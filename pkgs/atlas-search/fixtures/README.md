@@ -8,6 +8,23 @@ embedded singly and in one fixed mixed batch. Provenance (model
 revision, file hashes, runtime version, thread counts, padding and
 pooling semantics) is recorded inside the JSON itself.
 
+## DNS source retrieval fixture (code#2469)
+
+`dns-search-corpus.sql` and `dns-search-spec.json` are a small,
+isolated synthetic fixture for the `atlas-core` vector-search path.
+`dns_config_source_is_retrievable_by_vector_search_fixture` proves
+that a DNS-record query returns a result titled
+`infra/dns/dns_config.yaml` containing the known MX record. Its fixed
+toy vectors exercise retrieval plumbing only; they are **not** a
+production embedding-quality or production-corpus claim.
+
+The production Atlas corpus is maintained outside this repository by
+the local corpus pipeline. First-pass ingestion of code-repository
+documents is tracked separately by code#6025; that work remains gated
+on its corpus-ingestion prerequisites. Do not add this source to the
+personal conversation corpus or claim production ingestion from this
+fixture alone.
+
 Bit-identity is a **version-matched** claim (code#6663): the gate
 must load the ONNX Runtime version named in the provenance
 (1.31.1, the atlas venv build). A different runtime — e.g. the nix

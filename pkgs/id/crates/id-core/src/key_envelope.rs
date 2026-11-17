@@ -10,6 +10,10 @@ use chacha20poly1305::{KeyInit, XChaCha20Poly1305, XNonce, aead::Aead, aead::Pay
 use rand::RngExt as _;
 use zeroize::Zeroizing;
 
+/// Minimum passphrase length accepted by every envelope/backup
+/// creation path (shared floor: backup creation and key export).
+pub const MIN_PASSPHRASE_BYTES: usize = 8;
+
 const MAGIC: &[u8; 5] = b"IDKEY";
 const VERSION: u8 = 1;
 const KDF_ARGON2ID: u8 = 1;

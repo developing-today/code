@@ -35,6 +35,7 @@ Run on the laptop:
   python3 pm-stack/host-health-collector.py
   python3 pm-stack/host-health-collector.py --output /tmp/host-health.json
 """
+
 import argparse
 import json
 import re
@@ -48,24 +49,46 @@ HOME = Path.home()
 DEFAULT_OUTPUT = HOME / ".local" / "state" / "pm-aggregator" / "host-health.json"
 DEFAULT_MODE_FILE = HOME / ".local" / "state" / "opencode-claimant" / "mode"
 
-UNITS = ["pm-git-sync", "pm-projector-reconcile", "pm-kaneo-sync-guard",
-         "pm-dashboard-backup"]
+UNITS = [
+    "pm-git-sync",
+    "pm-projector-reconcile",
+    "pm-kaneo-sync-guard",
+    "pm-dashboard-backup",
+]
 TIMERS = [f"{u}.timer" for u in UNITS] + ["pm-host-health.timer"]
 
-SHOW_PROPS = ["Id", "ActiveState", "SubState", "Result", "ExecMainStatus",
-              "ExecMainExitTimestamp", "InactiveEnterTimestamp",
-              "ActiveEnterTimestamp", "StateChangeTimestamp"]
+SHOW_PROPS = [
+    "Id",
+    "ActiveState",
+    "SubState",
+    "Result",
+    "ExecMainStatus",
+    "ExecMainExitTimestamp",
+    "InactiveEnterTimestamp",
+    "ActiveEnterTimestamp",
+    "StateChangeTimestamp",
+]
 
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(
-        prog="host-health-collector.py", allow_abbrev=False,
+        prog="host-health-collector.py",
+        allow_abbrev=False,
         description="Collect claimant-mode + PM unit health into the "
-                    "aggregator's host-health snapshot (code#10141).")
-    parser.add_argument("--output", default=str(DEFAULT_OUTPUT), metavar="PATH",
-                        help="snapshot path (default: %(default)s).")
-    parser.add_argument("--mode-file", default=str(DEFAULT_MODE_FILE), metavar="PATH",
-                        help="claimant mode file (default: %(default)s).")
+        "aggregator's host-health snapshot (code#10141).",
+    )
+    parser.add_argument(
+        "--output",
+        default=str(DEFAULT_OUTPUT),
+        metavar="PATH",
+        help="snapshot path (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--mode-file",
+        default=str(DEFAULT_MODE_FILE),
+        metavar="PATH",
+        help="claimant mode file (default: %(default)s).",
+    )
     return parser.parse_args(argv)
 
 
@@ -88,12 +111,15 @@ def iso_from_systemd(value):
 
 def show_unit(unit):
     out = subprocess.run(
-        ["systemctl", "--user", "show", unit,
-         "--property=" + ",".join(SHOW_PROPS)],
-        capture_output=True, text=True)
+        ["systemctl", "--user", "show", unit, "--property=" + ",".join(SHOW_PROPS)],
+        capture_output=True,
+        text=True,
+    )
     if out.returncode != 0:
-        return {"state": "unknown",
-                "detail": f"systemctl show failed: {out.stderr.strip()[:200]}"}
+        return {
+            "state": "unknown",
+            "detail": f"systemctl show failed: {out.stderr.strip()[:200]}",
+        }
     props = {}
     for line in out.stdout.splitlines():
         key, _, val = line.partition("=")
@@ -117,8 +143,10 @@ def show_unit(unit):
     # Last success: for a oneshot that finished cleanly, inactive-enter
     # is its completion time; only trust it while Result says success.
     if result == "success":
-        record["lastSuccessAt"] = (iso_from_systemd(props.get("ExecMainExitTimestamp"))
-                                   or record["inactiveEnterAt"])
+        record["lastSuccessAt"] = (
+            iso_from_systemd(props.get("ExecMainExitTimestamp"))
+            or record["inactiveEnterAt"]
+        )
     else:
         record["lastSuccessAt"] = None
     return record
@@ -127,9 +155,11 @@ def show_unit(unit):
 def read_claimant_mode(mode_file):
     path = Path(mode_file)
     if not path.exists():
-        return {"state": "missing",
-                "detail": f"mode file {path} does not exist; claimant "
-                          "read_mode() defaults to shadow (#10141)"}
+        return {
+            "state": "missing",
+            "detail": f"mode file {path} does not exist; claimant "
+            "read_mode() defaults to shadow (#10141)",
+        }
     try:
         raw = path.read_text()
     except Exception as exc:
@@ -137,9 +167,11 @@ def read_claimant_mode(mode_file):
     value = raw.strip().lower()
     if value in ("live", "shadow"):
         return {"state": value, "detail": f"mode file content: {value}"}
-    return {"state": "invalid",
-            "detail": f"mode file content {raw.strip()[:40]!r} is not live|shadow; "
-                      "claimant read_mode() defaults to shadow"}
+    return {
+        "state": "invalid",
+        "detail": f"mode file content {raw.strip()[:40]!r} is not live|shadow; "
+        "claimant read_mode() defaults to shadow",
+    }
 
 
 def main(argv=None):
@@ -172,14 +204,20 @@ def main(argv=None):
         tmp.write_text(json.dumps(snapshot, indent=2) + "\n")
         tmp.replace(output)
     except Exception as exc:
-        print(f"host-health-collector: FAIL cannot write {output}: {exc}",
-              file=sys.stderr)
+        print(
+            f"host-health-collector: FAIL cannot write {output}: {exc}", file=sys.stderr
+        )
         return 1
-    bad_units = [u for u, r in snapshot["units"].items()
-                 if r.get("activeState") == "failed" or (
-                     r.get("result") not in (None, "success"))]
-    print(f"host-health-collector: claimant={snapshot['claimantMode']['state']} "
-          f"units_bad={bad_units or 'none'} -> {output}")
+    bad_units = [
+        u
+        for u, r in snapshot["units"].items()
+        if r.get("activeState") == "failed"
+        or (r.get("result") not in (None, "success"))
+    ]
+    print(
+        f"host-health-collector: claimant={snapshot['claimantMode']['state']} "
+        f"units_bad={bad_units or 'none'} -> {output}"
+    )
     return 0
 
 

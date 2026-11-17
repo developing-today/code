@@ -21,6 +21,29 @@
         "type": "github"
       }
     },
+    "antigravity-cli-nix": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs-unstable"
+        ]
+      },
+      "locked": {
+        "lastModified": 1794654022,
+        "narHash": "sha256-0w9dkDfIq5VK6RMset1Jw7D2lcnvZWW78c2epNYxbCc=",
+        "owner": "selfhost-it",
+        "repo": "antigravity-cli-nix",
+        "rev": "c081b0688d176cf315418b49afbcc600e2461ade",
+        "type": "github"
+      },
+      "original": {
+        "owner": "selfhost-it",
+        "repo": "antigravity-cli-nix",
+        "type": "github"
+      }
+    },
     "aquamarine": {
       "inputs": {
         "hyprutils": [
@@ -1496,15 +1519,15 @@
         "qmd": "qmd"
       },
       "locked": {
-        "lastModified": 1793860488,
-        "narHash": "sha256-nJuhwbielPiFM/LTm2t70baUsA7u1JnKTOAYGUbVuMk=",
-        "owner": "openclaw",
+        "lastModified": 1794515660,
+        "narHash": "sha256-Hhkx8vP4sFknZ7zW/BnKBN5xjrciKPjwjMljMjUWLSY=",
+        "owner": "developing-today",
         "repo": "nix-openclaw",
-        "rev": "26516d997d7e1794d708c63e1e1285529c17ee62",
+        "rev": "75961c688c13c6ee9278744c3e1fd30392a1b2d3",
         "type": "github"
       },
       "original": {
-        "owner": "openclaw",
+        "owner": "developing-today",
         "repo": "nix-openclaw",
         "type": "github"
       }
@@ -1737,11 +1760,11 @@
     },
     "nixpkgs-25": {
       "locked": {
-        "lastModified": 1793726008,
-        "narHash": "sha256-jQp1wKvbwWdLBASTXkSi/VYmDJ5AbBi1WvcMt9HWJC8=",
+        "lastModified": 1794537146,
+        "narHash": "sha256-Wpz/7x/YWnDIBu7yj6ixe8j6fIMsidd9Y+o1PqPF3iM=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "1d060086d60cb76a40cf37109f979d88a5bd6396",
+        "rev": "d5cc6833999746cffdfe0598f7bc801a57b887a9",
         "type": "github"
       },
       "original": {
@@ -2240,11 +2263,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1794635800,
-        "narHash": "sha256-cgZJmv47M81TIK37lMUi0yFbo58SHbh0bU6KRObReQc=",
+        "lastModified": 1794701110,
+        "narHash": "sha256-zaEglOngiL3LK/vWDPnTtBooaXrkX4YuVWwQrcIbcMg=",
         "owner": "developing-today-forks",
         "repo": "openchamber",
-        "rev": "025e96d3afdab7f8fdf75695f975e51a6db0a7a2",
+        "rev": "ce3173a4923e4bd365bea77f0b16c55636fbc8c2",
         "type": "github"
       },
       "original": {
@@ -2264,11 +2287,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1794671466,
-        "narHash": "sha256-fjpc0axb7clrT4CqUpkWkHew1jBvPbe/m7yigjdakbQ=",
+        "lastModified": 1794873791,
+        "narHash": "sha256-hC2I5z0RTpJqh5ASq3MmzyduOhB0o79Z+WQ6HOVFoWk=",
         "owner": "developing-today-forks",
         "repo": "opencode",
-        "rev": "18d688bc8ee3e09934857cde817beaf59b3b04ce",
+        "rev": "d27246ffc396c728eefe033335539ebfe86bd30f",
         "type": "github"
       },
       "original": {
@@ -2372,6 +2395,7 @@
     "root": {
       "inputs": {
         "affinity-nix": "affinity-nix",
+        "antigravity-cli-nix": "antigravity-cli-nix",
         "chatgpt-desktop": "chatgpt-desktop",
         "clan-core": "clan-core",
         "claude-desktop": "claude-desktop",

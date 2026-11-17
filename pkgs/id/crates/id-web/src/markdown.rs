@@ -3349,6 +3349,38 @@ mod tests {
     }
 
     #[test]
+    fn test_newline_destination_protection_unmatched_backtick() {
+        // #7557 oracle: CommonMark treats an unmatched backtick run as
+        // literal text, so destinations after one — later in the same
+        // paragraph or in a later paragraph — are genuine and must be
+        // protected, while a properly closed span stays literal.
+        for doc in [
+            // Stray backtick, destination in a later paragraph.
+            "the `foo flag does x\n\n[x](<a\nb>)\n",
+            // Stray backtick, destination later in the same paragraph.
+            "the `foo flag does x\n[x](<a\nb>)\n",
+            // Stray double-backtick run, destination in a later paragraph.
+            "a ``foo run\n\n[x](<a\nb>)\n",
+        ] {
+            let (protected, token) = protect_newline_destinations(doc);
+            assert!(
+                token.is_some(),
+                "destination after unmatched backtick unprotected: {doc:?}"
+            );
+            assert!(
+                protected.contains("idweb-newline"),
+                "destination after unmatched backtick not tokenised: {doc:?} -> {protected:?}"
+            );
+        }
+        // A closed span in a later paragraph is still literal after a
+        // stray backtick in an earlier one.
+        let literal = "a `stray\n\n`[x](<a\nb>)`\n";
+        let (protected, token) = protect_newline_destinations(literal);
+        assert_eq!(protected, literal, "closed span rewritten: {literal:?}");
+        assert!(token.is_none(), "closed span tokenised: {literal:?}");
+    }
+
+    #[test]
     fn test_tab_and_newline_editor_href_and_reference_definition() {
         // #1423, save direction alone: an editor-created PM link whose
         // href carries a tab or newline saves in angle form and reparses

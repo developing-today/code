@@ -44,6 +44,21 @@
 //!
 //! Numbers are only comparable on the same machine class; baselines must
 //! record where they were taken (slice 2).
+//!
+//! Benchmark matrix (#5896): the four loadgen-core workloads above are
+//! also emitted as a versioned `results.jsonl` bundle — one run-manifest
+//! record plus one cell record per (workload × interface × configuration)
+//! tuple, per the decision record posted on #5896. The measured interface
+//! is the loadgen `in_process` surface; the shell-contract transport IDs
+//! (`iroh`, `websocket`, `ssh-exec`) have no adapter in this harness, so
+//! their cells are recorded explicitly as `unsupported` with a reason —
+//! never silently omitted and never represented as zero. The legacy
+//! `bench` lines remain the compatibility view; the JSONL bundle is the
+//! source of truth for matrix consumers (#5897's comparator keys on the
+//! full matrix identity). The two async workloads (`many_worlds`,
+//! `fuel_spin_isolation`) keep their dedicated drivers and legacy lines
+//! only for now: their pacing is the loadgen record's later executor
+//! steps, so they are not matrix cells yet.
 
 use std::hint::black_box;
 use std::path::{Path, PathBuf};
@@ -782,13 +797,199 @@ fn median(mut samples: Vec<f64>) -> f64 {
     samples[samples.len() / 2]
 }
 
-fn report(name: &str, unit: &str, samples: Vec<f64>) {
+fn report(name: &str, unit: &str, samples: Vec<f64>, cells: &mut Vec<MatrixCell>) {
     let med = median(samples.clone());
     let min = samples.iter().copied().fold(f64::INFINITY, f64::min);
     println!(
         "bench {name} unit={unit} median={med:.3} min={min:.3} reps={}",
         samples.len()
     );
+    record_matrix_cells(name, unit, &samples, cells);
+}
+
+/// One planned cell of the #5896 benchmark matrix. `samples` is empty
+/// unless `status` is `measured`.
+struct MatrixCell {
+    workload_id: String,
+    interface_id: String,
+    status: &'static str,
+    reason: Option<String>,
+    unit: Option<String>,
+    samples: Vec<f64>,
+}
+
+/// The interface axis of the matrix (#5896 decision record): the
+/// loadgen `in_process` surface this harness measures, plus the
+/// shell-contract transport IDs (`pkgs/id/contract/shell-contract.v1.json`).
+/// Presentation kinds (`WorldSurface::Screen` / `Text`) are not
+/// transports and are never interface IDs.
+const MATRIX_INTERFACES: [&str; 4] = ["in_process", "iroh", "websocket", "ssh-exec"];
+
+/// The configuration axis (#5894): the standard server baseline's
+/// default configuration. The scale (S0/S1/S2 per #5894) is recorded
+/// on each cell as provenance; `--quick` smoke sizes are not a scale.
+const MATRIX_CONFIGURATION: &str = "standard-default";
+
+fn record_matrix_cells(name: &str, unit: &str, samples: &[f64], cells: &mut Vec<MatrixCell>) {
+    for interface in MATRIX_INTERFACES {
+        if interface == "in_process" {
+            cells.push(MatrixCell {
+                workload_id: name.to_owned(),
+                interface_id: interface.to_owned(),
+                status: "measured",
+                reason: None,
+                unit: Some(unit.to_owned()),
+                samples: samples.to_vec(),
+            });
+        } else {
+            cells.push(MatrixCell {
+                workload_id: name.to_owned(),
+                interface_id: interface.to_owned(),
+                status: "unsupported",
+                reason: Some(format!(
+                    "no {interface} transport adapter in the world_bench harness: \
+                     this workload is measured on the in_process surface only; \
+                     transport cells require the server harness of the #5894 \
+                     baseline programme"
+                )),
+                unit: None,
+                samples: Vec::new(),
+            });
+        }
+    }
+}
+
+fn json_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            ch if (ch as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", ch as u32)),
+            ch => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Days-from-civil algorithm (Howard Hinnant) — the inverse: convert
+/// Unix epoch seconds to an ISO-8601 UTC timestamp without a date
+/// crate, so the manifest's `started_at_utc` is human-readable.
+fn iso8601_utc(epoch_secs: u64) -> String {
+    let days = (epoch_secs / 86_400) as i64;
+    let secs = epoch_secs % 86_400;
+    let (hour, minute, second) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+/// Write the #5896 `results.jsonl` bundle: a run-manifest record
+/// followed by one record per planned matrix cell. The comparison
+/// identity of a measured metric is (machine_class, workload_id,
+/// interface_id, configuration_id, metric, statistic) — consumers
+/// must not compare across machine classes, configurations, units,
+/// or workload/interface IDs.
+fn write_results_jsonl(cells: &[MatrixCell], quick: bool) -> Result<()> {
+    let started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let run_id = format!("{}-{}", started, std::process::id());
+    // The canonical machine classes are #5894's: `fleet-laptop` (the
+    // reference class of BASELINES.md) and `ci-runner` (relative-only
+    // series). The workflow sets ci-runner explicitly; a bare local
+    // run is on the reference machine by fleet convention.
+    let machine_class =
+        std::env::var("ID_BENCH_MACHINE_CLASS").unwrap_or_else(|_| "fleet-laptop".to_owned());
+    let git_sha = std::env::var("ID_BENCH_GIT_SHA")
+        .or_else(|_| std::env::var("GITHUB_SHA"))
+        .unwrap_or_else(|_| "unknown".to_owned());
+    let toolchain = std::env::var("ID_BENCH_TOOLCHAIN").unwrap_or_else(|_| "unknown".to_owned());
+    let build_profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    let threads = std::thread::available_parallelism().map_or(1, usize::from);
+    let scale = if quick { "smoke" } else { "S1" };
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{{\"type\":\"manifest\",\"schema_version\":1,\"run_id\":\"{}\",\"git_sha\":\"{}\",\"started_at_utc\":\"{}\",\"machine_class\":\"{}\",\"os\":\"{}\",\"arch\":\"{}\",\"cpu_threads\":{},\"toolchain\":\"{}\",\"build_profile\":\"{}\",\"generator_version\":{},\"seed\":{}}}\n",
+        json_escape(&run_id),
+        json_escape(&git_sha),
+        iso8601_utc(started),
+        json_escape(&machine_class),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        threads,
+        json_escape(&toolchain),
+        build_profile,
+        loadgen::GENERATOR_VERSION,
+        BENCH_SEED,
+    ));
+    for cell in cells {
+        let mut line = format!(
+            "{{\"type\":\"cell\",\"run_id\":\"{}\",\"workload_id\":\"{}\",\"interface_id\":\"{}\",\"configuration_id\":\"{}\",\"scale\":\"{}\",\"status\":\"{}\"",
+            json_escape(&run_id),
+            json_escape(&cell.workload_id),
+            json_escape(&cell.interface_id),
+            MATRIX_CONFIGURATION,
+            scale,
+            cell.status,
+        );
+        if let Some(reason) = &cell.reason {
+            line.push_str(&format!(",\"reason\":\"{}\"", json_escape(reason)));
+        }
+        line.push_str(",\"metrics\":[");
+        if cell.status == "measured" {
+            let unit = cell.unit.as_deref().unwrap_or("");
+            let samples_json = cell
+                .samples
+                .iter()
+                .map(|s| format!("{s:.3}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            for (i, (statistic, value)) in [
+                ("median", median(cell.samples.clone())),
+                (
+                    "min",
+                    cell.samples.iter().copied().fold(f64::INFINITY, f64::min),
+                ),
+            ]
+            .iter()
+            .enumerate()
+            {
+                if i > 0 {
+                    line.push(',');
+                }
+                line.push_str(&format!(
+                    "{{\"metric\":\"latency\",\"statistic\":\"{statistic}\",\"unit\":\"{}\",\"value\":{value:.3},\"sample_count\":{},\"samples\":[{samples_json}]}}",
+                    json_escape(unit),
+                    cell.samples.len(),
+                ));
+            }
+        }
+        line.push_str("]}\n");
+        out.push_str(&line);
+    }
+
+    let path = std::env::var("ID_BENCH_RESULTS").unwrap_or_else(|_| "results.jsonl".to_owned());
+    std::fs::write(&path, out)
+        .with_context(|| format!("write benchmark matrix results to {path}"))?;
+    println!("matrix results={path} cells={}", cells.len());
+    Ok(())
 }
 
 /// The `journal_append_fsync` workload on the loadgen core (#5891
@@ -1284,11 +1485,16 @@ fn main() -> Result<()> {
 
     let run = |name: &str| only.is_none() || only == Some(name);
 
+    // The #5896 matrix cells for the loadgen-core workloads; the
+    // async workloads below are not matrix cells yet (header note).
+    let mut cells: Vec<MatrixCell> = Vec::new();
+
     if run("journal_append_fsync") {
         report(
             "journal_append_fsync",
             "us_per_append",
             bench_journal_append(&dir, events.min(2_000), reps)?,
+            &mut cells,
         );
     }
     if run("checkpoint_compaction") {
@@ -1296,6 +1502,7 @@ fn main() -> Result<()> {
             "checkpoint_compaction",
             "us_per_compact",
             bench_compaction(&dir, events.min(2_000), reps)?,
+            &mut cells,
         );
     }
     if run("guest_replay") {
@@ -1303,6 +1510,7 @@ fn main() -> Result<()> {
             "guest_replay",
             "us_per_event",
             bench_guest_replay(events, reps)?,
+            &mut cells,
         );
     }
     if run("session_fanout") {
@@ -1310,6 +1518,7 @@ fn main() -> Result<()> {
             "session_fanout",
             "us_per_delivery",
             bench_fanout(clients, rounds, reps)?,
+            &mut cells,
         );
     }
     if run("many_worlds") {
@@ -1329,6 +1538,10 @@ fn main() -> Result<()> {
             .enable_all()
             .build()?;
         runtime.block_on(bench_fuel_spin_isolation(worker_threads, quick))?;
+    }
+
+    if !cells.is_empty() {
+        write_results_jsonl(&cells, quick)?;
     }
 
     let _ = std::fs::remove_dir_all(&dir);

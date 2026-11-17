@@ -63,16 +63,6 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 use tokio::fs as afs;
 
-use crate::local::LocalNode;
-use crate::meta_client::{expect_ok, request_over};
-use crate::{
-    CLIENT_KEY_FILE, META_ALPN, MetaRequest, MetaResponse, create_local_client_endpoint,
-    get_serve_info, is_node_id, load_or_create_keypair, open_store, parse_put_spec,
-    parse_stdin_items, read_input,
-};
-
-const PUT_FINALIZATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2 * 60);
-
 /// Add `data` to `store` as a raw blob; returns its hash and a guard that keeps
 /// the blob protected until dropped (hold it until the blob has been named).
 pub async fn add_raw(store: &Store, data: Vec<u8>) -> Result<(Hash, TempTag)> {
@@ -89,70 +79,15 @@ pub async fn add_raw(store: &Store, data: Vec<u8>) -> Result<(Hash, TempTag)> {
     Ok((guard.hash(), guard))
 }
 
-/// Upload `hash` to `target`, **then** register `name` for it.
-///
-/// Two ordering rules make this safe:
-///
-/// 1. **Bytes before name.** The server verifies the blob is present before it
-///    creates a name, so a failed upload can never leave a dangling name.
-/// 2. **Keep the blobs connection open until the server confirms.** A push is
-///    one-way — the server sends no acknowledgement — and closing the QUIC
-///    connection right after the last write can abort the server's import of
-///    data it has buffered but not yet processed. The `Put` request is the
-///    acknowledgement: the server answers it once the blob is complete, so we
-///    close the blobs connection only after that.
-///
-/// A `Put` for a blob that is still being finalized is retried for up to two
-/// minutes (large blobs take a moment to finish on the server).
-pub async fn push_and_name(
-    store: &Store,
-    endpoint: &Endpoint,
-    target: EndpointAddr,
-    name: &str,
-    hash: Hash,
-) -> Result<()> {
-    let blobs_conn = id_core::connectivity::connect(endpoint, target.clone(), BLOBS_ALPN).await?;
-    let push_request = PushRequest::new(hash, ChunkRangesSeq::from_ranges([ChunkRanges::all()]));
-    store
-        .remote()
-        .execute_push(blobs_conn.clone(), push_request)
-        .await
-        .context(
-            "blob push rejected: the server only accepts writes from allowed nodes \
-             (run `id id --client` on this machine and add the printed ID to the \
-             server's `--allow-node` or `.iroh-allowed`)",
-        )?;
+pub use id_sync::meta_client::push_and_name;
 
-    let meta_conn = id_core::connectivity::connect(endpoint, target, META_ALPN).await?;
-    let req = MetaRequest::Put {
-        filename: name.to_owned(),
-        hash,
-    };
-    let outcome = id_core::connectivity::within(
-        PUT_FINALIZATION_TIMEOUT,
-        "registering the blob name",
-        async {
-            loop {
-                match request_over(&meta_conn, &req).await? {
-                    MetaResponse::Error { message }
-                        if id_sync::fileops::is_blob_missing_message(&message) =>
-                    {
-                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                    }
-                    response => return Ok(response),
-                }
-            }
-        },
-    )
-    .await;
-    meta_conn.close(0u32.into(), b"done");
-    blobs_conn.close(0u32.into(), b"done");
-    match expect_ok(outcome?)? {
-        MetaResponse::Put { success: true } => Ok(()),
-        MetaResponse::Put { success: false } => bail!("server rejected"),
-        _ => bail!("unexpected response"),
-    }
-}
+use crate::local::LocalNode;
+use crate::meta_client::{expect_ok, request_over};
+use crate::{
+    CLIENT_KEY_FILE, META_ALPN, MetaRequest, MetaResponse, create_local_client_endpoint,
+    get_serve_info, is_node_id, load_or_create_keypair, open_store, parse_put_spec,
+    parse_stdin_items, read_input,
+};
 
 /// Trim a name typed at the forgiving CLI surface before FileOps sees it.
 ///

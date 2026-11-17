@@ -15,7 +15,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { migrate, upsertComment } from "../src/store";
-import { handleRequest, type ServerEnv } from "../src/server";
+import { handleRequest, HEALTH_SNAPSHOT_STALE_MS, type ServerEnv } from "../src/server";
 
 let dir: string;
 let db: Client;
@@ -119,5 +119,61 @@ describe("/health isolation (#9850)", () => {
     const body = (await res.json()) as { ok: boolean; comments: number };
     expect(body.ok).toBe(true);
     expect(body.comments).toBe(24);
+  });
+});
+
+describe("/health snapshot + reconcile gate (#9850 round 2)", () => {
+  test("health serves the background snapshot and does no DB work on the request path", async () => {
+    const wedgedDb = {
+      execute: async () => {
+        throw new Error("db wedged");
+      },
+      batch: async () => {
+        throw new Error("db wedged");
+      },
+    } as unknown as Client;
+    const res = await handleRequest(new Request("http://127.0.0.1:7801/health"), wedgedDb, env, {
+      healthDb: wedgedDb,
+      healthSnapshot: () => ({ items: 11, comments: 22, links: 33, at: Date.now() }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      ok: boolean;
+      items: number;
+      comments: number;
+      links: number;
+      snapshotAgeMs: number;
+    };
+    expect(body.ok).toBe(true);
+    expect(body.items).toBe(11);
+    expect(body.comments).toBe(22);
+    expect(body.links).toBe(33);
+    expect(body.snapshotAgeMs).toBeGreaterThanOrEqual(0);
+  });
+
+  test("a stale snapshot answers 503, not a healthy answer", async () => {
+    const res = await handleRequest(new Request("http://127.0.0.1:7801/health"), db, env, {
+      healthSnapshot: () => ({ items: 1, comments: 2, links: 3, at: Date.now() - HEALTH_SNAPSHOT_STALE_MS - 1_000 }),
+    });
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { ok: boolean; error: string };
+    expect(body.ok).toBe(false);
+    expect(body.error).toBe("health_snapshot_stale");
+  });
+
+  test("a /reconcile trigger during an in-flight pass is a no-op success", async () => {
+    const res = await handleRequest(
+      new Request("http://127.0.0.1:7801/reconcile", {
+        method: "POST",
+        headers: { authorization: "Bearer test-token" },
+      }),
+      db,
+      { PM_PROJECTOR_API_TOKEN: "test-token", PM_REPOS: "" },
+      { beginReconcile: () => false, endReconcile: () => {} },
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; skipped?: string };
+    expect(body.ok).toBe(true);
+    expect(body.skipped).toBe("reconcile_in_progress");
   });
 });

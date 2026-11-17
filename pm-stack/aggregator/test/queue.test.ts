@@ -174,12 +174,7 @@ describe("fetchQueueSnapshot (fixture broker)", () => {
   };
   test("reads /health then /list per queue with the agent token, read verbs only", async () => {
     calls.length = 0;
-    const snap = await fetchQueueSnapshot(
-      "http://broker.test:4801",
-      "tok-123",
-      stubFetch as never,
-      () => NOW,
-    );
+    const snap = await fetchQueueSnapshot("http://broker.test:4801", "tok-123", stubFetch as never, () => NOW);
     expect(snap.available).toBe(true);
     // Only queues named by /health get a /list call: the two pilot
     // tasks come back; the scratch-queue task is never fetched.
@@ -201,9 +196,9 @@ describe("fetchQueueSnapshot (fixture broker)", () => {
       status: 503,
       json: async () => ({ error: "backend down" }),
     });
-    await expect(
-      fetchQueueSnapshot("http://broker.test:4801", "tok", errFetch as never, () => NOW),
-    ).rejects.toThrow("backend down");
+    await expect(fetchQueueSnapshot("http://broker.test:4801", "tok", errFetch as never, () => NOW)).rejects.toThrow(
+      "backend down",
+    );
   });
 });
 

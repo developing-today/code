@@ -91,8 +91,7 @@ const LOCAL_CHECKS: LocalCheck[] = [
   {
     id: "primary-checkout",
     name: "Primary checkout",
-    run: () =>
-      checkPrimaryCheckout(process.env.PM_PRIMARY_CHECKOUT_DIR?.trim() || join(homedir(), "git", "code")),
+    run: () => checkPrimaryCheckout(process.env.PM_PRIMARY_CHECKOUT_DIR?.trim() || join(homedir(), "git", "code")),
   },
 ];
 
@@ -218,7 +217,9 @@ async function round(state: SentinelStateFile): Promise<void> {
 
 async function main(): Promise<void> {
   const state = await loadState();
-  console.log(`stack-sentinel: probing ${PROBES.length} services + ${LOCAL_CHECKS.length} local checks every ${LOOP_MS / 1000}s (state: ${STATE_FILE})`);
+  console.log(
+    `stack-sentinel: probing ${PROBES.length} services + ${LOCAL_CHECKS.length} local checks every ${LOOP_MS / 1000}s (state: ${STATE_FILE})`,
+  );
   for (;;) {
     try {
       await round(state);

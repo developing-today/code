@@ -11,31 +11,22 @@
 // instead of inventing a state.
 //
 // The per-phase F-item PROGRESS half is derived only where a
-// uniform machine-readable source exists. Today that is Phase 12:
-// the ordered step list in issue #1235's body (parsed and joined by
-// phase12.ts for the Path to Phase 12 panel) is exactly such a
-// source, and derivePhase12Progress below counts its steps against
-// live GhItem state. Phase 11 is NOT derivable from its plan file:
-// only F11.1-F11.3 carry an issue ref in their item header
-// (.opencode/plans/phase-11-foundations.md, verified 2026-11-14);
-// the other items' refs are prose-level and ambiguous (F11.11 names
-// #250 for a done part and #242 for an open part), so a header join
-// would fabricate progress for 15 of 18 items. Phases 0-10 and 13
-// have no F-item source at all. Those phases join when a
-// phase-mapping source of record exists (proposed: a phases table
-// in planning/roadmaps/id.md, parsed like the repo-roadmap source);
-// until then they render validation state only, with the gap stated
-// rather than a percentage invented.
+// uniform machine-readable source exists. Phase 12: the ordered
+// step list in issue #1235's body (parsed and joined by phase12.ts),
+// counted by derivePhase12Progress below. Phases 11 and 13: the
+// F-item mapping table in planning/roadmaps/id.md — the source of
+// record created for this panel (parsed and counted by
+// phase-mapping.ts) — researched on 2026-11-14: dedicated F-item
+// issues for most items, the phase-11 status record for the two
+// PR-delivered items (F11.6 -> PR #247, F11.14 -> PR #248), #227 for
+// F11.12, and #783-#790 for F13.1-F13.8. Phases 0-10 have no F-item
+// numbering in any plan, so they render validation state only, with
+// the gap stated rather than a percentage invented.
 //
 // Everything in this module is pure: the derivations join their
 // sources against the aggregator's GhItem states.
 import type { GhItem, RefKey } from "./model.ts";
-import {
-  joinPhase12Steps,
-  parsePhase12Steps,
-  phase12IsStale,
-  type Phase12Snapshot,
-} from "./phase12.ts";
+import { joinPhase12Steps, parsePhase12Steps, phase12IsStale, type Phase12Snapshot } from "./phase12.ts";
 
 export const PHASE_TRACKER_REPO = "developing-today/code";
 export const PHASE_TRACKER_UMBRELLA = 796;
@@ -103,10 +94,7 @@ function issueUrl(issueNumber: number): string {
  * themselves) whose title references the audit as "#<number>" and
  * whose live state is open. Closed references are history, not
  * outstanding validation work, so they do not surface. */
-export function openFollowUpsFor(
-  auditIssue: number,
-  items: ReadonlyMap<RefKey, GhItem>,
-): PhaseFollowUp[] {
+export function openFollowUpsFor(auditIssue: number, items: ReadonlyMap<RefKey, GhItem>): PhaseFollowUp[] {
   const needle = new RegExp(`#${auditIssue}\\b`);
   const auditRefs = new Set(PHASE_AUDITS.map((a) => refFor(a.issueNumber)));
   const out: PhaseFollowUp[] = [];
@@ -126,9 +114,7 @@ export function openFollowUpsFor(
 }
 
 /** Derive validation state for every phase 0-13 from live items. */
-export function derivePhaseValidation(
-  items: ReadonlyMap<RefKey, GhItem>,
-): PhaseValidation[] {
+export function derivePhaseValidation(items: ReadonlyMap<RefKey, GhItem>): PhaseValidation[] {
   const byPhase = new Map<number, PhaseValidation>();
   for (const audit of PHASE_AUDITS) {
     const ref = refFor(audit.issueNumber);

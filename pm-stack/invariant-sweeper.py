@@ -65,6 +65,7 @@ Run on the laptop (Kaneo's Postgres lives there):
   python3 pm-stack/invariant-sweeper.py --post-epic  # + epic comment if changed
   python3 pm-stack/invariant-sweeper.py --act        # after review (see above)
 """
+
 import argparse
 import hashlib
 import json
@@ -85,7 +86,7 @@ EPIC_NUMBER = 10136
 KNOWN_POSITIVE = ("developing-today/code", 9060)
 BOT_LOGINS = {"developing-today[bot]", "developing-today"}
 DONE_LABEL = "status:done"
-CLOSE_WINDOW = timedelta(minutes=15)       # PR merge -> bot close gap (watchdog parity)
+CLOSE_WINDOW = timedelta(minutes=15)  # PR merge -> bot close gap (watchdog parity)
 HUMAN_ECHO_WINDOW = timedelta(seconds=120)  # human close just before a bot echo close
 MAX_EPIC_ROWS = 50
 
@@ -97,30 +98,56 @@ CLOSING_KEYWORDS = r"(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|res
 def parse_args(argv):
     """Strict declaration of the whole command line (#3352)."""
     parser = argparse.ArgumentParser(
-        prog="invariant-sweeper.py", allow_abbrev=False,
+        prog="invariant-sweeper.py",
+        allow_abbrev=False,
         description="Epic-invariant sweeper (code#10139): inventory closed-with-"
-                    "open-sub-issues, open-with-status:done, and Kaneo<->GitHub "
-                    "mismatches across the four Kaneo-synced repos.")
-    parser.add_argument("--act", action="store_true",
-                        help="enable auto-repair (reopen eligible invariant-(a) "
-                             "issues, strip bot-applied status:done). Default is "
-                             "report-only, per the report-first policy.")
-    parser.add_argument("--post-epic", action="store_true",
-                        help="comment the inventory on epic code#10136 when the "
-                             "violation fingerprint changed since the last post.")
-    parser.add_argument("--force-post", action="store_true",
-                        help="with --post-epic, post even if the fingerprint is "
-                             "unchanged.")
-    parser.add_argument("--repo", action="append", default=None, metavar="OWNER/NAME",
-                        help="limit the sweep to this repo (repeatable). Default: "
-                             "all four Kaneo-synced repos.")
-    parser.add_argument("--state-file", default=str(STATE_DIR / "state.json"),
-                        metavar="PATH", help="state file path.")
-    parser.add_argument("--report-dir", default=str(STATE_DIR),
-                        metavar="PATH", help="directory for last-report.md/.json.")
-    parser.add_argument("--skip-kaneo", action="store_true",
-                        help="skip invariant (c) (Kaneo Postgres unreachable from "
-                             "here); the report records the section as skipped.")
+        "open-sub-issues, open-with-status:done, and Kaneo<->GitHub "
+        "mismatches across the four Kaneo-synced repos.",
+    )
+    parser.add_argument(
+        "--act",
+        action="store_true",
+        help="enable auto-repair (reopen eligible invariant-(a) "
+        "issues, strip bot-applied status:done). Default is "
+        "report-only, per the report-first policy.",
+    )
+    parser.add_argument(
+        "--post-epic",
+        action="store_true",
+        help="comment the inventory on epic code#10136 when the "
+        "violation fingerprint changed since the last post.",
+    )
+    parser.add_argument(
+        "--force-post",
+        action="store_true",
+        help="with --post-epic, post even if the fingerprint is unchanged.",
+    )
+    parser.add_argument(
+        "--repo",
+        action="append",
+        default=None,
+        metavar="OWNER/NAME",
+        help="limit the sweep to this repo (repeatable). Default: "
+        "all four Kaneo-synced repos.",
+    )
+    parser.add_argument(
+        "--state-file",
+        default=str(STATE_DIR / "state.json"),
+        metavar="PATH",
+        help="state file path.",
+    )
+    parser.add_argument(
+        "--report-dir",
+        default=str(STATE_DIR),
+        metavar="PATH",
+        help="directory for last-report.md/.json.",
+    )
+    parser.add_argument(
+        "--skip-kaneo",
+        action="store_true",
+        help="skip invariant (c) (Kaneo Postgres unreachable from "
+        "here); the report records the section as skipped.",
+    )
     args = parser.parse_args(argv)
     repos = args.repo if args.repo else list(DEFAULT_REPOS)
     for repo in repos:
@@ -142,6 +169,7 @@ GH_ROUTE = "gh (unresolved)"
 def resolve_gh_route():
     global GH_CMD, GH_ROUTE
     import shutil
+
     if shutil.which("fleet"):
         GH_CMD = ["fleet", "gh"]
         GH_ROUTE = "fleet gh (rotating app tiers)"
@@ -222,8 +250,12 @@ def enumerate_issues(repo):
     owner, name = repo.split("/", 1)
     issues, cursor = [], None
     while True:
-        data = gh_graphql(ISSUES_QUERY, owner=owner, name=name,
-                          **({"cursor": cursor} if cursor else {}))
+        data = gh_graphql(
+            ISSUES_QUERY,
+            owner=owner,
+            name=name,
+            **({"cursor": cursor} if cursor else {}),
+        )
         conn = data["repository"]["issues"]
         issues.extend(conn["nodes"])
         if not conn["pageInfo"]["hasNextPage"]:
@@ -253,8 +285,14 @@ def classify_close(repo, number):
     data = gh_graphql(CLOSE_EVIDENCE_QUERY, owner=owner, name=name, number=number)
     issue = data["repository"]["issue"]
     closes = [n for n in issue["timelineItems"]["nodes"] if n]
-    evidence = {"open_sub_issues": None, "close_actor": None, "closed_at": None,
-                "trigger_pr": None, "closing_keyword": False, "human_echo": None}
+    evidence = {
+        "open_sub_issues": None,
+        "close_actor": None,
+        "closed_at": None,
+        "trigger_pr": None,
+        "closing_keyword": False,
+        "human_echo": None,
+    }
     summary = issue.get("subIssuesSummary") or {}
     total, completed = summary.get("total") or 0, summary.get("completed") or 0
     evidence["open_sub_issues"] = total - completed
@@ -301,15 +339,28 @@ def label_actor(repo, number, label):
 # ---------------------------------------------------------------- Kaneo (c)
 
 KAN_CONTAINER = "pm-stack-postgres-1"
-KAN_PSQL = ["docker", "exec", KAN_CONTAINER, "psql", "-U", "kaneo",
-            "-d", "kaneo", "-tA", "-v", "ON_ERROR_STOP=1"]
+KAN_PSQL = [
+    "docker",
+    "exec",
+    KAN_CONTAINER,
+    "psql",
+    "-U",
+    "kaneo",
+    "-d",
+    "kaneo",
+    "-tA",
+    "-v",
+    "ON_ERROR_STOP=1",
+]
 
 
 def kaneo_links():
     """{(repo, issue_number): kaneo_task_status} for GitHub issue links."""
-    sql = ("SELECT el.url, t.status FROM external_link el "
-           "JOIN task t ON t.id = el.task_id "
-           "WHERE el.resource_type='issue'")
+    sql = (
+        "SELECT el.url, t.status FROM external_link el "
+        "JOIN task t ON t.id = el.task_id "
+        "WHERE el.resource_type='issue'"
+    )
     out = subprocess.run(KAN_PSQL + ["-c", sql], capture_output=True, text=True)
     if out.returncode != 0:
         raise RuntimeError(f"kaneo psql failed: {out.stderr.strip()[:300]}")
@@ -325,6 +376,7 @@ def kaneo_links():
 
 # ---------------------------------------------------------------- repairs
 
+
 def act_on_finding(kind, repo, number, evidence):
     """--act repairs. Returns an action string. Only called for findings
     the design's policy makes eligible; everything else stays report-only."""
@@ -332,8 +384,15 @@ def act_on_finding(kind, repo, number, evidence):
         gh_run("issue", "reopen", str(number), "--repo", repo)
         issue_labels = evidence.get("labels") or []
         if DONE_LABEL in issue_labels:
-            gh_run("issue", "edit", str(number), "--repo", repo,
-                   "--remove-label", DONE_LABEL)
+            gh_run(
+                "issue",
+                "edit",
+                str(number),
+                "--repo",
+                repo,
+                "--remove-label",
+                DONE_LABEL,
+            )
         body = (
             "**Invariant sweeper (code#10139): reopening a wrongful auto-close.**\n\n"
             f"- Closed by `{evidence.get('close_actor')}` at {evidence.get('closed_at')}.\n"
@@ -342,28 +401,45 @@ def act_on_finding(kind, repo, number, evidence):
             f"- Trigger PR: #{evidence.get('trigger_pr')} (no closing keyword for this issue).\n"
             "- Reopened under the sweeper's post-review auto-reopen policy "
             "(design: doc/2026-11-14T17-00-00Z_design_pm-stack-close-authority). "
-            "Defect: #7610. Watchdog: #10105.")
+            "Defect: #7610. Watchdog: #10105."
+        )
         gh_run("issue", "comment", str(number), "--repo", repo, "--body", body)
         return "reopened"
     if kind == "b":
-        gh_run("issue", "edit", str(number), "--repo", repo,
-               "--remove-label", DONE_LABEL)
-        gh_run("issue", "comment", str(number), "--repo", repo, "--body",
-               "**Invariant sweeper (code#10139): removed a bot-applied "
-               "`status:done` label from an open issue.** The label is Kaneo's "
-               "mirror of a Done task; on an open issue it is contradictory "
-               "state (close-authority program code#10136).")
+        gh_run(
+            "issue", "edit", str(number), "--repo", repo, "--remove-label", DONE_LABEL
+        )
+        gh_run(
+            "issue",
+            "comment",
+            str(number),
+            "--repo",
+            repo,
+            "--body",
+            "**Invariant sweeper (code#10139): removed a bot-applied "
+            "`status:done` label from an open issue.** The label is Kaneo's "
+            "mirror of a Done task; on an open issue it is contradictory "
+            "state (close-authority program code#10136).",
+        )
         return "stripped-done-label"
     return "report-only"
 
 
 # ---------------------------------------------------------------- the sweep
 
+
 def sweep_repo(repo, act):
     """Returns (section_dict, error_or_None). Never raises: per-repo
     isolation is part of the design (one repo down must not blind the rest)."""
-    section = {"repo": repo, "issues_total": 0, "closed_total": 0, "open_total": 0,
-               "a_closed_open_subs": [], "b_open_done_label": [], "actions": []}
+    section = {
+        "repo": repo,
+        "issues_total": 0,
+        "closed_total": 0,
+        "open_total": 0,
+        "a_closed_open_subs": [],
+        "b_open_done_label": [],
+        "actions": [],
+    }
     try:
         issues = enumerate_issues(repo)
     except Exception as exc:
@@ -378,16 +454,31 @@ def sweep_repo(repo, act):
             summary = issue.get("subIssuesSummary") or {}
             open_subs = (summary.get("total") or 0) - (summary.get("completed") or 0)
             if open_subs > 0:
-                finding = {"number": issue["number"], "title": issue["title"],
-                           "open_sub_issues": open_subs, "labels": labels}
+                finding = {
+                    "number": issue["number"],
+                    "title": issue["title"],
+                    "open_sub_issues": open_subs,
+                    "labels": labels,
+                }
                 try:
                     ev = classify_close(repo, issue["number"])
-                    finding.update({k: ev[k] for k in
-                                    ("close_actor", "closed_at", "trigger_pr",
-                                     "closing_keyword", "human_echo")})
+                    finding.update(
+                        {
+                            k: ev[k]
+                            for k in (
+                                "close_actor",
+                                "closed_at",
+                                "trigger_pr",
+                                "closing_keyword",
+                                "human_echo",
+                            )
+                        }
+                    )
                     finding["eligible_reopen"] = bool(
-                        is_bot(ev["close_actor"]) and not ev["closing_keyword"]
-                        and not ev["human_echo"])
+                        is_bot(ev["close_actor"])
+                        and not ev["closing_keyword"]
+                        and not ev["human_echo"]
+                    )
                 except Exception as exc:
                     finding["evidence_error"] = str(exc)[:200]
                     finding["eligible_reopen"] = False
@@ -397,7 +488,9 @@ def sweep_repo(repo, act):
             if DONE_LABEL in labels:
                 finding = {"number": issue["number"], "title": issue["title"]}
                 try:
-                    finding["label_actor"] = label_actor(repo, issue["number"], DONE_LABEL)
+                    finding["label_actor"] = label_actor(
+                        repo, issue["number"], DONE_LABEL
+                    )
                 except Exception as exc:
                     finding["label_actor_error"] = str(exc)[:200]
                 section["b_open_done_label"].append(finding)
@@ -406,20 +499,26 @@ def sweep_repo(repo, act):
             if finding.get("eligible_reopen"):
                 try:
                     action = act_on_finding("a", repo, finding["number"], finding)
-                    section["actions"].append({"number": finding["number"], "action": action})
+                    section["actions"].append(
+                        {"number": finding["number"], "action": action}
+                    )
                     finding["action"] = action
                 except Exception as exc:
-                    section["actions"].append({"number": finding["number"],
-                                               "error": str(exc)[:200]})
+                    section["actions"].append(
+                        {"number": finding["number"], "error": str(exc)[:200]}
+                    )
         for finding in section["b_open_done_label"]:
             if is_bot(finding.get("label_actor")):
                 try:
                     action = act_on_finding("b", repo, finding["number"], finding)
-                    section["actions"].append({"number": finding["number"], "action": action})
+                    section["actions"].append(
+                        {"number": finding["number"], "action": action}
+                    )
                     finding["action"] = action
                 except Exception as exc:
-                    section["actions"].append({"number": finding["number"],
-                                               "error": str(exc)[:200]})
+                    section["actions"].append(
+                        {"number": finding["number"], "error": str(exc)[:200]}
+                    )
     section["_by_number"] = by_number
     return section, None
 
@@ -434,16 +533,22 @@ def known_positive_status():
         issue = data["repository"]["issue"]
         out["state"] = issue["state"]
         summary = issue.get("subIssuesSummary") or {}
-        out["open_sub_issues"] = (summary.get("total") or 0) - (summary.get("completed") or 0)
+        out["open_sub_issues"] = (summary.get("total") or 0) - (
+            summary.get("completed") or 0
+        )
         closes = [n for n in issue["timelineItems"]["nodes"] if n]
         if closes:
             last = closes[-1]
             out["last_close_actor"] = (last.get("actor") or {}).get("login")
             out["last_closed_at"] = last.get("createdAt")
         out["detected_as_wrongful_close"] = bool(
-            closes and is_bot(out.get("last_close_actor")) and out["open_sub_issues"] > 0)
-        out["verdict"] = ("live-violation" if issue["state"] == "CLOSED"
-                          else "resolved-by-audit")
+            closes
+            and is_bot(out.get("last_close_actor"))
+            and out["open_sub_issues"] > 0
+        )
+        out["verdict"] = (
+            "live-violation" if issue["state"] == "CLOSED" else "resolved-by-audit"
+        )
     except Exception as exc:
         out["error"] = str(exc)[:300]
     return out
@@ -462,12 +567,14 @@ def fingerprint(report):
 
 
 def render_markdown(report):
-    lines = [f"## Invariant sweeper inventory — {report['run_at']}",
-             "",
-             f"Mode: **{report['mode']}** · Program: code#10136 · Sweeper: code#10139 · "
-             "Watchdog: code#10105",
-             f"GitHub route: {report.get('gh_route', 'unknown')}",
-             ""]
+    lines = [
+        f"## Invariant sweeper inventory — {report['run_at']}",
+        "",
+        f"Mode: **{report['mode']}** · Program: code#10136 · Sweeper: code#10139 · "
+        "Watchdog: code#10105",
+        f"GitHub route: {report.get('gh_route', 'unknown')}",
+        "",
+    ]
     kp = report["known_positive"]
     lines += ["### Known positive — code#9060", ""]
     if kp.get("error"):
@@ -479,15 +586,18 @@ def render_markdown(report):
             f"still open — classifier verdict: "
             f"{'WRONGFUL CLOSE detected' if kp.get('detected_as_wrongful_close') else 'not detected'}; "
             f"current state **{kp.get('state')}** "
-            f"({kp.get('verdict')}).")
+            f"({kp.get('verdict')})."
+        )
     lines.append("")
     for sec in report["repos"]:
         lines += [f"### {sec['repo']}", ""]
         if sec.get("error"):
             lines += [f"- **SWEEP ERROR:** {sec['error']}", ""]
             continue
-        lines.append(f"- Issues enumerated: {sec['issues_total']} "
-                     f"({sec['closed_total']} closed, {sec['open_total']} open).")
+        lines.append(
+            f"- Issues enumerated: {sec['issues_total']} "
+            f"({sec['closed_total']} closed, {sec['open_total']} open)."
+        )
         a = sec["a_closed_open_subs"]
         lines.append(f"- (a) Closed with open sub-issues: **{len(a)}**")
         for f in a[:MAX_EPIC_ROWS]:
@@ -497,14 +607,19 @@ def render_markdown(report):
                 f"trigger PR: {('#' + str(f['trigger_pr'])) if f.get('trigger_pr') else 'none found'}; "
                 f"closing keyword: {'yes' if f.get('closing_keyword') else 'no'}"
                 + (f"; action: {f['action']}" if f.get("action") else "")
-                + ("; **eligible for auto-reopen**" if f.get("eligible_reopen") else ""))
+                + ("; **eligible for auto-reopen**" if f.get("eligible_reopen") else "")
+            )
         if len(a) > MAX_EPIC_ROWS:
-            lines.append(f"  - … and {len(a) - MAX_EPIC_ROWS} more (full list in the run's JSON report).")
+            lines.append(
+                f"  - … and {len(a) - MAX_EPIC_ROWS} more (full list in the run's JSON report)."
+            )
         b = sec["b_open_done_label"]
         lines.append(f"- (b) Open with `status:done` label: **{len(b)}**")
         for f in b[:MAX_EPIC_ROWS]:
-            lines.append(f"  - #{f['number']} — label applied by `{f.get('label_actor')}`"
-                         + (f"; action: {f['action']}" if f.get("action") else ""))
+            lines.append(
+                f"  - #{f['number']} — label applied by `{f.get('label_actor')}`"
+                + (f"; action: {f['action']}" if f.get("action") else "")
+            )
         if len(b) > MAX_EPIC_ROWS:
             lines.append(f"  - … and {len(b) - MAX_EPIC_ROWS} more.")
         if sec["actions"]:
@@ -517,15 +632,19 @@ def render_markdown(report):
     elif c.get("error"):
         lines.append(f"- **UNAVAILABLE:** {c['error']}")
     else:
-        lines.append(f"- Linked GitHub issues in Kaneo: {c['linked']}; "
-                     f"mismatches: **{c['count']}** "
-                     f"(Kaneo done / GitHub open: {c['kaneo_done_gh_open']}; "
-                     f"Kaneo not-done / GitHub closed: {c['kaneo_open_gh_closed']}). "
-                     "Report-only by policy: GitHub is the truth; the sync or a "
-                     "human heals Kaneo.")
+        lines.append(
+            f"- Linked GitHub issues in Kaneo: {c['linked']}; "
+            f"mismatches: **{c['count']}** "
+            f"(Kaneo done / GitHub open: {c['kaneo_done_gh_open']}; "
+            f"Kaneo not-done / GitHub closed: {c['kaneo_open_gh_closed']}). "
+            "Report-only by policy: GitHub is the truth; the sync or a "
+            "human heals Kaneo."
+        )
         for m in c["items"][:MAX_EPIC_ROWS]:
-            lines.append(f"  - {m['repo']}#{m['number']} — Kaneo task `{m['kaneo_status']}` "
-                         f"vs GitHub `{m['github_state']}`")
+            lines.append(
+                f"  - {m['repo']}#{m['number']} — Kaneo task `{m['kaneo_status']}` "
+                f"vs GitHub `{m['github_state']}`"
+            )
         if len(c["items"]) > MAX_EPIC_ROWS:
             lines.append(f"  - … and {len(c['items']) - MAX_EPIC_ROWS} more.")
     lines.append("")
@@ -537,8 +656,13 @@ def main(argv=None):
     args = parse_args(argv)
     resolve_gh_route()
     run_at = datetime.now(timezone.utc).isoformat()
-    report = {"run_at": run_at, "mode": "act" if args.act else "report",
-              "gh_route": GH_ROUTE, "repos": [], "errors": []}
+    report = {
+        "run_at": run_at,
+        "mode": "act" if args.act else "report",
+        "gh_route": GH_ROUTE,
+        "repos": [],
+        "errors": [],
+    }
     sections = []
     for repo in args.repos:
         section, error = sweep_repo(repo, args.act)
@@ -567,16 +691,33 @@ def main(argv=None):
                     continue
                 if status == "done" and state == "OPEN":
                     done_open += 1
-                    items.append({"repo": repo, "number": number, "kind": "kaneo-done-gh-open",
-                                  "kaneo_status": status, "github_state": state})
+                    items.append(
+                        {
+                            "repo": repo,
+                            "number": number,
+                            "kind": "kaneo-done-gh-open",
+                            "kaneo_status": status,
+                            "github_state": state,
+                        }
+                    )
                 elif status != "done" and state == "CLOSED":
                     open_closed += 1
-                    items.append({"repo": repo, "number": number, "kind": "kaneo-open-gh-closed",
-                                  "kaneo_status": status, "github_state": state})
+                    items.append(
+                        {
+                            "repo": repo,
+                            "number": number,
+                            "kind": "kaneo-open-gh-closed",
+                            "kaneo_status": status,
+                            "github_state": state,
+                        }
+                    )
             report["c_kaneo_mismatches"] = {
-                "linked": len(links), "count": len(items),
-                "kaneo_done_gh_open": done_open, "kaneo_open_gh_closed": open_closed,
-                "items": items}
+                "linked": len(links),
+                "count": len(items),
+                "kaneo_done_gh_open": done_open,
+                "kaneo_open_gh_closed": open_closed,
+                "items": items,
+            }
         except Exception as exc:
             report["c_kaneo_mismatches"] = {"error": str(exc)[:300]}
             report["errors"].append(f"kaneo: {exc}"[:300])
@@ -600,12 +741,20 @@ def main(argv=None):
     (report_dir / "last-report.md").write_text(md)
 
     posted = False
-    if args.post_epic and (args.force_post
-                           or state.get("last_posted_fingerprint") != report["fingerprint"]):
+    if args.post_epic and (
+        args.force_post or state.get("last_posted_fingerprint") != report["fingerprint"]
+    ):
         body_file = report_dir / "epic-comment.md"
         body_file.write_text(md)
-        gh_run("issue", "comment", str(EPIC_NUMBER), "--repo", EPIC_REPO,
-               "--body-file", str(body_file))
+        gh_run(
+            "issue",
+            "comment",
+            str(EPIC_NUMBER),
+            "--repo",
+            EPIC_REPO,
+            "--body-file",
+            str(body_file),
+        )
         posted = True
         state["last_posted_fingerprint"] = report["fingerprint"]
 
@@ -613,30 +762,51 @@ def main(argv=None):
     state["last_fingerprint"] = report["fingerprint"]
     state["mode"] = report["mode"]
     runs = state.setdefault("runs", [])
-    runs.append({"at": run_at, "mode": report["mode"],
-                 "fingerprint": report["fingerprint"], "posted_epic": posted,
-                 "counts": {sec["repo"]: {"a": len(sec["a_closed_open_subs"]),
-                                          "b": len(sec["b_open_done_label"])}
-                            for sec in report["repos"]},
-                 "errors": report["errors"]})
+    runs.append(
+        {
+            "at": run_at,
+            "mode": report["mode"],
+            "fingerprint": report["fingerprint"],
+            "posted_epic": posted,
+            "counts": {
+                sec["repo"]: {
+                    "a": len(sec["a_closed_open_subs"]),
+                    "b": len(sec["b_open_done_label"]),
+                }
+                for sec in report["repos"]
+            },
+            "errors": report["errors"],
+        }
+    )
     state["runs"] = runs[-30:]
     state_file.parent.mkdir(parents=True, exist_ok=True)
     tmp = state_file.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(state, indent=2) + "\n")
     tmp.replace(state_file)
 
-    summary = {"run_at": run_at, "mode": report["mode"], "gh_route": GH_ROUTE,
-               "fingerprint": report["fingerprint"], "posted_epic": posted,
-               "known_positive": report["known_positive"],
-               "counts": {sec["repo"]: {"total": sec["issues_total"],
-                                        "a": len(sec["a_closed_open_subs"]),
-                                        "b": len(sec["b_open_done_label"]),
-                                        "actions": sec["actions"]}
-                          for sec in report["repos"]},
-               "c_kaneo_mismatches": (None if report["c_kaneo_mismatches"] is None
-                                      else {k: v for k, v in report["c_kaneo_mismatches"].items()
-                                            if k != "items"}),
-               "errors": report["errors"]}
+    summary = {
+        "run_at": run_at,
+        "mode": report["mode"],
+        "gh_route": GH_ROUTE,
+        "fingerprint": report["fingerprint"],
+        "posted_epic": posted,
+        "known_positive": report["known_positive"],
+        "counts": {
+            sec["repo"]: {
+                "total": sec["issues_total"],
+                "a": len(sec["a_closed_open_subs"]),
+                "b": len(sec["b_open_done_label"]),
+                "actions": sec["actions"],
+            }
+            for sec in report["repos"]
+        },
+        "c_kaneo_mismatches": (
+            None
+            if report["c_kaneo_mismatches"] is None
+            else {k: v for k, v in report["c_kaneo_mismatches"].items() if k != "items"}
+        ),
+        "errors": report["errors"],
+    }
     print(json.dumps(summary, indent=2))
     return 1 if report["errors"] else 0
 

@@ -15,8 +15,11 @@
 //! +-------------------+---------------- frame body -------------------+
 //! ```
 //!
+//! - OPEN, DATA, and CLOSE carry a nonzero stream ID. WINDOW_UPDATE uses
+//!   stream ID 0 for connection credit or a nonzero ID for stream credit.
+//!   PING, PONG, RESUME, RESUME_ACK, and ERROR use stream ID 0.
 //! - `seq` is the per-stream DATA sequence number (decision §5); it is 0
-//!   and ignored for frame types that carry no sequence.
+//!   for every non-DATA frame.
 //! - DATA payloads are capped at [`MAX_DATA_PAYLOAD`] (16 KiB, decision
 //!   §2 / invariant 4). The cap is enforced on encode and on decode.
 //! - Stream IDs are scoped to a leg: odd IDs are opened by the leg's
@@ -179,9 +182,10 @@ impl ErrorReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Frame {
     pub ty: FrameType,
-    /// Leg-scoped stream ID; 0 for leg-level frames (PING, RESUME, …).
+    /// Leg-scoped stream ID; nonzero for OPEN/DATA/CLOSE, optionally nonzero
+    /// for WINDOW_UPDATE, and 0 for leg-level frames.
     pub stream_id: u32,
-    /// Per-stream DATA sequence number (decision §5); 0 for other types.
+    /// Per-stream DATA sequence number (decision §5); 0 for non-DATA frames.
     pub seq: u64,
     pub payload: Vec<u8>,
 }
@@ -205,15 +209,15 @@ impl Frame {
         Self::new(FrameType::Data, stream_id, seq, payload)
     }
 
-    /// An ERROR frame: payload is the reason byte plus a UTF-8 message.
+    /// A leg-level ERROR frame: payload is the reason byte plus a UTF-8 message.
     /// Messages are metadata for operators; they must never contain
     /// payload bytes (invariant 2).
-    pub fn error(stream_id: u32, reason: ErrorReason, message: &str) -> Self {
+    pub fn error(reason: ErrorReason, message: &str) -> Self {
         let mut payload = vec![reason.to_u8()];
         payload.extend_from_slice(message.as_bytes());
         Self {
             ty: FrameType::Error,
-            stream_id,
+            stream_id: 0,
             seq: 0,
             payload,
         }
@@ -245,6 +249,23 @@ impl Frame {
     }
 
     fn validate(&self) -> Result<()> {
+        let requires_stream = matches!(
+            self.ty,
+            FrameType::Open | FrameType::Data | FrameType::Close
+        );
+        let allows_stream = requires_stream || self.ty == FrameType::WindowUpdate;
+        if requires_stream && self.stream_id == 0 {
+            bail!("{:?} frame must name a nonzero stream ID", self.ty);
+        }
+        if !allows_stream && self.stream_id != 0 {
+            bail!("{:?} frame is leg-level and must use stream ID 0", self.ty);
+        }
+        if self.ty != FrameType::Data && self.seq != 0 {
+            bail!("{:?} frame must use sequence number 0", self.ty);
+        }
+        if self.ty == FrameType::WindowUpdate && self.payload.len() != 4 {
+            bail!("WINDOW_UPDATE payload must be exactly 4 bytes");
+        }
         if self.ty == FrameType::Data && self.payload.len() > MAX_DATA_PAYLOAD {
             bail!(
                 "DATA payload of {} bytes exceeds the {MAX_DATA_PAYLOAD}-byte cap",
@@ -441,22 +462,23 @@ mod tests {
             any::<u64>(),
             prop::collection::vec(any::<u8>(), 0..64),
         )
-            .prop_map(|(ty, stream_id, seq, payload)| {
+            .prop_map(|(ty, stream_id, seq, mut payload)| {
                 // WINDOW_UPDATE payloads are a fixed 4-byte amount.
-                let payload = if ty == FrameType::WindowUpdate {
-                    payload
-                        .iter()
-                        .chain(&[0, 0, 0])
-                        .copied()
-                        .take(4)
-                        .collect::<Vec<u8>>()
-                } else {
-                    payload
-                };
+                if ty == FrameType::WindowUpdate {
+                    payload.truncate(4);
+                    payload.resize(4, 0);
+                }
                 Frame {
                     ty,
-                    stream_id,
-                    seq,
+                    stream_id: if matches!(ty, FrameType::Open | FrameType::Data | FrameType::Close)
+                    {
+                        stream_id.max(1)
+                    } else if ty == FrameType::WindowUpdate {
+                        stream_id
+                    } else {
+                        0
+                    },
+                    seq: if ty == FrameType::Data { seq } else { 0 },
                     payload,
                 }
             })
@@ -532,6 +554,68 @@ mod tests {
     }
 
     #[test]
+    fn frame_scope_and_sequence_semantics_are_validated_on_construction_and_wire() {
+        assert!(Frame::data(0, 0, Vec::new()).is_err());
+        assert!(Frame::new(FrameType::Ping, 1, 0, Vec::new()).is_err());
+        assert!(Frame::new(FrameType::Data, 1, 1, Vec::new()).is_ok());
+        assert!(Frame::new(FrameType::Close, 1, 1, Vec::new()).is_err());
+
+        for ty in [
+            FrameType::Ping,
+            FrameType::Pong,
+            FrameType::Resume,
+            FrameType::ResumeAck,
+            FrameType::Error,
+        ] {
+            assert!(Frame::new(ty, 0, 0, Vec::new()).is_ok(), "{ty:?}");
+        }
+        for ty in [FrameType::Open, FrameType::Data, FrameType::Close] {
+            assert!(Frame::new(ty, 1, 0, Vec::new()).is_ok(), "{ty:?}");
+        }
+        assert!(Frame::new(FrameType::WindowUpdate, 0, 0, 4u32.to_be_bytes().to_vec()).is_ok());
+        assert!(Frame::new(FrameType::WindowUpdate, 1, 0, 4u32.to_be_bytes().to_vec()).is_ok());
+        assert!(Frame::new(FrameType::WindowUpdate, 0, 0, vec![0; 3]).is_err());
+
+        let invalid_frames = [
+            Frame {
+                ty: FrameType::Data,
+                stream_id: 0,
+                seq: 0,
+                payload: Vec::new(),
+            },
+            Frame {
+                ty: FrameType::Close,
+                stream_id: 1,
+                seq: 1,
+                payload: Vec::new(),
+            },
+            Frame {
+                ty: FrameType::Ping,
+                stream_id: 1,
+                seq: 0,
+                payload: Vec::new(),
+            },
+            Frame {
+                ty: FrameType::WindowUpdate,
+                stream_id: 0,
+                seq: 0,
+                payload: vec![0; 3],
+            },
+        ];
+        for frame in invalid_frames {
+            assert!(frame.encode().is_err(), "{frame:?}");
+            let mut body = vec![frame.ty.to_u8()];
+            body.extend_from_slice(&frame.stream_id.to_be_bytes());
+            body.extend_from_slice(&frame.seq.to_be_bytes());
+            body.extend_from_slice(&frame.payload);
+            let mut wire = Vec::new();
+            wire.extend_from_slice(&u32::try_from(body.len()).unwrap().to_be_bytes());
+            wire.extend_from_slice(&body);
+            assert!(Frame::decode_prefix(&wire).is_err(), "{frame:?}");
+        }
+    }
+
+    #[test]
     fn oversized_length_prefix_is_refused_before_the_body() {
         let mut wire = Vec::new();
         wire.extend_from_slice(&u32::try_from(MAX_FRAME_BODY + 1).unwrap().to_be_bytes());
@@ -567,7 +651,7 @@ mod tests {
 
     #[test]
     fn error_reason_round_trip() {
-        let frame = Frame::error(0, ErrorReason::CreditOverrun, "credit exceeded");
+        let frame = Frame::error(ErrorReason::CreditOverrun, "credit exceeded");
         assert_eq!(
             frame.error_reason().unwrap(),
             Some(ErrorReason::CreditOverrun)

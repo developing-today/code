@@ -33,10 +33,7 @@ const AUDIT_TITLES: Record<number, string> = {
 
 function allClosed(): Map<string, GhItem> {
   return new Map(
-    [1075, 1076, 1077, 1078].map((n) => [
-      `${PHASE_TRACKER_REPO}#${n}`,
-      item(n, "closed", AUDIT_TITLES[n]),
-    ]),
+    [1075, 1076, 1077, 1078].map((n) => [`${PHASE_TRACKER_REPO}#${n}`, item(n, "closed", AUDIT_TITLES[n])]),
   );
 }
 
@@ -87,10 +84,7 @@ describe("derivePhaseValidation (#9923)", () => {
       `${PHASE_TRACKER_REPO}#1501`,
       item(1501, "open", "id: follow-up to #1076 — recheck portable platform claim"),
     );
-    items.set(
-      `${PHASE_TRACKER_REPO}#1502`,
-      item(1502, "closed", "id: follow-up to #1076 — already settled"),
-    );
+    items.set(`${PHASE_TRACKER_REPO}#1502`, item(1502, "closed", "id: follow-up to #1076 — already settled"));
     const rows = derivePhaseValidation(items);
     expect(rows[9].openFollowUps.map((f) => f.issueNumber)).toEqual([1501]);
     expect(rows[9].state).toBe("validated");
@@ -123,8 +117,7 @@ const snapshot = (body: string, fetchedAt: string): Phase12Snapshot => ({
   fetchedAt,
 });
 
-const freshSnapshot = (body: string): Phase12Snapshot =>
-  snapshot(body, new Date().toISOString());
+const freshSnapshot = (body: string): Phase12Snapshot => snapshot(body, new Date().toISOString());
 
 describe("derivePhase12Progress (#9923 step 2)", () => {
   test("counts steps by live issue state: closed is done, open is not", () => {
@@ -151,9 +144,7 @@ describe("derivePhase12Progress (#9923 step 2)", () => {
   });
 
   test("a step whose issue is missing from the source counts as unresolved, never done", () => {
-    const items = new Map<string, GhItem>([
-      [`${PHASE_TRACKER_REPO}#229`, item(229, "closed")],
-    ]);
+    const items = new Map<string, GhItem>([[`${PHASE_TRACKER_REPO}#229`, item(229, "closed")]]);
     const progress = derivePhase12Progress(freshSnapshot(PHASE12_BODY), items);
     expect(progress).toEqual({ total: 4, done: 1, open: 0, unresolved: 3, percent: 25 });
   });
@@ -161,9 +152,7 @@ describe("derivePhase12Progress (#9923 step 2)", () => {
   test("absent, stale, or step-less feeds withhold progress (null)", () => {
     const items = allClosed();
     expect(derivePhase12Progress(null, items)).toBeNull();
-    expect(
-      derivePhase12Progress(snapshot(PHASE12_BODY, "2026-11-14T00:00:00Z"), items),
-    ).toBeNull();
+    expect(derivePhase12Progress(snapshot(PHASE12_BODY, "2026-11-14T00:00:00Z"), items)).toBeNull();
     expect(derivePhase12Progress(freshSnapshot("## no steps here\n"), items)).toBeNull();
   });
 });

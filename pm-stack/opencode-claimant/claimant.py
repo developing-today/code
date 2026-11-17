@@ -13,8 +13,15 @@ It handles:
 Mode: shadow (default) or live (read from ~/.local/state/opencode-claimant/mode)
 
 Usage: python3 pm-stack/opencode-claimant/claimant.py
+
+Argument contract (#3352, doc/agents/operator-script-argument-contract.md):
+this script takes NO command-line arguments. The command line is parsed
+strictly (argparse) before any file read, subprocess, network, claim, or
+launch step; any argument at all (including --help and unknown flags) is
+a usage error with exit 2.
 """
 
+import argparse
 import base64
 import json
 import os
@@ -981,5 +988,25 @@ def main():
     return 0
 
 
+def parse_args(argv):
+    """Strictly parse the (empty) declared command line (#3352).
+
+    claimant.py takes no arguments: anything on the command line is
+    unaccounted for and argparse exits 2 with a usage error. --help is
+    disabled (add_help=False) so it is rejected the same way instead of
+    exiting 0.
+    """
+    parser = argparse.ArgumentParser(
+        prog="claimant.py",
+        add_help=False,
+        allow_abbrev=False,
+        description="OpenCode lane claimant/executor. Takes no arguments.",
+    )
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
+    # Strict parse first: a usage error (exit 2) must precede every
+    # file read, subprocess, network, claim, and launch step in main().
+    parse_args(sys.argv[1:])
     sys.exit(main())

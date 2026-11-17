@@ -22,7 +22,6 @@ Make the platform something other people can build on without changing its core:
 | Audit log and telemetry                  | planned  | A structured audit of admin actions and provider use, with OpenTelemetry export.                                                                                                                                | F12.6 #1063      |
 | Delta and binary frames                  | planned  | A typical redraw costs under 10 percent of a full frame.                                                                                                                                                        | F12.11 #805      |
 | Many worlds per node                     | planned  | 1,000 idle / 100 active worlds with a per-world memory budget.                                                                                                                                                  | F12.12 #557      |
-| Journal replication                      | planned  | Read replicas over a signed stream; a world keeps a single writer.                                                                                                                                              | F12.13 #806      |
 | Portals                                  | planned  | Cross-world messaging through a capability both worlds' admins have granted.                                                                                                                                    | F12.14 #1068     |
 | Authoring tools                          | planned  | `id world dev`: watch, rebuild, hot-swap, fixture replay, fuzz harness. (`id world doctor`, F12.16, is done.)                                                                                                   | F12.15 #558      |
 | Denial-of-service test suite             | planned  | Fuel, memory, journal, frame, session, schedule and provider bounds all refused with documented codes, in CI.                                                                                                   | F12.18 #560      |
@@ -47,10 +46,42 @@ Decided by Drew on 2026-11-05 in the next-horizons discussion #1240: **all seven
 | -------------------------------------- | ----- | -------------------------- |
 | Hosted worlds & always-on hosting      | #6276 | #6283, #6284, #6285, #6286 |
 | Discovery, registry & federation       | #6277 | #6287, #6288, #6289, #6290 |
-| Program ecosystem (share/fork/gallery) | #6278 | #6291, #6293, #6294, #6295 |
 | More shells (mobile, native, hardware) | #6279 | #6296, #6297, #6298, #6299 |
 | Agents in worlds (MCP bridge)          | #6280 | #6300, #6301, #6302, #6303 |
 | Scale & performance hardening          | #6281 | #6304, #6305, #6306, #6307 |
 | Creator tooling & insight              | #6282 | #6308, #6309, #6310, #6311 |
 
 Design order: F12.4 (#1061) and F12.10 (#1067) designs first, then Phase 14 v1 designs in the order hosted worlds → discovery → agents spike → ecosystem → shells → scale → creators. Implementation follows Phase 13.
+
+## Phase tracker — F-item mapping (source of record for #9923)
+
+The Phase tracker panel's per-phase progress counts F-items against live GitHub state, and this table is the mapping it counts from — maintained as plan data here, never copied into the aggregator. Researched and verified against GitHub on 2026-11-14 (task 16681): each ref is the item's dedicated tracking issue, except F11.6 and F11.14, which were delivered by PR with no dedicated issue (per the 2026-10-20 Phase 11 status record). Phase 12 is not in this table: its uniform source is the ordered step list in #1235, which the panel already counts. Phases 0–10 have no rows because their plans carry no F-item numbering at all (Phase 9's plan included) — the panel states that gap rather than inventing a percentage for them.
+
+| Phase | Item   | Ref     | Title                                                 |
+| ----- | ------ | ------- | ----------------------------------------------------- |
+| 11    | F11.1  | #238    | Relay kit location                                    |
+| 11    | F11.2  | #229    | Firefox E2E isolation                                 |
+| 11    | F11.3  | #241    | Explain the LogSync flakes                            |
+| 11    | F11.4  | #551    | A fast lane                                           |
+| 11    | F11.5  | #552    | Injected time                                         |
+| 11    | F11.6  | PR #247 | Per-call fuel metrics and budgets                     |
+| 11    | F11.7  | #553    | Host metrics and tracing                              |
+| 11    | F11.8  | #539    | Benchmarks                                            |
+| 11    | F11.9  | #542    | Bytes per frame                                       |
+| 11    | F11.10 | #540    | Split the large modules, with no behavior change      |
+| 11    | F11.11 | #543    | One client projection                                 |
+| 11    | F11.12 | #227    | Journal format management                             |
+| 11    | F11.13 | #554    | Error taxonomy                                        |
+| 11    | F11.14 | PR #248 | Cheaper Screen                                        |
+| 11    | F11.15 | #555    | Smaller modules                                       |
+| 11    | F11.16 | #544    | Replay self-check                                     |
+| 11    | F11.17 | #547    | A view trap must not poison the world                 |
+| 11    | F11.18 | #541    | Pinned toolchain for checked-in artifacts             |
+| 13    | F13.1  | #783    | The shell contract                                    |
+| 13    | F13.2  | #784    | SSH as a transport for the frame protocol             |
+| 13    | F13.3  | #785    | SSH-over-iroh reachability                            |
+| 13    | F13.4  | #786    | Presentation capability tiers                         |
+| 13    | F13.5  | #787    | Kitty keyboard protocol on the raw input path         |
+| 13    | F13.6  | #788    | Native client shells                                  |
+| 13    | F13.7  | #789    | Client-side capability providers                      |
+| 13    | F13.8  | #790    | Multi-server, multi-client topology; client-only mode |

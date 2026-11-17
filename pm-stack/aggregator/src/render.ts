@@ -65,7 +65,7 @@ import type { NeedsDrewCensus } from "./needs-drew.ts";
 import type { Incident, IncidentEvent, PushSubscriptionRow } from "./alerts.ts";
 import type { NotificationRollup } from "./notifications.ts";
 import { NOTIFICATION_CLASS_DEFAULTS, NOTIFICATION_CLASSES } from "./notifications.ts";
-import { ageMsText, feedAgeText } from "./feed.ts";
+import { FEED_STALE_MS, ageMsText, feedAgeText } from "./feed.ts";
 import { providerDisplayNames } from "./provider-display.ts";
 import {
   reconciledInProgress,
@@ -137,6 +137,7 @@ import {
   derivePhase12Progress,
   derivePhaseValidation,
 } from "./phase-tracker.ts";
+import { deriveMappedProgress, type PhaseMappingSnapshot } from "./phase-mapping.ts";
 import {
   BUILD_HEALTH_REPO,
   buildHealthIsStale,
@@ -189,7 +190,6 @@ export function fmtDate(iso: string | null | undefined): string {
     .replace("T", " ")
     .replace(/\.\d+Z$/, "Z");
 }
-
 
 /** Central-time stamp for Drew-facing quota/reset surfaces (#9553):
  * "Sat, Nov 14, 8:00 AM CST". fmtDate above renders raw UTC ISO; the
@@ -1737,7 +1737,7 @@ export function renderBoardShell(provenance: Provenance, detail?: ProvenanceDeta
   const fragBoard = viewQuery ? `/frag/board?${viewQuery}` : "/frag/board";
   return layout(
     "Cross-repo WIP board",
-    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards.</p><noscript><meta http-equiv="refresh" content="0; url=/board"></noscript><div id="board-main" data-frag data-on-load="@get('${fragBoard}')" data-on:dashrefresh__window="@get('${fragBoard}')"><div class="skel">Loading the board…</div></div>`,
+    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards.</p><noscript><meta http-equiv="refresh" content="0; url=/board"></noscript><div id="board-main" data-frag data-init="@get('${fragBoard}')" data-on:dashrefresh__window="@get('${fragBoard}')"><div class="skel">Loading the board…</div></div>`,
     provenance,
     "/board",
     ACTION_SCRIPT + FRAG_WATCHDOG_SCRIPT,
@@ -2068,6 +2068,23 @@ export function eventTableHtml(events: readonly AuditEvent[]): string {
   return `<div class="tblwrap"><table class="activity-events"><caption>Shared activity events</caption><thead><tr><th scope="col">When</th><th scope="col">Actor</th><th scope="col">Kind</th><th scope="col">Ref</th><th scope="col">Summary</th><th scope="col">Source</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">No matching events; this does not establish complete coverage.</td></tr>'}</tbody></table></div>`;
 }
 
+/** #1500: the honest empty-section wording, keyed off the provenance
+ * strings the renderers already receive — no new data plumbing. The
+ * comment stream is fixture-sourced while the projector is off (#1199),
+ * so a bare "no comments" would claim a fact about the work when it is
+ * really a fact about the dashboard's resolution path. */
+export const FIXTURE_COMMENTS_CAUSE = "the comment stream is fixture-sourced while the projector is off (#1199)";
+
+export function commentsFixtureSourced(provenance: Provenance): boolean {
+  return provenance.comments.startsWith("fixtures");
+}
+
+export function fixtureCommentsBannerHtml(provenance: Provenance): string {
+  return commentsFixtureSourced(provenance)
+    ? `<div class="banner">The comment stream is fixture-sourced while the projector is off (#1199) — GitHub comments may be missing or stale, and an empty stream does not mean the work has no discussion.</div>`
+    : "";
+}
+
 export function renderItem(
   title: string,
   subject: string,
@@ -2092,6 +2109,24 @@ export function renderItem(
         `<tr><td class="muted">${fmtDate(c.createdAt)}</td><td><span class="badge ${esc(c.kind)}">${esc(c.kind)}</span></td><td>${esc(c.author)}</td><td>${esc(c.body)}${c.path ? ` <span class="muted">(${esc(c.path)}${c.line ? `:${c.line}` : ""})</span>` : ""}</td></tr>`,
     )
     .join("");
+  // #1500: when some linked refs did not resolve, the Linked header
+  // carries the tally and the cause; when every ref resolves it stays
+  // plain. The fixture cause is keyed off the items provenance string
+  // only (the partial-fixtures shape from sources/live.ts, or a fully
+  // fixture-sourced items facet).
+  const linkedResolved = all.length;
+  const linkedHeader =
+    links.length > 0 && linkedResolved < links.length
+      ? `Linked issues / PRs — ${links.length} linked · ${linkedResolved} resolved — ${
+          /\+ fixtures for \d+ ref\(s\) outside the pool/.test(provenance.items) || provenance.items.startsWith("fixtures")
+            ? "resolution fell back to fixtures (projector off, #1199)"
+            : "some linked refs could not be resolved from the current sources"
+        }`
+      : "Linked issues / PRs";
+  const commentsBanner = fixtureCommentsBannerHtml(provenance);
+  const emptyCommentRow = commentsFixtureSourced(provenance)
+    ? `<tr><td colspan="4" class="muted">no comments loaded — ${FIXTURE_COMMENTS_CAUSE}</td></tr>`
+    : '<tr><td colspan="4" class="muted">no comments</td></tr>';
   const dashSection = extras
     ? `<h2>Dashboard comments</h2>${
         extras.dashComments.length
@@ -2137,8 +2172,8 @@ ${
       )
     : ""
 }
-<h2>Linked issues / PRs</h2><div class="tblwrap"><table class="table table-zebra"><caption>Linked issues and pull requests</caption><tr><th scope="col">Ref</th><th scope="col">Title</th><th scope="col">Labels</th><th scope="col">Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
- <h2>Activity stream comments</h2><div class="tblwrap"><table class="table table-zebra"><caption>Comments</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
+<h2>${linkedHeader}</h2><div class="tblwrap"><table class="table table-zebra"><caption>Linked issues and pull requests</caption><tr><th scope="col">Ref</th><th scope="col">Title</th><th scope="col">Labels</th><th scope="col">Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
+ <h2>Activity stream comments</h2>${commentsBanner}<div class="tblwrap"><table class="table table-zebra"><caption>Comments</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || emptyCommentRow}</table></div>
  ${activitySection}${sessionSection}${statusSection}${roadmapAnnotationSection}${dashSection}`,
     provenance,
     "/board",
@@ -2250,12 +2285,23 @@ function paygCardHtml(usage: UsageView): string {
   const lines = usage.payg
     .map((l: PaygLine) => {
       const figures =
-        l.accruedUsd != null
-          ? `$${l.accruedUsd.toFixed(2)} accrued${l.collectedUsd != null ? ` · $${l.collectedUsd.toFixed(2)} collected` : ""} · $${(l.unbilledUsd ?? 0).toFixed(2)} unbilled`
-          : l.estimate
-            ? `counted $${countedEstimate(l.estimate).toFixed(2)} as used (1.2 × high) · estimate $${l.estimate.low.toFixed(2)}–$${l.estimate.high.toFixed(2)} ${esc(l.estimate.period)}`
-            : "not estimable from local records";
-      return `<div><strong>${esc(l.label)}</strong>: ${figures}<br><span class="muted">${esc(l.note)}</span><br>${freshnessStamp(l.measuredAt, l.sourceClass, 7)}</div>`;
+        l.settledUsd != null
+          ? `$${l.settledUsd.toFixed(2)} ${l.settledSource === "invoice" ? "invoiced" : "settled"}${
+              l.estimate
+                ? ` · estimates $${l.estimate.low.toFixed(2)}–$${l.estimate.high.toFixed(2)}`
+                : l.accruedUsd != null
+                  ? ` · $${l.accruedUsd.toFixed(2)} accrued`
+                  : ""
+            }${l.settledVarianceUsd != null ? ` · variance ${l.settledVarianceUsd < 0 ? "-$" : "+$"}${Math.abs(l.settledVarianceUsd).toFixed(2)}` : ""} · $${(l.unbilledUsd ?? 0).toFixed(2)} unbilled`
+          : l.accruedUsd != null
+            ? `$${l.accruedUsd.toFixed(2)} accrued${l.collectedUsd != null ? ` · $${l.collectedUsd.toFixed(2)} collected` : ""} · $${(l.unbilledUsd ?? 0).toFixed(2)} unbilled`
+            : l.estimate
+              ? `counted $${countedEstimate(l.estimate).toFixed(2)} as used (1.2 × high) · estimate $${l.estimate.low.toFixed(2)}–$${l.estimate.high.toFixed(2)} ${esc(l.estimate.period)}`
+              : "not estimable from local records";
+      const stale = l.staleEstimate
+        ? ` <span class="badge near">stale estimate — unreconciled &gt;1 invoice cycle</span>`
+        : "";
+      return `<div><strong>${esc(l.label)}</strong>${stale}: ${figures}<br><span class="muted">${esc(l.note)}</span><br>${freshnessStamp(l.measuredAt, l.sourceClass, 7)}</div>`;
     })
     .join("");
   const total = usage.payg.reduce((sum, l) => sum + (l.unbilledUsd ?? 0), 0);
@@ -3555,10 +3601,23 @@ ${view.expiredCount ? `<p class="muted">${view.expiredCount} finished or stale $
 
 /** Wrap one attention section as a Datastar fragment container: the
  *  shell's placeholder and the fragment payload share this shape, so
- *  a refresh re-patches the container with itself (attrs included). */
-export function attentionFragment(section: "header" | "queues" | "sessions", innerHtml: string, query = ""): string {
+ *  a refresh re-patches the container with itself (attrs included).
+ *
+ *  `initial` marks the shell placeholder (#10605): it carries
+ *  `data-init` so the first paint fetches the section with no
+ *  freshness event. The `/frag/*` payload that replaces it (outer
+ *  mode) must leave `initial` off — a re-initialising element would
+ *  fetch itself again on every patch, i.e. loop.
+ */
+export function attentionFragment(
+  section: "header" | "queues" | "sessions",
+  innerHtml: string,
+  query = "",
+  options: { initial?: boolean } = {},
+): string {
   const q = query ? `?${query}` : "";
-  return `<div id="attn-${section}" data-frag data-on-load="@get('/frag/attention/${section}${q}')" data-on:dashrefresh__window="@get('/frag/attention/${section}${q}')">${innerHtml}</div>`;
+  const init = options.initial ? ` data-init="@get('/frag/attention/${section}${q}')"` : "";
+  return `<div id="attn-${section}" data-frag${init} data-on:dashrefresh__window="@get('/frag/attention/${section}${q}')">${innerHtml}</div>`;
 }
 
 /**
@@ -3575,9 +3634,9 @@ export function renderAttentionShell(
   const refsQuery = refs ? `refs=${encodeURIComponent(refs)}` : "";
   const skel = (label: string) => `<div class="skel">Loading ${label}…</div>`;
   const body = `<h1>Needs you</h1><p class="muted">Loading the Needs User and Needs Orchestrator queues…</p><noscript><meta http-equiv="refresh" content="0; url=/attention?full=1"></noscript>
-${attentionFragment("header", skel("queue status"), refsQuery)}
-${attentionFragment("queues", skel("the queues"), refsQuery)}
-${attentionFragment("sessions", skel("sessions"), refsQuery)}${questionsHtml}`;
+${attentionFragment("header", skel("queue status"), refsQuery, { initial: true })}
+${attentionFragment("queues", skel("the queues"), refsQuery, { initial: true })}
+${attentionFragment("sessions", skel("sessions"), refsQuery, { initial: true })}${questionsHtml}`;
   return layout(
     "Needs you",
     body,
@@ -3818,7 +3877,7 @@ export function renderTodayShell(
 ): string {
   return layout(
     "Today",
-    `<h1>Today</h1><noscript><meta http-equiv="refresh" content="0; url=/today?full=1"></noscript><div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on:dashrefresh__window="@get('/frag/today')">${todayHealthStrip(health, quota, quotaUnavailable)}<div class="skel">Loading today…</div></div>${questionsHtml}`,
+    `<h1>Today</h1><noscript><meta http-equiv="refresh" content="0; url=/today?full=1"></noscript><div id="today-main" data-frag data-init="@get('/frag/today')" data-on:dashrefresh__window="@get('/frag/today')">${todayHealthStrip(health, quota, quotaUnavailable)}<div class="skel">Loading today…</div></div>${questionsHtml}`,
     provenance,
     "/today",
     FRAG_WATCHDOG_SCRIPT,
@@ -3895,7 +3954,7 @@ export function renderQueue(view: QueueView, provenance: Provenance, detail?: Pr
 export function renderQueueShell(provenance: Provenance, detail?: ProvenanceDetail): string {
   return layout(
     "Queue",
-    `<h1>Queue visibility</h1><noscript><meta http-equiv="refresh" content="0; url=/queue?full=1"></noscript><div id="queue-main" data-frag data-on-load="@get('/frag/queue')" data-on:dashrefresh__window="@get('/frag/queue')"><div class="skel">Loading queue…</div></div>`,
+    `<h1>Queue visibility</h1><noscript><meta http-equiv="refresh" content="0; url=/queue?full=1"></noscript><div id="queue-main" data-frag data-init="@get('/frag/queue')" data-on:dashrefresh__window="@get('/frag/queue')"><div class="skel">Loading queue…</div></div>`,
     provenance,
     "/queue",
     FRAG_WATCHDOG_SCRIPT,
@@ -4040,6 +4099,15 @@ export function renderOverviewBody(summary: OverviewSummary): string {
         .join("")
     : `<p class="muted">No quota pools measured yet.</p>`;
   const healthStrip = `<div class="card"><span class="dot ${summary.health.down || summary.health.degraded ? "down" : "up"}"></span><strong>${summary.health.up} of ${summary.health.total} services up</strong>${summary.health.down ? ` · ${summary.health.down} down` : ""}${summary.health.degraded ? ` · <span class="badge stale">degraded</span>` : ""}${summary.health.feedAgeMs !== null ? ` · feed ${esc(ageMsText(summary.health.feedAgeMs))} old` : ""} — <a href="/health">health</a></div>`;
+  // #1116 item (5): when the feed itself has crossed the staleness
+  // threshold the dashboard must say so visibly — a "feed X old" suffix
+  // is not an actionable warning. The data-signal hook is what the
+  // age-feed drill greps for as its rendered-page evidence.
+  const feedAgeMs = summary.health.feedAgeMs;
+  const feedStaleBanner =
+    feedAgeMs !== null && feedAgeMs >= FEED_STALE_MS
+      ? `<div class="banner feed-stale" data-signal="feed-stale">Feed stale — last collection ${esc(ageMsText(feedAgeMs))} ago (threshold ${esc(ageMsText(FEED_STALE_MS))}); the collector may be down. <a href="/health">Check health</a></div>`
+      : "";
   const itemList = (items: { title: string; repo: string }[], empty: string) =>
     items.length
       ? `<ul>${items.map((i) => `<li>${esc(i.title)}${i.repo ? ` <span class="muted">${esc(i.repo)}</span>` : ""}</li>`).join("")}</ul>`
@@ -4064,7 +4132,7 @@ export function renderOverviewBody(summary: OverviewSummary): string {
 <h2>Needs you (${summary.needsYou.count ?? "unknown"})</h2>${needs}${topItems}
 <h2>Projects</h2>${projectCards}
 <h2>Quota</h2>${quotaStrip}
-<h2>Health</h2>${healthStrip}
+<h2>Health</h2>${feedStaleBanner}${healthStrip}
 <h2>In progress</h2>${inProgressItems}
 <h2>Recently done</h2>${itemList(summary.recentDone, "Nothing done on the board yet.")}
 <p class="muted">In progress reconciles Project Status, active sessions lined up, and open PRs; recently done is the board's lane — the full curated cross-repo board is a drill-down from here: <a href="/board">Board →</a></p>`;
@@ -4086,7 +4154,7 @@ export function renderOverview(data: OverviewData, provenance: Provenance, detai
 export function renderOverviewShell(provenance: Provenance, detail?: ProvenanceDetail): string {
   return layout(
     "Overview",
-    `<h1>Overview</h1><noscript><meta http-equiv="refresh" content="0; url=/?full=1"></noscript><div id="overview-main" data-frag data-on-load="@get('/frag/overview')" data-on:dashrefresh__window="@get('/frag/overview')"><div class="skel">Loading the overview…</div></div>`,
+    `<h1>Overview</h1><noscript><meta http-equiv="refresh" content="0; url=/?full=1"></noscript><div id="overview-main" data-frag data-init="@get('/frag/overview')" data-on:dashrefresh__window="@get('/frag/overview')"><div class="skel">Loading the overview…</div></div>`,
     provenance,
     "/",
     FRAG_WATCHDOG_SCRIPT,
@@ -4197,7 +4265,7 @@ ${dnsTable(section.entries, renewingSoon, next)}`;
  * Written without template literals on purpose — it lives inside one.
  */
 const AA_EXPLORER_SCRIPT = `<script type="module">
-import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatios, chartClickSuppressed, computeRecommendations, effectiveChartView, logEdges, normName, panChartView, paretoSet, parseChartViewBox, pctRank, projectTask, resetChartView, scoreEdges, sortRows, zoomChartView } from "/assets/aa-explorer-computations.js";
+import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatios, chartClickSuppressed, computeRecommendations, effectiveChartView, logEdges, normName, panChartView, paretoSet, parseChartViewBox, pctRank, projectTask, resetChartView, scoreEdges, sortRows, unpricedScoredPoints, zoomChartView } from "/assets/aa-explorer-computations.js";
 (function () {
   var dataEl = document.getElementById("xpl-data");
   if (!dataEl) return;
@@ -4923,6 +4991,33 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
     });
   }
   // --- hidden tray (reference design's hide-a-configuration flow) ---
+  function renderUnpriced() {
+    // #1400 remainder: visible scored configurations with no published
+    // cost cannot appear on the cost charts; list them under the charts
+    // as real buttons that open the existing detail card via
+    // selectPoint — the same flow as clicking a dot or a table row.
+    // visPoints() already applies every filter and the hidden set.
+    var box = document.getElementById("xpl-unpriced");
+    if (!box) return;
+    var rows = unpricedScoredPoints(visPoints());
+    box.innerHTML = "";
+    if (!rows.length) {
+      var none = document.createElement("p");
+      none.className = "muted";
+      none.textContent = "No visible scored configurations are missing a published cost.";
+      box.appendChild(none);
+      return;
+    }
+    rows.forEach(function (p) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "xpl-ctl-btn";
+      b.setAttribute("data-unpriced", p.key);
+      b.textContent = (p.family || p.key) + (p.effort ? " \u2014 " + p.effort : "") + " \u00b7 " + scoreWord() + " " + fmtN(p.score, 1) + " \u00b7 no published cost";
+      b.addEventListener("click", function () { selectPoint(p.key); });
+      box.appendChild(b);
+    });
+  }
   function renderTray() {
     var tray = document.getElementById("xpl-tray");
     if (!tray) return;
@@ -5572,7 +5667,7 @@ import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatio
         : "Intelligence & decode perspective — the AA Intelligence Index rankings: score is the Intelligence Index, cost and time the import's per-task figures (time excludes TTFT).";
     }
     applyTab();
-    if (S.tab === "aa") { renderLegend(); renderTray(); drawCharts(); renderAaTable(); renderPareto(); renderRecs(); renderBandComparisons(); }
+    if (S.tab === "aa") { renderLegend(); renderTray(); drawCharts(); renderUnpriced(); renderAaTable(); renderPareto(); renderRecs(); renderBandComparisons(); }
     else renderModels();
     enhanceCharts();
   }
@@ -6083,6 +6178,7 @@ ${aaTabAge}
 <div class="chart" data-chart="xpl-c5"><h3>Multiples of the baseline</h3><span class="xpl-ctl"><label>Baseline <select id="xf-baseline"></select></label><button type="button" data-dl="xpl-c5">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c5"><button type="button" data-zact="expand" data-zfor="xpl-c5">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c5" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c5" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c5" aria-label="Reset view">⟲</button></span><svg id="xpl-c5" viewBox="0 0 680 400" role="img" aria-label="Cost and duration multiples scatter chart"></svg><p class="muted" data-note></p></div>
 <div class="chart" data-chart="xpl-c6"><h3>Scores — every measured configuration</h3><span class="xpl-ctl"><button type="button" data-dl="xpl-c6">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c6"><button type="button" data-zact="expand" data-zfor="xpl-c6">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c6" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c6" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c6" aria-label="Reset view">⟲</button></span><svg id="xpl-c6" viewBox="0 0 680 400" role="img" aria-label="Scores bar chart"></svg><p class="muted" data-note></p></div>
 </div>
+<div class="card" id="xpl-unpriced-wrap"><h3>Scored configurations without a published cost</h3><p class="muted">These visible configurations have a score but no published cost, so they cannot appear on the cost charts. Select one to open its detail card.</p><div id="xpl-unpriced" class="strip"></div></div>
 <p class="muted">Time is seconds to finish one task (log scale), not tokens/sec — a model can stream fast and still finish slowly if it burns many tokens, and per-task time here excludes time to first token (shown separately where timed). Thin lines join each model's effort rungs (DeepSeek ladders dotted); the white dashed line is that chart's Pareto frontier; white-ringed dots sit on it, dimmed dots are beaten on its axes. Bracket splits: cost $0.15 / $0.75 / $2.50, time 1m / 5m / 15m. Only measured configurations are plotted — nothing is estimated, so configurations AA never timed appear in the tables, not the time charts. DeepSeek prices split peak / off-peak: peak is 01:00–04:00 and 06:00–10:00 UTC Monday–Friday at double the off-peak token rates, so the same runs appear at two costs. Click a dot or a row for details.</p>
 <h2>Multiples table</h2>
 <p class="muted">Every visible configuration with all three measures, as multiples of the baseline chosen above, sorted by cost multiple.</p>
@@ -6487,7 +6583,14 @@ export function renderDiscuss(
       : objectRef.startsWith("session:")
         ? `<p class="muted"><a href="/sessions">← the session registry</a> · <a href="/attention">Needs you</a></p>`
         : `<p class="muted"><a href="/attention">← Needs you</a></p>`;
-  const body = `<h1>${esc(title)}</h1><p class="muted">object: <code>${esc(objectRef)}</code></p>${back}
+  // #1500: the same fixture banner + honest empty wording as the item
+  // page, keyed off the comments provenance this page already receives.
+  const discussFixtureBanner = fixtureCommentsBannerHtml(provenance);
+  const discussEmptyWording =
+    commentsFixtureSourced(provenance) && comments.length === 0
+      ? `<p class="muted">no comments loaded — ${FIXTURE_COMMENTS_CAUSE}</p>`
+      : "";
+  const body = `<h1>${esc(title)}</h1><p class="muted">object: <code>${esc(objectRef)}</code></p>${back}${discussFixtureBanner}${discussEmptyWording}
 <p class="muted">Two kinds, visibly distinct: a <strong>note</strong> is read when this is next picked up and triggers nothing; a <strong>message to Muse</strong> is triaged by the orchestrator on its next pass and may create work.${
     opts.githubRefs?.length
       ? ` This item is GitHub-backed, so a comment can also be posted as a <strong>GitHub comment</strong> on an explicit target.`
@@ -6679,7 +6782,7 @@ export function projectsBodyHtml(
       : []),
   ].join("");
   if (!pool.length) {
-    return `<div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div>${coverageSectionHtml(opts.coverage)}<p class="muted">Live services: ${serviceHomeLinks()
+    return `<div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div>${coverageSectionHtml(opts.coverage)}${opts.spend?.unattributed ? unattributedSpendHtml(opts.spend.unattributed) : ""}<p class="muted">Live services: ${serviceHomeLinks()
       .map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`)
       .join(" · ")}</p>`;
   }
@@ -7045,7 +7148,18 @@ function epicGraphAnchor(ref: RefKey): string {
   return `epic-graph-${ref.replace(/[^a-zA-Z0-9]+/g, "-")}`;
 }
 
-function epicGraphSectionHtml(items: ProjectPoolItem[], selectorItems: ProjectPoolItem[] = items): string {
+interface EpicGraphActionContext {
+  orchestration?: OrchestrationSection | null;
+  actionsByObject?: Map<string, DashAction[]>;
+  identities?: AuthorIdentity[];
+  orchestrationState?: string;
+}
+
+function epicGraphSectionHtml(
+  items: ProjectPoolItem[],
+  selectorItems: ProjectPoolItem[] = items,
+  actionContext?: EpicGraphActionContext,
+): string {
   // Selector entries and rendered sections are scoped to the project's
   // own pool (selectorItems = detail.poolItems): on a normal project
   // request the caller passes the entire org pool as `items` for
@@ -7070,11 +7184,62 @@ function epicGraphSectionHtml(items: ProjectPoolItem[], selectorItems: ProjectPo
         `<li><a href="#${epicGraphAnchor(e.ref)}">${esc(e.title)}</a> <span class="muted">${esc(e.ref)} · ${e.itemCount} item${e.itemCount === 1 ? "" : "s"} · ${e.blockedCount} blocked · ${e.doneCount} done</span></li>`,
     )
     .join("")}</ul></nav>`;
-  const sections = selector.map((entry) => epicGraphOneHtml(items, entry)).join("");
+  const sections = selector.map((entry) => epicGraphOneHtml(items, entry, actionContext)).join("");
   return `<h3>Per-epic dependency graph</h3>${selectorHtml}${sections}`;
 }
 
-function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epicSelector>[number]): string {
+function graphNodeActionsHtml(nodeRef: RefKey, context?: EpicGraphActionContext): string {
+  const section = context?.orchestration;
+  const drewItem = section?.tiers.needsDrew.find((item) => item.ref === nodeRef);
+  const orchestratorItem = section?.tiers.needsOrchestrator.find((item) => item.ref === nodeRef);
+  const item = drewItem ?? orchestratorItem;
+  if (!item) {
+    return `<p class="muted epic-graph-actions">No inline action: this item is not in the currently published Needs User or Needs Orchestrator tier.</p>`;
+  }
+
+  const tier = drewItem ? "needs-drew" : "needs-orchestrator";
+  const objectRef = tierItemObjectRef(item);
+  const actions = context?.actionsByObject?.get(objectRef);
+  const state = cardState(actions);
+  const disabledReason = item.source === "watchdog" || context?.orchestrationState === "live"
+    ? undefined
+    : `the tier source is ${context?.orchestrationState ?? "unavailable"}, so this item cannot be confirmed against the orchestrator's current published queues`;
+  const controls = context?.identities
+    ? triageActionsHtml(
+        objectRef,
+        tier,
+        { identities: context.identities, ...(disabledReason ? { disabledReason } : {}) },
+        tier === "needs-drew" ? needsUserFormsHtml(item, objectRef, Date.now(), state) : "",
+        state,
+      )
+    : `<p class="muted">Inline actions unavailable: no dashboard author identity is configured.</p>`;
+  const needsUserBody = tier === "needs-drew" ? needsUserBodyHtml(item, actions) : "";
+  const history = `${actionBadgesHtml(actions)}<details class="carddetail"><summary>Action history</summary>${actionHistoryHtml(actions)}</details>`;
+
+  let sessionControls = "";
+  if (item.sessionId) {
+    const sessionSource = item.source === "claude" ? "claude-code" : item.source;
+    const support = sessionVerbSupport(sessionSource);
+    if (!context?.identities) {
+      sessionControls = `<p class="muted">Session action unavailable: no dashboard author identity is configured.</p>`;
+    } else if (support.some((entry) => !entry.reason)) {
+      const sessionRef = sessionObjectRef(item.sessionId);
+      const sessionActions = context?.actionsByObject?.get(sessionRef);
+      sessionControls = `${actionBadgesHtml(sessionActions)}${sessionActionsHtml(item.sessionId, sessionSource, { identities: context.identities })}<details class="carddetail"><summary>Session action history</summary>${actionHistoryHtml(sessionActions)}</details>`;
+    } else {
+      const reason = support.find((entry) => entry.reason)?.reason ?? "this published item has no supported live session control channel";
+      sessionControls = `<p class="muted">Session action unavailable: ${esc(reason)}.</p>`;
+    }
+  }
+
+  return `<div class="epic-graph-actions"><span class="badge ${tier === "needs-drew" ? "drew" : "orch"}">${tier === "needs-drew" ? "Needs User" : "Needs Orchestrator"}</span>${needsUserBody}${history}${controls}${sessionControls}</div>`;
+}
+
+function epicGraphOneHtml(
+  items: ProjectPoolItem[],
+  entry: ReturnType<typeof epicSelector>[number],
+  actionContext?: EpicGraphActionContext,
+): string {
   const g = epicGraph(items, entry.ref);
   const heading = `<h4 id="${epicGraphAnchor(entry.ref)}">${esc(entry.title)} <span class="muted">(${esc(entry.ref)})</span></h4>`;
   if (g.status === "unavailable" || !g.epic) {
@@ -7086,6 +7251,32 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
     return held === undefined || held.state === "open";
   };
   const summary = `<p class="muted"><strong>${g.memberCount} item${g.memberCount === 1 ? "" : "s"} in this epic</strong> · ${g.blockedCount} blocked on an unresolved blocker · ${g.externalCount} one-hop reference${g.externalCount === 1 ? "" : "s"} outside this pool (unresolved — status unknown, never counted as resolved).</p>`;
+  const cycleGroupsHtml = g.cycleGroups.length
+    ? `<div class="epic-graph-cycle-groups">${g.cycleGroups
+        .map((group) => {
+          const members = group.members
+            .map((ref) => {
+              const member = poolByRef.get(ref);
+              return `<li>${poolRefLink(ref)}${member?.title ? ` — ${esc(member.title)}` : ""}</li>`;
+            })
+            .join("");
+          const explanation = group.kind === "dependency"
+            ? "The dependency data is contradictory. Resolving one member alone does not clear this cycle; correct the cycle edges."
+            : "The parent links are cyclic. These members are one hierarchy warning group, not independent roots; correct the parent edges.";
+          return `<section class="banner" role="alert"><strong>⚠ ${esc(group.name)}</strong><p>${explanation}</p><ul>${members}</ul></section>`;
+        })
+        .join("")}</div>`
+    : "";
+  const edgeDiagnosticsHtml = g.edgeDiagnostics.length
+    ? `<section class="banner" role="status"><strong>⚠ Relation edge data needs review</strong><ul>${g.edgeDiagnostics
+        .map((diagnostic) => {
+          const relation = diagnostic.relation === "parent" ? "parent" : diagnostic.relation === "blockedBy" ? "blocked-by" : "blocks";
+          const issue = diagnostic.target === null ? "endpoint unavailable" : `malformed endpoint <code>${esc(diagnostic.target)}</code>`;
+          const state = diagnostic.state === "unavailable" ? "Unavailable edge data" : "Malformed relation reference";
+          return `<li>${state}: ${poolRefLink(diagnostic.sourceRef)} ${relation} edge — ${issue}; it was not treated as an external issue.</li>`;
+        })
+        .join("")}</ul></section>`
+    : "";
   const truncatedHtml = g.truncated
     ? `<p class="muted">Truncated: this graph shows ${g.nodes.length} of ${g.totalNodes} nodes (cap ${EPIC_GRAPH_DEFAULT_CAP}). The counts above cover the full set; a capped graph is not complete.</p>`
     : "";
@@ -7106,7 +7297,9 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
           return `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.downstreamCount} distinct downstream open epic item${r.downstreamCount === 1 ? "" : "s"} via ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${blockerItems.join(", ")}${contributingItems}</li>`;
         })
         .join("")}</ul>`
-    : `<p class="muted">No open item in this epic is waiting on an unresolved blocker.</p>`;
+    : g.blockedCount > 0
+      ? `<p class="muted">${g.blockedCount} open item${g.blockedCount === 1 ? " is" : "s are"} waiting on an unresolved blocker, but none can be ranked here — members of a dependency cycle are excluded from the unblock ranking until the cycle is broken.</p>`
+      : `<p class="muted">No open item in this epic is waiting on an unresolved blocker.</p>`;
 
   const rankedBlockersHtml = g.rankedBlockers.length
     ? `<ol class="epic-graph-list">${g.rankedBlockers
@@ -7185,11 +7378,12 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
         : "blocks: none observed";
       const name = n.title ? `${esc(n.title)}` : "(outside this pool — no title in this feed)";
       const nodeRef = isValidRef(n.ref) ? `<a href="${esc(n.issueUrl)}">${esc(n.ref)}</a>` : esc(n.ref);
-      return `<li>${nodeRef} ${name} — ${stateText}; ${blockedBy}; ${blocks}</li>`;
+      const actions = isValidRef(n.ref) ? graphNodeActionsHtml(n.ref, actionContext) : "";
+      return `<li>${nodeRef} ${name} — ${stateText}; ${blockedBy}; ${blocks}${actions}</li>`;
     })
     .join("")}</ul>`;
 
-  return `<section>${heading}${summary}${truncatedHtml}<div class="epic-graph-flex">${svg}<div class="epic-graph-side"><h5>Primary ranking — blockers by downstream open work</h5><p class="muted">Each open epic item is counted once per blocker across its transitive blockedBy ancestry. This measures downstream reach, not a promise that every item is immediately unblocked. Current additional unresolved blockers are listed per item; unsized contributors count separately from known effort weight. The longest dependency chain remains a separate diagnostic.</p>${rankedBlockersHtml}<h5>Open items by their worst blocker's downstream reach</h5>${rankedHtml}<h5>All items — dependency list</h5>${listHtml}</div></div></section>`;
+  return `<section>${heading}${summary}${cycleGroupsHtml}${edgeDiagnosticsHtml}${truncatedHtml}<div class="epic-graph-flex">${svg}<div class="epic-graph-side"><h5>Primary ranking — blockers by downstream open work</h5><p class="muted">Each open epic item is counted once per blocker across its transitive blockedBy ancestry. This measures downstream reach, not a promise that every item is immediately unblocked. Current additional unresolved blockers are listed per item; unsized contributors count separately from known effort weight. The longest dependency chain remains a separate diagnostic.</p>${rankedBlockersHtml}<h5>Open items by their worst blocker's downstream reach</h5>${rankedHtml}<h5>All items — dependency list</h5>${listHtml}</div></div></section>`;
 }
 
 /** The Path to Phase 12 panel (#9922): #1235's ordered steps, parsed
@@ -7241,7 +7435,9 @@ export function phase12PanelHtml(
     const bits = [`task ${task.id}`];
     if (task.lane) bits.push(`lane ${task.lane}`);
     if (task.progressStage) bits.push(task.progressStage);
-    const more = earlier.length ? ` <span class="muted">(+${earlier.length} earlier task${earlier.length === 1 ? "" : "s"})</span>` : "";
+    const more = earlier.length
+      ? ` <span class="muted">(+${earlier.length} earlier task${earlier.length === 1 ? "" : "s"})</span>`
+      : "";
     return ` <span class="badge ${cls}">queue: ${esc(task.status)}</span> <span class="muted">${esc(bits.join(" · "))}</span>${more}`;
   };
   const rows = steps
@@ -7263,18 +7459,21 @@ export function phase12PanelHtml(
  * validation audits, #1075-#1078, already in the id project's tracked
  * refs). No hand-maintained values: a reopened audit or a new open
  * follow-up changes the panel without an edit. Phase 12 also shows
- * F-item progress counted from #1235's ordered step list (the one
- * uniform machine-readable F-item source); the other phases withhold
- * progress — no such source exists for them yet (#9923), and a
- * fabricated percentage is worse than the stated gap. */
+ * F-item progress counted from #1235's ordered step list, and Phases
+ * 11 and 13 count the F-item mapping table in planning/roadmaps/id.md
+ * (the source of record, #9923 step 3) when the source carries it;
+ * Phases 0-10 have no F-item numbering in their plans, so they state
+ * that gap instead of showing a fabricated percentage. */
 export function phaseTrackerPanelHtml(
   items: Map<RefKey, GhItem>,
   phase12: Phase12Snapshot | null = null,
+  phaseMapping: PhaseMappingSnapshot | null = null,
 ): string {
   const umbrellaUrl = `https://github.com/${PHASE_TRACKER_REPO}/issues/${PHASE_TRACKER_UMBRELLA}`;
   const head = `<h2>Phase tracker — validation by phase, live from <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a></h2>`;
   const progress = derivePhase12Progress(phase12, items);
-  const sourceLine = `<p class="muted">Source: the validation audits <a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1075">#1075</a>–<a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1078">#1078</a> under umbrella <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a>, resolved from the same live GitHub items as the tracked-issues table above (the page provenance stamp applies). Phase 12 progress counts the ordered steps in <a href="${PHASE12_ISSUE_URL}">#1235</a> against live issue state${phase12 ? ` (body fetched ${esc(phase12.fetchedAt)})` : ""}; other phases show no percentage — no machine-readable F-item mapping source exists for them yet, so the gap is stated rather than a number invented.</p>`;
+  const mappedProgress = phaseMapping ? deriveMappedProgress(phaseMapping.entries, items) : null;
+  const sourceLine = `<p class="muted">Source: the validation audits <a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1075">#1075</a>–<a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1078">#1078</a> under umbrella <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a>, resolved from the same live GitHub items as the tracked-issues table above (the page provenance stamp applies). Phase 12 progress counts the ordered steps in <a href="${PHASE12_ISSUE_URL}">#1235</a> against live issue state${phase12 ? ` (body fetched ${esc(phase12.fetchedAt)})` : ""}; ${phaseMapping ? `Phases 11 and 13 progress counts the F-item mapping table in <a href="https://github.com/${PHASE_TRACKER_REPO}/blob/main/planning/roadmaps/id.md">planning/roadmaps/id.md</a> (read ${esc(phaseMapping.fetchedAt)}) against live item state; ` : ""}Phases 0–10 have no F-item numbering in their plans, so no percentage is shown for them — the gap is stated rather than a number invented.</p>`;
   const rows = derivePhaseValidation(items)
     .map((r) => {
       const badge =
@@ -7290,16 +7489,19 @@ export function phaseTrackerPanelHtml(
           ? `<span class="muted">—</span>`
           : `<a href="${esc(r.auditUrl ?? "")}">#${r.auditIssue}</a>${r.auditTitle ? ` ${esc(r.auditTitle)}` : ""}`;
       const followUps = r.openFollowUps.length
-        ? r.openFollowUps
-            .map((f) => `<a href="${esc(f.url)}">#${f.issueNumber}</a>`)
-            .join(" ")
+        ? r.openFollowUps.map((f) => `<a href="${esc(f.url)}">#${f.issueNumber}</a>`).join(" ")
         : `<span class="muted">—</span>`;
+      const mapped = mappedProgress?.get(r.phase);
       const progressCell =
-        r.phase !== 12
-          ? `<span class="muted">not derived — no F-item source yet</span>`
-          : progress
+        r.phase === 12
+          ? progress
             ? `<strong>${progress.done}/${progress.total} steps done (${progress.percent}%)</strong><br><span class="muted">${progress.open} open${progress.unresolved ? ` · ${progress.unresolved} not resolved in the current source` : ""} — from <a href="${PHASE12_ISSUE_URL}">#1235</a></span>`
-            : `<span class="muted">withheld — #1235 feed unavailable or stale</span>`;
+            : `<span class="muted">withheld — #1235 feed unavailable or stale</span>`
+          : mapped
+            ? `<strong>${mapped.done}/${mapped.total} items done (${mapped.percent}%)</strong><br><span class="muted">${mapped.open} open${mapped.unresolved ? ` · ${mapped.unresolved} not resolved in the current source` : ""} — from the F-item mapping in planning/roadmaps/id.md</span>`
+            : r.phase <= 10
+              ? `<span class="muted">not derived — this phase's plan has no F-item numbering</span>`
+              : `<span class="muted">not derived — F-item mapping unavailable in the current source</span>`;
       return `<tr><th scope="row">Phase ${r.phase}</th><td>${badge}</td><td>${audit}</td><td>${followUps}</td><td>${progressCell}</td></tr>`;
     })
     .join("");
@@ -7416,7 +7618,6 @@ export function f12ReadinessPanelHtml(
   return `${head}${sourceLine}${rows}`;
 }
 
-
 export function queuePanelHtml(snapshot: QueueSnapshot | null): string {
   const head = `<h2>Queue &amp; fleet \u2014 live from the fleet queue broker</h2>`;
   if (!snapshot) {
@@ -7425,9 +7626,7 @@ export function queuePanelHtml(snapshot: QueueSnapshot | null): string {
   const fetchedIso = new Date(snapshot.fetchedAt).toISOString();
   const sourceLine = `<p class="muted">Source: queue-broker /health + /list (read-only), fetched ${esc(fetchedIso)}.</p>`;
   if (!snapshot.available || snapshot.stale) {
-    const why = snapshot.errors.length
-      ? ` Last read error: ${esc(snapshot.errors[0])}.`
-      : "";
+    const why = snapshot.errors.length ? ` Last read error: ${esc(snapshot.errors[0])}.` : "";
     return `${head}${sourceLine}<div class="banner">Stale source: this queue snapshot was fetched at ${esc(fetchedIso)}, outside the freshness window \u2014 queue numbers are withheld rather than shown silently old.${why} They refresh on the next successful broker read.</div>`;
   }
   const age = (ms: number | null): string => {
@@ -7444,9 +7643,12 @@ export function queuePanelHtml(snapshot: QueueSnapshot | null): string {
         `<tr><td>${esc(q.queue)}</td><td>${q.queued}</td><td>${q.claimed}</td><td>${q.parked}</td><td>${q.blocked}</td><td>${q.done}</td><td>${esc(age(q.oldestQueuedAgeMs))}</td><td>${q.terminalEvents24h} / ${q.terminalEvents7d}</td></tr>`,
     )
     .join("");
-  const streams = `<table><thead><tr><th>Queue stream</th><th>Queued</th><th>Claimed</th><th>Parked</th><th>Blocked</th><th>Done</th><th>Oldest queued</th><th>Terminal 24h / 7d</th></tr></thead><tbody>${streamRows}</tbody></table>`;
+  const streams = `<table><caption>Queue streams</caption><thead><tr><th scope="col">Queue stream</th><th scope="col">Queued</th><th scope="col">Claimed</th><th scope="col">Parked</th><th scope="col">Blocked</th><th scope="col">Done</th><th scope="col">Oldest queued</th><th scope="col">Terminal 24h / 7d</th></tr></thead><tbody>${streamRows}</tbody></table>`;
   const idItems = snapshot.tasks.filter(
-    (task) => task.repo === "developing-today/code" && task.issue !== null && (task.status === "claimed" || task.status === "parked"),
+    (task) =>
+      task.repo === "developing-today/code" &&
+      task.issue !== null &&
+      (task.status === "claimed" || task.status === "parked"),
   );
   const itemRows = idItems
     .slice(0, 50)
@@ -7457,7 +7659,7 @@ export function queuePanelHtml(snapshot: QueueSnapshot | null): string {
     })
     .join("");
   const items = idItems.length
-    ? `<h3>Claimed &amp; parked id items (${idItems.length})</h3><table><thead><tr><th>Task</th><th>Issue</th><th>Status</th><th>Worker / lane</th><th>Stage</th></tr></thead><tbody>${itemRows}</tbody></table>`
+    ? `<h3>Claimed &amp; parked id items (${idItems.length})</h3><table><caption>Claimed &amp; parked id items</caption><thead><tr><th scope="col">Task</th><th scope="col">Issue</th><th scope="col">Status</th><th scope="col">Worker / lane</th><th scope="col">Stage</th></tr></thead><tbody>${itemRows}</tbody></table>`
     : `<h3>Claimed &amp; parked id items</h3><p class="muted">None in the current snapshot.</p>`;
   return `${head}${sourceLine}${streams}${items}`;
 }
@@ -7472,6 +7674,8 @@ export function renderProgramProject(
   buildHealth?: BuildHealthSnapshot | null,
   f12?: { design: Phase12Snapshot | null; prRefs: Map<number, F12PrRef[]> | null } | null,
   queueSnap?: QueueSnapshot | null,
+  phaseMapping?: PhaseMappingSnapshot | null,
+  graphActions?: EpicGraphActionContext,
 ): string {
   const { config } = detail;
   const linkBits: string[] = [];
@@ -7537,7 +7741,7 @@ export function renderProgramProject(
     const epicHtml = epics.length
       ? `<h3>Epics — weighted progress</h3><p class="muted"><strong>${esc(weightedLine(epicW))}</strong></p>${epicRows}`
       : "";
-    poolHtml = `<p class="muted"><strong>${esc(weightedLine(allW))}</strong><br>${esc(handsLine(allW))}<br><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${epicHtml}${poolGraphHtml(detail.poolItems, allW)}${epicGraphSectionHtml(epicPool, detail.poolItems)}${cards}${more}`;
+    poolHtml = `<p class="muted"><strong>${esc(weightedLine(allW))}</strong><br>${esc(handsLine(allW))}<br><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${epicHtml}${poolGraphHtml(detail.poolItems, allW)}${epicGraphSectionHtml(epicPool, detail.poolItems, graphActions)}${cards}${more}`;
   }
 
   let roadmapHtml: string;
@@ -7577,8 +7781,10 @@ export function renderProgramProject(
 <p class="muted">Built only from already-published fleet data — the orchestration section this aggregator serves and the fleet's tracked issues. No new data pipeline feeds this section.</p>${programEntries(config.sweepHealth, items)}`
     : "";
 
-  const phaseTrackerHtml = config.id === "id" ? phaseTrackerPanelHtml(items, phase12 ?? null) : "";
-  const phase12Html = config.id === "id" && phase12 !== undefined ? phase12PanelHtml(phase12, items, queueSnap ?? null) : "";
+  const phaseTrackerHtml =
+    config.id === "id" ? phaseTrackerPanelHtml(items, phase12 ?? null, phaseMapping ?? null) : "";
+  const phase12Html =
+    config.id === "id" && phase12 !== undefined ? phase12PanelHtml(phase12, items, queueSnap ?? null) : "";
   const buildHealthHtml = config.id === "id" && buildHealth !== undefined ? buildHealthPanelHtml(buildHealth) : "";
   const f12Html =
     config.id === "id" && f12 !== undefined
@@ -7611,7 +7817,7 @@ ${phaseTrackerHtml}${phase12Html}${buildHealthHtml}${f12Html}${queueHtml}${edito
     body,
     provenance,
     "/program",
-    "",
+    graphActions?.identities ? ACTION_SCRIPT : "",
     provDetail ? freshnessChips(provDetail, ["orchestration", "items", "roadmap"]) : "",
   );
 }

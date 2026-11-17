@@ -389,8 +389,11 @@ impl SearchParametersV1 {
         if self.fts_weight == 0.0 && self.vector_weight == 0.0 {
             return Err("at least one of fts_weight or vector_weight must be positive".to_string());
         }
-        if self.jaccard_depth != 0 || self.jaccard_threshold != 0.0 {
-            return Err("Jaccard controls are not implemented yet".to_string());
+        if !self.jaccard_threshold.is_finite()
+            || self.jaccard_threshold < 0.0
+            || self.jaccard_threshold > 1.0
+        {
+            return Err("jaccard_threshold must be a finite number in [0, 1]".to_string());
         }
         if self.planner_enabled || self.spell_enabled {
             return Err("planner/spell stages are not implemented yet".to_string());
@@ -858,9 +861,14 @@ mod tests {
     fn unsupported_or_invalid_query_parameters_are_rejected() {
         let defaults = SearchParametersV1::default();
         assert!(defaults.validate(0).is_ok());
+        // Jaccard controls are implemented (#5733): depth is a plain
+        // count, and the threshold is range-checked instead.
         let mut p = defaults.clone();
         p.jaccard_depth = 10;
-        assert!(p.validate(0).unwrap_err().contains("Jaccard"));
+        assert!(p.validate(0).is_ok());
+        let mut p = defaults.clone();
+        p.jaccard_threshold = 1.5;
+        assert!(p.validate(0).unwrap_err().contains("jaccard_threshold"));
         let mut p = defaults.clone();
         p.planner_enabled = true;
         assert!(p.validate(0).unwrap_err().contains("not implemented"));

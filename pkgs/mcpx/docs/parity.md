@@ -32,7 +32,7 @@ and costs an agent the ability to restart a server that has wedged. What they
 carry instead is a description that says so and MCP annotations
 (`readOnlyHint`, `destructiveHint`) for a client that wants to scope on them.
 
-## /v1 operations (89)
+## /v1 operations (93)
 
 | Operation | Route | CLI | MCP tool | Plugin | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -48,7 +48,7 @@ carry instead is a description that says so and MCP annotations
 | `ask_poll` | `GET /v1/ask/{id}` | `mcpx ask poll` *generated* | `mcpx_ask_poll` | `ops.askPoll()` |  |
 | `ask_abandon` | `POST /v1/ask/{id}/abandon` | `mcpx ask abandon` *generated* | `mcpx_ask_abandon` | `ops.askAbandon()` | Privileged. Destructive. |
 | `ask_answers` | `POST /v1/ask/{id}/answers` | `mcpx ask answers` *generated* | `mcpx_ask_answers` | `ops.askAnswers()` | Privileged. |
-| `authz_decisions_clear` | `DELETE /v1/authz/decisions` | `mcpx authz decisions clear` *generated* | `mcpx_authz_decisions_clear` | `ops.authzDecisionsClear()` | Privileged. |
+| `authz_decisions_clear` | `DELETE /v1/authz/decisions` | `mcpx authz decisions-clear` *generated* | `mcpx_authz_decisions_clear` | `ops.authzDecisionsClear()` | Privileged. |
 | `authz_decisions` | `GET /v1/authz/decisions` | `mcpx authz decisions` *generated* | `mcpx_authz_decisions` | `ops.authzDecisions()` |  |
 | `batch` | `POST /v1/batch` | `mcpx batch` | `mcpx_batch` | `ops.batch()` |  |
 | `call` | `POST /v1/call` | `mcpx call` | `mcpx_call` | `ops.call()`, `call()`, `callAsTask()` |  |
@@ -81,6 +81,10 @@ carry instead is a description that says so and MCP annotations
 | `metrics_tools` | `GET /v1/metrics/tools` | `mcpx metrics tools` *generated* | `mcpx_metrics_tools` | `ops.metricsTools()` |  |
 | `namespaces` | `GET /v1/namespaces` | `mcpx ls` | `mcpx_namespaces` | `ops.namespaces()`, `namespaces()` |  |
 | `openapi` | `GET /v1/openapi.json` | `mcpx openapi` | `mcpx_openapi` | `ops.openapi()` |  |
+| `plugin_sessions_list` | `GET /v1/plugin-sessions` | `mcpx plugin-session list` *generated* | `mcpx_plugin_sessions_list` | `ops.pluginSessionsList()` |  |
+| `plugin_sessions_open` | `POST /v1/plugin-sessions` | `mcpx plugin-session open` *generated* | `mcpx_plugin_sessions_open` | `ops.pluginSessionsOpen()` |  |
+| `plugin_session_close` | `DELETE /v1/plugin-sessions/{id}` | `mcpx plugin-session close` *generated* | `mcpx_plugin_session_close` | `ops.pluginSessionClose()` |  |
+| `plugin_session_get` | `GET /v1/plugin-sessions/{id}` | `mcpx plugin-session get` *generated* | `mcpx_plugin_session_get` | `ops.pluginSessionGet()` |  |
 | `preflight` | `POST /v1/preflight` | `mcpx preflight` *generated* | `mcpx_preflight` | `ops.preflight()` |  |
 | `prompt_get` | `POST /v1/prompt` | `mcpx prompts` | `mcpx_prompt_get` | `ops.promptGet()` |  |
 | `prompts` | `GET /v1/prompts` | `mcpx prompts` | `mcpx_prompts` | `ops.prompts()` |  |
@@ -126,7 +130,7 @@ carry instead is a description that says so and MCP annotations
 | `types` | `GET /v1/types` | `mcpx types` | `mcpx_types` | `ops.types()`, `types()` |  |
 | `writes_clear` | `POST /v1/writes/{server}/clear` | `mcpx writes clear` *generated* | `mcpx_writes_clear` | `ops.writesClear()` | Privileged. |
 
-## CLI commands (72)
+## CLI commands (74)
 
 Every command the binary dispatches, with the operations it reaches. A command
 that reaches none says why: those are decisions, not gaps.
@@ -170,6 +174,7 @@ that reaches none says why: those are decisions, not gaps.
 | `metrics` | `metrics_tokens`, `metrics_tools` | Generated from the operation table. |
 | `openapi` | `openapi` |  |
 | `plugin` | – | Plugin discovery is local: the CLI and daemon read paths.plugins and PATH on this machine, and the daemon serves each plugin as a server of its own. |
+| `plugin-session` | `plugin_sessions_list`, `plugin_sessions_open`, `plugin_session_close`, `plugin_session_get` | Generated from the operation table. |
 | `preflight` | `preflight` | Generated from the operation table. |
 | `prompt` | `intent` |  |
 | `prompts` | `prompt_get`, `prompts` |  |
@@ -204,6 +209,7 @@ that reaches none says why: those are decisions, not gaps.
 | `tui` | – | An interactive interface over the reads above; it consumes the API rather than extending it. |
 | `types` | `types` |  |
 | `upgrade` | – | Replaces the running daemon with another binary, a decision for whoever runs the CLI rather than a tool a model can call. |
+| `want` | – | Local-only: appends to wantlog.jsonl under the state directory, which is never transmitted; there is no /v1 operation for it. |
 | `writes` | `writes_clear` | Generated from the operation table. |
 
 ## Hand-written MCP tools (12)

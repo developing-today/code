@@ -219,6 +219,28 @@ pub enum RequiredScope {
     ChatRead,
 }
 
+/// Which side of the session boundary executes a provider (F13.7,
+/// design `doc/2026-11-01_design_id789.md`).
+///
+/// A [`ProviderSide::Host`] provider runs on the host, as every provider
+/// registered before F13.7 does. A [`ProviderSide::Client`] provider runs
+/// on the client that originated the session: the host holds no such
+/// resource, and the local user — not the world — is the grant authority
+/// over the device. The world grant/ceiling remains a separate host
+/// policy gate, not a grant of device authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderSide {
+    /// Executed by the host.
+    Host,
+    /// Executed by the originating session's client.
+    Client,
+}
+
+/// The namespace prefix reserved for client-side providers (F13.7):
+/// every [`ProviderSide::Client`] manifest name carries it, and no host
+/// manifest may use it.
+pub const CLIENT_PROVIDER_NAMESPACE: &str = "client.";
+
 /// One provider and its versioned manifest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProviderManifest {
@@ -236,6 +258,12 @@ pub struct ProviderManifest {
     pub required_scope: RequiredScope,
     /// Whether the provider joins default ceilings.
     pub default_ceiling: DefaultCeiling,
+    /// Which side executes the provider. Every provider registered
+    /// before F13.7 is [`ProviderSide::Host`]; a client-side provider
+    /// registers as [`ProviderSide::Client`] under the `client.`
+    /// namespace with an excluded default ceiling (see
+    /// [`ProviderManifest::side_contract_violation`]).
+    pub side: ProviderSide,
 }
 
 /// Existing catalog entries as full manifests. The macro generates the
@@ -264,6 +292,7 @@ macro_rules! define_provider_registry {
                 bounds: $bounds,
                 required_scope: $required_scope,
                 default_ceiling: $default_ceiling,
+                side: ProviderSide::Host,
             }),+
         ];
 
@@ -629,6 +658,7 @@ const TEST_PROVIDER_MANIFEST: ProviderManifest = ProviderManifest {
     bounds: &[],
     required_scope: RequiredScope::Join,
     default_ceiling: DefaultCeiling::Excluded,
+    side: ProviderSide::Host,
 };
 
 /// Registry-only entries added on top of [`PRODUCTION_CATALOG_ENTRIES`].
@@ -667,6 +697,38 @@ static ASSEMBLED_CATALOG_ENTRIES: [ProviderManifest; CATALOG_ENTRY_COUNT] =
 
 /// All statically registered providers, in stable catalog order.
 pub const CATALOG_ENTRIES: &[ProviderManifest] = &ASSEMBLED_CATALOG_ENTRIES;
+
+impl ProviderManifest {
+    /// The F13.7 side contract, enforced by the registry conformance
+    /// fixtures: a client-side provider must live in the `client.`
+    /// namespace and must stay out of every default ceiling (a world
+    /// reaches it only through an explicit ceiling, and the local user
+    /// still grants the device access), and a host provider must not
+    /// squat in the reserved `client.` namespace. Returns a description
+    /// of the first violation, or `None` when the manifest satisfies
+    /// the contract.
+    #[must_use]
+    pub fn side_contract_violation(&self) -> Option<&'static str> {
+        let in_client_namespace = self.name.starts_with(CLIENT_PROVIDER_NAMESPACE);
+        match self.side {
+            ProviderSide::Client => {
+                if !in_client_namespace {
+                    return Some("client-side provider name is outside the client. namespace");
+                }
+                if self.default_ceiling != DefaultCeiling::Excluded {
+                    return Some("client-side provider must default to an excluded ceiling");
+                }
+                None
+            }
+            ProviderSide::Host => {
+                if in_client_namespace {
+                    return Some("host provider name squats in the reserved client. namespace");
+                }
+                None
+            }
+        }
+    }
+}
 
 /// A registry view over the statically registered provider manifests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2187,7 +2249,46 @@ mod tests {
             bounds: &[],
             required_scope: RequiredScope::Join,
             default_ceiling,
+            side: ProviderSide::Host,
         }
+    }
+
+    #[test]
+    fn test_catalog_entries_satisfy_the_f137_side_contract() {
+        for entry in CATALOG_ENTRIES {
+            assert_eq!(entry.side_contract_violation(), None, "{}", entry.name);
+            // F13.7 step 1 lands the contract only: no client provider
+            // is registered yet (the first, client.file.read, is step
+            // 5), so every catalog entry is still host-side and the
+            // host catalog is unchanged.
+            assert_eq!(entry.side, ProviderSide::Host, "{}", entry.name);
+        }
+    }
+
+    #[test]
+    fn test_client_side_manifest_contract() {
+        // A well-formed client-side manifest: client. namespace,
+        // excluded default — and it stays out of default ceilings.
+        let mut client = manifest("client.file.read", DefaultCeiling::Excluded);
+        client.side = ProviderSide::Client;
+        assert_eq!(client.side_contract_violation(), None);
+        assert!(!default_ceiling_from(&[client]).contains("client.file.read"));
+
+        // A client-side provider outside the client. namespace is a
+        // contract violation.
+        let mut unnamespaced = manifest("file.read", DefaultCeiling::Excluded);
+        unnamespaced.side = ProviderSide::Client;
+        assert!(unnamespaced.side_contract_violation().is_some());
+
+        // A client-side provider in a default ceiling is a contract
+        // violation: registration alone must never widen authority.
+        let mut included = manifest("client.file.read", DefaultCeiling::Included);
+        included.side = ProviderSide::Client;
+        assert!(included.side_contract_violation().is_some());
+
+        // A host provider may not squat in the client. namespace.
+        let squatter = manifest("client.file.read", DefaultCeiling::Excluded);
+        assert!(squatter.side_contract_violation().is_some());
     }
 
     #[test]

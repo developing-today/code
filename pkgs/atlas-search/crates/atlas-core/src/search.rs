@@ -304,7 +304,7 @@ fn run_search_impl(
         },
         filters,
     )?;
-    let (ranked, vec_dist) = fuse_with_parameters(
+    let (mut ranked, vec_dist) = fuse_with_parameters(
         &pools.fts,
         &pools.vector,
         opts.parameters.rrf_k,
@@ -312,12 +312,44 @@ fn run_search_impl(
         opts.parameters.vector_weight,
     );
 
+    // Jaccard rescore (#5733): a third signal over the fused
+    // candidate union only — retrieval is unchanged. Candidate
+    // shingle sets are computed from chunk text at this stage (the
+    // union is depth-bounded, so the cost is too); the design's
+    // stored sets drop into rescore_fused unchanged when the ingest
+    // side store lands. Off unless jaccard_depth is set.
+    let mut jaccard_note: Option<String> = None;
+    if opts.parameters.jaccard_depth > 0 && !ranked.is_empty() {
+        let depth = opts.parameters.jaccard_depth.min(ranked.len());
+        let ids: Vec<i64> = ranked[..depth].iter().map(|e| e.chunk_id).collect();
+        let details = details_map(backend, &ids)?;
+        let query_set = crate::shingles::ShingleSet::from_text(&opts.query);
+        let sets: std::collections::HashMap<i64, crate::shingles::ShingleSet> = details
+            .values()
+            .map(|d| (d.chunk_id, crate::shingles::ShingleSet::from_text(&d.text)))
+            .collect();
+        let threshold = if opts.parameters.jaccard_threshold == 0.0 {
+            crate::shingles::DEFAULT_NEAR_EXACT_THRESHOLD
+        } else {
+            opts.parameters.jaccard_threshold
+        };
+        let report =
+            crate::shingles::rescore_fused(&mut ranked, &query_set, &sets, depth, threshold);
+        jaccard_note = Some(format!(
+            "jaccard rescore: {} candidates rescored (depth {}), {} near-exact at threshold {}",
+            report.rescored, depth, report.near_exact, threshold
+        ));
+    }
+
     // The local backend learns things mid-search (vector
     // coverage); fold any late notes in before rendering.
     for n in backend.notes() {
         if !notes.contains(&n) {
             notes.push(n);
         }
+    }
+    if let Some(n) = jaccard_note {
+        notes.push(n);
     }
 
     let mut out = if opts.parameters.raw_mode == RawMode::Branches {
@@ -789,6 +821,7 @@ mod trace_tests {
                     chunk_id: 2,
                     dist: Some(0.25),
                 }],
+                candidate_models: Default::default(),
             })
         }
         fn chunk_details(&self, ids: &[i64]) -> Result<Vec<ChunkDetail>> {
@@ -936,5 +969,129 @@ mod trace_tests {
         let body = std::fs::read_to_string(dir.join("atlas-traces-2026-11-14.jsonl")).unwrap();
         assert_eq!(body.lines().count(), 2);
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod jaccard_tests {
+    use super::*;
+    use crate::types::{BranchHit, MessageRow, NeighborRow};
+
+    /// The pasted passage the query quotes verbatim (chunk 2's text);
+    /// chunk 1 is merely topical and wins the fused ranking.
+    const PASSAGE: &str =
+        "error at line forty two the database disk image is malformed beyond repair";
+
+    struct JaccardStub;
+    impl SearchBackend for JaccardStub {
+        fn name(&self) -> &'static str {
+            "local"
+        }
+        fn vec_table(&self) -> &str {
+            "vec_stub"
+        }
+        fn notes(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn branch_pools(&self, _q: &BranchQuery, _f: &Filters) -> Result<BranchPools> {
+            Ok(BranchPools {
+                fts: vec![
+                    BranchHit {
+                        chunk_id: 1,
+                        dist: None,
+                    },
+                    BranchHit {
+                        chunk_id: 2,
+                        dist: None,
+                    },
+                    BranchHit {
+                        chunk_id: 3,
+                        dist: None,
+                    },
+                ],
+                vector: vec![],
+                candidate_models: Default::default(),
+            })
+        }
+        fn chunk_details(&self, ids: &[i64]) -> Result<Vec<ChunkDetail>> {
+            let texts: std::collections::HashMap<i64, &str> = std::collections::HashMap::from([
+                (
+                    1,
+                    "database backup restore repair disk image troubleshooting guide",
+                ),
+                (2, PASSAGE),
+                (
+                    3,
+                    "unrelated notes about cooking rice and lentils for dinner",
+                ),
+            ]);
+            Ok(ids
+                .iter()
+                .map(|&id| ChunkDetail {
+                    chunk_id: id,
+                    text: texts.get(&id).copied().unwrap_or("").to_string(),
+                    chunk_idx: 0,
+                    message_id: format!("m{id}"),
+                    m_role: None,
+                    session_id: "s1".into(),
+                    s_title: None,
+                    s_client: None,
+                    s_created_at: None,
+                    l_kind: None,
+                    l_topics: None,
+                    l_projects: None,
+                    eff_sensitivity: Some("internal".into()),
+                })
+                .collect())
+        }
+        fn neighbors(&self, _m: &str, _i: i64, _n: i64) -> Result<Vec<NeighborRow>> {
+            Ok(Vec::new())
+        }
+        fn message(&self, _m: &str) -> Result<Option<MessageRow>> {
+            Ok(None)
+        }
+    }
+
+    struct StubEmbedder;
+    impl QueryEmbedder for StubEmbedder {
+        fn embed_query(&self, _t: &str, _trunc: usize) -> Result<Vec<f32>> {
+            Ok(vec![0.1, 0.2])
+        }
+    }
+
+    fn opts(depth: usize) -> SearchOptions {
+        let mut o = SearchOptions {
+            mode: SearchMode::Fts,
+            k: 3,
+            ..SearchOptions::new(PASSAGE)
+        };
+        o.parameters.jaccard_depth = depth;
+        o
+    }
+
+    fn result_ids(out: &Json) -> Vec<i64> {
+        out["results"]
+            .as_array()
+            .expect("results array")
+            .iter()
+            .map(|r| r["chunk_id"].as_i64().expect("chunk_id"))
+            .collect()
+    }
+
+    #[test]
+    fn rescore_promotes_the_pasted_passage_end_to_end() {
+        // Off (the production default): fused order stands, the
+        // topical chunk leads.
+        let off = run_search(&JaccardStub, &StubEmbedder, &Filters::default(), &opts(0)).unwrap();
+        assert_eq!(result_ids(&off)[0], 1);
+
+        // On: the near-exact tier promotes the quoted passage itself
+        // to rank 1, and the envelope notes the rescore.
+        let on = run_search(&JaccardStub, &StubEmbedder, &Filters::default(), &opts(100)).unwrap();
+        assert_eq!(result_ids(&on)[0], 2);
+        let notes = on["notes"].to_string();
+        assert!(notes.contains("jaccard rescore"), "{notes}");
+        assert!(notes.contains("1 near-exact"), "{notes}");
     }
 }

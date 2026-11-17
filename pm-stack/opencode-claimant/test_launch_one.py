@@ -264,7 +264,14 @@ def no_journal():
 
 class TestLaunch(unittest.TestCase):
     def run_launch(
-        self, *, rows_kw, fq, server_kw=None, room=3, mode="live", hs=None,
+        self,
+        *,
+        rows_kw,
+        fq,
+        server_kw=None,
+        room=3,
+        mode="live",
+        hs=None,
         queue_name=QUEUE,
     ):
         server_patches, deleted = fake_server(**(server_kw or {}))
@@ -420,7 +427,7 @@ class TestCli(unittest.TestCase):
             [(c.args[1]["queue"], c.args[1]["status"]) for c in request.call_args_list],
             [("code", "claimed"), ("code", "handed_off")],
         )
-        record, = json.loads(out.getvalue())
+        (record,) = json.loads(out.getvalue())
         self.assertTrue(record["ok"], record)
         self.assertEqual(record["repo"], "developing-today/code")
         self.assertEqual(record["directory"], PRIMARY)

@@ -286,8 +286,11 @@ class ReadModeLoudDefaultTests(unittest.TestCase):
         import tempfile
 
         with tempfile.TemporaryDirectory() as td:
-            for content, want in (("live\n", "live"), ("shadow", "shadow"),
-                                  (" LIVE ", "live")):
+            for content, want in (
+                ("live\n", "live"),
+                ("shadow", "shadow"),
+                (" LIVE ", "live"),
+            ):
                 result, err = self._read_with_file(Path(td), content)
                 self.assertEqual(result, want)
                 self.assertNotIn("CLAIMANT-MODE-WARNING", err)

@@ -201,8 +201,8 @@ fn cli_rejects_unsupported_query_controls_before_backend_work() {
         .join("missing.db");
     for (flags, expected) in [
         (
-            vec!["--jaccard_depth", "5"],
-            "Jaccard controls are not implemented",
+            vec!["--jaccard_threshold", "1.5"],
+            "jaccard_threshold must be a finite number in [0, 1]",
         ),
         (
             vec!["--planner_enabled"],

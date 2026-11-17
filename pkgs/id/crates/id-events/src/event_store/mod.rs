@@ -64,6 +64,7 @@ use redb::{
 
 use id_store::chain::{self, Event};
 
+mod anchors;
 mod chat;
 mod claims;
 mod documents;
@@ -1523,6 +1524,7 @@ mod tests {
             checkpoint: None,
             rotation: None,
             chat: None,
+            anchor: None,
         }
     }
 

@@ -31,9 +31,13 @@ use atlas_core::filters::{Filters, split_csv};
 use atlas_core::shards::{ShardedBackend, TierCeiling, open_from_spec};
 use atlas_core::turso::{TURSO_HOST, resolve_turso_token};
 use atlas_core::{
-    AtlasEmbedder, CachingEmbedder, Error as CoreError, FixedEmbedder, JsonlTraceSink,
-    LocalBackend, QueryEmbedder, QueryEmbeddingCache, SearchBackend, SearchMode, SearchOptions,
-    TraceContext, TursoBackend, VectorBackend, run_get_chunk, run_search_traced,
+    AtlasEmbedder, CachingEmbedder, Error as CoreError, FeedbackInput, FixedEmbedder,
+    JsonlFeedbackSink, JsonlTraceSink, LocalBackend, QueryEmbedder, QueryEmbeddingCache,
+    SearchBackend, SearchMode, SearchOptions, TraceContext, TraceDocument, TursoBackend,
+    VectorBackend, Vote, aggregate_traces, feedback_for, ingest_traces, load_feedback_dir,
+    load_feedback_refs, load_feedback_votes, load_query_feedback_votes, load_query_requesters,
+    normalise_records, record_feedback, run_get_chunk, run_retention, run_search_traced,
+    search_traces, valid_civil_date, weekly_report, write_normalised, write_report,
 };
 use atlas_proto::{
     FilterSpec, QueryVariant, SearchMode as ProtoSearchMode, SearchParametersV1, SearchRequest,
@@ -67,6 +71,138 @@ enum Cmd {
     Init(InitArgs),
     /// download + verify the pinned Snowflake model into the state dir (step 5)
     FetchModel,
+    /// ingest query traces as a statistics-and-reports corpus, or run trace retention (design s4)
+    Traces(TracesArgs),
+    /// cast a thumbs vote on a served result, or retrieve feedback by its IDs (design s6.1)
+    Feedback(FeedbackArgs),
+}
+
+#[derive(Args)]
+struct FeedbackArgs {
+    /// the query_id the search response envelope carried (invariant 1)
+    #[arg(long)]
+    query: String,
+    /// the result's chunk_id; omit for a per-query vote (design s6.1)
+    #[arg(long)]
+    chunk: Option<i64>,
+    /// thumbs up (conflicts with --down)
+    #[arg(long, conflicts_with = "down")]
+    up: bool,
+    /// thumbs down (conflicts with --up)
+    #[arg(long)]
+    down: bool,
+    /// optional comment, verbatim; @file reads the comment from a file
+    #[arg(long)]
+    comment: Option<String>,
+    /// the result was opened/expanded before this vote (design s6.4)
+    #[arg(long)]
+    opened: bool,
+    /// requester kind: drew | agent | user | anonymous (design s6.3)
+    #[arg(long, default_value = "user")]
+    requester_kind: String,
+    /// stable requester id
+    #[arg(long, default_value = "cli")]
+    requester_id: String,
+    /// retrieve the feedback for --query [--chunk] instead of casting a vote
+    #[arg(long)]
+    get: bool,
+    /// feedback store directory (default: the JsonlFeedbackSink default dir)
+    #[arg(long)]
+    dir: Option<PathBuf>,
+    /// go through a running service instead of the local store
+    #[arg(long)]
+    via_service: bool,
+    /// service base URL for --via-service (env ATLAS_SEARCH_URL)
+    #[arg(long)]
+    service_url: Option<String>,
+}
+
+#[derive(Args)]
+struct TracesArgs {
+    #[command(subcommand)]
+    cmd: TracesCmd,
+}
+
+#[derive(Subcommand)]
+enum TracesCmd {
+    /// ingest trace JSONL into the statistics-and-reports corpus; --query searches it
+    Ingest(TraceIngestArgs),
+    /// run the 180-day hot retention pass (cold-tier move + compaction aggregate)
+    Retention(TraceRetentionArgs),
+    /// daily batch aggregation over stored traces (design s5)
+    Stats(TraceStatsArgs),
+    /// weekly statistics report into the statistics-and-reports source set (design s7)
+    Report(TraceReportArgs),
+    /// agent normalisation pass over the raw feedback store (design s6.2)
+    Normalise(TraceNormaliseArgs),
+}
+
+#[derive(Args)]
+struct TraceIngestArgs {
+    /// traces directory (default: the JsonlTraceSink default dir)
+    #[arg(long)]
+    dir: Option<PathBuf>,
+    /// only print documents matching this corpus query
+    #[arg(long)]
+    query: Option<String>,
+}
+
+#[derive(Args)]
+struct TraceRetentionArgs {
+    /// traces directory (default: the JsonlTraceSink default dir)
+    #[arg(long)]
+    dir: Option<PathBuf>,
+    /// today as YYYY-MM-DD (default: today, UTC)
+    #[arg(long)]
+    today: Option<String>,
+    /// feedback JSONL file naming referenced query ids (repeatable)
+    #[arg(long)]
+    feedback: Vec<PathBuf>,
+}
+
+#[derive(Args)]
+struct TraceStatsArgs {
+    /// traces directory (default: the JsonlTraceSink default dir)
+    #[arg(long)]
+    dir: Option<PathBuf>,
+    /// window end as YYYY-MM-DD (default: today, UTC)
+    #[arg(long)]
+    today: Option<String>,
+    /// rolling window length in days (default: 7)
+    #[arg(long, default_value_t = 7)]
+    window_days: i64,
+    /// feedback JSONL file with vote records (repeatable)
+    #[arg(long)]
+    feedback: Vec<PathBuf>,
+}
+
+#[derive(Args)]
+struct TraceReportArgs {
+    /// traces directory (default: the JsonlTraceSink default dir)
+    #[arg(long)]
+    dir: Option<PathBuf>,
+    /// report day as YYYY-MM-DD (default: today, UTC)
+    #[arg(long)]
+    today: Option<String>,
+    /// feedback JSONL file with vote records (repeatable)
+    #[arg(long)]
+    feedback: Vec<PathBuf>,
+}
+
+#[derive(Args)]
+struct TraceNormaliseArgs {
+    /// traces directory, for query requester identities (default: the JsonlTraceSink default dir)
+    #[arg(long)]
+    dir: Option<PathBuf>,
+    /// feedback store directory (default: the JsonlFeedbackSink default dir)
+    #[arg(long)]
+    feedback_dir: Option<PathBuf>,
+    /// derivative output directory (default: <feedback store>/normalised)
+    #[arg(long)]
+    out_dir: Option<PathBuf>,
+    /// derivative day as YYYY-MM-DD (default: today, UTC)
+    #[arg(long)]
+    today: Option<String>,
 }
 
 #[derive(Args)]
@@ -250,10 +386,10 @@ struct SearchArgs {
     /// reciprocal-rank-fusion multiplier for vectors (default 1)
     #[arg(long = "vector_weight", default_value_t = parameter_defaults().vector_weight)]
     vector_weight: f64,
-    /// candidate depth for Jaccard rescoring (unsupported unless 0)
+    /// candidate depth for Jaccard rescoring over the fused union (0 = off; #5733)
     #[arg(long = "jaccard_depth", default_value_t = parameter_defaults().jaccard_depth as i64)]
     jaccard_depth: i64,
-    /// threshold for Jaccard rescoring (unsupported unless 0)
+    /// near-exact Jaccard threshold in (0, 1] (0 = the design default 0.60; #5733)
     #[arg(long = "jaccard_threshold", default_value_t = parameter_defaults().jaccard_threshold)]
     jaccard_threshold: f64,
     /// reciprocal-rank-fusion constant (default 10)
@@ -886,6 +1022,252 @@ fn cmd_serve(args: ServeArgs) -> Result<(), CliError> {
     server::serve_forever(settings, engine).map_err(|m| (1, m))
 }
 
+fn cmd_feedback(args: FeedbackArgs) -> Result<(), CliError> {
+    if args.get {
+        let out = if args.via_service {
+            let base = service::base_url(args.service_url.as_deref());
+            service::get_feedback(&base, &args.query, args.chunk).map_err(|m| (1, m))?
+        } else {
+            let dir = args
+                .dir
+                .clone()
+                .unwrap_or_else(JsonlFeedbackSink::default_dir);
+            let records = load_feedback_dir(&dir).map_err(map_err)?;
+            let views = feedback_for(&records, &args.query, args.chunk);
+            serde_json::json!({
+                "query_id": args.query,
+                "chunk_id": args.chunk,
+                "feedback": views.iter().map(|v| v.to_json()).collect::<Vec<_>>(),
+            })
+        };
+        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+        return Ok(());
+    }
+    let vote = match (args.up, args.down) {
+        (true, false) => Vote::Up,
+        (false, true) => Vote::Down,
+        _ => {
+            return Err((
+                2,
+                "feedback needs exactly one of --up / --down (or --get to retrieve)".to_string(),
+            ));
+        }
+    };
+    let comment = match &args.comment {
+        Some(raw) if raw.starts_with('@') => {
+            let path = &raw[1..];
+            Some(
+                std::fs::read_to_string(path)
+                    .map_err(|e| (1, format!("cannot read comment file {path}: {e}")))?,
+            )
+        }
+        other => other.clone(),
+    };
+    if args.via_service {
+        let base = service::base_url(args.service_url.as_deref());
+        let payload = serde_json::json!({
+            "query_id": args.query,
+            "chunk_id": args.chunk,
+            "vote": vote.as_str(),
+            "comment": comment,
+            "opened": args.opened,
+            "requester": {"kind": args.requester_kind, "id": args.requester_id},
+        });
+        let out = service::post_feedback(&base, &payload).map_err(|m| (1, m))?;
+        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+        return Ok(());
+    }
+    let input = FeedbackInput {
+        query_id: args.query.clone(),
+        chunk_id: args.chunk,
+        vote,
+        comment,
+        requester_kind: args.requester_kind.clone(),
+        requester_id: args.requester_id.clone(),
+        opened: args.opened,
+    };
+    let dir = args
+        .dir
+        .clone()
+        .unwrap_or_else(JsonlFeedbackSink::default_dir);
+    let sink = JsonlFeedbackSink::new(dir);
+    let record = record_feedback(&sink, &input).map_err(map_err)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&record.to_json()).unwrap_or_default()
+    );
+    Ok(())
+}
+
+fn cmd_traces(args: TracesArgs) -> Result<(), CliError> {
+    match args.cmd {
+        TracesCmd::Ingest(a) => {
+            let dir = a.dir.unwrap_or_else(JsonlTraceSink::default_dir);
+            let corpus = ingest_traces(&dir).map_err(map_err)?;
+            let docs: Vec<&TraceDocument> = match &a.query {
+                Some(q) => search_traces(&corpus, q),
+                None => corpus.documents.iter().collect(),
+            };
+            let out = serde_json::json!({
+                "source_id": corpus.registration.source_id,
+                "source_class": corpus.registration.source_class,
+                "record_schema": corpus.registration.record_schema,
+                "dir": dir.display().to_string(),
+                "files": corpus.files,
+                "documents": corpus.documents.len(),
+                "skipped_lines": corpus.skipped_lines,
+                "query": a.query,
+                "matches": docs
+                    .iter()
+                    .map(|d| serde_json::json!({
+                        "query_id": d.query_id,
+                        "ts": d.ts,
+                        "surface": d.surface,
+                        "requester": format!("{}:{}", d.requester_kind, d.requester_id),
+                        "query_text": d.query_text,
+                        "query_text_hash": d.query_text_hash,
+                        "served": d.served,
+                        "merged": d.merged,
+                    }))
+                    .collect::<Vec<_>>(),
+            });
+            println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+            Ok(())
+        }
+        TracesCmd::Retention(a) => {
+            let dir = a.dir.unwrap_or_else(JsonlTraceSink::default_dir);
+            let today_str = match &a.today {
+                Some(t) => t.clone(),
+                None => {
+                    let ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    atlas_core::trace::rfc3339_utc(ms)[..10].to_string()
+                }
+            };
+            // Strict calendar validation: every component must
+            // parse, and the result must be a real date. An
+            // out-of-range month/day would otherwise be silently
+            // normalised by the day-count math and could age
+            // recent traces out of the hot tier by years.
+            let today: Option<(i64, u32, u32)> = (|| {
+                let mut parts = today_str.split('-');
+                let y: i64 = parts.next()?.parse().ok()?;
+                let m: u32 = parts.next()?.parse().ok()?;
+                let d: u32 = parts.next()?.parse().ok()?;
+                if parts.next().is_some() || !valid_civil_date(y, m, d) {
+                    return None;
+                }
+                Some((y, m, d))
+            })();
+            let Some(today) = today else {
+                return Err((
+                    2,
+                    format!("--today must be a valid YYYY-MM-DD date, got {today_str}"),
+                ));
+            };
+            let refs = load_feedback_refs(&a.feedback).map_err(map_err)?;
+            let report = run_retention(&dir, today, &refs).map_err(map_err)?;
+            let out = serde_json::json!({
+                "dir": dir.display().to_string(),
+                "today": today_str,
+                "feedback_refs": refs.len(),
+                "kept_files": report.kept_files,
+                "moved_files": report.moved_files,
+                "compacted_records": report.compacted_records,
+                "exempt_records": report.exempt_records,
+                "cold_files": report.cold_files,
+            });
+            println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+            Ok(())
+        }
+        TracesCmd::Stats(a) => {
+            let dir = a.dir.unwrap_or_else(JsonlTraceSink::default_dir);
+            let today = parse_today_arg(&a.today)?;
+            let votes = load_feedback_votes(&a.feedback).map_err(map_err)?;
+            let query_votes = load_query_feedback_votes(&a.feedback).map_err(map_err)?;
+            let stats = aggregate_traces(&dir, today, a.window_days, &votes, &query_votes)
+                .map_err(map_err)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&stats.to_json()).unwrap_or_default()
+            );
+            Ok(())
+        }
+        TracesCmd::Report(a) => {
+            let dir = a.dir.unwrap_or_else(JsonlTraceSink::default_dir);
+            let today = parse_today_arg(&a.today)?;
+            let votes = load_feedback_votes(&a.feedback).map_err(map_err)?;
+            let query_votes = load_query_feedback_votes(&a.feedback).map_err(map_err)?;
+            let report = weekly_report(&dir, today, &votes, &query_votes).map_err(map_err)?;
+            let report_file = write_report(&dir, &report).map_err(map_err)?;
+            let md_file = dir.join(format!("atlas-statistics-report-{}.md", report.report_day));
+            std::fs::write(&md_file, report.render_markdown())
+                .map_err(|e| (1, format!("cannot write {}: {e}", md_file.display())))?;
+            let mut out = report.to_json();
+            out["report_file"] = serde_json::json!(report_file.display().to_string());
+            out["markdown_file"] = serde_json::json!(md_file.display().to_string());
+            println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+            Ok(())
+        }
+        TracesCmd::Normalise(a) => {
+            let dir = a.dir.unwrap_or_else(JsonlTraceSink::default_dir);
+            let today = parse_today_arg(&a.today)?;
+            let day = atlas_core::format_day(today.0, today.1, today.2);
+            let feedback_dir = a
+                .feedback_dir
+                .unwrap_or_else(JsonlFeedbackSink::default_dir);
+            let records = load_feedback_dir(&feedback_dir).map_err(map_err)?;
+            let requesters = load_query_requesters(&dir).map_err(map_err)?;
+            let normalised = normalise_records(&records, &requesters);
+            let out_dir = a.out_dir.unwrap_or_else(|| feedback_dir.join("normalised"));
+            let file = write_normalised(&out_dir, &day, &normalised).map_err(map_err)?;
+            let self_feedback = normalised.iter().filter(|n| n.self_feedback).count();
+            let out = serde_json::json!({
+                "feedback_dir": feedback_dir.display().to_string(),
+                "raw_records": records.len(),
+                "normalised": normalised.len(),
+                "self_feedback": self_feedback,
+                "normalised_file": file.display().to_string(),
+            });
+            println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+            Ok(())
+        }
+    }
+}
+
+/// Parse a `--today YYYY-MM-DD` argument (default: today, UTC)
+/// with the same strict calendar validation the retention pass
+/// applies: an out-of-range month/day must be a usage error,
+/// never a silently normalised date.
+fn parse_today_arg(arg: &Option<String>) -> Result<(i64, u32, u32), CliError> {
+    let today_str = match arg {
+        Some(t) => t.clone(),
+        None => {
+            let ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            atlas_core::trace::rfc3339_utc(ms)[..10].to_string()
+        }
+    };
+    let parsed: Option<(i64, u32, u32)> = (|| {
+        let mut parts = today_str.split('-');
+        let y: i64 = parts.next()?.parse().ok()?;
+        let m: u32 = parts.next()?.parse().ok()?;
+        let d: u32 = parts.next()?.parse().ok()?;
+        if parts.next().is_some() || !valid_civil_date(y, m, d) {
+            return None;
+        }
+        Some((y, m, d))
+    })();
+    parsed.ok_or((
+        2,
+        format!("--today must be a valid YYYY-MM-DD date, got {today_str}"),
+    ))
+}
+
 fn cmd_fetch_model() -> Result<(), CliError> {
     fetch_model::fetch_model().map_err(|m| (2, m))
 }
@@ -913,6 +1295,8 @@ fn run(cli: Cli) -> Result<(), CliError> {
         Cmd::Serve(args) => cmd_serve(args),
         Cmd::Init(args) => cmd_init(args),
         Cmd::FetchModel => cmd_fetch_model(),
+        Cmd::Traces(args) => cmd_traces(args),
+        Cmd::Feedback(args) => cmd_feedback(args),
     }
 }
 
@@ -970,6 +1354,55 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(cli_request.parameters, raw_request.parameters);
+    }
+
+    #[test]
+    fn feedback_cli_parses_the_design_invocation() {
+        // Oracle: design section 6.1's CLI form —
+        // `atlas feedback --query <query_id> --chunk <chunk_id>
+        // --up|--down [--comment <text|@file>]`.
+        let cli = Cli::try_parse_from([
+            "atlas-search",
+            "feedback",
+            "--query",
+            "q-1",
+            "--chunk",
+            "42",
+            "--down",
+            "--comment",
+            "stale chunk",
+        ])
+        .unwrap();
+        let Cmd::Feedback(args) = cli.cmd else {
+            panic!("expected feedback command")
+        };
+        assert_eq!(args.query, "q-1");
+        assert_eq!(args.chunk, Some(42));
+        assert!(args.down && !args.up);
+        assert_eq!(args.comment.as_deref(), Some("stale chunk"));
+        assert!(!args.get);
+
+        // Per-query vote: no --chunk, and --get retrieves.
+        let cli =
+            Cli::try_parse_from(["atlas-search", "feedback", "--query", "q-1", "--get"]).unwrap();
+        let Cmd::Feedback(args) = cli.cmd else {
+            panic!("expected feedback command")
+        };
+        assert_eq!(args.chunk, None);
+        assert!(args.get);
+
+        // --up and --down conflict at parse time.
+        assert!(
+            Cli::try_parse_from([
+                "atlas-search",
+                "feedback",
+                "--query",
+                "q-1",
+                "--up",
+                "--down",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

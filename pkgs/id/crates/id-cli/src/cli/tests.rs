@@ -666,6 +666,65 @@ fn test_cli_parse_list() {
 }
 
 #[test]
+fn test_cli_parse_publish_listener() {
+    let cli = Cli::parse_from(["id", "publish", "arena", "--listen", "127.0.0.1:8080"]);
+    match cli.command {
+        Some(Command::Publish {
+            world,
+            listen,
+            path,
+            acknowledge_shadow,
+        }) => {
+            assert_eq!(world, "arena");
+            assert_eq!(listen.as_deref(), Some("127.0.0.1:8080"));
+            assert!(path.is_none());
+            assert!(!acknowledge_shadow);
+        }
+        _ => panic!("Expected Publish command"),
+    }
+}
+
+#[test]
+fn test_cli_parse_publish_path_with_acknowledgement() {
+    let cli = Cli::parse_from([
+        "id",
+        "publish",
+        "arena",
+        "--path",
+        "/world",
+        "--acknowledge-shadow",
+    ]);
+    match cli.command {
+        Some(Command::Publish {
+            world,
+            listen,
+            path,
+            acknowledge_shadow,
+        }) => {
+            assert_eq!(world, "arena");
+            assert!(listen.is_none());
+            assert_eq!(path.as_deref(), Some("/world"));
+            assert!(acknowledge_shadow);
+        }
+        _ => panic!("Expected Publish command"),
+    }
+}
+
+#[test]
+fn test_cli_parse_unpublish_and_publications() {
+    let cli = Cli::parse_from(["id", "unpublish", "--path", "/world"]);
+    match cli.command {
+        Some(Command::Unpublish { listen, path }) => {
+            assert!(listen.is_none());
+            assert_eq!(path.as_deref(), Some("/world"));
+        }
+        _ => panic!("Expected Unpublish command"),
+    }
+    let cli = Cli::parse_from(["id", "publications"]);
+    assert!(matches!(cli.command, Some(Command::Publications)));
+}
+
+#[test]
 fn test_cli_parse_list_remote() {
     let node_id = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     let cli = Cli::parse_from(["id", "list", node_id]);
@@ -2803,6 +2862,40 @@ fn test_cli_parse_world_dev_watch() {
                 assert_eq!(args.watch_max_cycles, 25);
                 assert_eq!(args.watch_debounce_ms, 300);
             }
+            other => panic!("unexpected: {other:?}"),
+        },
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+/// F11.12: `id world journal check|backup` parse through the CLI
+/// surface — the format-management commands the packet adds.
+#[test]
+fn world_journal_subcommands_parse() {
+    let cli = Cli::parse_from(["id", "world", "journal", "check", "/tmp/w", "--json"]);
+    match cli.command {
+        Some(Command::World(cmd)) => match *cmd {
+            WorldCommand::Journal(args) => match args.action {
+                JournalCommand::Check { dir, json } => {
+                    assert_eq!(dir, std::path::PathBuf::from("/tmp/w"));
+                    assert!(json);
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        },
+        other => panic!("unexpected: {other:?}"),
+    }
+    let cli = Cli::parse_from(["id", "world", "journal", "backup", "/tmp/w", "/tmp/b.jsonl"]);
+    match cli.command {
+        Some(Command::World(cmd)) => match *cmd {
+            WorldCommand::Journal(args) => match args.action {
+                JournalCommand::Backup { dir, out } => {
+                    assert_eq!(dir, std::path::PathBuf::from("/tmp/w"));
+                    assert_eq!(out, std::path::PathBuf::from("/tmp/b.jsonl"));
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
             other => panic!("unexpected: {other:?}"),
         },
         other => panic!("unexpected: {other:?}"),

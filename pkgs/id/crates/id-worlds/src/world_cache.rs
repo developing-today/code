@@ -695,6 +695,7 @@ pub fn validate_lru_bytes(lru_bytes: u64, max_module_bytes: u64) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

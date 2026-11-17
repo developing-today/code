@@ -116,15 +116,27 @@ type Op struct {
 }
 
 // CLIWords is how the command line reaches this operation: the hand-written
-// command when there is one, otherwise the generated one.
+// command when there is one, otherwise the generated one. A generated
+// command is two words at most: the group (the name's first segment) and
+// the verb, with any further segments hyphenated into the verb --
+// "authz_decisions_clear" is reached as `mcpx authz decisions-clear`,
+// the spelling opGroups builds and help prints. Returning the raw
+// underscore split instead named a command line the parser refuses
+// ("authz decisions: unexpected \"clear\"", #8457), and every
+// consumer that renders or invokes CLIWords -- the parity table,
+// the generated-command reachability tests -- inherited the lie.
 func (o Op) CLIWords() []string {
-	switch {
-	case o.Command != "":
+	if o.Command != "" {
 		return strings.Fields(o.Command)
-	case o.CLI != "":
-		return strings.Fields(o.CLI)
 	}
-	return strings.Split(o.Name, "_")
+	words := strings.Fields(o.CLI)
+	if o.CLI == "" {
+		words = strings.Split(o.Name, "_")
+	}
+	if len(words) <= 2 {
+		return words
+	}
+	return []string{words[0], strings.Join(words[1:], "-")}
 }
 
 // GeneratedCommand reports whether the CLI reaches this operation through a
@@ -231,7 +243,13 @@ func Ops() []Op {
 				"a session is a later operation (#1931).",
 		},
 		{
+			// The plugin-session operations carry a CLI name because
+			// their derived group, "plugin", is the hand-written
+			// plugin-discovery command: a generated group of that
+			// name would never run (TestGeneratedCommandsDoNotShadow)
+			// and the operations would have no CLI path (#8457).
 			Name: "plugin_sessions_open", Method: "POST", Path: "/v1/plugin-sessions",
+			CLI:      "plugin-session open",
 			Mutating: true, Permission: PermissionRun,
 			Summary: "Open a plugin session and be issued its id",
 			Description: "A plugin connecting over /v1 opens a session and the daemon issues " +
@@ -250,6 +268,7 @@ func Ops() []Op {
 		},
 		{
 			Name: "plugin_sessions_list", Method: "GET", Path: "/v1/plugin-sessions",
+			CLI:        "plugin-session list",
 			Permission: PermissionRead,
 			Summary:    "Live plugin sessions and what each one owns",
 			Description: "One entry per live plugin session: its id, its plugin, the " +
@@ -259,6 +278,7 @@ func Ops() []Op {
 		},
 		{
 			Name: "plugin_session_get", Method: "GET", Path: "/v1/plugin-sessions/{id}",
+			CLI:        "plugin-session get",
 			Permission: PermissionRead,
 			Summary:    "One live plugin session",
 			Description: "The session with this id, or a 404 when it is not live -- a " +
@@ -269,6 +289,7 @@ func Ops() []Op {
 		},
 		{
 			Name: "plugin_session_close", Method: "DELETE", Path: "/v1/plugin-sessions/{id}",
+			CLI:      "plugin-session close",
 			Mutating: true, Permission: PermissionRun,
 			Summary: "End a plugin session, dropping everything it owns",
 			Description: "The clean end of a plugin session, and the teardown every exit " +

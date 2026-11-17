@@ -66,6 +66,28 @@
 # GitHub API (the projector's webhook intake needs a public route,
 # which this stack deliberately does not have; reconcile is its
 # designed self-heal path).
+#
+# NO PATTERN KILLS -- Drew's rule, 2026-11-11 (code#8777). These
+# services are only ever reset by a port-handover/takeover (the
+# switch's designed path) or by an explicit, named systemctl action
+# from an identified actor. Never pkill/killall on bun, server.ts, a
+# service name, or a port: pm-aggregator and pm-dispatch share the
+# identical command line `bun run src/server.ts`, so one pattern
+# kill takes both down in the same second -- which is exactly what
+# happened at 2026-11-11T22:01:09Z, when an actor no record could
+# identify sent both units SIGTERM and the decisions page went dark
+# mid-use. To make a repeat a matter of record, the aggregator and
+# dispatch ExecStarts run under pkgs/sigterm-witness: a transparent
+# wrapper whose SA_SIGINFO handler logs the sender (pid, uid,
+# comm, parent pid, cmdline where capturable) of every signal
+# delivered to the wrapper itself; a signal addressed directly to
+# the child's pid is recorded as a child-killed event without
+# sender details (the documented limit in sigterm-witness.c). The
+# handler logs to
+# sigterm-witness.log in the service's state dir, then forwards the
+# signal and re-raises the child's death unchanged. The laptop has
+# no auditd; the witness is the attribution of record until a
+# declarative auditd lands (tracked on code#8777).
 {
   config,
   lib,
@@ -80,6 +102,7 @@ let
   home = "/home/${cfg.user}";
   repo = "${home}/git/code";
   aggState = "${home}/.local/state/pm-aggregator";
+  disState = "${home}/.local/state/pm-dispatch";
   projState = "${home}/.local/state/pm-projector";
   stackDir = "${home}/pm-stack";
 
@@ -87,6 +110,7 @@ let
   pmAggregator = pkgs.callPackage ../../../pkgs/pm-aggregator/package.nix { };
   pmDispatch = pkgs.callPackage ../../../pkgs/pm-dispatch/package.nix { };
   pmGitSync = pkgs.callPackage ../../../pkgs/pm-git-sync/package.nix { };
+  sigtermWitness = pkgs.callPackage ../../../pkgs/sigterm-witness/package.nix { };
 
   projectorReconcile = pkgs.writeShellScript "pm-projector-reconcile" ''
     # PM_PROJECTOR_API_TOKEN arrives via the unit's EnvironmentFile.
@@ -228,7 +252,11 @@ in
             # default in the config land in state too, never in a
             # checkout or the (read-only) store.
             WorkingDirectory = aggState;
-            ExecStart = "${pmAggregator}/bin/pm-aggregator";
+            # Runs under the sigterm witness (code#8777): every
+            # signal delivered to this service is attributed in
+            # ${aggState}/sigterm-witness.log before it is
+            # forwarded to the app.
+            ExecStart = "${sigtermWitness}/bin/sigterm-witness --log ${aggState}/sigterm-witness.log ${pmAggregator}/bin/pm-aggregator";
             EnvironmentFile = "${aggState}/.env";
             # The projector is a deployed service of this stack — never
             # render it off (see the header note). The coverage snapshot
@@ -269,6 +297,16 @@ in
               # checkout (Codex P1 on PR #5141, same failure class as
               # code#4906 above).
               "PM_AGG_ACTIVITY_FILE=${aggState}/activity-ingestion.json"
+              # #6815: the four aggregator stores that used to live only
+              # in this state dir (actions, activity-ingestion, usage
+              # snapshots, aa-last-good) are canonical in Supabase
+              # muse-dev2. The local files stay as a rebuildable cache
+              # (see pm-stack/aggregator/README.md, "Store backend");
+              # switching this back to "file" is the rollback.
+              "PM_AGG_STORE_BACKEND=supabase"
+              "PM_AGG_STORE_WRITER=pm-aggregator.service"
+              "BWS_BIN=/run/current-system/sw/bin/bws"
+              "BWS_ACCESS_TOKEN_FILE=${home}/.config/bws/access-token"
               # The digest archive (#1278) is runtime state too: one
               # JSON per day, rendered verbatim by /digest?date=<date>.
               "PM_AGG_DIGESTS_DIR=${aggState}/digests"
@@ -299,7 +337,14 @@ in
             # 180s wait needs room beyond the 90s default start limit.
             TimeoutStartSec = 300;
             ExecStartPre = "${waitForTailnet}";
-            ExecStart = "${pmDispatch}/bin/pm-dispatch";
+            # Runs under the sigterm witness (code#8777): every
+            # signal delivered to this service is attributed in
+            # ${disState}/sigterm-witness.log before it is
+            # forwarded to the app. StateDirectory creates disState
+            # (the witness log's home); the app keeps no state
+            # there itself.
+            StateDirectory = "pm-dispatch";
+            ExecStart = "${sigtermWitness}/bin/sigterm-witness --log ${disState}/sigterm-witness.log ${pmDispatch}/bin/pm-dispatch";
             # The env files stay outside the module, exactly like the
             # aggregator's: install.sh renders the sops-derived file
             # (GitHub App + Supabase config), and the operator file is
@@ -424,9 +469,14 @@ in
             Type = "oneshot";
             WorkingDirectory = "${repo}/pm-stack/aggregator";
             Environment = [
-              "SUPABASE_PROJECT_REF=keihfchslgjetkmnmzra"
               "BWS_BIN=/run/current-system/sw/bin/bws"
               "BWS_ACCESS_TOKEN_FILE=${home}/.config/bws/access-token"
+              # #6815: the collector writes the aa-last-good canonical
+              # document to Supabase muse-dev2 (the local file stays a
+              # rebuildable cache). Same writer identity as the
+              # aggregator unit env; see "Store backend" in the README.
+              "PM_AGG_STORE_BACKEND=supabase"
+              "PM_AGG_STORE_WRITER=fleet-feed-collector"
               "FLEET_FEED_OUT=${aggState}/fleet-feed.json"
               "PM_AGG_FRESHNESS_URL=http://127.0.0.1:4871/publish"
               "QUOTA_VIEW_PATH=${home}/hatch-personal/workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md"

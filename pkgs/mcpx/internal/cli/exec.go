@@ -181,6 +181,7 @@ func (a *App) localService(store *artifacts.Store, socket string, cfg *config.Co
 	lim.Interpreter = set.String("script.interpreter")
 	lim.CwdPolicy = set.String("script.cwd")
 	lim.Devshell = set.String("script.devshell")
+	lim.Language = set.String("script.language")
 	lim.Delivery = set.String("artifacts.delivery")
 	lim.InlineMaxBytes = set.Bytes("artifacts.inlineMaxBytes")
 	lim.ChunkBytes = set.Bytes("artifacts.chunkBytes")
@@ -633,6 +634,7 @@ func (c *Client) stream(ctx context.Context, method, path string, body any, acce
 type execRemoteFlags struct {
 	timeout     time.Duration
 	runtime     string
+	language    string
 	permissions string
 	export      string
 	session     string
@@ -695,6 +697,7 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 	}
 	opts := execsvc.Options{
 		Runtime:     rf.runtime,
+		Language:    rf.language,
 		Permissions: rf.permissions,
 		// From the resolved set, so --interpreter/--shell, the env and
 		// config files reach local and remote exec the same way.

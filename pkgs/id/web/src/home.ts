@@ -22,9 +22,72 @@ type HomeFeed = {
   popular_tags: FeedTag[];
 };
 
+const FEED_UNAVAILABLE = "Feed is temporarily unavailable.";
+
 let homeRefreshTimer: number | undefined;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isFeedDocument(value: unknown): value is FeedDocument {
+  return (
+    isRecord(value) &&
+    typeof value.name === "string" &&
+    typeof value.hash === "string" &&
+    isFiniteNumber(value.updated_at) &&
+    isFiniteNumber(value.tag_count) &&
+    isStringArray(value.tags)
+  );
+}
+
+function isFeedTag(value: unknown): value is FeedTag {
+  return (
+    isRecord(value) &&
+    typeof value.label === "string" &&
+    (value.subject === undefined || typeof value.subject === "string") &&
+    isFiniteNumber(value.timestamp) &&
+    isFiniteNumber(value.occurrences)
+  );
+}
+
+function isFeedDocumentArray(value: unknown): value is FeedDocument[] {
+  return Array.isArray(value) && value.every(isFeedDocument);
+}
+
+function isFeedTagArray(value: unknown): value is FeedTag[] {
+  return Array.isArray(value) && value.every(isFeedTag);
+}
+
+/**
+ * Validate an untrusted `/api/home/feed` body. Returns `null` for any payload that
+ * does not match the server contract, so callers never render a partial feed.
+ */
+export function parseHomeFeed(value: unknown): HomeFeed | null {
+  if (!isRecord(value)) return null;
+  if (typeof value.scope !== "string" || typeof value.popularity_metric !== "string") return null;
+  if (!isFeedDocumentArray(value.recent) || !isFeedDocumentArray(value.popular)) return null;
+  if (!isFeedTagArray(value.recent_tags) || !isFeedTagArray(value.popular_tags)) return null;
+  return {
+    scope: value.scope,
+    popularity_metric: value.popularity_metric,
+    recent: value.recent,
+    popular: value.popular,
+    recent_tags: value.recent_tags,
+    popular_tags: value.popular_tags,
+  };
+}
+
 function renderList(list: HTMLOListElement, documents: FeedDocument[]): void {
+  if (!isFeedDocumentArray(documents)) return;
   list.replaceChildren();
   if (documents.length === 0) {
     const empty = document.createElement("li");
@@ -52,6 +115,7 @@ function renderList(list: HTMLOListElement, documents: FeedDocument[]): void {
 
 /** Populate a tag list using text nodes; tag values are untrusted user metadata. */
 export function renderTagList(list: HTMLOListElement, tags: FeedTag[]): void {
+  if (!isFeedTagArray(tags)) return;
   list.replaceChildren();
   if (tags.length === 0) {
     const empty = document.createElement("li");
@@ -102,8 +166,12 @@ export function initHome(): void {
     try {
       const response = await fetch("/api/home/feed", { headers: { accept: "application/json" } });
       if (!response.ok) throw new Error(`feed request failed (${response.status})`);
-      const feed = (await response.json()) as HomeFeed;
+      const feed = parseHomeFeed(await response.json());
       if (!root.isConnected) return;
+      if (feed === null) {
+        updated.textContent = FEED_UNAVAILABLE;
+        return;
+      }
       renderList(recent, feed.recent);
       renderList(popular, feed.popular);
       renderTagList(recentTags, feed.recent_tags);
@@ -111,7 +179,10 @@ export function initHome(): void {
       updated.textContent = `Updated live from ${feed.scope}. ${feed.popularity_metric}.`;
     } catch (error) {
       if (root.isConnected) {
-        updated.textContent = error instanceof Error ? error.message : "Feed is temporarily unavailable.";
+        updated.textContent =
+          error instanceof Error && error.message.startsWith("feed request failed (")
+            ? error.message
+            : FEED_UNAVAILABLE;
       }
     } finally {
       pending = false;

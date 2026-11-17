@@ -1179,6 +1179,7 @@ let
     let
       pkgs = import inputs.nixpkgs-unstable { inherit system; };
       suites = [
+        "atlas-backup"
         "laptop-autocommit-in-progress"
         "laptop-autocommit-merge-abort"
         "laptop-backups-watchdog"

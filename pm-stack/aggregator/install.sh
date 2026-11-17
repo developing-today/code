@@ -27,6 +27,7 @@ if [ "$SRC" != "$EXPECTED_SRC" ]; then
 fi
 STATE_DIR="$HOME/.local/state/pm-aggregator"
 SOPS="$HOME/secrets/pm-stack.sops.yaml"
+PROJECTOR_ENV="$HOME/.local/state/pm-projector/.env"
 # Resolve the unit against the checkout root via the logical parent of
 # $SRC: "$SRC/../systemd" would be resolved by the kernel through the
 # package dir itself, so a symlinked package dir (smoke fixture, legacy
@@ -52,7 +53,7 @@ DEPLOY_COMMIT="$(git -C "$SRC" rev-parse HEAD 2>/dev/null || true)"
 tree_hash() {
   local root="$1"
   (cd "$root" && {
-    for f in package.json bun.lock tsconfig.json; do
+    for f in package.json bun.lock tsconfig.json install.sh; do
       [ -f "$f" ] && echo "$f"
     done
     find src test scripts opencode-tools systemd -type f 2>/dev/null
@@ -73,6 +74,7 @@ deploy_inputs_hash() {
     printf 'TAILNET_IP=%s\n' "$TAILNET_IP"
     printf 'STATE_DIR=%s\n' "$STATE_DIR"
     if [ -f "$SOPS" ]; then sha256sum "$SOPS"; else echo "sops:absent"; fi
+    if [ -f "$PROJECTOR_ENV" ]; then sha256sum "$PROJECTOR_ENV"; else echo "projector-env:absent"; fi
     if [ -f "$UNIT_SRC" ]; then sha256sum "$UNIT_SRC"; else echo "unit:absent"; fi
   } | sha256sum | cut -d' ' -f1
 }
@@ -175,7 +177,21 @@ if [ "$CHANGED" -eq 1 ]; then
     echo "PM_AGG_QUOTA_CURRENT_FILE=${STATE_DIR}/quota-current.json"
     echo "PM_AGG_COVERAGE_SNAPSHOT_FILE=${STATE_DIR}/coverage-snapshot.json"
     echo "PM_AGG_ROADMAP_ANNOTATIONS_FILE=${STATE_DIR}/roadmap-annotations.json"
+    # #6815: the four stores that used to be laptop-local files
+    # (actions, activity-ingestion, usage snapshots, aa-last-good) are
+    # canonical in Supabase muse-dev2; the local files remain a
+    # rebuildable cache. PM_AGG_STORE_BACKEND=file is the rollback.
+    echo "PM_AGG_STORE_BACKEND=supabase"
+    echo "PM_AGG_STORE_WRITER=pm-aggregator.service"
+    echo "BWS_BIN=/run/current-system/sw/bin/bws"
+    echo "BWS_ACCESS_TOKEN_FILE=${HOME}/.config/bws/access-token"
     echo "PM_PROJECTOR_URL=http://127.0.0.1:7801"
+    # The hot-list consumer shares only the projector's checkpoint-ack
+    # credential, not its webhook secret or GitHub App private key.
+    if [ -f "$PROJECTOR_ENV" ]; then
+      projector_token_line="$(grep -m 1 '^PM_PROJECTOR_API_TOKEN=' "$PROJECTOR_ENV" || true)"
+      if [ -n "$projector_token_line" ]; then printf '%s\n' "$projector_token_line"; fi
+    fi
     for key in kaneo_admin_email:KANEO_ADMIN_EMAIL kaneo_admin_password:KANEO_ADMIN_PASSWORD grist_api_key:GRIST_API_KEY; do
       sops_key="${key%%:*}"
       env_name="${key##*:}"

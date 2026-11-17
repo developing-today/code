@@ -633,6 +633,8 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	nsFlag := fs.String("ns", "", "restrict the client to these namespaces (comma separated)")
 	rt := fs.String("runtime", "",
 		"javascript runtime: auto, deno, bun, node, a name from script.runtimes, or a path")
+	lang := fs.String("language", "",
+		"script language: auto, typescript, javascript, or python (default: script.language)")
 	timeout := fs.Duration("timeout", 0, "kill the script after this long (0 = no limit)")
 	keep := fs.Bool("keep", false, "keep the generated client and script for inspection")
 	session := fs.String("session", "", "session key (default: a fresh one per run)")
@@ -861,10 +863,28 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		}
 	}
 
+	// The language comes from the fully merged settings. A preset is
+	// parsed into the hand-written --language pointer before the
+	// command line runs, so preferring that pointer would let a
+	// preset's --language discard an explicit --script-language,
+	// which the binding records in the resolved set at the flag
+	// layer, above the preset layer (Codex review, PR #7818). The
+	// resolved setting wins whenever one was given; a --language on
+	// the command line itself still wins over both, because the
+	// final parse set the pointer after every preset ran.
+	languagePref := *lang
+	if a.Settings().Given("script.language") {
+		languagePref = a.Settings().String("script.language")
+	}
+	if _, given := scanFlag(fs, args, "language"); given {
+		languagePref = *lang
+	}
+
 	if elsewhere {
 		return a.execOnDaemon(ctx, c, fs, inline, ns, sessionKey, eo,
 			execRemoteFlags{timeout: *timeout, runtime: *rt, permissions: *perms,
-				export: *export, session: sessionKey, shape: shape, dryRun: *dryRunFlag,
+				language: languagePref,
+				export:   *export, session: sessionKey, shape: shape, dryRun: *dryRunFlag,
 				remoteFile: *remoteFile})
 	}
 	// This process is about to start the script, so it checks first. The
@@ -1011,6 +1031,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		Clients:        clients,
 		CaptureConsole: shape.captureConsole,
 		Runtime:        runtimePref,
+		Language:       languagePref,
 		Interpreter:    interpreterPref,
 		CwdPolicy:      cwdPolicy,
 		Devshell:       set.String("script.devshell"),

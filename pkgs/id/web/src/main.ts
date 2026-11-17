@@ -19,10 +19,18 @@ import {
   parseIdentityRegisterResponse,
 } from "./identity-refresh";
 import { clientIdForDisplay } from "./settings-identity";
+import { closeDownloadMenu, toggleDownloadMenu } from "./download-menu";
 import { closeImageBrowser } from "./image-browser";
 import { createNavigation } from "./navigation";
 import { resolveSaveFilename } from "./save-filename";
-import { isCopyFileResponse, isNewFileResponse, isRenameFileResponse, isSaveFileResponse } from "./file-op-responses";
+import { parseTagsResponse } from "./tags-response";
+import {
+  isCopyFileResponse,
+  isNewFileResponse,
+  isRenameFileResponse,
+  isSaveFileResponse,
+  isSendFileResponse,
+} from "./file-op-responses";
 import { isSaveShortcut } from "./save-shortcut";
 import { cycleTheme, initTheme, setTheme, type Theme } from "./theme";
 
@@ -49,9 +57,11 @@ interface IdApp {
   disconnectTagsWs: () => void;
   loadFileTags: (filename: string) => Promise<void>;
   renderEditorTags: (tags: Array<{ key: string; value: string | null }>) => void;
+  renderEditorTagsLoadError: () => void;
   addTagInline: () => Promise<void>;
   removeTag: (subject: string, key: string, value: string | null) => Promise<void>;
   bulkAddTag: () => Promise<void>;
+  bulkSendToServer: () => Promise<void>;
   bulkClearSelection: () => void;
   initBulkSelect: () => void;
   navHistory: string[];
@@ -784,10 +794,23 @@ async function init(): Promise<void> {
     async loadFileTags(filename: string): Promise<void> {
       try {
         const response = await fetch(`/api/tags?subject=${encodeURIComponent(filename)}`);
-        if (!response.ok) return;
-        const raw = await response.json();
-        // API may return { tags: [...] } or a flat array
-        const tags: Array<{ key: string; value: string | null }> = Array.isArray(raw) ? raw : raw.tags || [];
+        if (!response.ok) {
+          console.error(`[id] Failed to load file tags for ${filename}: HTTP ${response.status}`);
+          this.renderEditorTagsLoadError();
+          return;
+        }
+        const raw: unknown = await response.json();
+        // API may return { tags: [...] } or a flat array. Validate the
+        // shape at the fetch boundary (#7841): a wrong-shape 200 fails
+        // closed into the explicit load-failure state — never a false
+        // "none", never the previous file's pills left in place, never
+        // a coerced "[object Object]" pill.
+        const tags = parseTagsResponse(raw);
+        if (tags === null) {
+          console.error(`[id] Failed to load file tags for ${filename}: unexpected /api/tags response shape`);
+          this.renderEditorTagsLoadError();
+          return;
+        }
         // Filter out system tags (created, modified, deleted, archive.*)
         const userTags = tags.filter(
           (t: { key: string }) =>
@@ -795,8 +818,26 @@ async function init(): Promise<void> {
         );
         this.renderEditorTags(userTags);
       } catch (err) {
-        console.warn("[id] Failed to load file tags:", err);
+        console.error("[id] Failed to load file tags:", err);
+        this.renderEditorTagsLoadError();
       }
+    },
+
+    /**
+     * Render the explicit tag load-failure state (#7841): the panel
+     * says the tags could not be loaded, replacing whatever the
+     * previous file's render left behind.
+     */
+    renderEditorTagsLoadError(): void {
+      const list = document.getElementById("editor-tag-list");
+      if (!list) return;
+
+      list.innerHTML = "";
+      const error = document.createElement("span");
+      error.className = "tag-load-error text-muted";
+      error.textContent = "failed to load tags";
+      error.style.fontSize = "9px";
+      list.appendChild(error);
     },
 
     /**
@@ -945,6 +986,61 @@ async function init(): Promise<void> {
       keyInput.value = "";
       if (valueInput) valueInput.value = "";
       // Tags WS will refresh the file list
+    },
+
+    /**
+     * Send each selected file to another server (#5346).
+     *
+     * One POST /api/files/send per selected file: the browser carries
+     * only the file name and the destination node ID — this server
+     * performs each transfer itself, server-to-server. A file counts
+     * as sent only when the response is OK *and* carries a well-shaped
+     * receipt (the server answers 200 only after the destination
+     * confirmed the send); every other outcome is reported as failed
+     * for that file, never as success.
+     */
+    async bulkSendToServer(): Promise<void> {
+      const destInput = document.getElementById("bulk-send-dest") as HTMLInputElement | null;
+      if (!destInput) return;
+
+      const dest = destInput.value.trim();
+      if (!dest) return;
+
+      const checkboxes = document.querySelectorAll(".file-select:checked") as NodeListOf<HTMLInputElement>;
+      const subjects: string[] = [];
+      checkboxes.forEach((cb) => {
+        const name = cb.dataset.name;
+        if (name) subjects.push(name);
+      });
+
+      if (subjects.length === 0) return;
+
+      let successCount = 0;
+      const failures: string[] = [];
+      for (const name of subjects) {
+        try {
+          const response = await fetch("/api/files/send", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name, dest }),
+          });
+          const result: unknown = await response.json().catch(() => null);
+          if (response.ok && isSendFileResponse(result)) {
+            successCount++;
+          } else {
+            failures.push(name);
+            console.error("[id] Send failed for", name, result);
+          }
+        } catch (err) {
+          failures.push(name);
+          console.error("[id] Send error for", name, err);
+        }
+      }
+
+      console.log(
+        `[id] Bulk send: sent ${successCount}/${subjects.length} files to ${dest}` +
+          (failures.length > 0 ? `; failed: ${failures.join(", ")}` : ""),
+      );
     },
 
     /**
@@ -1505,22 +1601,17 @@ async function init(): Promise<void> {
       if (format) {
         app.downloadFile(format);
       }
+      // Choosing an action dismisses the menu; keep focus on the toggle
+      // instead of letting it fall to the body with the hidden item.
+      closeDownloadMenu(document, { restoreFocus: true });
     }
 
     // Toggle download dropdown
-    const downloadBtn = target.closest("#download-btn");
-    if (downloadBtn) {
-      const menu = document.getElementById("download-menu");
-      if (menu) {
-        menu.classList.toggle("show");
-      }
-    } else {
+    if (target.closest("#download-btn")) {
+      toggleDownloadMenu();
+    } else if (!target.closest("#download-dropdown")) {
       // Close dropdown when clicking outside
-      const dropdown = target.closest("#download-dropdown");
-      if (!dropdown) {
-        const menu = document.getElementById("download-menu");
-        if (menu) menu.classList.remove("show");
-      }
+      closeDownloadMenu();
     }
   });
 
@@ -1532,6 +1623,13 @@ async function init(): Promise<void> {
         app.autoSave.saveNow();
       }
       return;
+    }
+
+    // Escape dismisses the download menu and returns focus to its toggle.
+    // A no-op when the menu is closed, so editor dialogs keep their own
+    // Escape handling.
+    if (event.key === "Escape") {
+      closeDownloadMenu(document, { restoreFocus: true });
     }
 
     // Enter key on tag inputs submits the tag

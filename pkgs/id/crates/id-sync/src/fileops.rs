@@ -29,7 +29,7 @@ use thiserror::Error;
 
 use id_store::tags::{TagStore, TagValue, now_unix};
 
-const ARCHIVE_IDENTITY_TAG_KEYS: [&[u8]; 5] = [
+const ARCHIVE_IDENTITY_TAG_KEYS: [&[u8]; 6] = [
     b"name",
     b"file",
     b"path",
@@ -39,6 +39,9 @@ const ARCHIVE_IDENTITY_TAG_KEYS: [&[u8]; 5] = [
     // every earlier archive from the live file's delete (#4574).
     b"archive.rename",
     b"archive.replace",
+    // The owner back-reference belongs to the archive it names; it
+    // must never travel onto another subject either.
+    b"archive.owner",
 ];
 
 /// Errors from file operations, distinguishable so callers can map them to
@@ -342,6 +345,22 @@ impl<'a> FileOps<'a> {
             .refresh_identity_tags(&self.tags.global, archive.as_bytes())
             .await
             .with_context(|| format!("refreshing identity for archive {archive}"))?;
+        // Record the live file this archive belongs to (#8815 review):
+        // delete() trusts this back-reference, maintained across renames,
+        // not the archive's name alone.
+        if let Err(e) = self
+            .tags
+            .set_tag(
+                &self.tags.global,
+                archive.as_bytes(),
+                b"archive.owner",
+                Some(name.as_bytes()),
+                b"",
+            )
+            .await
+        {
+            tracing::warn!("failed to set archive.owner tag on {archive}: {e:#}");
+        }
         for (key, value) in &archive_refs {
             self.tags
                 .set_tag(
@@ -516,6 +535,36 @@ impl<'a> FileOps<'a> {
             }
         }
 
+        // Maintain the `archive.owner` back-references delete() trusts
+        // (#8815 review): archives created here belong to `to`, and
+        // archives already attributed to `from` follow the file to its
+        // new name. A reference that fails attribution is left
+        // untouched, so a forged reference can never adopt another
+        // file's archive by being carried through a rename.
+        for key in [&b"archive.rename"[..], &b"archive.replace"[..]] {
+            let refs = match self.tags.get_by_key(ns, to.as_bytes(), key).await {
+                Ok(tags) => tags,
+                Err(e) => {
+                    tracing::warn!("failed to read archive references on {to}: {e:#}");
+                    continue;
+                }
+            };
+            for tag in refs {
+                let Some(archive_name) = tag.value.as_ref().and_then(|value| value.as_str()) else {
+                    continue;
+                };
+                let current_owner = archive_owner(self.tags, archive_name).await.ok().flatten();
+                let created_here = archived_original.as_deref() == Some(archive_name)
+                    || archived_replaced.as_deref() == Some(archive_name);
+                let follows_from = current_owner.as_deref() == Some(from);
+                let legacy_owned =
+                    current_owner.is_none() && is_owned_archive_tag_name(from, archive_name);
+                if created_here || follows_from || legacy_owned {
+                    set_archive_owner(self.tags, archive_name, &to).await;
+                }
+            }
+        }
+
         Ok(RenameOutcome {
             hash,
             archived_original,
@@ -587,9 +636,7 @@ impl<'a> FileOps<'a> {
 
     /// Hard-delete `name`: the name itself, its metadata, and its archive tags.
     pub async fn delete(&self, name: &str) -> Result<DeleteOutcome, FileOpError> {
-        if name.trim().is_empty() {
-            return Err(FileOpError::EmptyName);
-        }
+        Self::validate_name(name)?;
 
         // Renames move the file identity metadata, including these archive
         // references, to the current name. Read them before deleting metadata.
@@ -601,10 +648,20 @@ impl<'a> FileOps<'a> {
                 .await?
             {
                 if let Some(archive_name) = tag.value.as_ref().and_then(|value| value.as_str()) {
-                    if is_archive_tag_name(archive_name) {
+                    // Stored references are only actionable when FileOps
+                    // attribution ties them to this file: either they point
+                    // into this file's own archive namespace, or the
+                    // archive carries an `archive.owner` back-reference
+                    // naming this file (the provenance FileOps maintains
+                    // across renames, #8815 review). Metadata may predate
+                    // protocol-level reservation of these keys, so an
+                    // unattributed foreign reference is never honored.
+                    let owner_attributed = is_archive_tag_name(archive_name)
+                        && archive_owner(self.tags, archive_name).await?.as_deref() == Some(name);
+                    if is_owned_archive_tag_name(name, archive_name) || owner_attributed {
                         archives.insert(archive_name.to_owned());
                     } else {
-                        tracing::warn!("ignoring malformed archive reference on {name}");
+                        tracing::warn!("ignoring invalid or foreign archive reference on {name}");
                     }
                 }
             }
@@ -677,6 +734,65 @@ impl<'a> FileOps<'a> {
             archives_removed,
             metadata_removed,
         })
+    }
+}
+
+/// The live file an archive is attributed to, read from the
+/// `archive.owner` back-reference FileOps stamps when it creates the
+/// archive and maintains across renames (#8815). Peers cannot forge the
+/// back-reference: the key is reserved at the protocol layer.
+async fn archive_owner(tags: &TagStore, archive_name: &str) -> Result<Option<String>> {
+    let mut owner = None;
+    for tag in tags
+        .get_by_key(&tags.global, archive_name.as_bytes(), b"archive.owner")
+        .await?
+    {
+        if let Some(value) = tag.value.as_ref().and_then(|value| value.as_str()) {
+            owner = Some(value.to_owned());
+        }
+    }
+    Ok(owner)
+}
+
+/// Stamp the `archive.owner` back-reference on an archive (best-effort
+/// metadata bookkeeping, like the other archive tags).
+async fn set_archive_owner(tags: &TagStore, archive_name: &str, owner: &str) {
+    if let Err(e) = tags
+        .set_tag(
+            &tags.global,
+            archive_name.as_bytes(),
+            b"archive.owner",
+            Some(owner.as_bytes()),
+            b"",
+        )
+        .await
+    {
+        tracing::warn!("failed to set archive.owner tag on {archive_name}: {e:#}");
+    }
+}
+
+/// Whether `archive_name` is a FileOps archive owned by `name`.
+fn is_owned_archive_tag_name(name: &str, archive_name: &str) -> bool {
+    archive_name
+        .strip_prefix(&format!("{name}.archive."))
+        .is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()))
+}
+
+#[cfg(test)]
+mod archive_reference_tests {
+    use super::is_owned_archive_tag_name;
+
+    #[test]
+    fn deletion_ignores_foreign_archive_reference_but_accepts_owned_reference() {
+        assert!(!is_owned_archive_tag_name(
+            "my-file",
+            "other-file.archive.123"
+        ));
+        assert!(is_owned_archive_tag_name("my-file", "my-file.archive.123"));
+        assert!(!is_owned_archive_tag_name(
+            "my-file",
+            "my-file.archive.nope"
+        ));
     }
 }
 

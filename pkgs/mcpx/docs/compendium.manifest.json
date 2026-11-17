@@ -387,7 +387,7 @@
       "chapter": "build-and-packaging",
       "role": "chapter-source",
       "lines": 243,
-      "note": "what Containerfile builds and deliberately does not (#182)"
+      "note": "Nix-built image, its closure choices, and measurements from the retired Containerfile prototype (#182, #5771)"
     },
     {
       "path": "docs/decisions/0001-hook-vocabulary.md",
@@ -899,6 +899,13 @@
       "role": "not-compendium",
       "lines": 3,
       "note": "docs-history change fragment for #1871 (research and incidental findings chapter); history metadata consumed by the docs-history tooling, not a compendium page"
+    },
+    {
+      "path": "docs/changes/research-and-findings-nix-slice.md",
+      "chapter": null,
+      "role": "not-compendium",
+      "lines": 3,
+      "note": "docs-history change fragment for #1871 (research chapter nix slice); history metadata consumed by the docs-history tooling, not a compendium page"
     },
     {
       "path": "docs/cli.md",

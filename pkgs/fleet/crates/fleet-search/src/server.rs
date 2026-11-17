@@ -29,9 +29,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use atlas_core::types::BranchPools;
 use atlas_core::{
-    BranchPoolExecutor, BranchQuery, Error as CoreError, Filters, QueryEmbedder, SearchBackend,
-    SearchMode as CoreSearchMode, SearchOptions, Sensitivity as CoreSensitivity,
-    VectorBackend as CoreVectorBackend, run_get_chunk, run_search_with_executor,
+    BranchPoolExecutor, BranchQuery, Error as CoreError, Filters, JsonlFeedbackSink, QueryEmbedder,
+    SearchBackend, SearchMode as CoreSearchMode, SearchOptions, Sensitivity as CoreSensitivity,
+    VectorBackend as CoreVectorBackend, feedback_for, load_feedback_dir, record_feedback,
+    run_get_chunk, run_search_with_executor,
 };
 use atlas_proto::{
     BranchState, BranchStates, EmbedRequest, EmbedResponse, ErrorResponse, HealthResponse,
@@ -2177,6 +2178,12 @@ fn write_response(stream: &mut TcpStream, resp: &HttpResponse) {
     let _ = stream.flush();
 }
 
+// ---------------------------------------------------------- feedback ----
+
+mod server_feedback;
+
+use server_feedback::FeedbackRequest;
+
 // ------------------------------------------------------------ routing ----
 
 pub struct ServerHandle {
@@ -2190,11 +2197,23 @@ pub struct ServerHandle {
 struct ServerInner {
     settings: ServeSettings,
     manager: Arc<JobManager>,
+    /// Raw feedback store directory (design section 6, #9976):
+    /// the JsonlFeedbackSink default in production; tests point
+    /// it at a temp store via `start_server_with_feedback_dir`.
+    feedback_dir: PathBuf,
 }
 
 pub fn start_server(
     settings: ServeSettings,
     engine: Arc<dyn SearchEngine>,
+) -> Result<ServerHandle, String> {
+    start_server_with_feedback_dir(settings, engine, JsonlFeedbackSink::default_dir())
+}
+
+pub fn start_server_with_feedback_dir(
+    settings: ServeSettings,
+    engine: Arc<dyn SearchEngine>,
+    feedback_dir: PathBuf,
 ) -> Result<ServerHandle, String> {
     require_loopback(settings.listen)?;
     validate_limits(&settings.limits)?;
@@ -2208,6 +2227,7 @@ pub fn start_server(
     let inner = Arc::new(ServerInner {
         settings,
         manager: manager.clone(),
+        feedback_dir,
     });
     std::thread::spawn(move || {
         loop {
@@ -2310,6 +2330,51 @@ impl ServerInner {
                         vector,
                     })
                     .unwrap(),
+                ))
+            }
+            ("POST", ["v1", "feedback"]) | ("POST", ["feedback"]) => {
+                // Feedback capture (design section 6.1, #9976):
+                // authenticated like every /v1 route — the client
+                // token is the surface's credential, while the
+                // REQUESTER in the body may be anonymous (section
+                // 6.3). The vote lands in the raw feedback store;
+                // the response echoes the stored record.
+                self.require_client(req)?;
+                let request: FeedbackRequest = req.json()?;
+                let input = request.into_input().map_err(ServerError::bad_request)?;
+                let sink = JsonlFeedbackSink::new(self.feedback_dir.clone());
+                let record = record_feedback(&sink, &input)
+                    .map_err(|e| ServerError::new(500, "feedback_store", e.to_string()))?;
+                Ok(HttpResponse::json(201, record.to_json()))
+            }
+            ("GET", ["v1", "feedback"]) | ("GET", ["feedback"]) => {
+                // Retrieval by (query_id, result_id): every raw
+                // record for the query — narrowed to one chunk
+                // when `chunk_id` is given — with its derived
+                // supersede state (section 6.4).
+                self.require_client(req)?;
+                let Some(query_id) = req.query.get("query_id") else {
+                    return Err(ServerError::bad_request(
+                        "query_id query parameter is required",
+                    ));
+                };
+                let chunk_id = match req.query.get("chunk_id") {
+                    Some(raw) => Some(
+                        raw.parse::<i64>()
+                            .map_err(|_| ServerError::bad_request("chunk_id must be an integer"))?,
+                    ),
+                    None => None,
+                };
+                let records = load_feedback_dir(&self.feedback_dir)
+                    .map_err(|e| ServerError::new(500, "feedback_store", e.to_string()))?;
+                let views = feedback_for(&records, query_id, chunk_id);
+                Ok(HttpResponse::json(
+                    200,
+                    json!({
+                        "query_id": query_id,
+                        "chunk_id": chunk_id,
+                        "feedback": views.iter().map(|v| v.to_json()).collect::<Vec<_>>(),
+                    }),
                 ))
             }
             ("POST", ["v1", "search"]) => {
@@ -2787,6 +2852,126 @@ mod tests {
             Some(json!({"query": "  "})),
         );
         assert_eq!(resp.status, 400);
+    }
+
+    fn start_with_feedback(limits: RuntimeLimits) -> (ServerHandle, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "atlas-feedback-server-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let backend = Arc::new(StubBackend {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            gate: None,
+            snapshot: None,
+        });
+        let engine = Arc::new(CoreSearchEngine::new(
+            backend,
+            Arc::new(FixedEmbedder {
+                raw: vec![1.0, 0.0],
+            }),
+            Arc::new(|| "ready".to_string()),
+        ));
+        let handle = start_server_with_feedback_dir(settings(limits), engine, dir.clone()).unwrap();
+        (handle, dir)
+    }
+
+    #[test]
+    fn feedback_routes_cast_and_retrieve_by_ids() {
+        // Oracle: design section 6.1/6.4 (#9976) — a vote cast via
+        // the service API against a real (query_id, result_id) is
+        // retrievable by those IDs; an unopened down-vote stores
+        // opened=false; a re-vote supersedes with the raw record
+        // preserved.
+        let (handle, dir) = start_with_feedback(RuntimeLimits::default());
+        let addr = handle.addr;
+
+        // Unauthenticated feedback is refused like every /v1 route.
+        let resp = http(
+            addr,
+            "POST",
+            "/v1/feedback",
+            None,
+            Some(json!({"query_id": "q-9", "chunk_id": 42, "vote": "up"})),
+        );
+        assert_eq!(resp.status, 401, "body: {}", resp.body);
+
+        // Cast: thumbs down + comment on an unopened result.
+        let cast = http(
+            addr,
+            "POST",
+            "/v1/feedback",
+            Some(PERSONAL_TOKEN),
+            Some(json!({
+                "query_id": "q-9",
+                "chunk_id": 42,
+                "vote": "down",
+                "comment": "snippet looked right, chunk was stale",
+                "opened": false,
+                "requester": {"kind": "user", "id": "tester"}
+            })),
+        );
+        assert_eq!(cast.status, 201, "body: {}", cast.body);
+        assert_eq!(cast.body["vote"], json!("down"));
+        assert_eq!(cast.body["opened"], json!(false));
+        let first_id = cast.body["feedback_id"].as_str().unwrap().to_string();
+
+        // Retrieve by (query_id, result_id).
+        let got = http(
+            addr,
+            "GET",
+            "/v1/feedback?query_id=q-9&chunk_id=42",
+            Some(PERSONAL_TOKEN),
+            None,
+        );
+        assert_eq!(got.status, 200, "body: {}", got.body);
+        assert_eq!(got.body["feedback"].as_array().unwrap().len(), 1);
+        assert_eq!(got.body["feedback"][0]["active"], json!(true));
+
+        // Re-vote supersedes; both raw records stay retrievable.
+        let revote = http(
+            addr,
+            "POST",
+            "/feedback",
+            Some(PERSONAL_TOKEN),
+            Some(json!({
+                "query_id": "q-9",
+                "chunk_id": 42,
+                "vote": "up",
+                "opened": true,
+                "requester": {"kind": "user", "id": "tester"}
+            })),
+        );
+        assert_eq!(revote.status, 201, "body: {}", revote.body);
+        let got = http(
+            addr,
+            "GET",
+            "/v1/feedback?query_id=q-9&chunk_id=42",
+            Some(PERSONAL_TOKEN),
+            None,
+        );
+        let rows = got.body["feedback"].as_array().unwrap();
+        assert_eq!(rows.len(), 2, "raw records preserved: {}", got.body);
+        let first = rows
+            .iter()
+            .find(|r| r["feedback_id"] == json!(first_id))
+            .unwrap();
+        assert_eq!(first["active"], json!(false));
+        assert_eq!(
+            rows.iter().filter(|r| r["active"] == json!(true)).count(),
+            1
+        );
+
+        // A bad vote is a client error, never a stored record.
+        let bad = http(
+            addr,
+            "POST",
+            "/v1/feedback",
+            Some(PERSONAL_TOKEN),
+            Some(json!({"query_id": "q-9", "chunk_id": 42, "vote": "sideways"})),
+        );
+        assert_eq!(bad.status, 400, "body: {}", bad.body);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     fn submit(addr: SocketAddr, token: &str, body: Json) -> TestResponse {

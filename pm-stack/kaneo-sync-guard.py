@@ -18,6 +18,7 @@ drift itself is never silent.
 Run on the laptop (where the pm-stack containers live):
   python3 pm-stack/kaneo-sync-guard.py
 """
+
 import json
 import re
 import subprocess
@@ -35,8 +36,19 @@ EXPECTED = {
 FORBIDDEN_TARGETS = {"done"}
 
 CONTAINER = "pm-stack-postgres-1"
-PSQL = ["docker", "exec", CONTAINER, "psql", "-U", "kaneo", "-d", "kaneo",
-        "-tA", "-v", "ON_ERROR_STOP=1"]
+PSQL = [
+    "docker",
+    "exec",
+    CONTAINER,
+    "psql",
+    "-U",
+    "kaneo",
+    "-d",
+    "kaneo",
+    "-tA",
+    "-v",
+    "ON_ERROR_STOP=1",
+]
 
 
 def psql(sql):
@@ -47,8 +59,7 @@ def psql(sql):
 
 
 def main():
-    rows = psql("SELECT id || E'\\t' || config FROM integration "
-                "WHERE type='github'")
+    rows = psql("SELECT id || E'\\t' || config FROM integration WHERE type='github'")
     if not rows:
         print("GUARD ERROR: no github integrations found")
         return 2
@@ -60,8 +71,7 @@ def main():
             print(f"GUARD ERROR: unexpected integration id {integ_id!r}")
             return 2
         cfg = json.loads(raw)
-        repo = (f"{cfg.get('repositoryOwner')}/{cfg.get('repositoryName')}"
-                or integ_id)
+        repo = f"{cfg.get('repositoryOwner')}/{cfg.get('repositoryName')}" or integ_id
         st = cfg.get("statusTransitions") or {}
         problems = []
         for key, want in EXPECTED.items():
@@ -83,31 +93,41 @@ def main():
         print(f"DRIFT {repo}: " + "; ".join(problems))
         healed = dict(st)
         healed.update(EXPECTED)
-        for key in [k for k, v in healed.items()
-                    if v in FORBIDDEN_TARGETS and k not in EXPECTED]:
+        for key in [
+            k for k, v in healed.items() if v in FORBIDDEN_TARGETS and k not in EXPECTED
+        ]:
             del healed[key]
         # Re-apply in SQL so the write is atomic per integration.
+        # Persist the COMPLETE healed map computed above (#10528): setting
+        # only the three expected keys would leave a forbidden transition
+        # the heal deleted in memory still live in the stored config.
+        # jsonb_set at the top-level path also creates statusTransitions
+        # when it is missing entirely.
+        healed_json = json.dumps(healed, sort_keys=True).replace("'", "''")
         psql(
-            "UPDATE integration SET config = jsonb_set(jsonb_set(jsonb_set("
-            "config::jsonb, '{statusTransitions,onPRMerge}', "
-            "'\"in-review\"'), '{statusTransitions,onPROpen}', "
-            "'\"in-review\"'), '{statusTransitions,onBranchPush}', "
-            f"'\"in-progress\"')::text WHERE id='{integ_id}'")
-        after = json.loads(psql(
-            f"SELECT config FROM integration WHERE id='{integ_id}'"))
+            "UPDATE integration SET config = jsonb_set("
+            "config::jsonb, '{statusTransitions}', "
+            f"'{healed_json}'::jsonb)::text WHERE id='{integ_id}'"
+        )
+        after = json.loads(
+            psql(f"SELECT config FROM integration WHERE id='{integ_id}'")
+        )
         # jsonb text form (spaces after ':' and ',') silently breaks
         # Kaneo's outbound state/title/description sync:
         # syncLatestTaskValue string-compares the stored config against
         # JSON.stringify(JSON.parse(config)) and aborts on any byte
         # difference (#10140, 2026-11-14). Always leave the config in
         # that exact compact form.
-        compact = json.dumps(after, separators=(",", ":"),
-                             ensure_ascii=False)
+        compact = json.dumps(after, separators=(",", ":"), ensure_ascii=False)
         if "'" not in compact:
-            psql(f"UPDATE integration SET config = '{compact}' "
-                 f"WHERE id='{integ_id}'")
+            psql(f"UPDATE integration SET config = '{compact}' WHERE id='{integ_id}'")
         after_st = after.get("statusTransitions") or {}
         bad = [k for k, v in EXPECTED.items() if after_st.get(k) != v]
+        bad += [
+            f"{k} targets forbidden state {v!r}"
+            for k, v in after_st.items()
+            if v in FORBIDDEN_TARGETS and k not in EXPECTED
+        ]
         if bad:
             print(f"GUARD ERROR {repo}: heal did not stick for {bad}")
             return 2

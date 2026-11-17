@@ -38,6 +38,7 @@ import {
 } from "../activity.ts";
 import { isRecord } from "../validate.ts";
 import { fetchIssueBodySnapshot, type Phase12Snapshot } from "../phase12.ts";
+import { loadPhaseMapping, type PhaseMappingSnapshot } from "../phase-mapping.ts";
 import { fetchBuildHealthSnapshot, type BuildHealthSnapshot } from "../build-health.ts";
 import {
   fetchQueueSnapshot,
@@ -53,6 +54,7 @@ import { describeRepoRoadmapSection, mergeRoadmapRows, readRepoRoadmaps } from "
 import { summarizeDns } from "../dns.ts";
 import {
   applyCloudflareExport,
+  applyPaygSettlements,
   applySupabaseExport,
   extractCharges,
   extractPaygLines,
@@ -66,8 +68,8 @@ import { poolItemToGhItem } from "../projects.ts";
 import { createNeedsDrewSweeper, type NeedsDrewCensus } from "../needs-drew.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
 import { assembleWorkItems } from "../work-items.ts";
-import { overlayQuotaCurrent, overlayTursoUsage, parseQuotaCurrent } from "../quota-current.ts";
-import { SnapshotStore } from "../snapshots.ts";
+import { overlayQuotaCurrent, overlayTursoUsage, readQuotaCurrentFile } from "../quota-current.ts";
+import { SnapshotStore, type SnapshotsRemote } from "../snapshots.ts";
 import { gristDocUrl, kaneoTaskUrl } from "../service-links.ts";
 import { fixtureSource } from "./fixtures.ts";
 
@@ -846,12 +848,12 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
  * leaves the base services untouched.
  */
 async function tursoOverlay(cfg: Config, services: SaasService[]): Promise<SaasService[]> {
-  try {
-    const raw = await readFile(cfg.quotaCurrentFile, "utf8");
-    const file = parseQuotaCurrent(JSON.parse(raw));
-    if (file) return overlayTursoUsage(services, file);
-  } catch {
-    /* no gatherer file (or unreadable): base services stand */
+  const res = await readQuotaCurrentFile(cfg.quotaCurrentFile);
+  if (res.verdict === "ok" && res.file) return overlayTursoUsage(services, res.file);
+  if (res.verdict === "transport") {
+    console.error(`[quota] WARNING: quota-current read transport failure (${res.error ?? "unknown"}) — base services stand (#10816)`);
+  } else if (res.verdict === "unparseable") {
+    console.error(`[quota] WARNING: quota-current file unparseable (${res.error ?? "unknown"}) — base services stand (#10816)`);
   }
   return services;
 }
@@ -903,6 +905,10 @@ export function liveSource(
     // ingestion store has already persisted, so a restart cannot
     // reissue an undated delivery id that dedupe would discard.
     seenActivityIds?: (source: string) => Promise<readonly string[]> | readonly string[];
+    /** #6815: usage-snapshot backend. Set only when
+     *  PM_AGG_STORE_BACKEND=supabase; otherwise the local snapshot
+     *  directory is the store (the dev/test and rollback path). */
+    snapshotRemote?: SnapshotsRemote;
   },
 ): Source {
   const fix = fixtureSource();
@@ -1206,6 +1212,29 @@ export function liveSource(
     }
     return phase12InFlight;
   }
+  // #9923 step 3: the F-item mapping feed — planning/roadmaps/id.md
+  // in the code checkout, parsed and cached for 5 minutes, shared
+  // in-flight and fail-soft to the last good snapshot or null (same
+  // discipline as the phase12 feed above).
+  let phaseMappingCache: { value: PhaseMappingSnapshot; at: number } | null = null;
+  let phaseMappingInFlight: Promise<PhaseMappingSnapshot | null> | null = null;
+  async function phaseMappingSnapshot(): Promise<PhaseMappingSnapshot | null> {
+    if (phaseMappingCache && Date.now() - phaseMappingCache.at < 5 * 60_000) return phaseMappingCache.value;
+    if (!phaseMappingInFlight) {
+      phaseMappingInFlight = (async () => {
+        try {
+          const snap = await loadPhaseMapping(cfg.codeCheckout);
+          if (snap) phaseMappingCache = { value: snap, at: Date.now() };
+          return snap ?? phaseMappingCache?.value ?? null;
+        } catch {
+          return phaseMappingCache?.value ?? null;
+        }
+      })().finally(() => {
+        phaseMappingInFlight = null;
+      });
+    }
+    return phaseMappingInFlight;
+  }
   // #9924: the Build health snapshot — Actions API reads for the
   // id-gating lanes + the e2e nightly, cached for 5 minutes and
   // shared in-flight (same discipline as the phase12 feed above),
@@ -1452,12 +1481,12 @@ export function liveSource(
   // PR #4695): a pool the gatherer now reports healthy must clear its
   // walled/high-usage actions on the usage strip too.
   async function overlayCurrent(base: QuotaView): Promise<QuotaView> {
-    try {
-      const raw = await readFile(cfg.quotaCurrentFile, "utf8");
-      const file = parseQuotaCurrent(JSON.parse(raw));
-      if (file) return overlayQuotaCurrent(base, file);
-    } catch {
-      /* no gatherer file (or unreadable): base view stands */
+    const res = await readQuotaCurrentFile(cfg.quotaCurrentFile);
+    if (res.verdict === "ok" && res.file) return overlayQuotaCurrent(base, res.file);
+    if (res.verdict === "transport") {
+      console.error(`[quota] WARNING: quota-current read transport failure (${res.error ?? "unknown"}) — base view stands (#10816)`);
+    } else if (res.verdict === "unparseable") {
+      console.error(`[quota] WARNING: quota-current file unparseable (${res.error ?? "unknown"}) — base view stands (#10816)`);
     }
     return base;
   }
@@ -1740,6 +1769,9 @@ export function liveSource(
     async phase12(): Promise<Phase12Snapshot | null> {
       return phase12Snapshot();
     },
+    async phaseMapping(): Promise<PhaseMappingSnapshot | null> {
+      return phaseMappingSnapshot();
+    },
     async buildHealth(): Promise<BuildHealthSnapshot | null> {
       return buildHealthSnapshot();
     },
@@ -1813,15 +1845,22 @@ export function liveSource(
         view = await fix.quota();
       }
       try {
-        const raw = await readFile(cfg.quotaCurrentFile, "utf8");
-        const file = parseQuotaCurrent(JSON.parse(raw));
-        if (file) {
+        const res = await readQuotaCurrentFile(cfg.quotaCurrentFile);
+        if (res.verdict === "ok" && res.file) {
+          const file = res.file;
           provenance.quota += ` · gatherer ${file.generatedAt}`;
           const sanitized = file.sanitized;
           if (sanitized && sanitized.droppedProviders + sanitized.droppedWindows > 0) {
             provenance.quota += ` · sanitized quota-current: dropped ${sanitized.droppedProviders} provider(s), ${sanitized.droppedWindows} window(s)`;
           }
           return overlayQuotaCurrent(view, file);
+        }
+        if (res.verdict === "transport") {
+          provenance.quota += " · gatherer read transport failure (retry exhausted)";
+          console.error(`[quota] WARNING: quota-current read transport failure (${res.error ?? "unknown"}) — base view stands (#10816)`);
+        } else if (res.verdict === "unparseable") {
+          provenance.quota += " · gatherer file unparseable";
+          console.error(`[quota] WARNING: quota-current file unparseable (${res.error ?? "unknown"}) — base view stands (#10816)`);
         }
       } catch {
         /* no gatherer file (or unreadable): base view stands */
@@ -1834,7 +1873,7 @@ export function liveSource(
       // usage(): GETs must remain safe with a read-only snapshot store.
       const feed = await getFeed();
       if (!feed?.snapshots?.length) return 0;
-      return new SnapshotStore(cfg.snapshotsDir).append(feed.snapshots).catch(() => 0);
+      return new SnapshotStore(cfg.snapshotsDir, opts?.snapshotRemote).append(feed.snapshots).catch(() => 0);
     },
     async usage(): Promise<UsageView> {
       // Usage & billing hub (design §3): feed sections first (the
@@ -1851,7 +1890,7 @@ export function liveSource(
         (await readFile(cfg.freeServicesTrackerFile, "utf8")
           .then(extractUninstrumentedServices)
           .catch(() => []));
-      const store = new SnapshotStore(cfg.snapshotsDir);
+      const store = new SnapshotStore(cfg.snapshotsDir, opts?.snapshotRemote);
       const history = await store.byService().catch(() => ({}));
       const domains =
         feed?.dns && isDnsSection(feed.dns)
@@ -1912,7 +1951,11 @@ export function liveSource(
         const partial = {
           services: applySupabaseExport(applyCloudflareExport(feed.saas, cfExport), supabaseExport),
           uninstrumentedServices,
-          payg: feed.payg ?? [],
+          // #1056: feed lines are built by the collector without
+          // settlements — reconcile them against local history here,
+          // before attention flags are built from them (CodeRabbit,
+          // PR #10433: this branch previously returned unreconciled).
+          payg: applyPaygSettlements(feed.payg ?? [], Object.values(history).flat()),
           charges: feedCharges,
           subscriptions: feed.subscriptions ?? [],
         };
@@ -1950,7 +1993,7 @@ export function liveSource(
         const partial = {
           services: applySupabaseExport(applyCloudflareExport(extractSaasServices(doc), cfExport), supabaseExport),
           uninstrumentedServices,
-          payg: extractPaygLines(doc, registryText),
+          payg: extractPaygLines(doc, registryText, { settlements: Object.values(history).flat() }),
           charges: mergeChargeRows(feedCharges, extractCharges(doc, registryText)),
           subscriptions: extractSubscriptions(doc),
         };
@@ -2040,7 +2083,9 @@ export function liveSource(
     },
     async orchestration(): Promise<OrchestrationSection | null> {
       // #899: the orchestration section rides the fleet feed, embedded
-      // by the collector from the orchestrator's own output file. The
+      // by the collector from the latest orch_runs.document since the
+      // #10504 reader flip (orchestration.json export as its fallback).
+      // The
       // section carries its own provenance; absent = not measured yet.
       // #1140: three states, told apart — live (accepted, served in
       // the normalized contract shape, #1110), invalid (a section is
@@ -2364,6 +2409,13 @@ export function liveSource(
           state = "absent";
         else if (text.startsWith("store only")) state = "live";
         else state = "fixtures";
+        // #1500: a mixed items pass — pool-served refs plus a fixture
+        // fallback for refs outside the pool — is its own facet state,
+        // not plain "live": the fallback is exactly what a reader of
+        // the item pages needs the facet to say.
+        if (key === "items" && state === "live" && /\+ fixtures for \d+ ref\(s\) outside the pool/.test(text)) {
+          state = "partial-fixtures";
+        }
         const feedBacked = text.includes("fleet feed");
         if (state === "live" && feedBacked && feedAgeMs !== undefined && feedAgeMs >= FEED_STALE_MS) {
           state = "stale";

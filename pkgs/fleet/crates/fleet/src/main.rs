@@ -48,6 +48,9 @@ mod secrets;
 #[cfg(feature = "gh")]
 mod gh;
 
+#[cfg(feature = "gh")]
+mod gh_cache;
+
 #[allow(dead_code)]
 // the derivation runs in build.rs (which includes this module by path); the binary itself consumes only the baked FLEET_DERIVED_VERSION value, plus these unit tests
 mod derived_version;
@@ -437,10 +440,12 @@ fn required_capability(d: &Domain, args: &[String]) -> Result<Capability, i32> {
             let sub = args.first().map(|s| s.as_str());
             match sub {
                 Some("serve") => Ok(Capability::ProxyServe),
-                Some("connect") | Some("init") | Some("ssh") => Ok(Capability::ProxyConnect),
+                Some("connect") | Some("init") | Some("ssh") | Some("get") | Some("put") => {
+                    Ok(Capability::ProxyConnect)
+                }
                 Some("splice") => Ok(Capability::ProxyRawSplice),
                 _ => Err(usage_error(
-                    "'fleet proxy' needs a command: serve, connect, init, ssh, or splice",
+                    "'fleet proxy' needs a command: serve, connect, init, ssh, splice, get, or put",
                 )),
             }
         }
@@ -1004,6 +1009,52 @@ fn run_proxy(surface: &Surface, args: &[String]) -> i32 {
             }
         }
         Some("init") => run_init_call(surface, &args[1..]),
+        Some("get") => {
+            if args[1..]
+                .iter()
+                .any(|a| matches!(a.as_str(), "--help" | "-h"))
+            {
+                println!("{}", fleet_proxy::files::GET_USAGE);
+                return EXIT_OK;
+            }
+            let parsed = match fleet_proxy::files::GetArgs::parse(&args[1..]) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("fleet: {e}");
+                    return e.exit_code();
+                }
+            };
+            match fleet_proxy::files::run_get(&parsed, config, &client, &capabilities) {
+                Ok(code) => code,
+                Err(e) => {
+                    eprintln!("fleet: {e}");
+                    e.exit_code()
+                }
+            }
+        }
+        Some("put") => {
+            if args[1..]
+                .iter()
+                .any(|a| matches!(a.as_str(), "--help" | "-h"))
+            {
+                println!("{}", fleet_proxy::files::PUT_USAGE);
+                return EXIT_OK;
+            }
+            let parsed = match fleet_proxy::files::PutArgs::parse(&args[1..]) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("fleet: {e}");
+                    return e.exit_code();
+                }
+            };
+            match fleet_proxy::files::run_put(&parsed, config, &client, &capabilities) {
+                Ok(code) => code,
+                Err(e) => {
+                    eprintln!("fleet: {e}");
+                    e.exit_code()
+                }
+            }
+        }
         Some("ssh") => run_proxy_ssh(&args[1..], config),
         Some("splice") => {
             if args[1..].iter().any(|a| is_help_flag(a)) {

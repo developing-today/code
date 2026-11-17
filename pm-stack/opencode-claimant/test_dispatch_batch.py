@@ -218,14 +218,18 @@ class DispatchBatchTests(unittest.TestCase):
             return {"ok": True, "session_id": self.bound[task_id], "task": task_id}
 
         rc, records, fake_q = self.run_main(
-            self.base_argv("--to", "opencode", "--session-id", "ses_lane", queue="code"),
+            self.base_argv(
+                "--to", "opencode", "--session-id", "ses_lane", queue="code"
+            ),
             [dict(row(101, 555), queue="code"), dict(row(102, 556), queue="code")],
             send_impl=send_impl,
         )
         self.assertEqual(rc, 0)
-        self.assertEqual([r["outcome"] for r in self.items(records)], ["bound", "bound"])
+        self.assertEqual(
+            [r["outcome"] for r in self.items(records)], ["bound", "bound"]
+        )
         self.assertEqual(sends, [("code", 101), ("code", 102)])
-        claim, = fake_q.verbs("claim")
+        (claim,) = fake_q.verbs("claim")
         self.assertEqual(claim[claim.index("--queue") + 1], "code")
         self.assertEqual(
             [primary for primary, _, _ in self.worktree_calls],

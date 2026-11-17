@@ -38,6 +38,10 @@
 //! modules' `crate::` paths resolve exactly as they did in the
 //! facade; they name the lower crates that own those modules.
 
+/// The port contract (`world-store` port kind) this crate's adapters
+/// advertise against, owned by `id-core` (slice 9110-02, #10160).
+pub use id_core::port;
+
 pub mod blob_gate;
 pub mod groups;
 #[cfg(feature = "sandbox")]

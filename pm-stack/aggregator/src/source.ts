@@ -4,6 +4,7 @@
 import type { SectionDiagnosis } from "./feed.ts";
 import type { QueueSnapshot } from "./queue.ts";
 import type { Phase12Snapshot } from "./phase12.ts";
+import type { PhaseMappingSnapshot } from "./phase-mapping.ts";
 import type { BuildHealthSnapshot } from "./build-health.ts";
 import type { F12PrRef } from "./f12-readiness.ts";
 import type { NeedsDrewCensus } from "./needs-drew.ts";
@@ -90,6 +91,12 @@ export interface Source {
    * omit it and the panel renders unavailable instead of inventing
    * a step list. */
   phase12?(): Promise<Phase12Snapshot | null>;
+  /** The Phase tracker F-item mapping snapshot (#9923 step 3),
+   * parsed from planning/roadmaps/id.md in the code checkout;
+   * null = unavailable. Optional like phase12: sources that cannot
+   * read the checkout omit it and the panel withholds mapped
+   * progress instead of inventing it. */
+  phaseMapping?(): Promise<PhaseMappingSnapshot | null>;
   /** The Actions-API build-health snapshot for the id section's
    * Build health panel (#9924); null = not collected / unavailable.
    * Optional like phase12: sources that cannot read the Actions API

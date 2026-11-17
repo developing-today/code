@@ -134,9 +134,7 @@ export function labelsOf(obj: Obj): string[] {
 /** Assignee logins: the assignees array, falling back to the single assignee. */
 export function assigneesOf(obj: Obj): string[] {
   const many = Array.isArray(obj.assignees) ? obj.assignees : [];
-  const logins = many
-    .map((a) => str((a ?? {}) as Obj, "login"))
-    .filter((n): n is string => !!n);
+  const logins = many.map((a) => str((a ?? {}) as Obj, "login")).filter((n): n is string => !!n);
   if (logins.length) return logins.sort();
   const one = str((obj.assignee ?? {}) as Obj, "login");
   return one ? [one] : [];
@@ -157,11 +155,7 @@ export interface IssueRow {
   gh_updated_at: string | null;
 }
 
-export function buildIssueRow(
-  payload: Obj,
-  repo: string,
-  bodyHash: string | null,
-): IssueRow {
+export function buildIssueRow(payload: Obj, repo: string, bodyHash: string | null): IssueRow {
   const issue = (payload.issue ?? {}) as Obj;
   return {
     repo,
@@ -196,17 +190,12 @@ export interface PrRow extends IssueRow {
   comments_gh_updated_at: string | null;
 }
 
-export function buildPrRow(
-  payload: Obj,
-  repo: string,
-  bodyHash: string | null,
-): PrRow {
+export function buildPrRow(payload: Obj, repo: string, bodyHash: string | null): PrRow {
   const pr = (payload.pull_request ?? {}) as Obj;
   const base = buildIssueRow({ issue: pr }, repo, bodyHash);
   return {
     ...base,
-    comments_gh_updated_at:
-      str(pr, "comments_updated_at") ?? base.gh_updated_at,
+    comments_gh_updated_at: str(pr, "comments_updated_at") ?? base.gh_updated_at,
     merged: pr.merged === true || typeof pr.merged_at === "string" ? 1 : 0,
     draft: pr.draft === true ? 1 : 0,
     head_sha: str((pr.head ?? {}) as Obj, "sha"),
@@ -237,9 +226,7 @@ export interface CommentTouch {
 /** Agent notes carry the machine marker; the emoji header is the fallback. */
 export function isAgentNote(body: string | null | undefined): boolean {
   if (!body) return false;
-  return (
-    body.includes("<!-- agent-note:v1") || body.startsWith("🤖 **Agent note**")
-  );
+  return body.includes("<!-- agent-note:v1") || body.startsWith("🤖 **Agent note**");
 }
 
 export function buildCommentTouch(payload: Obj, repo: string): CommentTouch {
@@ -263,13 +250,8 @@ export function buildCommentTouch(payload: Obj, repo: string): CommentTouch {
 export async function bodyHashOf(obj: Obj): Promise<string | null> {
   const body = str(obj, "body");
   if (body === null) return null;
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(body),
-  );
-  return [...new Uint8Array(digest)]
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 interface Stmt {
@@ -308,9 +290,7 @@ async function ensureMirrorColumns(q: Turso): Promise<void> {
   if (present === null || present === "2") return;
   for (const table of MIRROR_TABLES) {
     try {
-      await q.execute(
-        `ALTER TABLE ${table} ADD COLUMN comments_gh_updated_at TEXT`,
-      );
+      await q.execute(`ALTER TABLE ${table} ADD COLUMN comments_gh_updated_at TEXT`);
     } catch (e) {
       // One table may already carry the column (mixed state); only a
       // duplicate-column error is ignorable here.
@@ -331,10 +311,7 @@ async function ensureMirrorColumns(q: Turso): Promise<void> {
  * marker absorbs it too; only a strictly newer source version
  * passes.
  */
-export function deletionBlocks(
-  markerVersion: string | null,
-  sourceUpdatedAt: string | null,
-): boolean {
+export function deletionBlocks(markerVersion: string | null, sourceUpdatedAt: string | null): boolean {
   if (markerVersion === null) return false;
   if (sourceUpdatedAt === null) return true;
   if (markerVersion === "") return true;
@@ -355,12 +332,7 @@ const TOMBSTONE_GUARD_SQL = `NOT EXISTS (
                 AND (? IS NULL OR m.gh_updated_at IS NULL
                      OR m.gh_updated_at >= ?))`;
 
-async function mirrorBatch(
-  env: SinkEnv,
-  event: string,
-  repo: string,
-  stmts: Stmt[],
-): Promise<void> {
+async function mirrorBatch(env: SinkEnv, event: string, repo: string, stmts: Stmt[]): Promise<void> {
   const q = new Turso(env.TURSO_QUEUE_URL, env.TURSO_QUEUE_TOKEN);
   const at = queueNow();
   await q.batch(MIRROR_DDL.map((sql) => ({ sql })));
@@ -385,10 +357,7 @@ export async function ensureMirrorSchema(env: SinkEnv): Promise<void> {
 }
 
 /** Run sweep statements (no meta stamp; see backfillStampStmt). */
-export async function mirrorSweepBatch(
-  env: SinkEnv,
-  stmts: Stmt[],
-): Promise<void> {
+export async function mirrorSweepBatch(env: SinkEnv, stmts: Stmt[]): Promise<void> {
   if (stmts.length === 0) return;
   const q = new Turso(env.TURSO_QUEUE_URL, env.TURSO_QUEUE_TOKEN);
   await q.batch(stmts);
@@ -468,14 +437,7 @@ export function forceCommentsStmt(
   return {
     sql: `UPDATE ${table} SET comments = ?, comments_gh_updated_at = ?, mirrored_at = ?
           WHERE repo = ? AND number = ? AND comments_gh_updated_at IS ?`,
-    args: [
-      iArg(comments),
-      tArg(commentsGhUpdatedAt),
-      tArg(queueNow()),
-      tArg(repo),
-      iArg(number),
-      tArg(guardVersion),
-    ],
+    args: [iArg(comments), tArg(commentsGhUpdatedAt), tArg(queueNow()), tArg(repo), iArg(number), tArg(guardVersion)],
   };
 }
 
@@ -562,11 +524,7 @@ export function issueUpsertStmt(row: IssueRow): Stmt {
 }
 
 /** Upsert the issue mirror row from an `issues` webhook payload. */
-export async function mirrorIssueEvent(
-  env: SinkEnv,
-  payload: Obj,
-  repo: string,
-): Promise<void> {
+export async function mirrorIssueEvent(env: SinkEnv, payload: Obj, repo: string): Promise<void> {
   if (payload.action === "deleted") {
     const issue = (payload.issue ?? {}) as Obj;
     // Order is the fix (Codex P2, PR #8604, two rounds): the
@@ -590,12 +548,7 @@ export async function mirrorIssueEvent(
               ON CONFLICT(repo, number) DO UPDATE SET
                 gh_updated_at = excluded.gh_updated_at,
                 mirrored_at = excluded.mirrored_at`,
-        args: [
-          tArg(repo),
-          iArg(num(issue, "number")),
-          tArg(str(issue, "updated_at")),
-          tArg(queueNow()),
-        ],
+        args: [tArg(repo), iArg(num(issue, "number")), tArg(str(issue, "updated_at")), tArg(queueNow())],
       },
       {
         sql: "DELETE FROM github_mirror_issues WHERE repo = ? AND number = ?",
@@ -604,11 +557,7 @@ export async function mirrorIssueEvent(
     ]);
     return;
   }
-  const row = buildIssueRow(
-    payload,
-    repo,
-    await bodyHashOf((payload.issue ?? {}) as Obj),
-  );
+  const row = buildIssueRow(payload, repo, await bodyHashOf((payload.issue ?? {}) as Obj));
   await mirrorBatch(env, "issues", repo, [issueUpsertStmt(row)]);
 }
 /** The PR snapshot upsert as a statement (shared by the webhook path and the sweep). */
@@ -674,16 +623,8 @@ export function prUpsertStmt(row: PrRow): Stmt {
 }
 
 /** Upsert the PR mirror row from a `pull_request` webhook payload. */
-export async function mirrorPrEvent(
-  env: SinkEnv,
-  payload: Obj,
-  repo: string,
-): Promise<void> {
-  const row = buildPrRow(
-    payload,
-    repo,
-    await bodyHashOf((payload.pull_request ?? {}) as Obj),
-  );
+export async function mirrorPrEvent(env: SinkEnv, payload: Obj, repo: string): Promise<void> {
+  const row = buildPrRow(payload, repo, await bodyHashOf((payload.pull_request ?? {}) as Obj));
   await mirrorBatch(env, "pull_request", repo, [prUpsertStmt(row)]);
 }
 /**
@@ -703,9 +644,7 @@ export async function mirrorPrEvent(
  */
 /** The comment-touch statements as a list (shared by the webhook path and the sweep). */
 export function commentTouchStmts(touch: CommentTouch): Stmt[] {
-  const table = touch.isPr
-    ? "github_mirror_pull_requests"
-    : "github_mirror_issues";
+  const table = touch.isPr ? "github_mirror_pull_requests" : "github_mirror_issues";
   return [
     {
       sql: `INSERT INTO ${table} (repo, number, mirrored_at) SELECT ?, ?, ?
@@ -790,34 +729,20 @@ export function commentTouchStmts(touch: CommentTouch): Stmt[] {
                   (repo, number, comment_id, mirrored_at)
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(repo, number, comment_id) DO NOTHING`,
-            args: [
-              tArg(touch.repo),
-              iArg(touch.number),
-              iArg(touch.deletedNoteId),
-              tArg(queueNow()),
-            ],
+            args: [tArg(touch.repo), iArg(touch.number), iArg(touch.deletedNoteId), tArg(queueNow())],
           },
           {
             sql: `UPDATE ${table} SET latest_agent_note_id = NULL,
                   latest_agent_note_url = NULL, mirrored_at = ?
                 WHERE repo = ? AND number = ? AND latest_agent_note_id = ?`,
-            args: [
-              tArg(queueNow()),
-              tArg(touch.repo),
-              iArg(touch.number),
-              iArg(touch.deletedNoteId),
-            ],
+            args: [tArg(queueNow()), tArg(touch.repo), iArg(touch.number), iArg(touch.deletedNoteId)],
           },
         ]
       : []),
   ];
 }
 
-export async function mirrorCommentEvent(
-  env: SinkEnv,
-  payload: Obj,
-  repo: string,
-): Promise<void> {
+export async function mirrorCommentEvent(env: SinkEnv, payload: Obj, repo: string): Promise<void> {
   const touch = buildCommentTouch(payload, repo);
   await mirrorBatch(env, "issue_comment", repo, commentTouchStmts(touch));
 }
