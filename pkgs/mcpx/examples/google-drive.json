@@ -1,0 +1,12 @@
+{
+  "apis": [
+    {
+      "description": "The caller's Google Drive, read through the Drive API v3 with the caller's own access token. The declaration carries no credential: the Authorization header is the ${GOOGLE_DRIVE_ACCESS_TOKEN} placeholder, expanded from the environment when the declaration is loaded, so the token itself is never written into a file. Only GET operations are declared, so the read-only default method set applies \u2014 listing, metadata and account reads; no upload, edit or delete endpoint is declared.",
+      "headers": {
+        "Authorization": "Bearer ${GOOGLE_DRIVE_ACCESS_TOKEN}"
+      },
+      "name": "googledrive",
+      "spec": "./google-drive.openapi.json"
+    }
+  ]
+}
