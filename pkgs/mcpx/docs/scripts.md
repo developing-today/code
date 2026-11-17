@@ -88,9 +88,11 @@ writer hits first:
   properties — that Node itself runs fine once types are
   transformed. An `enum` in a script is guarded by a test
   (`TestNodeRunsNonErasableTypeScript`), not a limitation.
-- **Typechecking is Deno-only.** `--typecheck` /
-  `script.typecheck` runs the check (via `deno check`) before
-  the run and only applies when Deno is the runtime.
+- **Typechecking is Deno-only.** `--typecheck` / `script.typecheck`
+  remain accepted as legacy spellings for `--script-check` /
+  `script.check`. `types` resolves imports and checks types with `deno check`,
+  and `strict` also checks declaration files. The old value `on` means `types`.
+  Non-Deno runtimes warn and continue because they strip types rather than checking them.
 
 ### Authority
 

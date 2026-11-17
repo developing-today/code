@@ -141,8 +141,17 @@ describe("summarizeItemCoverage (#1141)", () => {
 
 describe("fixture-resolved badges render unverified (#1141)", () => {
   const PROV = {
-    board: "x", roadmap: "x", items: "x", comments: "x", quota: "x", usage: "x",
-    attention: "x", orchestration: "x", dns: "x", registry: "x", aa: "x",
+    board: "x",
+    roadmap: "x",
+    items: "x",
+    comments: "x",
+    quota: "x",
+    usage: "x",
+    attention: "x",
+    orchestration: "x",
+    dns: "x",
+    registry: "x",
+    aa: "x",
   } as Provenance;
 
   test("item page: fixture badge is hollow + named unverified; pool badge is untouched", () => {
@@ -154,7 +163,7 @@ describe("fixture-resolved badges render unverified (#1141)", () => {
       { ref: "developing-today/code#752", relation: "tracks" as const },
       { ref: "dezren39/nix#508", relation: "tracks" as const },
     ];
-    const html = renderItem("Subject", "subj", links, [], items, [], PROV);
+    const html = renderItem("Subject", "subj", links, items, [], PROV);
     expect(html).toContain("badge open unverified");
     expect(html).toContain("developing-today/code#752 · unverified");
     expect(html).toContain("unverified — fixture state, not live GitHub data");

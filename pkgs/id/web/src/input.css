@@ -256,6 +256,70 @@
       0 0 22px color-mix(in oklch, white 20%, transparent);
   }
 
+  /* Settings page theme choices (#1792): the theme name renders below its
+     icon dot, in that theme's own accent colour (sneak blue 250, arch
+     green 145, mech orange 55 — the --color-primary hues above). The
+     .theme-choice rules override the header-dot sizing from
+     .theme-btn:not(.btn): the button is a vertical stack, not a dot. */
+  .theme-btn.theme-choice {
+    width: auto;
+    height: auto;
+    border-radius: 0.5rem;
+    background: none;
+    border: none;
+    box-shadow: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.25rem;
+  }
+
+  .theme-btn.theme-choice:hover {
+    transform: none;
+    background: none;
+    box-shadow: none;
+  }
+
+  .theme-choice .theme-dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    display: block;
+  }
+
+  .theme-choice-sneak .theme-dot {
+    background-color: oklch(0.65 0.2 250);
+    box-shadow: 0 0 8px oklch(0.65 0.2 250);
+  }
+
+  .theme-choice-arch .theme-dot {
+    background-color: oklch(0.75 0.25 145);
+    box-shadow: 0 0 8px oklch(0.75 0.25 145);
+  }
+
+  .theme-choice-mech .theme-dot {
+    background-color: oklch(0.7 0.2 55);
+    box-shadow: 0 0 8px oklch(0.7 0.2 55);
+  }
+
+  .theme-choice .theme-label {
+    font-size: 0.75rem;
+    line-height: 1rem;
+  }
+
+  .theme-choice-sneak .theme-label {
+    color: oklch(0.65 0.2 250);
+  }
+
+  .theme-choice-arch .theme-label {
+    color: oklch(0.75 0.25 145);
+  }
+
+  .theme-choice-mech .theme-label {
+    color: oklch(0.7 0.2 55);
+  }
+
   /* Tag pills (used in file list and editor tag panel) */
   .tag-pill {
     @apply badge badge-outline text-xs font-mono;

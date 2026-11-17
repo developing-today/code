@@ -65,7 +65,7 @@ func startOnce(t *testing.T, p *pool.Pool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	lease, err := p.Acquire(ctx, "")
+	lease, err := p.Acquire(ctx, config.ResolvedScope{Key: ""})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestPoolProbe(t *testing.T) {
 		defer p.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		res, err := p.Call(ctx, "", "hello", nil)
+		res, err := p.Call(ctx, config.ResolvedScope{Key: ""}, "hello", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -267,7 +267,7 @@ func TestPoolProbe(t *testing.T) {
 		defer p.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		if _, err := p.Call(ctx, "", "hello", nil); err != nil {
+		if _, err := p.Call(ctx, config.ResolvedScope{Key: ""}, "hello", nil); err != nil {
 			t.Fatal(err)
 		}
 		if era, v := p.Era(); era != mcpclient.EraModern || v != "2026-07-28" {

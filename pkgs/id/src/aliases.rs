@@ -81,15 +81,15 @@ pub struct Row {
     pub aliases: Vec<Alias>,
 }
 
-/// The alias claims on `subject`, in claim order. A bare tag, or an alias with empty text, is not
-/// an alias.
+/// The alias claims on `subject`, in claim order. A bare tag, or an alias with empty or
+/// whitespace-only text, is not an alias.
 #[must_use]
 pub fn aliases_of(claims: &[Claim], subject: &Hash) -> Vec<Alias> {
     claims
         .iter()
         .filter(|claim| claim.subject == *subject && claim.name == ALIAS_NAME)
         .filter_map(|claim| {
-            let text = claim.value.as_deref().filter(|text| !text.is_empty())?;
+            let text = claim.value.as_deref().filter(|text| !text.trim().is_empty())?;
             Some(Alias {
                 claim: claim.id,
                 text: text.to_owned(),
@@ -186,6 +186,7 @@ mod tests {
             subject,
             name: name.to_owned(),
             value: value.map(str::to_owned),
+            scope: crate::tag_claims::TagScope::Shared,
         }
     }
 
@@ -199,6 +200,23 @@ mod tests {
             claim(4, Hash::digest(b"bo"), ALIAS_NAME, Some("Ann")),
         ];
         assert!(aliases_of(&claims, &subject).is_empty());
+    }
+
+    #[test]
+    fn test_a_whitespace_only_alias_is_not_an_alias() {
+        let subject = Hash::digest(b"ann");
+        let claims = [
+            claim(1, subject, ALIAS_NAME, Some("   ")),
+            claim(2, subject, ALIAS_NAME, Some("\t")),
+            claim(3, subject, ALIAS_NAME, Some(" \t ")),
+        ];
+        assert!(aliases_of(&claims, &subject).is_empty());
+
+        // A non-blank alias keeps its exact text — no silent trimming.
+        let claims = [claim(4, subject, ALIAS_NAME, Some("  Ann  "))];
+        let aliases = aliases_of(&claims, &subject);
+        assert_eq!(aliases.len(), 1);
+        assert_eq!(aliases[0].text, "  Ann  ");
     }
 
     #[test]

@@ -407,25 +407,26 @@ fn put_varint(out: &mut Vec<u8>, mut x: usize) {
     out.push(x as u8);
 }
 
-/// Refuses a bound longer than a key. The decoder rejects such bounds
-/// (see Reader::entry), so an encoder that wrote one would produce a
-/// frame its own reader refuses — and a bound of 256+ bytes would wrap
-/// the u8 length prefix encode_entry writes and garble the entry
-/// stream. Every encode-side gate shares this check (#2595).
+/// Refuses a finite bound outside `1..=KEY_LEN`. Length zero is reserved
+/// for the +infinity sentinel, and longer bounds are rejected by the
+/// decoder (see Reader::entry); bounds of 256+ bytes would also wrap the
+/// u8 length prefix and garble the entry stream. Every encode-side gate
+/// shares this check (#2595, #2607).
 fn check_bound_len(bound: &[u8]) -> Result<()> {
     ensure!(
-        bound.len() <= KEY_LEN,
-        "a bound of {} bytes is longer than a key ({KEY_LEN} bytes)",
+        (1..=KEY_LEN).contains(&bound.len()),
+        "a finite bound must contain 1..={KEY_LEN} bytes; use None for +infinity (got {} bytes)",
         bound.len()
     );
     Ok(())
 }
 
-fn encode_entry(e: &Entry) -> Vec<u8> {
+fn encode_entry(e: &Entry) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     match &e.upper {
         None => out.push(0),
         Some(b) => {
+            check_bound_len(b)?;
             out.push(b.len() as u8);
             out.extend_from_slice(b);
         }
@@ -445,7 +446,7 @@ fn encode_entry(e: &Entry) -> Vec<u8> {
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Splits a message into frames of at most `budget` bytes each. Every frame but the last is
@@ -453,17 +454,14 @@ fn encode_entry(e: &Entry) -> Vec<u8> {
 ///
 /// # Errors
 ///
-/// Refuses an entry that does not fit a frame by itself, and an entry
-/// whose upper bound is longer than a key.
+/// Refuses an entry that does not fit a frame by itself, and a finite
+/// upper bound outside `1..=KEY_LEN` bytes.
 pub fn frames(msg: &[Entry], budget: usize) -> Result<Vec<Vec<u8>>> {
     let mut out = Vec::new();
     let mut body: Vec<u8> = Vec::new();
     let mut count = 0usize;
     for entry in msg {
-        if let Some(bound) = &entry.upper {
-            check_bound_len(bound)?;
-        }
-        let encoded = encode_entry(entry);
+        let encoded = encode_entry(entry)?;
         ensure!(
             encoded.len() + FRAME_HEADER_RESERVE <= budget,
             "an entry of {} bytes does not fit a {budget}-byte frame",
@@ -514,10 +512,7 @@ impl<'a> Reader<'a> {
                 // zero payload group, so a multi-byte spelling that ends
                 // in one (0x81 0x00 for 1) is a second wire spelling of
                 // the same value and is refused (#2596).
-                ensure!(
-                    i == 0 || b != 0,
-                    "varint is not minimally encoded"
-                );
+                ensure!(i == 0 || b != 0, "varint is not minimally encoded");
                 return Ok(x);
             }
         }
@@ -598,8 +593,8 @@ pub fn frame_entry_count(bytes: &[u8]) -> Result<usize> {
 ///
 /// # Errors
 ///
-/// Refuses a bound that does not increase, a bound longer than a key,
-/// and an entry after +infinity.
+/// Refuses a bound outside `1..=KEY_LEN` bytes, a bound that does not
+/// increase, and an entry after +infinity.
 pub fn check_bounds(msg: &[Entry]) -> Result<()> {
     let mut prev: Option<&[u8]> = None;
     let mut ended = false;
@@ -1038,8 +1033,14 @@ mod tests {
         // Overlong spellings of the same values.
         assert!(read(&[0x80, 0x00]).is_err(), "0 spelled in 2 bytes");
         assert!(read(&[0x81, 0x00]).is_err(), "1 spelled in 2 bytes");
-        assert!(read(&[0xff, 0xff, 0x00]).is_err(), "0x3fff spelled in 3 bytes");
-        assert!(read(&[0x80, 0x80, 0x81, 0x00]).is_err(), "0x4000 spelled in 4 bytes");
+        assert!(
+            read(&[0xff, 0xff, 0x00]).is_err(),
+            "0x3fff spelled in 3 bytes"
+        );
+        assert!(
+            read(&[0x80, 0x80, 0x81, 0x00]).is_err(),
+            "0x4000 spelled in 4 bytes"
+        );
         assert!(read(&[0xff, 0x80, 0x00]).is_err(), "127 spelled in 3 bytes");
 
         // Position 1: the frame header entry count.
@@ -1099,6 +1100,36 @@ mod tests {
                 "check_bounds refuses a {len}-byte bound"
             );
         }
+    }
+
+    #[test]
+    fn test_empty_bounds_are_refused_but_one_byte_and_infinity_round_trip() {
+        let skip = |upper: Option<Vec<u8>>| Entry {
+            upper,
+            mode: Mode::Skip,
+        };
+        let empty = skip(Some(Vec::new()));
+        let encode_error = frames(&[empty.clone()], 4096).unwrap_err();
+        assert!(
+            encode_error.to_string().contains("1..=72 bytes"),
+            "frames error names the finite-bound range: {encode_error}"
+        );
+        let bounds_error = check_bounds(&[empty]).unwrap_err();
+        assert!(
+            bounds_error.to_string().contains("1..=72 bytes"),
+            "check_bounds error names the finite-bound range: {bounds_error}"
+        );
+
+        let one_byte = skip(Some(vec![1]));
+        let wire = frames(&[one_byte.clone()], 4096).unwrap();
+        let (_, decoded) = decode_frame(&wire[0]).unwrap();
+        assert_eq!(decoded, [one_byte]);
+
+        let infinity = skip(None);
+        let wire = frames(&[infinity.clone()], 4096).unwrap();
+        assert_eq!(wire[0][2], 0, "zero length remains the +infinity sentinel");
+        let (_, decoded) = decode_frame(&wire[0]).unwrap();
+        assert_eq!(decoded, [infinity]);
     }
 
     #[test]

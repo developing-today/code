@@ -39,6 +39,9 @@ func (s *Set) Clamp(path, requested string) (Clamp, error) {
 	}
 	ceil, _ := s.Value(decl.ClampedBy)
 	cdecl, _ := s.schema.Lookup(decl.ClampedBy)
+	if _, ok := decl.Rank(requested); !ok {
+		return Clamp{}, fmt.Errorf("%s: %q is not one of %v", path, requested, decl.Enum)
+	}
 	want, ok := cdecl.Rank(requested)
 	if !ok {
 		return Clamp{}, fmt.Errorf("%s: %q is not one of %v", path, requested, cdecl.Enum)
@@ -69,8 +72,8 @@ func (s *Set) clampValue(v *Value) *Value {
 }
 
 // Rank is the position of raw in an ordered setting.
-func (d Setting) Rank(raw string) (int, bool) {
-	for i, e := range d.Enum {
+func (s Setting) Rank(raw string) (int, bool) {
+	for i, e := range s.Enum {
 		if e == raw {
 			return i, true
 		}

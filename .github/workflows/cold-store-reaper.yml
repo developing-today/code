@@ -25,15 +25,7 @@ name: cold-store-reaper
 # job provisions Python and zstd as well.
 
 on:
-  pull_request:
-    paths:
-      - "pkgs/cold-store-reaper/**"
-      - ".github/workflows/cold-store-reaper.yml"
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/cold-store-reaper/**"
-      - ".github/workflows/cold-store-reaper.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read

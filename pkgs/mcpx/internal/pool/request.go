@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sync/atomic"
 
+	"github.com/developing-today/code/pkgs/mcpx/internal/config"
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 )
 
@@ -38,8 +39,9 @@ func (r *instanceRef) key() string {
 // a code-mode host needs, and nothing else could reach the wire at all. That
 // is why /v1/complete answered from cache with `upstream:false`: not because
 // the server could not complete, but because no code path existed to ask it.
-func (p *Pool) Request(ctx context.Context, sessionKey, method string, params json.RawMessage) (json.RawMessage, error) {
-	lease, err := p.Acquire(ctx, sessionKey)
+func (p *Pool) Request(ctx context.Context, rs config.ResolvedScope, method string, params json.RawMessage) (json.RawMessage, error) {
+	sessionKey := rs.Key
+	lease, err := p.Acquire(ctx, rs)
 	if err != nil {
 		return nil, err
 	}
@@ -57,8 +59,9 @@ func (p *Pool) Request(ctx context.Context, sessionKey, method string, params js
 // showing, because a client that cannot tell an empty list from an
 // unimplemented method shows nothing and the user concludes the feature is
 // broken.
-func (p *Pool) Complete(ctx context.Context, sessionKey string, params json.RawMessage) (json.RawMessage, bool, error) {
-	lease, err := p.Acquire(ctx, sessionKey)
+func (p *Pool) Complete(ctx context.Context, rs config.ResolvedScope, params json.RawMessage) (json.RawMessage, bool, error) {
+	sessionKey := rs.Key
+	lease, err := p.Acquire(ctx, rs)
 	if err != nil {
 		return nil, false, err
 	}

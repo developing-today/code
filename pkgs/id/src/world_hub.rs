@@ -140,6 +140,10 @@ pub struct WorldInfo {
     /// directory JSON ([`directory_json`]) names this field `loaded`, for what it
     /// means; `open` remains the session-wire name for this struct.
     pub open: bool,
+    /// How many sessions are live on this world right now (the hub's lease
+    /// count for the world; 0 for a stored world). This is a count only: the
+    /// directory never names who is present (#812 shape ruling, 2026-10-29).
+    pub presence: usize,
 }
 
 /// The JSON shape of a world directory listing: the shared serializer for the
@@ -147,11 +151,12 @@ pub struct WorldInfo {
 /// and the web UI's directory surface is expected to consume the same shape.
 ///
 /// The shape is `{ "default": <name>, "worlds": [{ "name": ..., "loaded": ...,
-/// "default": ... }] }`. The per-world field for [`WorldInfo::open`] is named
-/// `loaded`, because that is what the value means — the world is currently open
-/// in memory — and not open-to-join: a world with `loaded: false` is stored and
-/// opens when selected. No field here claims presence or joinability; presence
-/// counts are a separate, undesigned part of #812.
+/// "default": ..., "presence": ... }] }`. The per-world field for
+/// [`WorldInfo::open`] is named `loaded`, because that is what the value
+/// means — the world is currently open in memory — and not open-to-join: a
+/// world with `loaded: false` is stored and opens when selected. `presence`
+/// is the count of sessions live on the world right now (#812): a count
+/// only, never an identity — who is present is not directory data.
 #[must_use]
 pub fn directory_json(worlds: &[WorldInfo], default: &str) -> serde_json::Value {
     let worlds: Vec<serde_json::Value> = worlds
@@ -161,6 +166,7 @@ pub fn directory_json(worlds: &[WorldInfo], default: &str) -> serde_json::Value 
                 "name": world.name,
                 "loaded": world.open,
                 "default": world.name == default,
+                "presence": world.presence,
             })
         })
         .collect();
@@ -350,6 +356,37 @@ impl Drop for WorldLease {
     }
 }
 
+/// Releases the lease `acquire_slot` counted if `lease_with` leaves without
+/// handing it to a [`WorldLease`] — on the error path, and on cancellation
+/// of the open await (for example the envelope acceptor's per-stream
+/// deadline dropping a callback mid-lease). Without this, a cancelled open
+/// leaks the count forever: the slot can never be evicted, and an
+/// uninitialized slot is never removed from the map.
+struct SlotLeaseGuard {
+    hub: WorldHub,
+    name: String,
+    slot: Arc<Slot>,
+    armed: bool,
+}
+
+impl Drop for SlotLeaseGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.slot.leases.fetch_sub(1, Ordering::AcqRel);
+        if let Ok(mut slots) = self.hub.inner.slots.lock()
+            && self.slot.leases.load(Ordering::Acquire) == 0
+            && self.slot.service.get().is_none()
+            && slots
+                .get(&self.name)
+                .is_some_and(|held| Arc::ptr_eq(held, &self.slot))
+        {
+            slots.remove(&self.name);
+        }
+    }
+}
+
 impl WorldHub {
     /// A hub that builds worlds with `opener`.
     #[must_use]
@@ -490,6 +527,15 @@ impl WorldHub {
         permit: OwnedSemaphorePermit,
     ) -> Result<WorldLease, ResolveError> {
         let (slot, evicted) = self.acquire_slot(name, create)?;
+        // Armed until the lease is handed to the caller: dropping the guard
+        // (error return, or cancellation of the awaits below) releases the
+        // counted lease exactly once.
+        let mut guard = SlotLeaseGuard {
+            hub: self.clone(),
+            name: name.to_owned(),
+            slot: Arc::clone(&slot),
+            armed: true,
+        };
         for service in evicted {
             let _ = service.world().shutdown().await;
         }
@@ -510,23 +556,18 @@ impl WorldHub {
             })
             .await;
         match opened {
-            Ok(service) => Ok(WorldLease {
-                service: service.clone(),
-                name: name.to_owned(),
-                slot,
-                _permit: permit,
-            }),
-            Err(error) => {
-                slot.leases.fetch_sub(1, Ordering::AcqRel);
-                if let Ok(mut slots) = self.inner.slots.lock()
-                    && slot.leases.load(Ordering::Acquire) == 0
-                    && slot.service.get().is_none()
-                    && slots.get(name).is_some_and(|held| Arc::ptr_eq(held, &slot))
-                {
-                    slots.remove(name);
-                }
-                Err(error)
+            Ok(service) => {
+                guard.armed = false;
+                Ok(WorldLease {
+                    service: service.clone(),
+                    name: name.to_owned(),
+                    slot,
+                    _permit: permit,
+                })
             }
+            // The guard's drop releases the counted lease and removes the
+            // still-uninitialized slot, as the manual cleanup here used to.
+            Err(error) => Err(error),
         }
     }
 
@@ -636,25 +677,29 @@ impl WorldHub {
     /// Worlds in storage plus any open ones, sorted by name.
     #[must_use]
     pub fn list(&self) -> Vec<WorldInfo> {
-        let mut names: std::collections::BTreeMap<String, bool> = self
+        let mut names: std::collections::BTreeMap<String, (bool, usize)> = self
             .inner
             .opener
             .as_ref()
             .map(|opener| opener.list())
             .unwrap_or_default()
             .into_iter()
-            .map(|name| (name, false))
+            .map(|name| (name, (false, 0)))
             .collect();
         if let Ok(slots) = self.inner.slots.lock() {
             for (name, slot) in slots.iter() {
                 if slot.service.get().is_some() {
-                    names.insert(name.clone(), true);
+                    names.insert(name.clone(), (true, slot.leases.load(Ordering::Acquire)));
                 }
             }
         }
         names
             .into_iter()
-            .map(|(name, open)| WorldInfo { name, open })
+            .map(|(name, (open, presence))| WorldInfo {
+                name,
+                open,
+                presence,
+            })
             .collect()
     }
 
@@ -1227,10 +1272,12 @@ mod tests {
             WorldInfo {
                 name: "lobby".to_owned(),
                 open: true,
+                presence: 2,
             },
             WorldInfo {
                 name: "attic".to_owned(),
                 open: false,
+                presence: 0,
             },
         ];
         let value = directory_json(&worlds, "lobby");
@@ -1240,6 +1287,8 @@ mod tests {
         assert_eq!(list[0]["name"], serde_json::json!("lobby"));
         assert_eq!(list[0]["loaded"], serde_json::json!(true));
         assert_eq!(list[0]["default"], serde_json::json!(true));
+        assert_eq!(list[0]["presence"], serde_json::json!(2));
+        assert_eq!(list[1]["presence"], serde_json::json!(0));
         assert_eq!(list[1]["name"], serde_json::json!("attic"));
         assert_eq!(list[1]["loaded"], serde_json::json!(false));
         assert_eq!(list[1]["default"], serde_json::json!(false));
@@ -1249,9 +1298,53 @@ mod tests {
             assert!(entry["name"].is_string());
             assert!(entry["loaded"].is_boolean());
             assert!(entry["default"].is_boolean());
+            assert!(entry["presence"].is_u64());
         }
         // An empty directory is a default with no worlds.
         let value = directory_json(&[], "lobby");
         assert_eq!(value["worlds"], serde_json::json!([]));
+    }
+
+    /// An opener whose open never completes, so the lease future can only
+    /// end by cancellation.
+    struct PendingOpener;
+
+    impl WorldOpener for PendingOpener {
+        fn open<'a>(&'a self, _name: &'a str, _create: bool) -> OpenFuture<'a> {
+            Box::pin(std::future::pending())
+        }
+
+        fn exists(&self, _name: &str) -> bool {
+            true
+        }
+
+        fn list(&self) -> Vec<String> {
+            Vec::new()
+        }
+
+        fn durable(&self) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_lease_releases_its_slot() {
+        let opener: Arc<dyn WorldOpener> = Arc::new(PendingOpener);
+        let hub = WorldHub::new(
+            opener,
+            Some("admin".to_owned()),
+            "lobby",
+            HubLimits::default(),
+        );
+        let lease = hub.lease(Some("arena"), Some("admin"));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), lease)
+                .await
+                .is_err(),
+            "the pending open should be cut off by the test deadline"
+        );
+        // The cancelled lease must not leak: its slot is gone, so the world
+        // is neither stuck open nor un-evictable.
+        assert_eq!(hub.open_count(), 0);
     }
 }

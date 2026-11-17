@@ -25,7 +25,7 @@ func TestOpenAtCreatesOwnerOnlyStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	db := elicit.StorePath(state)
 	if got := perm(t, filepath.Dir(db)); got != 0o700 {
@@ -60,7 +60,7 @@ func TestOpenAtMigratesLegacyStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 
 	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
 		t.Errorf("legacy store still in place after migration; err = %v", err)
@@ -111,7 +111,7 @@ func TestOpenAtTightensLooseModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b2.Close()
+	defer func() { _ = b2.Close() }()
 	if got := perm(t, filepath.Dir(db)); got != 0o700 {
 		t.Errorf("store dir mode after re-open = %04o, want 0700", got)
 	}
@@ -142,7 +142,7 @@ func TestOpenAtConcurrentOpens(t *testing.T) {
 			t.Errorf("concurrent open %d: %v", i, errs[i])
 		}
 		if brokers[i] != nil {
-			brokers[i].Close()
+			_ = brokers[i].Close()
 		}
 	}
 }
@@ -208,7 +208,7 @@ func TestOpenAtConcurrentMigrationPreservesUncheckpointedWAL(t *testing.T) {
 			t.Errorf("concurrent migrating open %d: %v", i, errs[i])
 		}
 		if brokers[i] != nil {
-			brokers[i].Close()
+			_ = brokers[i].Close()
 		}
 	}
 
@@ -216,7 +216,7 @@ func TestOpenAtConcurrentMigrationPreservesUncheckpointedWAL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close()
+	defer func() { _ = b.Close() }()
 	pending, err := b.Pending(elicit.Filter{})
 	if err != nil {
 		t.Fatal(err)

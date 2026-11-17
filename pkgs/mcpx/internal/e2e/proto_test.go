@@ -138,7 +138,7 @@ func TestALegacyClientIsAskedOverStreamableHTTP(t *testing.T) {
 		},
 	})
 	session := init.Header.Get("Mcp-Session-Id")
-	init.Body.Close()
+	_ = init.Body.Close()
 	if session == "" {
 		t.Fatal("a legacy client needs a session, or its answer has nowhere to go")
 	}
@@ -148,7 +148,7 @@ func TestALegacyClientIsAskedOverStreamableHTTP(t *testing.T) {
 		"params": map[string]any{"name": "mcpx_call",
 			"arguments": map[string]any{"namespace": "ask", "tool": "need_repo"}},
 	})
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
 		t.Fatalf("a request that has to ask something must stream, got %q", ct)
 	}
@@ -173,7 +173,7 @@ func TestALegacyClientIsAskedOverStreamableHTTP(t *testing.T) {
 			// On a separate POST, which is the whole reason a session
 			// exists: this connection is busy being the answer to the
 			// first request.
-			go func() { mcpPost(t, ep, session, answer).Body.Close() }()
+			go func() { _ = mcpPost(t, ep, session, answer).Body.Close() }()
 		default:
 			if frame["result"] != nil {
 				final = frame
@@ -218,7 +218,7 @@ func TestAModernClientIsHandedTheQuestionInTheResult(t *testing.T) {
 	disc := mcpPost(t, ep, "", map[string]any{"jsonrpc": "2.0", "id": 1,
 		"method": "server/discover", "params": map[string]any{"_meta": meta}})
 	issued := disc.Header.Get("Mcp-Session-Id")
-	disc.Body.Close()
+	_ = disc.Body.Close()
 	if issued != "" {
 		// 2026-07-28 has no sessions. One used to be minted here only so a
 		// requestState had something to be bound to; it is bound to the
@@ -234,7 +234,7 @@ func TestAModernClientIsHandedTheQuestionInTheResult(t *testing.T) {
 	resp := mcpPost(t, ep, session, map[string]any{"jsonrpc": "2.0", "id": 2,
 		"method": "tools/call", "params": params})
 	first := decodeJSON(t, resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	result, _ := first["result"].(map[string]any)
 	if result == nil || result["resultType"] != "input_required" {
 		t.Fatalf("a modern client is asked by being answered:\n%s", dumpJSON(t, first))
@@ -262,7 +262,7 @@ func TestAModernClientIsHandedTheQuestionInTheResult(t *testing.T) {
 	resp = mcpPost(t, ep, session, map[string]any{"jsonrpc": "2.0", "id": 3,
 		"method": "tools/call", "params": params})
 	second := decodeJSON(t, resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	body := dumpJSON(t, second)
 	if !strings.Contains(body, "me/modern") {
 		t.Fatalf("the retry should carry the original call through:\n%s", body)
@@ -293,7 +293,7 @@ func TestARequestStateOnAnotherRequestIsRefused(t *testing.T) {
 	r := mcpPost(t, ep, "", map[string]any{"jsonrpc": "2.0", "id": 2,
 		"method": "tools/call", "params": params})
 	first := decodeJSON(t, r.Body)
-	r.Body.Close()
+	_ = r.Body.Close()
 	result, _ := first["result"].(map[string]any)
 	state, _ := result["requestState"].(string)
 	if state == "" {
@@ -306,7 +306,7 @@ func TestARequestStateOnAnotherRequestIsRefused(t *testing.T) {
 	r = mcpPost(t, ep, "", map[string]any{"jsonrpc": "2.0", "id": 3,
 		"method": "tools/call", "params": other})
 	stolen := decodeJSON(t, r.Body)
-	r.Body.Close()
+	_ = r.Body.Close()
 	if stolen["error"] == nil {
 		t.Fatalf("a requestState was accepted on a request it was not issued for:\n%s", dumpJSON(t, stolen))
 	}
@@ -429,7 +429,7 @@ func TestAClientThatDeclaredNothingStillReachesTheBroker(t *testing.T) {
 			done <- outcome{err: err}
 			return
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		raw, err := io.ReadAll(resp.Body)
 		done <- outcome{body: string(raw), err: err}
 	}()
@@ -485,7 +485,7 @@ func TestCompletionComesFromTheServerAndSaysSo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body := decodeJSON(t, resp.Body)
 	text := dumpJSON(t, body)
 	if body["upstream"] != true || body["source"] != "upstream" {
@@ -510,7 +510,7 @@ func TestCompletionFallsBackToTheCacheAndSaysWhy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body := decodeJSON(t, resp.Body)
 	text := dumpJSON(t, body)
 	if body["upstream"] != false || body["source"] != "cache" {
@@ -536,7 +536,7 @@ func TestTheDaemonServesMCPAndTheRoutesTheSecondServerOwned(t *testing.T) {
 	resp := mcpPost(t, ep, "", map[string]any{"jsonrpc": "2.0", "id": 1,
 		"method": "tools/list", "params": map[string]any{}})
 	body := dumpJSON(t, decodeJSON(t, resp.Body))
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if !strings.Contains(body, "mcpx_catalog") {
 		t.Fatalf("the daemon should serve MCP on its own listeners:\n%s", body)
 	}
@@ -548,7 +548,7 @@ func TestTheDaemonServesMCPAndTheRoutesTheSecondServerOwned(t *testing.T) {
 		t.Fatal(err)
 	}
 	called := dumpJSON(t, decodeJSON(t, r.Body))
-	r.Body.Close()
+	_ = r.Body.Close()
 	if !strings.Contains(called, "through the daemon") {
 		t.Fatalf("POST /v1/call/{server}/{tool} should reach the tool:\n%s", called)
 	}
@@ -559,7 +559,7 @@ func TestTheDaemonServesMCPAndTheRoutesTheSecondServerOwned(t *testing.T) {
 		t.Fatal(err)
 	}
 	invoked := dumpJSON(t, decodeJSON(t, r.Body))
-	r.Body.Close()
+	_ = r.Body.Close()
 	if !strings.Contains(invoked, "demo") {
 		t.Fatalf("POST /v1/tools/{tool} should run the tool:\n%s", invoked)
 	}
@@ -571,7 +571,7 @@ func TestTheDaemonServesMCPAndTheRoutesTheSecondServerOwned(t *testing.T) {
 		t.Fatal(err)
 	}
 	doc := dumpJSON(t, decodeJSON(t, r.Body))
-	r.Body.Close()
+	_ = r.Body.Close()
 	if !strings.Contains(doc, "/v1/call/demo/echo") {
 		t.Errorf("the specification should describe every tool path:\n%s", firstN(doc, 400))
 	}
@@ -601,7 +601,7 @@ func TestTheProtocolMatrixIsServedFromTheTableTheCodeReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body := decodeJSON(t, resp.Body)
 	text := dumpJSON(t, body)
 	for _, want := range []string{"2026-07-28", "2025-03-26", "structuredContent", "elicitationURL"} {
@@ -649,7 +649,7 @@ func TestTheDaemonReportsItsRevisionPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body := decodeJSON(t, resp.Body)
 	sp, _ := body["spec"].(map[string]any)
 	order, _ := sp["precedence"].([]any)

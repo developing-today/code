@@ -1,0 +1,37 @@
+# github-ci Worker (#5693): the GitHub webhook receiver, re-homed off
+# the Supabase Edge Function of the same name. Deployed to the fleet
+# Cloudflare account. Dark until the #5693 cutover steps run: no
+# webhook points here until a repo-level dual-run webhook is added.
+#
+# Secrets (wrangler secret put; values never in this file):
+#   GITHUB_WEBHOOK_SECRET   HMAC gate; NEW value minted for this
+#                           Worker, vaulted in BWS by name
+#                           (cloudflare.github-ci-webhook-secret).
+#                           The org/App flip rotates again (#5693).
+#   TURSO_PLATFORM_TOKEN    turso.fleet-platform-rw-token (ci_events)
+#   TURSO_QUEUE_TOKEN       turso.fleet-queue-rw-token (agent events,
+#                           snapshots, watermarks)
+#   EVENTS_BROKER_TOKEN     the queue broker's own agent token (the
+#                           value in ~/.config/queue-broker/token on
+#                           the laptop); sent as X-Agent-Token.
+#   EVENTS_BROKER_ACCESS_CLIENT_ID / EVENTS_BROKER_ACCESS_CLIENT_SECRET
+#                           Cloudflare Access service token for
+#                           queue-broker.security.cab (#6925), vaulted
+#                           in BWS as cloudflare.access.queue-broker-
+#                           client-id / -client-secret.
+name = "github-ci"
+main = "src/index.ts"
+compatibility_date = "2025-09-15"
+workers_dev = true
+
+[vars]
+TURSO_PLATFORM_URL = "https://fleet-platform-dezren39.aws-us-east-1.turso.io"
+TURSO_QUEUE_URL = "https://fleet-queue-dezren39.aws-us-east-1.turso.io"
+EVENTS_BROKER_URL = "https://queue-broker.security.cab"
+# EVENTS_BROKER_URL (#6925): the queue broker's public route —
+# Cloudflare Tunnel ingress on the pm-stack tunnel to the broker's
+# tailnet listener, gated by a Cloudflare Access service-token-only
+# application plus the broker's X-Agent-Token check. With this set,
+# the Worker POSTs /events-append to the broker instead of writing
+# the sink table itself; the direct INSERT in sink.ts remains the
+# outage fallback (unset this var to revert to it).

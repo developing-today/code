@@ -1,0 +1,230 @@
+{
+  "version": 1,
+  "generatedAt": "2026-10-27T03:20:00Z",
+  "quota": {
+    "pools": [
+      {
+        "id": "example-pool-1",
+        "provider": "Example Provider 1",
+        "plan": "Example subscription",
+        "state": "healthy",
+        "windows": [
+          {
+            "name": "window-1",
+            "unit": "other",
+            "limit": 100,
+            "used": 11,
+            "resetsAt": "2026-11-10T00:00:00Z",
+            "percent": 11.0
+          }
+        ]
+      },
+      {
+        "id": "example-pool-2",
+        "provider": "Example Provider 2",
+        "plan": "Example subscription",
+        "state": "healthy",
+        "windows": [
+          {
+            "name": "window-1",
+            "unit": "usd",
+            "limit": 100,
+            "used": 50,
+            "resetsAt": "2026-11-10T00:00:00Z",
+            "percent": 84.0
+          },
+          {
+            "name": "window-2",
+            "unit": "usd",
+            "limit": 100,
+            "used": 2,
+            "resetsAt": null,
+            "percent": 7.0
+          }
+        ]
+      }
+    ],
+    "burn": [],
+    "choices": {
+      "hasHeadroom": ["example-pool-1"],
+      "burnBeforeReset": [],
+      "doNotStart": []
+    }
+  },
+  "attention": [],
+  "orchestration": {
+    "version": 1,
+    "generatedAt": "2026-10-27T03:14:56Z",
+    "runId": "orch-2026-10-27T03:14:56Z",
+    "provenance": {
+      "sources": [
+        "fleet-feed.json sample run: one active session, no awaiting question; quota pools healthy",
+        "laptop session collection completed this run: 6 entries",
+        "review-state keeper last run 2026-10-26T23:03:16Z"
+      ],
+      "runId": "orch-2026-10-27T03:14:56Z"
+    },
+    "tiers": {
+      "needsDrew": [
+        {
+          "id": "example-owner/example-repo#812",
+          "kind": "decision",
+          "title": "Review an example design decision",
+          "source": "backlog",
+          "reason": "Scope requires an owner design decision.",
+          "since": "2026-10-27T03:14:56Z",
+          "lastSeenAt": "2026-10-27T03:14:56Z",
+          "ref": "example-owner/example-repo#812"
+        }
+      ],
+      "needsOrchestrator": []
+    },
+    "dependencies": [
+      {
+        "task": "Example repository wiring task",
+        "ref": "example-owner/example-repo#807",
+        "status": "queued",
+        "taskRef": "example-owner/example-repo#818"
+      }
+    ],
+    "goals": [
+      {
+        "goalId": "goal_example_01",
+        "goal": "Keep the four repos healthy",
+        "momentum": "moving",
+        "summary": "Example progress recorded since the previous run.",
+        "progressedSinceLastRun": ["Example task closed via merged PR"],
+        "linedUp": [],
+        "stalled": [],
+        "gaps": []
+      }
+    ],
+    "actions": [
+      {
+        "at": "2026-10-27T03:14:56Z",
+        "kind": "verify",
+        "target": "example queue",
+        "summary": "Reviewed the latest example feed and session collection."
+      }
+    ]
+  },
+  "dns": {
+    "generatedAt": "2026-10-27T03:10:00Z",
+    "source": "register file (#902 pipeline) via fleet feed collector",
+    "totalAnnualListUsd": 15.5,
+    "entries": [
+      {
+        "domain": "alpha.example",
+        "registrar": "Example Registrar",
+        "dnsHost": "Example DNS",
+        "renewal": "2027-02-09",
+        "autoRenew": "ON",
+        "priceUsd": 4.07,
+        "priorYearCost": "unknown",
+        "used": "Example service",
+        "plan": "Active — example service",
+        "review": "REVIEW",
+        "status": "active"
+      },
+      {
+        "domain": "bravo.example",
+        "registrar": "Example Registrar",
+        "dnsHost": "Example DNS",
+        "renewal": "2027-05-01",
+        "autoRenew": "ON",
+        "priceUsd": 11.43,
+        "priorYearCost": "unknown",
+        "used": "Parked for example project",
+        "plan": "Example project — earmark inferred",
+        "review": "REVIEW",
+        "status": "earmarked"
+      },
+      {
+        "domain": "charlie.example",
+        "registrar": "Example Registrar",
+        "dnsHost": "Example DNS",
+        "renewal": "2028-01-01",
+        "autoRenew": "unknown",
+        "priceUsd": null,
+        "priorYearCost": "unknown",
+        "used": "Parked for example project",
+        "plan": "Unused — purpose unknown",
+        "review": "REVIEW",
+        "status": "unused"
+      }
+    ]
+  },
+  "registry": [
+    {
+      "id": "contract-session-01",
+      "source": "opencode-laptop",
+      "label": "Example opencode-laptop session 1",
+      "agentId": "opencode:main",
+      "agentLabel": "OpenCode · main (laptop)",
+      "parentId": null,
+      "startedAt": "2026-10-27T03:00:00Z",
+      "lastSeenAt": "2026-10-27T03:12:00Z",
+      "status": "in-progress",
+      "model": "example-model",
+      "title": "Example session for https://github.com/developing-today/code/issues/1177",
+      "taskRefs": ["developing-today/code#1177"]
+    },
+    {
+      "id": "contract-session-02",
+      "source": "jules",
+      "label": "Example jules session 2",
+      "agentId": "jules",
+      "agentLabel": "Jules",
+      "parentId": null,
+      "startedAt": "2026-10-27T03:00:00Z",
+      "lastSeenAt": "2026-10-27T03:12:00Z",
+      "status": "idle",
+      "model": "example-model",
+      "title": "Example session for https://github.com/developing-today/code/issues/1178",
+      "taskRefs": ["developing-today/code#1178"]
+    }
+  ],
+  "projects": [
+    {
+      "id": "PVTI_contract_1",
+      "databaseId": 901,
+      "url": "https://github.com/orgs/example-owner/projects/4?pane=issue&itemId=901",
+      "projectUrl": "https://github.com/orgs/example-owner/projects/4",
+      "ref": "example-owner/example-repo#2401",
+      "repo": "example-owner/example-repo",
+      "number": 2401,
+      "issueUrl": "https://github.com/example-owner/example-repo/issues/2401",
+      "title": "Example Project item 1",
+      "state": "open",
+      "contentKind": "issue",
+      "status": "Todo",
+      "area": null,
+      "horizon": "Month",
+      "kind": "Epic",
+      "labels": ["epic"],
+      "author": "example-user",
+      "updatedAt": "2026-10-27T03:00:00Z"
+    },
+    {
+      "id": "PVTI_contract_2",
+      "databaseId": 902,
+      "url": "https://github.com/orgs/example-owner/projects/4?pane=issue&itemId=902",
+      "projectUrl": "https://github.com/orgs/example-owner/projects/4",
+      "ref": "example-owner/example-repo#2402",
+      "repo": "example-owner/example-repo",
+      "number": 2402,
+      "issueUrl": "https://github.com/example-owner/example-repo/issues/2402",
+      "title": "Example Project item 2",
+      "state": "open",
+      "contentKind": "issue",
+      "status": "Todo",
+      "area": null,
+      "horizon": "Month",
+      "kind": "Task",
+      "labels": [],
+      "author": "example-user",
+      "updatedAt": "2026-10-27T03:00:00Z",
+      "parentRef": "example-owner/example-repo#2401"
+    }
+  ]
+}

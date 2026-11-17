@@ -31,7 +31,10 @@ describe("live board: Kaneo updatedAt honesty (#1197)", () => {
     globalThis.fetch = (async (input: unknown) => {
       const url = String(input);
       const json = (body: unknown, headers: Record<string, string> = {}) =>
-        new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json", ...headers } });
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json", ...headers },
+        });
       if (url.includes("/api/auth/sign-in/email")) return json({}, { "set-cookie": "session=test; Path=/" });
       if (url.includes("/api/workspace")) return json([{ id: "ws1" }]);
       if (url.includes("/api/project?")) return json([{ id: "p1", slug: "code", name: "Code" }]);
@@ -43,7 +46,14 @@ describe("live board: Kaneo updatedAt honesty (#1197)", () => {
                 id: "in-progress",
                 name: "In Progress",
                 tasks: [
-                  { id: "t-dated", number: 1, title: "Dated work", status: "in-progress", createdAt: created, updatedAt: updated },
+                  {
+                    id: "t-dated",
+                    number: 1,
+                    title: "Dated work",
+                    status: "in-progress",
+                    createdAt: created,
+                    updatedAt: updated,
+                  },
                   { id: "t-undated", number: 2, title: "Undated work", status: "in-progress", createdAt: created },
                 ],
               },

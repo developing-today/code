@@ -225,7 +225,7 @@ impl Cast {
             by,
             Body::Member(MemberOp::Remove {
                 member: id(who),
-                successor: None,
+                mode: crate::groups::RemoveMode::Revoke,
             }),
         );
         let messages = self
@@ -1257,7 +1257,7 @@ fn test_recovery_puts_the_device_back_and_its_compromised_copy_cannot_read() {
         1,
         Body::Member(MemberOp::Remove {
             member: id(3),
-            successor: None,
+            mode: crate::groups::RemoveMode::Revoke,
         }),
     );
     let with = cast.log(
@@ -1412,7 +1412,7 @@ fn test_fork_recovery_removes_the_forked_key_and_reenrols_a_new_one() {
         1,
         Body::Member(MemberOp::Remove {
             member: id(3),
-            successor: None,
+            mode: crate::groups::RemoveMode::Revoke,
         }),
     );
     let with = cast.log(

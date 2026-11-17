@@ -28,6 +28,20 @@
 //! [policy]                       # absent: the code defaults apply
 //! freshness_window_seconds = 300 # the server-level freshness window (N23)
 //! pull_policy = "open"           # who may pull a world's events: "open" or "members" (P6.5)
+//!                                # (the operator block list is not config: it lives in the
+//!                                #  event store's `blocks` table, #2245, and gates read it
+//!                                #  from there via `crate::event_store::BlockList`)
+//!
+//! [budgets]                        # absent: the #2247 code defaults apply
+//! app_inbound_bytes_per_hour = 21474836480   # 20 GiB/h app-wide inbound
+//! per_peer_bytes_per_hour = 104857600        # 100 MiB/h per peer
+//! per_ip_bytes_per_hour = 262144000          # 250 MiB/h per directly observed IP
+//!
+//! [[budgets.counterparty]]         # an override row for one specific peer;
+//! peer = "ann"                     # a declared user key, or a 64-hex public key
+//! bytes_per_window = 1048576       # 1 MiB per window for this peer only
+//! window_seconds = 86400           # the override window (here: a day)
+//! messages_per_window = 1000       # optional message cap inside the window
 //! ```
 //!
 //! [`ServerConfig::parse`] checks the whole file and translates every key to its ID, so a bad file
@@ -60,6 +74,9 @@ pub struct ServerConfig {
     groups: Vec<GroupSpec>,
     create: CreateRule,
     policy: PolicySpec,
+    /// The #2247 rolling-window abuse budgets. Defaults apply when
+    /// the file has no `[budgets]` table.
+    budgets: crate::abuse::BudgetPolicy,
     /// Every local key, for users and groups alike. Keys are unique within the config.
     names: BTreeMap<String, Object>,
     /// The primary alias of each object that has one.
@@ -205,6 +222,15 @@ impl ServerConfig {
     #[must_use]
     pub const fn pull_policy(&self) -> PullPolicy {
         self.policy.pull_policy
+    }
+
+    /// The #2247 rolling-window abuse budgets this server applies:
+    /// the `[budgets]` table's values, with the code defaults for
+    /// anything it does not set. Per-counterparty override rows are
+    /// already resolved to endpoint IDs.
+    #[must_use]
+    pub const fn budgets(&self) -> &crate::abuse::BudgetPolicy {
+        &self.budgets
     }
 
     /// The public key a user key names.

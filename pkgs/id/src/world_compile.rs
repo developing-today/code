@@ -251,6 +251,13 @@ pub async fn compile(
     // The compiler is a whole LLVM process; run it on a blocking thread and
     // poll for the deadline so a hung run cannot block the runtime.
     let run = tokio::task::spawn_blocking(move || {
+        // The compiler's self-reported version (#1069), probed here on
+        // the blocking thread under its own deadline: a hung compiler
+        // or wrapper can neither stall a Tokio worker nor outlive the
+        // probe bound, and a failed probe records an empty string
+        // rather than failing a compile whose artifact identity is
+        // already pinned by `compiler_blake3`.
+        let compiler_version = probe_compiler_version(&roc_bin, VERSION_PROBE_TIMEOUT);
         let mut command = std::process::Command::new(&roc_bin);
         let mut args = vec![
             "build".to_owned(),
@@ -307,9 +314,9 @@ pub async fn compile(
             std::thread::sleep(Duration::from_millis(25));
         };
         let captured_err = stderr_reader.join().unwrap_or_default();
-        Ok((status, captured_err, stable_arguments))
+        Ok((status, captured_err, stable_arguments, compiler_version))
     });
-    let (status, captured_err, arguments) = run
+    let (status, captured_err, arguments, compiler_version) = run
         .await
         .context("compile task")?
         .map_err(|error| error.context("compilation failed"))?;
@@ -323,6 +330,7 @@ pub async fn compile(
         crate::world::ModuleProvenance::SourceBuild(crate::world::SourceBuildProvenance {
             schema_version: 1,
             compiler_blake3,
+            compiler_version,
             platform_blake3,
             source_blake3,
             target: target.to_owned(),
@@ -357,6 +365,109 @@ pub async fn compile(
     .context("the compiled module is not a valid world module")?;
     Ok((wasm, tail(&captured_err, MAX_CAPTURE_BYTES), provenance))
 }
+
+/// Wall-clock bound for the compiler version probe (#1069). The probe
+/// is informational provenance only, so it gets a small slice of the
+/// compilation budget; a compiler that cannot state its version within
+/// the bound is recorded as an empty version.
+const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Ask the compiler for its self-reported version, bounded in time and
+/// captured output. Runs on a blocking thread (called from the compile
+/// job's `spawn_blocking` closure): the child is polled against
+/// `timeout` and killed past it, and its stdout is drained nonblocking
+/// into a tail-bounded buffer, so neither a hanging compiler nor a
+/// grandchild inheriting the stdout pipe can block the probe — there
+/// is no reader thread to join and no EOF to wait for. Any failure —
+/// spawn, non-zero exit, timeout — yields an empty string; the caller
+/// pins artifact identity by digest regardless.
+fn probe_compiler_version(roc_bin: &Path, timeout: Duration) -> String {
+    use std::io::Read as _;
+    let mut child = match std::process::Command::new(roc_bin)
+        .arg("version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return String::new(),
+    };
+    let mut stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return String::new();
+        }
+    };
+    set_nonblocking(&stdout);
+    // Drain whatever the child has written so far into the tail buffer.
+    // A nonblocking read reports `WouldBlock` when the pipe is empty for
+    // now and `Ok(0)` at EOF; both end the drain.
+    fn drain(stdout: &mut std::process::ChildStdout, retained: &mut Vec<u8>) {
+        let mut chunk = [0_u8; 8 * 1024];
+        loop {
+            match stdout.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(read) => {
+                    retained.extend_from_slice(&chunk[..read]);
+                    if retained.len() > MAX_CAPTURE_BYTES {
+                        retained.drain(..retained.len() - MAX_CAPTURE_BYTES);
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+    }
+    let mut retained = Vec::new();
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        drain(&mut stdout, &mut retained);
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(_) => break None,
+        }
+    };
+    drain(&mut stdout, &mut retained);
+    match status {
+        Some(status) if status.success() => String::from_utf8_lossy(&retained).trim().to_owned(),
+        _ => String::new(),
+    }
+}
+
+/// Put a pipe fd into nonblocking mode for the version probe's drain
+/// loop. On failure the probe still works: reads simply block until
+/// the child writes or exits, and the deadline poll keeps the bound
+/// (a blocked read can delay one drain, never the kill decision past
+/// the child's own output activity).
+#[cfg(unix)]
+fn set_nonblocking(stdout: &std::process::ChildStdout) {
+    use std::os::fd::AsRawFd as _;
+    // Safety: `fcntl` on a live fd owned by `stdout`; only the
+    // file-status flags are read and OR-ed, never replaced.
+    #[allow(unsafe_code)]
+    unsafe {
+        let flags = libc::fcntl(stdout.as_raw_fd(), libc::F_GETFL);
+        if flags >= 0 {
+            libc::fcntl(stdout.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+    }
+}
+
+/// No nonblocking control on non-Unix targets; the probe's deadline
+/// poll still bounds the wait between drains.
+#[cfg(not(unix))]
+fn set_nonblocking(_stdout: &std::process::ChildStdout) {}
 
 fn digest_file(path: &Path) -> Result<String> {
     let mut file = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
@@ -663,6 +774,46 @@ mod tests {
             tail(&captured, MAX_CAPTURE_BYTES),
             String::from_utf8_lossy(&expected).into_owned()
         );
+    }
+
+    #[cfg(unix)]
+    fn fake_compiler(script: &str) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("fake-roc");
+        std::fs::write(&path, script).expect("write fake compiler");
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake compiler");
+        (dir, path)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn version_probe_records_the_reported_version() {
+        let (_dir, bin) = fake_compiler("#!/bin/sh\necho 'roc version 9.9-test'\n");
+        assert_eq!(
+            probe_compiler_version(&bin, Duration::from_secs(5)),
+            "roc version 9.9-test"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn version_probe_bounds_a_hung_compiler() {
+        // A compiler that hangs while reporting its version must be
+        // killed at the probe bound and recorded as unavailable, not
+        // block the compile forever (Codex P2 on PR #4263).
+        let (_dir, bin) = fake_compiler("#!/bin/sh\nsleep 30\n");
+        let started = std::time::Instant::now();
+        assert_eq!(probe_compiler_version(&bin, Duration::from_millis(200)), "");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn version_probe_failure_records_empty() {
+        let (_dir, bin) = fake_compiler("#!/bin/sh\nexit 3\n");
+        assert_eq!(probe_compiler_version(&bin, Duration::from_secs(5)), "");
     }
 
     #[test]
@@ -1403,9 +1554,18 @@ restore = |text| match U64.from_str(text) {
         ] {
             let app = spec(vec![("main.roc", &format!("{spelling}\napp [x] {{}}"))]);
             let refused = check_imports(&app, &modules, &[]).unwrap_err().to_string();
-            assert!(refused.contains("main.roc imports Screen"), "{spelling}: {refused}");
-            assert!(check_imports(&app, &modules, &["Screen".to_owned()]).is_ok(), "{spelling}");
-            assert!(check_imports(&app, &modules, &["*".to_owned()]).is_ok(), "{spelling}");
+            assert!(
+                refused.contains("main.roc imports Screen"),
+                "{spelling}: {refused}"
+            );
+            assert!(
+                check_imports(&app, &modules, &["Screen".to_owned()]).is_ok(),
+                "{spelling}"
+            );
+            assert!(
+                check_imports(&app, &modules, &["*".to_owned()]).is_ok(),
+                "{spelling}"
+            );
         }
     }
 

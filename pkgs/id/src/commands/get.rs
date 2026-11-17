@@ -166,7 +166,7 @@ pub async fn cmd_get_local(name: &str, output: &str) -> Result<()> {
         send.write_all(&req).await?;
         send.finish()?;
         let resp_buf = recv.read_to_end(64 * 1024).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
         meta_conn.close(0u32.into(), b"done");
 
         let hash = match resp {
@@ -337,7 +337,7 @@ pub async fn cmd_get_one_remote(
     send.write_all(&req).await?;
     send.finish()?;
     let resp_buf = recv.read_to_end(64 * 1024).await?;
-    let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+    let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
     meta_conn.close(0u32.into(), b"done");
 
     let hash = match resp {

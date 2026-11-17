@@ -179,7 +179,8 @@ type TypeCheckMode string
 
 const (
 	TypeCheckOff    TypeCheckMode = "off"
-	TypeCheckOn     TypeCheckMode = "on"
+	TypeCheckTypes  TypeCheckMode = "types"
+	TypeCheckOn     TypeCheckMode = TypeCheckTypes // legacy name for callers
 	TypeCheckStrict TypeCheckMode = "strict"
 )
 
@@ -196,6 +197,26 @@ const (
 // scheduled, where the cost is irrelevant and a broken import at three in the
 // morning is not.
 func TypeCheck(ctx context.Context, runtimeBin, entry string, mode TypeCheckMode, timeout time.Duration) *Report {
+	return TypeCheckResolved(ctx, runtimeBin, entry, mode, timeout, nil, filepath.Dir(entry))
+}
+
+// TypeCheckResolved is TypeCheck with the executing run's
+// resolution-relevant arguments (see ResolutionArgs): a run that
+// executes under a materialised --config checks under that same
+// config, so an import only the generated dependency map supplies
+// is not reported missing by a check that never saw the map
+// (Codex review, PR #2589).
+//
+// execDir is the directory the script will execute in (runner's
+// Options.Dir). It matters for the same reason it matters in
+// CheckImportsResolved: the runtime resolves a relative configuration
+// path -- `--config ./deno.json` in the declared runtime arguments --
+// against its working directory, so the check must run there too, not
+// beside the entry file, or a valid run is aborted for a config that
+// was never the one it executes under (Codex review, PR #2589). An
+// empty execDir inherits the caller's working directory, which is
+// exactly what the execution does.
+func TypeCheckResolved(ctx context.Context, runtimeBin, entry string, mode TypeCheckMode, timeout time.Duration, configArgs []string, execDir string) *Report {
 	r := &Report{}
 	if mode == TypeCheckOff || mode == "" {
 		return r
@@ -206,8 +227,8 @@ func TypeCheck(ctx context.Context, runtimeBin, entry string, mode TypeCheckMode
 		// equivalent single command. Saying so is better than pretending the
 		// check ran.
 		r.Add(Problem{
-			What:  "type checking is only available under Deno; " + base + " strips types rather than checking them",
-			Where: "script.typecheck",
+			What:  "script checking is only available under Deno; " + base + " strips types rather than checking them",
+			Where: "script.check",
 		})
 		return r
 	}
@@ -215,6 +236,7 @@ func TypeCheck(ctx context.Context, runtimeBin, entry string, mode TypeCheckMode
 	if mode == TypeCheckStrict {
 		args = append(args, "--all")
 	}
+	args = append(args, ResolutionArgs(configArgs)...)
 	args = append(args, entry)
 
 	cctx := ctx
@@ -224,7 +246,10 @@ func TypeCheck(ctx context.Context, runtimeBin, entry string, mode TypeCheckMode
 		defer cancel()
 	}
 	cmd := exec.CommandContext(cctx, runtimeBin, args...)
-	cmd.Dir = filepath.Dir(entry)
+	// Execute in the directory the script will execute in, not beside
+	// the entry file: relative --config paths resolve from the working
+	// directory (Codex review, PR #2589).
+	cmd.Dir = execDir
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return r
@@ -232,14 +257,14 @@ func TypeCheck(ctx context.Context, runtimeBin, entry string, mode TypeCheckMode
 	if cctx.Err() != nil {
 		r.Add(Problem{
 			What:  "type checking did not finish within " + timeout.String(),
-			Where: "script.typecheck",
-			Fix:   "raise the timeout, or set script.typecheck off",
+			Where: "script.check",
+			Fix:   "raise the timeout, or set script.check off",
 		})
 		return r
 	}
 	r.Add(Problem{
 		What:  "the program does not type check:\n" + indent(strings.TrimSpace(string(out))),
-		Where: "script.typecheck",
+		Where: "script.check",
 		Fatal: true,
 	})
 	return r

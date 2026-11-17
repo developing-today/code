@@ -120,6 +120,23 @@ export class QueueClient {
     return rows[0] ?? null;
   }
 
+  /** Pre-enqueue dedupe-key lookup (issue #4661): the row, if any, that
+   * already consumes `dedupeKey`. Compared by row id after the enqueue
+   * (see isPreExistingTaskRow in server.ts) — never by comparing the
+   * DB-assigned created_at against the dispatch-host clock. Returns the
+   * existing row or null; a lookup failure returns null so a transient
+   * PostgREST blip degrades to "no known existing row" (the terminal-
+   * status check still catches terminal pre-existing rows). */
+  async findByDedupeKey(dedupeKey: string): Promise<TaskRow | null> {
+    const res = await fetch(
+      `${this.baseUrl}/rest/v1/tasks?dedupe_key=eq.${encodeURIComponent(dedupeKey)}&select=*&limit=1`,
+      { headers: this.headers(false) },
+    );
+    if (!res.ok) return null;
+    const rows = (await res.json()) as TaskRow[];
+    return rows[0] ?? null;
+  }
+
   async cancelTask(id: number, reason: string, worker = "dispatch"): Promise<void> {
     await this.rpc("cancel_repo_task", { p_task_id: id, p_worker: worker, p_reason: reason });
   }

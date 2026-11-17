@@ -39,8 +39,10 @@ use std::{
 use futures_lite::StreamExt;
 use russh::{
     Channel, ChannelId, ChannelOpenFailure, MethodKind, MethodSet, Pty,
-    keys::{Algorithm, PrivateKey, PublicKey, ssh_key::HashAlg, ssh_key::LineEnding},
-    server::{Auth, ChannelOpenHandle, Config, Handle, Handler, Msg, Server, Session},
+    keys::{Algorithm, PrivateKey, ssh_key::HashAlg, ssh_key::LineEnding},
+    server::{
+        Auth, ChannelOpenHandle, Config, Handle, Handler, Msg, Server, Session, VerifiedPublicKey,
+    },
 };
 use serde_json::json;
 use tokio::{
@@ -199,16 +201,62 @@ pub fn host_key_fingerprint(key: &PrivateKey) -> String {
 }
 
 /// The SSH host key, created on first use and reused on every later start.
+///
+/// First-run creation races are expected (a service and a CLI starting
+/// together): a reader that observes the winner's file mid-write retries
+/// the parse for a bounded window instead of failing on a partial PEM,
+/// and a creator that loses the `create_new` race reads the winner's key
+/// instead of propagating `AlreadyExists`. A file that still does not
+/// parse after the deadline is corrupt — it errors and is never
+/// regenerated, so a valid key is never replaced on a parse error.
 pub async fn load_or_create_host_key(path: &str) -> anyhow::Result<PrivateKey> {
     match tokio::fs::read_to_string(path).await {
-        Ok(pem) => Ok(PrivateKey::from_openssh(pem)?),
+        Ok(pem) => parse_host_key_after_creation_race(path, &pem).await,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)?;
             let pem = key.to_openssh(LineEnding::LF)?;
-            crate::store::write_private_file(path, pem.as_bytes()).await?;
-            Ok(key)
+            match crate::store::write_private_file(path, pem.as_bytes()).await {
+                Ok(()) => Ok(key),
+                Err(error)
+                    if error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists) =>
+                {
+                    // Another first start won the creation race. Keep its
+                    // key; never replace a key created after our first read.
+                    let pem = tokio::fs::read_to_string(path).await?;
+                    parse_host_key_after_creation_race(path, &pem).await
+                }
+                Err(error) => Err(error),
+            }
         }
         Err(error) => Err(error.into()),
+    }
+}
+
+/// Parse a host-key PEM, retrying briefly while a concurrent first start
+/// may still be writing the file. `first_pem` is the contents already
+/// read; retries re-read the file. Mirrors the 1-second creation-race
+/// window of `store::read_key_after_creation_race`, but parse-based: a
+/// PEM has no fixed length to wait for. After the deadline the parse
+/// error is returned as-is — the file is corrupt, not racing.
+async fn parse_host_key_after_creation_race(
+    path: &str,
+    first_pem: &str,
+) -> anyhow::Result<PrivateKey> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+    let mut pem = first_pem.to_owned();
+    loop {
+        match PrivateKey::from_openssh(pem.as_str()) {
+            Ok(key) => return Ok(key),
+            Err(error) => {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(error.into());
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                pem = tokio::fs::read_to_string(path).await?;
+            }
+        }
     }
 }
 
@@ -305,12 +353,12 @@ impl Handler for SshClient {
     async fn auth_publickey(
         &mut self,
         user: &str,
-        public_key: &PublicKey,
+        public_key: VerifiedPublicKey<'_>,
     ) -> Result<Auth, russh::Error> {
         let Some(world) = user.strip_prefix(EXPLORE_PREFIX) else {
             return Ok(Auth::reject());
         };
-        let Some(ed25519) = public_key.key_data().ed25519() else {
+        let Some(ed25519) = public_key.public_key.key_data().ed25519() else {
             return Ok(Auth::reject());
         };
         if self.permit.is_none() {
@@ -497,6 +545,7 @@ impl Handler for SshClient {
             commands: VecDeque::new(),
             records_prefix: None,
             records_drained: 0,
+            records_after: None,
             errored: false,
             previous_screen: None,
         };
@@ -692,6 +741,10 @@ struct SshIo {
     /// Cumulative bytes already rendered for the current `/records` drain, so a
     /// large world's records are bounded across pages, not just per page.
     records_drained: usize,
+    /// Cursor that produced the in-flight records page (`None` before the
+    /// first page, whose request sends `after: null`); the page's
+    /// `next_after` must strictly advance past it (#6615).
+    records_after: Option<String>,
     errored: bool,
     /// Last screen successfully written to this shell's terminal. A missing
     /// value forces the next screen view to repaint the whole terminal.
@@ -793,6 +846,7 @@ impl SessionIo for SshIo {
                         if let WorldCommand::Records { prefix } = &command {
                             self.records_prefix = Some(prefix.clone());
                             self.records_drained = 0;
+                            self.records_after = None;
                         }
                         return Inbound::Text(frame);
                     }
@@ -956,6 +1010,7 @@ impl SessionIo for SshIo {
             Some("error") => {
                 self.errored = true;
                 self.records_prefix = None;
+                self.records_after = None;
                 let message = value["message"].as_str().unwrap_or("error");
                 self.last_error = Some(format!("\r\n{}\r\n", terminal_text(message)));
                 self.last_error.clone().unwrap_or_default()
@@ -963,7 +1018,31 @@ impl SessionIo for SshIo {
             Some("records") => {
                 let records = value["records"].as_object();
                 let sequence = value["sequence"].as_u64().unwrap_or_default();
-                let after = value["next_after"].as_str().map(str::to_owned);
+                // Validate the cursor before trusting it (#6615): a
+                // present-but-non-string `next_after` is a malformed page,
+                // not a clean end-of-pages, and a cursor that does not
+                // strictly advance past the one that produced this page
+                // would re-request the same page until the byte cap stops
+                // the drain (~18,700 re-requests in the filing's probe).
+                // The advance rule is also why no page-count bound is
+                // needed beside the byte bound below: every continuation
+                // moves the cursor forward through the host's key space,
+                // so pages cannot repeat, and the rendered-byte total
+                // still caps the drain's size. Oracle: the `world_net`
+                // records cursor contract (#6505/#6578).
+                let produced_by = self.records_after.clone().unwrap_or_default();
+                let (after, notice) = match records_cursor(value.get("next_after"), &produced_by) {
+                    RecordsCursor::Advance(next) => (Some(next), None),
+                    RecordsCursor::End => (None, None),
+                    RecordsCursor::Malformed => (
+                        None,
+                        Some("[records truncated: host sent a malformed next-page cursor]\n"),
+                    ),
+                    RecordsCursor::Stalled => (
+                        None,
+                        Some("[records truncated: host cursor did not advance]\n"),
+                    ),
+                };
                 let text = render_records_value(records, sequence, after.as_deref());
                 // Bound the whole drain, not just each page: a world with many
                 // records would otherwise keep fetching pages without limit.
@@ -978,16 +1057,24 @@ impl SessionIo for SshIo {
                 };
                 let truncated = after.is_some() && self.records_drained >= MAX_RECORDS_TOTAL_BYTES;
                 if let Some((prefix, after)) = next {
+                    self.records_after = Some(after.clone());
                     self.commands
                         .push_back(WorldCommand::RecordsContinue { prefix, after });
                 } else {
                     self.records_prefix = None;
+                    self.records_after = None;
                 }
                 if truncated {
                     format!(
                         "\r\n{}\r\n{}",
                         terminal_text(&text),
                         terminal_text("[records truncated: too much output]\n")
+                    )
+                } else if let Some(notice) = notice {
+                    format!(
+                        "\r\n{}\r\n{}",
+                        terminal_text(&text),
+                        terminal_text(notice)
                     )
                 } else {
                     format!("\r\n{}", terminal_text(&text))
@@ -1040,9 +1127,15 @@ impl std::str::FromStr for SshTarget {
     fn from_str(text: &str) -> anyhow::Result<Self> {
         let (user, rest) = text.rsplit_once('@').unwrap_or(("id", text));
         let port = |digits: &str| {
-            digits
+            anyhow::ensure!(
+                digits.bytes().all(|byte| byte.is_ascii_digit()),
+                "`{digits}` is not a port"
+            );
+            let port = digits
                 .parse::<u16>()
-                .map_err(|_| anyhow::anyhow!("`{digits}` is not a port"))
+                .map_err(|_| anyhow::anyhow!("`{digits}` is not a port"))?;
+            anyhow::ensure!(port != 0, "`{digits}` is not a port");
+            Ok(port)
         };
         let (host, port) = if let Some(inner) = rest.strip_prefix('[') {
             let Some((host, tail)) = inner.split_once(']') else {
@@ -1060,6 +1153,21 @@ impl std::str::FromStr for SshTarget {
                 None => (rest, 22),
             }
         };
+        // #3267: whitespace, control characters, and `/` in the user or
+        // host are never legitimate — without this check they parse and
+        // fail later inside russh as opaque DNS/auth errors, and a
+        // newline-bearing host lands verbatim in error messages and the
+        // known-hosts lookup key. The bracketed-IPv6 host is held to the
+        // same rule: valid IPv6 literals contain none of these.
+        let has_bad_chars = |part: &str| {
+            part.chars()
+                .any(|c| c.is_whitespace() || c.is_control() || c == '/')
+        };
+        anyhow::ensure!(
+            !has_bad_chars(user) && !has_bad_chars(host),
+            "`{text}` is not [user@]host[:port]: user and host must not \
+             contain whitespace, control characters, or `/`"
+        );
         anyhow::ensure!(
             !host.is_empty() && !user.is_empty(),
             "`{text}` is not [user@]host[:port]"
@@ -1384,6 +1492,37 @@ fn render_records_value(
         output.push_str("more records; fetching next page\n");
     }
     output
+}
+
+/// What a records page's `next_after` means for the drain, judged
+/// against `produced_by` — the cursor that produced this page (the
+/// empty string before the first page, whose request sends
+/// `after: null`). Factored out of the `records` frame arm so the
+/// contract can be unit-tested without a live session (#6615).
+#[derive(Debug, PartialEq, Eq)]
+enum RecordsCursor {
+    /// No cursor (absent or null): the listing is complete.
+    End,
+    /// A cursor that strictly advances: fetch the next page after it.
+    Advance(String),
+    /// A present, non-string cursor: a malformed page, never a clean
+    /// end-of-pages.
+    Malformed,
+    /// A cursor that does not advance past `produced_by` (a repeat,
+    /// a step backwards, or the empty cursor at the start): following
+    /// it would re-request the page just rendered.
+    Stalled,
+}
+
+fn records_cursor(next_after: Option<&serde_json::Value>, produced_by: &str) -> RecordsCursor {
+    match next_after {
+        None | Some(serde_json::Value::Null) => RecordsCursor::End,
+        Some(serde_json::Value::String(cursor)) if cursor.as_str() > produced_by => {
+            RecordsCursor::Advance(cursor.clone())
+        }
+        Some(serde_json::Value::String(_)) => RecordsCursor::Stalled,
+        Some(_) => RecordsCursor::Malformed,
+    }
 }
 
 #[cfg(test)]
@@ -1771,10 +1910,15 @@ impl Typing {
 }
 
 /// Terminal text from the world: control characters are dropped, so text from
-/// one participant cannot drive another participant's terminal.
+/// one participant cannot drive another participant's terminal. Unicode
+/// format characters (Cf, per the shared `crate::is_format_char` set) are
+/// dropped for the same reason: a bidi override or zero-width character in
+/// one participant's text could otherwise reorder or falsify the terminal
+/// output around it (design #3455). The accepted cost is that `ZWJ`-joined
+/// emoji render as separate glyphs here; the stored text is untouched.
 fn terminal_text(data: &str) -> String {
     data.chars()
-        .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
+        .filter(|ch| (!ch.is_control() || matches!(ch, '\n' | '\t')) && !crate::is_format_char(*ch))
         .collect::<String>()
         .replace('\n', "\r\n")
 }
@@ -1798,6 +1942,81 @@ mod tests {
         ) -> Result<bool, russh::Error> {
             Ok(true)
         }
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_first_starts_converge_on_the_winners_host_key() {
+        // All callers line up behind a barrier so their first reads race
+        // the winner's create_new write: the losers must load the winner's
+        // key (via the AlreadyExists winner-read and/or the parse retry),
+        // never error and never end up with a different key.
+        for _round in 0..3 {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("ssh_host_key").display().to_string();
+            let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(8));
+            let mut handles = Vec::new();
+            for _ in 0..8 {
+                let barrier = std::sync::Arc::clone(&barrier);
+                let path = path.clone();
+                handles.push(tokio::spawn(async move {
+                    barrier.wait().await;
+                    load_or_create_host_key(&path).await
+                }));
+            }
+            let mut fingerprints = Vec::new();
+            for handle in handles {
+                let key = handle.await.unwrap().unwrap();
+                fingerprints.push(host_key_fingerprint(&key));
+            }
+            assert!(
+                fingerprints.iter().all(|f| f == &fingerprints[0]),
+                "concurrent first starts diverged: {fingerprints:?}"
+            );
+            let on_disk = load_or_create_host_key(&path).await.unwrap();
+            assert_eq!(host_key_fingerprint(&on_disk), fingerprints[0]);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_a_partially_written_host_key_pem_is_retried_until_it_parses() {
+        // The interleaving from #3465: the reader observes the winner's
+        // file between create_new and the completed write. The partial
+        // PEM is already on disk before the load starts, so the first
+        // read deterministically sees it; the load must retry until the
+        // writer finishes, not fail with a parse error.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ssh_host_key");
+        let winner = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+        let pem = winner.to_openssh(LineEnding::LF).unwrap();
+        let pem_text = pem.as_str().to_owned();
+        tokio::fs::write(&path, &pem_text[..pem_text.len() / 2])
+            .await
+            .unwrap();
+        let completer_path = path.clone();
+        let completer = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            tokio::fs::write(&completer_path, pem_text).await.unwrap();
+        });
+        let loaded = load_or_create_host_key(path.to_str().unwrap())
+            .await
+            .unwrap();
+        completer.await.unwrap();
+        assert_eq!(host_key_fingerprint(&loaded), host_key_fingerprint(&winner));
+    }
+
+    #[tokio::test]
+    async fn test_an_unparseable_host_key_errors_and_is_never_regenerated() {
+        // Past the creation-race deadline a bad PEM is corrupt, not
+        // racing: the load errors and the file is left exactly as found.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ssh_host_key");
+        let garbage =
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nnot-a-key\n-----END OPENSSH PRIVATE KEY-----\n";
+        tokio::fs::write(&path, garbage).await.unwrap();
+        let result = load_or_create_host_key(path.to_str().unwrap()).await;
+        assert!(result.is_err(), "corrupt host key must error, not load");
+        let after = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(after, garbage, "corrupt host key must never be regenerated");
     }
 
     async fn start(hub: WorldHub) -> (u16, tokio::task::JoinHandle<std::io::Result<()>>) {
@@ -2443,7 +2662,43 @@ mod tests {
         );
         assert_eq!(parse("[::1]:2022").unwrap(), target("id", "::1", 2022));
         assert_eq!(parse("me@[::1]").unwrap(), target("me", "::1", 22));
-        for bad in ["", "host:", "host:99999", "::1", "[::1", "@host", "[::1]x"] {
+        assert_eq!(
+            parse("me@[2001:db8::1]:2222").unwrap(),
+            target("me", "2001:db8::1", 2222)
+        );
+        for bad in [
+            "",
+            "host:",
+            "host:0",
+            "[::1]:0",
+            "host:+22",
+            "host:-22",
+            "host:٢٢",
+            "host:99999",
+            "::1",
+            "[::1",
+            "@host",
+            "[::1]x",
+        ] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+        // #3267: whitespace, control characters, and `/` in the user or
+        // the host (the bracketed-IPv6 host included) refuse at parse
+        // time instead of failing later inside russh.
+        for bad in [
+            "exam ple.org",
+            "ada@exam ple.org",
+            " @host",
+            "ada @host",
+            "ada@host ",
+            "ada@ho/st",
+            "a/b@example.org",
+            "[:: 1]",
+            "ada@[:: 1]",
+            "ada@example.org\n.evil",
+            "us\ter@host",
+            "ada@ho\rst",
+        ] {
             assert!(parse(bad).is_err(), "{bad}");
         }
     }
@@ -2899,6 +3154,21 @@ mod tests {
     }
 
     #[test]
+    fn terminal_text_drops_format_characters_but_keeps_layout() {
+        // Bidi overrides and zero-width characters never reach the terminal,
+        // even without any control character present (#3455 Phase 3b).
+        assert_eq!(terminal_text("a\u{202e}b"), "ab");
+        assert_eq!(terminal_text("a\u{200b}b"), "ab");
+        assert_eq!(terminal_text("a\u{feff}b"), "ab");
+        // The shared Cf set is the gate, not a bidi-only subset.
+        assert!(!terminal_text("\u{00ad}").chars().any(|c| c == '\u{00ad}'));
+        // Layout survivors are unchanged: LF/TAB are kept (as CRLF/TAB).
+        assert_eq!(terminal_text("a\nb\tc"), "a\r\nb\tc");
+        // Ordinary text, including non-joiner emoji bases, is byte-identical.
+        assert_eq!(terminal_text("naïve-✦サーバー"), "naïve-✦サーバー");
+    }
+
+    #[test]
     fn world_line_buffer_handles_fragmented_packets_and_crlf_once() {
         let mut input = WorldLineBuffer::default();
         assert!(input.push(b"hel").is_empty());
@@ -3017,6 +3287,65 @@ mod tests {
                 "the total cap must be finite"
             )
         };
+    }
+
+    #[test]
+    fn records_cursor_must_be_a_string_that_advances() {
+        // Issue #6615: the SSH /records drain trusted `next_after`
+        // unchecked — a non-string cursor silently read as a complete
+        // listing, and a repeated/empty cursor re-requested the same
+        // page ~18,700 times until the rendered-byte cap stopped it.
+        // Oracle: the world_net records cursor contract (#6505/#6578)
+        // — the cursor must be a string and must strictly advance.
+        let cursor = |value: serde_json::Value, produced_by: &str| {
+            records_cursor(Some(&value), produced_by)
+        };
+
+        // Absent and null both mean the host has no more pages.
+        assert_eq!(records_cursor(None, ""), RecordsCursor::End);
+        assert_eq!(
+            cursor(serde_json::Value::Null, "k1"),
+            RecordsCursor::End
+        );
+
+        // A normal multi-page drain: each cursor advances past the
+        // one that produced the page, then the listing ends.
+        assert_eq!(
+            cursor(serde_json::json!("k1"), ""),
+            RecordsCursor::Advance("k1".to_owned())
+        );
+        assert_eq!(
+            cursor(serde_json::json!("k2"), "k1"),
+            RecordsCursor::Advance("k2".to_owned())
+        );
+        assert_eq!(records_cursor(None, "k2"), RecordsCursor::End);
+
+        // Present but not a string: a malformed page, never End.
+        for bad in [
+            serde_json::json!(123),
+            serde_json::json!(true),
+            serde_json::json!({"key": "k1"}),
+            serde_json::json!(["k1"]),
+        ] {
+            assert_eq!(
+                cursor(bad, ""),
+                RecordsCursor::Malformed,
+                "non-string cursor must be malformed"
+            );
+        }
+
+        // A cursor that does not advance stops the drain: the empty
+        // cursor on the first page, a repeat of the producing
+        // cursor, and a step backwards.
+        assert_eq!(cursor(serde_json::json!(""), ""), RecordsCursor::Stalled);
+        assert_eq!(
+            cursor(serde_json::json!("k1"), "k1"),
+            RecordsCursor::Stalled
+        );
+        assert_eq!(
+            cursor(serde_json::json!("k0"), "k1"),
+            RecordsCursor::Stalled
+        );
     }
 
     #[cfg(test)]
@@ -3173,6 +3502,68 @@ mod tests {
             update.len(),
             initial.len()
         );
+        server.abort();
+    }
+
+    /// Proving test for tracker #796 item 9-6: an SSH `window-change`
+    /// request must reach the session as a resize and refit the shell view
+    /// to the new viewport size (drafted on #796 from task 6509; landed once
+    /// the ssh feature compiled again after #3962).
+    /// A program whose view is one fixed 4x2 ASCII screen.
+    struct FixedScreenSsh;
+
+    impl crate::world::WorldProgram for FixedScreenSsh {
+        fn view(&mut self, _viewer: &crate::world::Participant) -> anyhow::Result<Option<String>> {
+            Ok(Some(
+                r#"{"kind":"screen","version":1,"width":4,"height":2,"rows":["abcd","wxyz"]}"#
+                    .to_owned(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_window_change_refits_the_shell_view_to_the_new_size() {
+        let world = WorldHandle::spawn_with_program(
+            WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+            Box::new(FixedScreenSsh),
+        );
+        let (_, capability) = world
+            .issue(
+                "player".to_owned(),
+                crate::world::WorldScopes::from_names(["join", "input"]).unwrap(),
+            )
+            .await
+            .unwrap();
+        let hub = WorldHub::single(WorldService::new(world, Some("admin".to_owned())));
+        let (port, server) = start(hub).await;
+        let session = connect(port, capability.expose()).await;
+        let mut channel = shell(&session).await;
+        let mut terminal = vt100::Parser::new(24, 80, 0);
+        // The pty opens at 80x24, so the whole 4x2 screen is shown first.
+        read_until(&mut channel, &mut terminal, "wxyz").await;
+        assert!(terminal.screen().contents().contains("abcd"));
+
+        // A terminal window change must reach the session as a resize and
+        // refit the view: 2x1 keeps only the first two cells of row one.
+        channel.window_change(2, 1, 0, 0).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let contents = terminal.screen().contents();
+                if contents.contains("ab") && !contents.contains("wxyz") {
+                    break;
+                }
+                match channel.wait().await {
+                    Some(ChannelMsg::Data { data }) => terminal.process(&data),
+                    Some(_) => {}
+                    None => panic!("shell closed before the refitted view"),
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for the refitted view");
+        let contents = terminal.screen().contents();
+        assert!(contents.contains("ab"), "{contents:?}");
+        assert!(!contents.contains("cd"), "{contents:?}");
         server.abort();
     }
 

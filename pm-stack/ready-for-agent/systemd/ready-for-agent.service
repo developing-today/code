@@ -13,10 +13,15 @@
 # and enables it. State (SQLite) lives in
 # ~/.local/share/ready-for-agent/ by upstream default.
 #
-# The UI + GraphQL listen on port 6056. Since 2026-10-25 the unit
-# binds all interfaces (bare --host): loopback + tailnet + LAN —
-# Drew's call (LAN/tailnet access fine; a public endpoint only
-# behind a password). No public route is configured.
+# The UI + GraphQL listen on port 6056. The unit binds loopback
+# only (no --host flag: upstream's default), aligned with the rest
+# of the stack by #1181 — the 2026-10-25 all-interfaces bind (bare
+# --host) also claimed any future WAN-facing interface, broader
+# than the settled access model (loopback + tailnet; a public
+# endpoint only behind a password). On the NixOS host the live unit
+# comes from nixos/services/pm-apps (home-manager), which adds a
+# socket-activated proxy serving the tailnet address; a standalone
+# install of this file is loopback-only.
 #
 # PATH is explicit: the harness shells out to git, gh, and the
 # fleet's OpenCode 2 (`opencode` from the per-user profile — v1 is
@@ -32,7 +37,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=%h/pm-stack/ready-for-agent
 Environment=PATH=%h/.local/bin:/etc/profiles/per-user/user/bin:%h/.nix-profile/bin:/run/current-system/sw/bin:/usr/bin:/bin
-ExecStart=%h/.local/bin/ready-for-agent start --no-open --host
+ExecStart=%h/.local/bin/ready-for-agent start --no-open
 Restart=on-failure
 RestartSec=10
 

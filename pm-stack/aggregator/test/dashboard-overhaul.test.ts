@@ -6,7 +6,7 @@
 // and the Needs-you order is a saved preference.
 import { describe, expect, test } from "bun:test";
 import { validateNewAction, type DashAction } from "../src/actions.ts";
-import { cardState, effectiveActions } from "../src/card-state.ts";
+import { cancelledActionIds, cardState, effectiveActions } from "../src/card-state.ts";
 import { buildAttention } from "../src/derive.ts";
 import type { OrchestrationSection, TierItem } from "../src/model.ts";
 import { STANDING_IDENTITIES } from "../src/registry.ts";
@@ -177,6 +177,62 @@ describe("card-state derivation (#1443/#1450)", () => {
       createdAt: iso(NOW),
     });
     expect(cardState([dismiss, restore], NOW).suppressed).toBeNull();
+  });
+  test("a restore cancelled by a later restore no longer cancels its target — undo of undo revives the dismissal (#4310)", () => {
+    const dismiss = mkAction({ id: "da-dismiss", verb: "dismiss", state: "applied", payload: { reason: "x" } });
+    const restore1 = mkAction({
+      id: "da-restore-1",
+      verb: "restore",
+      state: "applied",
+      supersedes: "da-dismiss",
+      createdAt: iso(NOW - 60_000),
+    });
+    const restore2 = mkAction({ id: "da-restore-2", verb: "restore", supersedes: "da-restore-1", createdAt: iso(NOW) });
+    const actions = [dismiss, restore1, restore2];
+    expect(cancelledActionIds(actions)).toEqual(new Set(["da-restore-1"]));
+    expect(effectiveActions(actions).map((a) => a.id)).toEqual(["da-dismiss", "da-restore-2"]);
+    expect(cardState(actions, NOW).suppressed?.kind).toBe("dismissed");
+  });
+  test("depth-2 chain with a NEW first restore and an APPLIED second restore also revives the dismissal (#4310)", () => {
+    const dismiss = mkAction({ id: "da-dismiss", verb: "dismiss", state: "applied", payload: { reason: "x" } });
+    const restore1 = mkAction({
+      id: "da-restore-1",
+      verb: "restore",
+      supersedes: "da-dismiss",
+      createdAt: iso(NOW - 60_000),
+    });
+    const restore2 = mkAction({
+      id: "da-restore-2",
+      verb: "restore",
+      state: "applied",
+      supersedes: "da-restore-1",
+      createdAt: iso(NOW),
+    });
+    const actions = [dismiss, restore1, restore2];
+    expect(effectiveActions(actions).map((a) => a.id)).toEqual(["da-dismiss", "da-restore-2"]);
+    expect(cardState(actions, NOW).suppressed?.kind).toBe("dismissed");
+  });
+  test("depth-3 restore chain alternates: the third restore re-cancels the dismissal (#4310)", () => {
+    const dismiss = mkAction({ id: "da-dismiss", verb: "dismiss", state: "applied", payload: { reason: "x" } });
+    const restore1 = mkAction({
+      id: "da-restore-1",
+      verb: "restore",
+      state: "applied",
+      supersedes: "da-dismiss",
+      createdAt: iso(NOW - 120_000),
+    });
+    const restore2 = mkAction({
+      id: "da-restore-2",
+      verb: "restore",
+      state: "applied",
+      supersedes: "da-restore-1",
+      createdAt: iso(NOW - 60_000),
+    });
+    const restore3 = mkAction({ id: "da-restore-3", verb: "restore", supersedes: "da-restore-2", createdAt: iso(NOW) });
+    const actions = [dismiss, restore1, restore2, restore3];
+    expect(cancelledActionIds(actions)).toEqual(new Set(["da-dismiss", "da-restore-2"]));
+    expect(effectiveActions(actions).map((a) => a.id)).toEqual(["da-restore-1", "da-restore-3"]);
+    expect(cardState(actions, NOW).suppressed).toBeNull();
   });
   test("survey answers merge across submits, latest per question wins (#1451)", () => {
     const a1 = mkAction({
@@ -429,5 +485,18 @@ describe("attention sections (#1444)", () => {
     expect(sections.queues).toContain("Link the Citi accounts in Plaid");
     expect(sections.header).toContain("Needs User (1)");
     expect(sections.sessions).toContain('id="sessions"');
+  });
+});
+
+describe("tier item with a non-GitHub ref (phase-b regression, 2026-11-05)", () => {
+  test("a goal-id ref renders as text, not a GitHub link, and does not throw", async () => {
+    const html = await page([{ ...BASE, ref: "goal_b647ff5c92f5" }]);
+    expect(html).toContain("Link the Citi accounts in Plaid");
+    expect(html).toContain("<code>goal_b647ff5c92f5</code>");
+    expect(html).not.toContain("github.com/goal_b647ff5c92f5");
+  });
+  test("a GitHub ref still links the card title", async () => {
+    const html = await page([{ ...BASE, ref: "developing-today/code#812" }]);
+    expect(html).toContain('href="https://github.com/developing-today/code/issues/812"');
   });
 });

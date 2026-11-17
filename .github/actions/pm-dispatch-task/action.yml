@@ -1,4 +1,11 @@
 name: pm-dispatch-task
+# LOADING CONTRACT (issue #4742): this action must be loaded from a
+# workspace checkout of developing-today/code at .pm-central (as
+# pm-scheduled.yml and main-broken.yml do). Its nested dispatch steps
+# load pm-dispatch-start / pm-dispatch-queue from that same checkout
+# via local paths, because the remote `...@main` form makes the runner
+# download the whole repo as an action archive, which fails with
+# `Could not find file .../_staging/code-<sha>/archive`.
 description: >-
   Task-level entry point for pm-dispatch: dispatch a named, recurring task
   (bolt, palette, suggestions, ci-fix, or any future library entry) through
@@ -9,7 +16,7 @@ description: >-
   `permissions: id-token: write` — the starter/queuer steps mint a GitHub
   Actions OIDC token (audience pm-dispatch) to authenticate. For
   `task: ci-fix` the calling job MUST also provide a GH_TOKEN in the job
-  environment (for example `GH_TOKEN: ${{ github.token }}`) whose token can
+  environment (for example `GH_TOKEN` set to the workflow GITHUB_TOKEN) whose token can
   read issues in the target repo (for example `permissions: issues: read`),
   which the dedupe step uses to search for an existing open tracking issue.
 inputs:
@@ -267,7 +274,7 @@ runs:
     - name: Dispatch via pm-dispatch-start (launch a session now)
       id: dispatch_start
       if: inputs.task != 'ci-fix' || (steps.dedupe.outputs.mode == 'fresh' && steps.resolve.outputs.is_default_branch == 'true')
-      uses: developing-today/code/.github/actions/pm-dispatch-start@main
+      uses: ./.pm-central/.github/actions/pm-dispatch-start
       with:
         repo: ${{ inputs.repo }}
         title: ${{ steps.resolve.outputs.title }}
@@ -279,7 +286,7 @@ runs:
     - name: Dispatch via pm-dispatch-queue (attach to the existing tracking issue)
       id: dispatch_attach
       if: inputs.task == 'ci-fix' && steps.dedupe.outputs.mode == 'attach'
-      uses: developing-today/code/.github/actions/pm-dispatch-queue@main
+      uses: ./.pm-central/.github/actions/pm-dispatch-queue
       with:
         repo: ${{ inputs.repo }}
         issue_number: ${{ steps.dedupe.outputs.issue_number }}
@@ -292,7 +299,7 @@ runs:
     - name: Dispatch via pm-dispatch-queue (queue with a new tracking issue)
       id: dispatch_queue
       if: inputs.task == 'ci-fix' && steps.dedupe.outputs.mode == 'fresh' && steps.resolve.outputs.is_default_branch != 'true'
-      uses: developing-today/code/.github/actions/pm-dispatch-queue@main
+      uses: ./.pm-central/.github/actions/pm-dispatch-queue
       with:
         repo: ${{ inputs.repo }}
         issue: "true"

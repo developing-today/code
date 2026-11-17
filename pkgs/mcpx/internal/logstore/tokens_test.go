@@ -12,7 +12,7 @@ func TestTokenStoreEconomics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open token store: %v", err)
 	}
-	defer ts.Close()
+	defer func() { _ = ts.Close() }()
 
 	rec1 := TokenRecord{
 		ID:               "turn-1",

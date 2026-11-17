@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly fleet Cargo target janitor
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=10m
+Unit=cargo-target-janitor.service
+
+[Install]
+WantedBy=timers.target

@@ -142,7 +142,7 @@ func TestHandleMetricsTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ts.Close()
+	defer func() { _ = ts.Close() }()
 
 	_ = ts.RecordTurn(logstore.TokenRecord{
 		ID:             "turn-1",

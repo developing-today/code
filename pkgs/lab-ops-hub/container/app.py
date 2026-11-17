@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Lab Ops Hub crawler container.
 
-Tiny stdlib-only HTTP service. POST /crawl {"url": "..."} -> fetches the page
-with a real HTTP client, extracts title / link count / readable text, returns
-JSON in the same shape the Worker's fallback produces. Runs only on demand
-(Worker starts it via getContainer, sleepAfter=2m kills it when idle), so it
-burns container minutes only while crawling.
+Tiny HTTP service with one IDNA dependency. POST /crawl {"url": "..."} ->
+fetches the page with a real HTTP client, extracts title / link count / readable
+text, returns JSON in the same shape the Worker's fallback produces. Runs only
+on demand (Worker starts it via getContainer, sleepAfter=2m kills it when idle),
+so it burns container minutes only while crawling.
 """
 
 import base64
@@ -15,12 +15,15 @@ import json
 import re
 import socket
 import ssl
+import time
 import unicodedata
 import urllib.error
 import urllib.request
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import unquote, urlparse, urlsplit
+
+import idna
 
 # Crawl-target policy (#441): the Worker validates before dispatching,
 # and this service re-validates independently (defence in depth — it is
@@ -472,17 +475,117 @@ def validate_crawl_url(raw):
             # codepoint returns the judged host with the codepoint
             # deleted, as the Worker returns it (#652). A host whose
             # spelling was folded at extraction time (the Kelvin
-            # sign, #667) gets the same rebuild. (IP literals
-            # take the canonical-address return below instead, and
-            # WHATWG serializes those without a root dot, as here.)
+            # sign, #667) gets the same rebuild. A non-ASCII (IDN)
+            # host gets the same rebuild with the host in its A-label
+            # (punycode) form — the form the Worker's u.hostname
+            # carries — instead of returning the raw U-label spelling
+            # the fetcher would then resolve under a different name
+            # than the Worker certified (#659). The A-labels are NOT
+            # the encoded_labels already computed for the RFC 1035 length
+            # check above: those punycode the NFKC-mapped judged
+            # label, and NFKC is not UTS-46 mapping — it reorders
+            # combining marks before U+0345 can map (so
+            # ᾴ came back xn--hxa0a for the Worker's
+            # xn--kxad), it maps U+03F2 to U+03C2 where UTS-46 maps
+            # it to U+03C3 (xn--3xa for xn--4xa), and it never
+            # NFC-composes a base letter with a combining mark an
+            # ignored codepoint's deletion brought together
+            # (e­́ came back xn--e-xbb for xn--9ca) — each a
+            # different domain than the Worker certified, not a
+            # different spelling of one (Codex review of PR #3781).
+            # Instead each label is re-encoded from the ORIGINAL
+            # spelling (host_before_mapping, separators translated,
+            # root dot stripped, ignored codepoints deleted exactly
+            # as in judging) with the stdlib IDNA codec: nameprep
+            # applies the UTS-46-compatible mapping BEFORE
+            # normalization, in the Worker's order (#596's U+0345
+            # map included). A label the codec refuses — it judges
+            # by Unicode 3.2 tables — falls back to the
+            # NFKC-normalized punycode of the same original label
+            # (NFKC, not NFC, so the fallback still applies the
+            # compatibility mappings the Worker applies).
+            # (IP literals take the canonical-address return below
+            # instead, and WHATWG serializes those without a root
+            # dot, as here.)
+            _return_source = host_before_mapping.translate(
+                {0x3002: ".", 0xFF0E: ".", 0xFF61: "."}
+            )
+            if has_root_dot and _return_source.endswith("."):
+                _return_source = _return_source[:-1]
+            _original_labels = _return_source.split(".")
+
+            def _return_label(judged_label, original_label):
+                if judged_label.isascii():
+                    return judged_label
+                candidate = original_label.translate(
+                    {cp: None for cp in _UTS46_IGNORED}
+                )
+                if candidate.isascii():
+                    return judged_label
+                try:
+                    # Match the Worker's WHATWG URL hostname conversion:
+                    # UTS-46 nontransitional, not Python's IDNA2003
+                    # stdlib codec (Unicode 3.2 nameprep).
+                    return idna.encode(
+                        candidate,
+                        uts46=True,
+                        transitional=False,
+                        std3_rules=False,
+                    ).decode("ascii")
+                except (UnicodeError, ValueError):
+                    # Preserve the permissive fallback for labels
+                    # python-idna declines — but apply the UTS-46
+                    # mapping FIRST, independently of the strict
+                    # IDNA2008 validation that just failed, and only
+                    # then let NFKC supply any remaining compatibility
+                    # mappings before punycode. NFKC alone maps
+                    # U+03F2 (lunate sigma) to U+03C2 (final sigma)
+                    # where UTS-46 maps it to U+03C3, so a label the
+                    # codec refuses over an underscore (ϲ_.com) came
+                    # back as the final-sigma host xn--_-xmb instead
+                    # of the WHATWG xn--_-zmb — a different hostname
+                    # than the Worker certified (Codex review of
+                    # PR #5231). uts46_remap is mapping only (no
+                    # validity checks), so the permissive reach of
+                    # the fallback is unchanged.
+                    try:
+                        candidate = idna.core.uts46_remap(
+                            candidate, std3_rules=False, transitional=False
+                        )
+                    except (UnicodeError, ValueError):
+                        pass
+                    normalized = unicodedata.normalize("NFKC", candidate)
+                    if normalized.isascii():
+                        # The remapping can leave a pure-ASCII label
+                        # (UTS-46 deletes U+FE0F, so a_ + U+FE0F
+                        # remaps to a_): return it directly. An xn--
+                        # prefix on an ASCII label names a different
+                        # host than the Worker returns (Codex review
+                        # of PR #5231).
+                        return normalized
+                    return "xn--" + normalized.encode("punycode").decode("ascii")
+
+            return_host = (
+                ".".join(
+                    _return_label(judged_label, original_label)
+                    for judged_label, original_label in zip(
+                        host.split("."), _original_labels
+                    )
+                )
+                if not host.isascii()
+                else host
+            )
             return _url_with_encoded_components(
                 _normalize_validated_url(
-                    _url_with_host(u, host + "." if has_root_dot else host, raw)
+                    _url_with_host(
+                        u, return_host + "." if has_root_dot else return_host, raw
+                    )
                     if percent_decoded
                     or has_literal_separator
                     or host_was_mapped
                     or has_ignored_codepoint
                     or has_extraction_fold
+                    or not host.isascii()
                     else raw
                 )
             )
@@ -1251,9 +1354,24 @@ _OPENER = urllib.request.build_opener(
     _ValidatingRedirectHandler, urllib.request.HTTPSHandler(context=CTX)
 )
 
+_CRAWL_TIMEOUT_SECONDS = 20
+_CRAWL_MAX_BODY_BYTES = 2_000_000
+_CRAWL_READ_CHUNK_BYTES = 65_536
+
 
 def _fetch_crawl(url):
-    # Fetch a validated URL and return (status, body capped at 2 MB).
+    # Fetch a validated URL and return (status, body capped at 2 MB). One
+    # absolute deadline covers opening the response and reading its body;
+    # unlike the Worker fallback's per-hop timeout, redirects share this
+    # container fetch's budget.
+    deadline = time.monotonic() + _CRAWL_TIMEOUT_SECONDS
+
+    def remaining_seconds():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("crawl exceeded its total deadline")
+        return remaining
+
     # urllib raises HTTPError for 4xx/5xx, but an HTTPError is also the
     # response: an error-status page is still a crawl result (the
     # Worker fallback extracts it and reports its real status_code),
@@ -1275,14 +1393,36 @@ def _fetch_crawl(url):
     # hostname and fail before any request is sent (#622).
     _apply_userinfo_auth(req)
     try:
-        response = _OPENER.open(req, timeout=20)
+        response = _OPENER.open(req, timeout=remaining_seconds())
     except urllib.error.HTTPError as e:
         if not 400 <= e.code < 600:
             raise
         response = e
     with response as res:
         status = getattr(res, "status", None) or res.getcode()
-        return status, res.read(2_000_000)
+        body = bytearray()
+        while len(body) < _CRAWL_MAX_BODY_BYTES:
+            remaining = remaining_seconds()
+            # urllib's HTTPResponse uses a buffered reader over the socket.
+            # Tighten the socket timeout before every bounded read so a
+            # peer that keeps dribbling bytes cannot renew the 20s budget.
+            fp = getattr(res, "fp", None)
+            raw = getattr(fp, "raw", None)
+            sock = getattr(raw, "_sock", None)
+            if sock is not None:
+                sock.settimeout(remaining)
+            chunk = res.read1(
+                min(
+                    _CRAWL_READ_CHUNK_BYTES,
+                    _CRAWL_MAX_BODY_BYTES - len(body),
+                )
+            )
+            if time.monotonic() >= deadline:
+                raise TimeoutError("crawl exceeded its total deadline")
+            if not chunk:
+                break
+            body.extend(chunk)
+        return status, bytes(body)
 
 
 class Extractor(HTMLParser):

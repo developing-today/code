@@ -34,13 +34,21 @@ This list is the workflow's request catalog (`request_catalog` in [`.agents/rese
 
 Folders are named `<UTC datetime>_<kind>_<name>`. The kinds in use are `feature`, `design`, `architecture`, `phase`, `fix`, `reference` and `research`. Run `ls doc/` to list them all. Some starting points:
 
+- [Architecture index](../planning/architecture/README.md) — every architecture and design record in one place, plus the ADR index and template.
 - [Next stage platform architecture](2026-10-17T15-00-00Z_architecture_next_stage_platform/2026-10-17T15-00-00Z_architecture_next_stage_platform.md)
 - [Portable world surfaces](2026-10-14T19-39-30Z_architecture_portable_world_surfaces/2026-10-14T19-39-30Z_architecture_portable_world_surfaces.md)
 - [Roc worlds architecture](2026-10-07T00-20-00Z_architecture_roc_worlds/2026-10-07T00-20-00Z_architecture_roc_worlds.md)
+- [AGPL/GPL hosting: inspectable worlds, uploads, and self-hosting](2026-11-05T15-08-16Z_research_id5986_agpl_gpl_hosting/2026-11-05T15-08-16Z_research_id5986_agpl_gpl_hosting.md)
 - [Research workflow design](2026-10-19T06-09-02Z_design_research_workflow/2026-10-19T06-09-02Z_design_research_workflow.md)
 - [Project-management stack design](2026-10-24T11-05-38Z_design_project-management-stack/2026-10-24T11-05-38Z_design_project-management-stack.md)
 - [T3 Code V2 integration](2026-10-26T21-18-21Z_feature_t3code-v2-integration/main.md)
 - [PM stack forecasting: velocity, quota walls, and stall risk](2026-11-01T21-07-00Z_design_pm-stack_forecasting/2026-11-01T21-07-00Z_design_pm-stack_forecasting.md)
+- [Authenticated peer announcements and bounded discovery](2026-11-02T08-13-35Z_design_peer-announcement-authentication/2026-11-02T08-13-35Z_design_peer-announcement-authentication.md)
+- [Graph-native currency event contracts](2026-11-07T03-55-49Z_feature_graph_currency_contracts/2026-11-07T03-55-49Z_feature_graph_currency_contracts.md) (first implementation slice for #5522; later v1 layers remain)
+- [Self-hosting and interop stance](2026-11-08T09-12-27Z_design_id-self-hosting-interop-stance/2026-11-08T09-12-27Z_design_id-self-hosting-interop-stance.md) (decision record for #5975: the interop contract, supported self-hosting shapes, and what is not required of a self-hoster)
+- [Per-user function mapping](2026-11-08T10-26-00Z_design_id_per_user_function_mapping/2026-11-08T10-26-00Z_design_id_per_user_function_mapping.md) (design for #5967: the per-user function interface, the per-tick mapping algorithm with its failure table, boundary-only switching and triggers, human+AI-partner composition, and fuel-style fairness)
+- [Atlas storage growth model](2026-11-08T11-18-02Z_design_atlas_storage_growth_model/2026-11-08T11-18-02Z_design_atlas_storage_growth_model.md) (design for #6061: per-source churn x retention growth model against the #6019 plan envelope, the ledger-fed calibration procedure, conservative v1 retention defaults for the #6026 rule engine, and staging modelled separately from the retained corpus)
+- [Writer sets v2: view-as-object, set algebra, federation, discovery v2](2026-11-08T11-10-00Z_design_id_writer_sets_v2/2026-11-08T11-10-00Z_design_id_writer_sets_v2.md) (design for #5789: pinned/tracking view references, derived sets with provenance and exclusions winning, federation claim discipline via #5675/#5672, inherited uncounted-side honesty, and the three v1 open questions answered)
 
 Two names break the pattern. They stay as they are because other documents link to them: `2026-03-23T00:00:00Z_feature_file_list_ui/` has colons in its name, and `2026-10-14T10-18-19Z_design_p7_2_cloudflare_workers.md` is a file, not a folder.
 

@@ -46,6 +46,30 @@ describe("matchCharges", () => {
     expect(matchCharges(candidates, SERVICES).rows).toHaveLength(2);
   });
 
+  test("same-source Plaid charges are not deduped", () => {
+    const candidates: ChargeCandidate[] = [
+      { source: "plaid", at: "2026-10-28", merchant: "OPENAI", amountUsd: 20 },
+      { source: "plaid", at: "2026-10-29", merchant: "OPENAI", amountUsd: 20 },
+    ];
+    expect(matchCharges(candidates, SERVICES).rows).toHaveLength(2);
+  });
+
+  test("same-source Gmail charges are not deduped", () => {
+    const candidates: ChargeCandidate[] = [
+      { source: "gmail", at: "2026-10-28", merchant: "OPENAI", amountUsd: 20 },
+      { source: "gmail", at: "2026-10-29", merchant: "OPENAI", amountUsd: 20 },
+    ];
+    expect(matchCharges(candidates, SERVICES).rows).toHaveLength(2);
+  });
+
+  test("distinct empty-normalized merchants are not deduped", () => {
+    const candidates: ChargeCandidate[] = [
+      { source: "plaid", at: "2026-10-28", merchant: "1234567", amountUsd: 20 },
+      { source: "gmail", at: "2026-10-29", merchant: "9876543", amountUsd: 20 },
+    ];
+    expect(matchCharges(candidates, SERVICES).rows).toHaveLength(2);
+  });
+
   test("matched charges take the service name as their label", () => {
     const candidates: ChargeCandidate[] = [
       { source: "plaid", at: "2026-10-11", merchant: "ANTHROPIC PBC", amountUsd: 100 },
@@ -62,6 +86,40 @@ describe("matchCharges", () => {
     const { rows } = matchCharges(candidates, SERVICES);
     expect(rows[0]?.label).toBe("OpenAI");
     expect(rows[0]?.source).toBe("Gmail alert");
+  });
+
+  test("service and SaaS-marker matches require token boundaries", () => {
+    const candidates: ChargeCandidate[] = [
+      { source: "plaid", at: "2026-10-15", merchant: "METAMUCIL", amountUsd: 12 },
+      { source: "plaid", at: "2026-10-16", merchant: "METAL ROOFING LLC", amountUsd: 34 },
+      { source: "plaid", at: "2026-10-17", merchant: "META PAY", amountUsd: 8 },
+    ];
+    const { rows, unmatchedSaas } = matchCharges(candidates, [{ name: "Meta" }]);
+
+    expect(rows.map((row) => row.label)).toEqual(["METAMUCIL", "METAL ROOFING LLC", "Meta"]);
+    expect(unmatchedSaas.map((charge) => charge.merchant)).toEqual([]);
+    expect(isSaasLooking(normalizeMerchantName("METAMUCIL"))).toBe(false);
+    expect(isSaasLooking(normalizeMerchantName("METAL ROOFING LLC"))).toBe(false);
+    expect(isSaasLooking(normalizeMerchantName("META PAY"))).toBe(true);
+    expect(isSaasLooking(normalizeMerchantName("METAPAY*UC5DPA22Y4 US"))).toBe(true);
+  });
+
+  test("Cursor.com still matches the Cursor service", () => {
+    const candidates: ChargeCandidate[] = [
+      { source: "plaid", at: "2026-10-18", merchant: "CURSOR.COM", amountUsd: 20 },
+    ];
+    expect(matchCharges(candidates, [{ name: "Cursor" }]).rows[0]?.label).toBe("Cursor");
+  });
+
+  test("multi-word service names retain token-set matching", () => {
+    const candidates: ChargeCandidate[] = [
+      { source: "plaid", at: "2026-10-19", merchant: "NORTH STAR PLAN", amountUsd: 9 },
+      { source: "plaid", at: "2026-10-20", merchant: "PLAN NORTH MONTHLY STAR", amountUsd: 10 },
+    ];
+    expect(matchCharges(candidates, [{ name: "North Star" }]).rows.map((row) => row.label)).toEqual([
+      "North Star",
+      "North Star",
+    ]);
   });
 
   test("unmatched SaaS-looking charges surface once, deduped", () => {

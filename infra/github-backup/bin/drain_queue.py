@@ -3,8 +3,9 @@
 
 The Cloudflare Worker (../worker) receives GitHub App webhooks, validates
 the HMAC, and stores events in KV. This drainer (timer: every 5 min):
-  GET  <GHB_WORKER_URL>/queue   (Authorization: Bearer <GHB_WORKER_BEARER>)
-  ->   {"events": [{"id", "repo", "event", "ts"}]}
+  GET  <GHB_WORKER_URL>/queue[?cursor=...] (Authorization: Bearer <GHB_WORKER_BEARER>)
+  ->   {"events": [{"id", "repo", "event", "ts"}], "cursor": ..., "list_complete": ...}
+       The drainer follows all pages before applying the ack policy.
   POST <GHB_WORKER_URL>/queue/ack {"ids": [...]}
 Per-repo coalescing: a repo is fetched at most once per 15 min
 (state.json key drain_last::<repo>) — hatch-personal pushes every ~2 min.
@@ -40,15 +41,29 @@ logged as one loud DRAIN-DROP line, and counted in the run summary.
 The allowlist fails closed: no owners in config, nothing is fetched.
 """
 
-import json, os, sys, time, urllib.request
+import json, os, sys, time, urllib.request, urllib.parse
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from ghb_common import load_config, backup_root
+from ghb_common import load_config, backup_root, load_plan, load_state, report_problems, save_json, state_lock
 import fetch_mirrors
 
 COALESCE_S = 15 * 60
 CHRONIC_DRAIN_FAILURES = 5
+# The Worker performs one KV delete per acked id, and Cloudflare caps an
+# invocation at 1,000 KV operations — acks are sent in batches well
+# under that ceiling so a multi-page backlog can always drain.
+ACK_BATCH_SIZE = 500
+# Pagination bounds for queue_events (#6572, design #6622 Phase 2): a
+# Worker page stream that always answers list_complete=false with a
+# fresh, never-repeated cursor otherwise loops forever, accumulating
+# events and never acking. Pages carry 500 events and the largest
+# observed backlog is ~5.9k events (~12 pages), so these bounds sit
+# roughly 8x above any legitimate drain; a stream that crosses either
+# one is a stuck external system, and the poll fails closed (nothing
+# from it is acked) with an error naming the bound it hit.
+MAX_QUEUE_PAGES = 100
+MAX_QUEUE_EVENTS = 50_000
 
 
 def worker_req(path, payload=None):
@@ -66,6 +81,63 @@ def worker_req(path, payload=None):
         req.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(req, timeout=60) as r:
         return json.loads(r.read() or b"{}")
+
+
+def ack_events(cfg, ids):
+    """Acknowledge ids in bounded batches (ACK_BATCH_SIZE per request).
+
+    A single /queue/ack request carrying a whole multi-page backlog
+    exceeds the Worker's per-invocation KV-operation limit once more
+    than ~1,000 events are ackable; the Worker then fails mid-batch
+    after partially deleting it. Bounded requests drain any backlog.
+    """
+    path = cfg["worker"]["queue_poll_path"] + "/ack"
+    for i in range(0, len(ids), ACK_BATCH_SIZE):
+        worker_req(path, {"ids": ids[i : i + ACK_BATCH_SIZE]})
+
+
+def queue_events(queue_poll_path):
+    """Read every Worker KV page before applying the existing ack policy.
+
+    Older Worker responses without pagination metadata remain a one-page
+    response. An incomplete/malformed cursor fails closed before any event
+    from this poll can be acknowledged, as does a page stream that crosses
+    MAX_QUEUE_PAGES / MAX_QUEUE_EVENTS without completing (#6572).
+    """
+    events = []
+    cursor = None
+    seen_cursors = set()
+    pages = 0
+    while True:
+        path = queue_poll_path
+        if cursor is not None:
+            sep = "&" if "?" in path else "?"
+            path += sep + urllib.parse.urlencode({"cursor": cursor})
+        page = worker_req(path)
+        pages += 1
+        page_events = page.get("events", [])
+        if not isinstance(page_events, list):
+            raise RuntimeError("Worker queue response events must be a list")
+        events.extend(page_events)
+        if page.get("list_complete", True):
+            return events
+        if pages >= MAX_QUEUE_PAGES:
+            raise RuntimeError(
+                f"Worker queue pagination exceeded MAX_QUEUE_PAGES "
+                f"({MAX_QUEUE_PAGES}) without list_complete"
+            )
+        if len(events) > MAX_QUEUE_EVENTS:
+            raise RuntimeError(
+                f"Worker queue pagination exceeded MAX_QUEUE_EVENTS "
+                f"({MAX_QUEUE_EVENTS}) accumulated events without list_complete"
+            )
+        next_cursor = page.get("cursor")
+        if not isinstance(next_cursor, str) or not next_cursor:
+            raise RuntimeError("Worker queue response is incomplete but has no cursor")
+        if next_cursor in seen_cursors:
+            raise RuntimeError("Worker queue pagination cursor repeated")
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
 
 
 def event_age_s(ev, now):
@@ -122,7 +194,8 @@ def event_owner(ev):
     """
     rep = ev.get("repository")
     if isinstance(rep, dict):
-        login = (rep.get("owner") or {}).get("login")
+        owner = rep.get("owner")
+        login = owner.get("login") if isinstance(owner, dict) else None
         if isinstance(login, str) and login:
             return login
     repo = event_repo(ev)
@@ -130,7 +203,8 @@ def event_owner(ev):
         return repo.split("/", 1)[0]
     inst = ev.get("installation")
     if isinstance(inst, dict):
-        login = (inst.get("account") or {}).get("login")
+        account = inst.get("account")
+        login = account.get("login") if isinstance(account, dict) else None
         if isinstance(login, str) and login:
             return login
     return None
@@ -139,22 +213,26 @@ def event_owner(ev):
 def main():
     cfg = load_config()
     root = backup_root(cfg)
+    # #3240: same shared state lock as the daily fetch — see
+    # fetch_mirrors.main. The lock spans load -> modify -> save.
+    with state_lock(root):
+        return _main_locked(cfg, root)
+
+
+def _main_locked(cfg, root):
     state_path = os.path.join(root, "state.json")
-    state = json.load(open(state_path)) if os.path.exists(state_path) else {}
-    q = worker_req(cfg["worker"]["queue_poll_path"])
-    events = q.get("events", [])
+    state, problems = load_state(root)
+    report_problems(problems)
+    events = queue_events(cfg["worker"]["queue_poll_path"])
     if not events:
         print("queue empty")
         return 0
     now = time.time()
     stamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     log_path = os.path.join(root, "fetch.log")
-    plan_path = os.path.join(root, "plan.json")
-    planned = (
-        {p["repo"] for p in json.load(open(plan_path))}
-        if os.path.exists(plan_path)
-        else set()
-    )
+    plan, problems = load_plan(root)
+    report_problems(problems)
+    planned = {p["repo"] for p in plan}
 
     def log(line):
         with open(log_path, "a") as f:
@@ -228,10 +306,9 @@ def main():
         failed.append(
             {"repo": repo, "result": res, "consecutive_failures": fs["count"]}
         )
-    with open(state_path, "w") as f:
-        json.dump(state, f, indent=0)
+    save_json(state_path, state)
     if ack:
-        worker_req(cfg["worker"]["queue_poll_path"] + "/ack", {"ids": ack})
+        ack_events(cfg, ack)
     print(
         json.dumps(
             {

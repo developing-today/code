@@ -1,6 +1,6 @@
 [Unit]
 Description=mcpx MCP gateway daemon
-Documentation=https://github.com/dezren39/nix/tree/main/pkgs/mcpx/docs
+Documentation=https://github.com/dezren39/darwin-nix/tree/main/pkgs/mcpx/docs
 After=network-online.target
 Wants=network-online.target
 

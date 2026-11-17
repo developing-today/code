@@ -50,6 +50,7 @@ fn make_source(root: &Path) -> (PathBuf, String) {
                     module_hash: hash.clone(),
                     seed: 7,
                     provenance: None,
+                    trust: None,
                 },
             },
         })

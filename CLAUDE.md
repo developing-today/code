@@ -84,7 +84,7 @@ outputs = inputs: lib.merge [
   sops-nix). Secrets themselves live under `sops/` and `secrets/` (see `.sops.yaml`).
 - Most flake inputs pin to `nixpkgs-unstable` (aliased as the main `nixpkgs` input) because of a
   `neededForBoot` patch (`patches/nixpkgs/neededforboot-nixos-unstable.patch`) that only applies
-  cleanly to the unstable tree — don't re-follow individual inputs back to `nixpkgs-stable`/`-25`
+  cleanly to the unstable tree — don't re-follow individual inputs back to `nixpkgs-25`
   without checking that patch still applies.
 - Root-level single-letter/word symlinks (`rebuild`, `auth`, `nvim`, `n`, `v`, `format-nix`, ...)
   are convenience aliases into `lib/*.sh`; `lib/` here is shell scripts, distinct from the Nix

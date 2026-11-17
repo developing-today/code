@@ -1,23 +1,10 @@
 name: scripts-test
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
-    paths:
-      - "scripts/update-nixpkgs-inputs.py"
-      - "scripts/update-nixpkgs-inputs.sh"
-      - "pkgs/id/scripts/update-nixpkgs-inputs.py"
-      - "pkgs/id/scripts/update-nixpkgs-inputs.sh"
-      - "scripts/tests/test_update_nixpkgs_inputs.py"
-      - ".github/workflows/scripts-test.yml"
   pull_request:
-    paths:
-      - "scripts/update-nixpkgs-inputs.py"
-      - "scripts/update-nixpkgs-inputs.sh"
-      - "pkgs/id/scripts/update-nixpkgs-inputs.py"
-      - "pkgs/id/scripts/update-nixpkgs-inputs.sh"
-      - "scripts/tests/test_update_nixpkgs_inputs.py"
-      - ".github/workflows/scripts-test.yml"
 
 permissions:
   contents: read
@@ -45,3 +32,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Run update-nixpkgs-inputs contract tests (#603)
         run: python3 -m unittest discover -s scripts/tests -p 'test_update_nixpkgs_inputs.py' -v
+      - name: Run worker preflight contract tests (#4862)
+        run: python3 -m unittest discover -s scripts/tests -p 'test_worker_preflight.py' -v
+      - name: Run bitwarden-load-secrets multiline contract tests (#5650)
+        run: python3 -m unittest discover -s scripts/tests -p 'test_bitwarden_load_secrets.py' -v
+      - name: Run power-guard timing validation tests (#6477)
+        run: python3 -m unittest discover -s nixos/services/power-guard -p 'test_*.py' -v
+      - name: Run sops atomic writers regression tests (#6555)
+        run: bash lib/sops-atomic-writers.test.sh

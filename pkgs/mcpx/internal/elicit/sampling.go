@@ -62,6 +62,9 @@ func decodeSampleContent(raw json.RawMessage, arrayOK bool) ([]sampleBlock, erro
 		if err := json.Unmarshal(b, &raws); err != nil {
 			return nil, fmt.Errorf("content is not a list of content blocks: %w", err)
 		}
+		if len(raws) == 0 {
+			return nil, fmt.Errorf("content is an empty list")
+		}
 		blocks := make([]sampleBlock, 0, len(raws))
 		for _, r := range raws {
 			blk, err := decodeSampleBlock(r)
@@ -161,6 +164,9 @@ func ValidateSampleRequest(params json.RawMessage, arrayOK bool) error {
 	if err := json.Unmarshal(params, &p); err != nil {
 		return fmt.Errorf("a CreateMessageRequest must be an object with messages: %w", err)
 	}
+	if len(p.Messages) == 0 {
+		return fmt.Errorf("a CreateMessageRequest must carry at least one message")
+	}
 	// toolUses is every tool_use id seen in an earlier message; a tool
 	// result may only name one of those.
 	toolUses := map[string]bool{}
@@ -226,6 +232,9 @@ func ValidateSampleResult(content json.RawMessage, arrayOK, tools bool) error {
 	if r.Role == nil {
 		return fmt.Errorf("a sampling answer must carry a role")
 	}
+	if *r.Role != "assistant" {
+		return fmt.Errorf("a sampling answer must carry role %q, got %q", "assistant", *r.Role)
+	}
 	if r.Model == nil || *r.Model == "" {
 		return fmt.Errorf("a sampling answer must carry a model")
 	}
@@ -233,6 +242,9 @@ func ValidateSampleResult(content json.RawMessage, arrayOK, tools bool) error {
 	if err != nil {
 		return fmt.Errorf("a sampling answer: %w", err)
 	}
+	// Stop reasons are revision-extensible, so leave unrecognized values to
+	// the revision that introduced them. Only toolUse needs this cross-field
+	// check against whether the request carried tools.
 	if !tools {
 		if r.StopReason == "toolUse" {
 			return fmt.Errorf("a sampling answer stopped for tool use, but the request carried no tools")

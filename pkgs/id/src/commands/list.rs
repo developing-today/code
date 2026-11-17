@@ -7,12 +7,15 @@
 //!
 //! Each line contains:
 //! ```text
-//! <hash>\t<name>
+//! <hash>\t<name>\t<origin>\t<uploaded_at>
 //! ```
 //!
 //! Where:
 //! - `hash` is the 64-character BLAKE3 content hash
 //! - `name` is the tag name assigned to the blob
+//! - `origin` is the node that first wrote the file, or `unknown` for
+//!   files written before origin stamping existed (#4973)
+//! - `uploaded_at` is the upload time (unix seconds), or `unknown`
 //!
 //! # Examples
 //!
@@ -30,7 +33,7 @@ use iroh_base::EndpointId;
 
 use crate::commands::client::create_local_client_endpoint;
 use crate::commands::serve::get_serve_info;
-use crate::commands::text::tsv_row;
+use crate::commands::text::list_tsv_row;
 use crate::protocol::{MetaRequest, MetaResponse};
 use crate::store::{load_or_create_keypair, open_store};
 use crate::{CLIENT_KEY_FILE, META_ALPN, is_node_id};
@@ -80,7 +83,7 @@ pub async fn cmd_list(node: Option<String>, no_relay: bool) -> Result<()> {
         send.write_all(&req).await?;
         send.finish()?;
         let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
-        let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+        let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
         meta_conn.close(0u32.into(), b"done");
 
         let result = match resp {
@@ -88,8 +91,16 @@ pub async fn cmd_list(node: Option<String>, no_relay: bool) -> Result<()> {
                 if items.is_empty() {
                     println!("(no files stored)");
                 } else {
-                    for (hash, name) in items {
-                        println!("{}", tsv_row(hash, &name));
+                    for entry in &items {
+                        println!(
+                            "{}",
+                            list_tsv_row(
+                                entry.hash,
+                                &entry.name,
+                                entry.origin.as_deref(),
+                                entry.uploaded_at
+                            )
+                        );
                     }
                 }
                 Ok(())
@@ -100,22 +111,34 @@ pub async fn cmd_list(node: Option<String>, no_relay: bool) -> Result<()> {
         return result;
     }
 
-    let store = open_store(false).await?;
-    let store_handle = store.as_store();
-
-    let mut list = store_handle.tags().list().await?;
-    let mut count = 0;
-    while let Some(item) = list.next().await {
-        let item = item?;
-        let name = String::from_utf8_lossy(item.name.as_ref());
-        println!("{}", tsv_row(item.hash, &name));
-        count += 1;
-    }
-    if count == 0 {
-        println!("(no files stored)");
-    }
-    store.shutdown().await?;
-    Ok(())
+    // Offline: run the same in-process meta handler the REPL uses, so the
+    // listing is enriched with the recorded origin + upload time from the
+    // metadata tags instead of reporting `unknown` for files whose
+    // metadata exists locally (Codex review, PR #5191).
+    let node = crate::local::LocalNode::open(false).await?;
+    let result = match node.request(MetaRequest::List).await {
+        MetaResponse::List { items } => {
+            if items.is_empty() {
+                println!("(no files stored)");
+            } else {
+                for entry in &items {
+                    println!(
+                        "{}",
+                        list_tsv_row(
+                            entry.hash,
+                            &entry.name,
+                            entry.origin.as_deref(),
+                            entry.uploaded_at
+                        )
+                    );
+                }
+            }
+            Ok(())
+        }
+        _ => Err(anyhow::anyhow!("unexpected response")),
+    };
+    node.shutdown().await?;
+    result
 }
 
 /// Lists files on a remote node.
@@ -146,7 +169,7 @@ pub async fn cmd_list_remote(server_node_id: EndpointId, no_relay: bool) -> Resu
     send.write_all(&req).await?;
     send.finish()?;
     let resp_buf = crate::meta_client::read_capped_response(&mut recv).await?;
-    let resp: MetaResponse = postcard::from_bytes(&resp_buf)?;
+    let resp: MetaResponse = crate::protocol::decode_meta_exact(&resp_buf)?;
     meta_conn.close(0u32.into(), b"done");
 
     let result = match resp {
@@ -154,8 +177,16 @@ pub async fn cmd_list_remote(server_node_id: EndpointId, no_relay: bool) -> Resu
             if items.is_empty() {
                 println!("(no files stored)");
             } else {
-                for (hash, name) in items {
-                    println!("{}", tsv_row(hash, &name));
+                for entry in &items {
+                    println!(
+                        "{}",
+                        list_tsv_row(
+                            entry.hash,
+                            &entry.name,
+                            entry.origin.as_deref(),
+                            entry.uploaded_at
+                        )
+                    );
                 }
             }
             Ok(())

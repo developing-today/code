@@ -5,7 +5,7 @@ description: Prepare one concept of a research package for its full research (st
 
 # Research prepare (S1)
 
-Prepares one concept so the agent who picks up its Research issue can do the full research with almost no other context. There is one agent per concept, and many run in parallel. This is not the full research: S1 makes no recommendation, takes no decision and does no design. That is `concept-research` (S2). The stage contract is in [stages.md](/planning/workflow/stages.md), and the concept file format is in [records.md](/planning/workflow/records.md).
+Prepares one concept so the agent who picks up its Research issue can do the full research with almost no other context. There is one agent per concept, and many run in parallel. This is not the full research: S1 makes no recommendation, takes no decision and does no design. That is `concept-research` (S2). The stage contract is in [stages.md](../../../planning/workflow/stages.md), and the concept file format is in [records.md](../../../planning/workflow/records.md).
 
 ## Inputs
 
@@ -120,7 +120,7 @@ You own only:
 - one `changes.md` line per change;
 - your log.
 
-Other prepare workers run at the same time on other concepts. Wide files change only through your PR. The shared run table is the router's (`rw render`). The full rules are in [collaboration.md](/planning/workflow/collaboration.md).
+Other prepare workers run at the same time on other concepts. Wide files change only through your PR. The shared run table is the router's (`rw render`). The full rules are in [collaboration.md](../../../planning/workflow/collaboration.md).
 
 ## Should load / should not load
 

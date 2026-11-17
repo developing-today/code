@@ -11,9 +11,17 @@
 // Everything here is pure except the state the collector itself
 // passes in/out; file IO lives in collect-fleet-feed.ts, following
 // the same split as charges-match.ts (decisions here, state there).
+//
+// The charges contract (#3161) as it applies here: identity is the
+// shared rule stated in charges-match.ts — sameCharge below is its
+// hand-fed-vs-auto form — and delivery means surfaced keys are
+// persisted only for charges in a feed that was successfully
+// published, so an unmatched charge counts as shown only once it
+// was actually delivered.
 
 import {
   DEDUPE_WINDOW_DAYS,
+  isRealCalendarDate,
   normalizeMerchantName,
   type ChargeCandidate,
   type UnmatchedCharge,
@@ -41,12 +49,14 @@ export function parseChargeCandidates(raw: unknown): ChargeCandidate[] {
     if (typeof entry !== "object" || entry === null) continue;
     const c = entry as Partial<ChargeCandidate>;
     if (c.source !== "plaid" && c.source !== "gmail") continue;
-    if (typeof c.at !== "string" || !/^\d{4}-\d{2}-\d{2}/.test(c.at)) continue;
+    if (typeof c.at !== "string") continue;
+    const at = c.at.slice(0, 10);
+    if (!isRealCalendarDate(at)) continue;
     if (typeof c.merchant !== "string" || !c.merchant.trim()) continue;
     if (typeof c.amountUsd !== "number" || !Number.isFinite(c.amountUsd)) continue;
     out.push({
       source: c.source,
-      at: c.at.slice(0, 10),
+      at,
       merchant: c.merchant,
       amountUsd: c.amountUsd,
       ...(typeof c.method === "string" && c.method ? { method: c.method } : {}),
@@ -55,53 +65,88 @@ export function parseChargeCandidates(raw: unknown): ChargeCandidate[] {
   return out;
 }
 
-function squash(normalized: string): string {
-  return normalized.replace(/\s+/g, "");
-}
-
 function daysBetween(a: string, b: string): number {
   const ms = Math.abs(Date.parse(a) - Date.parse(b));
   return Math.floor(ms / 86_400_000);
 }
 
 /**
+ * Extract a card mask (e.g. "7535" from "Visa •7535", "•7535", or
+ * "Visa ending 7535") when present on a payment-method string.
+ * Returns undefined when no card mask is present (e.g. "card",
+ * "Link", empty/missing).
+ */
+export function extractCardMask(method: string | undefined | null): string | undefined {
+  if (typeof method !== "string" || !method.trim()) return undefined;
+  const m = /(?:[•*×xX#]|ending\s*)?\s*(\d{3,4})\b/i.exec(method);
+  return m ? m[1] : undefined;
+}
+
+/**
  * Does a hand-fed row describe the same charge as an auto-matched
  * row? Same amount, dates within the matcher's dedupe window, and
- * merchant/label token strings that contain one another once
- * squashed ("Meta PAYG spill" vs "METAPAY" both squash around
- * METAPAY). Conservative: a hand-fed row is only dropped when an
- * auto row plausibly IS that charge.
+ * merchant/label token sequences that contain one another at whole-
+ * token boundaries ("Meta PAYG spill" still matches the "Meta" alias
+ * of a METAPAY charge). Conservative: a hand-fed row is only dropped
+ * when an auto row plausibly IS that charge.
+ *
+ * When both rows carry known, conflicting card masks (e.g. Visa
+ * •7535 vs Visa •9545), they describe charges on different cards
+ * and are preserved as distinct evidence (#3123).
  */
 /**
- * Every squashed spelling a label answers to: its own, plus the
+ * Every token spelling a label answers to: its own, plus the
  * canonical provider name and merchant aliases of its alias group
  * when the label names one of them. Canonicalizing a matched label
  * (the charge catalog's "Meta Model API" for a METAPAY charge) must
- * not break deduplication against hand-fed rows written under the
- * merchant spelling ("Meta PAYG spill" squashes around METAPAY, an
- * alias of the canonical name) -- without the group expansion the
- * same charge lands in the feed twice (Codex review, PR #3168).
+ * not break deduplication against hand-fed rows written under one of
+ * its merchant aliases ("Meta PAYG spill" contains the whole-token
+ * alias "Meta") -- without group expansion the same charge lands in
+ * the feed twice (Codex review, PR #3168).
  */
-function labelSquashes(label: string): string[] {
-  const base = squash(normalizeMerchantName(label));
-  if (!base) return [];
-  const out = new Set<string>([base]);
+function labelTokenSequences(label: string): string[][] {
+  const normalized = normalizeMerchantName(label);
+  if (!normalized) return [];
+  const base = normalized.split(" ");
+  const out = new Map<string, string[]>([[normalized, base]]);
   for (const [canonical, aliases] of Object.entries(PROVIDER_ALIASES)) {
-    const group = [canonical, ...aliases].map((n) => squash(normalizeMerchantName(n)));
-    if (group.includes(base)) {
-      for (const g of group) out.add(g);
+    const group = [canonical, ...aliases].map((name) => normalizeMerchantName(name)).filter(Boolean);
+    if (group.includes(normalized)) {
+      for (const name of group) out.set(name, name.split(" "));
     }
   }
-  return [...out];
+  return [...out.values()];
 }
 
+function containsTokenSequence(tokens: string[], sequence: string[]): boolean {
+  if (!sequence.length || sequence.length > tokens.length) return false;
+  for (let start = 0; start <= tokens.length - sequence.length; start++) {
+    if (sequence.every((token, offset) => tokens[start + offset] === token)) return true;
+  }
+  return false;
+}
+
+/**
+ * The shared identity rule (#3161), hand-fed-vs-auto form: the two
+ * rows are the same charge only when amounts are equal, dates fall
+ * inside the dedupe window, and the merchant identity holds at
+ * token boundaries — token-sequence containment in either
+ * direction over the alias-expanded label token sequences (which
+ * preserves the documented METAPAY / "Meta PAYG spill" merge while
+ * excluding substring lookalikes). An empty normalized label never
+ * matches, and conflicting known card masks veto the merge;
+ * agreement or absence of a payment method does not block it.
+ */
 function sameCharge(handFed: ChargeRow, auto: ChargeRow): boolean {
   if (handFed.amountUsd !== auto.amountUsd) return false;
   if (daysBetween(handFed.at, auto.at) > DEDUPE_WINDOW_DAYS) return false;
-  const aSet = labelSquashes(handFed.label);
-  const bSet = labelSquashes(auto.label);
+  const maskA = extractCardMask(handFed.method);
+  const maskB = extractCardMask(auto.method);
+  if (maskA && maskB && maskA !== maskB) return false;
+  const aSet = labelTokenSequences(handFed.label);
+  const bSet = labelTokenSequences(auto.label);
   if (!aSet.length || !bSet.length) return false;
-  return aSet.some((a) => bSet.some((b) => a.includes(b) || b.includes(a)));
+  return aSet.some((a) => bSet.some((b) => containsTokenSequence(a, b) || containsTokenSequence(b, a)));
 }
 
 /**
@@ -116,7 +161,7 @@ export function mergeChargeRows(autoRows: ChargeRow[], handFedRows: ChargeRow[])
 }
 
 /** Stable identity of one unmatched charge for the surfaced-once state. */
-export function unmatchedKey(u: UnmatchedCharge): string {
+export function unmatchedKey(u: Pick<UnmatchedCharge, "normalized" | "amountUsd" | "at">): string {
   return `${u.normalized}|${u.amountUsd.toFixed(2)}|${u.at}`;
 }
 

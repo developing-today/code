@@ -1,0 +1,15 @@
+# Hosted data-plane scaffold (#5199). LOCAL ONLY: this config is for
+# wrangler dev / tests. No account-level deployment, production binding,
+# or billable resource is authorized by this package — deployment and the
+# real-account jurisdiction canary are gated on #2285 / #3403.
+name = "id-hosted-worker"
+main = "src/worker.ts"
+compatibility_date = "2025-06-01"
+
+[[durable_objects.bindings]]
+name = "USERS"
+class_name = "UserDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["UserDO"]

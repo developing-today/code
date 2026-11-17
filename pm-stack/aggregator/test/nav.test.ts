@@ -18,7 +18,8 @@ import { navLinks } from "../src/render.ts";
 
 const SRC = join(import.meta.dir, "..", "src");
 const serverSource = readFileSync(join(SRC, "server.ts"), "utf8");
-const renderSource = readFileSync(join(SRC, "render.ts"), "utf8");
+const renderSource =
+  readFileSync(join(SRC, "ui.css"), "utf8") + "\n" + readFileSync(join(SRC, "render.ts"), "utf8");
 
 /** The CSS rule body for a selector in the stylesheet string. */
 function cssRule(selector: string): string {
@@ -37,7 +38,7 @@ function serverPaths(): { exact: string[]; prefixes: string[] } {
 
 /** Routes that are not pages a person navigates to: JSON twins, POST
  * endpoints, datastar fragments, static assets, and the /board alias. */
-const NON_PAGE = /^\/api\/|^\/frag\/|^\/assets\/|^\/sw\.js$|^\/board$|^\/manifest\.webmanifest$/;
+const NON_PAGE = /^\/api\/|^\/frag\/|^\/assets\/|^\/sw\.js$|^\/board$|^\/manifest\.webmanifest$|^\/quota\/refresh$/;
 
 describe("the manifest groups every page (#1135)", () => {
   test("every page names one of PAGE_GROUPS, and groups have no page-less id", () => {
@@ -97,7 +98,11 @@ describe("the bar wraps instead of scrolling sideways (#1135, 390px)", () => {
   test("the phone breakpoint tightens the bar instead of widening it", () => {
     const mobile = renderSource.slice(renderSource.indexOf("@media (max-width: 720px)"));
     expect(mobile).toContain("nav a { padding:");
-    expect(mobile).not.toContain("overflow-x");
+    // #1135: the nav must never become a sideways scroll container. The
+    // body-level `overflow-x: clip` in this block is the deliberate 390px
+    // mobile-audit fix (97e06242d) that stops the page scrolling sideways —
+    // it is not a nav rule, so the check is scoped to the nav selectors.
+    expect(mobile).not.toMatch(/(^|\n)\s*(nav|\.navgroup|\.navlabel)[^{]*\{[^}]*overflow-x/);
   });
 });
 

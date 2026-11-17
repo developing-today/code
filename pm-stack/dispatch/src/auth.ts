@@ -50,12 +50,17 @@ function b64urlDecode(s: string): Uint8Array {
   return new Uint8Array(Buffer.from(b64, "base64"));
 }
 
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export function parseJwt(token: string): JwtParts | null {
   const parts = token.split(".");
   if (parts.length !== 3) return null;
   try {
-    const header = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[0]!)));
-    const payload = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[1]!)));
+    const header: unknown = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[0]!)));
+    const payload: unknown = JSON.parse(new TextDecoder().decode(b64urlDecode(parts[1]!)));
+    if (!isJsonObject(header) || !isJsonObject(payload)) return null;
     return {
       header,
       payload,
@@ -70,15 +75,42 @@ export function parseJwt(token: string): JwtParts | null {
 export type Jwks = { keys: Array<Record<string, unknown>> };
 export type JwksSource = () => Promise<Jwks>;
 
-const GITHUB_JWKS_URL = "https://token.actions.githubusercontent.com/.well-known/jwks.json";
+export const GITHUB_JWKS_URL = "https://token.actions.githubusercontent.com/.well-known/jwks";
 let jwksCache: { at: number; jwks: Jwks } | null = null;
 const JWKS_TTL_MS = 60 * 60_000;
+
+// The JWKS body is external JSON: validate its shape before anything
+// trusts or caches it (#7565). A bare cast let a malformed 200 body
+// escape verifyOidcToken as a raw TypeError (HTTP 500, not 401) and,
+// once cached, poison OIDC auth for the whole TTL.
+export function parseJwks(value: unknown): Jwks {
+  if (!isJsonObject(value) || !Array.isArray(value.keys)) {
+    throw new AuthError("oidc: malformed JWKS (expected an object with a keys array)");
+  }
+  for (const key of value.keys) {
+    if (!isJsonObject(key)) throw new AuthError("oidc: malformed JWKS (key entry is not an object)");
+  }
+  return { keys: value.keys as Array<Record<string, unknown>> };
+}
+
+// Test seam: the JWKS cache is module state shared across test files
+// in one bun test process (server.test.ts warms it via the real fetch
+// path), so fetch-path tests must be able to start from an empty cache.
+export function resetJwksCacheForTests(): void {
+  jwksCache = null;
+}
 
 export const fetchGithubJwks: JwksSource = async () => {
   if (jwksCache && Date.now() - jwksCache.at < JWKS_TTL_MS) return jwksCache.jwks;
   const res = await fetch(GITHUB_JWKS_URL);
   if (!res.ok) throw new AuthError(`oidc: JWKS fetch failed (HTTP ${res.status})`);
-  const jwks = (await res.json()) as Jwks;
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    throw new AuthError("oidc: JWKS fetch returned a non-JSON body");
+  }
+  const jwks = parseJwks(body);
   jwksCache = { at: Date.now(), jwks };
   return jwks;
 };
@@ -102,7 +134,7 @@ export async function verifyOidcToken(token: string, opts: OidcVerifyOptions): P
   const kid = jwt.header.kid;
   if (typeof kid !== "string" || !kid) throw new AuthError("oidc: missing kid");
 
-  const jwks = await (opts.jwksSource ?? fetchGithubJwks)();
+  const jwks = parseJwks(await (opts.jwksSource ?? fetchGithubJwks)());
   const jwk = jwks.keys.find((k) => k.kid === kid);
   if (!jwk) throw new AuthError("oidc: signing key not found in JWKS");
 
@@ -203,8 +235,6 @@ export function assertCallerRepo(caller: CallerIdentity, repo: string, allowlist
     throw new AuthError(`repo ${repo} is not in the dispatch allowlist`);
   }
   if (caller.type === "oidc" && !allowlist.includes(caller.repository)) {
-    throw new AuthError(
-      `oidc: token repository ${caller.repository} is not in the dispatch allowlist`,
-    );
+    throw new AuthError(`oidc: token repository ${caller.repository} is not in the dispatch allowlist`);
   }
 }

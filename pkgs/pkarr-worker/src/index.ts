@@ -14,6 +14,7 @@
 // verifies before storing, but is trusted for availability, not integrity.
 
 import { DurableObject } from "cloudflare:workers";
+import { retentionMilliseconds } from "./retention";
 import {
   MAX_RELAY_PAYLOAD,
   buildDohResponse,
@@ -42,6 +43,20 @@ const PACKET_CONTENT_TYPE = "application/x-pkarr-signed-packet";
 const DOH_CONTENT_TYPE = "application/dns-message";
 const MAX_DOH_BODY = 4096;
 
+
+/**
+ * The record table stores the packet timestamp through a JS Number
+ * (SQLite INTEGER binding), which is exact only for integers a double
+ * can represent. A signed packet may carry any unsigned 64-bit
+ * timestamp; above 2^53 most values round to a different integer, so
+ * the stored timestamp collapses and the strictly-newer comparison in
+ * putPacket can judge an older packet newer (issue #6892). Reject any
+ * timestamp that does not survive the storage round-trip exactly.
+ */
+function timestampSurvivesStorage(timestampMicros: bigint): boolean {
+  return BigInt(Number(timestampMicros)) === timestampMicros;
+}
+
 export class PkarrStore extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -54,18 +69,25 @@ export class PkarrStore extends DurableObject<Env> {
 
   /** Store the payload only if strictly newer than the current record. */
   async putPacket(payload: Uint8Array, timestampMicros: bigint): Promise<"stored" | "stale"> {
+    if (!timestampSurvivesStorage(timestampMicros)) {
+      throw new RangeError("packet timestamp does not survive the storage round-trip exactly");
+    }
     const rows = [...this.ctx.storage.sql.exec("SELECT ts FROM record WHERE id = 1")];
     const current = rows.length > 0 ? BigInt(rows[0].ts as number) : null;
     // ts is stored as a SQLite INTEGER (signed 64-bit); microsecond
-    // timestamps (~1.7e15) fit comfortably.
+    // timestamps (~1.7e15) fit comfortably. The guard above keeps any
+    // larger timestamp that a Number cannot represent exactly out of
+    // storage, so the read-back below stays exact for every record
+    // that can exist.
     if (current !== null && timestampMicros <= current) return "stale";
     this.ctx.storage.sql.exec(
       "INSERT INTO record (id, payload, ts) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, ts = excluded.ts",
       payload,
       Number(timestampMicros),
     );
-    const retentionMs = Number(this.env.RETENTION_SECONDS || "604800") * 1000;
-    await this.ctx.storage.setAlarm(Date.now() + retentionMs);
+    const now = Date.now();
+    const retentionMs = retentionMilliseconds(this.env.RETENTION_SECONDS, now);
+    await this.ctx.storage.setAlarm(now + retentionMs);
     return "stored";
   }
 
@@ -109,14 +131,69 @@ async function rateLimited(limiter: RateLimit, key: string): Promise<boolean> {
 
 const NO_STORE = { "cache-control": "no-store" } as const;
 
+type BoundedBodyResult = { kind: "ok"; bytes: Uint8Array } | { kind: "too-large" } | { kind: "read-error" };
+
+/** Read at most `maximum` bytes, cancelling the request as soon as it exceeds the cap. */
+async function readBoundedBody(request: Request, maximum: number): Promise<BoundedBodyResult> {
+  const declaredLength = request.headers.get("content-length");
+  if (declaredLength !== null && /^\d+$/.test(declaredLength)) {
+    const length = Number(declaredLength);
+    if (Number.isSafeInteger(length) && length > maximum) {
+      try {
+        await request.body?.cancel();
+      } catch {
+        // The declared size is sufficient to reject; cancellation is best effort.
+      }
+      return { kind: "too-large" };
+    }
+  }
+
+  const reader = request.body?.getReader();
+  if (reader === undefined) return { kind: "ok", bytes: new Uint8Array() };
+
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value.byteLength === 0) continue;
+      total += value.byteLength;
+      if (total > maximum) {
+        try {
+          await reader.cancel();
+        } catch {
+          // The over-limit condition is already decisive; cancellation is best effort.
+        }
+        return { kind: "too-large" };
+      }
+      chunks.push(value);
+    }
+  } catch {
+    return { kind: "read-error" };
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { kind: "ok", bytes };
+}
+
 async function handlePut(request: Request, env: Env, keyText: string): Promise<Response> {
   const publicKey = parsePublicKey(keyText);
   if (publicKey === null) return new Response("invalid public key", { status: 400 });
   if (await rateLimited(env.PUT_LIMITER, clientIp(request))) {
     return new Response("rate limited", { status: 429 });
   }
-  const body = new Uint8Array(await request.arrayBuffer());
-  if (body.length > MAX_RELAY_PAYLOAD) return new Response("payload too large", { status: 413 });
+  const read = await readBoundedBody(request, MAX_RELAY_PAYLOAD);
+  if (read.kind === "too-large") return new Response("payload too large", { status: 413 });
+  if (read.kind === "read-error") return new Response("invalid request body", { status: 400 });
+  const body = read.bytes;
   const parsed = parseRelayPayload(body);
   if (typeof parsed === "string") return new Response(parsed, { status: 400 });
   // The packet itself must be a well-formed DNS message within bounds.
@@ -125,6 +202,11 @@ async function handlePut(request: Request, env: Env, keyText: string): Promise<R
   }
   if (!(await verifyPacket(publicKey, parsed))) {
     return new Response("invalid signature", { status: 400 });
+  }
+  // Reject before the DO call: a timestamp that rounds through the
+  // Number storage binding would break newest-wins ordering (#6892).
+  if (!timestampSurvivesStorage(parsed.timestampMicros)) {
+    return new Response("timestamp precision loss: timestamp is outside the exact integer range", { status: 400 });
   }
   try {
     await storeFor(env, publicKey).putPacket(body, parsed.timestampMicros);
@@ -173,7 +255,12 @@ function underOrigin(name: string, origin: string): boolean {
   return suffix.every((label, i) => labels[labels.length - suffix.length + i] === label);
 }
 
-async function handleDoh(request: Request, env: Env, queryBytes: Uint8Array): Promise<Response> {
+async function handleDoh(
+  request: Request,
+  env: Env,
+  queryBytes: Uint8Array,
+  rateLimitChecked = false,
+): Promise<Response> {
   if (queryBytes.length > MAX_DOH_BODY) return new Response("message too large", { status: 413 });
   const query = parseDnsMessage(queryBytes);
   if (typeof query === "string") return new Response("malformed dns message", { status: 400 });
@@ -193,7 +280,7 @@ async function handleDoh(request: Request, env: Env, queryBytes: Uint8Array): Pr
   if (question.type !== 16 && question.type !== 255) return respond(0, []); // TXT/ANY only
   const publicKey = parsePublicKey(keyText);
   if (publicKey === null) return respond(0, []);
-  if (await rateLimited(env.DOH_LIMITER, clientIp(request))) {
+  if (!rateLimitChecked && (await rateLimited(env.DOH_LIMITER, clientIp(request)))) {
     return new Response("rate limited", { status: 429 });
   }
   const payload = await storeFor(env, publicKey).getPacket();
@@ -255,7 +342,20 @@ export default {
     }
     if (path === "/dns-query") {
       if (request.method === "POST") {
-        return handleDoh(request, env, new Uint8Array(await request.arrayBuffer()));
+        // DoH POSTs are rate-limited before any request-body read, including
+        // malformed queries that cannot yet be associated with a lookup key.
+        if (await rateLimited(env.DOH_LIMITER, clientIp(request))) {
+          try {
+            await request.body?.cancel();
+          } catch {
+            // The rate limit is decisive; cancellation is best effort.
+          }
+          return new Response("rate limited", { status: 429 });
+        }
+        const read = await readBoundedBody(request, MAX_DOH_BODY);
+        if (read.kind === "too-large") return new Response("message too large", { status: 413 });
+        if (read.kind === "read-error") return new Response("invalid request body", { status: 400 });
+        return handleDoh(request, env, read.bytes, true);
       }
       if (request.method === "GET") {
         const dns = url.searchParams.get("dns");

@@ -117,7 +117,7 @@ func upstreamPool(t *testing.T, url string) *pool.Pool {
 
 func pingThrough(t *testing.T, p *pool.Pool, key string) {
 	t.Helper()
-	lease, err := p.Acquire(context.Background(), key)
+	lease, err := p.Acquire(context.Background(), config.ResolvedScope{Key: key})
 	if err != nil {
 		t.Fatal(err)
 	}

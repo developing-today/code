@@ -1,6 +1,6 @@
 # Close-out: consolidated record, sub-features, plan issues, bookkeeping PR
 
-Read before step 10. The record shape is the [design record template](/planning/templates/design.md), the folder rule is [doc/DOCUMENTATION_PROTOCOL.md](/doc/DOCUMENTATION_PROTOCOL.md), and the plan issue body is the [plan issue template](/planning/workflow/templates/issue-plan.md). This file says how the orchestrator gets each of them written and merged without writing the prose itself.
+Read before step 10. The record shape is the [design record template](../../../../planning/templates/design.md), the folder rule is [doc/DOCUMENTATION_PROTOCOL.md](../../../../doc/DOCUMENTATION_PROTOCOL.md), and the plan issue body is the [plan issue template](../../../../planning/workflow/templates/issue-plan.md). This file says how the orchestrator gets each of them written and merged without writing the prose itself.
 
 ## 1. The consolidated design record (step 10)
 
@@ -15,7 +15,7 @@ Read before step 10. The record shape is the [design record template](/planning/
   - **Sub-features**: the list in section 2, each with its tier, goal, what it enables, the decisions it builds on and its edges to the others.
   - **Consequences**: what gets easier or harder, and what must stay compatible.
   - **Open questions**: each with its default and who or what settles it. Questions that depend on implementation details are marked "deferred to the plan".
-- **Review.** One fresh [reviewer](/planning/workflow/templates/prompts/reviewer.md) in single-PR mode, with "Must satisfy" set to the orchestration issue, the parent issue, every facet record and every decision record. Restart the editor on the same branch with the must-fix list. Stop after two rounds: open a follow-up issue for each must-fix still standing, link it from "Open questions", and merge.
+- **Review.** One fresh [reviewer](../../../../planning/workflow/templates/prompts/reviewer.md) in single-PR mode, with "Must satisfy" set to the orchestration issue, the parent issue, every facet record and every decision record. Restart the editor on the same branch with the must-fix list. Stop after two rounds: open a follow-up issue for each must-fix still standing, link it from "Open questions", and merge.
 
 ## 2. Sub-features (step 12)
 
@@ -25,7 +25,7 @@ For each sub-feature, the consolidated record already states:
 
 - **Tier.** `crucial` (the goal fails without it), `recommended` (worth doing now, the goal holds without it) or `contingent` (only if its trigger fires; name the trigger). Start from the concept's priority and lower it only with a reason.
 - **Goal and what it enables.** One sentence each, so the planner can order the work by value.
-- **Edges.** `requires`, `recommended-after` (with the rework cost of starting early) and `shares-files-with`, as in [ordering.md](/planning/workflow/ordering.md).
+- **Edges.** `requires`, `recommended-after` (with the rework cost of starting early) and `shares-files-with`, as in [ordering.md](../../../../planning/workflow/ordering.md).
 - **Decisions it builds on**, by id, including the preliminary ones listed in `human-review.md`.
 
 Then, for each one:
@@ -34,7 +34,7 @@ Then, for each one:
 2. Crucial and recommended: draft a plan issue from the template. Title `Plan: <sub-feature> (<package>·<item id>)`. Add `"item":"<item id>"` to the marker. "Prerequisites" carries the edges as plan issue links once they exist, so create them in edge order. "Current state" names the human-review defaults it builds on.
 3. Contingent: the item only, with its trigger in the text. No issue until the trigger fires.
 
-Run the marker search in the [templates README](/planning/workflow/templates/README.md) for every draft, so a retry never makes a duplicate. Give each draft body, and nothing else, to its own [zero-context reader](/planning/workflow/templates/prompts/zero-context-reader.md), all in parallel. Fix the gaps and re-run until none is blocking. Publish with `gh issue create --repo <issue_repository> --title <title> --body-file <file>`, record each URL in `root.md` at once, and confirm with `gh issue view <url> --json url,state,body` that the body ends with its marker.
+Run the marker search in the [templates README](../../../../planning/workflow/templates/README.md) for every draft, so a retry never makes a duplicate. Give each draft body, and nothing else, to its own [zero-context reader](../../../../planning/workflow/templates/prompts/zero-context-reader.md), all in parallel. Fix the gaps and re-run until none is blocking. Publish with `gh issue create --repo <issue_repository> --title <title> --body-file <file>`, record each URL in `root.md` at once, and confirm with `gh issue view <url> --json url,state,body` that the body ends with its marker.
 
 ## 3. The bookkeeping PR (step 13)
 

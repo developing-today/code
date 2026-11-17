@@ -71,3 +71,22 @@ func TestSubMillisecondRefusalIsScopedToMaxTTL(t *testing.T) {
 		t.Errorf("protoTasks.pollInterval %q: want acceptance, got %v", "500us", err)
 	}
 }
+
+func TestProtoTasksCancelGraceSettingDefaultAndValidation(t *testing.T) {
+	sch, err := settings.New(settings.Registry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, ok := sch.Lookup("protoTasks.cancelGrace")
+	if !ok {
+		t.Fatal("protoTasks.cancelGrace is not a setting")
+	}
+	if s.Default != "5s" {
+		t.Errorf("default = %q, want 5s", s.Default)
+	}
+	for _, raw := range []string{"1ms", "5s", "30s"} {
+		if err := settings.Validate(*s, raw); err != nil {
+			t.Errorf("%q: want valid duration, got %v", raw, err)
+		}
+	}
+}

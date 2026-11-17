@@ -94,6 +94,7 @@ let
       # Web development tools
       bun # JavaScript bundler and runtime (required for web builds)
       typescript # TypeScript for type checking # nodepackages remoed 2026-04-03
+      wrangler # Cloudflare Worker CLI (worker-poc dev, #2271)
 
       # E2E testing (Playwright) — use playwright-driver.browsers for
       # pre-patched browser binaries that work with Playwright's CDP protocol.

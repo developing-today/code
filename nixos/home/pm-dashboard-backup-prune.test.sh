@@ -55,7 +55,8 @@ mkdir -p "$HOME_DIR/.local/state/pm-aggregator" "$HOME_DIR/atlas/meta-quota-expo
 
 # --- fixture data set -------------------------------------------------------
 for f in actions.json comments.json fleet-feed.json quota-current.json \
-         registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json; do
+         registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json \
+         events.json coverage-snapshot.json aa-last-good.json; do
   echo "{\"fixture\": \"$f\"}" > "$HOME_DIR/.local/state/pm-aggregator/$f"
 done
 echo '{"fixture": "latest"}' > "$HOME_DIR/atlas/meta-quota-export/latest.json"

@@ -2,7 +2,7 @@
 // record — append-only session-recording ingestion (#1853).
 //
 // Replaces the hand-append to ~/git/ai_recordings.jsonl that
-// dezren39/nix instructions/recordings.md used to prescribe. An agent
+// dezren39/darwin-nix instructions/recordings.md used to prescribe. An agent
 // that has just explained something worth keeping to the user sends the
 // same observation here instead:
 //
@@ -32,12 +32,30 @@
 // agent sessions cannot interleave partial lines. The target file (and
 // its parent directory) is created on first append. Target override:
 // AI_RECORDINGS_FILE (default ~/git/ai_recordings.jsonl).
+//
+// Define semantics for externally-spelled keys (#2953). A value keyed by a
+// name a caller, document, feed, file, peer or user can spell is stored with
+// define semantics, never assignment semantics: the store is built in a Map
+// or a null-prototype object and converted at the boundary with
+// Object.fromEntries / spread, or the entry is written with
+// Object.defineProperty. The non-conforming forms for external keys are
+// obj[key] = v, obj[key] ??= ..., dst[k] = src[k] copy loops, and
+// Object.assign(dst, src) with an externally-keyed src — all go through
+// [[Set]], and for the one spelling "__proto__" [[Set]] invokes the
+// Object.prototype setter instead of creating an own property, silently
+// dropping the entry or moving the container's prototype. Keys are data:
+// preserve, don't reject. Code-constructed tables whose keys are all
+// internal are exempt. Probe matrix for every covered site — keys
+// "__proto__" (string value), "__proto__" (object value), "constructor",
+// "toString", and an ordinary key: the entry exists as an own property with
+// its value, a JSON round-trip preserves it, and neither the container's
+// prototype nor Object.prototype moves or gains own properties.
 
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 export const DEFAULT_TARGET = path.join(
   os.homedir(),
@@ -107,7 +125,18 @@ export const parseLoose = (raw) => {
       } catch {
         // Keep the verbatim string; normalisation happens later.
       }
-      fields[key] = value;
+      // Define semantics, not assignment (#2828): assigning a
+      // '__proto__' key would invoke the prototype setter — a string
+      // value is silently dropped and an object value would replace
+      // this object's prototype — while the JSON input path preserves
+      // the field. Defining makes every accepted key an own data
+      // property, so no supplied field is ever lost.
+      Object.defineProperty(fields, key, {
+        value,
+        enumerable: true,
+        writable: true,
+        configurable: true
+      });
       keyed += 1;
     } else if (segment.trim() !== '') {
       unkeyed.push(segment.trim());
@@ -203,10 +232,21 @@ const main = async () => {
   process.exit(0);
 };
 
-if (
-  process.argv[1] &&
-  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
-) {
+// Entry-point check: compare realpaths, not the raw strings (#2235;
+// same pattern as proxy-supervise.mjs / #2083). process.argv[1] keeps the
+// path exactly as invoked (e.g. through a file or directory symlink)
+// while import.meta.url is the resolved module URL, so a string compare
+// silently never matches and main() never runs via a symlink.
+const isMain = (() => {
+  try {
+    if (!process.argv[1]) return false;
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+
+if (isMain) {
   main();
 }
 

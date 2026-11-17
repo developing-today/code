@@ -77,3 +77,21 @@ func TestPrunePermitsTheProgramInUse(t *testing.T) {
 		t.Errorf("the generated client is not a program and must survive: %v", err)
 	}
 }
+
+// TestWorkDirKeySeparatesRuntimes is the Codex finding on PR #2589
+// (ace6c3609 round): Node and Bun runs with identical clients and
+// dependency payloads shared one WorkRoot directory, so a Node frozen
+// install could delete a live Bun run's dependencies. The runtime
+// kind is part of the key, so the two never collide -- while identical
+// runs of one runtime still share (the cache depends on it).
+func TestWorkDirKeySeparatesRuntimes(t *testing.T) {
+	opts := Options{ClientSource: "client", Deps: &Deps{Packages: []string{"foo@1.0.0"}}}
+	node := workDirKeyMaterial(KindNode, opts)
+	bun := workDirKeyMaterial(KindBun, opts)
+	if node == bun {
+		t.Fatal("node and bun runs with identical payloads must not share a workdir key")
+	}
+	if again := workDirKeyMaterial(KindNode, opts); again != node {
+		t.Fatal("identical runs of one runtime must keep sharing a workdir key")
+	}
+}

@@ -87,7 +87,7 @@ one rendering client of the frames instead of the only reader.
      Claiming one would be a false promise.
    - `ServerFrame::Document { name, size, text }` — the document's UTF-8
      text, its byte size, and its name echoed for correlation. The
-     `--- {name} ({size} bytes; read-only) ---` header is a *rendering*:
+     `--- {name} ({size} bytes; read-only) ---` header is a _rendering_:
      each client formats its own (SSH reproduces today's header byte-for-
      byte); it is not part of the payload.
 4. **Authorization is the records rule, unchanged.** Both frames carry the

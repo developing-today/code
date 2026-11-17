@@ -8,7 +8,8 @@ inventories cleanly is unaffected: repos it no longer has drop out of
 the plan as before.
 
 Drives the real reconcile.main() with inventory stubbed, against a
-temp backup root holding real (empty) bare mirrors.
+temp backup root holding real bare mirrors (one commit each — a
+zero-ref skeleton is not a valid mirror since #3238).
 
 Run: python3 infra/github-backup/tests/test_reconcile_retention.py
 """
@@ -24,9 +25,31 @@ import reconcile
 
 
 def bare_mirror(root, repo):
+    """A REAL valid mirror: bare + one commit on refs/heads/main.
+
+    Since #3238 a bare skeleton (zero refs) is NOT a valid mirror —
+    validity requires a resolvable HEAD — so a fixture mirror that
+    must count as present needs history.
+    """
     path = os.path.join(root, repo + ".git")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     subprocess.run(["git", "init", "--bare", "-q", path], check=True)
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "ghb-test",
+        "GIT_AUTHOR_EMAIL": "ghb-test@example.invalid",
+        "GIT_COMMITTER_NAME": "ghb-test",
+        "GIT_COMMITTER_EMAIL": "ghb-test@example.invalid",
+    }
+    tree = subprocess.run(
+        ["git", "-C", path, "mktree"], input="", capture_output=True, text=True, check=True
+    ).stdout.strip()
+    commit = subprocess.run(
+        ["git", "-C", path, "commit-tree", tree, "-m", "seed"],
+        capture_output=True, text=True, check=True, env=env,
+    ).stdout.strip()
+    subprocess.run(["git", "-C", path, "update-ref", "refs/heads/main", commit], check=True)
+    subprocess.run(["git", "-C", path, "symbolic-ref", "HEAD", "refs/heads/main"], check=True)
 
 
 def plan_item(repo, parent=None):

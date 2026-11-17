@@ -1,0 +1,415 @@
+name: org-run (generic dispatch runner)
+
+# A generic, dispatch-only build/test runner for the developing-today
+# org (Drew, 2026-11-04) — the org-level counterpart to dezren39/fleet's
+# fleet-run.yml, whose job schema this file mirrors. Drew's placement
+# options were "in code repo or dedicated"; it lives here because code
+# is the fleet's default home for source and the developing.today app
+# is already installed across the org, so this was feasible
+# immediately. The file is self-contained; a dedicated repo can adopt
+# it unchanged later.
+#
+# Runner parity (placement, 2026-11-04): the `runner` input below
+# matches fleet-run's deltas in developing-today/fleet — legs run on
+# GitHub-hosted ubuntu-24.04 or, for org repos, Blacksmith
+# (blacksmith-4vcpu-ubuntu-2404). See docs/placement.md in
+# developing-today/fleet.
+#
+# Setup runner (2026-11-06): the setup job has its own
+# `setup_runner` input, defaulting to Blacksmith, so matrix
+# expansion is never gated by the GitHub-hosted queue (in the
+# Blacksmith evaluation an org-run setup job on ubuntu-24.04
+# waited 34.6 minutes and was never assigned a runner). The
+# legs still follow the `runner` input below.
+#
+# Single-shot — one repo, one command:
+#
+#   gh workflow run org-run.yml --repo developing-today/code \
+#     -f repo=developing-today-forks/openchamber -f command='nix build .#openchamber'
+#
+# Matrix — the `jobs` input is a JSON array of entries; the setup
+# job flattens the entries into legs and the legs run in parallel
+# as a matrix (fail-fast is off, so one leg's failure never
+# cancels the others). Entries come in three shapes.
+#
+# Fan-out — repos attach per command; one leg per repo:
+#
+#   {"command": "nix flake check",
+#    "repos": [{"repo": "developing-today/code"},
+#              {"repo": "developing-today-forks/openchamber", "ref": "main"}]}
+#
+# Flat sugar — exactly one leg:
+#
+#   {"repo": "developing-today-forks/openchamber",
+#    "command": "nix build .#openchamber"}
+#
+# Together — ONE command with several repos cloned side-by-side in
+# the same job, for cross-repo commands (diffing two trees,
+# running one repo's tooling against another's checkout):
+#
+#   {"command": "diff -r code/pkgs opencode/pkgs",
+#    "together": [{"repo": "developing-today/code"},
+#                 {"repo": "developing-today-forks/opencode", "ref": "main"}]}
+#
+# A together entry is exactly one leg regardless of repo count
+# (it needs at least two repos — one repo is the flat form). Its
+# repos land in repos/<basename> under the workspace root and the
+# command runs once, from the workspace root, with all of them
+# present. Use fan-out when the same command runs independently
+# per repo; use together when the command needs several repos at
+# once. An entry carries exactly one of repos / together / repo.
+#
+# In every shape ref is optional (blank = the repo's default
+# branch). Every repo object also accepts an optional depth (on
+# the entry itself for the flat form): a positive integer fetches
+# that many commits, 0 fetches the full history, absent means 1 —
+# the escape hatch for the rare history work (bisection,
+# archaeology); everything else wants the shallow default. The
+# setup job validates the expanded legs before
+# anything runs: every repo must be one of the six org fleet
+# repos, and the total leg count is capped at 32. Serial
+# composition needs no machinery of its own — it is just shell:
+# put `cmd1 && cmd2` (or `cmd1; cmd2`) in one command string.
+#
+# Guardrails, such as they are, are structural: the workflow only
+# runs on workflow_dispatch (dispatching requires write access to
+# this repo), the target repos are restricted to the six org fleet
+# repos (the choice input in single-shot form, an allowlist in the
+# setup job for the jobs form), each leg's timeout is capped at
+# 120 minutes, and every command runs verbatim with its full log on
+# the run page — nothing is hidden or cached away. Trigger
+# discipline: this file deliberately has NO push or schedule
+# triggers — all push-triggered workflows in this repo stay
+# disabled by Drew's order (2026-11-02), and nothing here can fire
+# on its own. There is deliberately no concurrency group: every
+# leg gets a fresh runner and container, legs share nothing
+# mutable (the hosted nix caches are content-addressed and
+# append-only), so parallel runs are safe and a group would only
+# serialise them.
+#
+# The legs run in the published org image
+# ghcr.io/developing-today/fleet-build:full as root: the pinned
+# toolchain, Nix, and the baked cache configuration are already
+# there. Commands that must run as the image's nix owner can drop
+# privileges the way the variant legs do:
+#   runuser -u vscode -- env HOME=/home/vscode bash -lc '...'
+#
+# Checkout auth differs from fleet-run by necessity. fleet-run
+# reads its targets with GHCR_ORG_PAT, a classic PAT that covers
+# every fleet repo; the org side's automation token
+# (REPO_AUTOMATION_TOKEN — the fine-grained PAT
+# `developing-today-code-automation`) is scoped to exactly three
+# repos: code, opencode, openchamber. Those three check out with
+# it via actions/checkout, with full ref handling (SHAs included).
+# The other three allowlisted repos (developing-today/.github,
+# developing-today/hardware-doc, developing-today/zulip-archive)
+# are public and outside the PAT's selection, so they are cloned
+# anonymously with the same depth/ref semantics as the together
+# legs (branch/tag refs). Together legs mix the two the same way:
+# token URL for the PAT three, anonymous clone for the rest.
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "Target repo to check out and run in (single-shot form)"
+        type: choice
+        required: true
+        options:
+          - developing-today/code
+          - developing-today-forks/opencode
+          - developing-today-forks/openchamber
+          - developing-today/.github
+          - developing-today/hardware-doc
+          - developing-today/zulip-archive
+      ref:
+        description: "Branch, tag, or SHA in the target repo (blank = its default branch)"
+        type: string
+        required: false
+        default: ""
+      command:
+        description: "Shell command to run in the checked-out tree (bash -lc; ignored when jobs is given)"
+        type: string
+        required: false
+        default: ""
+      jobs:
+        description: "JSON array of entries — {command, repos: [{repo, ref?, depth?}]} fan-out, {command, together: [{repo, ref?, depth?}, ...]} co-resident, or {repo, ref?, depth?, command} flat — run as a parallel matrix"
+        type: string
+        required: false
+        default: ""
+      timeout_minutes:
+        description: "Per-leg timeout in minutes (5-120, fails fast outside)"
+        type: number
+        required: false
+        default: 60
+      runner:
+        description: "Runner provider for the legs: github (ubuntu-24.04) or blacksmith (blacksmith-4vcpu-ubuntu-2404; org surfaces only)"
+        type: choice
+        required: false
+        default: "github"
+        options:
+          - github
+          - blacksmith
+      setup_runner:
+        description: "Runner provider for the setup job: blacksmith (default; keeps matrix expansion off the GitHub-hosted queue) or github (ubuntu-24.04)"
+        type: choice
+        required: false
+        default: "blacksmith"
+        options:
+          - blacksmith
+          - github
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  setup:
+    name: setup
+    runs-on: ${{ inputs.setup_runner == 'blacksmith' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+    steps:
+      - name: Resolve job list
+        id: resolve
+        env:
+          JOBS_INPUT: ${{ inputs.jobs }}
+          SINGLE_REPO: ${{ inputs.repo }}
+          SINGLE_REF: ${{ inputs.ref }}
+          SINGLE_COMMAND: ${{ inputs.command }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+
+          allowlist='["developing-today/code", "developing-today-forks/opencode", "developing-today-forks/openchamber", "developing-today/.github", "developing-today/hardware-doc", "developing-today/zulip-archive"]'
+
+          if [ -n "$(tr -d '[:space:]' <<<"$JOBS_INPUT")" ]; then
+            raw="$JOBS_INPUT"
+          else
+            # No jobs JSON: synthesise one flat entry from the
+            # single-shot inputs, so existing callers keep working
+            # unchanged.
+            [ -n "$SINGLE_COMMAND" ] || fail "nothing to run: pass the jobs input, or the repo/ref/command inputs"
+            raw=$(jq -cn --arg repo "$SINGLE_REPO" --arg ref "$SINGLE_REF" --arg command "$SINGLE_COMMAND" \
+              '[{repo: $repo, ref: $ref, command: $command}]')
+          fi
+
+          entries=$(jq -ce 'if type == "array" then . else error("jobs must be a JSON array") end' <<<"$raw") \
+            || fail "jobs input is not a valid JSON array"
+
+          # Expand each entry into legs. An entry carries exactly
+          # one shape key:
+          #   repos:    fan-out  — {command, repos: [{repo, ref?}, ...]}, one leg per repo
+          #   together: co-resident — {command, together: [{repo, ref?}, ...]}, exactly one leg
+          #   repo:     flat     — {repo, ref?, command}, exactly one leg
+          legs=$(jq -ce '
+            [ to_entries[] |
+              .key as $i | .value as $e
+              | if ($e | type) != "object" then
+                  error("entry \($i) is not an object")
+                elif (([($e | has("repos")), ($e | has("together")), ($e | has("repo"))] | map(select(.)) | length) != 1) then
+                  error("entry \($i) must carry exactly one of repos (fan-out), together, or repo (flat)")
+                elif ($e | has("repos")) then
+                  if (($e.command | type) != "string") or ($e.command == "") then
+                    error("entry \($i) (fan-out) has an empty command")
+                  elif (($e.repos | type) != "array") or (($e.repos | length) == 0) then
+                    error("entry \($i) (fan-out) needs a non-empty repos array")
+                  else
+                    $e.repos[] |
+                    if (type != "object") or ((.repo // "") == "") then
+                      error("entry \($i) has a repos item without a repo")
+                    elif (has("depth") and (((.depth | type) != "number") or (.depth != (.depth | floor)) or (.depth < 0))) then
+                      error("entry \($i) repo \(.repo) has invalid depth \(.depth) — must be an integer >= 0")
+                    else
+                      {repo: .repo, ref: (.ref // ""), depth: (.depth // 1), command: $e.command, mode: "single"}
+                    end
+                  end
+                elif ($e | has("together")) then
+                  if (($e.command | type) != "string") or ($e.command == "") then
+                    error("entry \($i) (together) has an empty command")
+                  elif (($e.together | type) != "array") or (($e.together | length) < 2) then
+                    error("entry \($i) (together) needs at least 2 repos — a single repo is the flat form")
+                  elif any($e.together[]; (type != "object") or ((.repo // "") == "")) then
+                    error("entry \($i) has a together item without a repo")
+                  else
+                    ($e.together | map(
+                      if (has("depth") and (((.depth | type) != "number") or (.depth != (.depth | floor)) or (.depth < 0))) then
+                        error("entry \($i) repo \(.repo) has invalid depth \(.depth) — must be an integer >= 0")
+                      else
+                        {repo: .repo, ref: (.ref // ""), depth: (.depth // 1)}
+                      end)) as $cos
+                    | ($cos | map(.repo | split("/")[1])) as $bases
+                    | if (($bases | length) != ($bases | unique | length)) then
+                        error("entry \($i) (together) has duplicate repo basenames: \($bases | join(", "))")
+                      else
+                        {repo: ($bases | join("+")), ref: "", command: $e.command, mode: "together", checkouts: $cos}
+                      end
+                  end
+                else
+                  if (($e.command | type) != "string") or ($e.command == "") then
+                    error("entry \($i) (flat) has an empty command")
+                  elif (($e | has("depth")) and ((($e.depth | type) != "number") or ($e.depth != ($e.depth | floor)) or ($e.depth < 0))) then
+                    error("entry \($i) (flat) has invalid depth \($e.depth) — must be an integer >= 0")
+                  else
+                    {repo: $e.repo, ref: ($e.ref // ""), depth: ($e.depth // 1), command: $e.command, mode: "single"}
+                  end
+                end
+            ]' <<<"$entries") || fail "jobs validation failed (see the error above)"
+
+          count=$(jq 'length' <<<"$legs")
+          [ "$count" -ge 1 ] || fail "jobs produced no legs"
+          [ "$count" -le 32 ] || fail "jobs expand to $count legs; the cap is 32"
+
+          # Validate every leg's repos against the six-repo
+          # allowlist (for together legs, every co-resident repo),
+          # assigning idx in expansion order.
+          matrix=$(jq -ce --argjson allow "$allowlist" '
+            [ to_entries[] |
+              .value as $leg
+              | if ($leg.mode == "together") then
+                  if all($leg.checkouts[]; .repo as $r | ([$allow[] | . == $r] | any)) then
+                    $leg + {idx: .key}
+                  else
+                    error("entry leg #\(.key) (together) names a repo outside the six org fleet repos")
+                  end
+                elif ([$allow[] | . == $leg.repo] | any) then
+                  $leg + {idx: .key}
+                else
+                  error("repo \($leg.repo) is not one of the six org fleet repos")
+                end
+            ]' <<<"$legs") || fail "jobs validation failed (see the error above)"
+
+          echo "resolved $count leg(s):"
+          jq -r '.[] |
+            if .mode == "together" then
+              "  #\(.idx) together [\(.checkouts | map(.repo + (if .ref == "" then "" else "@" + .ref end)) | join(", "))]: \(.command)"
+            else
+              "  #\(.idx) \(.repo) @ \(if .ref == "" then "(default branch)" else .ref end) (depth \(.depth)): \(.command)"
+            end' <<<"$matrix"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  run:
+    name: "run (${{ matrix.repo }} #${{ matrix.idx }})"
+    needs: setup
+    runs-on: ${{ inputs.runner == 'blacksmith' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    # The input is clamped into range so an out-of-range value can
+    # never set an absurd timeout; the validate step then fails the
+    # run fast with the reason.
+    timeout-minutes: ${{ fromJSON(inputs.timeout_minutes) > 120 && 120 || fromJSON(inputs.timeout_minutes) < 5 && 5 || fromJSON(inputs.timeout_minutes) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    container:
+      image: ghcr.io/developing-today/fleet-build:full
+      options: --user root
+    steps:
+      - name: Validate inputs
+        env:
+          MODE: ${{ matrix.mode }}
+          TARGET_REPO: ${{ matrix.repo }}
+          TARGET_REF: ${{ matrix.ref }}
+          CHECKOUTS_JSON: ${{ toJSON(matrix.checkouts) }}
+          TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = "together" ]; then
+            echo "mode:            together"
+            echo "checkouts:"
+            jq -r '.[] | "  \(.repo) @ \(if .ref == "" then "(default branch)" else .ref end) -> repos/\(.repo | split("/")[1]) (depth \(.depth))"' <<<"$CHECKOUTS_JSON"
+          else
+            echo "repo:            $TARGET_REPO"
+            echo "ref:             ${TARGET_REF:-(default branch)}"
+          fi
+          echo "timeout_minutes: $TIMEOUT_MINUTES"
+          if [ "$TIMEOUT_MINUTES" -lt 5 ] || [ "$TIMEOUT_MINUTES" -gt 120 ]; then
+            echo "::error::timeout_minutes must be between 5 and 120 (got $TIMEOUT_MINUTES)"
+            exit 1
+          fi
+      - name: Check out the target repo (automation-token repos)
+        if: ${{ matrix.mode == 'single' && contains(fromJSON('["developing-today/code", "developing-today-forks/opencode", "developing-today-forks/openchamber"]'), matrix.repo) }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.ref }}
+          fetch-depth: ${{ matrix.depth }}
+          token: ${{ secrets.REPO_AUTOMATION_TOKEN }}
+          path: target
+      - name: Check out the target repo (public repos, anonymous)
+        if: ${{ matrix.mode == 'single' && !contains(fromJSON('["developing-today/code", "developing-today-forks/opencode", "developing-today-forks/openchamber"]'), matrix.repo) }}
+        env:
+          TARGET_REPO: ${{ matrix.repo }}
+          TARGET_REF: ${{ matrix.ref }}
+          TARGET_DEPTH: ${{ matrix.depth }}
+        run: |
+          set -euo pipefail
+          clone_args=()
+          if [ "$TARGET_DEPTH" -ge 1 ]; then
+            clone_args+=(--depth "$TARGET_DEPTH")
+          fi
+          if [ -n "$TARGET_REF" ]; then
+            clone_args+=(--branch "$TARGET_REF")
+          fi
+          git clone "${clone_args[@]}" "https://github.com/${TARGET_REPO}.git" "$GITHUB_WORKSPACE/target"
+      - name: Clone the together repos side-by-side
+        if: ${{ matrix.mode == 'together' }}
+        env:
+          CHECKOUTS_JSON: ${{ toJSON(matrix.checkouts) }}
+          CLONE_TOKEN: ${{ secrets.REPO_AUTOMATION_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$CLONE_TOKEN"
+          mkdir -p "$GITHUB_WORKSPACE/repos"
+          while read -r item; do
+            repo=$(jq -r '.repo' <<<"$item")
+            ref=$(jq -r '.ref' <<<"$item")
+            depth=$(jq -r '.depth' <<<"$item")
+            base="${repo##*/}"
+            dest="$GITHUB_WORKSPACE/repos/$base"
+            clone_args=()
+            if [ "$depth" -ge 1 ]; then
+              clone_args+=(--depth "$depth")
+            fi
+            if [ -n "$ref" ]; then
+              clone_args+=(--branch "$ref")
+            fi
+            case "$repo" in
+              developing-today/code|developing-today-forks/opencode|developing-today-forks/openchamber)
+                url="https://x-access-token:${CLONE_TOKEN}@github.com/${repo}.git" ;;
+              *)
+                url="https://github.com/${repo}.git" ;;
+            esac
+            git clone "${clone_args[@]}" "$url" "$dest"
+          done < <(jq -c '.[]' <<<"$CHECKOUTS_JSON")
+      - name: Run command
+        if: ${{ matrix.mode == 'single' }}
+        env:
+          ORG_RUN_COMMAND: ${{ matrix.command }}
+        run: |
+          git config --global --add safe.directory '*'
+          cd "$GITHUB_WORKSPACE/target"
+          echo "HEAD: $(git rev-parse HEAD)"
+          bash -lc "$ORG_RUN_COMMAND"
+      - name: Run command (together)
+        if: ${{ matrix.mode == 'together' }}
+        env:
+          CHECKOUTS_JSON: ${{ toJSON(matrix.checkouts) }}
+          ORG_RUN_COMMAND: ${{ matrix.command }}
+        run: |
+          git config --global --add safe.directory '*'
+          cd "$GITHUB_WORKSPACE"
+          echo "layout (command runs from the workspace root):"
+          while read -r item; do
+            repo=$(jq -r '.repo' <<<"$item")
+            base="${repo##*/}"
+            echo "  $repo -> repos/$base (HEAD $(git -C "repos/$base" rev-parse HEAD))"
+          done < <(jq -c '.[]' <<<"$CHECKOUTS_JSON")
+          bash -lc "$ORG_RUN_COMMAND"

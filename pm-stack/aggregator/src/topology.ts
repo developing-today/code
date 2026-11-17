@@ -66,7 +66,7 @@ function projectorDef(cfg: Config): ServiceDef {
     return {
       id: "projector",
       name: "Projector",
-      port: 7801,
+      port: configuredPort(cfg.projector.baseUrl, 7801),
       bind: "127.0.0.1 only",
       runsAs: "systemd user unit pm-projector.service (NixOS) — runs from the ~/git/code checkout",
       probe: "http",
@@ -81,7 +81,7 @@ function projectorDef(cfg: Config): ServiceDef {
   return {
     id: "projector",
     name: "Projector",
-    port: 7801,
+    port: configuredPort(cfg.projector.baseUrl, 7801),
     bind: "— (not running)",
     runsAs: "off by config (PM_PROJECTOR_URL=off)",
     probe: "off",
@@ -89,6 +89,17 @@ function projectorDef(cfg: Config): ServiceDef {
     breaksIfDown: "nothing — while off, the comment projection runs on fixtures by design",
     notes: "Off is a configuration state, not a failure.",
   };
+}
+
+/** Use the configured probe target's explicit port, retaining the documented default otherwise. */
+function configuredPort(baseUrl: string | null, fallback: number): number {
+  if (!baseUrl) return fallback;
+  try {
+    const port = new URL(baseUrl).port;
+    return port ? Number(port) : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 export function buildServices(cfg: Config): ServiceDef[] {
@@ -106,7 +117,7 @@ export function buildServices(cfg: Config): ServiceDef[] {
     {
       id: "kaneo",
       name: "Kaneo",
-      port: 5173,
+      port: configuredPort(cfg.kaneo.baseUrl, 5173),
       bind: "loopback only · public via Cloudflare tunnel (kaneo.security.cab, pm-tunnel.service)",
       runsAs: "container pm-stack-kaneo-1",
       probe: "http",
@@ -131,8 +142,8 @@ export function buildServices(cfg: Config): ServiceDef[] {
     {
       id: "ready-for-agent",
       name: "ready-for-agent",
-      port: 6056,
-      bind: "0.0.0.0 — every interface, incl. LAN (bind scope tracked in #1181)",
+      port: configuredPort(cfg.readyForAgent.baseUrl, 6056),
+      bind: "loopback + tailnet — app on 127.0.0.1 only; tailnet address via ready-for-agent-tailnet socket proxy (aligned in #1181)",
       runsAs: "ready-for-agent.service",
       probe: "http",
       loopbackUrl: cfg.readyForAgent.baseUrl,
@@ -145,7 +156,7 @@ export function buildServices(cfg: Config): ServiceDef[] {
     {
       id: "pad",
       name: "Pad",
-      port: 7777,
+      port: configuredPort(cfg.pad.baseUrl, 7777),
       bind: "loopback + tailnet",
       runsAs: "container pad-pad-1",
       probe: "http",
@@ -159,7 +170,7 @@ export function buildServices(cfg: Config): ServiceDef[] {
     {
       id: "grist",
       name: "Grist",
-      port: 8484,
+      port: configuredPort(cfg.grist.baseUrl, 8484),
       bind: "loopback + tailnet",
       runsAs: "container grist-grist-1",
       probe: "http",

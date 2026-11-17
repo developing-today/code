@@ -54,6 +54,46 @@ The script sees `MCPX_RUNTIME` set to the **kind**, not the declared name.
 object, so the nearest file that sets one replaces the whole object from
 files further away, as with any other setting.
 
+## Capability matrix
+
+What each runtime can actually do for a script, measured rather than
+asserted: every cell below is the result of the capability probes in
+`internal/probe`, which run in the mcpx CI job against the installed
+deno, bun and node. Five one-line TypeScript probes (environment
+access, `fetch`, file read via `node:fs`, JSON round-trip, exit codes)
+plus package-resolution and type-check probes run per runtime; if a
+runtime's behaviour changes, the probe test fails and this table must
+be updated in the same change.
+
+| Capability                                                                            | deno               | bun                               | node                              |
+| ------------------------------------------------------------------------------------- | ------------------ | --------------------------------- | --------------------------------- |
+| Environment access (`Deno.env` / `process.env`)                                       | yes                | yes                               | yes                               |
+| `fetch` global                                                                        | yes                | yes                               | yes                               |
+| `node:` builtins (e.g. `node:fs`)                                                     | yes                | yes                               | yes                               |
+| JSON parse/stringify                                                                  | yes                | yes                               | yes                               |
+| Script-chosen exit code (`Deno.exit` / `process.exit`)                                | yes                | yes                               | yes                               |
+| Bare package resolution from `node_modules`                                           | yes                | yes                               | yes                               |
+| Static type checking before run                                                       | yes (`deno check`) | no — types are stripped unchecked | no — types are stripped unchecked |
+| Permission enforcement (profiles below)                                               | full model         | none (`all` only)                 | partial (`--permission`)          |
+| Python runtime ([#1917](https://github.com/developing-today/code/issues/1917))        | pending            | pending                           | pending                           |
+| Flake environments ([#1921](https://github.com/developing-today/code/issues/1921))    | pending            | pending                           | pending                           |
+| Dependency management ([#1913](https://github.com/developing-today/code/issues/1913)) | pending            | pending                           | pending                           |
+
+### Which runtime should I choose?
+
+- **Default (`auto`)** — let mcpx pick the first installed runtime
+  that can enforce the permissions you asked for; this is the right
+  choice unless you have a reason below.
+- **deno** — you need a permission profile narrower than `all`, or
+  you want scripts type-checked (`deno check`) before they run. The
+  only runtime whose sandbox is complete.
+- **bun** — startup speed matters and the script runs unsandboxed
+  anyway; bun has no permission model, so profiles other than `all`
+  are refused for it.
+- **node** — maximum npm-ecosystem compatibility, or the target
+  machine only has node; network access cannot be restricted under
+  node, so profiles that limit it are refused for it.
+
 ## Permission profiles
 
 `script.permissions` (`--permissions`, `MCPX_PERMISSIONS`) names profiles.

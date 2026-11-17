@@ -1,0 +1,59 @@
+name: bin tests
+
+# CI tier policy: see .github/ci-policy.md
+#
+# Test verification for the bin/ provider proxies (#6081).
+#
+# 12 of the 13 bin/*.test.mjs suites — the regression tests for the
+# live provider proxies in bin/ (proxy-supervise,
+# proxy-relay, ...) — were run by
+# no workflow; only bin/check-opencode-metered-providers.test.mjs
+# had wiring (opencode-config-guard). The rest executed only when a
+# human remembered to run node --test by hand, so pins regressed
+# silently (#3355, #3769, #3114 were each caught by hand runs).
+#
+# This workflow runs every suite via the bin/*.test.mjs glob — a
+# suite added later is picked up automatically, never silently
+# dropped — on pushes to main that touch bin/ and on dispatch,
+# following the house pattern for test workflows (dispatch plus
+# the shared concurrency pattern). Main tier only: not a merge gate.
+#
+# The run step counts the files the glob matched and fails if it
+# matched nothing, so a green run can never be a silently skipped
+# suite.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "bin/**"
+      - ".github/workflows/bin-tests.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bin-tests-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bin-tests:
+    name: "full (main tier): bin proxy suites"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Run the bin/*.test.mjs suites
+        run: |
+          count=$(ls bin/*.test.mjs | wc -l)
+          echo "Matched $count bin/*.test.mjs suite(s)."
+          if [ "$count" -eq 0 ]; then
+            echo "::error::No test files matched bin/*.test.mjs — the suites were not run."
+            exit 1
+          fi
+          node --test bin/*.test.mjs

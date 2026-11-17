@@ -74,16 +74,36 @@ export interface CoverageSnapshotFile {
 
 export const COVERAGE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
+function isRepositoryRef(value: string): boolean {
+  const parts = value.split("/");
+  if (parts.length !== 2) return false;
+  const [owner, name] = parts;
+  // GitHub owners are alphanumeric segments separated by single hyphens;
+  // repository names additionally allow dots and underscores.
+  return (
+    /^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/.test(owner!) &&
+    owner!.length <= 39 &&
+    /^[A-Za-z0-9._-]{1,100}$/.test(name!) &&
+    name !== "." &&
+    name !== ".."
+  );
+}
+
 /** Structural gate for one census row, shared by the feed reader. */
 export function isRepoCensus(v: unknown): v is RepoCensus {
   if (!v || typeof v !== "object") return false;
   const r = v as Record<string, unknown>;
   return (
     typeof r.repo === "string" &&
-    r.repo.includes("/") &&
+    isRepositoryRef(r.repo) &&
     Number.isInteger(r.openIssues) &&
+    (r.openIssues as number) >= 0 &&
     Number.isInteger(r.gateNow) &&
-    Number.isInteger(r.gateNext)
+    (r.gateNow as number) >= 0 &&
+    Number.isInteger(r.gateNext) &&
+    (r.gateNext as number) >= 0 &&
+    (r.gateNow as number) <= (r.openIssues as number) &&
+    (r.gateNext as number) <= (r.openIssues as number)
   );
 }
 
@@ -190,6 +210,56 @@ export function nextCoverageSnapshot(
   return { baseline: stored.baseline, current, weekly: stored.weekly ?? stored.current, anchorAt: anchor };
 }
 
+/** One coverage count: a finite number, or null when unavailable. */
+function isCoverageCount(value: unknown): value is number | null {
+  return value === null || (typeof value === "number" && Number.isFinite(value));
+}
+
+/** Structural gate for one stored coverage row (#4140). */
+function isCoverageRow(value: unknown): value is RepoCoverage {
+  if (!value || typeof value !== "object") return false;
+  const row = value as Record<string, unknown>;
+  return (
+    typeof row.repo === "string" &&
+    isCoverageCount(row.openIssues) &&
+    isCoverageCount(row.gateNow) &&
+    isCoverageCount(row.gateNext) &&
+    isCoverageCount(row.poolItems) &&
+    isCoverageCount(row.poolUnsetStatus) &&
+    isCoverageCount(row.poolUnsetArea)
+  );
+}
+
+/** Structural gate for one stored coverage report (#4140). */
+function isCoverageReport(value: unknown): value is CoverageReport {
+  if (!value || typeof value !== "object") return false;
+  const report = value as Record<string, unknown>;
+  return (
+    typeof report.generatedAt === "string" &&
+    Array.isArray(report.repos) &&
+    report.repos.every(isCoverageRow)
+  );
+}
+
+/**
+ * Whole-file gate for the stored snapshot (#4140): `current` must be a
+ * report; `baseline` and `weekly` may be null or absent (files written
+ * before `weekly` existed) but when present must be reports. Anything
+ * else reads as absent, per the store's contract — a malformed
+ * baseline used to sail through `read()` and crash `diffCoverage` on
+ * the /projects path, and a malformed `weekly` could be promoted into
+ * the baseline slot by the weekly rotation.
+ */
+function isCoverageSnapshotFile(value: unknown): value is CoverageSnapshotFile {
+  if (!value || typeof value !== "object") return false;
+  const file = value as Record<string, unknown>;
+  return (
+    isCoverageReport(file.current) &&
+    (file.baseline === null || file.baseline === undefined || isCoverageReport(file.baseline)) &&
+    (file.weekly === null || file.weekly === undefined || isCoverageReport(file.weekly))
+  );
+}
+
 /** Thin JSON store for the coverage snapshot; corrupt reads as absent. */
 export class CoverageSnapshotStore {
   private writeChain: Promise<void> = Promise.resolve();
@@ -199,11 +269,8 @@ export class CoverageSnapshotStore {
 
   async read(): Promise<CoverageSnapshotFile | null> {
     try {
-      const parsed = JSON.parse(await readFile(this.file, "utf8")) as CoverageSnapshotFile;
-      if (!parsed || typeof parsed !== "object" || !parsed.current || !Array.isArray(parsed.current.repos)) {
-        return null;
-      }
-      return parsed;
+      const parsed: unknown = JSON.parse(await readFile(this.file, "utf8"));
+      return isCoverageSnapshotFile(parsed) ? parsed : null;
     } catch {
       return null;
     }

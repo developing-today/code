@@ -9,6 +9,7 @@
 #   statix     - Nix linter/fixer
 #   shfmt      - Shell scripts
 #   taplo      - TOML files
+#   just       - justfile
 
 [global]
 excludes = [
@@ -59,3 +60,8 @@ options = ["-i", "2", "-s", "-w"]
 command = "taplo"
 options = ["fmt"]
 includes = ["*.toml"]
+
+[formatter.just]
+command = "bash"
+options = ["-c", "for f in \"$@\"; do just --fmt --justfile \"$f\"; done", "_"]
+includes = ["justfile"]

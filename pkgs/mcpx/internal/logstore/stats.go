@@ -58,7 +58,7 @@ func (s *Store) Calls(q Query) ([]CallStat, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	type key struct{ server, tool string }
 	durations := map[key][]float64{}
@@ -108,7 +108,10 @@ func (s *Store) Calls(q Query) ([]CallStat, error) {
 		if out[i].TotalMs != out[j].TotalMs {
 			return out[i].TotalMs > out[j].TotalMs
 		}
-		return out[i].Server+out[i].Tool < out[j].Server+out[j].Tool
+		if out[i].Server != out[j].Server {
+			return out[i].Server < out[j].Server
+		}
+		return out[i].Tool < out[j].Tool
 	})
 	return out, nil
 }
@@ -146,7 +149,7 @@ func (s *Store) Servers(q Query) ([]ServerStat, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	stats := map[string]*ServerStat{}
 	ready := map[string][]float64{}
@@ -239,7 +242,7 @@ func (s *Store) Instances(q Query) ([]InstanceStat, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	byID := map[string]*InstanceStat{}
 	var order []string
@@ -319,7 +322,7 @@ func (s *Store) Errors(q Query) ([]ErrorStat, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []ErrorStat
 	for rows.Next() {
 		var e ErrorStat
@@ -371,7 +374,7 @@ func (s *Store) Sessions(q Query) ([]SessionStat, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []SessionStat
 	for rows.Next() {
 		var st SessionStat
@@ -423,7 +426,7 @@ func (s *Store) Volume(q Query) ([]VolumeBucket, []FileStat, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var buckets []VolumeBucket
 	index := map[string]int{}
 	for rows.Next() {
@@ -458,7 +461,7 @@ func (s *Store) Volume(q Query) ([]VolumeBucket, []FileStat, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	defer frows.Close()
+	defer func() { _ = frows.Close() }()
 	var files []FileStat
 	for frows.Next() {
 		var f FileStat
@@ -502,7 +505,7 @@ func (s *Store) Slowest(q Query, n int) ([]SlowCall, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []SlowCall
 	for rows.Next() {
 		var c SlowCall
@@ -570,7 +573,7 @@ func (s *Store) Correlations(q Query, maxRows int) ([]ToolCorrelation, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []ToolCorrelation
 	for rows.Next() {
 		var tc ToolCorrelation
@@ -611,7 +614,7 @@ func (s *Store) Timeline(q Query, maxPoints int) ([]ToolTimelinePoint, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []ToolTimelinePoint
 	for rows.Next() {
 		var p ToolTimelinePoint

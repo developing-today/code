@@ -637,3 +637,14 @@ func TestLegacyTaskCapChargesTheResolvedIdentityNotTheOwner(t *testing.T) {
 		t.Fatalf("want the second connection naming alice refused by the cap, admitted=%v err=%q", ok, msg)
 	}
 }
+
+func TestANullExtensionEntryIsNotADeclaration(t *testing.T) {
+	declared := peer("2026-07-28", `{"extensions":{"io.modelcontextprotocol/tasks":{}}}`)
+	if !declared.DeclaredExtension("io.modelcontextprotocol/tasks") {
+		t.Error("an empty-object extension entry must count as declared")
+	}
+	nullEntry := peer("2026-07-28", `{"extensions":{"io.modelcontextprotocol/tasks":null}}`)
+	if nullEntry.DeclaredExtension("io.modelcontextprotocol/tasks") {
+		t.Error("a null extension entry must behave as undeclared (#2474)")
+	}
+}

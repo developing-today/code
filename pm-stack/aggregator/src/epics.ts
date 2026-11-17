@@ -1,4 +1,5 @@
 import type { ProjectPoolItem, RefKey } from "./model.ts";
+import { isValidRef } from "./model.ts";
 
 export interface EpicRollup {
   /** Resolved pool items whose epicRef points at this epic. */
@@ -11,12 +12,20 @@ export interface EpicRollup {
   statusMix: { status: string; count: number }[];
 }
 
+/** The one epic done-rule (#3954): a child counts as done when it is
+ *  closed/merged in GitHub OR its Project Status is Done. Every surface
+ *  that reports epic progress (/projects rollups, /roadmap drill-down)
+ *  must use this helper so the counts cannot drift apart again. */
+export function isEpicChildDone(child: ProjectPoolItem): boolean {
+  return child.state === "closed" || child.state === "merged" || child.status?.trim() === "Done";
+}
+
 /** Build rollups for epics in the pool, using only explicit epicRef edges. */
 export function buildEpicRollups(pool: readonly ProjectPoolItem[]): Map<RefKey, EpicRollup> {
   const byRef = new Map(pool.map((item) => [item.ref, item]));
   const childrenByEpic = new Map<RefKey, ProjectPoolItem[]>();
   for (const item of pool) {
-    if (!item.epicRef) continue;
+    if (!isValidRef(item.epicRef)) continue;
     const children = childrenByEpic.get(item.epicRef) ?? [];
     children.push(item);
     childrenByEpic.set(item.epicRef, children);
@@ -32,10 +41,11 @@ export function buildEpicRollups(pool: readonly ProjectPoolItem[]): Map<RefKey, 
     for (const child of children) {
       const status = child.status?.trim() || "No status";
       statuses.set(status, (statuses.get(status) ?? 0) + 1);
-      if (child.state === "closed" || child.state === "merged" || status === "Done") done += 1;
+      if (isEpicChildDone(child)) done += 1;
       if (
         child.state === "open" &&
         (child.blockedBy ?? []).some((ref) => {
+          if (!isValidRef(ref)) return false;
           const blocker = byRef.get(ref);
           return blocker === undefined || blocker.state === "open";
         })

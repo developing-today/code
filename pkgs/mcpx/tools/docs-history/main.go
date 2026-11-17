@@ -1118,12 +1118,27 @@ func main() {
 			switch rest[i] {
 			case "--version":
 				i++
+				if i >= len(rest) {
+					fmt.Fprintln(os.Stderr, "docs-history: --version requires a value")
+					usage()
+					os.Exit(2)
+				}
 				version = rest[i]
 			case "--date":
 				i++
+				if i >= len(rest) {
+					fmt.Fprintln(os.Stderr, "docs-history: --date requires a value")
+					usage()
+					os.Exit(2)
+				}
 				date = rest[i]
 			case "--changes-dir":
 				i++
+				if i >= len(rest) {
+					fmt.Fprintln(os.Stderr, "docs-history: --changes-dir requires a value")
+					usage()
+					os.Exit(2)
+				}
 				changesDir = rest[i]
 			default:
 				files = append(files, rest[i])
@@ -1145,11 +1160,21 @@ func main() {
 			switch rest[i] {
 			case "--diff":
 				i++
+				if i >= len(rest) {
+					fmt.Fprintln(os.Stderr, "docs-history: --diff requires a value")
+					usage()
+					os.Exit(2)
+				}
 				diffFile = rest[i]
 			case "--trivial":
 				trivial = true
 			case "--changes-dir":
 				i++
+				if i >= len(rest) {
+					fmt.Fprintln(os.Stderr, "docs-history: --changes-dir requires a value")
+					usage()
+					os.Exit(2)
+				}
 				changesDir = rest[i]
 			default:
 				files = append(files, rest[i])

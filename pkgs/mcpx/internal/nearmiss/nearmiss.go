@@ -13,6 +13,7 @@ package nearmiss
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Normalize folds a name to the form distances are measured on: case
@@ -21,19 +22,12 @@ import (
 // letters survive; every other rune is a boundary.
 func Normalize(s string) string {
 	var b strings.Builder
-	prevLower := false
 	for _, r := range s {
-		switch {
-		case unicode.IsLetter(r) || unicode.IsDigit(r):
-			if unicode.IsUpper(r) && prevLower {
-				// A camel boundary: the split is recorded by dropping
-				// nothing -- the letters join -- because the boundary
-				// carries no more meaning than a separator does.
-			}
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			// A camel boundary is recorded by dropping nothing -- the
+			// letters join -- because the boundary carries no more
+			// meaning than a separator does.
 			b.WriteRune(unicode.ToLower(r))
-			prevLower = unicode.IsLower(r) || unicode.IsDigit(r)
-		default:
-			prevLower = false
 		}
 	}
 	return b.String()
@@ -46,10 +40,14 @@ func Distance(a, b string) int {
 	return damerau(Normalize(a), Normalize(b))
 }
 
-// damerau is optimal string alignment Damerau-Levenshtein over bytes of
-// already-normalised (lowercase ASCII-folded) strings.
+// damerau is optimal string alignment Damerau-Levenshtein over the
+// runes of already-normalised strings. Counting runes, not UTF-8
+// bytes, is the point (#3099): one accented or Cyrillic character is
+// one character, so a single-character edit costs one edit whatever
+// its encoded width.
 func damerau(a, b string) int {
-	la, lb := len(a), len(b)
+	ra, rb := []rune(a), []rune(b)
+	la, lb := len(ra), len(rb)
 	d := make([][]int, la+1)
 	for i := range d {
 		d[i] = make([]int, lb+1)
@@ -61,11 +59,11 @@ func damerau(a, b string) int {
 	for i := 1; i <= la; i++ {
 		for j := 1; j <= lb; j++ {
 			cost := 1
-			if a[i-1] == b[j-1] {
+			if ra[i-1] == rb[j-1] {
 				cost = 0
 			}
 			d[i][j] = min(d[i-1][j]+1, d[i][j-1]+1, d[i-1][j-1]+cost)
-			if i > 1 && j > 1 && a[i-1] == b[j-2] && a[i-2] == b[j-1] {
+			if i > 1 && j > 1 && ra[i-1] == rb[j-2] && ra[i-2] == rb[j-1] {
 				d[i][j] = min(d[i][j], d[i-2][j-2]+1)
 			}
 		}
@@ -96,7 +94,7 @@ func Near(a, b string) bool {
 	if na == nb {
 		return true
 	}
-	if len(na) > 2 && len(nb) > 2 && (strings.HasPrefix(nb, na) || strings.HasPrefix(na, nb)) {
+	if utf8.RuneCountInString(na) > 2 && utf8.RuneCountInString(nb) > 2 && (strings.HasPrefix(nb, na) || strings.HasPrefix(na, nb)) {
 		return true
 	}
 	return damerau(na, nb) <= 1
@@ -115,7 +113,7 @@ func Nearest(name string, candidates []string) (string, bool) {
 			best, bestD = c, d
 		}
 	}
-	if best == "" || bestD > Threshold(len(nn)) {
+	if best == "" || bestD > Threshold(utf8.RuneCountInString(nn)) {
 		return "", false
 	}
 	return best, true

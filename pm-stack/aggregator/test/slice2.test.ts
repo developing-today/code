@@ -8,6 +8,7 @@ import {
   roadmapDayGrain,
   sessionChildren,
   sessionRoots,
+  timeline,
 } from "../src/derive.ts";
 import { type OrchestrationSection, type RoadmapRow, type SessionFeedEntry, type TierItem } from "../src/model.ts";
 import { renderAttention, renderRoadmap, renderToday } from "../src/render.ts";
@@ -18,7 +19,6 @@ import {
   FIXTURE_ROADMAP,
   fixtureSource,
 } from "../src/sources/fixtures.ts";
-import { julesSummary, mapJulesItems, type JulesReviewState } from "../src/sources/jules.ts";
 
 const NOW = Date.parse("2026-10-25T15:00:00Z");
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -192,113 +192,53 @@ describe("session hierarchy (#898 §5)", () => {
   });
 });
 
-describe("jules mapping (#898 §5)", () => {
-  const state: JulesReviewState = {
-    last_run: "2026-10-25T14:58:00Z",
-    items: {
-      "4259424002214698449": {
-        state: "AWAITING_USER_FEEDBACK",
-        title: "Fix #811: a joiner's resize",
-        source: "sources/github/developing-today/code",
-        created: "2026-10-25T12:44:14Z",
-        last_action: "replied",
-        last_action_at: "2026-10-25T14:58:25Z",
-        note: "Agent reported work done and asked 'Does this look good, and should I proceed?' Replied.",
-      },
-      "999": {
-        state: "FAILED",
-        title: "Broke",
-        source: "sources/github/developing-today/opencode",
-        last_action_at: "2026-10-25T10:00:00Z",
-      },
-    },
-    jules_note_1458:
-      "Jules list this run: 84 sessions - 77 COMPLETED, 6 FAILED, 1 AWAITING_USER_FEEDBACK, 0 AWAITING_PLAN_APPROVAL, 0 IN_PROGRESS. 1 Jules response sent.",
-  };
-
-  test("maps keeper items to Jules feed entries", () => {
-    const entries = mapJulesItems(state);
-    const awaiting = entries.find((e) => e.sessionId === "4259424002214698449")!;
-    expect(awaiting.source).toBe("jules");
-    expect(awaiting.directory).toBe("developing-today/code");
-    expect(awaiting.awaitingQuestion).toBe("Does this look good, and should I proceed?");
-    const failed = entries.find((e) => e.sessionId === "999")!;
-    expect(failed.outcome).toBe("failed");
-    expect(failed.lastTurnError).toContain("failed");
-  });
-
-  test("parses keeper totals", () => {
-    const s = julesSummary(state);
-    expect(s.total).toBe(84);
-    expect(s.completed).toBe(77);
-    expect(s.failed).toBe(6);
-    expect(s.tracked).toBe(2);
-    expect(s.at).toBe("2026-10-25T14:58:00Z");
-  });
-
-  test("ties totals to the last run across midnight, not the lexicographic max (#1587)", () => {
-    // Yesterday's late note must not outrank today's note all day.
-    const s = julesSummary({
-      last_run: "2026-10-26T00:10:00Z",
-      items: {},
-      jules_note_2359:
-        "Jules list this run: 84 sessions - 77 COMPLETED, 6 FAILED, 1 AWAITING_USER_FEEDBACK, 0 AWAITING_PLAN_APPROVAL, 0 IN_PROGRESS. 1 Jules response sent.",
-      jules_note_0010:
-        "Jules list this run: 12 sessions - 3 COMPLETED, 1 FAILED, 2 AWAITING_USER_FEEDBACK, 1 AWAITING_PLAN_APPROVAL, 5 IN_PROGRESS. 1 Jules response sent.",
-    });
-    expect(s.total).toBe(12);
-    expect(s.completed).toBe(3);
-    expect(s.failed).toBe(1);
-    expect(s.at).toBe("2026-10-26T00:10:00Z");
-  });
-
-  test("a stale late-evening note does not stand in for the morning run (#1587)", () => {
-    const s = julesSummary({
-      last_run: "2026-10-26T09:30:00Z",
-      items: {},
-      jules_note_2359:
-        "Jules list this run: 84 sessions - 77 COMPLETED, 6 FAILED, 1 AWAITING_USER_FEEDBACK, 0 AWAITING_PLAN_APPROVAL, 0 IN_PROGRESS. 1 Jules response sent.",
-      jules_note_0930:
-        "Jules list this run: 20 sessions - 9 COMPLETED, 2 FAILED, 3 AWAITING_USER_FEEDBACK, 1 AWAITING_PLAN_APPROVAL, 5 IN_PROGRESS. 1 Jules response sent.",
-    });
-    expect(s.total).toBe(20);
-    expect(s.completed).toBe(9);
-    expect(s.failed).toBe(2);
-  });
-
-  test("an unpadded note key never outranks a padded later one (#1587)", () => {
-    const s = julesSummary({
-      last_run: "2026-10-27T14:58:00Z",
-      items: {},
-      jules_note_905:
-        "Jules list this run: 50 sessions - 40 COMPLETED, 5 FAILED, 1 AWAITING_USER_FEEDBACK, 1 AWAITING_PLAN_APPROVAL, 3 IN_PROGRESS. 1 Jules response sent.",
-      jules_note_1458:
-        "Jules list this run: 84 sessions - 77 COMPLETED, 6 FAILED, 1 AWAITING_USER_FEEDBACK, 0 AWAITING_PLAN_APPROVAL, 0 IN_PROGRESS. 1 Jules response sent.",
-    });
-    expect(s.total).toBe(84);
-    expect(s.completed).toBe(77);
-    expect(s.failed).toBe(6);
-  });
-
-  test("omits totals when no note can be tied to the last run (#1587)", () => {
-    const s = julesSummary({
-      last_run: "2026-10-26T10:00:00Z",
-      items: {},
-      jules_note_0930:
-        "Jules list this run: 20 sessions - 9 COMPLETED, 2 FAILED, 3 AWAITING_USER_FEEDBACK, 1 AWAITING_PLAN_APPROVAL, 5 IN_PROGRESS. 1 Jules response sent.",
-    });
-    expect(s.total).toBeUndefined();
-    expect(s.at).toBe("2026-10-26T10:00:00Z");
-    expect(s.tracked).toBe(0);
-  });
-});
-
 describe("roadmap grains (#898 §3)", () => {
   test("month timeline places dated rows by month and keeps quarter grain", () => {
     const tl = monthTimeline(FIXTURE_ROADMAP);
     const keys = tl.lanes.map((l) => l.key);
     expect(keys).toContain("2026-10");
     expect(keys).toContain("2026-Q4");
+  });
+
+  test("month timeline sorts quarter and month lanes on one chronological scale (#3952)", () => {
+    const mk = (id: number, horizon: string): RoadmapRow => ({
+      id,
+      subject: `grist:doc/Roadmap/${id}`,
+      title: `Row ${id}`,
+      area: "PM stack",
+      status: "Planned",
+      horizon,
+      source: "",
+      notes: "",
+      links: [],
+    });
+    // Deliberately scrambled input order: the lane sequence must come from
+    // the order scale, not from insertion order / sort stability.
+    const tl = monthTimeline([
+      mk(1, "Q1 2030"),
+      mk(2, "Ongoing"),
+      mk(3, "2027-01-15"),
+      mk(4, "Q4 2026"),
+      mk(5, "Unscheduled"),
+      mk(6, "2026-10-24"),
+      mk(7, "Q1 2027"),
+      mk(8, "Someday"),
+    ]);
+    expect(tl.lanes.map((l) => l.key)).toEqual([
+      "2026-10",
+      "2026-Q4",
+      "2027-01",
+      "2027-Q1",
+      "2030-Q1",
+      "ongoing",
+      "other:Someday",
+      "unscheduled",
+    ]);
+    // The quarter view is unchanged: timeline() still uses laneFor orders
+    // on the year*4+quarter scale.
+    const qt = timeline([mk(9, "Q1 2030"), mk(10, "Q4 2026"), mk(11, "Q1 2027")]);
+    expect(qt.lanes.map((l) => l.key)).toEqual(["2026-Q4", "2027-Q1", "2030-Q1"]);
+    expect(qt.lanes.map((l) => l.order)).toEqual([8108, 8109, 8121]);
   });
 
   test("day grains window the dated rows and count the rest honestly", () => {
@@ -445,7 +385,7 @@ describe("attention render (slice 2)", () => {
     expect(html).toContain("Why you:");
     expect(html).toContain("Only Drew can pick which repo installs");
     expect(html).toContain("OpenCode · laptop");
-    expect(html).toContain("Jules");
+    expect(html).not.toContain("Jules"); // source retired (code#5098): no Jules coverage row or cards
     expect(html).toContain("sub-session");
     expect(html).toContain("Session coverage");
     expect(html).toContain("not wired");

@@ -126,20 +126,21 @@ impl Outbox {
     ///
     /// # Errors
     ///
-    /// Fails if the file cannot be read, or a complete line is corrupt.
+    /// Fails if the file cannot be read, a complete line is corrupt, or a
+    /// journal record violates the outbox state machine.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let mut outbox = Self {
             path: path.into(),
             entries: BTreeMap::new(),
         };
-        let text = match fs::read_to_string(&outbox.path) {
-            Ok(text) => text,
+        let bytes = match fs::read(&outbox.path) {
+            Ok(bytes) => bytes,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(outbox),
             Err(error) => return Err(error).context("reading the envelope outbox"),
         };
         let mut kept = 0;
-        for (number, line) in text.split_inclusive('\n').enumerate() {
-            if !line.ends_with('\n') {
+        for (number, line) in bytes.split_inclusive(|byte| *byte == b'\n').enumerate() {
+            if !line.ends_with(b"\n") {
                 // The final line has no newline: a crash cut the append
                 // short. Parseable or not, it was never completely
                 // written, so it is torn and dropped — the same rule
@@ -150,15 +151,19 @@ impl Outbox {
                 // truncated to it below.
                 break;
             }
-            if line.trim().is_empty() {
+            let text = std::str::from_utf8(line)
+                .with_context(|| format!("envelope outbox line {} is corrupt", number + 1))?;
+            if text.trim().is_empty() {
                 // Blank lines carry no records, but they are complete bytes in
                 // the journal and must remain before any later torn tail.
                 kept += line.len();
                 continue;
             }
-            match serde_json::from_str::<Record>(line.trim_end()) {
+            match serde_json::from_str::<Record>(text.trim_end()) {
                 Ok(record) => {
-                    outbox.apply(record)?;
+                    outbox.apply(record).with_context(|| {
+                        format!("envelope outbox line {} is refused", number + 1)
+                    })?;
                     kept += line.len();
                 }
                 Err(error) => {
@@ -168,7 +173,7 @@ impl Outbox {
                 }
             }
         }
-        if kept < text.len() {
+        if kept < bytes.len() {
             OpenOptions::new()
                 .write(true)
                 .open(&outbox.path)?
@@ -317,6 +322,16 @@ impl Outbox {
                 error,
             } => {
                 let entry = self.entry_mut(&id)?;
+                ensure!(entry.finish.is_none(), "envelope {id} already finished");
+                let expected_attempts = entry.attempts + 1;
+                ensure!(
+                    attempts == expected_attempts,
+                    "outbox record for envelope {id} expected {expected_attempts} attempts, got {attempts}"
+                );
+                ensure!(
+                    attempts < MAX_ATTEMPTS,
+                    "outbox record attempts envelope {id} at the retry limit"
+                );
                 entry.attempts = attempts;
                 entry.next_at = next_at;
                 entry.last_error = Some(error);
@@ -328,21 +343,61 @@ impl Outbox {
                 detail,
             } => {
                 let entry = self.entry_mut(&id)?;
+                ensure!(entry.finish.is_none(), "envelope {id} already finished");
+                let expected_attempts = entry.attempts + 1;
+                ensure!(
+                    attempts == expected_attempts,
+                    "outbox record for envelope {id} expected {expected_attempts} attempts, got {attempts}"
+                );
+                ensure!(
+                    attempts <= MAX_ATTEMPTS,
+                    "outbox record exceeds the retry limit for envelope {id}"
+                );
+                match outcome {
+                    Finish::Delivered => ensure!(
+                        detail.is_none(),
+                        "delivered outbox record for envelope {id} has refusal detail"
+                    ),
+                    Finish::Refused => ensure!(
+                        detail.is_some(),
+                        "refused outbox record for envelope {id} is missing detail"
+                    ),
+                    Finish::GaveUp => {
+                        ensure!(
+                            attempts == MAX_ATTEMPTS,
+                            "gave-up outbox record for envelope {id} is not at the retry limit"
+                        );
+                        ensure!(
+                            detail.is_some(),
+                            "gave-up outbox record for envelope {id} is missing detail"
+                        );
+                    }
+                }
                 entry.attempts = attempts;
                 entry.finish = Some(outcome);
                 entry.last_error = detail;
             }
             Record::Withdrawn { id } => {
+                let entry = self
+                    .entries
+                    .get(&id)
+                    .with_context(|| format!("outbox record withdraws unknown envelope {id}"))?;
                 ensure!(
-                    self.entries.remove(&id).is_some(),
-                    "outbox record withdraws unknown envelope {id}"
+                    entry.attempts == 0 && entry.finish.is_none(),
+                    "envelope {id} was already attempted"
                 );
+                self.entries.remove(&id);
             }
         }
         Ok(())
     }
 
     fn insert_queued(&mut self, target: String, payload: Payload) -> Result<()> {
+        // The live path checks the target in the enqueue verbs
+        // before committing; replay must hold the same line, or a journal
+        // record the live API could never produce loads as a due entry and
+        // only fails at flush time as a spurious refusal (#5635).
+        check_target(&target)?;
         let key = payload.key(&target);
         ensure!(!self.entries.contains_key(&key), "{key} is queued twice");
         self.entries.insert(
@@ -461,6 +516,32 @@ mod tests {
             .to_owned()
     }
 
+    fn queued_record(id: &str) -> Record {
+        Record::Queued {
+            target: target(),
+            envelope: envelope(id),
+        }
+    }
+
+    fn write_records(dir: &tempfile::TempDir, records: impl IntoIterator<Item = Record>) {
+        let text = records
+            .into_iter()
+            .map(|record| format!("{}\n", serde_json::to_string(&record).unwrap()))
+            .collect::<String>();
+        fs::write(path(dir), text).unwrap();
+    }
+
+    fn assert_replay_error(records: impl IntoIterator<Item = Record>, line: usize, reason: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        write_records(&dir, records);
+        let error = Outbox::open(path(&dir))
+            .err()
+            .expect("invalid replay should fail");
+        let message = format!("{error:#}");
+        assert!(message.contains(&format!("line {line}")), "{message}");
+        assert!(message.contains(reason), "{message}");
+    }
+
     #[test]
     fn a_target_is_a_ticket_or_a_bare_node_id() {
         let id = iroh::SecretKey::from_bytes(&[7; 32]).public();
@@ -527,6 +608,30 @@ mod tests {
         assert_eq!(entry.last_error.as_deref(), Some("bad signature"));
         assert!(outbox.due(u64::MAX).is_empty());
         assert!(outbox.record("e1", NOW, Outcome::Delivered).is_err());
+        drop(outbox);
+
+        let reopened = Outbox::open(path(&dir)).unwrap();
+        assert_eq!(reopened.entry("e1").unwrap().finish, Some(Finish::Refused));
+        assert_eq!(
+            reopened.entry("e1").unwrap().last_error.as_deref(),
+            Some("bad signature")
+        );
+    }
+
+    #[test]
+    fn a_delivery_survives_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut outbox = Outbox::open(path(&dir)).unwrap();
+        outbox.enqueue(&target(), envelope("e1")).unwrap();
+        outbox.record("e1", NOW, Outcome::Delivered).unwrap();
+        drop(outbox);
+
+        let reopened = Outbox::open(path(&dir)).unwrap();
+        assert_eq!(
+            reopened.entry("e1").unwrap().finish,
+            Some(Finish::Delivered)
+        );
+        assert!(reopened.entry("e1").unwrap().last_error.is_none());
     }
 
     #[test]
@@ -574,7 +679,8 @@ mod tests {
         outbox.enqueue(&target(), envelope("e1")).unwrap();
         drop(outbox);
         let mut file = OpenOptions::new().append(true).open(path(&dir)).unwrap();
-        file.write_all(b"{\"op\":\"queued\",\"target\"").unwrap();
+        // The tail is cut after the first byte of a multibyte name.
+        file.write_all(b"{\"name\":\"Jos\xc3").unwrap();
         drop(file);
 
         let mut outbox = Outbox::open(path(&dir)).unwrap();
@@ -628,6 +734,147 @@ mod tests {
         fs::write(path(&dir), "\nnot json\n").unwrap();
         let error = Outbox::open(path(&dir)).err().unwrap();
         assert!(format!("{error:#}").contains("envelope outbox line 2 is corrupt"));
+    }
+
+    #[test]
+    fn replay_rejects_attempt_after_finish() {
+        assert_replay_error(
+            [
+                queued_record("e1"),
+                Record::Finished {
+                    id: "e1".to_owned(),
+                    attempts: 1,
+                    outcome: Finish::Delivered,
+                    detail: None,
+                },
+                Record::Attempted {
+                    id: "e1".to_owned(),
+                    attempts: 2,
+                    next_at: NOW + MINUTE,
+                    error: "down".to_owned(),
+                },
+            ],
+            3,
+            "already finished",
+        );
+    }
+
+    #[test]
+    fn replay_rejects_a_second_finish() {
+        assert_replay_error(
+            [
+                queued_record("e1"),
+                Record::Finished {
+                    id: "e1".to_owned(),
+                    attempts: 1,
+                    outcome: Finish::Delivered,
+                    detail: None,
+                },
+                Record::Finished {
+                    id: "e1".to_owned(),
+                    attempts: 2,
+                    outcome: Finish::Refused,
+                    detail: Some("bad signature".to_owned()),
+                },
+            ],
+            3,
+            "already finished",
+        );
+    }
+
+    #[test]
+    fn replay_rejects_attempt_count_regression() {
+        let mut records = vec![queued_record("e1")];
+        for attempts in 1..=5 {
+            records.push(Record::Attempted {
+                id: "e1".to_owned(),
+                attempts,
+                next_at: NOW + u64::from(attempts) * MINUTE,
+                error: "down".to_owned(),
+            });
+        }
+        records.push(Record::Attempted {
+            id: "e1".to_owned(),
+            attempts: 2,
+            next_at: NOW + 2 * MINUTE,
+            error: "down".to_owned(),
+        });
+
+        assert_replay_error(records, 7, "expected 6 attempts, got 2");
+    }
+
+    #[test]
+    fn replay_rejects_withdrawal_after_an_attempt() {
+        assert_replay_error(
+            [
+                queued_record("e1"),
+                Record::Attempted {
+                    id: "e1".to_owned(),
+                    attempts: 1,
+                    next_at: NOW + MINUTE,
+                    error: "down".to_owned(),
+                },
+                Record::Withdrawn {
+                    id: "e1".to_owned(),
+                },
+            ],
+            3,
+            "already attempted",
+        );
+    }
+
+    #[test]
+    fn replay_rejects_withdrawal_after_finish() {
+        assert_replay_error(
+            [
+                queued_record("e1"),
+                Record::Finished {
+                    id: "e1".to_owned(),
+                    attempts: 1,
+                    outcome: Finish::Delivered,
+                    detail: None,
+                },
+                Record::Withdrawn {
+                    id: "e1".to_owned(),
+                },
+            ],
+            3,
+            "already attempted",
+        );
+    }
+
+    #[test]
+    fn replay_rejects_a_queued_record_with_a_malformed_target() {
+        assert_replay_error(
+            [Record::Queued {
+                target: "not a target".to_owned(),
+                envelope: envelope("e1"),
+            }],
+            1,
+            "is neither an endpoint ticket nor a node ID",
+        );
+    }
+
+    #[test]
+    fn replay_rejects_a_queued_artifact_record_with_a_malformed_target() {
+        let artifact = SignedArtifact {
+            author: "00".to_owned(),
+            seq: 1,
+            prev: String::new(),
+            kind: "note".to_owned(),
+            body: serde_json::Value::Null,
+            after: Vec::new(),
+            hash: "00".to_owned(),
+            signature: "00".to_owned(),
+        };
+        assert_replay_error(
+            [Record::QueuedArtifact {
+                target: "not a target".to_owned(),
+                artifact,
+            }],
+            1,
+            "is neither an endpoint ticket nor a node ID",
+        );
     }
 
     #[test]

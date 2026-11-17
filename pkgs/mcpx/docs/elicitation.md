@@ -4,7 +4,7 @@
 id:           elicitation-a-design
 since:        pre-release
 created:      2026-09-28T18:00:00-05:00
-last-updated: 2026-09-28T18:00:00-05:00
+last-updated: 2026-11-03T12:00:00-06:00
 status:       partial
 tags:         area:protocol, area:integration
 description:  how a server asks a question, and how the answer gets back
@@ -32,7 +32,7 @@ worth knowing before you read on:
 | `mcpx_elicit_pending`                                                             | the tool is `mcpx_elicit_list`                                                                                                                                                                                                                                                                                                                                    |
 | `plumbing.elicitTTL`, `elicit.mode`, `elicit.rules`                               | none exist. The TTL is `elicit.ttl` in `defaults.json` and is not a setting; the shipped policy is `elicit.Route` (`internal/elicit/elicit.go:491`), which is not rule-based                                                                                                                                                                                      |
 | `MCPX_PLUGIN_ELICIT`                                                              | does not exist                                                                                                                                                                                                                                                                                                                                                    |
-| `onElicit()` / `ask()` script globals, the TUI view, the `mcpx-elicitation` skill | none built                                                                                                                                                                                                                                                                                                                                                        |
+| `onElicit()` / `ask()` script globals, the TUI view, the `mcpx-elicitation` skill | not built; `onElicit`/`ask` decided against (2026-11-03, #1935 / ELI-21): broker-only is the deliberate design, see §5.2. The TUI view and the skill remain unbuilt proposals                                                                                                                                                                                     |
 | a `202` with `Location` and `Retry-After`, an `Elicitation` OpenAPI component     | not built. The retry shape that shipped is MCP-side `input_required`                                                                                                                                                                                                                                                                                              |
 
 ---
@@ -393,22 +393,58 @@ const issue = await tools.github.create_issue({ title: "x" });
 ```
 
 By default the runtime answers from policy or cancels, and the call returns
-whatever the server does with that. To participate -- **not built**: no
+whatever the server does with that.
+
+**Decision (2026-11-03, #1935, register row ELI-21): broker-only is the
+deliberate design. `onElicit` and `ask` will not be built** -- no
 `onElicit` and no `ask` are emitted into the script's globals
-(`internal/codegen/emit.go`):
+(`internal/codegen/emit.go`), and that absence is now a decision, not a
+gap. The proposal that was considered, kept as the record:
 
 ```ts
 onElicit(async (q) => {
-  // NOT BUILT
+  // NOT BUILT -- decided against; see below
   if (q.mode === "url") return { action: "decline" };
   if (q.schema.properties.repo) return { action: "accept", content: { repo: "me/thing" } };
   return { action: "cancel" };
 });
 ```
 
-And for a script run on a terminal, `ask(q)` would prompt. The handler is
-registered rather than passed per call, because the question arrives from
-inside a call the script did not know would ask.
+(For a script run on a terminal, `ask(q)` would have prompted. The handler
+was to be registered rather than passed per call, because the question
+arrives from inside a call the script did not know would ask.)
+
+Why the broker stays the only answer path:
+
+- **Consent and credentials are routed to a human on purpose.**
+  `elicit.Route` (`internal/elicit/elicit.go`) sends url-mode questions,
+  credential-shaped fields, and bare confirmations to a human -- "a
+  confirmation is consent, which is not the agent's to give". An inline
+  script handler answers from inside the call, ahead of that routing;
+  giving scripts first claim on a question would either bypass the human
+  gate or force every generated client to re-implement `Route`. Neither
+  is acceptable, so the routing lives in exactly one place: the broker.
+- **A script cannot reliably know which call asked.** The correlation
+  the protocol has identifies a _call_, and a script is many calls,
+  possibly concurrent over one shared upstream instance; questions that
+  cannot be attributed are already marked `ambiguous` on the CLI path
+  (§5.1). A registered global handler would answer questions it cannot
+  attribute -- the failure mode the broker's claim-once, TTL-bound
+  answer path exists to prevent.
+- **Scripts are not locked out; they answer through the broker like
+  every other surface.** A script run stops with exit `75` and the
+  `mcpx elicit answer` command (§5.1); anything that can speak HTTP or
+  MCP can list, inspect, and answer pending questions via
+  `GET /v1/elicit`, `POST /v1/elicit/{id}/{action}`, and the
+  `mcpx_elicit_*` tools, and the ops surface exposes the same as
+  `ops.elicitList()` / `ops.elicitAnswer()` (`docs/parity.md`). Whoever
+  sends the answer, it still passes `Route`, the TTL, and the
+  claim-once update.
+
+Revisit only if both change: run-scoped question correlation lands (a
+question provably belongs to one script run and one call), and the hook
+is restricted to questions `Route` already sends to the agent -- never
+url mode, never credential fields, never confirmations.
 
 ### 5.3 REST and OpenAPI
 

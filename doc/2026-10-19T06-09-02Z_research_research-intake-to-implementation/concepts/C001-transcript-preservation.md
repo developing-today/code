@@ -59,7 +59,7 @@ Preserve the raw user prompt byte-for-byte in transcript.txt without normalizati
 - Protection Attributes: `.gitattributes` (`transcript.txt -text`) and `.editorconfig` (`trim_trailing_whitespace = false`)
 - Workspace Scripts: `root.just` (`strip-whitespace` exclusion for `transcript.txt`)
 - Upstream Cairn Request: `other/2026-10-19_research-design-workflow_request.txt`
-- Workflow Specification: [`planning/workflow/records.md`](/planning/workflow/records.md)
+- Workflow Specification: [`planning/workflow/records.md`](../../../planning/workflow/records.md)
 
 ## Trigger Issue Draft
 

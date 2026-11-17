@@ -1,8 +1,17 @@
-// Tests for the pure parsing core of cloudflare-quota-export.mjs.
-// Run: node --test pm-stack/cloudflare-export/
+// Tests for cloudflare-quota-export parsing and CLI entry-point behavior.
+// Run: node --test pm-stack/cloudflare-export/cloudflare-quota-export.test.mjs
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  aiNeuronsDayAlerts,
+  aiNeuronsDayAlertThreshold,
+  AI_NEURONS_DAY_ALERT_THRESHOLD_DEFAULT,
+  AI_NEURONS_DAY_GROUP_LIMIT,
   classifyBilling,
   classifyR2,
   cycleStartUtc,
@@ -10,6 +19,7 @@ import {
   ExportError,
   failureDocument,
   foldKv,
+  listR2Buckets,
   parseGraphqlUsage,
   R2_STORAGE_GROUP_LIMIT,
   run,
@@ -35,9 +45,18 @@ const ACCOUNT = {
   ],
   r2StorageAdaptiveGroups: [{ max: { payloadSize: 25139205306 } }],
   aiInferenceAdaptiveGroups: [{ sum: { totalNeurons: 4114515.31 } }],
+  // Grouped rows sum to the same 4,114,515.31 cycle total: the
+  // Oct 24–25 2026 burn shape from #2287 (Oct 24 alone ~2.99M on the
+  // deepseek model via the gateway).
+  aiInferenceAdaptiveGroupsByDay: [
+    { dimensions: { date: "2026-10-24", modelId: "@cf/deepseek-ai/deepseek-v4-pro-0813" }, sum: { totalNeurons: 2990000 } },
+    { dimensions: { date: "2026-10-24", modelId: "@cf/meta/llama-3.1-8b-instruct" }, sum: { totalNeurons: 100000 } },
+    { dimensions: { date: "2026-10-25", modelId: "@cf/deepseek-ai/deepseek-v4-pro-0813" }, sum: { totalNeurons: 1024515.31 } },
+  ],
 };
 const NOW = new Date("2026-10-29T10:00:00Z");
 const START = cycleStartUtc(NOW);
+const EXPORTER_PATH = fileURLToPath(new URL("./cloudflare-quota-export.mjs", import.meta.url));
 
 test("API_REQUEST_TIMEOUT_MS: bounded below the 120s service deadline", () => {
   // cloudflare-quota-export.service has TimeoutStartSec=120; a stalled
@@ -45,6 +64,57 @@ test("API_REQUEST_TIMEOUT_MS: bounded below the 120s service deadline", () => {
   // document instead of being killed with a stale latest.json in place.
   assert.ok(API_REQUEST_TIMEOUT_MS > 0);
   assert.ok(API_REQUEST_TIMEOUT_MS < 120_000);
+});
+
+test("CLI: runs main via file and directory symlinks (#4325)", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "cloudflare-export-entrypoint-"));
+  const links = path.join(home, "links");
+  fs.mkdirSync(links);
+  const fileLink = path.join(links, "export.mjs");
+  const dirLink = path.join(links, "export-dir");
+  fs.symlinkSync(EXPORTER_PATH, fileLink);
+  fs.symlinkSync(path.dirname(EXPORTER_PATH), dirLink, "dir");
+  const env = { ...process.env, HOME: home, CLOUDFLARE_API_TOKEN: "" };
+
+  try {
+    for (const [name, entry] of [
+      ["direct", EXPORTER_PATH],
+      ["file-symlink", fileLink],
+      ["directory-symlink", path.join(dirLink, path.basename(EXPORTER_PATH))],
+    ]) {
+      const outDir = path.join(home, name);
+      const result = spawnSync(process.execPath, [entry, "--out-dir", outDir], {
+        env,
+        encoding: "utf8",
+        timeout: 10000,
+      });
+      assert.equal(result.status, 2, `${name}: ${result.stderr}`);
+      const doc = JSON.parse(fs.readFileSync(path.join(outDir, "latest.json"), "utf8"));
+      assert.equal(doc.service, "cloudflare");
+      assert.equal(doc.status, "no-token");
+    }
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("importing cloudflare-quota-export.mjs as a library does not run main (#4325)", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "cloudflare-export-import-"));
+  try {
+    const result = spawnSync(process.execPath, [
+      "--input-type=module", "-e", `await import(${JSON.stringify(pathToFileURL(EXPORTER_PATH).href)});`,
+    ], {
+      env: { ...process.env, HOME: home, CLOUDFLARE_API_TOKEN: "" },
+      encoding: "utf8",
+      timeout: 5000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr, "");
+    assert.equal(fs.existsSync(path.join(home, "atlas", "cloudflare-export")), false);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("cycleStartUtc: first of the month, UTC", () => {
@@ -291,6 +361,150 @@ test("run: GraphQL errors controls unchanged (#2608)", async () => {
   assert.equal(doc.metrics.length, 11);
 });
 
+test("aiNeuronsDayAlerts: an Oct 24-shaped day fires with top-model attribution (#2287)", () => {
+  const { alerts, saturated } = aiNeuronsDayAlerts(ACCOUNT.aiInferenceAdaptiveGroupsByDay, 50000);
+  assert.equal(saturated, false);
+  assert.equal(alerts.length, 2); // both burn days exceed 50k
+  assert.deepEqual(alerts[0], {
+    kind: "workers-ai-neurons-day",
+    date: "2026-10-24",
+    totalNeurons: 3090000,
+    threshold: 50000,
+    topModels: [
+      { model: "@cf/deepseek-ai/deepseek-v4-pro-0813", neurons: 2990000 },
+      { model: "@cf/meta/llama-3.1-8b-instruct", neurons: 100000 },
+    ],
+  });
+  assert.equal(alerts[1].date, "2026-10-25");
+  assert.equal(alerts[1].totalNeurons, 1024515); // fractional day total rounds for display
+});
+
+test("aiNeuronsDayAlerts: days at or under the threshold stay silent (#2287)", () => {
+  const quiet = [
+    { dimensions: { date: "2026-10-24", modelId: "@cf/meta/llama-3.1-8b-instruct" }, sum: { totalNeurons: 10000 } },
+    { dimensions: { date: "2026-10-25", modelId: "@cf/meta/llama-3.1-8b-instruct" }, sum: { totalNeurons: 9999 } },
+  ];
+  assert.deepEqual(aiNeuronsDayAlerts(quiet, 50000), { alerts: [], saturated: false });
+  // Exactly at the threshold does not fire (the rule is exceeds).
+  assert.deepEqual(aiNeuronsDayAlerts(quiet, 10000).alerts, []);
+  // No usage at all (empty groups) is a legitimate silent zero.
+  assert.deepEqual(aiNeuronsDayAlerts([], 50000), { alerts: [], saturated: false });
+});
+
+test("aiNeuronsDayAlerts: top models are capped at 3, ordered by neurons (#2287)", () => {
+  const groups = ["m1", "m2", "m3", "m4"].map((modelId, i) => ({
+    dimensions: { date: "2026-10-24", modelId },
+    sum: { totalNeurons: (4 - i) * 100000 },
+  }));
+  const { alerts } = aiNeuronsDayAlerts(groups, 50000);
+  assert.equal(alerts.length, 1);
+  assert.deepEqual(alerts[0].topModels.map((m) => m.model), ["m1", "m2", "m3"]);
+});
+
+test("aiNeuronsDayAlerts: a missing or drifted grouped field fails closed (#2287)", () => {
+  assert.throws(() => aiNeuronsDayAlerts(undefined, 50000), /aiInferenceAdaptiveGroupsByDay groups missing/);
+  assert.throws(
+    () => aiNeuronsDayAlerts([{ dimensions: { date: "24 Oct", modelId: "m" }, sum: { totalNeurons: 1 } }], 50000),
+    /dimensions\.date/,
+  );
+  assert.throws(
+    () => aiNeuronsDayAlerts([{ dimensions: { date: "2026-10-24" }, sum: { totalNeurons: 1 } }], 50000),
+    /dimensions\.modelId/,
+  );
+  const missing = structuredClone(ACCOUNT);
+  delete missing.aiInferenceAdaptiveGroupsByDay;
+  assert.throws(() => parseGraphqlUsage(missing, { now: NOW, cycleStart: START }), /aiInferenceAdaptiveGroupsByDay/);
+});
+
+test("aiNeuronsDayAlerts: saturation is flagged, never silently truncated (#2287)", () => {
+  const groups = Array.from({ length: AI_NEURONS_DAY_GROUP_LIMIT }, (_, i) => ({
+    dimensions: { date: "2026-10-24", modelId: `m${i}` },
+    sum: { totalNeurons: 100 },
+  }));
+  const { alerts, saturated } = aiNeuronsDayAlerts(groups, 50000);
+  assert.equal(saturated, true);
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].lowerBound, true);
+  // The document carries the saturation flag even when nothing fires.
+  const parsed = parseGraphqlUsage(
+    { ...structuredClone(ACCOUNT), aiInferenceAdaptiveGroupsByDay: groups },
+    { now: NOW, cycleStart: START, aiThreshold: Number.MAX_SAFE_INTEGER },
+  );
+  const doc = successDocument({
+    measuredAt: NOW.toISOString(),
+    cycleStart: START,
+    accountId: "acct",
+    billing: { status: "invoice-only" },
+    parsed,
+    r2Buckets: [],
+  });
+  assert.equal(doc.aiNeuronsByDaySaturated, true);
+  assert.equal("alerts" in doc, false);
+});
+
+test("aiNeuronsDayAlertThreshold: env override with honest fallback (#2287)", () => {
+  assert.equal(AI_NEURONS_DAY_ALERT_THRESHOLD_DEFAULT, 50000);
+  assert.equal(aiNeuronsDayAlertThreshold({}), 50000);
+  assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "12345" }), 12345);
+  assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "" }), 50000);
+  assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "abc" }), 50000);
+  assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "-5" }), 50000);
+  // Zero is a typo, never a threshold: every spelling falls back to the
+  // default, so a single neuron can never trip the daily alert (#4381).
+  for (const zero of ["0", "-0", "0.0", " 0 ", "0e5"]) {
+    assert.equal(
+      aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: zero }),
+      50000,
+      `zero spelling ${JSON.stringify(zero)} must fall back to the default`,
+    );
+  }
+  // Spellings that denote a positive number are accepted as that number;
+  // pinned so the parse cannot drift silently either way.
+  assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "0x10" }), 16);
+  assert.equal(aiNeuronsDayAlertThreshold({ CLOUDFLARE_AI_NEURONS_DAY_ALERT_THRESHOLD: "0.5" }), 0.5);
+  // The gate a zeroed threshold would have opened: at the threshold exactly
+  // nothing fires, one neuron above it does.
+  const oneDay = (neurons) => [
+    { dimensions: { date: "2026-11-01", modelId: "@cf/meta/llama" }, sum: { totalNeurons: neurons } },
+  ];
+  assert.deepEqual(aiNeuronsDayAlerts(oneDay(50000), 50000).alerts, []);
+  assert.equal(aiNeuronsDayAlerts(oneDay(50001), 50000).alerts.length, 1);
+  // A custom threshold actually gates the alert through parseGraphqlUsage.
+  const parsed = parseGraphqlUsage(ACCOUNT, { now: NOW, cycleStart: START, aiThreshold: 4000000 });
+  assert.deepEqual(parsed.aiNeurons.alerts, []);
+});
+
+test("documents: alerts array present only when a day is firing (#2287)", () => {
+  const billing = classifyBilling([
+    { endpoint: "a", status: 403 },
+    { endpoint: "b", status: 403 },
+  ]);
+  const firing = successDocument({
+    measuredAt: NOW.toISOString(),
+    cycleStart: START,
+    accountId: "acct",
+    billing,
+    parsed: parseGraphqlUsage(ACCOUNT, { now: NOW, cycleStart: START }),
+    r2Buckets: [],
+  });
+  assert.equal(firing.alerts.length, 2);
+  assert.equal(firing.alerts[0].kind, "workers-ai-neurons-day");
+
+  const quietAccount = structuredClone(ACCOUNT);
+  quietAccount.aiInferenceAdaptiveGroupsByDay = [
+    { dimensions: { date: "2026-10-24", modelId: "@cf/meta/llama-3.1-8b-instruct" }, sum: { totalNeurons: 5000 } },
+  ];
+  const quiet = successDocument({
+    measuredAt: NOW.toISOString(),
+    cycleStart: START,
+    accountId: "acct",
+    billing,
+    parsed: parseGraphqlUsage(quietAccount, { now: NOW, cycleStart: START }),
+    r2Buckets: [],
+  });
+  assert.equal("alerts" in quiet, false);
+});
+
 test("measurement strings use plain decimals; request counts remain integers (#2791)", () => {
   const invalid = ["", "   ", " 12 ", "0x10", "1e2", "1.5"];
   for (const value of invalid) {
@@ -355,4 +569,110 @@ test("measurement strings use plain decimals; request counts remain integers (#2
         error.message.includes("ai.totalNeurons"),
     );
   }
+});
+
+// #2574: R2 bucket enumeration is explicit — unknown is null plus a
+// detail, never a silent [] or a truncated page. Bucket pages are
+// consumed in order for /r2/buckets; billing probes and GraphQL stay
+// benign so the document's metrics prove the degradation is isolated.
+function bucketPage(names, { page = 1, totalPages } = {}) {
+  return {
+    status: 200,
+    body: {
+      result: { buckets: names.map((name) => ({ name })) },
+      ...(totalPages === undefined ? {} : {
+        result_info: { page, per_page: 100, total_pages: totalPages, count: names.length, total_count: 150 },
+      }),
+    },
+  };
+}
+
+async function runWithBuckets(bucketPages) {
+  let i = 0;
+  const prev = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes("/r2/buckets")) {
+      const p = bucketPages[Math.min(i++, bucketPages.length - 1)];
+      return { status: p.status, json: async () => p.body };
+    }
+    if (u.includes("/graphql")) {
+      return { status: 200, json: async () => ({ data: { viewer: { accounts: [ACCOUNT] } } }) };
+    }
+    return { status: 200, json: async () => ({}) };
+  };
+  try {
+    return await run({ token: "tok", accountId: "acct", now: NOW });
+  } finally {
+    globalThis.fetch = prev;
+  }
+}
+
+test("run: an HTTP 500 on buckets keeps metrics and marks enumeration unknown (#2574)", async () => {
+  const doc = await runWithBuckets([{ status: 500, body: {} }]);
+  assert.equal(doc.status, "ok");
+  assert.equal(doc.metrics.length, 11); // GraphQL metrics survive
+  assert.equal(doc.r2Buckets, null);
+  assert.match(doc.r2BucketsDetail, /HTTP 500/);
+});
+
+test("run: missing or malformed result.buckets marks enumeration unknown (#2574)", async () => {
+  for (const body of [{}, { result: {} }, { result: { buckets: "nope" } }, { result: { buckets: null } }]) {
+    const doc = await runWithBuckets([{ status: 200, body }]);
+    assert.equal(doc.status, "ok");
+    assert.equal(doc.r2Buckets, null);
+    assert.match(doc.r2BucketsDetail, /missing or malformed/);
+  }
+});
+
+test("run: pagination follows every reported page (#2574)", async () => {
+  const first = Array.from({ length: 100 }, (_, i) => `b${i}`);
+  const rest = Array.from({ length: 50 }, (_, i) => `b${100 + i}`);
+  const doc = await runWithBuckets([bucketPage(first, { page: 1, totalPages: 2 }), bucketPage(rest, { page: 2, totalPages: 2 })]);
+  assert.equal(doc.status, "ok");
+  assert.equal(doc.r2Buckets.length, 150);
+  assert.equal(doc.r2Buckets[0], "b0");
+  assert.equal(doc.r2Buckets[149], "b149");
+  assert.equal("r2BucketsDetail" in doc, false);
+});
+
+test("run: a later-page failure publishes unknown, never the partial list (#2574)", async () => {
+  const first = Array.from({ length: 100 }, (_, i) => `b${i}`);
+  const doc = await runWithBuckets([
+    bucketPage(first, { page: 1, totalPages: 2 }),
+    { status: 500, body: {} },
+  ]);
+  assert.equal(doc.status, "ok");
+  assert.equal(doc.r2Buckets, null); // not the 100-name partial page
+  assert.match(doc.r2BucketsDetail, /page 2/);
+});
+
+test("run: a malformed later page publishes unknown, never the partial list (#2574)", async () => {
+  const first = Array.from({ length: 100 }, (_, i) => `b${i}`);
+  const doc = await runWithBuckets([
+    bucketPage(first, { page: 1, totalPages: 2 }),
+    { status: 200, body: { result: { buckets: "nope" } } },
+  ]);
+  assert.equal(doc.r2Buckets, null);
+  assert.match(doc.r2BucketsDetail, /page 2/);
+});
+
+test("run: a full page with no pagination metadata is unknown, not complete (#2574)", async () => {
+  const full = Array.from({ length: 100 }, (_, i) => `b${i}`);
+  const doc = await runWithBuckets([bucketPage(full)]);
+  assert.equal(doc.r2Buckets, null);
+  assert.match(doc.r2BucketsDetail, /truncated/);
+  // A short page without metadata is still provably complete (existing shape).
+  const short = await runWithBuckets([bucketPage(["b1"])]);
+  assert.deepEqual(short.r2Buckets, ["b1"]);
+  assert.equal("r2BucketsDetail" in short, false);
+});
+
+test("run: 401/403 on buckets still throws the token-scope contract (#2574)", async () => {
+  await assert.rejects(runWithBuckets([{ status: 403, body: {} }]), (e) => {
+    assert.ok(e instanceof ExportError);
+    assert.equal(e.status, "token-scope");
+    assert.equal(e.exitCode, 3);
+    return true;
+  });
 });

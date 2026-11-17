@@ -255,3 +255,128 @@ func TestResolveDefaultModelReachesProvider(t *testing.T) {
 		t.Errorf("model sent = %v, want the configured default gpt-5", gotBody["model"])
 	}
 }
+
+func TestProfileFallbackUsesProviderKeyedSettingsInOrder(t *testing.T) {
+	var firstHits, secondHits int
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstHits++
+		if got := r.Header.Get("Authorization"); got != "Bearer first-secret" {
+			t.Errorf("first auth = %q", got)
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["max_tokens"] != float64(64) {
+			t.Errorf("first max_tokens = %v, want profile budget 64", body["max_tokens"])
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, "temporarily unavailable")
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondHits++
+		if got := r.Header.Get("Authorization"); got != "Bearer second-secret" {
+			t.Errorf("second auth = %q", got)
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["model"] != "claude-test" {
+			t.Errorf("second model = %v", body["model"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"model":"claude-test","choices":[{"message":{"content":"fallback answered"}}]}`)
+	}))
+	defer second.Close()
+	cfg := Config{
+		Provider:             "none",
+		DefaultModel:         "balanced",
+		ProviderSettingsJSON: `{"openai":{"baseURL":"` + first.URL + `","apiKeyEnv":"FIRST_KEY"},"anthropic":{"baseURL":"` + second.URL + `","apiKeyEnv":"SECOND_KEY"}}`,
+		ProfilesJSON:         `{"balanced":{"models":["openai/gpt-test","anthropic/claude-test"],"budget":64,"timeout":"2s"}}`,
+		LookupEnv: func(name string) string {
+			return map[string]string{"FIRST_KEY": "first-secret", "SECOND_KEY": "second-secret"}[name]
+		},
+	}
+	p, err := Resolve(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := p.Generate(context.Background(), Request{Messages: []Message{{Content: "hello"}}, MaxTokens: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Text != "fallback answered" || resp.Provider != "anthropic" {
+		t.Fatalf("response = %+v", resp)
+	}
+	if firstHits != 1 || secondHits != 1 {
+		t.Fatalf("attempts first=%d second=%d, want 1 each", firstHits, secondHits)
+	}
+}
+
+func TestProfileSkipsProviderWithUnsetExplicitKeyVariable(t *testing.T) {
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"model":"ok","choices":[{"message":{"content":"ok"}}]}`)
+	}))
+	defer srv.Close()
+	p, err := Resolve(Config{
+		ProviderSettingsJSON: `{"openai":{"baseURL":"` + srv.URL + `","apiKeyEnv":"EXPLICIT_KEY"},"anthropic":{"baseURL":"` + srv.URL + `"}}`,
+		ProfilesJSON:         `{"p":{"models":["openai/first","anthropic/second"]}}`,
+		LookupEnv: func(name string) string {
+			if name != "EXPLICIT_KEY" {
+				t.Errorf("resolver scanned unconfigured env name %q", name)
+			}
+			return ""
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := p.Generate(context.Background(), Request{Model: "p"})
+	if err != nil || resp.Text != "ok" || resp.Provider != "anthropic" {
+		t.Fatalf("resp=%+v err=%v", resp, err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("provider calls = %v, want only the configured fallback", calls)
+	}
+}
+
+func TestProfileSkipsUnconfiguredProviderAndKeepsDeterministicFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"model":"ok","choices":[{"message":{"content":"ok"}}]}`)
+	}))
+	defer srv.Close()
+	p, err := Resolve(Config{
+		Provider:             "none",
+		ProviderSettingsJSON: `{"openai":{"baseURL":"` + srv.URL + `"}}`,
+		ProfilesJSON:         `{"p":{"models":["not-configured/missing","openai/ok"]}}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := p.Generate(context.Background(), Request{Model: "p"})
+	if err != nil || resp.Text != "ok" {
+		t.Fatalf("resp=%+v err=%v", resp, err)
+	}
+
+	p, err = Resolve(Config{ProfilesJSON: `{"empty":{"models":["unknown/model","plugin/future"]}}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err = p.Generate(context.Background(), Request{Model: "empty"})
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("err=%v, want ErrUnavailable", err)
+	}
+	if resp.Text != "" {
+		t.Fatalf("unavailable profile fabricated response: %+v", resp)
+	}
+}
+
+func TestProfileSettingsRejectInvalidJSON(t *testing.T) {
+	for _, cfg := range []Config{{ProviderSettingsJSON: "{"}, {ProfilesJSON: "{"}} {
+		if _, err := Resolve(cfg); err == nil {
+			t.Errorf("Resolve(%+v) succeeded with invalid JSON", cfg)
+		}
+	}
+}

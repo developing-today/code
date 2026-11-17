@@ -1,0 +1,466 @@
+#!/usr/bin/env python3
+"""record-external-send — the external-comms ledger writer + pusher.
+
+Implements Drew's ratified rule (2026-11-05): EXTERNAL COMMS ARE NEVER
+SILENT. Every send outside our own repos/channels under Drew's identity
+or a fleet identity is recorded at send time in the ledger table
+`agent_external_comms` in the Turso database fleet-platform
+(repointed 2026-11-07 from `agent.external_comms` in Supabase
+muse-dev2, whose data plane has been down since 2026-11-06,
+code#6619; DDL: migration-0002-agent-external-comms-turso.sql.
+The 58 rows recorded in Postgres before the repoint stay there
+until the finalize pass tops this table up by id.)
+
+Write pattern (the pm-stack durability pattern, cf. aggregator
+events.ts): DATABASE-FIRST WITH SPILL TO OUTBOX.
+
+  record        Try a direct insert into agent_external_comms
+                (libSQL pipeline, DB token resolved by name through
+                `fleet secrets get`). On ANY failure — DB down,
+                network, secrets broker — the record is appended to
+                the local outbox (~/.local/state/external-comms/
+                outbox.jsonl, fsync'd) and the command still exits 0:
+                recording must never block or fail the send it logs.
+                Exit is non-zero only when BOTH paths fail.
+
+  push          The pusher. Drains the outbox into the database:
+                each record is inserted with ignore-duplicates on its
+                stable id (so a retry after an ambiguous failure is
+                safe), landed lines are removed, failures stay with
+                _attempts/_last_error bookkeeping. A line that cannot
+                be parsed (or is not a JSON object) is NEVER dropped:
+                it is appended verbatim to quarantine.jsonl in the
+                state dir (raw line + timestamp + reason, fsync'd
+                before the outbox rewrite that removes it), counted
+                in pusher-health.json and the stdout summary, and a
+                run that quarantined a line is not a clean drain (it
+                does not set last_drain_ok_at). Runs under the
+                systemd user timer external-comms-pusher.timer
+                (every minute) and always rewrites
+                pusher-health.json — the visible surface a stewardship
+                visibility pass reads to spot a stuck pusher.
+
+  status        Print pusher health + outbox depth + DB row count.
+
+  record-many   Batch form of record (one JSON object per line) —
+                used for the 2026-11-05 audit backfill.
+
+Secrets are referenced by NAME only and held in memory:
+  turso.fleet-platform-rw-token
+Test hooks (env): EXTERNAL_COMMS_TURSO_URL overrides the database
+URL; EXTERNAL_COMMS_TURSO_TOKEN overrides the token;
+EXTERNAL_COMMS_STATE_DIR overrides the state directory.
+"""
+import fcntl
+import json
+import os
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+import uuid
+from datetime import datetime, timezone
+
+STATE_DIR = os.environ.get(
+    "EXTERNAL_COMMS_STATE_DIR",
+    os.path.expanduser("~/.local/state/external-comms"))
+OUTBOX = os.path.join(STATE_DIR, "outbox.jsonl")
+HEALTH = os.path.join(STATE_DIR, "pusher-health.json")
+QUARANTINE = os.path.join(STATE_DIR, "quarantine.jsonl")
+LOCK = os.path.join(STATE_DIR, "pusher.lock")
+TABLE = "agent_external_comms"
+DB_URL = "https://fleet-platform-dezren39.aws-us-east-1.turso.io"
+TIMEOUT = 8  # seconds; a send-time caller must never hang on the ledger
+
+
+def now_iso():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def find_fleet():
+    for cand in (os.path.expanduser("~/.local/bin/fleet"),
+                 "/run/current-system/sw/bin/fleet"):
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    from shutil import which
+    return which("fleet")
+
+
+def secret(name):
+    fleet = find_fleet()
+    if not fleet:
+        raise RuntimeError("fleet binary not found (secrets route)")
+    # The broker answers single calls reliably but can fail transiently
+    # under burst (exit 3 observed during the 68-row backfill); the
+    # queue broker retries the same race at startup. Retry with backoff.
+    import time
+    last = None
+    for attempt in range(3):
+        out = subprocess.run([fleet, "secrets", "get", name],
+                             capture_output=True, text=True, timeout=30)
+        if out.returncode == 0:
+            return out.stdout.strip()
+        last = out.returncode
+        if attempt < 2:
+            time.sleep(1 + attempt)
+    raise RuntimeError(f"fleet secrets get {name} failed "
+                       f"(exit {last}, 3 attempts)")
+
+
+_DB_CONFIG = None
+
+
+def db_config():
+    global _DB_CONFIG
+    if _DB_CONFIG is None:
+        base = os.environ.get("EXTERNAL_COMMS_TURSO_URL") or DB_URL
+        key = os.environ.get("EXTERNAL_COMMS_TURSO_TOKEN") or \
+            secret("turso.fleet-platform-rw-token")
+        _DB_CONFIG = (base.rstrip("/"), key)
+    return _DB_CONFIG
+
+
+def _enc(v):
+    if v is None:
+        return {"type": "null"}
+    if isinstance(v, int):
+        return {"type": "integer", "value": str(v)}
+    if isinstance(v, float):
+        return {"type": "float", "value": v}
+    return {"type": "text", "value": str(v)}
+
+
+def _pipeline(base, key, stmts):
+    """Run [(sql, args), ...] as one libSQL pipeline batch against the
+    ledger DB. Returns the per-statement result objects; raises on
+    transport or statement failure."""
+    body = json.dumps({"requests":
+                       [{"type": "execute",
+                         "stmt": {"sql": sql,
+                                  "args": [_enc(a) for a in args]}}
+                        for sql, args in stmts] + [{"type": "close"}]})
+    req = urllib.request.Request(
+        f"{base}/v2/pipeline",
+        data=body.encode(),
+        method="POST",
+        headers={"Authorization": f"Bearer {key}",
+                 "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+        if resp.status != 200:
+            raise RuntimeError(f"turso pipeline HTTP {resp.status}")
+        out = json.loads(resp.read().decode())
+    results = []
+    for res in out.get("results", []):
+        if res.get("type") == "error":
+            raise RuntimeError(f"turso statement failed: {res['error']}")
+        results.append(res.get("response", {}).get("result", {}))
+    return results
+
+
+# Column order of agent_external_comms (migration-0002). Every record
+# field maps 1:1; payload is stored as JSON text.
+COLUMNS = ("id", "sent_at", "recorded_at", "identity", "channel",
+           "destination", "item_ref", "kind", "approval_basis",
+           "approver", "approval_evidence", "summary", "payload",
+           "source")
+
+
+def insert_record(base, key, rec):
+    """One pipeline insert, INSERT OR IGNORE on the id PK (the
+    ignore-duplicates retry semantics of the old PostgREST path).
+    Returns None on success; raises on failure."""
+    row = {k: v for k, v in rec.items() if not k.startswith("_")}
+    row.setdefault("payload", {})
+    if not isinstance(row["payload"], str):
+        row["payload"] = json.dumps(row["payload"])
+    row.setdefault("source", "record-external-send")
+    row["recorded_at"] = now_iso()
+    sql = (f"INSERT OR IGNORE INTO {TABLE} "
+           f"({', '.join(COLUMNS)}) "
+           f"VALUES ({', '.join('?' for _ in COLUMNS)})")
+    _pipeline(base, key, [(sql, tuple(row.get(c) for c in COLUMNS))])
+
+
+def spill(rec):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    rec = dict(rec)
+    rec.setdefault("_spilled_at", now_iso())
+    rec.setdefault("_attempts", 0)
+    with open(OUTBOX, "a") as f:
+        f.write(json.dumps(rec) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def write_health(_remove=(), **fields):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    health = {}
+    if os.path.exists(HEALTH):
+        try:
+            with open(HEALTH) as f:
+                health = json.load(f)
+        except Exception:
+            health = {}
+    health.update(fields)
+    for k in _remove:
+        health.pop(k, None)
+    health["updated_at"] = now_iso()
+    tmp = HEALTH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(health, f, indent=1)
+    os.replace(tmp, HEALTH)
+    return health
+
+
+def quarantine_line(raw, run_at, reason):
+    """Durably append one malformed outbox line to quarantine.jsonl.
+
+    Stores the exact raw line (minus its line terminator), the time and
+    the reason. fsync'd: callers must only drop the line from the outbox
+    after this returns. Raises on failure."""
+    os.makedirs(STATE_DIR, exist_ok=True)
+    entry = {"_quarantined_at": run_at, "_reason": reason,
+             "_raw": raw.rstrip("\n")}
+    # Roll a failed append back to its starting offset: a partial
+    # (unterminated) prefix left in quarantine.jsonl would merge with
+    # the next successful entry into one invalid JSON line, making
+    # that record unrecoverable even though it counted as quarantined.
+    offset = os.path.getsize(QUARANTINE) if os.path.exists(QUARANTINE) else 0
+    try:
+        with open(QUARANTINE, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception:
+        try:
+            with open(QUARANTINE, "r+") as f:
+                f.truncate(offset)
+        except Exception:
+            pass
+        raise
+
+
+def do_record(rec):
+    """Returns 'db' or 'outbox'. Raises only if both paths fail."""
+    try:
+        base, key = db_config()
+        insert_record(base, key, rec)
+        return "db"
+    except Exception as db_err:
+        try:
+            spill(rec)
+            return "outbox"
+        except Exception as spill_err:
+            raise RuntimeError(
+                f"DB insert failed ({db_err}) and outbox spill failed "
+                f"({spill_err})")
+
+
+def do_push():
+    os.makedirs(STATE_DIR, exist_ok=True)
+    lockf = open(LOCK, "w")
+    try:
+        fcntl.flock(lockf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print(json.dumps({"pusher": "already-running"}))
+        return 0
+    run_at = now_iso()
+    pending, landed, last_error = [], 0, None
+    pending_raw = []  # malformed lines whose quarantine write failed
+    quarantined, last_quarantine_reason = 0, None
+    total_landed, total_quarantined = 0, 0
+    if os.path.exists(HEALTH):
+        try:
+            with open(HEALTH) as f:
+                prev_health = json.load(f)
+            total_landed = prev_health.get("total_landed", 0)
+            total_quarantined = prev_health.get("total_quarantined", 0)
+        except Exception:
+            total_landed, total_quarantined = 0, 0
+    lines = []
+    if os.path.exists(OUTBOX):
+        with open(OUTBOX) as f:
+            lines = [ln for ln in f if ln.strip()]
+    if lines:
+        try:
+            base, key = db_config()
+        except Exception as e:
+            base, key, last_error = None, None, f"db config: {e}"
+        for ln in lines:
+            rec, malformed = None, None
+            try:
+                rec = json.loads(ln)
+                if not isinstance(rec, dict):
+                    malformed = "not a JSON object"
+            except Exception as e:
+                malformed = f"json-decode: {e}"
+            if malformed is not None:
+                # NEVER SILENT: quarantine the exact line durably
+                # BEFORE the rewrite below removes it from the outbox.
+                # If the quarantine write itself fails, keep the raw
+                # line in the outbox for the next run instead.
+                try:
+                    quarantine_line(ln, run_at, malformed)
+                    quarantined += 1
+                    last_quarantine_reason = malformed
+                except Exception as qe:
+                    pending_raw.append(ln if ln.endswith("\n")
+                                       else ln + "\n")
+                    last_error = f"quarantine failed: {qe}"[:300]
+                continue
+            if base is None:
+                rec["_attempts"] = rec.get("_attempts", 0) + 1
+                rec["_last_error"] = str(last_error)
+                rec["_last_attempt_at"] = run_at
+                pending.append(rec)
+                continue
+            try:
+                insert_record(base, key, rec)
+                landed += 1
+            except Exception as e:
+                rec["_attempts"] = rec.get("_attempts", 0) + 1
+                rec["_last_error"] = str(e)[:300]
+                rec["_last_attempt_at"] = run_at
+                last_error = str(e)[:300]
+                pending.append(rec)
+        tmp = OUTBOX + ".tmp"
+        with open(tmp, "w") as f:
+            for rec in pending:
+                f.write(json.dumps(rec) + "\n")
+            for ln in pending_raw:
+                f.write(ln)
+        os.replace(tmp, OUTBOX)
+    total_landed += landed
+    total_quarantined += quarantined
+    pending_total = len(pending) + len(pending_raw)
+    health_fields = dict(
+        last_run_at=run_at,
+        pending_count=pending_total,
+        last_error=last_error,
+        total_landed=total_landed,
+        last_run_quarantined=quarantined,
+        total_quarantined=total_quarantined)
+    if quarantined:
+        health_fields["last_quarantine_at"] = run_at
+        health_fields["last_quarantine_reason"] = last_quarantine_reason
+        health_fields["last_lossy_drain_at"] = run_at
+    clean_drain = not pending_total and not quarantined
+    health = write_health(
+        _remove=("last_drain_ok_at",) if quarantined else (),
+        **health_fields,
+        **({"last_drain_ok_at": run_at} if clean_drain else {}))
+    print(json.dumps({"pusher": "ran", "landed": landed,
+                      "pending": pending_total,
+                      "quarantined": quarantined,
+                      "last_error": last_error}))
+    return 0
+
+
+def do_status():
+    health = {}
+    if os.path.exists(HEALTH):
+        with open(HEALTH) as f:
+            health = json.load(f)
+    depth = 0
+    if os.path.exists(OUTBOX):
+        with open(OUTBOX) as f:
+            depth = sum(1 for ln in f if ln.strip())
+    count = None
+    try:
+        base, key = db_config()
+        res = _pipeline(base, key,
+                        [(f"SELECT count(*) FROM {TABLE}", ())])
+        cell = res[0]["rows"][0][0]
+        count = int(cell["value"]) if cell.get("type") == "integer" \
+            else cell.get("value")
+    except Exception as e:
+        count = f"unreachable ({e})"
+    print(json.dumps({"health": health, "outbox_depth": depth,
+                      "db_rows": count}, indent=1))
+    return 0
+
+
+FIELDS = ("sent_at", "identity", "channel", "destination", "item_ref",
+          "kind", "approval_basis", "approver", "approval_evidence",
+          "summary", "payload", "source")
+
+
+def build_record(args):
+    rec = {"id": args.get("id") or uuid.uuid4().hex,
+           "sent_at": args.get("sent_at") or now_iso(),
+           "source": args.get("source") or "record-external-send"}
+    for f in FIELDS:
+        if f in ("sent_at", "source"):
+            continue
+        v = args.get(f)
+        if v is not None:
+            rec[f] = v
+    missing = [f for f in ("identity", "channel", "destination", "kind",
+                           "approval_basis", "summary") if not rec.get(f)]
+    if missing:
+        raise SystemExit(f"record-external-send: missing required "
+                         f"field(s): {', '.join(missing)}")
+    if isinstance(rec.get("payload"), str):
+        rec["payload"] = json.loads(rec["payload"])
+    return rec
+
+
+def parse_flags(argv):
+    args = {}
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if not a.startswith("--"):
+            raise SystemExit(f"unexpected argument: {a}")
+        key = a[2:].replace("-", "_")
+        if i + 1 >= len(argv):
+            raise SystemExit(f"flag {a} needs a value")
+        args[key] = argv[i + 1]
+        i += 2
+    return args
+
+
+USAGE = """usage:
+  record-external-send --identity drew|fleet:<name> --channel <c>
+      --destination <d> --kind <k> --approval-basis <b> --summary <s>
+      [--item-ref <url>] [--approver <who>] [--approval-evidence <ref>]
+      [--sent-at <iso>] [--id <stable-id>] [--payload <json>]
+      [--source <s>]
+  record-external-send record-many <records.jsonl>
+  record-external-send push      # drain the outbox (the pusher)
+  record-external-send status    # health + outbox depth + DB rows"""
+
+
+def main(argv):
+    if not argv:
+        raise SystemExit(USAGE)
+    cmd = argv[0]
+    if cmd == "push":
+        return do_push()
+    if cmd == "status":
+        return do_status()
+    if cmd == "record-many":
+        if len(argv) != 2:
+            raise SystemExit(USAGE)
+        landed_db = landed_outbox = 0
+        with open(argv[1]) as f:
+            for ln in f:
+                if not ln.strip():
+                    continue
+                rec = build_record(json.loads(ln))
+                if do_record(rec) == "db":
+                    landed_db += 1
+                else:
+                    landed_outbox += 1
+        print(json.dumps({"recorded_db": landed_db,
+                          "spilled_outbox": landed_outbox}))
+        return 0
+    # default: a single record; argv are --flag value pairs
+    rec = build_record(parse_flags(argv))
+    where = do_record(rec)
+    print(json.dumps({"id": rec["id"], "landed": where}))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

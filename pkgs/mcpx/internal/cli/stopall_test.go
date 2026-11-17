@@ -106,7 +106,7 @@ func TestStopAllStopsDaemonFoundInDefaultDir(t *testing.T) {
 	})
 	srv := &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(ln) }()
-	defer srv.Close()
+	defer func() { _ = srv.Close() }()
 
 	writeDaemonRecord(t, defaultDir, socket, "/cfg/a.json")
 

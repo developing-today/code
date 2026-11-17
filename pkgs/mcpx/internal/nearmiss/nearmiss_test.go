@@ -85,3 +85,60 @@ func TestThreshold(t *testing.T) {
 		}
 	}
 }
+
+func TestDistanceCountsUnicodeCharacters(t *testing.T) {
+	// #3099: one multibyte character is one character. Every pair
+	// below differs by exactly one Unicode character, so each costs
+	// one edit; measured in UTF-8 bytes each cost two.
+	cases := []struct {
+		a, b string
+		want int
+	}{
+		{"café", "cafe", 1},     // substitution: é for e
+		{"entrée", "entree", 1}, // substitution in a longer name
+		{"привет", "привед", 1}, // Cyrillic substitution: т for д
+		{"café", "cafés", 1},    // insertion
+		{"cafés", "café", 1},    // deletion
+		{"café", "caéf", 1},     // adjacent transposition across a multibyte rune
+		{"", "éé", 2},           // two runes, four bytes
+		{"café", "café", 0},
+	}
+	for _, c := range cases {
+		if got := Distance(c.a, c.b); got != c.want {
+			t.Errorf("Distance(%q, %q) = %d, want %d", c.a, c.b, got, c.want)
+		}
+	}
+}
+
+func TestNearRecognisesSingleMultibyteEdits(t *testing.T) {
+	for _, c := range []struct {
+		a, b string
+		want bool
+	}{
+		{"café", "cafe", true},
+		{"entrée", "entree", true},
+		{"привет", "привед", true},
+		{"café", "caéf", true},
+		{"ééé", "éééé", true}, // prefix rule: both longer than two characters
+		{"éé", "éééé", false}, // prefix guard counts characters: a two-rune prefix is too short, and the distance is two
+	} {
+		if got := Near(c.a, c.b); got != c.want {
+			t.Errorf("Near(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+		if got := Near(c.b, c.a); got != c.want {
+			t.Errorf("Near(%q, %q) = %v, want %v (symmetric)", c.b, c.a, got, c.want)
+		}
+	}
+}
+
+func TestNearestThresholdCountsCharacters(t *testing.T) {
+	if got, ok := Nearest("привет", []string{"привед", "catalog"}); !ok || got != "привед" {
+		t.Errorf("Nearest(привет) = %q, %v; want привед, true", got, ok)
+	}
+	// Three runes may drift by Threshold(3) = 2, however many bytes
+	// they occupy: a distance of three is noise. Counted in bytes
+	// (6) the threshold would inflate to 3 and wrongly match.
+	if _, ok := Nearest("ééé", []string{"aaa"}); ok {
+		t.Error("Nearest(ééé) matched aaa; the threshold must count characters, not bytes")
+	}
+}

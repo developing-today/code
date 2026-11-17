@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpserver"
+	"github.com/developing-today/code/pkgs/mcpx/internal/tasks"
 )
 
 // fakeBackend counts calls under a lock: stdio requests run concurrently, so
@@ -766,7 +767,9 @@ func TestResourceTemplatesAreServedRatherThanSwallowed(t *testing.T) {
 func TestAToolCallCanRunAsATask(t *testing.T) {
 	// For a genuinely slow tool, holding a request open for minutes invites
 	// every intermediary to time it out. A task hands back a handle at once.
+	store := tasks.New()
 	s := mcpserver.New(newBackend(), "mcpx", "test")
+	s.TaskStore = store
 	resp := s.Handle(context.Background(), mcpserver.Request(1, "tools/call", map[string]any{
 		// mcpx_call: a tool that declares taskSupport (2025-11-25).
 		"name": "mcpx_call", "arguments": map[string]any{"namespace": "alpha", "tool": "t"},
@@ -785,6 +788,14 @@ func TestAToolCallCanRunAsATask(t *testing.T) {
 		t.Fatalf("a task handle should come back at once: %s", b)
 	}
 	id := got.Result.Task.TaskID
+	if _, _, err := store.Result(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	beforeResult, ok := store.Get(id)
+	if !ok || beforeResult.LastTouched == nil {
+		t.Fatalf("completed task has no touch metadata: %+v", beforeResult)
+	}
+	time.Sleep(10 * time.Millisecond)
 
 	// tasks/result waits for it and returns the tool's own result.
 	res := s.Handle(context.Background(), mcpserver.Request(2, "tasks/result",
@@ -796,13 +807,28 @@ func TestAToolCallCanRunAsATask(t *testing.T) {
 	if !strings.Contains(text, "alpha") {
 		t.Errorf("the tool's result should arrive: %q", text)
 	}
+	afterResult, ok := store.Get(id)
+	if !ok || afterResult.LastTouched == nil || !afterResult.LastTouched.After(*beforeResult.LastTouched) {
+		t.Fatalf("MCP tasks/result did not touch retention: before=%+v after=%+v", beforeResult, afterResult)
+	}
+	time.Sleep(10 * time.Millisecond)
+	s.Handle(context.Background(), mcpserver.Request(3, "tasks/list", nil))
+	afterList, ok := store.Get(id)
+	if !ok || afterList.LastTouched == nil || !afterList.LastTouched.Equal(*afterResult.LastTouched) {
+		t.Fatalf("MCP collection read touched retention: before=%+v after=%+v", afterResult, afterList)
+	}
 
 	// tasks/get reports it completed.
-	get := s.Handle(context.Background(), mcpserver.Request(3, "tasks/get",
+	get := s.Handle(context.Background(), mcpserver.Request(4, "tasks/get",
 		map[string]any{"taskId": id}))
 	b, _ = json.Marshal(get)
 	if !strings.Contains(string(b), `"completed"`) {
 		t.Errorf("the task should be completed: %s", b)
+	}
+	for _, field := range []string{`"expiresAt"`, `"lastTouched"`, `"ttlRemainingMs"`} {
+		if !strings.Contains(string(b), field) {
+			t.Errorf("the task representation should include %s: %s", field, b)
+		}
 	}
 }
 

@@ -137,6 +137,14 @@ type Setting struct {
 	// would turn one silent answer into another.
 	Floor int
 
+	// Ceiling is the largest whole number a KindInt setting accepts. Zero
+	// means no ceiling, which is what every integer had before this field
+	// existed. A setting that declares a Ceiling declares a range: its
+	// Floor — zero when unset — is then a real lower bound too, so
+	// daemon.port's range is 0-65535, not "anything up to 65535". Like
+	// Floor it is checked by Validate, the one parser every layer shares.
+	Ceiling int
+
 	// Default is the value when nothing sets it. It is stated here as a
 	// string in the same syntax a user would write, so that the default and
 	// a user's override go through identical parsing -- a default that skips
@@ -159,6 +167,10 @@ type Setting struct {
 	// spellings, given in full.
 	Env        string
 	EnvAliases []string
+
+	// PathAliases are older dotted configuration/runtime-setting paths that
+	// resolve to this setting. Values are always stored under Path.
+	PathAliases []string
 
 	// Enum lists the permitted values when Kind is KindEnum.
 	Enum []string
@@ -318,10 +330,11 @@ func isLower(r rune) bool { return r >= 'a' && r <= 'z' }
 
 // Schema is the whole set.
 type Schema struct {
-	settings []Setting
-	byPath   map[string]*Setting
-	byFlag   map[string]*Setting
-	byEnv    map[string]*Setting
+	settings    []Setting
+	byPath      map[string]*Setting
+	byPathAlias map[string]*Setting
+	byFlag      map[string]*Setting
+	byEnv       map[string]*Setting
 }
 
 // New builds a schema, rejecting collisions. A duplicated flag or variable is
@@ -329,9 +342,10 @@ type Schema struct {
 // discovering that one of two settings silently wins.
 func New(list []Setting) (*Schema, error) {
 	s := &Schema{
-		byPath: map[string]*Setting{},
-		byFlag: map[string]*Setting{},
-		byEnv:  map[string]*Setting{},
+		byPath:      map[string]*Setting{},
+		byPathAlias: map[string]*Setting{},
+		byFlag:      map[string]*Setting{},
+		byEnv:       map[string]*Setting{},
 	}
 	// Sort before taking any pointers. Sorting afterwards moves the elements
 	// out from under every pointer already handed to the lookup maps, which
@@ -347,6 +361,18 @@ func New(list []Setting) (*Schema, error) {
 		}
 		p := &s.settings[i]
 		s.byPath[set.Path] = p
+		for _, name := range set.PathAliases {
+			if name == "" || name == set.Path {
+				return nil, fmt.Errorf("settings: %q has invalid path alias %q", set.Path, name)
+			}
+			if prev, dup := s.byPath[name]; dup {
+				return nil, fmt.Errorf("settings: path %q is claimed by both %q and alias of %q", name, prev.Path, set.Path)
+			}
+			if prev, dup := s.byPathAlias[name]; dup {
+				return nil, fmt.Errorf("settings: path alias %q is claimed by both %q and %q", name, prev.Path, set.Path)
+			}
+			s.byPathAlias[name] = p
+		}
 
 		for _, name := range append([]string{set.FlagName()}, set.FlagAliases...) {
 			if prev, dup := s.byFlag[name]; dup {
@@ -361,6 +387,13 @@ func New(list []Setting) (*Schema, error) {
 					name, prev.Path, set.Path)
 			}
 			s.byEnv[name] = p
+		}
+	}
+	for _, set := range s.settings {
+		for _, alias := range set.PathAliases {
+			if prev, dup := s.byPath[alias]; dup {
+				return nil, fmt.Errorf("settings: path alias %q for %q collides with %q", alias, set.Path, prev.Path)
+			}
 		}
 	}
 	for i := range s.settings {
@@ -380,7 +413,18 @@ func (s *Schema) All() []Setting { return append([]Setting(nil), s.settings...) 
 // Lookup finds a setting by its dotted path.
 func (s *Schema) Lookup(path string) (*Setting, bool) {
 	set, ok := s.byPath[path]
+	if !ok {
+		set, ok = s.byPathAlias[path]
+	}
 	return set, ok
+}
+
+// canonicalPath returns the declared spelling for a path alias.
+func (s *Schema) canonicalPath(path string) string {
+	if set, ok := s.byPathAlias[path]; ok {
+		return set.Path
+	}
+	return path
 }
 
 // ByFlag finds a setting by any of its flag spellings.

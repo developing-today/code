@@ -3,12 +3,18 @@
 
 Builds the universe list from two sources:
 
-1. GitHub enumeration of the developing-today org and the dezren39
-   account (`gh api --paginate orgs/developing-today/repos` and
+1. GitHub enumeration of the developing-today and
+   developing-today-forks orgs and the dezren39 account
+   (`gh api --paginate orgs/developing-today/repos`,
+   `gh api --paginate orgs/developing-today-forks/repos` and
    `gh api --paginate 'user/repos?affiliation=owner'`, authenticated
-   as dezren39), captured as JSON files. (NOT `users/dezren39/repos`:
-   that endpoint returns public repos only and silently misses
-   private owned repos.)
+   as dezren39), captured as JSON files. The two org captures are
+   merged before classification: developing-today/opencode and
+   developing-today/openchamber moved to the developing-today-forks
+   org on 2026-11-04 (#5615), so enumerating only developing-today
+   would lose them on a full regeneration. (NOT
+   `users/dezren39/repos`: that endpoint returns public repos only
+   and silently misses private owned repos.)
 2. The 2026-10-27 all-repos census (goal-workspace
    `hidden_files/git-cleanup-2026-10-27/all-repos-census.md`): every
    clone remote on laptop + sandbox, including the nested clones
@@ -18,7 +24,7 @@ and writes the maintained artifact `doc/fleet/repo-universe.yaml`.
 
 Classification (defaults; overridable per repo, see below):
 
-- `owned`               owner is developing-today or dezren39 and the
+- `owned`               owner is developing-today, developing-today-forks or dezren39 and the
                         repo is not a GitHub fork.
 - `fork`                GitHub fork flag is set.
 - `archive-nested`      census-only repo whose clone lives inside
@@ -37,7 +43,8 @@ verbatim in effect — hand edits there survive regeneration; the
 on unchanged inputs produces a zero diff (idempotent).
 
 Usage:
-    generate.py --org-json org.json --user-json user.json \
+    generate.py --org-json org.json --forks-org-json forks-org.json \
+        --user-json user.json \
         --census /path/to/all-repos-census.md \
         --census-label 'hidden_files/git-cleanup-2026-10-27/all-repos-census.md (repo-health goal workspace)' \
         --output doc/fleet/repo-universe.yaml
@@ -56,7 +63,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-OWNED_OWNERS = {"developing-today", "dezren39"}
+OWNED_OWNERS = {"developing-today", "developing-today-forks", "dezren39"}
+# The two orgs enumerated for the universe (#5615): opencode and
+# openchamber moved from developing-today to developing-today-forks
+# on 2026-11-04, so both orgs are captured and merged.
+ORGS = ("developing-today", "developing-today-forks")
 CLASSES = ("owned", "fork", "upstream-dependency", "archive-nested")
 WATCHES = ("issues", "inventory-only")
 
@@ -64,14 +75,84 @@ URL_RE = re.compile(
     r"github\.com[:/]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?(?:[\s|)'\"]|$)"
 )
 
+# The GitHub shape of a full_name: an owner (alphanumerics and single
+# hyphens, never leading/trailing) and a name (alphanumerics, '.', '_',
+# '-') joined by exactly one slash (#6814).
+FULL_NAME_RE = re.compile(
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9._-]+"
+)
 
-def decode_pages(text: str) -> list[dict]:
+
+def validate_entry(entry: object, source: str, index: int) -> dict:
+    """One enumeration entry must be a repo object with a string
+    full_name. Valid JSON with the wrong shape — a string/null entry
+    in a page array, an API error object saved into a capture, a repo
+    object missing full_name — must surface as a named error
+    identifying the capture source and the offending entry, never as
+    a bare TypeError/KeyError that aborts the run with no indication
+    of which capture or entry is at fault (#6716; the contract #6652
+    established on the checker side). The fields inside an object
+    entry are validated too (#6814): full_name must be a well-formed
+    owner/name, html_url (when present) a string without whitespace
+    or control characters, and fork (when present) a JSON boolean.
+    """
+    if not isinstance(entry, dict):
+        raise ValueError(
+            f"{source}: enumeration entry {index} is not a JSON object: "
+            f"{entry!r:.80}"
+        )
+    if not isinstance(entry.get("full_name"), str):
+        raise ValueError(
+            f"{source}: enumeration entry {index} has no string "
+            f"full_name: {entry!r:.80}"
+        )
+    # Field-level shape (#6814, the residual of #6716 one level down):
+    # an object entry's fields are validated too, because build()
+    # emits full_name and html_url verbatim into the maintained
+    # artifact (a newline in either forges a phantom repo entry) and
+    # classify() reads fork (a string "false" is truthy and silently
+    # un-watches a real owned repo). A wrong-shaped field fails here,
+    # at the one gate every consumer passes through, with the same
+    # named error.
+    full_name = entry["full_name"]
+    if not FULL_NAME_RE.fullmatch(full_name) or full_name.split("/")[1] in (
+        ".",
+        "..",
+    ):
+        raise ValueError(
+            f"{source}: enumeration entry {index} has a malformed "
+            f"full_name (not owner/name): {full_name!r:.80}"
+        )
+    html_url = entry.get("html_url")
+    if html_url is not None:
+        if not isinstance(html_url, str):
+            raise ValueError(
+                f"{source}: enumeration entry {index} has a non-string "
+                f"html_url: {html_url!r:.80}"
+            )
+        if any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in html_url):
+            raise ValueError(
+                f"{source}: enumeration entry {index} has an html_url "
+                f"with whitespace/control characters: {html_url!r:.80}"
+            )
+    fork = entry.get("fork")
+    if fork is not None and not isinstance(fork, bool):
+        raise ValueError(
+            f"{source}: enumeration entry {index} has a non-boolean "
+            f"fork: {fork!r:.80}"
+        )
+    return entry
+
+
+def decode_pages(text: str, source: str = "enumeration capture") -> list[dict]:
     """Decode one or more concatenated JSON documents.
 
     `gh api --paginate` emits one JSON array (or object) per page, so a
     captured enumeration file — like live --paginate output — is a
     stream of documents, not a single JSON value. Decode them all and
-    flatten the entries.
+    flatten the entries. Every entry is shape-validated as it lands
+    (validate_entry), so a wrong-shape capture fails at decode time
+    naming the source and entry instead of crashing a consumer.
     """
     entries: list[dict] = []
     decoder = json.JSONDecoder()
@@ -83,16 +164,32 @@ def decode_pages(text: str) -> list[dict]:
             break
         doc, idx = decoder.raw_decode(text, idx)
         if isinstance(doc, list):
-            entries.extend(doc)
+            for entry in doc:
+                entries.append(validate_entry(entry, source, len(entries)))
         else:
-            entries.append(doc)
+            entries.append(validate_entry(doc, source, len(entries)))
     return entries
 
 
 def load_enumeration(path: str | None) -> list[dict]:
     if path is None:
         return []
-    return decode_pages(Path(path).read_text())
+    return decode_pages(
+        Path(path).read_text(), source=f"enumeration capture {path}"
+    )
+
+
+def merge_repos(*groups: list[dict]) -> list[dict]:
+    """Merge enumeration captures into one list, deduped by
+    full_name (first capture wins). A repo lives in exactly one org,
+    but the org and user captures can overlap, and the two org
+    captures are merged before classification (#5615)."""
+    merged: dict[str, dict] = {}
+    for group_no, group in enumerate(groups):
+        for i, repo in enumerate(group):
+            repo = validate_entry(repo, f"merge_repos group {group_no}", i)
+            merged.setdefault(repo["full_name"], repo)
+    return list(merged.values())
 
 
 EXPECTED_USER_LOGIN = "dezren39"
@@ -130,7 +227,7 @@ def fetch_live(endpoint: str) -> list[dict]:
         check=True,
     ).stdout
     # --paginate concatenates one JSON array per page.
-    return decode_pages(out)
+    return decode_pages(out, source=f"live enumeration {endpoint}")
 
 
 def parse_census(text: str) -> dict[str, dict]:
@@ -209,7 +306,14 @@ def build(
 ) -> str:
     census = parse_census(census_text)
     gh: dict[str, dict] = {}
-    for repo in org_repos + user_repos:
+    # build re-indexes by full_name, so it validates entries itself:
+    # a caller that bypassed decode_pages/merge_repos gets the same
+    # named error, not a bare KeyError (#6716).
+    for i, repo in enumerate(org_repos):
+        repo = validate_entry(repo, "build org_repos", i)
+        gh[repo["full_name"]] = repo
+    for i, repo in enumerate(user_repos):
+        repo = validate_entry(repo, "build user_repos", i)
         gh[repo["full_name"]] = repo
 
     names = sorted(set(gh) | set(census), key=str.lower)
@@ -220,7 +324,7 @@ def build(
     lines.append("#")
     lines.append("# Generated by scripts/fleet/repo-universe/generate.py from:")
     lines.append(
-        "#   - GitHub enumeration: orgs/developing-today/repos + user/repos?affiliation=owner (as dezren39)"
+        "#   - GitHub enumeration: orgs/developing-today/repos + orgs/developing-today-forks/repos + user/repos?affiliation=owner (as dezren39)"
     )
     lines.append(f"#   - Census: {census_label}")
     lines.append(
@@ -277,7 +381,11 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument(
         "--org-json",
-        help="captured `gh api --paginate orgs/developing-today/repos` JSON",
+        help="captured `gh api --paginate orgs/developing-today/repos` JSON (the developing-today half of the two-org enumeration; merged with --forks-org-json before classification)",
+    )
+    ap.add_argument(
+        "--forks-org-json",
+        help="captured `gh api --paginate orgs/developing-today-forks/repos` JSON (the developing-today-forks half of the two-org enumeration; merged with --org-json before classification)",
     )
     ap.add_argument(
         "--user-json",
@@ -299,20 +407,29 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.live:
         require_expected_account()
-        org_repos = fetch_live("orgs/developing-today/repos?per_page=100&type=all")
+        # Both orgs (#5615): developing-today-forks holds opencode and
+        # openchamber since 2026-11-04; enumerating developing-today
+        # alone would drop them from a full regeneration.
+        org_repos = merge_repos(
+            *(
+                fetch_live(f"orgs/{org}/repos?per_page=100&type=all")
+                for org in ORGS
+            )
+        )
         # user/repos?affiliation=owner, NOT users/dezren39/repos: the
         # latter returns public repos only and silently misses private
         # owned repos (dezren39/hatch-personal among them, found at
         # build time — the census row was the only sign).
         user_repos = fetch_live("user/repos?per_page=100&affiliation=owner")
     else:
-        # Both captures are required offline: a missing one would
-        # silently regenerate with that source emptied, deleting its
-        # GitHub-only repos from the artifact.
+        # All three captures are required offline: a missing one
+        # would silently regenerate with that source emptied,
+        # deleting its GitHub-only repos from the artifact.
         missing = [
             flag
             for flag, value in (
                 ("--org-json", args.org_json),
+                ("--forks-org-json", args.forks_org_json),
                 ("--user-json", args.user_json),
             )
             if not value
@@ -321,7 +438,10 @@ def main(argv: list[str] | None = None) -> int:
             ap.error(
                 "offline mode requires " + " and ".join(missing) + " (or use --live)"
             )
-        org_repos = load_enumeration(args.org_json)
+        org_repos = merge_repos(
+            load_enumeration(args.org_json),
+            load_enumeration(args.forks_org_json),
+        )
         user_repos = load_enumeration(args.user_json)
 
     census_text = Path(args.census).read_text()
@@ -339,4 +459,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except ValueError as exc:
+        # A wrong-shape enumeration capture (#6716) is a named,
+        # actionable failure, not a traceback.
+        raise SystemExit(f"error: {exc}")

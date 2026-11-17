@@ -34,6 +34,7 @@ use iroh_blobs::{
 };
 
 use crate::access::AccessPolicy;
+use crate::event_store::BlockList;
 use crate::groups::{Role, worlds::Worlds};
 
 /// The two questions the gate asks of the world graph.
@@ -98,6 +99,29 @@ pub fn decide(
     hash: &Hash,
     request: Request,
 ) -> bool {
+    decide_with_blocks(access, policy, None, requester, hash, request)
+}
+
+/// [`decide`], with the operator block list composed in (#2245): a
+/// requester blocked by endpoint key is refused fetch and observe alike,
+/// member or not. The seam's shape stays the crate's bool verdict (the
+/// provider's `AbortReason::Permission` is what a refusal becomes in
+/// [`blob_events_with_blocks`]). Pushes are not decided here: a block
+/// changes serving only, never what the store ingests.
+///
+/// `blocks` is `None` for a gate with no list attached — exactly
+/// [`decide`]'s behaviour.
+pub fn decide_with_blocks(
+    access: &impl WorldAccess,
+    policy: &BlobPolicy,
+    blocks: Option<&dyn BlockList>,
+    requester: &EndpointId,
+    hash: &Hash,
+    request: Request,
+) -> bool {
+    if blocks.is_some_and(|blocks| blocks.peer_blocked(requester.as_bytes())) {
+        return false;
+    }
     access.worlds_referencing(hash).iter().any(|world| {
         access.is_current_member(world, requester)
             && match request {
@@ -168,6 +192,21 @@ pub fn blob_events<A: WorldAccess>(
     policy: BlobPolicy,
     writes: AccessPolicy,
 ) -> EventSender {
+    blob_events_with_blocks(access, policy, writes, None)
+}
+
+/// [`blob_events`], with the operator block list composed into every
+/// serving verdict (#2245): a blocked endpoint is refused `get`,
+/// `get_many`, and `observe` through the same `AbortReason::Permission`
+/// as a non-member, so a refusal still does not reveal which rule made
+/// it. Push verdicts are unchanged — writes are ingest, and a block
+/// never rejects what a peer sends, only what it is served.
+pub fn blob_events_with_blocks<A: WorldAccess>(
+    access: Arc<A>,
+    policy: BlobPolicy,
+    writes: AccessPolicy,
+    blocks: Option<Arc<dyn BlockList>>,
+) -> EventSender {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<ProviderMessage>(64);
     let mask = EventMask {
         connected: ConnectMode::Notify,
@@ -191,22 +230,42 @@ pub fn blob_events<A: WorldAccess>(
                 }
                 ProviderMessage::GetRequestReceived(m) => {
                     let verdict = admit(peers.get(&m.connection_id), |id| {
-                        decide(&*access, &policy, id, &m.request.hash, Request::Fetch)
+                        decide_with_blocks(
+                            &*access,
+                            &policy,
+                            blocks.as_deref(),
+                            id,
+                            &m.request.hash,
+                            Request::Fetch,
+                        )
                     });
                     let _ = m.tx.send(verdict).await;
                 }
                 ProviderMessage::GetManyRequestReceived(m) => {
                     let verdict = admit(peers.get(&m.connection_id), |id| {
-                        m.request
-                            .hashes
-                            .iter()
-                            .all(|hash| decide(&*access, &policy, id, hash, Request::Fetch))
+                        m.request.hashes.iter().all(|hash| {
+                            decide_with_blocks(
+                                &*access,
+                                &policy,
+                                blocks.as_deref(),
+                                id,
+                                hash,
+                                Request::Fetch,
+                            )
+                        })
                     });
                     let _ = m.tx.send(verdict).await;
                 }
                 ProviderMessage::ObserveRequestReceived(m) => {
                     let verdict = admit(peers.get(&m.connection_id), |id| {
-                        decide(&*access, &policy, id, &m.request.hash, Request::Observe)
+                        decide_with_blocks(
+                            &*access,
+                            &policy,
+                            blocks.as_deref(),
+                            id,
+                            &m.request.hash,
+                            Request::Observe,
+                        )
                     });
                     let _ = m.tx.send(verdict).await;
                 }
@@ -297,6 +356,36 @@ mod tests {
         assert!(decide(
             &t,
             &BlobPolicy::default(),
+            &id(1),
+            &blob(9),
+            Request::Fetch
+        ));
+    }
+
+    #[test]
+    fn a_blocked_member_is_refused_fetch_and_observe() {
+        // #2245: the block composes over membership — a current member
+        // blocked by endpoint key is served nothing.
+        let t = one_world(id(1), blob(9));
+        let p = BlobPolicy::default().with_observe();
+        let blocks = crate::pull_policy::testing::stub_blocks(&[*id(1).as_bytes()], &[]);
+        for request in [Request::Fetch, Request::Observe] {
+            assert!(!decide_with_blocks(
+                &t,
+                &p,
+                Some(&*blocks),
+                &id(1),
+                &blob(9),
+                request
+            ));
+        }
+        // A list that blocks someone else leaves the member's verdict
+        // exactly what membership decides.
+        let blocks = crate::pull_policy::testing::stub_blocks(&[*id(2).as_bytes()], &[]);
+        assert!(decide_with_blocks(
+            &t,
+            &p,
+            Some(&*blocks),
             &id(1),
             &blob(9),
             Request::Fetch
@@ -410,7 +499,7 @@ mod tests {
                 group: Some(create),
                 body: Body::Member(MemberOp::Remove {
                     member,
-                    successor: None,
+                    mode: crate::groups::RemoveMode::Revoke,
                 }),
             });
         }

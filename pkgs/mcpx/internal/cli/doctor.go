@@ -274,6 +274,13 @@ func (a *App) CmdDoctor(ctx context.Context, args []string) error {
 		_ = st.Close()
 	}
 
+	// Slow remotes (#1936): the log's measured latency and error figures
+	// for configured remote servers, with a local alternative when the
+	// registry offers one. Read-only; see doctor_remote.go.
+	for _, c := range a.doctorSlowRemotes(ctx) {
+		add(c)
+	}
+
 	// Optional integrations. Absent is not a problem, so these are only
 	// reported when present or when configured and broken.
 	if path, oerr := opencode.Find(""); oerr == nil {

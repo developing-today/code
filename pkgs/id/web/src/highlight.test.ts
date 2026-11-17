@@ -4,7 +4,15 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { createSyntaxHighlightPlugin, detectLanguage, EXT_TO_LANG, FILENAME_TO_LANG, LANG_IMPORTS, languageFromInfoString, resolveCodeBlockLanguage } from "./highlight";
+import {
+  createSyntaxHighlightPlugin,
+  detectLanguage,
+  EXT_TO_LANG,
+  FILENAME_TO_LANG,
+  LANG_IMPORTS,
+  languageFromInfoString,
+  resolveCodeBlockLanguage,
+} from "./highlight";
 
 // ============================================================================
 // Language Detection: Extension Mapping

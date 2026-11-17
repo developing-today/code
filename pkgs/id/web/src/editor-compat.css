@@ -1140,6 +1140,16 @@ img.ProseMirror-separator {
   border-color: var(--color-primary);
 }
 
+.goto-line-input[aria-invalid="true"] {
+  border-color: var(--color-error);
+}
+
+.goto-line-error {
+  color: var(--color-error);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
 /* Hide number input spinners */
 .goto-line-input::-webkit-inner-spin-button,
 .goto-line-input::-webkit-outer-spin-button {

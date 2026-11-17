@@ -160,10 +160,14 @@ Release build, one thread, AMD Ryzen 7 7840U, 2,000 guesses: **1.40 ms per guess
 - **Signing primitive.** The key pair comes from Go's standard `ed25519.GenerateKey` (RFC 8032). The signing call is `kbcrypto`'s `Sign`, which I did not read. Its output is not checked against Keybase.
 - **`ctime` unit.** `keybase1.Time` is not read. I use milliseconds, to match the design's `*_MS` naming.
 - **Links.** The `id:join?…` format, the bearer fragment, and "typed link fails without the key" are not built. The brief's S9 list does not include them. Structurally, an accept cannot be made without the token.
-- **Not built:** the chain event format, persistence, multiple admins racing on one invite (the research doc, §8.3, says the chain must serialise accepts, as Keybase does at admission), the approval flow, the metadata documentation, and a Keybase interop test (no Keybase server or client here).
+- **Not built:** the chain event format, persistence, multiple admins racing on one invite (the client-side sequential completion path does not establish atomic exclusion of concurrent handlers), the approval flow, the metadata documentation, and a Keybase interop test (no Keybase server or client here).
 - **Secrets.** `SiKey` and the Ed25519 seed are not zeroised on drop.
 - **Ticket network behaviour.** No dial, no relay, no real endpoint. The probe is decode-only.
 - **Performance.** Only the single-guess timing above. No benchmarks of admission or of `Token::generate`.
+
+### 2026-11-01 follow-up: Keybase old-style V2 single use
+
+The table's row 15 cites a Keybase test comment and the spike's local `max_uses = 1` model; that test covers repeated requests in one handler, not separate transactions. Review of `keybase/client` commit `952e87eed559ffc3e5c840b3354b2161e4f725f8` confirms that `InviteSeitanV2` creates an invite without `MaxUses` or expiry, and the normal sequential handler repolls chain state before consumption. A successful completion is recorded in the team chain and removes the invite from active lookups, so a later handler that sees the committed state cannot consume it again. The spike's `max_uses = 1` is a local model of that outcome, not Keybase's mechanism. This does not establish atomic exclusion of concurrent or stale handlers, or server-side replay behavior. See the source links and caveat in `pkgs/id/src/seitan/mod.rs`.
 
 ## Deviations from the brief and the design
 

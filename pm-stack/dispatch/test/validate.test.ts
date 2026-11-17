@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   ValidationError,
   parseModel,
@@ -103,6 +106,23 @@ describe("model parsing", () => {
     });
   });
 
+  test("string form trims whitespace around each segment like the object form", () => {
+    const clean = { providerID: "anthropic", id: "claude-sonnet" };
+    expect(parseModel("anthropic / claude-sonnet")).toEqual(clean);
+    expect(parseModel("anthropic/ claude-sonnet")).toEqual(clean);
+    expect(parseModel("anthropic /claude-sonnet")).toEqual(clean);
+    expect(parseModel("  anthropic / claude-sonnet  ")).toEqual(clean);
+    expect(parseModel({ providerID: " anthropic ", id: " claude-sonnet " })).toEqual(clean);
+    // Trimming must not eat slashes that belong to the model id.
+    expect(parseModel("meta / claude/sonnet")).toEqual({ providerID: "meta", id: "claude/sonnet" });
+  });
+
+  test("string form rejects a segment that is empty after trimming", () => {
+    expect(() => parseModel("anthropic / ")).toThrow(ValidationError);
+    expect(() => parseModel(" / claude-sonnet")).toThrow(ValidationError);
+    expect(() => parseModel("   /   ")).toThrow(ValidationError);
+  });
+
   test("malformed models are rejected", () => {
     expect(() => parseModel("noslash")).toThrow(ValidationError);
     expect(() => parseModel("/model")).toThrow(ValidationError);
@@ -171,6 +191,13 @@ describe("request validation", () => {
   test("titleFromPrompt takes the first non-empty line, capped", () => {
     expect(titleFromPrompt("\n\n  fix the thing  \nmore")).toBe("fix the thing");
     expect(titleFromPrompt("x".repeat(200)).length).toBe(120);
+    expect(titleFromPrompt("x".repeat(200))).toBe("x".repeat(119) + "…");
+  });
+
+  test("titleFromPrompt does not split astral code points when truncating", () => {
+    expect(titleFromPrompt("x".repeat(118) + "😀" + "y".repeat(10))).toBe("x".repeat(118) + "…");
+    expect(titleFromPrompt("ab😀cde", 4)).toBe("ab…");
+    expect(titleFromPrompt("a😀bcde", 4)).toBe("a😀…");
   });
 });
 
@@ -299,5 +326,98 @@ describe("session blank title/directory parsing (issue #2664)", () => {
     });
     expect(r.title).toBe("My session");
     expect(r.directory).toBe("/home/user/git/code/pkgs");
+  });
+});
+
+describe("session directory symlink confinement (issue #3999)", () => {
+  // Fixture layout under a fresh temp dir:
+  //   base/clone/            the repo clone (configured root)
+  //   base/clone/inner/      a real in-clone directory
+  //   base/outside/          a directory outside the clone
+  //   base/outside/sub/      a subdirectory of the outside directory
+  //   clone/worktrees   ->   base/outside        (committed-link shape)
+  //   clone/nixpkgs     ->   ../nixpkgs-missing  (dangling, points outside)
+  //   clone/local-link  ->   inner               (points inside)
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "dispatch-3999-")));
+  const clone = join(base, "clone");
+  const inner = join(clone, "inner");
+  const outside = join(base, "outside");
+  const outsideSub = join(outside, "sub");
+  mkdirSync(inner, { recursive: true });
+  mkdirSync(outsideSub, { recursive: true });
+  symlinkSync(outside, join(clone, "worktrees"), "dir");
+  symlinkSync("../nixpkgs-missing", join(clone, "nixpkgs"), "dir");
+  symlinkSync(inner, join(clone, "local-link"), "dir");
+  const repoDirs = { "developing-today/code": clone };
+  const code = "developing-today/code";
+  // realpathSync above canonicalizes base (e.g. /tmp -> /private/tmp), so
+  // expectations are built from the canonical fixture paths.
+  test("an in-clone symlink to an outside directory is rejected", () => {
+    expect(() => resolveSessionDirectory("oidc", code, join(clone, "worktrees"), repoDirs)).toThrow(ValidationError);
+    expect(() => resolveSessionDirectory("bearer", code, join(clone, "worktrees", "sub"), repoDirs)).toThrow(
+      ValidationError,
+    );
+  });
+
+  test("a dangling in-clone symlink pointing outside is rejected", () => {
+    expect(() => resolveSessionDirectory("oidc", code, join(clone, "nixpkgs"), repoDirs)).toThrow(ValidationError);
+  });
+
+  test("an in-clone symlink pointing inside the clone is accepted and resolved", () => {
+    expect(resolveSessionDirectory("oidc", code, join(clone, "local-link"), repoDirs)).toBe(inner);
+  });
+
+  test("'..' after a symlinked component pops the resolved parent", () => {
+    // Lexically clone/worktrees/../inner stays inside the clone; the
+    // kernel resolves worktrees first, so the real path is
+    // base/inner, which does NOT exist inside the clone - the parent
+    // of outside is base, so ../inner lands at base/inner (outside).
+    expect(() => resolveSessionDirectory("oidc", code, `${clone}/worktrees/../inner`, repoDirs)).toThrow(
+      ValidationError,
+    );
+    // And outside/sub/../sub resolves within the outside tree, still out.
+    expect(() => resolveSessionDirectory("oidc", code, `${clone}/worktrees/sub/../sub`, repoDirs)).toThrow(
+      ValidationError,
+    );
+  });
+
+  test("a nonexistent candidate inside the clone is accepted lexically", () => {
+    const candidate = join(clone, "new-dir", "deeper");
+    expect(resolveSessionDirectory("oidc", code, candidate, repoDirs)).toBe(candidate);
+  });
+
+  test("a nonexistent candidate under an escaping symlink is rejected", () => {
+    expect(() => resolveSessionDirectory("oidc", code, join(clone, "worktrees", "not-there"), repoDirs)).toThrow(
+      ValidationError,
+    );
+  });
+
+  test("a cyclic symlink is rejected by the depth limit, not expanded", () => {
+    symlinkSync("loop/../loop", join(clone, "loop"), "dir");
+    expect(() => resolveSessionDirectory("oidc", code, join(clone, "loop"), repoDirs)).toThrow(ValidationError);
+    expect(() => resolveSessionDirectory("oidc", code, `${clone}/loop/../loop`, repoDirs)).toThrow(ValidationError);
+  });
+
+  test("a dangling-link expansion chain is bounded by the shared budget", () => {
+    // l0 dangles; each lN names l(N-1) twice, so a per-recursion
+    // depth limit alone permits exponential expansions (Codex round
+    // 2). The shared budget must reject the chain outright.
+    symlinkSync("missing-target", join(clone, "l0"), "dir");
+    for (let n = 1; n <= 17; n++) {
+      symlinkSync(`l${n - 1}/../l${n - 1}`, join(clone, `l${n}`), "dir");
+    }
+    expect(() => resolveSessionDirectory("oidc", code, join(clone, "l17"), repoDirs)).toThrow(ValidationError);
+  });
+
+  test("the clone root reached through a symlink is the same root", () => {
+    const alias = join(base, "clone-alias");
+    symlinkSync(clone, alias, "dir");
+    expect(resolveSessionDirectory("oidc", code, alias, repoDirs)).toBe(clone);
+    expect(resolveSessionDirectory("oidc", code, join(alias, "inner"), repoDirs)).toBe(inner);
+  });
+
+  test("fixture cleanup", () => {
+    rmSync(base, { recursive: true, force: true });
+    expect(true).toBe(true);
   });
 });

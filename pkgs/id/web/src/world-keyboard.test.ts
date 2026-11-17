@@ -64,6 +64,34 @@ describe("terminal-compatible world key input", () => {
     expect(key("F5")).toBeNull();
   });
 
+  it("rejects every Object.prototype member name", () => {
+    for (const name of Object.getOwnPropertyNames(Object.prototype)) {
+      expect(key(name), name).toBeNull();
+    }
+  });
+
+  it("preserves all unmodified special-key encodings", () => {
+    const encodings = {
+      Enter: "\r",
+      Tab: "\t",
+      Backspace: "\x7f",
+      Escape: "\x1b",
+      Delete: "\x1b[3~",
+      Home: "\x1b[H",
+      End: "\x1b[F",
+      PageUp: "\x1b[5~",
+      PageDown: "\x1b[6~",
+      ArrowUp: "\x1b[A",
+      ArrowDown: "\x1b[B",
+      ArrowRight: "\x1b[C",
+      ArrowLeft: "\x1b[D",
+    };
+
+    for (const [name, expected] of Object.entries(encodings)) {
+      expect(key(name), name).toBe(expected);
+    }
+  });
+
   it("encodes modified CSI tilde keys with the xterm modifier parameter", () => {
     expect(key("Delete", { ctrlKey: true })).toBe("\x1b[3;5~");
     expect(key("Delete", { shiftKey: true })).toBe("\x1b[3;2~");

@@ -9,7 +9,10 @@ import { PAGES } from "../src/pages.ts";
 import { navLinks, pageDropdown, renderAa } from "../src/render.ts";
 import { FIXTURE_AA } from "../src/sources/fixtures.ts";
 
-const renderSource = readFileSync(join(import.meta.dir, "..", "src", "render.ts"), "utf8");
+const renderSource =
+  readFileSync(join(import.meta.dir, "..", "src", "ui.css"), "utf8") +
+  "\n" +
+  readFileSync(join(import.meta.dir, "..", "src", "render.ts"), "utf8");
 
 describe("light theme (#1215)", () => {
   const light = renderSource.slice(
@@ -121,11 +124,20 @@ describe("the emitted explorer script stays valid (#1215, Codex P1 on PR #3308)"
       aa: "fixtures",
     } as never;
     const html = renderAa(FIXTURE_AA, prov);
-    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+    const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].map((m) => ({
+      tag: m[0].slice(0, m[0].indexOf(">") + 1),
+      body: m[1],
+    }));
     expect(scripts.length).toBeGreaterThan(0);
-    for (const script of scripts) expect(() => new Function(script)).not.toThrow();
+    const module = scripts.find((script) => script.tag.includes('type="module"') && !script.tag.includes(" src="));
+    expect(module?.body).toContain("/assets/aa-explorer-computations.js");
+    for (const script of scripts) {
+      if (script.tag.includes('type="application/json"')) continue;
+      const source = script.body.replace(/^\s*import [^\n]*\n/, "");
+      expect(() => new Function(source)).not.toThrow();
+    }
     // The row-header cells reach the browser as real scope attributes.
-    expect(scripts[0]).toContain('scope=\\"row\\"');
+    expect(module?.body).toContain('scope=\\"row\\"');
   });
 
   test("hidden-configuration restore buttons are themed in the light theme (Codex P2 on PR #3308)", () => {

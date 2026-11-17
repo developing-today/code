@@ -1,0 +1,56 @@
+name: repo-universe tests
+
+# Test verification for scripts/fleet/repo-universe (#5945).
+#
+# The repo-universe regression suites — test_generate.py (generator:
+# overrides survival, idempotence, classification, owned coverage,
+# #1650) and test_check_issues.py (checker: delta semantics, PR
+# filtering, failed-fetch state preservation, #1651) — 16 tests in
+# total, were enumerated by no workflow and had no documented CI
+# runner. The systemd timer runs check_issues.py in production but
+# never its tests, so generator/checker regressions surfaced only as
+# a corrupt inventory or a wrong delta report.
+#
+# The tests are plain unittest modules (stdlib only, fixture/offline).
+# The run step first asserts both suite files exist by name, then runs
+# unittest discovery over the suite directory explicitly, so a green
+# run can never be a silently skipped suite. unittest exits non-zero
+# when any test fails, which fails the job.
+#
+# Trigger policy matches the house pattern since 5a94833ea3:
+# dispatch/schedule only, no push/pull_request triggers.
+# CI tier policy: see .github/ci-policy.md.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: "repo-universe: regression suites"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Run the repo-universe regression suites
+        run: |
+          for t in scripts/fleet/repo-universe/test_generate.py scripts/fleet/repo-universe/test_check_issues.py; do
+            if [ ! -f "$t" ]; then
+              echo "::error::Missing suite file $t — the repo-universe suite was not run in full."
+              exit 1
+            fi
+          done
+          python3 -m unittest discover -s scripts/fleet/repo-universe -p 'test_*.py' -v

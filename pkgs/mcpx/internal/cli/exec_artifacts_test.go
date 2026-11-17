@@ -94,7 +94,7 @@ func TestFetchArtifactsSameNamedNeverOverwrite(t *testing.T) {
 
 // TestApplyFrameCurrentDirArtifactsDir covers the Codex finding on #2950:
 // with artifacts.dir set to "." the streaming path must still deliver --
-// UniquePath's containment check used to reject the joined bare file name.
+// ClaimPath's containment check used to reject the joined bare file name.
 func TestApplyFrameCurrentDirArtifactsDir(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
@@ -161,5 +161,43 @@ func TestFetchArtifactsCurrentDirArtifactsDir(t *testing.T) {
 		if string(got) != want {
 			t.Fatalf("%s holds %q, want %q", path, got, want)
 		}
+	}
+}
+
+// TestFetchArtifactsKeepsAForeignFileThatHoldsTheName is the fetched-path
+// half of #4253: a file already sitting at the delivery name keeps its
+// bytes, and the fetched body lands under the suffixed name -- the path
+// recorded for the artifact is the file actually written.
+func TestFetchArtifactsKeepsAForeignFileThatHoldsTheName(t *testing.T) {
+	dir := t.TempDir()
+	foreign := filepath.Join(dir, "shot.png")
+	if err := os.WriteFile(foreign, []byte("FOREIGN"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := &App{client: &Client{}, connected: true}
+	enc := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+	res := &execsvc.Result{Artifacts: []execsvc.Artifact{
+		{Meta: artifacts.Meta{ID: "id1", Name: "shot.png"}, Data: enc("FETCHED-BODY")},
+	}}
+	if err := a.fetchArtifacts(res, execOptions{ArtifactsDir: dir}); err != nil {
+		t.Fatal(err)
+	}
+	gotPath := res.Artifacts[0].Path
+	if filepath.Base(gotPath) != "shot-1.png" {
+		t.Fatalf("fetched artifact landed at %q, want shot-1.png", gotPath)
+	}
+	got, err := os.ReadFile(foreign)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "FOREIGN" {
+		t.Fatalf("foreign file holds %q; the delivery overwrote it", got)
+	}
+	body, err := os.ReadFile(gotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "FETCHED-BODY" {
+		t.Fatalf("%s holds %q, want FETCHED-BODY", gotPath, body)
 	}
 }

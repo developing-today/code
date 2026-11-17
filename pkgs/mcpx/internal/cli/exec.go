@@ -221,7 +221,7 @@ func (a *App) execRemoteStream(ctx context.Context, c *Client, req map[string]an
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	sc := bufio.NewScanner(resp.Body)
 	// The same ceiling the daemon writes with, rather than a second number
 	// that happens to be larger today.
@@ -230,7 +230,7 @@ func (a *App) execRemoteStream(ctx context.Context, c *Client, req map[string]an
 	pending := map[string]*os.File{}
 	defer func() {
 		for _, f := range pending {
-			f.Close()
+			_ = f.Close()
 		}
 	}()
 	for sc.Scan() {
@@ -247,7 +247,7 @@ func (a *App) execRemoteStream(ctx context.Context, c *Client, req map[string]an
 		}
 		// Frames are echoed as they arrive when the caller asked for a
 		// stream: that is what it asked for.
-		fmt.Fprintln(os.Stdout, line)
+		_, _ = fmt.Fprintln(os.Stdout, line)
 	}
 	return sc.Err()
 }
@@ -306,9 +306,11 @@ func (a *App) applyFrame(res *execsvc.Result, f execsvc.Frame, eo execOptions, p
 			return nil
 		}
 		delete(pending, f.ID)
-		if err := w.Close(); err != nil {
-			return err
-		}
+		stagedPath := w.Name()
+		defer func() {
+			_ = w.Close()
+			_ = os.Remove(stagedPath)
+		}()
 		name := "artifact"
 		match := -1
 		for i := range res.Artifacts {
@@ -322,12 +324,30 @@ func (a *App) applyFrame(res *execsvc.Result, f execsvc.Frame, eo execOptions, p
 		// same file is suffixed, exactly as Store.Export does (#1605).
 		// Renaming onto the bare sanitised name silently destroyed the
 		// first artifact's body and left both Path fields pointing at
-		// the one surviving file.
-		dest, err := artifacts.UniquePath(eo.ArtifactsDir, name)
+		// the one surviving file. The claim is held across the copy
+		// (#4253): the staged temp is copied into the claimed name, so a
+		// destination that appears in the meantime is never replaced.
+		dest, claim, err := artifacts.ClaimPath(eo.ArtifactsDir, name)
 		if err != nil {
 			return err
 		}
-		if err := os.Rename(w.Name(), dest); err != nil {
+		if _, err := w.Seek(0, io.SeekStart); err != nil {
+			_ = claim.Close()
+			_ = os.Remove(dest)
+			return err
+		}
+		if _, err := io.Copy(claim, w); err != nil {
+			_ = claim.Close()
+			_ = os.Remove(dest)
+			return err
+		}
+		if err := w.Close(); err != nil {
+			_ = claim.Close()
+			_ = os.Remove(dest)
+			return err
+		}
+		if err := claim.Close(); err != nil {
+			_ = os.Remove(dest)
 			return err
 		}
 		if match >= 0 {
@@ -350,10 +370,10 @@ func (a *App) renderExecResult(res *execsvc.Result, eo execOptions) error {
 		}
 	default:
 		for _, e := range res.Emits {
-			fmt.Fprintln(os.Stdout, string(e))
+			_, _ = fmt.Fprintln(os.Stdout, string(e))
 		}
 		if res.Stdout != "" {
-			fmt.Fprint(os.Stdout, res.Stdout)
+			_, _ = fmt.Fprint(os.Stdout, res.Stdout)
 		}
 		a.reportArtifacts(res)
 	}
@@ -403,17 +423,14 @@ func (a *App) fetchArtifacts(res *execsvc.Result, eo execOptions) error {
 				return gerr
 			}
 			body, err = io.ReadAll(resp.Body)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if err != nil {
 				return err
 			}
 		}
 		// Never overwrite, same rule as the streaming path (#1605).
-		dest, err := artifacts.UniquePath(eo.ArtifactsDir, art.Name)
+		dest, err := writeNew(eo.ArtifactsDir, art.Name, body)
 		if err != nil {
-			return err
-		}
-		if err := writeNew(dest, body); err != nil {
 			return err
 		}
 		art.Path = dest
@@ -421,22 +438,26 @@ func (a *App) fetchArtifacts(res *execsvc.Result, eo execOptions) error {
 	return nil
 }
 
-// writeNew writes through a temporary name so a failure leaves nothing that
-// looks finished.
-func writeNew(dest string, body []byte) error {
-	tmp, err := os.CreateTemp(filepath.Dir(dest), ".incoming-*")
+// writeNew delivers body into dir under name without ever overwriting,
+// and returns the path written. The name is claimed with ClaimPath and the
+// body is written into the claim itself (#4253), so the name stays taken
+// for the whole write; a failure removes the claimed name, leaving
+// nothing that looks finished.
+func writeNew(dir, name string, body []byte) (string, error) {
+	dest, claim, err := artifacts.ClaimPath(dir, name)
 	if err != nil {
-		return err
+		return "", err
 	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(body); err != nil {
-		tmp.Close()
-		return err
+	if _, err := claim.Write(body); err != nil {
+		_ = claim.Close()
+		_ = os.Remove(dest)
+		return "", err
 	}
-	if err := tmp.Close(); err != nil {
-		return err
+	if err := claim.Close(); err != nil {
+		_ = os.Remove(dest)
+		return "", err
 	}
-	return os.Rename(tmp.Name(), dest)
+	return dest, nil
 }
 
 // reportArtifacts tells the person at the terminal what came back.
@@ -495,7 +516,7 @@ func (c *Client) stream(ctx context.Context, method, path string, body any, acce
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		var e struct {
 			Error string `json:"error"`
 		}
@@ -517,6 +538,7 @@ type execRemoteFlags struct {
 	export      string
 	session     string
 	shape       scriptShape
+	dryRun      bool
 }
 
 // execOnDaemon sends the script to the daemon and renders what comes back.
@@ -532,6 +554,7 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 	sh := rf.shape
 	source := sh.inlineSource(fs.Args())
 	var args []string
+	var scriptPath string
 	phases := &execsvc.Phases{Before: sh.before, OnSuccess: sh.onSuccess, OnError: sh.onError}
 	if !inline {
 		// The file's text travels and the daemon writes it to its own disk,
@@ -541,6 +564,7 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 		if err != nil {
 			return err
 		}
+		scriptPath = path
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return err
@@ -553,6 +577,10 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 	}
 
 	cwd, _ := os.Getwd()
+	depsOpts, derr := a.depsOptions(cwd, scriptPath)
+	if derr != nil {
+		return derr
+	}
 	opts := execsvc.Options{
 		Runtime:     rf.runtime,
 		Permissions: rf.permissions,
@@ -575,15 +603,20 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 		Args:      args,
 		Artifacts: eo.artifactOptions(cwd),
 
-		Export:           rf.export,
-		Env:              withInputReport(sh.env, a.stdoutOverride == nil),
-		TypeCheck:        sh.typecheck,
-		Imports:          sh.imports,
-		ImportsOnDynamic: sh.importsOnDynamic,
-		Launcher:         sh.launcher,
-		LauncherName:     sh.launcherName,
-		AllowRepeat:      sh.allowRepeat,
-		CaptureConsole:   &sh.captureConsole,
+		Export:              rf.export,
+		DryRun:              rf.dryRun,
+		Env:                 withInputReport(sh.env, a.stdoutOverride == nil),
+		TypeCheck:           sh.typecheck,
+		Imports:             sh.imports,
+		ImportsOnDynamic:    sh.importsOnDynamic,
+		ImportsOnMissing:    sh.importsOnMissing,
+		ImportsCrossProject: sh.importsCrossProject,
+		ImportsNetwork:      sh.importsNetwork,
+		Launcher:            sh.launcher,
+		LauncherName:        sh.launcherName,
+		AllowRepeat:         sh.allowRepeat,
+		CaptureConsole:      &sh.captureConsole,
+		Deps:                depsOpts,
 	}
 	if len(phases.Before)+len(phases.Prefix)+len(phases.OnSuccess)+
 		len(phases.OnError)+len(phases.Suffix) > 0 {
@@ -651,7 +684,7 @@ func (c *Client) ArtifactBody(ctx context.Context, id string) (string, string, e
 	if err != nil {
 		return "", "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", "", err

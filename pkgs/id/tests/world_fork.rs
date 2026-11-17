@@ -38,6 +38,7 @@ fn a_fork_copies_the_parent_and_records_provenance() {
                 module_hash: hash.clone(),
                 seed: 7,
                 provenance: None,
+                trust: None,
             },
         },
     };
@@ -129,6 +130,7 @@ fn make_source(root: &std::path::Path) -> std::path::PathBuf {
                     module_hash: hash,
                     seed: 7,
                     provenance: None,
+                    trust: None,
                 },
             },
         })

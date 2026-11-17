@@ -50,6 +50,28 @@ if ! git fetch origin --quiet; then
   exit 1
 fi
 
+# The baseline is the last HEAD for which every changed subtree's
+# redeploy completed. Keeping it across runs also catches a hand-pulled
+# HEAD: in that case HEAD already equals origin/main, but still differs
+# from this deployed baseline.
+DEPLOYED_HEAD_FILE="$STATE_DIR/deployed-head"
+current="$(git rev-parse HEAD)"
+if [ -f "$DEPLOYED_HEAD_FILE" ]; then
+  old="$(cat "$DEPLOYED_HEAD_FILE")"
+  if ! git cat-file -e "$old^{commit}" 2>/dev/null; then
+    echo "pm-git-sync: FAIL deployed-head baseline '$old' is not a commit in $REPO"
+    exit 1
+  fi
+else
+  # On the first run, assume the currently checked-out tree is the
+  # deployed one; subsequent runs retain the exact deployed baseline.
+  old="$current"
+  if ! mkdir -p "$STATE_DIR" || ! printf '%s\n' "$old" >"$DEPLOYED_HEAD_FILE"; then
+    echo "pm-git-sync: FAIL could not initialize deployed-head baseline in $STATE_DIR"
+    exit 1
+  fi
+fi
+
 # --- owed redeploys (#2391) -------------------------------------------------
 # One record per unit: $STATE_DIR/owed-<unit>, line 1 = subtree,
 # line 2 = dependency step (may be empty). Records are written only
@@ -142,20 +164,32 @@ finish() {
     echo "pm-git-sync: FAIL redeploy(s) still owed for: $(echo "$owed" | tr '\n' ' ')"
     exit 1
   fi
+  local baseline_tmp="$DEPLOYED_HEAD_FILE.tmp.$$"
+  if ! printf '%s\n' "$new" >"$baseline_tmp" || ! mv -f "$baseline_tmp" "$DEPLOYED_HEAD_FILE"; then
+    rm -f "$baseline_tmp"
+    echo "pm-git-sync: FAIL could not persist deployed-head baseline $new in $STATE_DIR"
+    exit 1
+  fi
   echo "$1"
   exit 0
 }
 
-old="$(git rev-parse HEAD)"
-new="$(git rev-parse origin/main)"
-if [ "$old" = "$new" ]; then
-  finish "pm-git-sync: ok clean main, up to date at $old"
+remote="$(git rev-parse origin/main)"
+if [ "$current" != "$remote" ]; then
+  if ! git pull --ff-only origin main; then
+    echo "pm-git-sync: FAIL git pull --ff-only $current -> $remote in $REPO"
+    exit 1
+  fi
 fi
-if ! git pull --ff-only origin main; then
-  echo "pm-git-sync: FAIL git pull --ff-only $old -> $new in $REPO"
+new="$(git rev-parse HEAD)"
+if ! git merge-base --is-ancestor "$old" "$new"; then
+  echo "pm-git-sync: FAIL deployed-head baseline $old is not an ancestor of current HEAD $new"
   exit 1
 fi
-echo "pm-git-sync: updated $old -> $new"
+if [ "$old" = "$new" ]; then
+  finish "pm-git-sync: ok clean main, up to date at $new"
+fi
+echo "pm-git-sync: updated deployed baseline $old -> $new"
 
 redeploy() { # <subtree> <unit> <dep-step-or-empty>
   local subtree="$1" unit="$2" dep="$3"

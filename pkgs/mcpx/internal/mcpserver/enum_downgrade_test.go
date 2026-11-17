@@ -99,6 +99,31 @@ func TestMultiSelectWithheldFromPre20251125Host(t *testing.T) {
 	}
 }
 
+func TestMultiSelectToleratesOtherPropertyShapes(t *testing.T) {
+	old := peer("2025-06-18", `{"elicitation":{}}`)
+	newer := peer("2025-11-25", `{"elicitation":{"form":{}}}`)
+	cases := map[string]string{
+		"single control":        `{"choice":{"type":"string","enum":["a"]}}`,
+		"multi control":         `{"choice":{"type":"array","items":{"enum":["a"]}}}`,
+		"union sibling":         `{"choice":{"type":"array","items":{"enum":["a"]}},"other":{"type":["string","null"]}}`,
+		"boolean items sibling": `{"choice":{"type":"array","items":{"anyOf":[]}},"other":{"type":"array","items":true}}`,
+		"union multi":           `{"choice":{"type":["array","null"],"items":{"enum":["a"]}}}`,
+		"non-array union":       `{"choice":{"type":["string","null"],"items":{"enum":["a"]}}}`,
+	}
+	for name, schema := range cases {
+		t.Run(name, func(t *testing.T) {
+			q := enumQuestion(schema)
+			want := name == "single control" || name == "non-array union"
+			if got := q.Sendable(old); got != want {
+				t.Errorf("old host Sendable = %v, want %v", got, want)
+			}
+			if !q.Sendable(newer) {
+				t.Error("new host must receive question")
+			}
+		})
+	}
+}
+
 func TestNonBooleanDefaultsStrippedForPre20251125Host(t *testing.T) {
 	old := peer("2025-06-18", `{"elicitation":{}}`)
 	newer := peer("2025-11-25", `{"elicitation":{"form":{}}}`)

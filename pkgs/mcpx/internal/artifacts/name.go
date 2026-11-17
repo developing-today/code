@@ -74,20 +74,30 @@ func MimeForName(name string) string {
 	return "application/octet-stream"
 }
 
-// UniquePath resolves a name inside a directory without ever overwriting,
+// ClaimPath resolves a name inside a directory without ever overwriting,
 // for callers outside this package that deliver artifacts into a directory
 // the caller named (the CLI's exec artifact delivery, #1605). It is the
-// exported form of uniquePath, so every delivery path follows the same
+// exported form of claimPath, so every delivery path follows the same
 // never-overwrite rule Store.Export documents.
-func UniquePath(dir, name string) (string, error) {
-	return uniquePath(dir, name)
+func ClaimPath(dir, name string) (string, *os.File, error) {
+	return claimPath(dir, name)
 }
 
-// uniquePath resolves a name inside a directory without ever overwriting.
+// claimPath resolves a name inside a directory without ever overwriting,
+// and returns the destination already created, with the claim held open.
+//
+// The O_EXCL create is the check and the claim in one step, and -- unlike
+// the previous resolve-then-rename composition (#4253) -- the claim is not
+// released before the write: the caller writes the delivery into the
+// returned file and closes it. A name handed out here cannot be handed
+// out again or taken by a file that appears later, because it is already
+// taken. On any failure after claiming, the caller closes the file and
+// removes the path, so a failed delivery leaves nothing that looks
+// finished.
 //
 // The suffix goes before the extension -- shot-1.png, not shot.png-1 -- so
 // the file still opens in whatever the extension implies.
-func uniquePath(dir, name string) (string, error) {
+func claimPath(dir, name string) (string, *os.File, error) {
 	name = SanitizeName(name)
 	// Resolved so that a symlinked output directory is still written inside
 	// itself. Checked after joining, because the check has to be on the path
@@ -110,23 +120,18 @@ func uniquePath(dir, name string) (string, error) {
 		// including "." and the filesystem root.
 		rel, rerr := filepath.Rel(base, p)
 		if rerr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return "", fmt.Errorf("artifact name %q does not stay inside %s", name, dir)
+			return "", nil, fmt.Errorf("artifact name %q does not stay inside %s", name, dir)
 		}
-		// O_EXCL is the check and the claim in one step. Testing with Stat
-		// and then creating is a race two concurrent runs of the same script
-		// would lose.
+		// Testing with Stat and then creating would be a race two
+		// concurrent runs of the same script would lose; the create
+		// itself is the test, and the open file is the held claim.
 		f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 		if err == nil {
-			f.Close()
-			// Removed again so Link can have the name. The window is the
-			// price of reserving it at all; without the reservation two
-			// concurrent exports pick the same name and one is lost.
-			_ = os.Remove(p)
-			return p, nil
+			return p, f, nil
 		}
 		if !os.IsExist(err) {
-			return "", err
+			return "", nil, err
 		}
 	}
-	return "", fmt.Errorf("%s already holds %d files called %q", dir, defaults.ArtifactNameCollisionLimit, name)
+	return "", nil, fmt.Errorf("%s already holds %d files called %q", dir, defaults.ArtifactNameCollisionLimit, name)
 }

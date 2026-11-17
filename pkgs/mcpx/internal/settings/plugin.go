@@ -118,6 +118,17 @@ func pluginSettings() []Setting {
 			Long: "Auto offers them when plugin.tools is on or when discovery found " +
 				"more than one daemon and somebody may want to choose.",
 		},
+		{
+			Path: "plugin.disabledTools", Kind: KindList, Default: "",
+			Scope: ScopePlugin, Repeatable: true,
+			Name: "Disabled tools", Short: "model-facing mcpx tools hidden from every session",
+			Long: "Model-facing mcpx tool names (mcpx_exec, ...) hidden from every " +
+				"session the plugin serves: setup records it as each new " +
+				"session's tool-filter policy, unless that session already " +
+				"has a policy of its own. Names outside the mcpx_ namespace " +
+				"are dropped when the policy is read, so this can never hide " +
+				"a host tool.",
+		},
 	}
 }
 

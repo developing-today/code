@@ -174,4 +174,124 @@ describe("world page records fetch (#1458)", () => {
     expect(renderedRecords()).toEqual({ only: 1 });
     expect(socket.sent("records")).toHaveLength(7);
   });
+
+  it("define semantics (#2953): prototype-spelled record keys from a peer frame are stored, not set", () => {
+    // The frame is built by JSON.parse so "__proto__" is a genuine own
+    // key of the records object, exactly as a peer-supplied frame
+    // delivers it. With assignment semantics (Object.assign) the object
+    // value would move the records object's prototype and the string
+    // value would be silently dropped; neither would render.
+    q<HTMLButtonElement>("[data-world-records-refresh]").click();
+    const objectFrame = JSON.parse(
+      '{"type":"records","records":{"__proto__":{"polluted":"no"},"constructor":"c-value","toString":"t-value","ordinary":1},"next_after":null}',
+    ) as Record<string, unknown>;
+    socket.deliver(objectFrame);
+    const rendered = renderedRecords();
+    expect(Object.hasOwn(rendered, "__proto__")).toBe(true);
+    expect(rendered["__proto__"]).toEqual({ polluted: "no" });
+    expect(rendered["constructor"]).toBe("c-value");
+    expect(rendered["toString"]).toBe("t-value");
+    expect(rendered["ordinary"]).toBe(1);
+    // JSON round-trip preserved every key, and nothing polluted the
+    // shared prototype.
+    expect(JSON.parse(JSON.stringify(rendered))).toEqual(rendered);
+    expect(Object.hasOwn(Object.prototype, "polluted")).toBe(false);
+    expect(({} as Record<string, unknown>)["polluted"]).toBeUndefined();
+
+    q<HTMLButtonElement>("[data-world-records-refresh]").click();
+    const stringFrame = JSON.parse(
+      '{"type":"records","records":{"__proto__":"string-value"},"next_after":null}',
+    ) as Record<string, unknown>;
+    socket.deliver(stringFrame);
+    const renderedString = renderedRecords();
+    expect(Object.hasOwn(renderedString, "__proto__")).toBe(true);
+    expect(renderedString["__proto__"]).toBe("string-value");
+    expect(Object.getPrototypeOf(renderedString)).toBe(Object.prototype);
+  });
+
+  it("rejects malformed snapshots without partial state changes and accepts the next valid snapshot", () => {
+    const status = q<HTMLOutputElement>("[data-world-status]");
+    const participantList = q<HTMLElement>("[data-world-participants]");
+    const log = q<HTMLOListElement>("[data-world-log]");
+    const recordsRequests = socket.sent("records").length;
+    const malformedSnapshots: Array<Record<string, unknown>> = [
+      { type: "snapshot" },
+      { type: "snapshot", snapshot: null },
+      { type: "snapshot", snapshot: { world_id: "bad", participants: [] } },
+      { type: "snapshot", snapshot: { world_id: "bad", current_sequence: 90, participants: "bad" } },
+      { type: "snapshot", snapshot: { world_id: "bad", current_sequence: Number.NaN, participants: [] } },
+      { type: "snapshot", snapshot: { world_id: 3, current_sequence: 90, participants: [] } },
+      {
+        type: "snapshot",
+        snapshot: { world_id: "bad", current_sequence: 90, participants: [{ id: 1, display_name: 2 }] },
+      },
+    ];
+
+    for (const frame of malformedSnapshots) {
+      socket.deliver(frame);
+      expect(status.textContent).toBe("Received an invalid world frame");
+      expect(status.dataset.state).toBe("error");
+      expect(participantList.textContent).toBe("ada");
+      expect(socket.sent("records")).toHaveLength(recordsRequests);
+    }
+    expect(log.textContent).toContain("error: invalid world frame");
+
+    socket.deliver({
+      type: "snapshot",
+      snapshot: { world_id: "recovered", current_sequence: 8, participants: [{ id: 2, display_name: "grace" }] },
+    });
+    expect(status.textContent).toBe("Connected");
+    expect(status.dataset.state).toBe("good");
+    expect(participantList.textContent).toBe("grace");
+    expect(log.textContent).toContain("Connected to recovered at event 8");
+    expect(socket.sent("records")).toHaveLength(recordsRequests + 1);
+  });
+
+  it("rejects malformed events before cursor or log changes and accepts the next valid event", async () => {
+    const status = q<HTMLOutputElement>("[data-world-status]");
+    const log = q<HTMLOListElement>("[data-world-log]");
+    const recordsRequests = socket.sent("records").length;
+
+    socket.deliver({
+      type: "event",
+      event: { sequence: 9, participant_id: 2, kind: { kind: "chat", data: "recovered" } },
+    });
+    expect(log.textContent).toContain("grace: recovered");
+
+    const malformedEvents: Array<Record<string, unknown>> = [
+      { type: "event", event: { sequence: 100, participant_id: 2 } },
+      { type: "event", event: null },
+      { type: "event", event: { sequence: 101, participant_id: 2, kind: null } },
+      { type: "event", event: { sequence: 102, participant_id: 2, kind: { kind: "other", data: "bad" } } },
+      { type: "event", event: { sequence: 103, participant_id: 2, kind: { kind: "chat", data: 1 } } },
+      { type: "event", event: { sequence: 104, participant_id: 2, kind: { kind: "input", data: "bad" } } },
+      {
+        type: "event",
+        event: { sequence: 105, participant_id: 2, kind: { kind: "input", data: [Number.NaN] } },
+      },
+      { type: "event", event: { sequence: 106, participant_id: "2", kind: { kind: "input", data: [27] } } },
+      { type: "event", event: { participant_id: 2, kind: { kind: "chat", data: "bad sequence" } } },
+      {
+        type: "event",
+        event: { sequence: Number.NaN, participant_id: 2, kind: { kind: "chat", data: "bad sequence" } },
+      },
+    ];
+
+    for (const frame of malformedEvents) {
+      socket.deliver(frame);
+      expect(status.textContent).toBe("Received an invalid world frame");
+      expect(status.dataset.state).toBe("error");
+    }
+    expect(socket.sent("records")).toHaveLength(recordsRequests);
+    expect(log.textContent).not.toContain("input #100");
+    expect(log.textContent).not.toContain("bad sequence");
+
+    const closedSocket = socket;
+    closedSocket.close();
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    const reconnectedSocket = FakeSocket.all.at(-1);
+    expect(reconnectedSocket).toBeDefined();
+    reconnectedSocket!.open();
+    expect(reconnectedSocket!.sent("join")[0]).toHaveProperty("after", 9);
+  });
 });

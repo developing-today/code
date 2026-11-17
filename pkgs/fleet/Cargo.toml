@@ -1,0 +1,59 @@
+# fleet — one multicall binary for the fleet's tools (epic: developing-today/code#5412).
+# Design of record: doc/2026-11-04T11-45-48Z_design_fleet_multicall_binary/ (§1 layout).
+#
+# Self-contained workspace on the pkgs/atlas-search pattern: own Cargo.toml,
+# Cargo.lock and rust-toolchain.toml, no workspace relationship to the repo
+# root. Crates land one step at a time: step 1 (#5429) the skeleton
+# (platform crates + the bin's dispatch/stub machinery + variant
+# builds); step 2 (#5430) the queue domain (crates/fleet-queue);
+# step 3 (#5431) the proxy domain (crates/fleet-proxy); step 4
+# (#5432) the dispatch thin client (crates/fleet-dispatch); step 6
+# (#5554) the secrets verb (in the bin crate, over fleet-secrets);
+# step 5 (#5433) the search client domain (crates/fleet-search),
+# gated on the #5350 step-6 Atlas cutover; #5604 the search serve
+# role (crates/fleet-search `serve` feature), the one member that
+# consumes crates outside this workspace (atlas-core / atlas-embed /
+# atlas-proto by path, ../atlas-search/crates/*, untouched).
+[workspace]
+members = [
+  "crates/fleet-registry",
+  "crates/fleet-config",
+  "crates/fleet-secrets",
+  "crates/fleet-proxy-proto",
+  "crates/fleet-queue",
+  "crates/fleet-dispatch",
+  "crates/fleet-dispatch-test",
+  "crates/fleet-proxy",
+  "crates/fleet-search",
+  "crates/fleet",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+fleet-registry = { path = "crates/fleet-registry" }
+fleet-config = { path = "crates/fleet-config" }
+fleet-secrets = { path = "crates/fleet-secrets" }
+fleet-proxy-proto = { path = "crates/fleet-proxy-proto" }
+fleet-queue = { path = "crates/fleet-queue" }
+fleet-dispatch = { path = "crates/fleet-dispatch" }
+fleet-dispatch-test = { path = "crates/fleet-dispatch-test" }
+fleet-proxy = { path = "crates/fleet-proxy" }
+fleet-search = { path = "crates/fleet-search", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+
+[profile.release]
+# Small artifacts are a build contract for the connect variant (§2 of the
+# design note: target <= 1.5 MiB, hard budget <= 2 MiB, stripped). Size —
+# not speed — is the release profile's job in this workspace.
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true

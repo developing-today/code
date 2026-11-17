@@ -1,7 +1,6 @@
 package logging
 
 import (
-	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"net"
@@ -29,7 +28,7 @@ type TraceID string
 // NewTraceID mints an identifier with a short readable prefix.
 func NewTraceID(prefix string) TraceID {
 	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
+	if _, err := RandSource.Read(b[:]); err != nil {
 		// Randomness failing is not a reason to stop logging.
 		return TraceID(prefix + "-0000000000000000")
 	}

@@ -95,7 +95,7 @@ func livePID(p *pool.Pool) int {
 // goes through a real call, so it shows the child is serving.
 func servedPID(t *testing.T, p *pool.Pool) int {
 	t.Helper()
-	raw, err := p.Call(context.Background(), "global", "state", map[string]any{})
+	raw, err := p.Call(context.Background(), config.ResolvedScope{Key: "global"}, "state", map[string]any{})
 	if err != nil {
 		t.Fatalf("state call on %s: %v", p.Name(), err)
 	}

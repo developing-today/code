@@ -1,6 +1,6 @@
 # The merge gate
 
-Read before merging any worker PR. `implementation-orchestrate` uses the same gate. Rule 7 in [collaboration.md](/planning/workflow/collaboration.md) owns the requirement; this file is the procedure.
+Read before merging any worker PR. `implementation-orchestrate` uses the same gate. Rule 7 in [collaboration.md](../../../../planning/workflow/collaboration.md) owns the requirement; this file is the procedure.
 
 ## Gate
 

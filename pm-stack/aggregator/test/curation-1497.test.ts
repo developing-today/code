@@ -2,7 +2,8 @@
 // 2026-10-27 + triage task 2593). The decision table is data here so a
 // future manifest edit that drifts from it fails loudly.
 import { describe, expect, test } from "bun:test";
-import type { ProjectPoolItem, Provenance } from "../src/model.ts";
+import type { Comment, ProjectPoolItem, Provenance } from "../src/model.ts";
+import { buildBriefs } from "../src/brief.ts";
 import { PAGES, SUBROUTE_PARENTS, manifestRouteFor, pageByRoute, primaryGroupedPages } from "../src/pages.ts";
 import { buildProgramData } from "../src/program.ts";
 import { navLinks, pageDropdown, renderPages, renderProgram } from "../src/render.ts";
@@ -27,11 +28,13 @@ const DECISIONS: Record<string, "primary" | "dropdown"> = {
   attention: "primary",
   board: "dropdown",
   roadmap: "primary",
+  search: "dropdown",
   quota: "primary",
   dns: "dropdown",
   "aa-explorer": "dropdown",
   sessions: "dropdown",
   program: "primary",
+  queue: "primary",
   health: "primary",
   pages: "dropdown",
   // Post-#1497 addition (#3676, 2026-11-01): Alerts entered at
@@ -39,6 +42,25 @@ const DECISIONS: Record<string, "primary" | "dropdown"> = {
   // ack surface from his phone) promotes it to primary — a curation
   // decision, recorded here like the others.
   alerts: "primary",
+  // Post-#1497 addition (#1210, 2026-11-01): the comments queue
+  // enters at dropdown tier — no curation ruling promotes it, and
+  // new pages do not take primary slots without one.
+  "comments-queue": "dropdown",
+  // Post-#1497 addition (#1739, 2026-11-02): the events page
+  // enters at dropdown tier — no curation ruling promotes it, and
+  // new pages do not take primary slots without one.
+  events: "dropdown",
+  // Post-#1497 addition (#1282, 2026-11-03): the source-conflict inbox
+  // enters at dropdown tier — a triage queue, not a primary surface.
+  conflicts: "dropdown",
+  // Post-#1497 addition (#3319, 2026-11-03): the notifications
+  // measurement page enters at dropdown tier — no curation ruling
+  // promotes it, and new pages do not take primary slots without one.
+  notifications: "dropdown",
+  // Post-#1497 addition (#1278, 2026-11-03): the scheduled-digest
+  // archive page enters at dropdown tier — no curation ruling promotes
+  // it, and new pages do not take primary slots without one.
+  digest: "dropdown",
 };
 
 describe("the #1497 decision table is applied to the manifest", () => {
@@ -119,5 +141,48 @@ describe("the Projects merge into Program (#1497)", () => {
     // Area chips in the merged section point back at /program, not the redirect.
     expect(html).toContain('href="/program?area=pm-dashboard"');
     expect(html).not.toContain('href="/projects?area=');
+  });
+
+  test("renderProgram forwards prebuilt comment-backed briefs to the pool cards (#1279)", () => {
+    const pool: ProjectPoolItem[] = [
+      {
+        id: "PVTI_y",
+        url: "https://github.com/orgs/developing-today/projects/4?pane=issue&itemId=2",
+        projectUrl: "https://github.com/orgs/developing-today/projects/4",
+        ref: "developing-today/code#2",
+        repo: "developing-today/code",
+        number: 2,
+        issueUrl: "https://github.com/developing-today/code/issues/2",
+        title: "briefed pool card",
+        state: "open",
+        contentKind: "issue",
+        status: "Todo",
+        area: "pm-dashboard",
+        horizon: null,
+        kind: null,
+      },
+    ];
+    const briefs = buildBriefs(pool, {
+      comments: [
+        {
+          id: "c1",
+          ref: "developing-today/code#2",
+          kind: "issue_comment",
+          author: "alice",
+          body: "working on it",
+          createdAt: "2026-10-30T00:00:00Z",
+          url: "https://github.com/developing-today/code/issues/2#issuecomment-1",
+          deleted: false,
+        } as Comment,
+      ],
+    });
+    const items = new Map();
+    const data = { ...buildProgramData(items, pool, null), projects: [] };
+    const withBriefs = renderProgram(data, items, PROV, undefined, { pool, area: null, briefs });
+    // The comment-backed brief names the last actor; the comment-less
+    // fallback built inside projectsBodyHtml cannot.
+    expect(withBriefs).toContain("Last activity by alice");
+    const without = renderProgram(data, items, PROV, undefined, { pool, area: null });
+    expect(without).not.toContain("Last activity by alice");
   });
 });

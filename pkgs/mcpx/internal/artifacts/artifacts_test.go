@@ -24,7 +24,7 @@ func open(t *testing.T, opts artifacts.Options) *artifacts.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
 

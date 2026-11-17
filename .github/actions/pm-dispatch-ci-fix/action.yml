@@ -71,7 +71,7 @@ runs:
   steps:
     - name: Dispatch ci-fix via pm-dispatch-task
       id: dispatch
-      uses: developing-today/code/.github/actions/pm-dispatch-task@main
+      uses: ./.pm-central/.github/actions/pm-dispatch-task
       with:
         task: ci-fix
         repo: ${{ inputs.repo }}

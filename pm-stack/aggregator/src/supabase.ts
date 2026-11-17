@@ -1,9 +1,9 @@
 // Supabase access for the aggregator — the exact path the fleet-feed
 // collector uses for muse-dev2 (scripts/collect-fleet-feed.ts): SQL
 // over the Management API query endpoint, authenticated with the
-// Bitwarden secret named `supabase.access-token-muse-cli` (the sbp_
+// Bitwarden secret named `supabase.muse-dev2.access-token-muse-cli` (the sbp_
 // management token), project ref from $SUPABASE_PROJECT_REF, else the
-// Bitwarden `supabase.project-ref` secret, else the muse-dev2 ref.
+// Bitwarden `supabase.muse-dev2.project-ref` secret, else the muse-dev2 ref.
 // The token is only ever sent to api.supabase.com; it is never logged.
 import { resolveBwsSecret } from "./secrets.ts";
 
@@ -40,28 +40,40 @@ async function supabaseQuery(token: string, ref: string, sql: string): Promise<u
   return res.json();
 }
 
-let clientPromise: Promise<SupabaseClient | null> | null = null;
-
 /**
- * The shared muse-dev2 client, resolved once. Null when no management
- * token is reachable (callers fail soft — the alerts surface reports
- * itself unavailable instead of taking the dashboard down).
+ * Create the shared muse-dev2 client resolver. In-flight calls share one
+ * attempt and successful clients stay cached; a null result is fail-soft
+ * but not permanent, so a later call can recover.
+ * Lazy-init contract (success-only memoization): README "Lazy-initialization contract" (#3879).
  */
-export function getSupabaseClient(): Promise<SupabaseClient | null> {
-  if (!clientPromise) {
-    clientPromise = (async () => {
-      const token = await resolveBwsSecret("supabase.access-token-muse-cli");
-      if (!token) return null;
-      const ref =
-        process.env.SUPABASE_PROJECT_REF ?? (await resolveBwsSecret("supabase.project-ref")) ?? "keihfchslgjetkmnmzra";
-      return {
-        ref,
-        async query<T = Record<string, unknown>>(sql: string): Promise<T[]> {
-          const out = await supabaseQuery(token, ref, sql);
-          return (Array.isArray(out) ? out : []) as T[];
-        },
-      };
-    })().catch(() => null);
+export function createSupabaseClientGetter(
+  resolveSecret: typeof resolveBwsSecret = resolveBwsSecret,
+): () => Promise<SupabaseClient | null> {
+  let clientPromise: Promise<SupabaseClient | null> | null = null;
+
+  return function getSupabaseClient(): Promise<SupabaseClient | null> {
+    if (!clientPromise) {
+      const pending = (async () => {
+        const token = await resolveSecret("supabase.muse-dev2.access-token-muse-cli");
+        if (!token) return null;
+        const ref =
+          process.env.SUPABASE_PROJECT_REF ?? (await resolveSecret("supabase.muse-dev2.project-ref")) ?? "keihfchslgjetkmnmzra";
+        return {
+          ref,
+          async query<T = Record<string, unknown>>(sql: string): Promise<T[]> {
+            const out = await supabaseQuery(token, ref, sql);
+            return (Array.isArray(out) ? out : []) as T[];
+          },
+        };
+      })().catch(() => null);
+      clientPromise = pending;
+      void pending.then((client) => {
+        if (client === null && clientPromise === pending) clientPromise = null;
+      });
+    }
+    return clientPromise;
   }
-  return clientPromise;
 }
+
+/** The shared muse-dev2 client, fail-soft while its management token is unavailable. */
+export const getSupabaseClient = createSupabaseClientGetter();

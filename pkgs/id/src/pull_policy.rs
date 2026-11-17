@@ -11,6 +11,13 @@
 //! sync sessions check the gate before any event is sent. A refused peer gets no event, and the
 //! refusal is clean. An open gate never reads membership.
 //!
+//! A gate may also carry the operator block list ([`crate::event_store::BlockList`], #2245):
+//! a peer blocked by key is refused under every policy, and a gate whose world's name is a
+//! blocked topic tag serves nothing. The blocks compose with the policy — they only ever
+//! narrow it. Without a list attached, a gate behaves exactly as it did before the list
+//! existed. The list is read on each check, so a block or an unblock lands on the next
+//! session, as a membership removal does.
+//!
 //! This is a config setting, not a protocol rule. The policy belongs with the world's policy. The
 //! server config's `[policy]` table parses it ([`crate::server_config::ServerConfig::pull_policy`]),
 //! but `id serve` does not read it yet, and no session builds a gate from config. Blobs are not
@@ -23,6 +30,7 @@ use std::sync::Arc;
 use iroh_base::EndpointId;
 
 use crate::blob_gate::WorldAccess;
+use crate::event_store::BlockList;
 
 /// Who may pull a world's events from this server.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -51,10 +59,14 @@ pub struct PullGate {
     policy: PullPolicy,
     world: String,
     access: Arc<dyn WorldAccess>,
+    /// The operator block list, when the gate's owner attached one
+    /// ([`PullGate::with_blocks`]). Read on each check.
+    blocks: Option<Arc<dyn BlockList>>,
 }
 
 impl PullGate {
     /// A gate for `world` under `policy`. `access` answers membership at the time of each check.
+    /// No operator block list is attached; [`PullGate::with_blocks`] adds one.
     #[must_use]
     pub fn new<A: WorldAccess>(
         policy: PullPolicy,
@@ -65,7 +77,18 @@ impl PullGate {
             policy,
             world: world.into(),
             access,
+            blocks: None,
         }
+    }
+
+    /// Attaches the operator block list (#2245): a peer blocked by key is
+    /// refused under every policy, and a gate whose world's name is a
+    /// blocked topic tag serves nothing. The list is consulted live, so a
+    /// block added after the gate was built is seen by the next check.
+    #[must_use]
+    pub fn with_blocks(mut self, blocks: Arc<dyn BlockList>) -> Self {
+        self.blocks = Some(blocks);
+        self
     }
 
     /// The world this gate serves.
@@ -74,10 +97,34 @@ impl PullGate {
         &self.world
     }
 
-    /// Whether `peer` may pull this world's events now.
+    /// Whether the operator block list blocks `peer` by key. False when
+    /// no list is attached.
+    #[must_use]
+    pub fn peer_blocked(&self, peer: &EndpointId) -> bool {
+        self.blocks
+            .as_ref()
+            .is_some_and(|blocks| blocks.peer_blocked(peer.as_bytes()))
+    }
+
+    /// Whether the operator block list blocks this topic tag (raw bytes:
+    /// a world name, or a sync topic's hash bytes). False when no list is
+    /// attached. Session seams that carry a topic the gate's world does
+    /// not name — the `log_sync` handshake — check the tag through here.
+    #[must_use]
+    pub fn topic_tag_blocked(&self, tag: &[u8]) -> bool {
+        self.blocks
+            .as_ref()
+            .is_some_and(|blocks| blocks.topic_tag_blocked(tag))
+    }
+
+    /// Whether `peer` may pull this world's events now: not blocked by
+    /// key, the world not blocked as a topic tag, and the policy admits
+    /// the peer.
     #[must_use]
     pub fn admits(&self, peer: &EndpointId) -> bool {
-        self.policy.admits(self.access.as_ref(), &self.world, peer)
+        !self.peer_blocked(peer)
+            && !self.topic_tag_blocked(self.world.as_bytes())
+            && self.policy.admits(self.access.as_ref(), &self.world, peer)
     }
 }
 
@@ -163,7 +210,7 @@ pub(crate) mod testing {
                 group: Some(create),
                 body: Body::Member(MemberOp::Remove {
                     member,
-                    successor: None,
+                    mode: crate::groups::RemoveMode::Revoke,
                 }),
             });
         }
@@ -205,6 +252,57 @@ pub(crate) mod testing {
     /// `folded` as shared membership that a gate can hold.
     pub(crate) fn live(folded: FoldedWorlds) -> Arc<Live> {
         Arc::new(Live::new(folded))
+    }
+
+    /// An operator block list with fixed rows, for the gate tests and the
+    /// session tests: the peers and topic tags it names are blocked, and
+    /// nothing else is.
+    #[derive(Debug, Default)]
+    pub(crate) struct StubBlocks {
+        /// Blocked endpoint keys.
+        pub peers: std::collections::HashSet<[u8; 32]>,
+        /// Blocked topic tags, as raw bytes.
+        pub topics: std::collections::HashSet<Vec<u8>>,
+        /// Blocked IPs, in the text form `BlockList::ip_blocked`
+        /// formats them in.
+        pub ips: std::collections::HashSet<String>,
+    }
+
+    impl crate::event_store::BlockList for StubBlocks {
+        fn is_blocked(&self, kind: crate::event_store::BlockKind, value: &[u8]) -> bool {
+            match kind {
+                crate::event_store::BlockKind::PeerKey => {
+                    <[u8; 32]>::try_from(value).is_ok_and(|key| self.peers.contains(&key))
+                }
+                crate::event_store::BlockKind::TopicTag => self.topics.iter().any(|t| t == value),
+                crate::event_store::BlockKind::Ip => {
+                    std::str::from_utf8(value).is_ok_and(|text| self.ips.contains(text))
+                }
+            }
+        }
+    }
+
+    /// A stub block list naming `peers` by key and `topics` by tag.
+    pub(crate) fn stub_blocks(peers: &[[u8; 32]], topics: &[&str]) -> Arc<StubBlocks> {
+        Arc::new(StubBlocks {
+            peers: peers.iter().copied().collect(),
+            topics: topics.iter().map(|t| t.as_bytes().to_vec()).collect(),
+            ips: std::collections::HashSet::new(),
+        })
+    }
+
+    /// A stub block list like [`stub_blocks`], additionally naming
+    /// `ips` as blocked.
+    pub(crate) fn stub_blocks_with_ips(
+        peers: &[[u8; 32]],
+        topics: &[&str],
+        ips: &[std::net::IpAddr],
+    ) -> Arc<StubBlocks> {
+        Arc::new(StubBlocks {
+            peers: peers.iter().copied().collect(),
+            topics: topics.iter().map(|t| t.as_bytes().to_vec()).collect(),
+            ips: ips.iter().map(|ip| ip.to_string()).collect(),
+        })
     }
 
     /// An open gate over an empty world. It never reads membership.
@@ -263,6 +361,86 @@ mod tests {
         assert!(gate.admits(&key(2).public()), "before the removal");
         access.set(docs_world(key(1).public(), key(2).public(), true));
         assert!(!gate.admits(&key(2).public()), "after the removal");
+    }
+
+    /// #2245: a peer blocked by key is refused even under the open
+    /// policy, which admits every other peer. The block only narrows.
+    #[test]
+    fn test_pull_gate_refuses_a_blocked_peer_under_open_policy() {
+        let gate = PullGate::new(
+            PullPolicy::Open,
+            WORLD,
+            live(docs_world(key(1).public(), key(2).public(), false)),
+        )
+        .with_blocks(super::testing::stub_blocks(
+            &[*key(9).public().as_bytes()],
+            &[],
+        ));
+        assert!(
+            !gate.admits(&key(9).public()),
+            "the blocked peer is refused"
+        );
+        assert!(
+            gate.admits(&key(2).public()),
+            "an unblocked peer still pulls"
+        );
+    }
+
+    /// #2245: a blocked topic tag is not pulled — a gate whose world is a
+    /// blocked tag serves nothing, to members included.
+    #[test]
+    fn test_pull_gate_refuses_every_peer_when_its_world_is_a_blocked_topic_tag() {
+        let gate = PullGate::new(
+            PullPolicy::Members,
+            WORLD,
+            live(docs_world(key(1).public(), key(2).public(), false)),
+        )
+        .with_blocks(super::testing::stub_blocks(&[], &[WORLD]));
+        assert!(
+            !gate.admits(&key(2).public()),
+            "a member of a blocked topic"
+        );
+        assert!(
+            !gate.admits(&key(1).public()),
+            "the founder of a blocked topic"
+        );
+    }
+
+    /// #2245, against the real store-backed list: a permanent block
+    /// refuses the peer, and an expired block does not — expiry is judged
+    /// by the list itself, so the gate needs no clock of its own.
+    #[test]
+    fn test_pull_gate_over_a_store_block_list_enforces_only_live_blocks() {
+        use crate::event_store::{Block, BlockKind, EventStore};
+        use crate::waiting::WaitingLimits;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
+        let row = |value: &[u8], expires_at_ms: Option<u64>| Block {
+            kind: BlockKind::PeerKey,
+            value: value.to_vec(),
+            added_at_ms: 1_000,
+            reason: "gate test".to_owned(),
+            expires_at_ms,
+        };
+        store
+            .add_block(&row(key(9).public().as_bytes(), None))
+            .unwrap();
+        store
+            .add_block(&row(key(8).public().as_bytes(), Some(1_500)))
+            .unwrap();
+        let gate = PullGate::new(
+            PullPolicy::Open,
+            WORLD,
+            live(docs_world(key(1).public(), key(2).public(), false)),
+        )
+        .with_blocks(Arc::new(store));
+        assert!(!gate.admits(&key(9).public()), "a permanent block refuses");
+        assert!(
+            gate.admits(&key(8).public()),
+            "an expired block (expiry 1_500, long past) is not enforced"
+        );
+        assert!(gate.admits(&key(2).public()), "an unlisted peer pulls");
     }
 
     /// A gate names one world. A member of `docs` is not a member of another world.
