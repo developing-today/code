@@ -535,8 +535,8 @@ test("an uninstalled lib checkout dependency is installed and the OpenDesign kee
       usage: { windows: { weekly: { usedPercent: null } } },
     };
 
-    // A plain-clone lib checkout: manifest + lockfile declare fake-dep,
-    // but node_modules was never installed — the #8759 defect shape.
+    // A clean main lib checkout (#5721 gate): manifest + lockfile declare
+    // fake-dep, but node_modules was never installed — the #8759 defect shape.
     await mkdir(join(libDir, "quota/credentials"), { recursive: true });
     await mkdir(join(libDir, "quota/providers"), { recursive: true });
     await writeFile(
@@ -560,6 +560,14 @@ test("an uninstalled lib checkout dependency is installed and the OpenDesign kee
       "export async function fetchOpenDesignQuota() { return {}; }\n",
       "utf8",
     );
+    await writeFile(join(checkoutRoot, ".gitignore"), "node_modules/\n", "utf8");
+    const git = (...args: string[]) => {
+      const r = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: checkoutRoot, encoding: "utf8" });
+      if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}`);
+    };
+    git("init", "-q", "-b", "main");
+    git("add", "-A");
+    git("commit", "-q", "-m", "lib checkout");
     // The install step (OPENCHAMBER_LIB_INSTALL_CMD seam; production
     // default is bun install at the checkout root): materialize the
     // declared package under the cwd the gatherer gives it — the root.
