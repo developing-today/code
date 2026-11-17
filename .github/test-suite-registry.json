@@ -1092,6 +1092,19 @@
       "related_issues": [8941]
     },
     {
+      "id": "fleet.smoke",
+      "paths": ["pkgs/fleet/smoke.sh"],
+      "invocation": "nix build .#fleet .#fleet-serve .#fleet-connect .#fleet-connect-static, then bash pkgs/fleet/smoke.sh <fleet> <fleet-serve> <fleet-connect> <fleet-connect-static>",
+      "venue": {
+        "workflow": ".github/workflows/fleet-smoke.yml",
+        "job_step": "fleet-smoke / Run the per-variant smoke suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [6400]
+    },
+    {
       "id": "web-gen-api.e2e",
       "paths": ["pkgs/web-gen-api/end2end/tests/example.spec.ts"],
       "invocation": "End-to-end package runner not confirmed",
