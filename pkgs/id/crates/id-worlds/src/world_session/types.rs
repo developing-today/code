@@ -68,16 +68,22 @@ pub trait SessionIo: Send {
 }
 
 /// Tunables for [`run_session_with`].
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct SessionConfig {
     /// How long a peer may take to send its first frame.
     pub join_timeout: Duration,
+    /// The server blob store documents are served from, when the
+    /// transport holds one the world service does not (the SSH shell
+    /// receives the store directly; D1-040 decision 7). Falls back to
+    /// the world service's own blob store when `None`.
+    pub documents_store: Option<Store>,
 }
 
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             join_timeout: Duration::from_secs(10),
+            documents_store: None,
         }
     }
 }
@@ -118,6 +124,19 @@ pub(crate) enum ClientFrame {
     /// Ask for a read-only doc ticket to replicate the records peer-to-peer.
     RecordsTicket {
         capability: String,
+    },
+    /// Page the server blob store's public document names (D1-040).
+    Documents {
+        capability: String,
+        /// Only names starting with this prefix.
+        prefix: Option<String>,
+        /// Continue after this name (exclusive).
+        after: Option<String>,
+    },
+    /// Read one public document from the server blob store (D1-040).
+    Document {
+        capability: String,
+        name: String,
     },
     DownloadModule {
         capability: String,
@@ -318,6 +337,34 @@ pub(crate) enum ClientFrame {
     Revoke {
         participant_id: u64,
     },
+    /// F13.7 step 2: the shell advertises the client-side providers
+    /// it can serve for this session — only ones the local user has
+    /// opted into. An offer enables nothing by itself: the host
+    /// broker (step 3) may only request an offered provider, and
+    /// only when world policy also allows it. A shell that never
+    /// offers is a v1 shell for provider purposes and receives no
+    /// `provider_request` frames.
+    ProviderOffer {
+        /// Provider names, each under the `client.` namespace.
+        providers: Vec<String>,
+    },
+    /// F13.7 step 2: the shell's answer to one `provider_request`,
+    /// correlated by the host-minted `nonce`. Exactly one of
+    /// `result_hex` / `error` is meaningful, per `ok`. The reply is
+    /// ephemeral: only the broker's accepted result event is
+    /// journaled, never the reply itself.
+    ProviderReply {
+        /// The nonce from the request being answered, hex-encoded.
+        nonce: String,
+        /// Whether the local adapter executed the request.
+        ok: bool,
+        /// The bounded result bytes, hex-encoded, when `ok`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result_hex: Option<String>,
+        /// A stable refusal code when not `ok`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
 }
 
 /// Signer metadata supplied with an uploaded module. Public keys and
@@ -340,6 +387,23 @@ pub(crate) enum ServerFrame<'a> {
     },
     Event {
         event: &'a WorldEvent,
+    },
+    /// F13.7 step 2: the host broker asks the originating session's
+    /// shell to execute one client-side provider. Sent only to a
+    /// session that advertised the provider in `provider_offer`;
+    /// shells that do not know this frame ignore it (the contract's
+    /// additive-revision rule), and a reply is accepted only for the
+    /// bound session and nonce (broker rules, step 3). Ephemeral:
+    /// the pending request is never journaled.
+    ProviderRequest {
+        /// Host-minted correlation nonce, hex-encoded.
+        nonce: &'a str,
+        /// The provider name, under the `client.` namespace.
+        provider: &'a str,
+        /// The request arguments, per the provider's manifest schema.
+        args: serde_json::Value,
+        /// The broker's deadline for the reply, in milliseconds.
+        deadline_ms: u64,
     },
     /// Acknowledges a deferred form answer; on field validation failure the
     /// fresh token lets the trusted presenter show the pending form again.
@@ -394,6 +458,20 @@ pub(crate) enum ServerFrame<'a> {
     /// A read-only iroh-docs ticket for the records document.
     RecordsTicket {
         ticket: String,
+    },
+    /// One page of public document names, in sorted order. No
+    /// `sequence`: the listing is a point-in-time snapshot of the
+    /// blob store's tag set, which has no sequence to report (D1-040).
+    Documents {
+        names: Vec<String>,
+        /// Present when more names follow; pass as `after` to continue.
+        next_after: Option<String>,
+    },
+    /// One public document: its UTF-8 text, byte size, and name.
+    Document {
+        name: String,
+        size: u64,
+        text: String,
     },
     ModuleBegin {
         module_hash: String,

@@ -50,9 +50,7 @@ class TestOrchestrationWriterArgs(unittest.TestCase):
         # empty object, so a run that gets past parsing fails later
         # (secret fetch or the missing runId key) — never with the
         # exit-2 usage error, and never reaching any SQL step.
-        with tempfile.NamedTemporaryFile(
-            "w", suffix=".json", delete=False
-        ) as f:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
             json.dump({}, f)
             path = f.name
         result = run_writer(path)

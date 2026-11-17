@@ -31,6 +31,7 @@ pub mod discovery;
 pub mod frames;
 pub mod graph;
 pub mod hex;
+pub mod holders;
 pub mod intranet;
 pub mod ip_evidence;
 pub mod json_unique;

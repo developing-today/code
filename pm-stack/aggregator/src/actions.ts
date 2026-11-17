@@ -561,6 +561,13 @@ export function newClientToken(): string {
   return `ct-${Date.now().toString(36)}-${rand}`;
 }
 
+export interface ActionsRemote {
+  loadAll(): Promise<DashAction[]>;
+  /** Upsert the store's full current record set. History is never
+   *  deleted; state transitions ride the same rows. */
+  saveAll(actions: readonly DashAction[]): Promise<void>;
+}
+
 export class ActionsStore {
   private actions: DashAction[] = [];
   private fileExtras: Record<string, unknown> = {};
@@ -571,6 +578,9 @@ export class ActionsStore {
   constructor(
     private readonly file: string,
     private readonly archive: StoreArchive = archiveStoreBytes,
+    /** #6815: when set, the store uses this backend instead of the file.
+     *  The file is then never read or written (no dual write). */
+    private readonly remote?: ActionsRemote,
   ) {}
 
   // The load is memoized as a single promise (#1509): the old
@@ -583,6 +593,11 @@ export class ActionsStore {
   }
 
   private async doLoad(): Promise<void> {
+    if (this.remote) {
+      this.actions = await this.remote.loadAll();
+      this.fileExtras = {};
+      return;
+    }
     // #1452: a missing file is the only silent empty start ("no store
     // yet"). An unparseable or wrongly-shaped file is NOT an empty
     // store: it is the append-only audit history, so quarantine the
@@ -689,6 +704,10 @@ export class ActionsStore {
   // CommentsStore.persist (#1509).
   private persist(): Promise<void> {
     const run = this.writeChain.then(async () => {
+      if (this.remote) {
+        await this.remote.saveAll([...this.actions]);
+        return;
+      }
       const data = { ...this.fileExtras, version: 1 as const, actions: this.actions };
       await mkdir(dirname(this.file), { recursive: true });
       const tmp = `${this.file}.tmp-${process.pid}-${++this.writeSeq}`;

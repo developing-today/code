@@ -94,6 +94,16 @@ let
   # See pkgs/latest-cli/default.nix for the rationale, the tradeoffs, and the
   # list of things deliberately NOT bumped.
   latestCli = pkgs.callPackage ../../pkgs/latest-cli { };
+  # `gh` routed through `fleet gh` (token rotation across the
+  # personal token and the three App installations), wrapping the
+  # latest-cli gh above; the pristine binary stays as `gh-orig`.
+  # Drew, 2026-11-14 — see pkgs/gh-fleet. Deliberately the SAME
+  # derivation in programs.gh.package and home.packages below, so
+  # buildEnv dedups exactly as it did for latestCli.gh.
+  ghFleet = pkgs.callPackage ../../pkgs/gh-fleet {
+    inherit (latestCli) gh;
+    inherit (fleetPkgs) fleet;
+  };
   # Vendored from nixpkgs master; see the header in that file for why. Provides
   # `agy_acp_server`, which t3code's AcpRegistryDriver can drive.
   antigravity-acp = pkgs.callPackage ../../pkgs/antigravity-acp { };
@@ -1346,7 +1356,7 @@ in
             muse-code # 1.4.13            -- driver "muse"
             pi-coding-agent # 0.84.3, >= 0.80.5   -- driver "pi"
             mcpx # fleet MCP gateway binary, for shells and agents t3 spawns
-            latestCli.gh # `gh` for threads that shell out to GitHub
+            ghFleet # `gh` for threads that shell out to GitHub (fleet-routed)
             pkgs.antigravity-cli # binary is `agy` -- t3 driver "antigravity"
             pkgs.tailscale # MUST be here or --tailscale-serve fails (see above)
             pkgs.git
@@ -1508,8 +1518,9 @@ in
     };
     gh = {
       enable = true;
-      # nixpkgs trails upstream (2.97.0 vs 2.102.0); prebuilt release binary.
-      package = latestCli.gh;
+      # nixpkgs trails upstream (2.97.0 vs 2.102.0); prebuilt release
+      # binary, wrapped by ghFleet so calls route through fleet gh.
+      package = ghFleet;
       extensions = [ pkgs.gh-dash ]; # gh dash: TUI for PRs/issues
     };
     # git-credential-oauth.enable = true; # can't get browser to return back
@@ -1779,6 +1790,11 @@ in
     packages =
       with pkgs;
       [
+        # agy (antigravity-cli, overlaid to the newest upstream in
+        # nixos/environment): in home.packages so the user profile
+        # carries the newest agy on PATH ahead of the system profile
+        # copy; both resolve to the same overlaid package.
+        antigravity-cli
         libnotify
         # On-screen keyboard (wvkbd-mobintl) for touch use over the
         # Sunshine/Moonlight stream: launched only while a stream is
@@ -2109,7 +2125,7 @@ in
         fw
         fzf
         # same derivation as programs.gh.package above; buildEnv dedups
-        latestCli.gh
+        ghFleet
         gimp
         git
         git-absorb

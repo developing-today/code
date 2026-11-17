@@ -590,6 +590,10 @@ of silently showing canned data. `bun run dev` sets the switch for you.
 | `PM_AGG_ACTIONS_FILE`      | `./actions.json`                                       | Dashboard action store (#1152/#1154/#1156) — aggregator-local; created on first action                                                                                                                 |
 | `PM_AGG_REGISTRY_FILE`     | `./registry.json`                                      | Durable session identity registry (#906) — merged records persist across restarts                                                                                                                      |
 | `PM_AGG_ACTIVITY_FILE`     | `~/.local/state/pm-aggregator/activity-ingestion.json` | Activity-ingestion store (#3321) — per-source checkpoints, dedupe seen sets, source status, and gap records for watchdog/Kaneo/GitHub writers                                                          |
+| `PM_AGG_STORE_BACKEND`     | `file`                                                 | Backing store for the four #6815 stores: `file` (local JSON, dev/test/rollback) or `supabase` (canonical in muse-dev2). Any other value refuses to start; see "Store backend" below                    |
+| `PM_AGG_STORE_WRITER`      | `pm-aggregator.service`                                | Writer identity recorded on remote rows (`agg_store_documents.writer`), so the single writer of a store is visible in the data                                                                    |
+| `BWS_BIN`                  | first of `/run/current-system/sw/bin/bws`, `~/tools/bin/bws` | Bitwarden Secrets Manager binary used to resolve the muse-dev2 ref/token by NAME only                                                                                                          |
+| `BWS_ACCESS_TOKEN_FILE`    | `~/.config/bws/access-token`                           | Machine-account access token file for `bws`; never logged, never rendered into the archive                                                                                                     |
 
 Secrets are read from the environment only and are never committed or
 printed. Names here reference Bitwarden entries (`kaneo.*`, `grist.*`).
@@ -635,6 +639,69 @@ historical ranges) is documented in `ACTIVITY_SOURCE_COVERAGE` in
 `src/activity.ts` and rendered on `/events`. GitHub coverage begins only
 with rows retained in the hot list; upstream webhook deliveries the
 projector never received and pre-hot-list history remain unsupported.
+
+### Store backend: Supabase muse-dev2 (#6815)
+
+Four stores that used to live only as laptop-local JSON under the
+aggregator's state dir are canonical in Supabase muse-dev2. The
+`PM_AGG_STORE_BACKEND` switch picks exactly one active backend:
+
+| Store | `file` backend | `supabase` backend |
+| --- | --- | --- |
+| Dashboard actions | `actions.json` (`PM_AGG_ACTIONS_FILE`) | `public.agg_actions` (contract `20261105_0001`) |
+| Activity ingestion | `activity-ingestion.json` (`PM_AGG_ACTIVITY_FILE`) | `public.agg_activity_ingestion` + `public.agg_activity_gaps` |
+| Usage snapshots | `snapshots/usage-YYYY-MM.jsonl` (`PM_AGG_SNAPSHOTS_DIR`) | `public.agg_usage_snapshots` |
+| AA last-good | `aa-last-good.json` (collector) | `public.agg_store_documents` key `aa-last-good` |
+
+Rules the implementation holds to:
+
+- **One backend, no dual writes.** `parseStoreBackend()` accepts only
+  `file` (the default: dev, tests, and rollback) or `supabase`; any
+  other value refuses to start. In `supabase` mode a remote failure is
+  fail-closed — the process reports the error and never silently falls
+  back to the local file.
+- **One writer.** `pm-aggregator.service` is the only writer of the
+  aggregator stores; the collector writes only its `aa-last-good`
+  document and is recorded as writer `fleet-feed-collector`
+  (`PM_AGG_STORE_WRITER`). Rows carry that identity.
+- **Local files are a cache.** With `supabase` active, any remaining
+  local copy (`actions.json`, `activity-ingestion.json`,
+  `snapshots/`, `aa-last-good.json`) is a rebuildable cache, not the
+  source of truth: a fresh state dir boots empty and reconstructs from
+  muse-dev2 (covered by `test/store-remote-backends.test.ts`).
+- **Schema is consumed, not redesigned.** `agg_actions` follows the
+  #3142 contract in migration `20261105_0001`; the additive
+  `20261116_0001_aggregator_remote_stores` adds the activity, snapshot
+  and document tables.
+
+Cutover order (also the header of
+`scripts/migrate-stores-to-supabase.ts`):
+
+1. Apply `shared-schema/migrations/20261105_0001_action_event_store`.
+2. Apply `shared-schema/migrations/20261116_0001_aggregator_remote_stores`.
+3. Run `bun run scripts/migrate-stores-to-supabase.ts` (idempotent; run
+   `--dry-run` first for counts).
+4. Deploy with `PM_AGG_STORE_BACKEND=supabase` (rendered by
+   `install.sh` and set in the NixOS unit).
+5. Re-run the import once after the switch: writes made between step 3
+   and step 4 are then closed, and re-running is a no-op for rows
+   already present.
+
+Rollback is the reverse: set `PM_AGG_STORE_BACKEND=file` and restart; the
+file stores were never deleted. The tables are additive and the down
+migration refuses to drop a non-empty table.
+
+Backup / RPO (#1514, recorded on #6815): `pm-dashboard-backup.sh`
+exports the five tables as JSON into `supabase/agg_*.json` in the daily
+archive whenever the deployed backend is `supabase`, and records them as
+conditionally-required manifest members. Without that export a restore
+would have no canonical store to read.
+
+Out of scope here (follow-on, #3989): the sibling stores
+`freshness.json`, `notifications.jsonl`, `needs-drew.json`,
+`decisions.json`, `decision-events*.jsonl`, `stack-health.json` and
+`item-history.jsonl` still live only as laptop-local files and need the
+same treatment in their own change.
 
 ## Capability provenance matrix (#1200)
 

@@ -27,6 +27,7 @@
 //! mutex; session load (~1.6 GB RSS) is shared state by design,
 //! never per-request.
 
+pub mod aggregate;
 pub mod backend;
 pub mod embed;
 pub mod embed_cache;
@@ -36,7 +37,10 @@ pub mod feedback;
 pub mod feedback_normalise;
 pub mod filters;
 pub mod fusion;
+pub mod github_comments;
+pub mod join;
 pub mod local;
+pub mod manifest;
 pub mod search;
 pub mod shards;
 pub mod shingles;
@@ -51,8 +55,11 @@ pub mod types;
 /// Keep this aligned with the service's get-chunk neighbors ceiling.
 pub const MAX_EXPAND_NEIGHBORS: usize = 100;
 
+pub use aggregate::{PromoteReport, embed_unit_into_shard, tier_sensitivity_name};
 pub use backend::SearchBackend;
-pub use embed::{AtlasEmbedder, FixedEmbedder, QUERY_PROMPT, QueryEmbedder};
+pub use embed::{
+    AtlasEmbedder, DocEmbedder, FixedDocEmbedder, FixedEmbedder, QUERY_PROMPT, QueryEmbedder,
+};
 pub use embed_cache::{
     CachingEmbedder, QueryEmbeddingCache, RawQueryEmbedder, SharedEmbeddingStore,
     TursoEmbeddingStore, cache_key, normalize_query_text,
@@ -74,7 +81,15 @@ pub use feedback_normalise::{
 };
 pub use filters::{Filters, Sensitivity};
 pub use fusion::FusedEntry;
+pub use join::{
+    Assembled, Hit, Paragraph, RenderRequest, RenderResult, Span, SpanOccurrence, SpanTable,
+    Successor, VersionCatalog, VersionRecord, VersionState, assemble, assemble_version, render,
+};
 pub use local::LocalBackend;
+pub use manifest::{
+    LoadedManifest, Manifest, ManifestRow, ManifestSource, builtin_manifest, load_manifest,
+    parse_manifest_rows,
+};
 pub use search::{
     BackendBranchExecutor, BranchPoolExecutor, SearchMode, SearchOptions, TraceJob, run_get_chunk,
     run_search, run_search_traced, run_search_with_executor, run_search_with_executor_traced,

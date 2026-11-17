@@ -31,7 +31,8 @@ export type CborErrorCode =
   | "DuplicateKey"
   | "KeysOutOfOrder"
   | "TrailingBytes"
-  | "UnknownCriticalField";
+  | "UnknownCriticalField"
+  | "TooDeeplyNested";
 
 /** Typed profile error; `code` names the Rust variant it mirrors. */
 export class CborError extends Error {
@@ -133,6 +134,12 @@ export function encodeCanonical(value: CborValue): Uint8Array {
   return new Uint8Array(out);
 }
 
+/** Maximum nesting depth for decoded values. Mirrors the Rust
+ * `MAX_NESTING_DEPTH`: each open array or map consumes at least one
+ * input byte, so without this bound hostile nesting recurses until
+ * the stack overflows. */
+export const MAX_NESTING_DEPTH = 64;
+
 class Reader {
   pos = 0;
   constructor(private readonly bytes: Uint8Array) {}
@@ -171,6 +178,11 @@ class Reader {
   }
 
   value(): CborValue {
+    return this.valueInner(0);
+  }
+
+  private valueInner(depth: number): CborValue {
+    if (depth > MAX_NESTING_DEPTH) throw new CborError("TooDeeplyNested");
     const initial = this.byte();
     const major = initial >> 5;
     const additional = initial & 0x1f;
@@ -195,7 +207,7 @@ class Reader {
       case 4: {
         const len = Number(this.argument(additional));
         const items: CborValue[] = [];
-        for (let i = 0; i < len; i++) items.push(this.value());
+        for (let i = 0; i < len; i++) items.push(this.valueInner(depth + 1));
         return { kind: "array", value: items };
       }
       case 5: {
@@ -204,7 +216,7 @@ class Reader {
         let previous: Uint8Array | undefined;
         for (let i = 0; i < len; i++) {
           const keyStart = this.pos;
-          const key = this.value();
+          const key = this.valueInner(depth + 1);
           if (!isKey(key)) throw new CborError("InvalidMapKey");
           const keyBytes = this.bytes.slice(keyStart, this.pos);
           if (previous !== undefined) {
@@ -213,7 +225,7 @@ class Reader {
             if (order < 0) throw new CborError("KeysOutOfOrder");
           }
           previous = keyBytes;
-          entries.push([key, this.value()]);
+          entries.push([key, this.valueInner(depth + 1)]);
         }
         return { kind: "map", value: entries };
       }

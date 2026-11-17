@@ -262,6 +262,20 @@ function baseWindowsExpired(pool: QuotaPool, entry: QuotaCurrentEntry): boolean 
   });
 }
 
+/**
+ * #10684: pools whose extraction is intentionally uninstrumented
+ * (opendesign, deepseek, mistral, openrouter — no dated-read
+ * extractor by design) carry no extractor samples, so a failed or
+ * stale gatherer tick must not relabel them "error"/"stale" over
+ * their real window state. Their pool state recomputes from the
+ * standing (or adopted) windows via poolState; the gatherer
+ * failure still rides honestly on freshness. Instrumented pools
+ * keep the error/stale surfacing below.
+ */
+function isIntentionallyUninstrumented(pool: QuotaPool): boolean {
+  return pool.extractionHealth?.status === "intentional" && pool.extractionHealth?.reason === "uninstrumented";
+}
+
 function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState, legError?: string): boolean {
   // Returns true when the pool's windows were replaced by a fresh read.
   const freshness: PoolFreshness = {
@@ -281,8 +295,8 @@ function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState
   // the honest state until the next collector derivation.
   delete pool.exhaustion;
   if (state === "error") {
-    pool.state = "error";
     adoptEntryWindows(pool, entry);
+    pool.state = isIntentionallyUninstrumented(pool) ? poolState(pool) : "error";
     return false;
   }
   if (state === "lapsed") {
@@ -295,6 +309,15 @@ function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState
     return true;
   }
   if (state === "stale") {
+    // #10684: an uninstrumented pool never takes the error/stale
+    // label — its state recomputes from the standing (or adopted)
+    // windows while freshness keeps the stale stamp. The #6942 /
+    // #7033 leg-error conversions below stay for instrumented pools.
+    if (isIntentionallyUninstrumented(pool)) {
+      adoptEntryWindows(pool, entry);
+      pool.state = poolState(pool);
+      return false;
+    }
     // #6942: a retained entry whose gatherer leg errored is that
     // read error surfacing, not mere staleness — but only a pool
     // with no dated windows of its own changes rendering for it.
@@ -447,10 +470,21 @@ function summarize(file: QuotaCurrentFile, nowMs: number): GathererSummary {
  * antigravity-direct.gemini / antigravity-direct.claude-gpt — and
  * opencode-go.drewrypope / opencode-go.popesdrew, produced by
  * entriesWithPoolSplits in quota-gather-map.ts). Synthesizing pools
- * for them would double-render the same read. Every OTHER serviceId
- * the read reports renders as a pool — see the synthesis below.
+ * for them would double-render the same read. "groq" (#10575) is a
+ * different shape of non-pool: Groq exposes no first-party quota
+ * surface at all (its gatherer row is permanently error-state,
+ * failureClass "no-quota-surface", with no windows), so synthesizing
+ * a pool for it would render an identity-only pool that can never
+ * carry a measurement. Every OTHER serviceId the read reports
+ * renders as a pool — see the synthesis below.
  */
-const NON_POOL_SERVICE_IDS: ReadonlySet<string> = new Set(["turso", "antigravity", "_antigravity", "opencode-go"]);
+const NON_POOL_SERVICE_IDS: ReadonlySet<string> = new Set([
+  "turso",
+  "antigravity",
+  "_antigravity",
+  "opencode-go",
+  "groq",
+]);
 
 /**
  * Overlay a parsed quota-current document onto a quota view. Pure:
@@ -608,4 +642,84 @@ export function overlayTursoUsage(services: SaasService[], file: QuotaCurrentFil
   if (svc.conflicts.includes(flag)) return services;
   out[idx] = { ...svc, conflicts: [...svc.conflicts, flag] };
   return out;
+}
+
+/**
+ * Pause between the two quota-current reads (#10816).
+ */
+export const QUOTA_CURRENT_RETRY_PAUSE_MS = 250;
+
+/** How a quota-current.json read resolved (#10816). */
+export type QuotaCurrentReadVerdict = "ok" | "missing" | "unparseable" | "transport";
+
+export interface QuotaCurrentReadResult {
+  verdict: QuotaCurrentReadVerdict;
+  file: QuotaCurrentFile | null;
+  /** Human-readable detail for the transport/unparseable warnings. */
+  error?: string;
+}
+
+const isEnoent = (err: unknown): boolean =>
+  typeof err === "object" && err !== null && (err as { code?: unknown }).code === "ENOENT";
+
+/**
+ * Read + parse quota-current.json with one retry (#10816): a single
+ * failed read is retried once after QUOTA_CURRENT_RETRY_PAUSE_MS, so a
+ * transient sandbox→laptop transport stall does not collapse into a
+ * "file missing" verdict. Verdicts:
+ * - ok: parsed file attached.
+ * - missing: ENOENT on BOTH attempts (the path never goes absent on
+ *   the writer side — gather-quota.ts writes tmp + rename — so this
+ *   means the gatherer genuinely never wrote).
+ * - transport: the read failed non-ENOENT at least once and never
+ *   succeeded (wait/retry, not a gatherer investigation).
+ * - unparseable: the bytes landed but JSON.parse or parseQuotaCurrent
+ *   rejected them (gatherer investigation).
+ */
+export async function readQuotaCurrentFile(
+  path: string,
+  deps?: {
+    readFile?: (path: string, encoding: "utf8") => Promise<string>;
+    sleep?: (ms: number) => Promise<void>;
+  },
+): Promise<QuotaCurrentReadResult> {
+  const read = deps?.readFile ?? ((await import("node:fs/promises")).readFile as typeof import("node:fs/promises").readFile);
+  const sleep = deps?.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let raw: string | null = null;
+  let firstErr: unknown = null;
+  let lastErr: unknown = null;
+  try {
+    raw = await read(path, "utf8");
+  } catch (err) {
+    firstErr = err;
+    await sleep(QUOTA_CURRENT_RETRY_PAUSE_MS);
+    try {
+      raw = await read(path, "utf8");
+    } catch (err2) {
+      lastErr = err2;
+    }
+  }
+  if (raw === null) {
+    const first = firstErr ?? lastErr;
+    if (first !== null && lastErr !== null && isEnoent(first) && isEnoent(lastErr)) {
+      return { verdict: "missing", file: null };
+    }
+    const detail = lastErr ?? firstErr;
+    return {
+      verdict: "transport",
+      file: null,
+      error: detail instanceof Error ? detail.message : String(detail),
+    };
+  }
+  try {
+    const file = parseQuotaCurrent(JSON.parse(raw));
+    if (file) return { verdict: "ok", file };
+    return { verdict: "unparseable", file: null, error: "parseQuotaCurrent rejected the document" };
+  } catch (err) {
+    return {
+      verdict: "unparseable",
+      file: null,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
 }

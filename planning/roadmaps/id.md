@@ -22,7 +22,6 @@ Make the platform something other people can build on without changing its core:
 | Audit log and telemetry                  | planned  | A structured audit of admin actions and provider use, with OpenTelemetry export.                                                                                                                                | F12.6 #1063      |
 | Delta and binary frames                  | planned  | A typical redraw costs under 10 percent of a full frame.                                                                                                                                                        | F12.11 #805      |
 | Many worlds per node                     | planned  | 1,000 idle / 100 active worlds with a per-world memory budget.                                                                                                                                                  | F12.12 #557      |
-| Journal replication                      | planned  | Read replicas over a signed stream; a world keeps a single writer.                                                                                                                                              | F12.13 #806      |
 | Portals                                  | planned  | Cross-world messaging through a capability both worlds' admins have granted.                                                                                                                                    | F12.14 #1068     |
 | Authoring tools                          | planned  | `id world dev`: watch, rebuild, hot-swap, fixture replay, fuzz harness. (`id world doctor`, F12.16, is done.)                                                                                                   | F12.15 #558      |
 | Denial-of-service test suite             | planned  | Fuel, memory, journal, frame, session, schedule and provider bounds all refused with documented codes, in CI.                                                                                                   | F12.18 #560      |
@@ -47,7 +46,6 @@ Decided by Drew on 2026-11-05 in the next-horizons discussion #1240: **all seven
 | -------------------------------------- | ----- | -------------------------- |
 | Hosted worlds & always-on hosting      | #6276 | #6283, #6284, #6285, #6286 |
 | Discovery, registry & federation       | #6277 | #6287, #6288, #6289, #6290 |
-| Program ecosystem (share/fork/gallery) | #6278 | #6291, #6293, #6294, #6295 |
 | More shells (mobile, native, hardware) | #6279 | #6296, #6297, #6298, #6299 |
 | Agents in worlds (MCP bridge)          | #6280 | #6300, #6301, #6302, #6303 |
 | Scale & performance hardening          | #6281 | #6304, #6305, #6306, #6307 |

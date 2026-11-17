@@ -346,6 +346,12 @@ CREATE INDEX IF NOT EXISTS elicit_state   ON elicitations(state, expires_ms);
 CREATE INDEX IF NOT EXISTS elicit_session ON elicitations(session);
 CREATE INDEX IF NOT EXISTS elicit_trace   ON elicitations(trace);
 
+CREATE TABLE IF NOT EXISTS elicitation_answerers (
+  audience     TEXT PRIMARY KEY,
+  last_seen_ms INTEGER NOT NULL,
+  pid          INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS elicitation_answers (
   id          TEXT PRIMARY KEY REFERENCES elicitations(id),
   action      TEXT NOT NULL,
@@ -620,6 +626,13 @@ func (b *Broker) Respond(a Answer) error {
 	}
 	if err := tx.Commit(); err != nil {
 		return err
+	}
+	// A recorded answer is proof an answerer for this audience exists:
+	// heartbeat presence from it (#2438). Best-effort -- the answer
+	// stands even if the heartbeat write fails. Expiry is not an
+	// answerer and proves nothing.
+	if a.By != "expiry" {
+		_ = b.NoteAnswerer(r.Audience)
 	}
 
 	b.mu.Lock()

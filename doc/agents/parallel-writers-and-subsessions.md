@@ -2,7 +2,7 @@
 
 ### Parallel writers
 
-These apply whenever other agents may share the repository. Reasons and detail: [`planning/workflow/collaboration.md`](planning/workflow/collaboration.md).
+These apply whenever other agents may share the repository. Reasons and detail: [`planning/workflow/collaboration.md`](../../planning/workflow/collaboration.md).
 
 - **Boot:** `source /home/user/.local/share/plaza-tools/git-env.sh` (commits fail without it), then a fresh worktree from `origin/<base>`. Push the empty branch first; open the PR after the first commit.
 - **One writer per file.** Wide files (`AGENTS.md`, `doc/README.md`, indexes, a package's `main.md` and `design.md`) change only by PR from your own branch.

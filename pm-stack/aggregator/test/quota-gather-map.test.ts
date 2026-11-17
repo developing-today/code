@@ -616,7 +616,8 @@ describe("serviceIdFor", () => {
   });
 
   test("OpenCode Zen door ids alias onto the Go pools (#10443)", () => {
-    // The Zen door (opencode-zen-plans in .opencode/route-fallbacks.md)
+    // The Zen door (zen-plans in .opencode/route-fallbacks.md;
+    // named opencode-zen-plans until the 2026-11-15 rename)
     // reads the same plan meters as the Go door — on the 2026-11-15
     // ticks its rows carried windows and reset instants identical to
     // the matching opencode-go.* rows — so its measured rows file
@@ -683,7 +684,7 @@ describe("measured-provider census (#10443)", () => {
     "_muse",
     "deepseek",
   ];
-  const NON_POOL_SERVICE_IDS = new Set(["turso", "antigravity", "_antigravity", "opencode-go"]);
+  const NON_POOL_SERVICE_IDS = new Set(["turso", "antigravity", "_antigravity", "opencode-go", "groq"]);
 
   test("every measured provider resolves to a registered pool or a documented non-pool id", () => {
     const registered = new Set(extractQuotaPools("", new Date("2026-11-15T08:30:15.319Z")).map((pool) => pool.id));
@@ -694,6 +695,32 @@ describe("measured-provider census (#10443)", () => {
         `${providerId} -> ${serviceId} is not a registered pool`,
       ).toBe(true);
     }
+  });
+});
+
+describe("measured-provider census (#10575)", () => {
+  // Oracle: the providerIds the Plans Space Freshness Keeper found in
+  // the quota-current tick generatedAt 2026-11-16T00:21:59.701Z that
+  // the #10443 census did not cover — the free-tier doors enabled
+  // 2026-11-15 (commit b68f134124). Registration decision (#10575):
+  // openrouter is a registered shell pool (measured ok, a real
+  // monthly window), groq is a documented non-pool service (no quota
+  // surface exists for it; its row is permanently error-state with
+  // no windows, so no pool may be synthesized for it).
+  const NON_POOL_SERVICE_IDS = new Set(["turso", "antigravity", "_antigravity", "opencode-go", "groq"]);
+
+  test("groq resolves to a documented non-pool id and openrouter to a registered pool", () => {
+    const registered = new Set(extractQuotaPools("", new Date("2026-11-16T00:21:59.701Z")).map((pool) => pool.id));
+    for (const providerId of ["groq", "openrouter"]) {
+      const serviceId = serviceIdFor(providerId);
+      expect(
+        registered.has(serviceId) || NON_POOL_SERVICE_IDS.has(serviceId),
+        `${providerId} -> ${serviceId} is not a registered pool`,
+      ).toBe(true);
+    }
+    expect(serviceIdFor("groq")).toBe("groq");
+    expect(NON_POOL_SERVICE_IDS.has(serviceIdFor("groq"))).toBe(true);
+    expect(registered.has("openrouter")).toBe(true);
   });
 });
 

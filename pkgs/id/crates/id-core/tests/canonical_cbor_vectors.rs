@@ -135,6 +135,59 @@ fn ambiguous_encodings_reject_with_typed_errors() {
 }
 
 #[test]
+fn hostile_declared_lengths_reject_without_allocating() {
+    // Array header declaring u64::MAX items in a 9-byte input:
+    // before the bound this attempted a multi-GB allocation
+    // (capacity overflow / abort) instead of a typed error.
+    let mut giant_array = vec![0x9b];
+    giant_array.extend_from_slice(&u64::MAX.to_be_bytes());
+    assert_eq!(
+        decode_canonical(&giant_array),
+        Err(CborError::UnexpectedEof)
+    );
+
+    // Same for a map header, and for a merely large-but-plausible
+    // count that still exceeds the bytes left.
+    let mut giant_map = vec![0xbb];
+    giant_map.extend_from_slice(&(1u64 << 40).to_be_bytes());
+    assert_eq!(decode_canonical(&giant_map), Err(CborError::UnexpectedEof));
+    assert_eq!(
+        decode_canonical(&unhex("9b0000000100000000")),
+        Err(CborError::UnexpectedEof)
+    );
+    // A byte string length beyond `usize` (32-bit) or beyond the
+    // remaining input rejects without slicing.
+    let mut oversized_bytes = vec![0x5b];
+    oversized_bytes.extend_from_slice(&u64::MAX.to_be_bytes());
+    assert_eq!(
+        decode_canonical(&oversized_bytes),
+        Err(CborError::UnexpectedEof)
+    );
+}
+
+#[test]
+fn nesting_deeper_than_the_limit_rejects() {
+    use id_core::canonical_cbor::MAX_NESTING_DEPTH;
+
+    // One byte per level: without a depth bound a few KB of 0x81
+    // would overflow the thread stack.
+    let hostile = vec![0x81u8; MAX_NESTING_DEPTH as usize + 100];
+    assert_eq!(decode_canonical(&hostile), Err(CborError::TooDeeplyNested));
+
+    // Nesting exactly at the limit is still legal and round-trips:
+    // MAX_NESTING_DEPTH arrays (one byte each) around a leaf.
+    let mut allowed = vec![0x81u8; MAX_NESTING_DEPTH as usize];
+    allowed.push(0x00);
+    let decoded = decode_canonical(&allowed).unwrap();
+    assert_eq!(hex(&encode_canonical(&decoded).unwrap()), hex(&allowed));
+
+    // One level deeper than the limit rejects.
+    let mut deeper = vec![0x81u8; MAX_NESTING_DEPTH as usize + 1];
+    deeper.push(0x00);
+    assert_eq!(decode_canonical(&deeper), Err(CborError::TooDeeplyNested));
+}
+
+#[test]
 fn unknown_critical_fields_reject_and_others_tolerate() {
     let record = Value::Map(vec![
         (text("subject"), text("content:abc")),

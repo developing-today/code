@@ -41,7 +41,10 @@ pub const CIRCUIT_THRESHOLD: u32 = 3;
 /// How long the circuit stays open once tripped (seconds).
 pub const CIRCUIT_OPEN_SECONDS: i64 = 300;
 /// Default maximum delivery attempts before an entry goes `blocked`
-/// for human review.
+/// for human review. This is a GitHub-filing delivery cap (#3706
+/// bounded pilot), NOT a queue-task max_attempts: it never becomes
+/// a task row value. Task rows default from
+/// `validate::TASK_DEFAULT_MAX_ATTEMPTS` (#8973, #10799).
 pub const DEFAULT_MAX_ATTEMPTS: i64 = 8;
 
 /// The creation kinds the pilot carries. Anything else is rejected

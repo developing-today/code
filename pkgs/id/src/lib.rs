@@ -215,6 +215,7 @@ pub mod boards;
 pub use id_core::connectivity;
 pub use id_store::chain;
 pub use id_store::chat;
+pub use id_store::chat_anchor;
 pub mod conversion;
 pub mod currency;
 pub mod currency_poc;
@@ -235,6 +236,7 @@ pub use id_directory::directory_mail;
 pub use id_directory::directory_view;
 pub mod didit;
 pub use id_store::documents;
+pub use id_store::media;
 #[cfg(feature = "world")]
 pub mod encryption;
 #[cfg(feature = "world")]
@@ -258,6 +260,7 @@ pub use id_directory::invites;
 pub use id_events::local_claims;
 pub use id_events::local_events;
 pub use id_store::issuer_rotation;
+pub use id_sync::chained_message;
 pub use id_sync::log_sync;
 pub mod serve_proxy;
 pub use id_core::membership;
@@ -357,8 +360,8 @@ pub use id_cli::commands::{
     cmd_get_one_remote, cmd_gethash, cmd_id, cmd_list, cmd_list_remote, cmd_migrate_tags, cmd_peek,
     cmd_peers, cmd_put_hash, cmd_put_local_file, cmd_put_local_stdin, cmd_put_multi, cmd_put_one,
     cmd_put_one_remote, cmd_search, cmd_send, cmd_serve, cmd_show, cmd_tag,
-    create_local_client_endpoint,
-    create_serve_lock, get_serve_info, is_process_alive, remove_serve_lock,
+    create_local_client_endpoint, create_serve_lock, get_serve_info, is_process_alive,
+    remove_serve_lock,
 };
 pub use id_cli::helpers::{
     download_output_path, parse_get_spec, parse_put_spec, print_match_cli, print_match_repl,
@@ -369,6 +372,7 @@ pub use id_cli::protocol::{
     FindMatch, MatchKind, MetaProtocol, MetaRequest, MetaResponse, TaggedMatch,
 };
 pub use id_cli::repl::run_repl;
+pub use id_core::holders;
 pub use store::{StoreType, load_or_create_keypair, open_store};
 
 use anyhow::Result;

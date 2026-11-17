@@ -1237,10 +1237,7 @@ function settledGatewayLine(low: number, high: number, settlement: SnapshotRecor
  * like the direct-read path (CodeRabbit, PR #10433 — the feed branch
  * previously returned before any reconciliation could apply). Lines
  * with no matching settlement pass through untouched. */
-export function applyPaygSettlements(
-  lines: PaygLine[],
-  settlements?: readonly SnapshotRecord[],
-): PaygLine[] {
+export function applyPaygSettlements(lines: PaygLine[], settlements?: readonly SnapshotRecord[]): PaygLine[] {
   if (!settlements?.length) return lines;
   return lines.map((line) => {
     const settlement = newestSettlement(settlements, line.id);

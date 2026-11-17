@@ -48,32 +48,69 @@ check_fail() {
   fi
 }
 
+check_usage_fail() {
+  local label="$1"
+  shift
+  local status=0
+  if bash "$script" "$@" >"$out" 2>&1; then
+    echo "unexpected success: $label" >&2
+    exit 1
+  else
+    status=$?
+  fi
+  if [[ $status -ne 2 ]]; then
+    cat "$out"
+    echo "unexpected exit status $status (expected 2): $label" >&2
+    exit 1
+  fi
+  if ! grep -q "unexpected argument" "$out"; then
+    cat "$out"
+    echo "missing unexpected-argument message: $label" >&2
+    exit 1
+  fi
+}
+
+# Extra positional arguments must be rejected before any scan work.
+check_usage_fail 'extra positional argument' extra-arg-test
+
 # Clean tree: one small file, integration tests, vendored code and the
-# module-gated encryption and world-session tests are all out of scope and must not trip
-# a limit of 3.
+# module-gated encryption, world-session and cli test modules are all out of
+# scope and must not trip a limit of 3. Both the pre-split `src/...` layout
+# and the post-split `crates/<crate>/src/...` layout are covered: the guard
+# normalizes the crate prefix before matching (#10603).
 reset_tree
 write_small src
 mkdir -p "$tmp/tests" "$tmp/vendor/dep" "$tmp/src/encryption" "$tmp/src/web" "$tmp/src/world_session"
+mkdir -p "$tmp/crates/id-groups/src/encryption" "$tmp/crates/id-worlds/src/world_session" "$tmp/crates/id-cli/src/cli"
 printf 'line1\nline2\nline3\nline4\n' >"$tmp/tests/big_integration.rs"
 printf 'line1\nline2\nline3\nline4\n' >"$tmp/vendor/dep/big_vendor.rs"
 printf 'line1\nline2\nline3\nline4\n' >"$tmp/src/encryption/tests.rs"
 printf 'line1\nline2\nline3\nline4\n' >"$tmp/src/world_session/tests.rs"
+printf 'line1\nline2\nline3\nline4\n' >"$tmp/crates/id-groups/src/encryption/tests.rs"
+printf 'line1\nline2\nline3\nline4\n' >"$tmp/crates/id-worlds/src/world_session/tests.rs"
+printf 'line1\nline2\nline3\nline4\n' >"$tmp/crates/id-cli/src/cli/tests.rs"
 printf 'line1\nline2\nline3\n#[cfg(test)]\nmod tests { }\n' >"$tmp/src/web/markdown.rs"
 check_pass 3 'clean tree passes'
 
-# New over-limit production file fails and is named with its count.
+# New over-limit production file fails and is named with its count — in the
+# pre-split layout and under a crate.
 reset_tree
 write_small src
 for i in 1 2 3 4 5; do echo "pub fn f$i() {}"; done >"$tmp/src/grown.rs"
 check_fail 3 'new over-limit file fails' 'src/grown.rs has 5 production lines (limit 3)'
-
-# Grandfathered markdown.rs at its allowance passes; one line more fails.
 reset_tree
-mkdir -p "$tmp/src/web"
-awk 'BEGIN { for (i = 0; i < 6232; i++) print "x" }' >"$tmp/src/web/markdown.rs"
+write_small crates/x/src
+for i in 1 2 3 4 5; do echo "pub fn f$i() {}"; done >"$tmp/crates/x/src/grown.rs"
+check_fail 3 'new over-limit crate file fails' 'crates/x/src/grown.rs has 5 production lines (limit 3)'
+
+# A grandfathered crate file at its allowance passes; one line more fails,
+# and the allowance is reported against the real crate path.
+reset_tree
+mkdir -p "$tmp/crates/id-directory/src"
+awk 'BEGIN { for (i = 0; i < 2610; i++) print "x" }' >"$tmp/crates/id-directory/src/directory.rs"
 check_pass 2500 'grandfather at allowance passes'
-printf 'one more line\n' >>"$tmp/src/web/markdown.rs"
-check_fail 2500 'grandfather growth fails' 'grandfathered file grew: 6233 production lines (allowance 6232'
+printf 'one more line\n' >>"$tmp/crates/id-directory/src/directory.rs"
+check_fail 2500 'grandfather growth fails' 'grandfathered file grew: 2611 production lines (allowance 2610'
 
 # Empty scan is a broken scan, not a pass.
 reset_tree

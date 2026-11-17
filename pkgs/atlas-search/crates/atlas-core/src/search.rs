@@ -821,6 +821,7 @@ mod trace_tests {
                     chunk_id: 2,
                     dist: Some(0.25),
                 }],
+                candidate_models: Default::default(),
             })
         }
         fn chunk_details(&self, ids: &[i64]) -> Result<Vec<ChunkDetail>> {
@@ -1010,6 +1011,7 @@ mod jaccard_tests {
                     },
                 ],
                 vector: vec![],
+                candidate_models: Default::default(),
             })
         }
         fn chunk_details(&self, ids: &[i64]) -> Result<Vec<ChunkDetail>> {

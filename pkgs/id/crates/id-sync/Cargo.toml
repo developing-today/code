@@ -26,6 +26,7 @@ test-utils = []
 
 [dependencies]
 anyhow = "1"
+blake3 = "1"
 futures-lite = "2"
 futures-util = { version = "0.3", features = ["sink"] }
 ed25519-dalek = { version = "3", features = ["rand_core"] }
@@ -57,7 +58,9 @@ p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b9526
   "serde",
 ] }
 # The artifact and envelope network tests use id-core silent lookup helpers.
-id-core = { path = "../id-core", default-features = false, features = ["test-utils"] }
+id-core = { path = "../id-core", default-features = false, features = [
+  "test-utils",
+] }
 proptest = "1.12"
 tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }

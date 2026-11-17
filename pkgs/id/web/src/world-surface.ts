@@ -585,7 +585,8 @@ const EMOJI_PRESENTATION_SEQ_RANGES: ReadonlyArray<readonly [number, number]> = 
 
 const EMOJI_PRESENTATION_SEQ_CODE_POINTS = flattenRanges(EMOJI_PRESENTATION_SEQ_RANGES);
 
-function isEmojiPresentationSeqBase(codePoint: number): boolean {
+// Exported for the boundary/parity test against the unicode-width 0.2.2 fixture (#10819).
+export function isEmojiPresentationSeqBase(codePoint: number): boolean {
   return rangeContains(EMOJI_PRESENTATION_SEQ_CODE_POINTS, codePoint);
 }
 

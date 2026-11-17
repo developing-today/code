@@ -148,7 +148,10 @@ impl RecordsRevisionCache {
             return revision;
         }
         let revision = compute(records);
-        let mut entries = self.entries.lock().unwrap();
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some((_, cached)) = entries
             .iter()
             .find(|(snapshot, _)| Arc::ptr_eq(snapshot, records))
@@ -165,7 +168,7 @@ impl RecordsRevisionCache {
     fn cached(&self, records: &Arc<id_worlds::world::Records>) -> Option<u64> {
         self.entries
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .iter()
             .find(|(snapshot, _)| Arc::ptr_eq(snapshot, records))
             .map(|(_, revision)| *revision)

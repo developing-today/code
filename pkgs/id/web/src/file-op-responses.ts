@@ -40,6 +40,15 @@ export interface CopyFileResponse {
   hash: string;
 }
 
+export interface SendFileResponse {
+  name: string;
+  dest_name: string;
+  dest: string;
+  hash: string;
+  already_present: boolean;
+  replaced: boolean;
+}
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -72,4 +81,23 @@ export function isRenameFileResponse(value: unknown): value is RenameFileRespons
 
 export function isCopyFileResponse(value: unknown): value is CopyFileResponse {
   return isRecord(value) && isNonEmptyString(value.name) && isNonEmptyString(value.hash);
+}
+
+/**
+ * Guard for POST /api/files/send responses (#5346). A send is reported
+ * as done only from a well-shaped receipt: the handler answers 200
+ * only after the destination confirmed blob completion and name
+ * registration, and a wrong-shape 200 must never be counted as a
+ * successful send (the #7837 failure mode, applied to sends).
+ */
+export function isSendFileResponse(value: unknown): value is SendFileResponse {
+  return (
+    isRecord(value) &&
+    isNonEmptyString(value.name) &&
+    isNonEmptyString(value.dest_name) &&
+    isNonEmptyString(value.dest) &&
+    isNonEmptyString(value.hash) &&
+    typeof value.already_present === "boolean" &&
+    typeof value.replaced === "boolean"
+  );
 }

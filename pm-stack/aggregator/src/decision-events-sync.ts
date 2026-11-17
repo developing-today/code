@@ -161,7 +161,7 @@ export function validateDecisionEvent(
       return { ok: false, error: "event.payload exceeds 64 KiB" };
     }
   }
-  if (typeof b.ts !== "string" || !isIsoDate(b.ts)) {
+  if (typeof b.ts !== "string" || !b.ts.includes("T") || !isIsoDate(b.ts)) {
     return { ok: false, error: "event.ts must be an ISO timestamp string" };
   }
   return { ok: true, value: { eventId, setId, questionRef, type, payload, ts: b.ts } };
@@ -322,17 +322,26 @@ export async function insertDecisionEventsTurso(
 }
 
 /** POST one batch to the decision-events Worker webhook. The Worker
- * answers 200 with {accepted, inserted, duplicates}; a non-200 (or a
- * 200 without that shape) is a failed leg, never a silent success. */
+ * answers 200 with {accepted, inserted, duplicates, errors?}; a non-200
+ * (or a 200 without that shape) is a failed leg, never a silent success.
+ * Per-event rejections in `errors` are returned in `rejected` so callers
+ * only ack `acceptedEvents`. */
 export async function postDecisionEventsWebhook(
   webhookUrl: string,
   secret: string,
   events: DecisionSetEvent[],
   fetchFn: FetchFn = fetch,
   batchSize = 100,
-): Promise<{ attempted: number; inserted: number }> {
+): Promise<{
+  attempted: number;
+  inserted: number;
+  acceptedEvents: DecisionSetEvent[];
+  rejected: { event: DecisionSetEvent; error: string }[];
+}> {
   if (!webhookUrl || !secret) throw new Error("webhook url/secret unset");
   let inserted = 0;
+  const acceptedEvents: DecisionSetEvent[] = [];
+  const rejected: { event: DecisionSetEvent; error: string }[] = [];
   for (let i = 0; i < events.length; i += batchSize) {
     const batch = events.slice(i, i + batchSize);
     const res = await fetchFn(webhookUrl, {
@@ -342,11 +351,37 @@ export async function postDecisionEventsWebhook(
       signal: AbortSignal.timeout(30_000),
     });
     if (!res.ok) throw new Error(`webhook failed: HTTP ${res.status}`);
-    const out = (await res.json().catch(() => null)) as { inserted?: unknown } | null;
+    const out = (await res.json().catch(() => null)) as {
+      inserted?: unknown;
+      errors?: unknown;
+    } | null;
     if (!out || typeof out.inserted !== "number") throw new Error("webhook failed: malformed response");
     inserted += out.inserted;
+    const rejectedIndices = new Set<number>();
+    if (Array.isArray(out.errors)) {
+      for (const entry of out.errors) {
+        if (
+          entry &&
+          typeof entry === "object" &&
+          typeof (entry as { index?: unknown }).index === "number" &&
+          (entry as { index: number }).index >= 0 &&
+          (entry as { index: number }).index < batch.length
+        ) {
+          const idx = (entry as { index: number }).index;
+          rejectedIndices.add(idx);
+          const errMsg =
+            typeof (entry as { error?: unknown }).error === "string"
+              ? (entry as { error: string }).error
+              : "rejected by webhook";
+          rejected.push({ event: batch[idx] as DecisionSetEvent, error: errMsg });
+        }
+      }
+    }
+    for (let j = 0; j < batch.length; j++) {
+      if (!rejectedIndices.has(j)) acceptedEvents.push(batch[j] as DecisionSetEvent);
+    }
   }
-  return { attempted: events.length, inserted };
+  return { attempted: events.length, inserted, acceptedEvents, rejected };
 }
 
 // --- Per-leg sync state (which eventIds each sink has acked) ---
@@ -444,6 +479,7 @@ export async function syncDecisionEvents(opts: SyncOptions): Promise<LegReport[]
         const r = await insertDecisionEventsTurso(url, opts.tursoToken, pending, fetchFn, opts.batchSize);
         report.attempted = r.attempted;
         report.inserted = r.inserted;
+        markAcked(opts.state, leg, pending);
       } else {
         if (!opts.webhookUrl) throw new Error("webhook URL unset (DECISION_EVENTS_WEBHOOK_URL)");
         if (!opts.webhookSecret) {
@@ -458,8 +494,17 @@ export async function syncDecisionEvents(opts: SyncOptions): Promise<LegReport[]
         );
         report.attempted = r.attempted;
         report.inserted = r.inserted;
+        if (r.acceptedEvents.length > 0) {
+          markAcked(opts.state, leg, r.acceptedEvents);
+        }
+        if (r.rejected.length > 0) {
+          const sample = r.rejected
+            .slice(0, 3)
+            .map((x) => `${x.event.eventId}: ${x.error}`)
+            .join("; ");
+          report.error = `webhook rejected ${r.rejected.length} event(s): ${sample}`;
+        }
       }
-      markAcked(opts.state, leg, pending);
     } catch (err) {
       report.error = err instanceof Error ? err.message : String(err);
     }

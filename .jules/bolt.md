@@ -27,3 +27,11 @@
 
 **Learning:** The earlier ASCII fast path left three range tables (`WIDE_RANGES`, `TEXT_PRESENTATION_RANGES`, `EMOJI_PRESENTATION_SEQ_RANGES`) scanned linearly via `.some()` — ~1.5-2 µs per lookup — and left every non-ASCII single scalar (box-drawing borders, accented Latin, CJK, emoji) on the Intl.Segmenter path. A full 120x50 box-drawing frame therefore took ~52 ms instead of ~2 ms. Two invariants make the fix safe: every single Unicode scalar value is exactly one grapheme cluster (verified exhaustively over U+0000..U+10FFFF against Intl.Segmenter), and all three range tables are sorted and disjoint (verified by construction). The single exception is U+200D, whose graphemeWidth shortcut returns 1 while codePointWidth returns 0, so it must stay on the general path. Flattening the tables into `Int32Array` and binary-searching removes the per-comparison array destructuring that made `.some()` so slow.
 **Action:** When a range table is sorted and queried per hot cell, flatten it to `Int32Array` and binary-search it; extend single-code-unit fast paths to all single scalars (not just ASCII), excluding only the code points whose width semantics diverge between the fast and general paths. Verify equivalence exhaustively over the full code-point space before shipping.
+
+## 2026-11-16 - [Client-keyed plain objects silently drop `__proto__`]
+**Learning:** Count maps keyed by client strings (`probe.foreignSeen[r] = ...` in `pm-stack/aggregator/src/push.ts`) never record a `"__proto__"` key: assignment hits the prototype setter instead of creating an own property, so the count silently vanishes. The sibling `mergeClasses` in `alerts.ts` takes arbitrary client keys the same way and has the same latent trap.
+**Action:** When bounding/capping client-keyed `Record<string, number>` maps, explicitly skip `__proto__` (and gate new-key checks on `Object.hasOwn`, not `in`); consider `Map` for new code.
+
+## 2026-11-16 - [Shared laptop checkout: diffs are not all yours]
+**Learning:** The dispatch laptop checkout hosts concurrent lanes: `pkgs/id/web/src/image-browser.*` modifications and a `.Jules/palette.md` edit appeared in `git status` mid-run from another lane, after the run started clean.
+**Action:** Re-check `git status` right before committing and commit exact file paths only — never `git add .`.

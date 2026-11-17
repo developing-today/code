@@ -68,7 +68,7 @@ pub use markdown::{
 
 use axum::Router;
 use iroh_blobs::api::Store;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -78,7 +78,7 @@ use id_store::tags::TagStore;
 
 pub use app_interface::{WebInterface, WebInterfaceError, WebMode, web_interface_from_app_toml};
 pub use assets::static_handler;
-pub use collab::CollabState;
+pub use collab::{CollabState, note_session_key};
 pub use identity::IdentityStore;
 #[doc(hidden)]
 pub use identity::crash_gate;
@@ -237,6 +237,153 @@ impl Drop for SavePermit {
     }
 }
 
+/// Default number of successful registrations one source may complete
+/// inside [`DEFAULT_REGISTER_WINDOW`] before the register handler starts
+/// refusing with 429 (#1766).
+pub const DEFAULT_REGISTER_LIMIT: usize = 10;
+
+/// Default registration rate-limit window (#1766).
+pub const DEFAULT_REGISTER_WINDOW: Duration = Duration::from_secs(60);
+
+/// Per-source rate limiter for `POST /api/identity/register` (#1766).
+///
+/// The identity store's admission cap bounds how many identities can
+/// exist, but the register handler itself was unthrottled: a caller on
+/// a non-loopback bind could burn request-rate CPU/IO and squat cap
+/// slots with junk registrations. This limiter follows the
+/// [`SaveRateLimiter`] pattern — a per-key map whose entries are swept
+/// once they can no longer refuse, so the map holds only sources
+/// active inside the current window (#1713 discipline).
+///
+/// The key is the request's source (the peer IP, supplied by the
+/// listener's connect-info; see `identity_register_handler` in
+/// `routes.rs`). Forwarded headers are never consulted: on the
+/// directly exposed listener they are client-spoofable (the
+/// `security.rs` doctrine). Only *successful* registrations are
+/// counted — a refusal at the admission cap or a failed attempt does
+/// not consume budget. The check/record split means a concurrent
+/// burst can overshoot the limit by the number of requests in flight;
+/// that tolerance is immaterial against the sustained-rate
+/// cap-squatting this limiter exists to stop.
+#[derive(Debug, Clone)]
+pub struct RegisterRateLimiter {
+    /// Map of source key → timestamps of successful registrations
+    /// inside the current window, oldest first.
+    attempts: Arc<Mutex<HashMap<String, VecDeque<Instant>>>>,
+    /// Maximum successful registrations per source inside `window`.
+    pub limit: usize,
+    /// Sliding window length.
+    pub window: Duration,
+}
+
+impl RegisterRateLimiter {
+    /// Create a new registration rate limiter.
+    pub fn new(limit: usize, window: Duration) -> Self {
+        Self {
+            attempts: Arc::new(Mutex::new(HashMap::new())),
+            limit,
+            window,
+        }
+    }
+
+    /// Drop one source's aged-out timestamps; returns the number of
+    /// in-window registrations remaining for it.
+    fn prune(times: &mut VecDeque<Instant>, now: Instant, window: Duration) -> usize {
+        while times
+            .front()
+            .is_some_and(|t| now.duration_since(*t) >= window)
+        {
+            times.pop_front();
+        }
+        times.len()
+    }
+
+    /// Check whether a registration from `source` is allowed now.
+    ///
+    /// Returns `Ok(())` if the source is under its limit, or
+    /// `Err(remaining)` with the time until the oldest in-window
+    /// registration ages out and a new one is allowed.
+    pub async fn check(&self, source: &str) -> Result<(), Duration> {
+        if self.limit == 0 {
+            return Err(self.window);
+        }
+        let mut map = self.attempts.lock().await;
+        let now = Instant::now();
+        if let Some(times) = map.get_mut(source) {
+            if Self::prune(times, now, self.window) >= self.limit {
+                // The front is the oldest in-window registration
+                // (prune kept it because it is younger than the
+                // window), so the remaining wait is exact.
+                let oldest = *times.front().unwrap_or(&now);
+                return Err(self
+                    .window
+                    .checked_sub(now.duration_since(oldest))
+                    .unwrap_or(Duration::ZERO));
+            }
+            if times.is_empty() {
+                map.remove(source);
+            }
+        }
+        Ok(())
+    }
+
+    /// Record a successful registration from `source`.
+    pub async fn record(&self, source: &str) {
+        let mut map = self.attempts.lock().await;
+        let now = Instant::now();
+        // Sweep every source's aged-out entries: they can no longer
+        // refuse a registration, and keeping them would grow the map
+        // by one entry for every source ever seen (#1713).
+        map.retain(|_, times| Self::prune(times, now, self.window) > 0);
+        map.entry(source.to_owned()).or_default().push_back(now);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod register_rate_limiter_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn under_limit_is_allowed_and_over_limit_is_refused() {
+        let limiter = RegisterRateLimiter::new(2, Duration::from_secs(60));
+        limiter.check("203.0.113.7").await.unwrap();
+        limiter.record("203.0.113.7").await;
+        limiter.check("203.0.113.7").await.unwrap();
+        limiter.record("203.0.113.7").await;
+        let remaining = limiter.check("203.0.113.7").await.unwrap_err();
+        assert!(remaining > Duration::ZERO && remaining <= Duration::from_secs(60));
+    }
+
+    #[tokio::test]
+    async fn sources_are_independent() {
+        let limiter = RegisterRateLimiter::new(1, Duration::from_secs(60));
+        limiter.record("198.51.100.1").await;
+        assert!(limiter.check("198.51.100.1").await.is_err());
+        limiter.check("198.51.100.2").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn window_expiry_allows_registration_again() {
+        let limiter = RegisterRateLimiter::new(1, Duration::from_millis(60));
+        limiter.record("192.0.2.9").await;
+        assert!(limiter.check("192.0.2.9").await.is_err());
+        tokio::time::sleep(Duration::from_millis(90)).await;
+        limiter.check("192.0.2.9").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn zero_window_never_refuses() {
+        // The routes tests disable the save limiter with a ZERO
+        // cooldown; a ZERO window is the same off switch here.
+        let limiter = RegisterRateLimiter::new(1, Duration::ZERO);
+        for _ in 0..5 {
+            limiter.record("203.0.113.99").await;
+            limiter.check("203.0.113.99").await.unwrap();
+        }
+    }
+}
+
 /// Dynamic publication path mounts (#2147 slice 3): mount path ->
 /// world name, shared by every clone of an [`AppState`] (all web
 /// listeners of one serve process) and by the serve-owned publication
@@ -338,6 +485,13 @@ impl PublicationMounts {
 pub struct AppState {
     /// The blob store for accessing files.
     pub store: Store,
+    /// This node's own iroh endpoint, when the serving process wired one
+    /// in (#5346): the server-to-server transfer behind the web send
+    /// route (`POST /api/files/send`) runs with this endpoint's identity,
+    /// exactly like the meta protocol's `Send` handler (#5345). `None`
+    /// for states built outside `id serve` (tests, embedded surfaces) —
+    /// the send route then answers 503 rather than inventing an identity.
+    pub transfer_endpoint: Option<iroh::endpoint::Endpoint>,
     /// State for collaborative editing sessions.
     pub collab: Arc<CollabState>,
     /// Asset URLs (with cache-busting hashes).
@@ -350,6 +504,8 @@ pub struct AppState {
     pub tag_store: Arc<TagStore>,
     /// Per-file save rate limiter.
     pub save_limiter: SaveRateLimiter,
+    /// Per-source registration rate limiter (#1766).
+    pub register_limiter: RegisterRateLimiter,
     /// Serializes filename-tag claims (upload name resolution, create
     /// existence check, save tag assignment) and the filename-keyed
     /// metadata writes across clones of this state (#2363, #8407).
@@ -404,6 +560,7 @@ impl std::fmt::Debug for AppState {
             .field("node_id", &self.node_id)
             .field("tag_store", &"<TagStore>")
             .field("save_limiter", &self.save_limiter)
+            .field("register_limiter", &self.register_limiter)
             .field("identity", &self.identity)
             .field("local_events", &"<LocalEvents>")
             .field("world", &self.world)
@@ -460,12 +617,17 @@ impl AppState {
     ) -> anyhow::Result<Self> {
         Ok(Self {
             store,
+            transfer_endpoint: None,
             collab: Arc::new(CollabState::new()),
             assets: load_asset_urls(),
             peers,
             node_id,
             tag_store,
             save_limiter: SaveRateLimiter::new(DEFAULT_SAVE_COOLDOWN),
+            register_limiter: RegisterRateLimiter::new(
+                DEFAULT_REGISTER_LIMIT,
+                DEFAULT_REGISTER_WINDOW,
+            ),
             upload_name_lock: Arc::new(Mutex::new(())),
             identity: IdentityStore::new_with_max_identities(
                 secret_key,
@@ -483,6 +645,14 @@ impl AppState {
             groups_log: None,
             seitan: SeitanState::default(),
         })
+    }
+
+    /// Wire the serving node's own endpoint in as the transfer identity
+    /// for the web send route (#5346). `id serve` passes its endpoint
+    /// through [`web_routers_with_surface`]; see
+    /// [`AppState::transfer_endpoint`].
+    pub fn set_transfer_endpoint(&mut self, endpoint: Option<iroh::endpoint::Endpoint>) {
+        self.transfer_endpoint = endpoint;
     }
 }
 
@@ -658,6 +828,7 @@ pub async fn web_routers(
         surfaces,
         groups_log,
         seitan,
+        None,
     )
     .await?;
     Ok(routers)
@@ -736,8 +907,9 @@ pub async fn web_routers_with_surface(
     surfaces: Vec<Option<String>>,
     groups_log: Option<std::path::PathBuf>,
     seitan: SeitanState,
+    transfer_endpoint: Option<iroh::endpoint::Endpoint>,
 ) -> anyhow::Result<(Vec<Router>, WebSurfaceFactory)> {
-    let state = match local_events {
+    let mut state = match local_events {
         Some(events) => {
             AppState::with_local_events(
                 store,
@@ -762,6 +934,7 @@ pub async fn web_routers_with_surface(
             .await?
         }
     };
+    state.set_transfer_endpoint(transfer_endpoint);
     let surface = WebSurfaceFactory {
         state: state.clone(),
         world: world.clone(),
@@ -817,7 +990,7 @@ fn finish_router(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -1120,7 +1293,17 @@ mod tests {
 
     #[test]
     fn test_load_asset_urls_from_manifest() {
+        use assets::Assets;
+
         let urls = load_asset_urls();
+        if Assets::get("manifest.json").is_none() {
+            // Clean checkout: no built frontend, so the documented
+            // fallback is the unhashed defaults (see load_asset_urls
+            // and pkgs/id/build.rs). The test must not require a build.
+            assert_eq!(urls.main_js, "/assets/main.js");
+            assert_eq!(urls.styles_css, "/assets/styles.css");
+            return;
+        }
         // Should load hashed URLs from manifest (name.hash.ext format)
         // Check that main_js has at least two dots (name.hash.js)
         let js_dots = urls.main_js.matches('.').count();

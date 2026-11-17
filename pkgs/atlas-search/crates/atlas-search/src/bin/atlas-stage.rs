@@ -11,6 +11,23 @@
 //!   registry record as JSON.
 //! * `atlas-stage units --state open --registry <path>` — list units
 //!   in a lifecycle state (what the aggregator's poll reads).
+//! * `atlas-stage ingest --db <path> --unit <id> --repo <r>
+//!   --path <p> --file <f> --commit <sha> [--kind config]
+//!   [--language yaml] [--sensitivity internal]` — stage one
+//!   code/config artifact as an embedding entry (#1518): one
+//!   `items` row plus its `chunks_raw` in the unit's staging DB.
+//! * `atlas-stage items --db <path> [--unit <id>]` — list the
+//!   items staged in a unit's DB, with chunk counts.
+//!
+//! * `atlas-stage promote --registry <path> --unit <id>
+//!   --shard-dir <dir> [--topic codeconfig]` — the aggregator's
+//!   embed-at-promotion step (#5669 aggregator slice, #1518): embed
+//!   the unit's staged chunks with the mandated model, write a new
+//!   core scan shard in the shard dir, stamp the unit DB's
+//!   embedding-model provenance, and promote the unit to `merged`
+//!   through the registry's M6 gate. Needs the embedding model +
+//!   ONNX runtime (ATLAS_MODEL_DIR / ATLAS_ORT_LIB, the same
+//!   resolution the atlas-search binary uses).
 //!
 //! All three are offline: a staging DB is a local libSQL/SQLite file
 //! today; hosted Turso creation is the aggregator slice's deployment
@@ -59,6 +76,62 @@ enum Command {
         unit: String,
         #[arg(long)]
         registry: PathBuf,
+    },
+    /// Stage one code/config artifact file as an embedding entry (#1518).
+    Ingest {
+        /// The unit's staging database file (already provisioned).
+        #[arg(long)]
+        db: PathBuf,
+        /// The staging-unit id the entry belongs to.
+        #[arg(long)]
+        unit: String,
+        /// The repository the artifact came from.
+        #[arg(long)]
+        repo: String,
+        /// The artifact's path inside the repo.
+        #[arg(long)]
+        path: String,
+        /// The local file whose bytes are staged.
+        #[arg(long)]
+        file: PathBuf,
+        /// The commit SHA the bytes were read at.
+        #[arg(long)]
+        commit: String,
+        /// The entry kind (prose|code|config).
+        #[arg(long, default_value = "config")]
+        kind: String,
+        /// The artifact language (yaml, toml, rust, ...).
+        #[arg(long, default_value = "")]
+        language: String,
+        /// Physical sensitivity level (public|internal|secret; default internal).
+        #[arg(long, default_value = "internal")]
+        sensitivity: String,
+    },
+    /// List the items staged in a unit's staging DB.
+    Items {
+        /// The staging database file to read.
+        #[arg(long)]
+        db: PathBuf,
+        /// Only this unit's items (default: all units in the DB).
+        #[arg(long)]
+        unit: Option<String>,
+    },
+    /// Embed a unit's staged chunks into a new core scan shard and
+    /// promote the unit to merged (aggregator embed-at-promotion).
+    Promote {
+        /// The registry store file.
+        #[arg(long)]
+        registry: PathBuf,
+        /// The staging-unit id to promote.
+        #[arg(long)]
+        unit: String,
+        /// Directory the new core scan shard is written into
+        /// (created if missing).
+        #[arg(long)]
+        shard_dir: PathBuf,
+        /// Shard topic for the promoted entries.
+        #[arg(long, default_value = "codeconfig")]
+        topic: String,
     },
     /// List units in a lifecycle state (open|closing|merged).
     Units {
@@ -129,6 +202,97 @@ fn run(cli: Cli) -> Result<(), String> {
                 None => Err(format!("no staging unit {unit:?} in the registry")),
             }
         }
+        Command::Ingest {
+            db,
+            unit,
+            repo,
+            path,
+            file,
+            commit,
+            kind,
+            language,
+            sensitivity,
+        } => {
+            let sensitivity = parse_tier(&sensitivity)?;
+            let text = std::fs::read_to_string(&file)
+                .map_err(|e| format!("reading {}: {e}", file.display()))?;
+            let language = if language.is_empty() {
+                file.extension()
+                    .and_then(|x| x.to_str())
+                    .unwrap_or("")
+                    .to_string()
+            } else {
+                language
+            };
+            let entry = atlas_core::stage::ArtifactEntry {
+                kind,
+                repo,
+                path,
+                commit_sha: commit,
+                language,
+                sensitivity,
+                text,
+            };
+            let item_id = atlas_core::stage::stage_artifact_in_db(&db, &unit, &entry, &now_utc())
+                .map_err(|e| e.to_string())?;
+            println!(
+                "{{\"item_id\":{item_id},\"unit\":{},\"source\":{}}}",
+                json_str(&unit),
+                json_str(&format!(
+                    "{}:{}@{}",
+                    entry.repo, entry.path, entry.commit_sha
+                )),
+            );
+            Ok(())
+        }
+        Command::Items { db, unit } => {
+            let items = atlas_core::stage::list_staged_items_in_db(&db, unit.as_deref())
+                .map_err(|e| e.to_string())?;
+            for item in &items {
+                println!(
+                    "{{\"id\":{},\"unit_id\":{},\"kind\":{},\"source\":{},\"sensitivity\":{},\"chunks\":{},\"meta\":{}}}",
+                    item.id,
+                    json_str(&item.unit_id),
+                    json_str(&item.kind),
+                    item.source
+                        .as_deref()
+                        .map(json_str)
+                        .unwrap_or_else(|| "null".to_string()),
+                    json_str(&item.sensitivity),
+                    item.chunk_count,
+                    item.meta.as_deref().unwrap_or("null"),
+                );
+            }
+            Ok(())
+        }
+        Command::Promote {
+            registry,
+            unit,
+            shard_dir,
+            topic,
+        } => {
+            let registry = Registry::open(&registry).map_err(|e| e.to_string())?;
+            let embedder = load_doc_embedder()?;
+            let report = atlas_core::aggregate::embed_unit_into_shard(
+                &registry,
+                &unit,
+                &shard_dir,
+                &topic,
+                &embedder,
+                &now_utc(),
+            )
+            .map_err(|e| e.to_string())?;
+            println!(
+                "{{\"unit\":{},\"shard\":{},\"shard_path\":{},\"items\":{},\"chunks\":{},\"dims\":{}}}",
+                json_str(&report.unit_id),
+                json_str(&report.shard_name),
+                json_str(&report.shard_path.display().to_string()),
+                report.items,
+                report.chunks,
+                report.dims,
+            );
+            Ok(())
+        }
         Command::Units { state, registry } => {
             let state = parse_state(&state)?;
             let registry = Registry::open(&registry).map_err(|e| e.to_string())?;
@@ -139,6 +303,53 @@ fn run(cli: Cli) -> Result<(), String> {
             Ok(())
         }
     }
+}
+
+/// Build the production document embedder for `promote`: the
+/// pinned Snowflake model via atlas-embed, resolved exactly as the
+/// atlas-search binary resolves it (ATLAS_MODEL_DIR, then the
+/// state-dir / HF-cache snapshots; ATLAS_ORT_LIB, then the state-dir
+/// runtime). A missing model or runtime is a loud error, never a
+/// silent downgrade.
+fn load_doc_embedder() -> Result<atlas_core::AtlasEmbedder, String> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| "HOME is not set".to_string())?;
+    let model_dir = std::env::var("ATLAS_MODEL_DIR")
+        .ok()
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .or_else(|| {
+            let state = home.join(".local/state/atlas-search/model/95c2741480856aa9666782eb4afe11959938017f");
+            if state.is_dir() {
+                return Some(state);
+            }
+            let hf = home.join(".cache/huggingface/hub/models--Snowflake--snowflake-arctic-embed-m-v2.0/snapshots/95c2741480856aa9666782eb4afe11959938017f");
+            if hf.is_dir() { Some(hf) } else { None }
+        })
+        .ok_or_else(|| {
+            "Snowflake model not found (looked in ATLAS_MODEL_DIR, ~/.local/state/atlas-search/model/<rev>, and the HF cache snapshot)".to_string()
+        })?;
+    let ort_lib = std::env::var("ATLAS_ORT_LIB")
+        .ok()
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+        .or_else(|| {
+            let cand = home.join(".local/state/atlas-search/ort/libonnxruntime.so");
+            if cand.is_file() {
+                return Some(cand);
+            }
+            let venv = home.join("atlas/v3-venv/lib/python3.14/site-packages/onnxruntime/capi/libonnxruntime.so.1.31.1");
+            if venv.is_file() { Some(venv) } else { None }
+        })
+        .ok_or_else(|| {
+            "ONNX Runtime library not found: set ATLAS_ORT_LIB".to_string()
+        })?;
+    let emb = atlas_embed::Embedder::load(&model_dir, &ort_lib)
+        .map_err(|e| format!("embedder load failed: {e}"))?;
+    Ok(atlas_core::AtlasEmbedder::new(emb))
 }
 
 fn unit_json(unit: &atlas_core::stage::StagingUnit) -> String {

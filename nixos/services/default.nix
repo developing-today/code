@@ -90,6 +90,24 @@
       enable = true;
       package = pkgs.plocate;
       interval = "hourly";
+      # Restates the option default (nixos/modules/misc/locate.nix) because
+      # assigning prunePaths replaces it, and adds the generated fleet tree:
+      # git worktrees and the watcher-bench fixture corpora (e.g.
+      # watcher-bench-195/fixtures/manydirs) have no locate value and are
+      # enormous. updatedb exhausted its fd limit scanning manydirs, exited
+      # 1, and the coincidentally-failed unit made an otherwise-healthy
+      # `nixos-rebuild switch` report failure (#10589). Prune it instead.
+      prunePaths = [
+        "/tmp"
+        "/var/tmp"
+        "/var/cache"
+        "/var/lock"
+        "/var/run"
+        "/var/spool"
+        "/nix/store"
+        "/nix/var/log/nix"
+        "/home/user/git/fleet"
+      ];
       #localuser = null;
     };
     displayManager = {

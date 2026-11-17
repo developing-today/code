@@ -5,9 +5,14 @@
 //! client does not opt in to screen patches: every received view is therefore
 //! a complete view, not a delta that needs a revision cache.
 
+use std::sync::{Arc, Mutex, MutexGuard};
+
 use anyhow::{Context, Result, bail};
+use id::frames::{read_frame, write_frame};
+use id::world_net::{WorldClient, route_frame};
 use id::world_presentation::{ScreenSurface, WorldSurface};
 use serde_json::{Value, json};
+use tokio::sync::mpsc;
 
 /// Create the initial join frame. `None` requests a fresh snapshot; this
 /// deliberately omits `screen_patches` until the shell tracks patch revisions.
@@ -96,6 +101,11 @@ pub enum ServerUpdate {
     /// The host replaced the world's program mid-session (a live install
     /// sends snapshot, then this notification, then a replacement view).
     ProgramChanged,
+    /// The host sent an F13.7 `provider_request` (step 2 frame, step 4
+    /// local handling): the validated frame is queued on the state for
+    /// the session's provider adapter to answer; session state itself
+    /// does not interpret it.
+    ProviderRequest,
 }
 
 /// Accumulated host state for a single session stream.
@@ -105,7 +115,17 @@ pub struct SessionState {
     events: Vec<Value>,
     view: Option<SessionView>,
     program_module_hash: Option<String>,
+    provider_requests: Vec<Value>,
 }
+
+/// Maximum durable events retained since the most recent snapshot.
+///
+/// The host only sends `snapshot` on join, lagged catch-up, and program
+/// install, so a session that keeps up would otherwise accumulate every
+/// `event` frame for its whole lifetime. Nothing in the running binary
+/// consumes these (only views feed the presenter), so retention is a
+/// bounded tail: the newest events, oldest dropped first.
+pub const MAX_RETAINED_EVENTS: usize = 512;
 
 impl SessionState {
     /// Apply one host frame after checking it against the embedded F13.1
@@ -131,11 +151,29 @@ impl SessionState {
             }
             "event" => {
                 self.events.push(frame["event"].clone());
+                if self.events.len() > MAX_RETAINED_EVENTS {
+                    let excess = self.events.len() - MAX_RETAINED_EVENTS;
+                    self.events.drain(..excess);
+                }
                 Ok(ServerUpdate::Event)
             }
             "view" => {
                 self.view = Some(SessionView::from_frame(&frame)?);
                 Ok(ServerUpdate::View)
+            }
+            "provider_request" => {
+                // F13.7 step 4: a provider request is validated by the
+                // contract check above and queued for the provider
+                // adapter, which applies the local grant/bounds check
+                // and builds the reply. The frame must name its nonce
+                // and provider to be answerable at all.
+                if frame["nonce"].as_str().is_none_or(str::is_empty)
+                    || frame["provider"].as_str().is_none_or(str::is_empty)
+                {
+                    bail!("provider_request frame has no nonce or provider");
+                }
+                self.provider_requests.push(frame);
+                Ok(ServerUpdate::ProviderRequest)
             }
             "program_changed" => {
                 // A live program install is a normal point in a session
@@ -162,6 +200,9 @@ impl SessionState {
     }
 
     /// Durable events received since the most recent snapshot.
+    ///
+    /// Bounded tail: at most [`MAX_RETAINED_EVENTS`] newest events are
+    /// kept; older events are dropped on receipt, oldest first.
     #[must_use]
     pub fn events(&self) -> &[Value] {
         &self.events
@@ -180,9 +221,195 @@ impl SessionState {
     pub fn program_module_hash(&self) -> Option<&str> {
         self.program_module_hash.as_deref()
     }
+
+    /// Drain the queued F13.7 `provider_request` frames, oldest
+    /// first. The session's provider adapter answers each one with a
+    /// `provider_reply`; an undrained request is never answered
+    /// implicitly.
+    pub fn take_provider_requests(&mut self) -> Vec<Value> {
+        std::mem::take(&mut self.provider_requests)
+    }
+}
+
+/// Lock the shared session state, mapping a poisoned lock to an error
+/// instead of panicking (the crate denies `panic` in non-test code).
+fn lock_state(state: &Mutex<SessionState>) -> Result<MutexGuard<'_, SessionState>> {
+    state
+        .lock()
+        .map_err(|_| anyhow::anyhow!("session state lock poisoned"))
+}
+
+/// Run one live session against a world host: send the join frame for
+/// `capability`, then pump frames in both directions until the host ends
+/// the session, a host frame fails contract validation, or the local
+/// outbound channel closes (the shell exiting).
+///
+/// The reader runs in its own task because frame reads are not
+/// cancel-safe (`id::frames::read_frame` documents this; the CLI's join
+/// pump splits its streams the same way). Every host frame is validated
+/// and folded into a [`SessionState`] exactly as the transcript harness
+/// folds recorded frames, and every new view is published on `views` —
+/// in the binary, that channel is what feeds
+/// `render::PresentedView`. Outbound frames (built by
+/// [`crate::events::native_event_frame`] or the crate's frame builders)
+/// are routed to the session's `world` with [`route_frame`],
+/// byte-identically to `WorldClient::send_json` on a client built with
+/// `with_world(world)`: construct `client` unbound and let this
+/// function own the routing, never both.
+///
+/// Returns the final accumulated state when the session ends.
+///
+/// # Errors
+///
+/// Fails when the join frame cannot be sent, a host frame is malformed
+/// or out of contract, the host refuses the session (an `error` frame),
+/// or an outbound frame cannot be sent.
+pub async fn run_session(
+    client: WorldClient,
+    world: Option<&str>,
+    capability: &str,
+    after: Option<u64>,
+    outbound: mpsc::Receiver<Value>,
+    views: mpsc::UnboundedSender<SessionView>,
+) -> Result<SessionState> {
+    let (provider_requests, _dropped) = mpsc::unbounded_channel();
+    run_session_inner(
+        client,
+        world,
+        capability,
+        after,
+        outbound,
+        views,
+        provider_requests,
+        None,
+    )
+    .await
+}
+
+/// [`run_session`] with F13.7 step-4 provider handling: validated
+/// `provider_request` frames are forwarded on `provider_requests`
+/// for the caller's [`crate::ProviderAdapter`] to answer through the
+/// ordinary outbound channel, and `provider_offer` (the adapter's
+/// offer frame for this world, when it has one) is sent immediately
+/// after the join frame.
+///
+/// # Errors
+///
+/// Same failures as [`run_session`], plus a failure to send the
+/// offer frame.
+pub async fn run_session_with_providers(
+    client: WorldClient,
+    world: Option<&str>,
+    capability: &str,
+    after: Option<u64>,
+    outbound: mpsc::Receiver<Value>,
+    views: mpsc::UnboundedSender<SessionView>,
+    provider_requests: mpsc::UnboundedSender<Value>,
+    provider_offer: Option<Value>,
+) -> Result<SessionState> {
+    run_session_inner(
+        client,
+        world,
+        capability,
+        after,
+        outbound,
+        views,
+        provider_requests,
+        provider_offer,
+    )
+    .await
+}
+
+async fn run_session_inner(
+    client: WorldClient,
+    world: Option<&str>,
+    capability: &str,
+    after: Option<u64>,
+    mut outbound: mpsc::Receiver<Value>,
+    views: mpsc::UnboundedSender<SessionView>,
+    provider_requests: mpsc::UnboundedSender<Value>,
+    provider_offer: Option<Value>,
+) -> Result<SessionState> {
+    let (conn, mut send, mut recv) = client.into_parts();
+    let join = route_frame(&join_frame(capability, after), world);
+    write_frame(&mut send, join.as_bytes())
+        .await
+        .context("send join frame")?;
+    if let Some(offer) = provider_offer {
+        let routed = route_frame(&offer, world);
+        write_frame(&mut send, routed.as_bytes())
+            .await
+            .context("send provider offer frame")?;
+    }
+
+    let shared = Arc::new(Mutex::new(SessionState::default()));
+    let reader_state = Arc::clone(&shared);
+    let mut reader = tokio::spawn(async move {
+        loop {
+            let Some(body) = read_frame(&mut recv).await.context("receive host frame")? else {
+                break;
+            };
+            let frame: Value = serde_json::from_slice(&body).context("decode host frame")?;
+            let view = {
+                let mut state = lock_state(&reader_state)?;
+                let update = state.apply_server_frame(frame)?;
+                if update == ServerUpdate::ProviderRequest {
+                    for request in state.take_provider_requests() {
+                        // A dropped receiver means the shell is not
+                        // answering provider requests this session;
+                        // the host broker times the request out and
+                        // the local refusal stays the default.
+                        let _ = provider_requests.send(request);
+                    }
+                }
+                if update == ServerUpdate::View {
+                    state.view().cloned()
+                } else {
+                    None
+                }
+            };
+            if let Some(view) = view {
+                // A dropped receiver means the presenter is gone; the
+                // session itself is unaffected, so keep reading.
+                let _ = views.send(view);
+            }
+        }
+        anyhow::Ok(())
+    });
+
+    let mut failure: Option<anyhow::Error> = None;
+    loop {
+        tokio::select! {
+            outgoing = outbound.recv() => {
+                let Some(frame) = outgoing else { break };
+                let routed = route_frame(&frame, world);
+                if let Err(error) = write_frame(&mut send, routed.as_bytes()).await {
+                    failure = Some(error.context("send client frame"));
+                    break;
+                }
+            }
+            joined = &mut reader => {
+                match joined {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => failure = Some(error),
+                    Err(error) => {
+                        failure = Some(anyhow::Error::from(error).context("session reader task"));
+                    }
+                }
+                break;
+            }
+        }
+    }
+    reader.abort();
+    conn.close(0_u32.into(), b"done");
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    Ok(lock_state(&shared)?.clone())
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -315,6 +542,31 @@ mod tests {
     }
 
     #[test]
+    fn provider_requests_are_queued_for_the_adapter_not_folded_into_state() {
+        let mut state = SessionState::default();
+        let frame = json!({
+            "type": "provider_request", "nonce": "ab12",
+            "provider": "client.file.read", "args": {"path": "notes.txt"},
+            "deadline_ms": 5000
+        });
+        assert_eq!(
+            state.apply_server_frame(frame.clone()).unwrap(),
+            ServerUpdate::ProviderRequest
+        );
+        assert_eq!(state.take_provider_requests(), vec![frame]);
+        assert!(state.take_provider_requests().is_empty());
+        // A request that cannot be answered (no nonce) is rejected.
+        assert!(
+            state
+                .apply_server_frame(json!({
+                    "type": "provider_request", "provider": "client.file.read",
+                    "args": {}, "deadline_ms": 5000
+                }))
+                .is_err()
+        );
+    }
+
+    #[test]
     fn malformed_and_non_session_host_frames_are_rejected() {
         let mut state = SessionState::default();
         assert!(
@@ -331,5 +583,26 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn event_retention_is_bounded_without_an_intervening_snapshot() {
+        let mut state = SessionState::default();
+        state
+            .apply_server_frame(json!({"type":"snapshot", "snapshot":{"sequence":0}}))
+            .unwrap();
+        let total = MAX_RETAINED_EVENTS + 64;
+        for sequence in 1..=total as u64 {
+            state
+                .apply_server_frame(json!({"type":"event", "event":{"sequence":sequence}}))
+                .unwrap();
+        }
+        assert_eq!(state.events().len(), MAX_RETAINED_EVENTS);
+        // Tail semantics: newest kept, oldest dropped first.
+        assert_eq!(
+            state.events().first().unwrap()["sequence"],
+            (total - MAX_RETAINED_EVENTS + 1) as u64
+        );
+        assert_eq!(state.events().last().unwrap()["sequence"], total as u64);
     }
 }

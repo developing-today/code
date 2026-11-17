@@ -870,6 +870,22 @@ mod tests {
     }
 
     #[test]
+    fn sign_request_rejects_non_domain_nonce_as_envelope_error() {
+        let client = key(7);
+        let req = request(issue());
+        let over_long = "a".repeat(129);
+        for nonce in ["", &over_long, "bad nonce"] {
+            assert!(
+                matches!(
+                    sign_request(&client, &req, 10_000, nonce),
+                    Err(GatewayError::Envelope)
+                ),
+                "nonce {nonce:?} must map to GatewayError::Envelope"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_identity_forgery_that_plain_verify_accepts() {
         let forged = Signed {
             key: encode_hex(&IDENTITY_KEY),

@@ -7,8 +7,9 @@
 //! only; consumers reach it through the sandbox session proxy.
 //!
 //! Endpoints (header `X-Agent-Token` required except /health):
-//!   GET /health        -> {ok, secrets, last_refresh_unix, refreshing,
-//!                          oldest_secret_age_seconds}
+//!   GET /health        -> {ok, serving, secrets, last_refresh_unix, refreshing,
+//!                          oldest_secret_age_seconds} | 503 while `serving`
+//!                          is false (no successful refresh yet, #10868)
 //!   GET /secrets       -> {names: [...]}
 //!   GET /secret/<name> -> {key, value, fetched_at_unix, age_seconds,
 //!                          source} | 404 | 503 (not loaded yet)
@@ -40,7 +41,7 @@
 //!      at startup, #5860).
 
 use std::collections::HashMap;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -60,6 +61,12 @@ struct CachedSecret {
 struct State {
     secrets: RwLock<HashMap<String, CachedSecret>>,
     last_refresh: RwLock<Option<u64>>,
+    /// The most recent vault-refresh failure, cleared by the next
+    /// successful refresh. Served on the not-loaded 503 so a client
+    /// can see WHY the broker has no secrets (#10743) instead of
+    /// retry-looping a bare "not loaded yet". Status-only text by
+    /// construction (BwsRunner discipline): never vault material.
+    last_refresh_error: RwLock<Option<String>>,
     refreshing: RwLock<bool>,
     /// In-flight read-through fetches, one gate per name (#6275):
     /// the first misser fetches from Bitwarden; concurrent missers
@@ -99,6 +106,11 @@ fn bws_token() -> Option<String> {
     None
 }
 
+/// Deadline for one `bws` child (#10871). A child that never returns
+/// must fail its fetch, or its worker never finishes, the refresh's
+/// join never returns, and the `refreshing` guard stays set forever.
+const BWS_CHILD_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Runs `bws` for the vault refresh, through the platform crate's
 /// CommandRunner discipline (fleet-secrets, design §1): stdout on
 /// success; on failure the error carries the exit status only —
@@ -107,25 +119,62 @@ fn bws_token() -> Option<String> {
 /// the port deliberately adopts the stricter platform rule.)
 struct BwsRunner {
     token: String,
+    timeout: Duration,
 }
 
 impl fleet_secrets::CommandRunner for BwsRunner {
     fn run(&self, program: &str, args: &[&str]) -> Result<String, String> {
-        let out = Command::new(program)
+        // A bare `bws` spawn dies with NotFound when the broker was
+        // launched under a stripped PATH (#10743); resolve through
+        // the well-known install locations instead.
+        let resolved;
+        let program: &std::path::Path = if program == "bws" {
+            resolved = fleet_secrets::resolve_bws_program();
+            &resolved
+        } else {
+            std::path::Path::new(program)
+        };
+        let mut child = Command::new(program)
             .args(args)
             .env("BWS_ACCESS_TOKEN", &self.token)
-            .output()
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
             .map_err(|e| format!("spawn failed: {}", e.kind()))?;
-        if !out.status.success() {
-            return Err(out.status.to_string());
+        let mut pipe = child.stdout.take();
+        let reader = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(out) = pipe.as_mut() {
+                let _ = std::io::Read::read_to_end(out, &mut buf);
+            }
+            buf
+        });
+        let deadline = std::time::Instant::now() + self.timeout;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if std::time::Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("timed out after {}s", self.timeout.as_secs()));
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+                Err(e) => return Err(format!("wait failed: {}", e.kind())),
+            }
+        };
+        let stdout = reader.join().unwrap_or_default();
+        if !status.success() {
+            return Err(status.to_string());
         }
-        String::from_utf8(out.stdout).map_err(|_| "output not utf8".to_string())
+        String::from_utf8(stdout).map_err(|_| "output not utf8".to_string())
     }
 }
 
 fn bws_run(args: &[&str], token: &str) -> Result<String, String> {
     let runner = BwsRunner {
         token: token.to_string(),
+        timeout: BWS_CHILD_TIMEOUT,
     };
     fleet_secrets::CommandRunner::run(&runner, "bws", args)
         .map_err(|e| format!("bws {} failed: {e}", args.join(" ")))
@@ -141,6 +190,16 @@ fn refresh(state: &Arc<State>) -> Result<usize, String> {
         *r = true;
     }
     let result = do_refresh(state);
+    // The refresh-error bookkeeping lives here, in the one shared
+    // operation, so every caller records it — the background loop
+    // AND the manual POST /refresh path, whose caller discards the
+    // result (CodeRabbit review, #10757). The guard rejection
+    // above returns before this point and never overwrites the
+    // recorded error: a rejected overlap is not an attempt.
+    match &result {
+        Ok(_) => *state.last_refresh_error.write().unwrap() = None,
+        Err(e) => *state.last_refresh_error.write().unwrap() = Some(e.clone()),
+    }
     *state.refreshing.write().unwrap() = false;
     result
 }
@@ -508,12 +567,15 @@ fn handle_request(
             .values()
             .map(|c| now.saturating_sub(c.fetched_at_unix))
             .max();
+        let last_refresh_unix = state.last_refresh.read().unwrap().clone();
+        let serving = last_refresh_unix.is_some();
         (
-            200,
+            if serving { 200 } else { 503 },
             json!({
-                "ok": true,
+                "ok": serving,
+                "serving": serving,
                 "secrets": state.secrets.read().unwrap().len(),
-                "last_refresh_unix": state.last_refresh.read().unwrap().clone(),
+                "last_refresh_unix": last_refresh_unix,
                 "refreshing": *state.refreshing.read().unwrap(),
                 "oldest_secret_age_seconds": oldest_secret_age_seconds,
             }),
@@ -547,7 +609,11 @@ fn handle_request(
             ),
             None => {
                 if state.last_refresh.read().unwrap().is_none() {
-                    (503, json!({"error": "secrets not loaded yet"}))
+                    let mut body = json!({"error": "secrets not loaded yet"});
+                    if let Some(e) = state.last_refresh_error.read().unwrap().clone() {
+                        body["refresh_error"] = json!(e);
+                    }
+                    (503, body)
                 } else {
                     // A miss on a loaded cache reads through to
                     // Bitwarden for this one name (#6275) before the
@@ -631,8 +697,20 @@ pub fn parse_ttl_s(raw: Option<&str>) -> Result<TtlParse, String> {
 
 pub fn run() -> i32 {
     use std::io::Read as _;
-    let bind =
-        std::env::var("SECRETS_BROKER_BIND").unwrap_or_else(|_| "100.99.113.103:4800".to_string());
+    // Stage-2 broker resilience: on the sandbox the broker is a
+    // local capability, never a LAN surface — force loopback
+    // regardless of the environment, so a stale or widened
+    // SECRETS_BROKER_BIND can never expose the vault off-host.
+    // The spawn in `fleet init` sets the loopback bind explicitly;
+    // this is the second enforcement, at the bind itself.
+    let sandbox = std::env::var("FLEET_LOCATION")
+        .ok()
+        .is_some_and(|v| v.trim() == "sandbox");
+    let bind = if sandbox {
+        "127.0.0.1:4800".to_string()
+    } else {
+        std::env::var("SECRETS_BROKER_BIND").unwrap_or_else(|_| "100.99.113.103:4800".to_string())
+    };
     let home = match crate::home::from_env() {
         Ok(home) => home,
         Err(error) => {
@@ -666,6 +744,7 @@ pub fn run() -> i32 {
     let state = Arc::new(State {
         secrets: RwLock::new(HashMap::new()),
         last_refresh: RwLock::new(None),
+        last_refresh_error: RwLock::new(None),
         refreshing: RwLock::new(false),
         inflight: Mutex::new(HashMap::new()),
     });
@@ -846,6 +925,7 @@ mod tests {
         install_refresh, now_unix, parse_list_entries, parse_ttl_s, pre_body_refusal,
         resolve_list_id, url_decode,
     };
+    use std::time::Duration;
 
     #[test]
     fn pre_body_refusal_decides_from_headers_alone() {
@@ -878,9 +958,49 @@ mod tests {
         Arc::new(State {
             secrets: RwLock::new(HashMap::new()),
             last_refresh: RwLock::new(Some(1)),
+            last_refresh_error: RwLock::new(None),
             refreshing: RwLock::new(false),
             inflight: Mutex::new(HashMap::new()),
         })
+    }
+
+    #[test]
+    fn health_reports_serving_only_after_a_successful_refresh() {
+        // oracle (#10868): a live process whose refresh never
+        // succeeded (stripped PATH, bws unspawnable) is not serving,
+        // so the health probe must fail and init-ensure can replace
+        // it; a loaded broker answers 200 with serving=true.
+        let state = empty_state();
+        *state.last_refresh.write().unwrap() = None;
+        let (status, body) = handle_request(&state, "tok", "GET", "/health", None);
+        assert_eq!(status, 503);
+        assert_eq!(body["serving"], false);
+        assert_eq!(body["ok"], false);
+        assert!(body.get("refresh_error").is_none());
+
+        *state.last_refresh.write().unwrap() = Some(1);
+        let (status, body) = handle_request(&state, "tok", "GET", "/health", None);
+        assert_eq!(status, 200);
+        assert_eq!(body["serving"], true);
+        assert_eq!(body["ok"], true);
+    }
+
+    #[test]
+    fn not_loaded_503_names_the_refresh_failure() {
+        // oracle (#10743): a broker that has never loaded because
+        // its refresh is failing says why on the 503, so a client
+        // surfaces the cause instead of a bare "not loaded yet".
+        let state = empty_state();
+        *state.last_refresh.write().unwrap() = None;
+        *state.last_refresh_error.write().unwrap() =
+            Some("bws secret list -o json failed: spawn failed: entity not found".to_string());
+        let (status, body) = handle_request(&state, "tok", "GET", "/secret/alpha", Some("tok"));
+        assert_eq!(status, 503);
+        assert_eq!(body["error"], "secrets not loaded yet");
+        assert_eq!(
+            body["refresh_error"],
+            "bws secret list -o json failed: spawn failed: entity not found"
+        );
     }
 
     #[test]
@@ -1221,6 +1341,44 @@ mod tests {
             assert!(err.contains("SECRETS_BROKER_TTL_S"), "error: {err}");
             assert!(err.contains(raw), "error: {err}");
         }
+    }
+
+    fn sh_runner(timeout: Duration) -> super::BwsRunner {
+        super::BwsRunner {
+            token: "tok".to_string(),
+            timeout,
+        }
+    }
+
+    #[test]
+    fn bws_child_that_never_exits_fails_at_the_deadline() {
+        // #10871 oracle: a child that never exits must come back as
+        // an error near its deadline, not block its caller forever.
+        use fleet_secrets::CommandRunner;
+        let started = std::time::Instant::now();
+        let err = sh_runner(Duration::from_millis(300))
+            .run("/bin/sh", &["-c", "exec sleep 600"])
+            .expect_err("a hung child must fail");
+        assert!(err.contains("timed out"), "error: {err}");
+        assert!(started.elapsed() < Duration::from_secs(20));
+    }
+
+    #[test]
+    fn bws_child_within_the_deadline_returns_its_stdout() {
+        use fleet_secrets::CommandRunner;
+        let out = sh_runner(Duration::from_secs(20))
+            .run("/bin/sh", &["-c", "printf '{\"value\":\"x\"}'"])
+            .expect("a prompt child succeeds");
+        assert_eq!(out, "{\"value\":\"x\"}");
+    }
+
+    #[test]
+    fn bws_child_failure_reports_only_the_exit_status() {
+        use fleet_secrets::CommandRunner;
+        let err = sh_runner(Duration::from_secs(20))
+            .run("/bin/sh", &["-c", "echo vault-material >&2; exit 3"])
+            .expect_err("a non-zero exit is an error");
+        assert!(!err.contains("vault-material"), "error: {err}");
     }
 
     #[test]

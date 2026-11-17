@@ -782,7 +782,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			rt.Bin = abs
 		}
 	}
-	if rt.Kind == KindNode && !(devshellIsFlake(opts.Devshell) && rt.Bin == rt.Invoke) {
+	if rt.Kind == KindNode && (!devshellIsFlake(opts.Devshell) || rt.Bin != rt.Invoke) {
 		// A devshell-deferred runtime has no host binary to probe: Bin
 		// is still the bare name the shell will resolve. Probing it
 		// here would fail the run before the shell gets its chance.
