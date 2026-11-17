@@ -724,17 +724,51 @@ for flags:\n\
 /// Per-verb usage for the fallback verbs.
 pub(crate) fn usage(verb: &str) -> &'static str {
     match verb {
-        "scan" => "usage: repo-queue fallback scan [--repo <repo>] [--limit <1..100>] [--lease-min <minutes>]\n\nScans the fallback repos' labelled issues for live/stale claims.",
-        "status" => "usage: repo-queue fallback status <repo> <issue-number> [--lease-min <minutes>]\n\nShows the folded claim state for one fallback issue.",
-        "claim" => "usage: repo-queue fallback claim <repo> <issue-number> --worker <id> [--lease-min <minutes>] [--note <text>]\n\nClaims a fallback issue by posting a claim marker comment (races are detected on read-back).",
-        "heartbeat" => "usage: repo-queue fallback heartbeat <repo> <issue-number> --worker <id> [--lease-min <minutes>] [--note <text>]\n\nRefreshes your fallback claim with a progress marker.",
-        "release" => "usage: repo-queue fallback release <repo> <issue-number> --worker <id> [--lease-min <minutes>] [--outcome done|free] [--summary <text>]\n\nReleases a fallback claim (done keeps the terminal state, free returns it to the pool).",
+        "scan" => {
+            "usage: repo-queue fallback scan [--repo <repo>] [--limit <1..100>] [--lease-min <minutes>]\n\nScans the fallback repos' labelled issues for live/stale claims."
+        }
+        "status" => {
+            "usage: repo-queue fallback status <repo> <issue-number> [--lease-min <minutes>]\n\nShows the folded claim state for one fallback issue."
+        }
+        "claim" => {
+            "usage: repo-queue fallback claim <repo> <issue-number> --worker <id> [--lease-min <minutes>] [--note <text>]\n\nClaims a fallback issue by posting a claim marker comment (races are detected on read-back)."
+        }
+        "heartbeat" => {
+            "usage: repo-queue fallback heartbeat <repo> <issue-number> --worker <id> [--lease-min <minutes>] [--note <text>]\n\nRefreshes your fallback claim with a progress marker."
+        }
+        "release" => {
+            "usage: repo-queue fallback release <repo> <issue-number> --worker <id> [--lease-min <minutes>] [--outcome done|free] [--summary <text>]\n\nReleases a fallback claim (done keeps the terminal state, free returns it to the pool)."
+        }
         _ => GROUP_USAGE,
     }
 }
 
 fn is_help_arg(s: &str) -> bool {
     matches!(s, "--help" | "-h" | "help")
+}
+
+/// True when `rest` asks for help: a help token that is not the value of a
+/// flag. `claim o/r 5 --note help` records the note "help"; it is not a help
+/// request. Every fallback flag takes a value, and the value rule mirrors
+/// `parse_fb_args`: without an inline `=`, the next token is the value.
+fn wants_help(rest: &[String], flags: &[&str]) -> bool {
+    let mut i = 0;
+    while i < rest.len() {
+        let a = rest[i].as_str();
+        if is_help_arg(a) {
+            return true;
+        }
+        if let Some(long) = a.strip_prefix("--")
+            && !long.contains('=')
+            && flags.contains(&long)
+            && i + 1 < rest.len()
+        {
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Die with a usage error (exit 2): the message plus the verb's
@@ -745,7 +779,7 @@ fn usage_error(verb: &str, msg: &str) -> ! {
 
 fn parse_fb_args(verb: &str, rest: &[String], flags: &[&str]) -> FbArgs {
     // Help wins over every other argument (#10838).
-    if rest.iter().any(|a| is_help_arg(a)) {
+    if wants_help(rest, flags) {
         println!("{}", usage(verb));
         exit(0);
     }
@@ -825,7 +859,10 @@ fn repo_and_issue(verb: &str, args: &FbArgs) -> (String, i64) {
     if args.pos.len() != 2 {
         usage_error(
             verb,
-            &format!("fallback {verb}: expected <repo> <issue-number>, got {} positional argument(s)", args.pos.len()),
+            &format!(
+                "fallback {verb}: expected <repo> <issue-number>, got {} positional argument(s)",
+                args.pos.len()
+            ),
         );
     }
     let repo = resolve_repo(&args.pos[0]);
@@ -1685,5 +1722,17 @@ mod tests {
         assert!(is_help_arg("-h"));
         assert!(is_help_arg("help"));
         assert!(!is_help_arg("--bogus"));
+    }
+
+    #[test]
+    fn a_help_word_given_as_a_flag_value_is_not_a_help_request() {
+        let flags = ["worker", "note"];
+        let v = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(!wants_help(&v(&["o/r", "5", "--note", "help"]), &flags));
+        assert!(!wants_help(&v(&["o/r", "5", "--note", "-h"]), &flags));
+        assert!(!wants_help(&v(&["o/r", "5", "--note", "--help"]), &flags));
+        assert!(wants_help(&v(&["o/r", "5", "--help"]), &flags));
+        assert!(wants_help(&v(&["--note=x", "-h"]), &flags));
+        assert!(wants_help(&v(&["help"]), &flags));
     }
 }

@@ -837,15 +837,15 @@ Run `repo-queue <verb> --help` for flags:\n\
   validate <packet-path>\n\
   enqueue <packet-path> [--queue <name>] [--platform <p>] [--dry-run] [--shadow-intent]\n\
   list [--queue <name>] [--status <s>] [--limit <n>] [--not-before <ts>] [--lane <l>] [--worker <w>] [--task <id>]\n\
-  claim [--worker <id>] [--reason <text>]\n\
+  claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\
   release <task-id> [--worker <id>] [--reason <text>]\n\
-  lane <task-id> [--worker <id>] [--stage <s>] [--progress <p>] [--progress-file <f>]\n\
-  bind <task-id> [--worker <id>] [--stage <s>] [--progress <p>] [--progress-file <f>]\n\
-  heartbeat <task-id> [--worker <id>] [--stage <s>] [--progress <p>] [--progress-file <f>]\n\
+  lane <task-id> [--worker <id>] [--exclusion-reason <text>] [--opencode-reason <text>] [--limit-platform <p>] [--limit-reason <text>] [--clear-platform-limit]\n\
+  bind <task-id> [--worker <id>] --session-id <id> [--launched-by <who>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>]\n\
+  heartbeat <task-id> [--worker <id>] [--extend-seconds <n>] [--progress <p>] [--progress-file <f>]\n\
   checkpoint <task-id> [--worker <id>] [--stage <s>] [--progress <p>] [--progress-file <f>]\n\
-  park <task-id> [--worker <id>] [--reason <text>]\n\
+  park <task-id> [--worker <id>] --reason <text> [--delay-seconds <n>] [--not-before <ts>] [--progress <p>] [--progress-file <f>] [--ready-condition <c>] [--execution <id>] [--required-budget-minutes <n>]\n\
   wake <task-id> [--worker <id>] [--reason <text>]\n\
-  block <task-id> [--worker <id>] [--reason <text>]\n\
+  block <task-id> [--worker <id>] --reason-class <c> --blocker <b> [--progress <p>] [--progress-file <f>] [--ledger-id <id>] [--question <text>] [--context <text>] [--options-json <json>] [--links-json <json>] [--blocked-by-pr <n>] [--blocked-by-issue <n>] [--blocked-by-task <id>] [--blocked-by-ci <ref>] [--dep-recheck-seconds <n>] [--dep-max-ttl-seconds <n>]\n\
   unblock <task-id> [--worker <id>] [--reason <text>]\n\
   dep-recheck [--task <id>] [--limit <n>]\n\
   quarantine-recheck [--task <id>] [--limit <n>]\n\
@@ -867,41 +867,105 @@ Run `repo-queue <verb> --help` for flags:\n\
 /// never prints nothing.
 pub(crate) fn usage(verb: &str) -> &'static str {
     match verb {
-        "validate" => "usage: repo-queue validate <packet-path>\n\nValidates a task packet without enqueuing it.",
-        "enqueue" => "usage: repo-queue enqueue <packet-path> [--queue <name>] [--platform <p>] [--dry-run] [--shadow-intent]\n\nEnqueues a task packet.",
-        "list" => "usage: repo-queue list [--queue <name>] [--status <s>] [--limit <n>] [--not-before <ts>] [--lane <l>] [--worker <w>] [--task <id>]\n\nLists tasks; a bare `list` shows one queue in the broker's default ordering (newest terminal rows first) — pass --status queued|parked|claimed|blocked for actionable work.",
-        "claim" => "usage: repo-queue claim [--worker <id>] [--reason <text>]\n\nClaims the highest-priority eligible task.",
-        "release" => "usage: repo-queue release <task-id> [--worker <id>] [--reason <text>]\n\nReleases a held claim.",
-        "lane" => "usage: repo-queue lane <task-id> [--worker <id>] [--stage <s>] [--progress <p>] [--progress-file <f>]\n\nReports lane progress on a task.",
-        "bind" => "usage: repo-queue bind <task-id> [--worker <id>] [--stage <s>] [--progress <p>] [--progress-file <f>]\n\nBinds a worker to a task.",
-        "heartbeat" => "usage: repo-queue heartbeat <task-id> [--worker <id>] [--stage <s>] [--progress <p>] [--progress-file <f>]\n\nRefreshes a claim lease.",
-        "checkpoint" => "usage: repo-queue checkpoint <task-id> [--worker <id>] [--stage <s>] [--progress <p>] [--progress-file <f>]\n\nRecords a progress checkpoint.",
-        "park" => "usage: repo-queue park <task-id> [--worker <id>] [--reason <text>]\n\nParks a task.",
-        "wake" => "usage: repo-queue wake <task-id> [--worker <id>] [--reason <text>]\n\nWakes a parked task.",
-        "block" => "usage: repo-queue block <task-id> [--worker <id>] [--reason <text>]\n\nMarks a task blocked.",
-        "unblock" => "usage: repo-queue unblock <task-id> [--worker <id>] [--reason <text>]\n\nClears a task's blocked state.",
-        "dep-recheck" => "usage: repo-queue dep-recheck [--task <id>] [--limit <n>]\n\nRechecks task dependencies.",
-        "quarantine-recheck" => "usage: repo-queue quarantine-recheck [--task <id>] [--limit <n>]\n\nRechecks quarantined tasks.",
-        "cancel" => "usage: repo-queue cancel <task-id> [--worker <id>] [--reason <text>]\n\nCancels a task.",
-        "revive" => "usage: repo-queue revive <task-id> [--worker <id>] [--reason <text>] [--not-before <ts>]\n\nRevives a terminal task.",
-        "fail" => "usage: repo-queue fail <task-id> [--worker <id>] [--error <text>] [--reason-class <c>] [--execution <id>]\n\nFails a task.",
-        "complete" => "usage: repo-queue complete <task-id> [--worker <id>] [--result <json>] [--result-file <f>] [--telemetry <json>] [--execution <id>] [--queue <name>]\n\nCompletes a task.",
-        "timeline" => "usage: repo-queue timeline <task-id> [--worker <id>]\n\nShows a task's event timeline.",
-        "models" => "usage: repo-queue models [--days <n>] [--json]\n\nRolls up serving-model stamps.",
+        "validate" => {
+            "usage: repo-queue validate <packet-path>\n\nValidates a task packet without enqueuing it."
+        }
+        "enqueue" => {
+            "usage: repo-queue enqueue <packet-path> [--queue <name>] [--platform <p>] [--dry-run] [--shadow-intent]\n\nEnqueues a task packet."
+        }
+        "list" => {
+            "usage: repo-queue list [--queue <name>] [--status <s>] [--limit <n>] [--not-before <ts>] [--lane <l>] [--worker <w>] [--task <id>]\n\nLists tasks; a bare `list` shows one queue in the broker's default ordering (newest terminal rows first) — pass --status queued|parked|claimed|blocked for actionable work."
+        }
+        "claim" => {
+            "usage: repo-queue claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\nClaims the highest-priority eligible task."
+        }
+        "release" => {
+            "usage: repo-queue release <task-id> [--worker <id>] [--reason <text>]\n\nReleases a held claim."
+        }
+        "lane" => {
+            "usage: repo-queue lane <task-id> [--worker <id>] [--exclusion-reason <text>] [--opencode-reason <text>] [--limit-platform <p>] [--limit-reason <text>] [--clear-platform-limit]\n\nReports lane progress on a task."
+        }
+        "bind" => {
+            "usage: repo-queue bind <task-id> [--worker <id>] --session-id <id> [--launched-by <who>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>]\n\nBinds a worker to a task."
+        }
+        "heartbeat" => {
+            "usage: repo-queue heartbeat <task-id> [--worker <id>] [--extend-seconds <n>] [--progress <p>] [--progress-file <f>]\n\nRefreshes a claim lease."
+        }
+        "checkpoint" => {
+            "usage: repo-queue checkpoint <task-id> [--worker <id>] [--stage <s>] [--progress <p>] [--progress-file <f>]\n\nRecords a progress checkpoint."
+        }
+        "park" => {
+            "usage: repo-queue park <task-id> [--worker <id>] --reason <text> [--delay-seconds <n>] [--not-before <ts>] [--progress <p>] [--progress-file <f>] [--ready-condition <c>] [--execution <id>] [--required-budget-minutes <n>]\n\nParks a task."
+        }
+        "wake" => {
+            "usage: repo-queue wake <task-id> [--worker <id>] [--reason <text>]\n\nWakes a parked task."
+        }
+        "block" => {
+            "usage: repo-queue block <task-id> [--worker <id>] --reason-class <c> --blocker <b> [--progress <p>] [--progress-file <f>] [--ledger-id <id>] [--question <text>] [--context <text>] [--options-json <json>] [--links-json <json>] [--blocked-by-pr <n>] [--blocked-by-issue <n>] [--blocked-by-task <id>] [--blocked-by-ci <ref>] [--dep-recheck-seconds <n>] [--dep-max-ttl-seconds <n>]\n\nMarks a task blocked."
+        }
+        "unblock" => {
+            "usage: repo-queue unblock <task-id> [--worker <id>] [--reason <text>]\n\nClears a task's blocked state."
+        }
+        "dep-recheck" => {
+            "usage: repo-queue dep-recheck [--task <id>] [--limit <n>]\n\nRechecks task dependencies."
+        }
+        "quarantine-recheck" => {
+            "usage: repo-queue quarantine-recheck [--task <id>] [--limit <n>]\n\nRechecks quarantined tasks."
+        }
+        "cancel" => {
+            "usage: repo-queue cancel <task-id> [--worker <id>] [--reason <text>]\n\nCancels a task."
+        }
+        "revive" => {
+            "usage: repo-queue revive <task-id> [--worker <id>] [--reason <text>] [--not-before <ts>]\n\nRevives a terminal task."
+        }
+        "fail" => {
+            "usage: repo-queue fail <task-id> [--worker <id>] [--error <text>] [--reason-class <c>] [--execution <id>]\n\nFails a task."
+        }
+        "complete" => {
+            "usage: repo-queue complete <task-id> [--worker <id>] [--result <json>] [--result-file <f>] [--telemetry <json>] [--execution <id>] [--queue <name>]\n\nCompletes a task."
+        }
+        "timeline" => {
+            "usage: repo-queue timeline <task-id> [--worker <id>]\n\nShows a task's event timeline."
+        }
+        "models" => {
+            "usage: repo-queue models [--days <n>] [--json]\n\nRolls up serving-model stamps."
+        }
         "health" => "usage: repo-queue health [--queue <name>] [--worker <id>]\n\nBroker health.",
-        "signal" => "usage: repo-queue signal [--queue <name>] [--reason <text>]\n\nSends a queue signal.",
+        "signal" => {
+            "usage: repo-queue signal [--queue <name>] [--reason <text>]\n\nSends a queue signal."
+        }
         "fallback" => crate::fallback::GROUP_USAGE,
-        "outbox enqueue" => "usage: repo-queue outbox enqueue [--repo <r>] [--kind <k>] [--dedup-key <d>] [--producer <p>] [--payload <json> | --payload-file <f>]\n\nEnqueues an outbox item.",
-        "outbox list" => "usage: repo-queue outbox list [--repo <r>] [--state <s>]\n\nLists outbox items.",
+        "outbox enqueue" => {
+            "usage: repo-queue outbox enqueue [--repo <r>] [--kind <k>] [--dedup-key <d>] [--producer <p>] [--payload <json> | --payload-file <f>]\n\nEnqueues an outbox item."
+        }
+        "outbox list" => {
+            "usage: repo-queue outbox list [--repo <r>] [--state <s>]\n\nLists outbox items."
+        }
         "outbox metrics" => "usage: repo-queue outbox metrics\n\nOutbox metrics.",
-        "outbox claim" => "usage: repo-queue outbox claim [--owner <name>]\n\nClaims an outbox item.",
-        "outbox resolve" => "usage: repo-queue outbox resolve <id> [--outcome done|rate_limited|uncertain|failed] [--github-number <n>] [--github-url <u>] [--retry-after <s>] [--error <text>]\n\nResolves an outbox item.",
-        "outbox drain" => "usage: repo-queue outbox drain [--owner <name>] [--max <n>]\n\nDrains claimed outbox items.",
-        "stack record" => "usage: repo-queue stack record [--stack <id>] [--worker <id>]\n\nRecords a stack entry.",
-        "stack list" => "usage: repo-queue stack list <stack-id> [--stack <id>] [--worker <id>]\n\nLists a stack's intents.",
-        "stack transition" => "usage: repo-queue stack transition [--stack <id>] [--worker <id>] [--repo-dir <dir>] [--dry-run]\n\nTransitions a stack.",
-        "stack restack" => "usage: repo-queue stack restack [--stack <id>] [--worker <id>] [--repo-dir <dir>] [--dry-run]\n\nRestacks intents.",
-        "stack replay" => "usage: repo-queue stack replay [--stack <id>] [--worker <id>] [--repo-dir <dir>] [--dry-run]\n\nReplays a stack plan.",
+        "outbox claim" => {
+            "usage: repo-queue outbox claim [--owner <name>]\n\nClaims an outbox item."
+        }
+        "outbox resolve" => {
+            "usage: repo-queue outbox resolve <id> [--outcome done|rate_limited|uncertain|failed] [--github-number <n>] [--github-url <u>] [--retry-after <s>] [--error <text>]\n\nResolves an outbox item."
+        }
+        "outbox drain" => {
+            "usage: repo-queue outbox drain [--owner <name>] [--max <n>]\n\nDrains claimed outbox items."
+        }
+        "stack record" => {
+            "usage: repo-queue stack record --stack <id> --repo <r> --branch <b> [--base-branch <b>] [--head-sha <sha>] [--issue <n>] [--pr <n>] --lane <l> [--worker <id>] [--session-id <id>]\n\nRecords a stack entry."
+        }
+        "stack list" => {
+            "usage: repo-queue stack list <stack-id> [--stack <id>] [--worker <id>]\n\nLists a stack's intents."
+        }
+        "stack transition" => {
+            "usage: repo-queue stack transition --stack <id> --position <n> --to <state> [--pr <n>] [--conflict-detail <text>] [--worker <id>]\n\nTransitions a stack."
+        }
+        "stack restack" => {
+            "usage: repo-queue stack restack --stack <id> --position <n> --base <b> [--head-sha <sha>] [--worker <id>]\n\nRestacks intents."
+        }
+        "stack replay" => {
+            "usage: repo-queue stack replay [--stack <id>] [--worker <id>] [--repo-dir <dir>] [--dry-run]\n\nReplays a stack plan."
+        }
         _ => TOP_USAGE,
     }
 }
@@ -912,6 +976,31 @@ pub(crate) fn usage(verb: &str) -> &'static str {
 /// exits 0, even alongside other flags.
 fn is_help_arg(s: &str) -> bool {
     matches!(s, "--help" | "-h" | "help")
+}
+
+/// True when `rest` asks for help: a help token that is not the value of
+/// one of `flags`. `fail 5 --error help` records the error text "help" and
+/// `park 5 --reason -h` parks with reason "-h"; neither is a help request.
+/// The value rule mirrors `parse_args_inner`: a value flag without an
+/// inline `=` takes the next token unless that token starts with `--`.
+pub(crate) fn wants_help(rest: &[String], flags: &[&str]) -> bool {
+    let mut i = 0;
+    while i < rest.len() {
+        let a = rest[i].as_str();
+        if is_help_arg(a) {
+            return true;
+        }
+        if let Some(long) = a.strip_prefix("--")
+            && !long.contains('=')
+            && flags.contains(&long)
+            && rest.get(i + 1).is_some_and(|v| !v.starts_with("--"))
+        {
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    false
 }
 
 /// The full text of a usage error: the one-line message plus the
@@ -932,7 +1021,7 @@ fn usage_error(verb: &str, msg: &str) -> ! {
 /// duplicate flag, flag without its value) prints the error plus
 /// the verb's usage and exits 2.
 fn parse_verb_args(verb: &str, rest: &[String], flags: &[&str], bools: &[&str]) -> Args {
-    if rest.iter().any(|a| is_help_arg(a)) {
+    if wants_help(rest, flags) {
         println!("{}", usage(verb));
         exit(0);
     }
@@ -1034,7 +1123,10 @@ impl Args {
 /// The error carries the verb's usage (#10838).
 fn reject_extra_pos(verb: &str, args: &Args, expected: usize) {
     if let Some(extra) = extra_positional(&args.pos, expected) {
-        usage_error(verb, &format!("{verb}: unexpected extra argument {extra:?}"));
+        usage_error(
+            verb,
+            &format!("{verb}: unexpected extra argument {extra:?}"),
+        );
     }
 }
 
@@ -1850,7 +1942,12 @@ fn resolve_enqueue_queue(
 }
 
 fn cmd_enqueue(rest: &[String]) -> i32 {
-    let args = parse_verb_args("enqueue", rest, &["queue", "platform"], &["dry-run", "shadow-intent"]);
+    let args = parse_verb_args(
+        "enqueue",
+        rest,
+        &["queue", "platform"],
+        &["dry-run", "shadow-intent"],
+    );
     reject_extra_pos("enqueue", &args, 1);
     let path = args
         .pos
@@ -2010,7 +2107,8 @@ pub(crate) fn bare_list_note(args: &Args, resolved_queue: &str) -> Option<String
 }
 
 fn cmd_list(rest: &[String]) -> i32 {
-    let args = parse_verb_args("list", 
+    let args = parse_verb_args(
+        "list",
         rest,
         &[
             "queue",
@@ -2918,7 +3016,8 @@ fn cmd_models(rest: &[String]) -> i32 {
 }
 
 fn cmd_claim(rest: &[String]) -> i32 {
-    let args = parse_verb_args("claim", 
+    let args = parse_verb_args(
+        "claim",
         rest,
         &[
             "queue",
@@ -3456,7 +3555,8 @@ fn claim_output(resp: &Value) -> (Value, i32) {
 }
 
 fn cmd_lane(rest: &[String]) -> i32 {
-    let args = parse_verb_args("lane", 
+    let args = parse_verb_args(
+        "lane",
         rest,
         &[
             "worker",
@@ -3488,7 +3588,8 @@ fn cmd_lane(rest: &[String]) -> i32 {
 }
 
 fn cmd_bind(rest: &[String]) -> i32 {
-    let args = parse_verb_args("bind", 
+    let args = parse_verb_args(
+        "bind",
         rest,
         &[
             "worker",
@@ -3561,7 +3662,8 @@ fn cmd_bind(rest: &[String]) -> i32 {
 }
 
 fn cmd_heartbeat(rest: &[String]) -> i32 {
-    let args = parse_verb_args("heartbeat", 
+    let args = parse_verb_args(
+        "heartbeat",
         rest,
         &["worker", "extend-seconds", "progress", "progress-file"],
         &[],
@@ -3588,7 +3690,12 @@ fn cmd_heartbeat(rest: &[String]) -> i32 {
 }
 
 fn cmd_checkpoint(rest: &[String]) -> i32 {
-    let args = parse_verb_args("checkpoint", rest, &["worker", "stage", "progress", "progress-file"], &[]);
+    let args = parse_verb_args(
+        "checkpoint",
+        rest,
+        &["worker", "stage", "progress", "progress-file"],
+        &[],
+    );
     reject_extra_pos("checkpoint", &args, 1);
     let stage = args
         .get("stage")
@@ -3610,7 +3717,8 @@ fn cmd_checkpoint(rest: &[String]) -> i32 {
 }
 
 fn cmd_park(rest: &[String]) -> i32 {
-    let args = parse_verb_args("park", 
+    let args = parse_verb_args(
+        "park",
         rest,
         &[
             "worker",
@@ -3771,7 +3879,8 @@ fn block_links_arg(args: &Args) -> Vec<String> {
 }
 
 fn cmd_block(rest: &[String]) -> i32 {
-    let args = parse_verb_args("block", 
+    let args = parse_verb_args(
+        "block",
         rest,
         &[
             "worker",
@@ -4059,7 +4168,12 @@ fn cmd_revive(rest: &[String]) -> i32 {
 }
 
 fn cmd_fail(rest: &[String]) -> i32 {
-    let args = parse_verb_args("fail", rest, &["worker", "error", "reason-class", "execution"], &[]);
+    let args = parse_verb_args(
+        "fail",
+        rest,
+        &["worker", "error", "reason-class", "execution"],
+        &[],
+    );
     reject_extra_pos("fail", &args, 1);
     let error = args
         .get("error")
@@ -4092,7 +4206,8 @@ fn cmd_fail(rest: &[String]) -> i32 {
 }
 
 fn cmd_complete(rest: &[String]) -> i32 {
-    let args = parse_verb_args("complete", 
+    let args = parse_verb_args(
+        "complete",
         rest,
         &[
             "worker",
@@ -4362,7 +4477,8 @@ fn outbox_payload(args: &Args) -> Value {
 }
 
 fn cmd_outbox_enqueue(rest: &[String]) -> i32 {
-    let args = parse_verb_args("outbox enqueue", 
+    let args = parse_verb_args(
+        "outbox enqueue",
         rest,
         &[
             "repo",
@@ -4433,7 +4549,8 @@ fn cmd_outbox_claim(rest: &[String]) -> i32 {
 }
 
 fn cmd_outbox_resolve(rest: &[String]) -> i32 {
-    let args = parse_verb_args("outbox resolve", 
+    let args = parse_verb_args(
+        "outbox resolve",
         rest,
         &[
             "outcome",
@@ -5058,7 +5175,8 @@ pub(crate) fn stack_record_body(
 }
 
 fn cmd_stack_record(rest: &[String]) -> i32 {
-    let args = parse_verb_args("stack record", 
+    let args = parse_verb_args(
+        "stack record",
         rest,
         &[
             "stack",
@@ -5213,7 +5331,8 @@ fn stack_transition_result(
 }
 
 fn cmd_stack_transition(rest: &[String]) -> i32 {
-    let args = parse_verb_args("stack transition", 
+    let args = parse_verb_args(
+        "stack transition",
         rest,
         &["stack", "position", "to", "pr", "conflict-detail", "worker"],
         &[],
@@ -5276,7 +5395,8 @@ pub(crate) fn stack_restack_body(
 }
 
 fn cmd_stack_restack(rest: &[String]) -> i32 {
-    let args = parse_verb_args("stack restack", 
+    let args = parse_verb_args(
+        "stack restack",
         rest,
         &["stack", "position", "base", "head-sha", "worker"],
         &[],
@@ -5395,7 +5515,12 @@ fn replay_args(parts: &[&str]) -> Vec<String> {
 /// failure stops the pass with the intent left `replaying` — a
 /// later `stack replay` resumes it (exit 3).
 fn cmd_stack_replay(rest: &[String]) -> i32 {
-    let args = parse_verb_args("stack replay", rest, &["stack", "worker", "repo-dir"], &["dry-run"]);
+    let args = parse_verb_args(
+        "stack replay",
+        rest,
+        &["stack", "worker", "repo-dir"],
+        &["dry-run"],
+    );
     reject_extra_pos("stack replay", &args, 0);
     let stack_id = args
         .get("stack")
@@ -6055,8 +6180,10 @@ fn cmd_stack_replay(rest: &[String]) -> i32 {
 }
 
 fn cmd_stack(rest: &[String]) -> i32 {
-    if rest.is_empty() || rest.iter().any(|a| is_help_arg(a)) {
-        println!("usage: repo-queue stack <record|list|transition|restack|replay> ...\n\nRun `repo-queue stack <sub> --help` for flags.");
+    if rest.is_empty() || is_help_arg(&rest[0]) {
+        println!(
+            "usage: repo-queue stack <record|list|transition|restack|replay> ...\n\nRun `repo-queue stack <sub> --help` for flags."
+        );
         return if rest.is_empty() { 2 } else { 0 };
     }
     let sub = rest[0].as_str();
@@ -6068,15 +6195,19 @@ fn cmd_stack(rest: &[String]) -> i32 {
         "restack" => cmd_stack_restack(tail),
         "replay" => cmd_stack_replay(tail),
         _ => {
-            eprint(&format!("repo-queue: unknown stack command {sub:?}\nusage: repo-queue stack <record|list|transition|restack|replay> ..."));
+            eprint(&format!(
+                "repo-queue: unknown stack command {sub:?}\nusage: repo-queue stack <record|list|transition|restack|replay> ..."
+            ));
             2
         }
     }
 }
 
 fn cmd_outbox(rest: &[String]) -> i32 {
-    if rest.is_empty() || rest.iter().any(|a| is_help_arg(a)) {
-        println!("usage: repo-queue outbox <enqueue|list|metrics|claim|resolve|drain> ...\n\nRun `repo-queue outbox <sub> --help` for flags.");
+    if rest.is_empty() || is_help_arg(&rest[0]) {
+        println!(
+            "usage: repo-queue outbox <enqueue|list|metrics|claim|resolve|drain> ...\n\nRun `repo-queue outbox <sub> --help` for flags."
+        );
         return if rest.is_empty() { 2 } else { 0 };
     }
     let sub = rest[0].as_str();
@@ -7961,11 +8092,21 @@ esac
         // block, complete, health, fallback each print a verb usage
         // that names the verb's own flags.
         for verb in [
-            "claim", "list", "enqueue", "checkpoint", "park", "block", "complete", "health",
+            "claim",
+            "list",
+            "enqueue",
+            "checkpoint",
+            "park",
+            "block",
+            "complete",
+            "health",
             "fallback",
         ] {
             let u = usage(verb);
-            assert!(u.starts_with("usage: repo-queue"), "{verb} usage header: {u:?}");
+            assert!(
+                u.starts_with("usage: repo-queue"),
+                "{verb} usage header: {u:?}"
+            );
             assert!(u.contains(verb), "{verb} usage names the verb: {u:?}");
         }
     }
@@ -8000,13 +8141,124 @@ esac
     }
 
     #[test]
+    fn a_help_word_given_as_a_flag_value_is_not_a_help_request() {
+        let flags = ["worker", "error", "reason"];
+        let v = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // `fail 5 --error help` must fail the task with error "help".
+        assert!(!wants_help(&v(&["5", "--error", "help"]), &flags));
+        assert!(!wants_help(&v(&["5", "--reason", "-h"]), &flags));
+        // A real help token still wins anywhere else.
+        assert!(wants_help(&v(&["5", "--error", "boom", "--help"]), &flags));
+        assert!(wants_help(&v(&["5", "--error=help", "-h"]), &flags));
+        // `--error --help`: the parser never takes a `--` token as a value.
+        assert!(wants_help(&v(&["5", "--error", "--help"]), &flags));
+        assert!(wants_help(&v(&["help"]), &flags));
+    }
+
+    /// Every verb's usage names exactly the flags its parser accepts, and as
+    /// many leading `<positional>`s as it allows (#10838). Read from this
+    /// file's own `parse_verb_args` / `reject_extra_pos` calls, so a flag
+    /// added to a parser without its usage (or the reverse) fails here.
+    #[test]
+    fn every_verb_usage_matches_its_parser() {
+        let src = include_str!("client.rs");
+        let list = |text: &str| -> Vec<String> {
+            text.split('"')
+                .skip(1)
+                .step_by(2)
+                .map(str::to_string)
+                .collect()
+        };
+        let resolve = |arg: &str| -> Vec<String> {
+            let arg = arg.trim();
+            if arg.starts_with("&[") {
+                return list(arg);
+            }
+            let decl = format!("const {arg}: &[&str] = &[");
+            let start = src.find(&decl).unwrap_or_else(|| panic!("no const {arg}")) + decl.len();
+            list(&src[start..start + src[start..].find(']').unwrap()])
+        };
+        let mut checked = 0;
+        let marker = ["parse_verb", "_args(\""].concat();
+        for (at, _) in src.match_indices(marker.as_str()) {
+            let call = &src[at + marker.len()..];
+            let verb = &call[..call.find('"').unwrap()];
+            if verb.is_empty() || verb.contains('{') {
+                continue;
+            }
+            let after_rest = &call[call.find("rest,").unwrap() + "rest,".len()..];
+            let (flags_arg, tail) = match after_rest.trim_start().starts_with("&[") {
+                true => {
+                    let t = after_rest.trim_start();
+                    let end = t.find(']').unwrap() + 1;
+                    (&t[..end], &t[end..])
+                }
+                false => {
+                    let t = after_rest.trim_start();
+                    let end = t.find(',').unwrap();
+                    (&t[..end], &t[end..])
+                }
+            };
+            let tail = tail.trim_start().trim_start_matches(',').trim_start();
+            let bools_arg = if tail.starts_with("&[") {
+                &tail[..tail.find(']').unwrap() + 1]
+            } else {
+                &tail[..tail.find(|c: char| c == ',' || c == ')').unwrap()]
+            };
+            let mut want: Vec<String> = resolve(flags_arg);
+            want.extend(resolve(bools_arg));
+            want.sort();
+            let text = usage(verb);
+            let synopsis = text.lines().next().unwrap();
+            let mut got: Vec<String> = synopsis
+                .split(|c: char| c == ' ' || c == '[' || c == ']' || c == '|')
+                .filter_map(|w| w.strip_prefix("--"))
+                .map(|w| w.split('=').next().unwrap().to_string())
+                .collect();
+            got.sort();
+            got.dedup();
+            assert_eq!(
+                got, want,
+                "usage for {verb:?} must list exactly its flags: {synopsis}"
+            );
+            let reject = format!("reject_extra_pos(\"{verb}\", &args, ");
+            if let Some(r) = src.find(&reject) {
+                let n: usize = src[r + reject.len()..]
+                    .split(')')
+                    .next()
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                // Leading positionals only: the `<...>` words before the
+                // first flag (a flag's own `<value>` is not a positional).
+                let positionals = synopsis
+                    .split_whitespace()
+                    .skip_while(|w| {
+                        !w.starts_with('<') && !w.starts_with('[') && !w.starts_with("--")
+                    })
+                    .take_while(|w| w.starts_with('<'))
+                    .count();
+                assert_eq!(positionals, n, "usage for {verb:?} positionals: {synopsis}");
+            }
+            checked += 1;
+        }
+        assert!(checked >= 30, "scanned only {checked} verbs");
+    }
+
+    #[test]
     fn bare_list_note_fires_only_on_unfiltered_list() {
         let bare = parse_args_inner(&[], &["queue", "status", "limit"], &[]).unwrap();
         let note = bare_list_note(&bare, "repo-queue-code-pilot");
         assert!(note.is_some(), "bare list must carry the scope note");
         let note = note.unwrap();
-        assert!(note.contains("repo-queue-code-pilot"), "note names the queue: {note:?}");
-        assert!(note.contains("--status"), "note points at filters: {note:?}");
+        assert!(
+            note.contains("repo-queue-code-pilot"),
+            "note names the queue: {note:?}"
+        );
+        assert!(
+            note.contains("--status"),
+            "note points at filters: {note:?}"
+        );
         // Any scope filter silences the note.
         for flag in ["queue", "status", "lane", "worker", "task"] {
             let filtered = parse_args_inner(
@@ -8026,9 +8278,6 @@ esac
     fn extra_positional_reports_the_first_extra() {
         assert_eq!(extra_positional(&[], 1), None);
         assert_eq!(extra_positional(&["a".into()], 1), None);
-        assert_eq!(
-            extra_positional(&["a".into(), "b".into()], 1),
-            Some("b")
-        );
+        assert_eq!(extra_positional(&["a".into(), "b".into()], 1), Some("b"));
     }
 }
