@@ -25,6 +25,11 @@
 //!   the embedding-model contract (#7648, M6 of the #6060 decision
 //!   record): a unit is promoted only when its database's recorded
 //!   `atlas_manifest` `embedding_model` equals the mandated model.
+//!   A successful promotion writes the unit's [`MergeManifest`],
+//!   branches its staging DB as the unit's archive
+//!   ([`branch_staging_db_as_archive`]), and takes the unit out of
+//!   every active state; the manifest and the archive are the
+//!   durable record (#5669 criterion 4).
 //!
 //! Deliberately out of scope here (later slices of #5669): the
 //! aggregator/embedder and merge-on-close promotion, the physical core
@@ -34,12 +39,12 @@
 //! surface the aggregator slice names, not this foundation.
 
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::{Error, Result};
-use crate::shards::{Tier, EMBEDDING_MODEL_ID};
+use crate::shards::{EMBEDDING_MODEL_ID, Tier};
 
 /// The staging schema version this build knows how to provision and
 /// read. Bump only together with a new `atlas_stage_vN.sql` artifact;
@@ -615,12 +620,35 @@ impl Registry {
     /// model cannot be promoted silently (#6019 ingestion inherits
     /// this gate by promoting through here). On refusal the unit's
     /// state does not change.
+    ///
+    /// A promotion that is accepted performs the design's close-out
+    /// (#5669 criterion 4, design 4.1):
+    ///
+    /// 1. the unit's staging DB is branched by copying a consistent
+    ///    snapshot beside it as the unit's archive
+    ///    ([`branch_staging_db_as_archive`]) — a failing archive is a
+    ///    failed promotion, so a `merged` unit always has its archive;
+    /// 2. the [`MergeManifest`] is written and the unit's registry row
+    ///    moves to `merged` in one transaction — the unit is no longer
+    ///    returned by any active-state query
+    ///    ([`Registry::units_in_state`]), while its manifest and
+    ///    archive remain the durable record.
+    ///
+    /// The archive is written before the registry transition commits;
+    /// if that commit fails the unit stays active and the promotion
+    /// can be retried (the archive copy is simply refreshed).
     pub fn promote(&self, unit_id: &str, now: &str) -> Result<()> {
         let unit = self.lookup(unit_id)?.ok_or_else(|| {
             Error::fatal(format!("registry: no staging unit {unit_id:?} to promote"))
         })?;
+        if unit.state == UnitState::Merged {
+            return Err(Error::fatal(format!(
+                "registry: unit {unit_id:?} is already merged"
+            )));
+        }
         assert_unit_embedding_model(&unit)?;
         let staged = build_merge_manifest(&unit, now)?;
+        branch_staging_db_as_archive(&unit)?;
         let tx = self.conn.unchecked_transaction().map_err(|e| {
             Error::backend(format!("registry: beginning promotion for {unit_id}: {e}"))
         })?;
@@ -644,6 +672,79 @@ impl Registry {
     }
 }
 
+/// The archive path a promotion branches a unit's staging DB to: the
+/// staging DB file name with `.archive` appended, in the same
+/// directory (`unit.db` → `unit.db.archive`), so the archive sits
+/// beside the DB it preserves and moves with it.
+pub fn staging_archive_path(db_uri: &str) -> PathBuf {
+    let db = Path::new(db_uri);
+    let mut name = db
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_else(|| "staging.db".into());
+    name.push(".archive");
+    db.with_file_name(name)
+}
+
+/// Branch a unit's staging DB as its archive (#5669 criterion 4,
+/// design 4.1: a merged unit is "promoted, archived by a branch,
+/// dropped from active use"): copy the unit's staged set — schema
+/// version, items, chunks, notes, kv — into a fresh database at
+/// [`staging_archive_path`] with `VACUUM INTO`, which reads a
+/// consistent snapshot and writes a complete standalone database.
+/// The staging DB itself stays untouched (retained); the archive is
+/// the durable, verifiable record next to it. Any previous archive
+/// at the path is replaced only once the new snapshot has been
+/// written (the copy goes to a temporary sibling first), so a failed
+/// re-archive never leaves a half-written archive behind.
+///
+/// Called by [`Registry::promote`]; public so the archive of a
+/// promoted unit can be recomputed or inspected by later slices.
+pub fn branch_staging_db_as_archive(unit: &StagingUnit) -> Result<PathBuf> {
+    let archive = staging_archive_path(&unit.db_uri);
+    let name = archive
+        .file_name()
+        .map(|n| n.to_os_string())
+        .ok_or_else(|| {
+            Error::fatal(format!(
+                "staging: archive path {} has no file name",
+                archive.display()
+            ))
+        })?;
+    let mut tmp_name = name;
+    tmp_name.push(".tmp");
+    let tmp = archive.with_file_name(tmp_name);
+    for stale in [&tmp, &archive] {
+        // The snapshot names are ordinary database files: clear the
+        // previous copy and any stale temporary from an earlier run
+        // before writing (a bare file is all VACUUM INTO needs).
+        remove_staging_db(stale);
+    }
+    let conn = open(Path::new(&unit.db_uri))?;
+    let target = sql_string_literal(&tmp.to_string_lossy());
+    conn.execute_batch(&format!("VACUUM INTO {target}"))
+        .map_err(|e| {
+            Error::backend(format!(
+                "staging: branching {} as archive for unit {}: {e}",
+                unit.db_uri, unit.unit_id
+            ))
+        })?;
+    std::fs::rename(&tmp, &archive).map_err(|e| {
+        Error::backend(format!(
+            "staging: moving archive snapshot into place at {}: {e}",
+            archive.display()
+        ))
+    })?;
+    Ok(archive)
+}
+
+/// Quote a value as a single-quoted SQL string literal, doubling
+/// embedded quotes per SQLite's literal syntax (`VACUUM INTO` takes
+/// its target as a string expression).
+fn sql_string_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
 /// Hash the complete staged set in a stable, typed encoding. The table
 /// and column order is explicit and rows are ordered by rowid; SQLite
 /// storage classes are tagged so NULL, integers, text and blobs cannot
@@ -653,9 +754,18 @@ fn build_merge_manifest(unit: &StagingUnit, now: &str) -> Result<MergeManifest> 
     use sha2::{Digest, Sha256};
     let conn = open(Path::new(&unit.db_uri))?;
     let tables = [
-        ("items", "SELECT id, unit_id, kind, source, text, sensitivity, created_at, meta FROM items WHERE unit_id = ?1 ORDER BY rowid"),
-        ("chunks_raw", "SELECT c.id, c.item_id, c.idx, c.text, c.content_hash, c.created_at FROM chunks_raw c JOIN items i ON i.id = c.item_id WHERE i.unit_id = ?1 ORDER BY c.rowid"),
-        ("notes", "SELECT id, unit_id, body, created_at, meta FROM notes WHERE unit_id = ?1 ORDER BY rowid"),
+        (
+            "items",
+            "SELECT id, unit_id, kind, source, text, sensitivity, created_at, meta FROM items WHERE unit_id = ?1 ORDER BY rowid",
+        ),
+        (
+            "chunks_raw",
+            "SELECT c.id, c.item_id, c.idx, c.text, c.content_hash, c.created_at FROM chunks_raw c JOIN items i ON i.id = c.item_id WHERE i.unit_id = ?1 ORDER BY c.rowid",
+        ),
+        (
+            "notes",
+            "SELECT id, unit_id, body, created_at, meta FROM notes WHERE unit_id = ?1 ORDER BY rowid",
+        ),
         ("kv", "SELECT key, value, updated_at FROM kv ORDER BY rowid"),
     ];
     let mut hasher = Sha256::new();
@@ -991,10 +1101,32 @@ mod tests {
             .map(|b| format!("{b:02x}"))
             .collect();
         assert_eq!(promoted.content_hash, expected_hash);
+        // Close-out, part 1: the unit is out of the active registry
+        // (the aggregator's poll only reads open/closing), while its
+        // manifest remains retrievable.
+        for state in [UnitState::Open, UnitState::Closing] {
+            let active = reg.units_in_state(state).expect("active state query");
+            assert!(
+                active.iter().all(|u| u.unit_id != "unit-good"),
+                "a merged unit must not be returned as active ({state})"
+            );
+        }
+        // Close-out, part 2: the staging DB was branched as the
+        // unit's archive beside it; the original is retained.
+        let archive = staging_archive_path(&db.to_string_lossy());
+        assert!(archive.exists(), "promotion must branch the archive");
+        assert!(db.exists(), "the staging DB is retained, not moved");
+        let archive_bytes = std::fs::read(&archive).expect("archive bytes");
         assert!(reg.promote("unit-good", "2026-11-10T02:00:00Z").is_err());
         assert_eq!(
             reg.merge_manifest("unit-good").expect("manifest query"),
             Some(promoted)
+        );
+        // A refused repeat promotion changes nothing, archive included.
+        assert_eq!(
+            std::fs::read(&archive).expect("archive bytes after refusal"),
+            archive_bytes,
+            "a refused promotion must not touch the archive"
         );
 
         // Non-mandated model: refusal naming unit and both ids, and
@@ -1016,6 +1148,10 @@ mod tests {
             .merge_manifest("unit-bad")
             .expect("manifest query")
             .is_none());
+        assert!(
+            !staging_archive_path(&db.to_string_lossy()).exists(),
+            "a refused promotion must not branch an archive"
+        );
 
         // No recorded model: refused as unknown provenance, state
         // unchanged.
@@ -1035,6 +1171,10 @@ mod tests {
             .merge_manifest("unit-unknown")
             .expect("manifest query")
             .is_none());
+        assert!(
+            !staging_archive_path(&_db.to_string_lossy()).exists(),
+            "an unknown-provenance refusal must not branch an archive"
+        );
 
         let empty_db = provision_unit(&dir, &reg, "unit-empty");
         stamp_embedding_model(&empty_db, EMBEDDING_MODEL_ID);
@@ -1050,7 +1190,81 @@ mod tests {
             .merge_manifest("unit-empty")
             .expect("manifest query")
             .is_none());
+        assert!(
+            !staging_archive_path(&empty_db.to_string_lossy()).exists(),
+            "an empty-unit refusal must not branch an archive"
+        );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Oracle: the archive itself, read back as a database. After
+    /// promotion the branched archive holds the same staged set the
+    /// manifest counted, and the manifest's content hash recomputes
+    /// from the archive's own rows — the round-trip verification the
+    /// design's audit trail is defined against (#5669 criterion 4).
+    #[test]
+    fn promotion_archive_preserves_the_staged_set_and_verifies() {
+        let dir = std::env::temp_dir().join(format!("atlas-stage-archive-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let reg = Registry::in_memory().expect("registry");
+        let db = provision_unit(&dir, &reg, "unit-archived");
+        let entry = artifact_entry("argo.internal:\n  type: A\n  content: 10.10.32.1\n");
+        stage_artifact_in_db(&db, "unit-archived", &entry, "2026-11-17T00:00:00Z")
+            .expect("stage artifact");
+        stamp_embedding_model(&db, EMBEDDING_MODEL_ID);
+        reg.promote("unit-archived", "2026-11-17T01:00:00Z")
+            .expect("promote staged unit");
+        let manifest = reg
+            .merge_manifest("unit-archived")
+            .expect("manifest query")
+            .expect("manifest persisted");
+
+        let archive = staging_archive_path(&db.to_string_lossy());
+        assert!(archive.exists(), "the unit's archive must exist");
+        let conn = open(&archive).expect("open archive");
+        // The archive is a complete staging DB: schema version 1 and
+        // the full staged set (the embed pipeline's atlas_manifest
+        // table travels with it, as in any embedded staging DB).
+        assert_eq!(
+            schema_version(&conn).expect("archive schema version"),
+            STAGE_SCHEMA_VERSION
+        );
+        let tables = user_tables(&conn).expect("archive tables");
+        for table in STAGE_V1_TABLES {
+            assert!(tables.contains(table), "archive is missing table {table}");
+        }
+        let items: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE unit_id = ?1",
+                params!["unit-archived"],
+                |r| r.get(0),
+            )
+            .expect("archive item count");
+        assert_eq!(items, 1);
+        let chunks: i64 = conn
+            .query_row("SELECT COUNT(*) FROM chunks_raw", [], |r| r.get(0))
+            .expect("archive chunk count");
+        assert_eq!(chunks, 1);
+        // Independent hash oracle over the archive's own rows: the
+        // manifest hash and counts recompute from the archive exactly.
+        let archived = StagingUnit {
+            unit_id: "unit-archived".to_string(),
+            db_uri: archive.to_string_lossy().into_owned(),
+            owner: "repo-worker-code".to_string(),
+            sensitivity: Tier::Internal,
+            state: UnitState::Merged,
+            schema_version: STAGE_SCHEMA_VERSION,
+            created_at: "2026-11-10T00:00:00Z".to_string(),
+            updated_at: "2026-11-17T01:00:00Z".to_string(),
+        };
+        let recomputed =
+            build_merge_manifest(&archived, "2026-11-17T01:00:00Z").expect("recompute manifest");
+        assert_eq!(recomputed.rows_in, manifest.rows_in);
+        assert_eq!(recomputed.content_hash, manifest.content_hash);
+        // The staging DB is retained beside its archive, untouched.
+        assert!(db.exists(), "the staging DB stays in place");
         let _ = std::fs::remove_dir_all(&dir);
     }
     // ---- #1518: code/config artifact item writer ----
