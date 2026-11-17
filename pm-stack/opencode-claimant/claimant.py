@@ -201,133 +201,218 @@ def get_active_root_session_count() -> int:
         return -1  # Unknown
 
 
-def supervision_step(mode: str) -> List[Dict]:
-    """
-    Step 1: Supervision - check bound sessions for recovery candidates.
-    
-    Returns list of tasks that need recovery (bound but stuck/zero-message sessions).
-    """
-    if mode != "live":
-        return []
-    
-    recovery_candidates = []
-    
-    # Get all claimed opencode-lane tasks with bound session IDs.
-    # Rows come from poll.py's broker rich read: the repo-queue
-    # binary's list verb prints a human table, and json-parsing it
-    # silently supervised nothing (#7325).
+# OpenCode server reads used by supervision. The v2 server answers
+# messages at /api/session/<id>/message — SINGULAR. /messages is a 404
+# with an EMPTY body, so a status-blind reader reads every session as
+# "zero messages" and deletes work that actually ran (#8038). Every
+# read below distinguishes "zero" from "could not read".
+MESSAGES_PATH = "/api/session/{id}/message"
+
+
+def _server_call(path: str, method: str = "GET", timeout: int = 10):
+    """(status, decoded_body) for one authenticated server call.
+
+    status is None when the call never completed (transport failure,
+    no status line); decoded_body is None for an empty or non-JSON
+    body. The credential never leaves this function."""
+    try:
+        result = subprocess.run(
+            ["curl", "-s", "-m", str(timeout), "-X", method,
+             *_auth_header_args(), "-w", "\n%{http_code}",
+             f"{OPENCODE_URL}{path}"],
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None, None
+    if result.returncode != 0:
+        return None, None
+    body, _, code = result.stdout.rpartition("\n")
+    try:
+        status = int(code.strip())
+    except ValueError:
+        return None, None
+    payload = None
+    if body.strip():
+        try:
+            payload = json.loads(body)
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict) and "data" in payload:
+            payload = payload["data"]
+    return status, payload
+
+
+def _session_messages(session_id: str) -> Optional[List]:
+    """The session's messages, or None when the read is inconclusive.
+
+    None means UNKNOWN, never zero: a non-200 status, a transport
+    failure or a non-list body leaves the binding alone (step 1a)."""
+    status, payload = _server_call(MESSAGES_PATH.format(id=session_id))
+    if status != 200 or not isinstance(payload, list):
+        return None
+    return payload
+
+
+def _delete_session_verified(session_id: str) -> bool:
+    """Delete the session and prove it is gone (step 1b). False on any
+    doubt: an un-deleted session with a cleared binding is the
+    duplicate-execution defect this ordering prevents."""
+    status, _ = _server_call(f"/api/session/{session_id}",
+                             method="DELETE", timeout=5)
+    if status not in (200, 202, 204, 404):
+        return False
+    status, _ = _server_call(f"/api/session/{session_id}", timeout=5)
+    return status == 404
+
+
+def _lease_expired(row: Dict, now_ms: int) -> bool:
+    """Only an expired lease makes a bound task the claimant's
+    business; an unreadable lease is never 'expired'."""
     poll = _load_poll_module()
+    lease_ms = poll.parse_lease_ms(row.get("lease_until"))
+    return lease_ms is not None and lease_ms <= now_ms
+
+
+def _queue_verb(argv: List[str]):
+    """Run one queue CLI verb, or None when it cannot be run."""
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=15)
+    except Exception as e:
+        print(f"Supervision: queue verb failed ({argv[1]}): {e}")
+        return None
+
+
+def supervision_step(mode: str) -> List[Dict]:
+    """Step 1: supervise bound opencode-lane sessions.
+
+    Candidates come from poll.py's classifiers, not from a local
+    reimplementation: `stuck_bound` (lease expired, session present as
+    a root with NO terminal marker, not in the server's active set,
+    silent for ACTIVE_WINDOW_MS — #4758) plus the gone-session case
+    (bound id absent from the COMPLETE session list, lease expired).
+
+    Each candidate passes three guards before anything is mutated: the
+    message read must succeed and be empty, the delete must be
+    verified, and only then is the binding cleared atomically. Any
+    unknown (session list, active set, message read) leaves every
+    binding exactly as it is. Shadow mode reports only.
+    """
+    poll = _load_poll_module()
+    now_ms = int(time.time() * 1000)
+    sessions = poll.fetch_sessions()
+    active_ids = poll.fetch_active_ids() if sessions is not None else None
+    if sessions is None or active_ids is None:
+        print("Supervision: session list or active set unreadable; "
+              "leaving every binding as it is.")
+        return []
+    session_by_id = {
+        s["id"]: s for s in sessions if isinstance(s, dict) and s.get("id")
+    }
+
+    stuck, gone = [], []
     for queue in QUEUES:
         try:
-            for task in poll.fetch_claimed_rows(queue):
-                # Rich rows carry lane/session in progress; a
-                # flattened row carries them at top level.
-                prog = task.get("progress") or {}
-                lane = prog.get("lane") or task.get("lane")
-                session_id = prog.get("session_id") or task.get("session_id")
-                if lane == "opencode" and session_id:
-
-                    # Check if session exists and is progressing
-                    try:
-                        session_response = subprocess.run(
-                            ["curl", "-s", "-m", "5", *_auth_header_args(),
-                             f"{OPENCODE_URL}/api/session/{session_id}"],
-                            capture_output=True,
-                            text=True
-                        )
-
-                        if session_response.returncode == 0:
-                            session = json.loads(session_response.stdout)
-                            if isinstance(session, dict) and "data" in session:
-                                session = session["data"]
-                            if not isinstance(session, dict) or not session.get("id"):
-                                # Error body, not a session object:
-                                # the session is gone from the server.
-                                session = None
-                            else:
-                                # Check for terminal state
-                                has_terminal = any(
-                                    marker in str(session.get("outcome", "") or "") or
-                                    marker in str((session.get("time") or {}).get("idle", "") or "")
-                                    for marker in ["idle", "outcome", "completed", "failed"]
-                                )
-
-                                if not has_terminal:
-                                    # Session exists and is active - nothing to do
-                                    continue
-                        # else: Session gone from server or error
-                    except Exception:
-                        # Could not verify session - leave bound
-                        continue
-
-                    # Session is gone or stuck - check if recovery is possible
-                    # Check task attempts and lease
-                    if task.get("attempts", 0) < task.get("max_attempts", 5):
-                        # Verify zero messages first
-                        try:
-                            messages_response = subprocess.run(
-                                ["curl", "-s", "-m", "5", *_auth_header_args(),
-                                 f"{OPENCODE_URL}/api/session/{session_id}/messages"],
-                                capture_output=True,
-                                text=True
-                            )
-
-                            if messages_response.returncode == 0:
-                                messages = json.loads(messages_response.stdout or "[]")
-                                if isinstance(messages, dict) and "data" in messages:
-                                    messages = messages["data"]
-                                if isinstance(messages, list) and len(messages) == 0:
-                                    recovery_candidates.append({
-                                        "task_id": task["id"],
-                                        "session_id": session_id,
-                                        "reason": "zero_message"
-                                    })
-                        except Exception:
-                            # Could not read messages - treat as unknown state
-                            pass
+            rows = poll.fetch_claimed_rows(queue)
         except Exception as e:
-            print(f"Warning: Supervision check failed for queue {queue}: {e}")
-    
-    # Process recovery candidates
-    for candidate in recovery_candidates:
-        task_id = candidate["task_id"]
-        session_id = candidate["session_id"]
-        
-        try:
-            # Delete the zero-message session
-            delete_result = subprocess.run(
-                ["curl", "-s", "-m", "5", "-X", "DELETE", *_auth_header_args(),
-                 f"{OPENCODE_URL}/api/session/{session_id}"],
-                capture_output=True,
-                text=True
-            )
-            
-            if delete_result.returncode == 0:
-                # Attempt recovery via atomic bind operation
-                bind_result = subprocess.run(
-                    [
-                        str(REPO_QUEUE_CMD),
-                        "bind", str(task_id),
-                        "--worker", "opencode-claimant",
-                        "--session-id", session_id,
-                        "--launched-by", LAUNCHED_BY_RECOVERY_ZERO_MESSAGE
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
-                
-                if bind_result.returncode == 0:
-                    print(f"Recovered task {task_id}: deleted zero-message session {session_id}")
-                    # Task is now unbound and eligible for next fire
-                else:
-                    print(f"Failed to recover task {task_id}: {bind_result.stderr}")
-            else:
-                print(f"Failed to delete session {session_id} for task {task_id}")
-        except Exception as e:
-            print(f"Error during recovery of task {task_id}: {e}")
-    
-    return recovery_candidates
+            print(f"Supervision: could not read queue {queue}: {e}")
+            continue
+        stuck.extend(poll.get_stuck_bound(rows, session_by_id, active_ids, now_ms))
+        for row in rows:
+            prog = row.get("progress") or {}
+            session_id = prog.get("session_id")
+            if prog.get("lane") != "opencode" or not session_id:
+                continue
+            if session_id in session_by_id:
+                continue  # present on the server: the stuck rule owns it
+            if _lease_expired(row, now_ms):
+                gone.append(row)
+
+    if mode != "live":
+        for row in stuck:
+            print(f"Supervision (shadow): task {row.get('id')} bound session "
+                  f"{(row.get('progress') or {}).get('session_id')} looks stuck")
+        for row in gone:
+            print(f"Supervision (shadow): task {row.get('id')} bound session "
+                  f"{(row.get('progress') or {}).get('session_id')} is gone")
+        return []
+
+    recovered = []
+    todo = [(row, "zero_message") for row in stuck] + \
+           [(row, "gone_session") for row in gone]
+    for row, reason in todo:
+        task_id = row.get("id")
+        prog = row.get("progress") or {}
+        session_id = prog.get("session_id")
+        worker_id = row.get("worker_id") or "repo-worker-code"
+        attempts = row.get("attempts") or 0
+        max_attempts = row.get("max_attempts") or 5
+
+        if reason == "zero_message":
+            messages = _session_messages(session_id)
+            if messages is None:
+                print(f"Supervision: messages unreadable for session "
+                      f"{session_id} (task {task_id}); state unknown, "
+                      f"leaving it bound.")
+                continue
+            if messages:
+                print(f"Supervision: task {task_id} session {session_id} "
+                      f"holds {len(messages)} messages; leaving it bound.")
+                continue
+            if not _delete_session_verified(session_id):
+                print(f"Supervision: could not verify deletion of session "
+                      f"{session_id} for task {task_id}; keeping the binding.")
+                continue
+        # gone_session: absence from the complete session list is the
+        # verification; there is nothing left to delete.
+
+        if attempts >= max_attempts:
+            execution = json.dumps({
+                "lane": "opencode",
+                "session_id": session_id,
+                "fallback_reason": "launch_failed_attempts_exhausted",
+            })
+            result = _queue_verb([
+                str(REPO_QUEUE_CMD), "fail", str(task_id),
+                "--worker", worker_id,
+                "--error", f"bound session {session_id} unavailable without "
+                           f"terminal outcome; attempts exhausted",
+                "--reason-class", "deterministic",
+                "--execution", execution,
+            ])
+            if result is not None and result.returncode == 0:
+                print(f"Supervision: task {task_id} failed after {attempts} "
+                      f"attempts (bound session {session_id} removed)")
+                recovered.append({"task_id": task_id,
+                                  "session_id": session_id,
+                                  "reason": reason})
+            elif result is not None:
+                print(f"Supervision: fail verb refused for task {task_id}: "
+                      f"{(result.stderr or result.stdout).strip()[:200]}")
+            continue
+
+        launched_by = (LAUNCHED_BY_RECOVERY_ZERO_MESSAGE
+                       if reason == "zero_message"
+                       else LAUNCHED_BY_RECOVERY_GONE_SESSION)
+        result = _queue_verb([
+            str(REPO_QUEUE_CMD), "bind", str(task_id),
+            "--worker", "opencode-claimant",
+            "--session-id", session_id,
+            "--launched-by", launched_by,
+        ])
+        if result is None:
+            continue
+        if result.returncode == 0:
+            print(f"Recovered task {task_id}: cleared {reason} "
+                  f"session {session_id}")
+            recovered.append({"task_id": task_id,
+                              "session_id": session_id,
+                              "reason": reason})
+        else:
+            print(f"Supervision: recovery bind refused for task {task_id}: "
+                  f"{(result.stderr or result.stdout).strip()[:200]}")
+
+    return recovered
 
 
 def gate_step() -> bool:
