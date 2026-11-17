@@ -2971,107 +2971,114 @@ async fn cmd_replica(
     Ok(())
 }
 
-/// A journal file's bytes for a fixture world: a `Created` header at
-/// `version`, then a `Forked` entry (a kind every version reads).
-fn journal_fixture(version: u32) -> Vec<u8> {
-    use id_worlds::world::JournalEntry;
-    let entries = [
-        JournalEntry::Created {
-            world_id: "world-1".to_owned(),
-            version,
-        },
-        JournalEntry::Forked {
-            from_world_id: "world-0".to_owned(),
-            from_module_hash: "abc123".to_owned(),
-            template: false,
-            at_sequence: 3,
-        },
-    ];
-    let mut bytes = Vec::new();
-    for entry in &entries {
-        bytes.extend_from_slice(&serde_json::to_vec(entry).unwrap());
-        bytes.push(b'\n');
+/// Tests for `journal check` and `journal backup` (F11.12).
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod journal_tests {
+    use super::*;
+
+    /// A journal file's bytes for a fixture world: a `Created` header at
+    /// `version`, then a `Forked` entry (a kind every version reads).
+    fn journal_fixture(version: u32) -> Vec<u8> {
+        use id_worlds::world::JournalEntry;
+        let entries = [
+            JournalEntry::Created {
+                world_id: "world-1".to_owned(),
+                version,
+            },
+            JournalEntry::Forked {
+                from_world_id: "world-0".to_owned(),
+                from_module_hash: "abc123".to_owned(),
+                template: false,
+                at_sequence: 3,
+            },
+        ];
+        let mut bytes = Vec::new();
+        for entry in &entries {
+            bytes.extend_from_slice(&serde_json::to_vec(entry).unwrap());
+            bytes.push(b'\n');
+        }
+        bytes
     }
-    bytes
-}
 
-fn write_journal(dir: &std::path::Path, bytes: &[u8]) {
-    std::fs::write(dir.join("journal.jsonl"), bytes).unwrap();
-}
+    fn write_journal(dir: &std::path::Path, bytes: &[u8]) {
+        std::fs::write(dir.join("journal.jsonl"), bytes).unwrap();
+    }
 
-/// Oracle: F11.12's format contract — `journal check` reports the
-/// header version and validity of a well-formed journal.
-#[test]
-fn journal_check_reports_a_valid_journal() {
-    let dir = tempfile::tempdir().unwrap();
-    write_journal(dir.path(), &journal_fixture(1));
-    let check = check_journal_bytes(&journal_fixture(1));
-    assert!(check.problems.is_empty(), "{check:?}");
-    assert_eq!(check.world_id.as_deref(), Some("world-1"));
-    assert_eq!(check.header_version, Some(1));
-    assert_eq!(check.entries, 2);
-    assert!(print_journal_check(dir.path(), false).is_ok());
-    assert!(print_journal_check(dir.path(), true).is_ok());
-}
+    /// Oracle: F11.12's format contract — `journal check` reports the
+    /// header version and validity of a well-formed journal.
+    #[test]
+    fn journal_check_reports_a_valid_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        write_journal(dir.path(), &journal_fixture(1));
+        let check = check_journal_bytes(&journal_fixture(1));
+        assert!(check.problems.is_empty(), "{check:?}");
+        assert_eq!(check.world_id.as_deref(), Some("world-1"));
+        assert_eq!(check.header_version, Some(1));
+        assert_eq!(check.entries, 2);
+        assert!(print_journal_check(dir.path(), false).is_ok());
+        assert!(print_journal_check(dir.path(), true).is_ok());
+    }
 
-/// Oracle: the restore path's refusal discipline — a journal from a
-/// newer format is flagged with the same "unsupported world journal
-/// version" wording, and the check exits nonzero.
-#[test]
-fn journal_check_flags_a_newer_format_journal() {
-    let newer = id_worlds::world::MAX_JOURNAL_VERSION + 1;
-    let dir = tempfile::tempdir().unwrap();
-    write_journal(dir.path(), &journal_fixture(newer));
-    let check = check_journal_bytes(&journal_fixture(newer));
-    assert!(
-        check
-            .problems
-            .iter()
-            .any(|problem| problem == &format!("unsupported world journal version {newer}")),
-        "{check:?}"
-    );
-    let err = print_journal_check(dir.path(), false).unwrap_err();
-    assert!(
-        format!("{err}").contains("unsupported world journal version"),
-        "{err}"
-    );
-}
+    /// Oracle: the restore path's refusal discipline — a journal from a
+    /// newer format is flagged with the same "unsupported world journal
+    /// version" wording, and the check exits nonzero.
+    #[test]
+    fn journal_check_flags_a_newer_format_journal() {
+        let newer = id_worlds::world::MAX_JOURNAL_VERSION + 1;
+        let dir = tempfile::tempdir().unwrap();
+        write_journal(dir.path(), &journal_fixture(newer));
+        let check = check_journal_bytes(&journal_fixture(newer));
+        assert!(
+            check
+                .problems
+                .iter()
+                .any(|problem| problem == &format!("unsupported world journal version {newer}")),
+            "{check:?}"
+        );
+        let err = print_journal_check(dir.path(), false).unwrap_err();
+        assert!(
+            format!("{err}").contains("unsupported world journal version"),
+            "{err}"
+        );
+    }
 
-/// Oracle: F11.12's exit — a backup restores byte for byte. The
-/// backup file's bytes equal the source journal's, and a world
-/// directory holding only the backup as its journal checks valid
-/// and reads back the same provenance.
-#[test]
-fn journal_backup_is_byte_for_byte_and_restores() {
-    let dir = tempfile::tempdir().unwrap();
-    let bytes = journal_fixture(1);
-    write_journal(dir.path(), &bytes);
-    let out = dir.path().join("backup.jsonl");
-    journal_backup(dir.path(), &out).unwrap();
-    assert_eq!(std::fs::read(&out).unwrap(), bytes);
+    /// Oracle: F11.12's exit — a backup restores byte for byte. The
+    /// backup file's bytes equal the source journal's, and a world
+    /// directory holding only the backup as its journal checks valid
+    /// and reads back the same provenance.
+    #[test]
+    fn journal_backup_is_byte_for_byte_and_restores() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = journal_fixture(1);
+        write_journal(dir.path(), &bytes);
+        let out = dir.path().join("backup.jsonl");
+        journal_backup(dir.path(), &out).unwrap();
+        assert_eq!(std::fs::read(&out).unwrap(), bytes);
 
-    let restored = tempfile::tempdir().unwrap();
-    std::fs::copy(&out, restored.path().join("journal.jsonl")).unwrap();
-    assert!(print_journal_check(restored.path(), false).is_ok());
-    assert_eq!(
-        world_provenance(restored.path()).unwrap().world_id,
-        "world-1"
-    );
-}
+        let restored = tempfile::tempdir().unwrap();
+        std::fs::copy(&out, restored.path().join("journal.jsonl")).unwrap();
+        assert!(print_journal_check(restored.path(), false).is_ok());
+        assert_eq!(
+            world_provenance(restored.path()).unwrap().world_id,
+            "world-1"
+        );
+    }
 
-/// A backup never overwrites an existing file, and never copies a
-/// journal that does not check valid.
-#[test]
-fn journal_backup_refuses_existing_output_and_invalid_journal() {
-    let dir = tempfile::tempdir().unwrap();
-    write_journal(dir.path(), &journal_fixture(1));
-    let out = dir.path().join("backup.jsonl");
-    std::fs::write(&out, b"earlier backup").unwrap();
-    let err = journal_backup(dir.path(), &out).unwrap_err();
-    assert!(format!("{err}").contains("already exists"), "{err}");
+    /// A backup never overwrites an existing file, and never copies a
+    /// journal that does not check valid.
+    #[test]
+    fn journal_backup_refuses_existing_output_and_invalid_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        write_journal(dir.path(), &journal_fixture(1));
+        let out = dir.path().join("backup.jsonl");
+        std::fs::write(&out, b"earlier backup").unwrap();
+        let err = journal_backup(dir.path(), &out).unwrap_err();
+        assert!(format!("{err}").contains("already exists"), "{err}");
 
-    let corrupt = tempfile::tempdir().unwrap();
-    write_journal(corrupt.path(), b"not a journal\n");
-    let err = journal_backup(corrupt.path(), &corrupt.path().join("b.jsonl")).unwrap_err();
-    assert!(format!("{err}").contains("invalid journal"), "{err}");
+        let corrupt = tempfile::tempdir().unwrap();
+        write_journal(corrupt.path(), b"not a journal\n");
+        let err = journal_backup(corrupt.path(), &corrupt.path().join("b.jsonl")).unwrap_err();
+        assert!(format!("{err}").contains("invalid journal"), "{err}");
+    }
 }
