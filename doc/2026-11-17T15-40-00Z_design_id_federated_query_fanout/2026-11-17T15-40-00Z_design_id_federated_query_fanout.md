@@ -220,7 +220,18 @@ lacks data.
   deadline that is no later than its parent's.
 - **Default origin deadline:** 5 s. **Default per-peer cap:** 2 s. Each hop uses
   `min(child_deadline, per_peer_cap)`.
-- The deadline is never reset or refunded (Part B V3).
+- The deadline is never reset or refunded (Part B V3). A relay's outbound work
+  is an invocation under the cooperative timeout contract
+  (`doc/2026-11-10_design_id6002_cooperative_timeout_contract.md`): it observes
+  its remaining budget, checkpoints progress and does not commit a partial
+  result as a response. For fan-out the rule is narrower than that contract's
+  "partial results discarded" default: a peer that answered before the deadline
+  keeps its `SignedResponse`, and only the unfinished peers are recorded as
+  `timeout`. The origin's answer is `partial`, never silently complete.
+- Budget scopes (per query, per requester/origin, per supplying peer, per
+  tenant context, node aggregate) are the ones named in Part B V3 and in the
+  server invariants record (`doc/2026-11-09T05-15-00Z_design_id_server_invariants/`).
+  This design adds no scope.
 
 ### 7.2 Slow or down peers
 
@@ -242,7 +253,11 @@ because one peer failed.
   was refused, or ran out of budget.
 
 A `complete` answer does not claim global completeness. Only the scope of the
-query and the policy that applied to it are claimed.
+query and the policy that applied to it are claimed. What a completeness claim
+can prove, and which tampering (omission, injection, reordering, staleness) is
+detectable, is owned by the federated-search tampering threat model (B30,
+#10279, S1.109–S1.113). This design only fixes the vocabulary: `partial` is the
+safe default, and `complete` is a claim that B30 may later qualify.
 
 ### 7.4 Truncation honesty
 
@@ -298,28 +313,29 @@ loop (section 5.2).
 Everything in sections 3–7 that is not in the table above is a gap. The gaps
 are listed as follow-on scopes in section 11.
 
-## 11. Proposed follow-on scopes
+## 11. Follow-on scopes
 
-These are the scopes this record adds to the existing sub-issues. They are not
-duplicates of them. Each names the issue that should own it.
+These are the scopes this record adds to the five existing sub-issues. Each names
+the owner. Two go to existing issues as comments rather than new issues, because
+their owner already exists and a hand-filed duplicate would split ownership; one
+is filed as a new child of #9144 because nothing owns it today.
 
-1. **Fan-out configuration surface (owner: #9111 modes/config).** The
-   `remotes[]`, `priority`, `relay`, `max_hops`, `deadline_ms`,
-   `per_peer_timeout_ms` and `peer_breadth` keys, their defaults and their
-   ceilings (section 8), plus validation that rejects a `max_hops` above the
-   ceiling. Acceptance: a config test for every default and every ceiling.
-2. **Deadline, timeout and completeness semantics (owner: a new child of #9144).**
-   The `completeness`, `unanswered_peers[]` and `ProvenanceEntry.status` fields
-   (sections 6.3, 7.2, 7.3), with a golden test that a slow or down peer yields
-   `partial` and keeps every other result. Oracle: a fixed fixture of three peers,
-   one slow, one down, one answering.
-3. **Requester-facing provenance presentation (owner: a new child of #9144).**
-   The full path default, the optional pseudonymous relay handle (Q3), and the
+1. **Fan-out configuration surface — owner #9111 (modes/config), recorded as a
+   comment there, not a new issue.** The `remotes[]`, `priority`, `relay`,
+   `max_hops`, `deadline_ms`, `per_peer_timeout_ms` and `peer_breadth` keys,
+   their defaults and their ceilings (section 8), plus validation that rejects a
+   `max_hops` above the ceiling. Acceptance: a config test for every default and
+   every ceiling.
+2. **Partial answers, per-peer timeouts and completeness reporting — filed as a
+   new child of #9144.** The `completeness`, `unanswered_peers[]` and
+   `ProvenanceEntry.status` fields (sections 6.3, 7.2, 7.3), with a golden test
+   that a slow or down peer yields `partial` and keeps every other result. Oracle:
+   a fixed fixture of three peers, one slow, one down, one answering.
+3. **Requester-facing provenance presentation — owner #10249 (B17 already owns
+   "end-to-end responder provenance"), recorded as a comment there.** The full
+   path default, the optional pseudonymous relay handle (Q3), and the
    no-announcement rule for withheld results (section 6.4). Oracle: the v1 §8
    truncation-honesty rule plus the #5818 disclosure policy.
-
-These three are filed as follow-on issues (see the PR description) only if the
-task packet allows it; otherwise they are recorded here for the owner to file.
 
 ## 12. Open questions and defaults
 
