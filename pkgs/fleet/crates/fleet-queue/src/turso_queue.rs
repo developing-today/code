@@ -452,127 +452,78 @@ pub struct TursoBackend {
 
 type TErr = String;
 
-/// The canonical fleet lane registry (#6853, re-based on the
-/// post-rename universe under #8097): every lane id a fleet worker
-/// may claim with, the worker that owns it, and the enabled flag a
-/// missing registration is restored with. The queue binding is the
-/// one-queue default ("*": the lane may claim any stream; see
-/// lane_queue_binds).
+/// The canonical fleet lane registry (#6853): every lane id a
+/// fleet worker may claim with, the worker that owns it, and the
+/// enabled flag a missing registration is restored with. The
+/// queue binding is the one-queue default ("*": the lane may
+/// claim any stream; see lane_queue_binds).
 ///
-/// The set is EXACTLY the live registry universe left by the
-/// 2026-11-11 lane rename and trims (#8097), plus one lane
-/// added later the same day: 36 lanes — code-a..j,
-/// not-code-a..g, any-a..s — 17 of them enabled. The added
-/// lane is not-code-g, the nix event-hook worker's OWN lane
-/// (Drew, 2026-11-11: the nix worker does not share a lane
-/// row with a Muse shift — it had been parked on
-/// not-code-a, the disabled Muse not-code-a shift's row;
-/// #8097 record, catch #6853). Lane ids Drew
-/// deleted (the code-k..z overhang, nix-a/b, opencode-a/b,
-/// openchamber-a/b) are deliberately ABSENT: the pre-rename seed
-/// still named them, so each schema ensure resurrected
-/// hand-deleted rows from it — openchamber-a/b came back enabled
-/// after being deleted on 2026-11-10. A lane outside this set is
-/// never seeded; a lane inside it that is deleted by hand comes
-/// back with exactly these fields. Registrations for
-/// session-scoped lanes (UUID ids) are created by their sessions
-/// and are not part of the canonical set; the OpenChamber lanes
-/// renamed out of UUID ids on 2026-11-11 are canonical under
-/// their final names below.
-fn canonical_lanes() -> Vec<(&'static str, &'static str, bool)> {
-    let mut lanes: Vec<(&'static str, &'static str, bool)> = Vec::new();
-    // code group: code-a..d (Muse) and code-f..j (OpenChamber),
-    // all owned by repo-worker-code. code-e (Muse) is disabled
-    // per the 2026-11-10 trims; the other nine are enabled.
-    for c in 'a'..='j' {
-        // Leak-free: the ids are built from a fixed alphabet by a
-        // match on the letter so the strings stay 'static.
-        lanes.push((code_lane_id(c), "repo-worker-code", c != 'e'));
-    }
-    // not-code group: not-code-d (OpenChamber) and not-code-g
-    // (the nix event-hook worker's own lane, added 2026-11-11)
-    // are enabled. Worker ids follow each lane's predecessor
-    // row: not-code-a was nix-a, not-code-b was opencode-a, and
-    // not-code-e was the opencode-project OpenChamber task.
-    for c in 'a'..='g' {
-        let worker = match c {
-            'a' | 'g' => "repo-worker-nix",
-            'b' | 'e' => "repo-worker-opencode",
-            'd' => "repo-worker-openchamber",
-            _ => "repo-worker-code",
-        };
-        lanes.push((not_code_lane_id(c), worker, c == 'd' || c == 'g'));
-    }
-    // any group: any-a..d (Muse) and any-n, any-o (OpenChamber)
-    // are enabled; any-e..m and any-p..s are disabled per the
-    // 2026-11-10 trims. All owned by repo-worker-code.
-    for c in 'a'..='s' {
-        let enabled = matches!(c, 'a' | 'b' | 'c' | 'd' | 'n' | 'o');
-        lanes.push((any_lane_id(c), "repo-worker-code", enabled));
+/// Drew, 2026-11-16: the registry knows EVERY variation -- each
+/// family spans the full a..=z suffix space and every canonical
+/// lane is enabled. This supersedes the 2026-11-10 trims and the
+/// #8097 36-lane set (code-a..j, not-code-a..g, any-a..s, most of
+/// them disabled or absent): those trims are why live claims kept
+/// meeting "unknown lane_id" (opencode-a/b, openchamber-a/b and
+/// nix-a/b were not seeded at all) and "lane is disabled"
+/// (not-code-c and most of the any-* range). The seed stays
+/// INSERT OR IGNORE, so it fills missing rows with exactly these
+/// fields and never touches a row that already exists -- a lane
+/// disabled by hand stays disabled until it is re-enabled by
+/// hand, and a pre-existing row keeps its recorded worker.
+/// Registrations for session-scoped lanes (UUID ids) are created
+/// by their sessions and are not part of the canonical set.
+fn canonical_lanes() -> Vec<(String, &'static str, bool)> {
+    const FAMILIES: [(&str, &str); 6] = [
+        ("code", "repo-worker-code"),
+        ("any", "repo-worker-code"),
+        ("not-code", "repo-worker-code"),
+        ("opencode", "repo-worker-opencode"),
+        ("openchamber", "repo-worker-openchamber"),
+        ("nix", "repo-worker-nix"),
+    ];
+    let mut lanes = Vec::with_capacity(FAMILIES.len() * 26);
+    for (family, worker) in FAMILIES {
+        for c in 'a'..='z' {
+            lanes.push((format!("{family}-{c}"), worker, true));
+        }
     }
     lanes
 }
 
-fn code_lane_id(c: char) -> &'static str {
-    match c {
-        'a' => "code-a",
-        'b' => "code-b",
-        'c' => "code-c",
-        'd' => "code-d",
-        'e' => "code-e",
-        'f' => "code-f",
-        'g' => "code-g",
-        'h' => "code-h",
-        'i' => "code-i",
-        'j' => "code-j",
-        _ => unreachable!("code lane letters are a..=j"),
+/// The family of a lane id shaped `<family>-<suffix>`, when the
+/// family is one the broker knows and the suffix is a nonempty
+/// lowercase alphabetic string ("code-a", "not-code-c",
+/// "darwin-nix-a"). claim_preamble uses this as the wildcard
+/// rule (Drew, 2026-11-16): a claim naming a known-family lane
+/// with no registry row auto-provisions the row instead of
+/// failing with "unknown lane_id". darwin-nix is wildcard-only:
+/// it is deliberately not part of the canonical seed set above,
+/// but a darwin-nix lane claim provisions its row on first use.
+fn lane_family_of(lane_id: &str) -> Option<&str> {
+    const FAMILIES: [&str; 7] = [
+        "code",
+        "any",
+        "not-code",
+        "opencode",
+        "openchamber",
+        "nix",
+        "darwin-nix",
+    ];
+    let (family, suffix) = lane_id.rsplit_once('-')?;
+    if suffix.is_empty() || !suffix.bytes().all(|b| b.is_ascii_lowercase()) {
+        return None;
     }
-}
-
-fn not_code_lane_id(c: char) -> &'static str {
-    match c {
-        'a' => "not-code-a",
-        'b' => "not-code-b",
-        'c' => "not-code-c",
-        'd' => "not-code-d",
-        'e' => "not-code-e",
-        'f' => "not-code-f",
-        'g' => "not-code-g",
-        _ => unreachable!("not-code lane letters are a..=g"),
-    }
-}
-
-fn any_lane_id(c: char) -> &'static str {
-    match c {
-        'a' => "any-a",
-        'b' => "any-b",
-        'c' => "any-c",
-        'd' => "any-d",
-        'e' => "any-e",
-        'f' => "any-f",
-        'g' => "any-g",
-        'h' => "any-h",
-        'i' => "any-i",
-        'j' => "any-j",
-        'k' => "any-k",
-        'l' => "any-l",
-        'm' => "any-m",
-        'n' => "any-n",
-        'o' => "any-o",
-        'p' => "any-p",
-        'q' => "any-q",
-        'r' => "any-r",
-        's' => "any-s",
-        _ => unreachable!("any lane letters are a..=s"),
-    }
+    FAMILIES.contains(&family).then_some(family)
 }
 
 /// The registry seed statement (#6853): INSERT OR IGNORE, so it
-/// restores a missing registration with its canonical fields —
-/// including a disabled lane's enabled = 0 — and can never
-/// resurrect or re-enable a lane whose row already exists in any
-/// state. Lanes outside the canonical set are never seeded at
-/// all (#8097).
+/// restores a missing registration with its canonical fields and
+/// can never resurrect or re-enable a lane whose row already
+/// exists in any state -- a lane disabled by hand stays disabled
+/// across broker restarts until it is re-enabled by hand. Lanes
+/// outside the canonical set are never seeded at all; the
+/// claim-time wildcard (lane_family_of) provisions known-family
+/// lanes the seed does not name.
 fn lane_seed_sql() -> String {
     let values: Vec<String> = canonical_lanes()
         .iter()
@@ -4245,8 +4196,37 @@ fn claim_preamble(
             &[Arg::Text(lane_id.clone())],
             &[],
         )?;
-        let Some(l) = lanes.into_iter().next() else {
-            return Err(format!("claim_repo_task: unknown lane_id {lane_id}"));
+        let l = match lanes.into_iter().next() {
+            Some(l) => l,
+            None => {
+                // Wildcard acceptance (Drew, 2026-11-16; #6853): a
+                // lane id in a known family (<family>-<suffix>, see
+                // lane_family_of) with no registry row yet is
+                // provisioned on first claim -- owned by the
+                // claiming worker, enabled, unbound queue -- and
+                // then validated by the same checks below. An
+                // existing row always takes precedence: a lane
+                // disabled by hand keeps refusing. Ids outside
+                // every known family keep the unknown-lane refusal.
+                if lane_family_of(lane_id).is_none() {
+                    return Err(format!("claim_repo_task: unknown lane_id {lane_id}"));
+                }
+                t.exec(
+                    "INSERT OR IGNORE INTO lanes (lane_id, worker_id, queue, enabled) VALUES (?, ?, '*', 1)",
+                    &[Arg::Text(lane_id.clone()), Arg::Text(worker.to_string())],
+                )?;
+                let lanes = t.query_objs(
+                    "SELECT lane_id, worker_id, queue, enabled FROM lanes WHERE lane_id = ?",
+                    &[Arg::Text(lane_id.clone())],
+                    &[],
+                )?;
+                match lanes.into_iter().next() {
+                    Some(l) => l,
+                    None => {
+                        return Err(format!("claim_repo_task: unknown lane_id {lane_id}"));
+                    }
+                }
+            }
         };
         if l.get("worker_id").and_then(|v| v.as_str()) != Some(worker) {
             return Err(format!(
@@ -8427,167 +8407,137 @@ mod tests {
     }
 
     #[test]
-    fn canonical_lanes_are_exactly_the_post_rename_universe_8097() {
-        // #8097 oracle: after the 2026-11-11 lane rename + trims,
-        // the canonical seed set is exactly the 36-lane registry
-        // (the 35 rename lanes plus not-code-g — the nix worker's
-        // own lane, added later the same day; #8097 record, #6853)
-        // universe with the end-state enabled flags — no more, no
-        // fewer. The pre-rename set named ids that no longer exist
-        // (code-k..z, nix-a/b, opencode-a/b, openchamber-a/b), and
-        // ensure_schema kept resurrecting hand-deleted rows from
-        // it: openchamber-a/b were deleted on 2026-11-10 and came
-        // back enabled at the next seed run. Seeding an empty
-        // lanes table executes lane_seed_sql() — a pure function
-        // of this set — so pinning the set and its per-lane tuples
-        // (next test) pins the seeded database exactly.
+    fn canonical_lanes_are_the_full_family_universe() {
+        // Drew, 2026-11-16 (#6853): the canonical seed set is the
+        // full variation space -- six families x a..=z = 156
+        // lanes, every one enabled. This supersedes the #8097 pin
+        // (36 lanes, 17 enabled): the trims left live lanes
+        // unseeded (opencode-a) or seeded disabled (not-code-c),
+        // and claims met "unknown lane_id" / "lane is disabled"
+        // for days. Seeding an empty lanes table executes
+        // lane_seed_sql() -- a pure function of this set -- so
+        // pinning the set and its per-lane tuples (next test)
+        // pins the seeded database exactly.
         let lanes = canonical_lanes();
-        assert_eq!(lanes.len(), 36);
-        let mut ids: Vec<&str> = lanes.iter().map(|(id, _, _)| *id).collect();
+        assert_eq!(lanes.len(), 156);
+        let mut ids: Vec<&str> = lanes.iter().map(|(id, _, _)| id.as_str()).collect();
         ids.sort();
         ids.dedup();
-        assert_eq!(ids.len(), 36, "duplicate lane ids in the canonical set");
-        let expected_ids: Vec<&str> = vec![
-            "any-a",
-            "any-b",
-            "any-c",
-            "any-d",
-            "any-e",
-            "any-f",
-            "any-g",
-            "any-h",
-            "any-i",
-            "any-j",
-            "any-k",
-            "any-l",
-            "any-m",
-            "any-n",
-            "any-o",
-            "any-p",
-            "any-q",
-            "any-r",
-            "any-s",
-            "code-a",
-            "code-b",
-            "code-c",
-            "code-d",
-            "code-e",
-            "code-f",
-            "code-g",
-            "code-h",
-            "code-i",
-            "code-j",
-            "not-code-a",
-            "not-code-b",
-            "not-code-c",
-            "not-code-d",
-            "not-code-e",
-            "not-code-f",
-            "not-code-g",
-        ];
-        assert_eq!(
-            ids, expected_ids,
-            "the canonical set is not the post-rename universe"
-        );
-        // No legacy id may ever be seeded again: the deleted
-        // openchamber pair, the pre-rename stream lanes, the
-        // code-k..z overhang, and the rename's tmp ids.
-        for legacy in [
-            "openchamber-a",
-            "openchamber-b",
-            "nix-a",
-            "nix-b",
-            "opencode-a",
-            "opencode-b",
-        ] {
-            assert!(
-                !ids.contains(&legacy),
-                "legacy lane {legacy} must not be seeded"
-            );
+        assert_eq!(ids.len(), 156, "duplicate lane ids in the canonical set");
+        let mut expected_ids: Vec<String> = Vec::new();
+        for family in ["code", "any", "not-code", "opencode", "openchamber", "nix"] {
+            for c in 'a'..='z' {
+                expected_ids.push(format!("{family}-{c}"));
+            }
         }
-        for c in 'k'..='z' {
-            let legacy = format!("code-{c}");
-            assert!(
-                !ids.iter().any(|id| *id == legacy),
-                "legacy lane {legacy} must not be seeded"
-            );
+        expected_ids.sort();
+        assert_eq!(
+            ids,
+            expected_ids.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            "the canonical set is not the full family universe"
+        );
+        // The lanes whose absence or disabled state broke live
+        // claims: all present now.
+        for id in [
+            "opencode-a",
+            "openchamber-a",
+            "nix-a",
+            "code-z",
+            "any-z",
+            "not-code-z",
+            "not-code-c",
+        ] {
+            assert!(ids.contains(&id), "canonical set misses {id}");
         }
         assert!(
             ids.iter().all(|id| !id.starts_with("tmp-")),
             "tmp rename ids must not be seeded"
         );
-        // The enabled set is exactly the 17 working lanes.
-        let mut enabled: Vec<&str> = lanes
-            .iter()
-            .filter(|(_, _, e)| *e)
-            .map(|(id, _, _)| *id)
-            .collect();
-        enabled.sort();
-        assert_eq!(
-            enabled,
-            [
-                "any-a",
-                "any-b",
-                "any-c",
-                "any-d",
-                "any-n",
-                "any-o",
-                "code-a",
-                "code-b",
-                "code-c",
-                "code-d",
-                "code-f",
-                "code-g",
-                "code-h",
-                "code-i",
-                "code-j",
-                "not-code-d",
-                "not-code-g",
-            ]
+        // Every canonical lane is enabled (Drew, 2026-11-16).
+        assert!(
+            lanes.iter().all(|(_, _, e)| *e),
+            "every canonical lane is enabled"
         );
-        // Worker ownership: the renamed lanes keep the worker of
-        // the registry row they came from.
-        let owner = |id: &str| lanes.iter().find(|(l, _, _)| *l == id).map(|(_, w, _)| *w);
+        // Worker ownership follows the family.
+        let owner = |id: &str| {
+            lanes
+                .iter()
+                .find(|(l, _, _)| l.as_str() == id)
+                .map(|(_, w, _)| *w)
+        };
         assert_eq!(owner("code-a"), Some("repo-worker-code"));
-        assert_eq!(owner("code-j"), Some("repo-worker-code"));
-        assert_eq!(owner("not-code-a"), Some("repo-worker-nix"));
-        assert_eq!(owner("not-code-b"), Some("repo-worker-opencode"));
-        assert_eq!(owner("not-code-d"), Some("repo-worker-openchamber"));
-        assert_eq!(owner("not-code-e"), Some("repo-worker-opencode"));
-        assert_eq!(owner("not-code-g"), Some("repo-worker-nix"));
-        assert_eq!(owner("any-s"), Some("repo-worker-code"));
+        assert_eq!(owner("code-z"), Some("repo-worker-code"));
+        assert_eq!(owner("any-z"), Some("repo-worker-code"));
+        assert_eq!(owner("not-code-z"), Some("repo-worker-code"));
+        assert_eq!(owner("opencode-a"), Some("repo-worker-opencode"));
+        assert_eq!(owner("openchamber-a"), Some("repo-worker-openchamber"));
+        assert_eq!(owner("nix-a"), Some("repo-worker-nix"));
+    }
+
+    #[test]
+    fn lane_family_of_accepts_known_families_and_rejects_garbage() {
+        // The claim-time wildcard (Drew, 2026-11-16): known
+        // family + nonempty lowercase alphabetic suffix.
+        for (id, family) in [
+            ("code-a", "code"),
+            ("code-z", "code"),
+            ("code-abc", "code"),
+            ("any-a", "any"),
+            ("any-z", "any"),
+            ("not-code-c", "not-code"),
+            ("not-code-z", "not-code"),
+            ("opencode-a", "opencode"),
+            ("openchamber-b", "openchamber"),
+            ("nix-a", "nix"),
+            ("darwin-nix-a", "darwin-nix"),
+        ] {
+            assert_eq!(lane_family_of(id), Some(family), "{id}");
+        }
+        for id in [
+            "banana-1", // unknown family, non-alpha suffix
+            "code-",    // empty suffix
+            "code",     // no suffix at all
+            "",         // empty id
+            "-a",       // empty family
+            "code-A",   // uppercase suffix
+            "code-a1",  // non-alpha suffix
+            "unknown-x",
+            "not-code", // a family prefix alone is not a lane id
+            "code-a-b", // the family would be "code-a": unknown
+            "tmp-a",    // rename scratch ids are not lanes
+            "CODE-a",   // uppercase family
+        ] {
+            assert_eq!(lane_family_of(id), None, "{id}");
+        }
     }
 
     #[test]
     fn lane_seed_sql_is_insert_or_ignore_over_the_canonical_set() {
-        // #6853 oracle, extended under #8097: the seed can only
-        // fill missing rows — an existing registration (in
-        // particular a lane disabled via enabled = 0) is never
-        // overwritten, so seeding at every broker start cannot
-        // undo a disable — and every seeded row carries its
-        // canonical fields, so a restored disabled lane comes
-        // back disabled, and a restored enabled lane comes back
-        // with its owning worker and the one-queue binding.
+        // #6853 oracle: the seed can only fill missing rows -- an
+        // existing registration (in particular a lane disabled via
+        // enabled = 0) is never overwritten, so seeding at every
+        // broker start cannot undo a disable -- and every seeded
+        // row carries its canonical fields, so a restored lane
+        // comes back with its owning worker, the one-queue
+        // binding, and enabled = 1 (the whole canonical set is
+        // enabled since 2026-11-16).
         let sql = lane_seed_sql();
         assert!(sql.starts_with("INSERT OR IGNORE INTO lanes"), "{sql}");
         for (id, worker, enabled) in canonical_lanes() {
             let tuple = format!("('{id}', '{worker}', '*', {})", i32::from(enabled));
             assert!(sql.contains(&tuple), "seed misses {tuple}");
         }
-        // Nothing outside the canonical set is seeded: a deleted
-        // legacy lane stays deleted across broker restarts.
-        for legacy in [
-            "openchamber-a",
-            "openchamber-b",
-            "nix-a",
-            "opencode-a",
-            "code-z",
-        ] {
+        // Nothing outside the canonical set is seeded: the
+        // wildcard-only darwin-nix family and the rename scratch
+        // ids stay unseeded (a darwin-nix lane row appears only
+        // when a claim provisions it).
+        for outside in ["darwin-nix-a", "darwin-nix-z"] {
             assert!(
-                !sql.contains(&format!("('{legacy}'")),
-                "seed must not name {legacy}"
+                !sql.contains(&format!("('{outside}'")),
+                "seed must not name {outside}"
             );
         }
+        assert!(!sql.contains("('tmp-"), "seed must not name tmp ids");
     }
 
     #[test]
