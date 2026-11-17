@@ -714,12 +714,10 @@ pub fn branch_staging_db_as_archive(unit: &StagingUnit) -> Result<PathBuf> {
     let mut tmp_name = name;
     tmp_name.push(".tmp");
     let tmp = archive.with_file_name(tmp_name);
-    for stale in [&tmp, &archive] {
-        // The snapshot names are ordinary database files: clear the
-        // previous copy and any stale temporary from an earlier run
-        // before writing (a bare file is all VACUUM INTO needs).
-        remove_staging_db(stale);
-    }
+    // Clear any stale temporary from an earlier run (VACUUM INTO needs
+    // a bare path). The previous archive stays in place until the
+    // rename below replaces it, as the doc above promises.
+    remove_staging_db(&tmp);
     let conn = open(Path::new(&unit.db_uri))?;
     let target = sql_string_literal(&tmp.to_string_lossy());
     conn.execute_batch(&format!("VACUUM INTO {target}"))
@@ -729,6 +727,14 @@ pub fn branch_staging_db_as_archive(unit: &StagingUnit) -> Result<PathBuf> {
                 unit.db_uri, unit.unit_id
             ))
         })?;
+    // A sidecar left by an earlier reader of the old archive must not
+    // be replayed against the new snapshot: drop only the sidecars here,
+    // the old archive itself is replaced atomically by the rename.
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let mut sidecar = archive.as_os_str().to_owned();
+        sidecar.push(suffix);
+        let _ = std::fs::remove_file(PathBuf::from(sidecar));
+    }
     std::fs::rename(&tmp, &archive).map_err(|e| {
         Error::backend(format!(
             "staging: moving archive snapshot into place at {}: {e}",
