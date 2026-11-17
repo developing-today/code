@@ -127,6 +127,11 @@ function startStubServe(script) {
         emit({ type: 'session.execution.succeeded', data: { sessionID: SESSION_ID } });
         return;
       }
+      if (req.method === 'DELETE' && url.pathname === `/api/session/${SESSION_ID}`) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ data: true }));
+        return;
+      }
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'not found' }));
     });
@@ -661,5 +666,34 @@ test('late terminal event from a reconciled prompt does not finish the next prom
     genuineCompletionEmitted,
     true,
     'second prompt waited for its own completion event, not the stale one',
+  );
+});
+
+test('stdin close deletes the serve sessions the adapter created (#8313)', async (t) => {
+  const { stub, acp } = await setup(t, textEvents());
+  const result = await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  assert.equal(result.sessionId, SESSION_ID);
+  const exited = new Promise((resolve) => acp.child.once('exit', resolve));
+  acp.child.stdin.end();
+  const code = await Promise.race([exited, sleep(5000).then(() => 'timeout')]);
+  assert.equal(code, 0, 'adapter exits after stdin close');
+  const deletes = stub.calls.filter((c) => c.method === 'DELETE');
+  assert.deepEqual(
+    deletes.map((c) => c.pathname),
+    [`/api/session/${SESSION_ID}`],
+  );
+});
+
+test('SIGTERM deletes the serve sessions the adapter created (#8313)', async (t) => {
+  const { stub, acp } = await setup(t, textEvents());
+  await acp.request('session/new', { cwd: '/home/user/code', mcpServers: [] });
+  const exited = new Promise((resolve) => acp.child.once('exit', resolve));
+  acp.child.kill('SIGTERM');
+  const code = await Promise.race([exited, sleep(5000).then(() => 'timeout')]);
+  assert.equal(code, 0, 'adapter exits on SIGTERM');
+  const deletes = stub.calls.filter((c) => c.method === 'DELETE');
+  assert.deepEqual(
+    deletes.map((c) => c.pathname),
+    [`/api/session/${SESSION_ID}`],
   );
 });

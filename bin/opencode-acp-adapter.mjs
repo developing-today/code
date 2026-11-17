@@ -29,8 +29,12 @@
 //                                session id)
 // There is no v1 route shape left in this file: every serve call
 // above is the pinned server's v2 contract (#4706 rule 1, #4614).
-// No DELETE /api/session/:id call exists here — see the #4707
-// closing-audit disposition of the sessions map (issue #4707).
+// Shutdown deletes the serve sessions this adapter created
+// (DELETE /api/session/:id for every key of the sessions map):
+// the pinned serve never expires idle sessions server-side, so
+// without that they would outlive the adapter on the ONE standing
+// shared serve (#8313; the gap the #4707 closing audit filed).
+// Best-effort and bounded — exit is never blocked on the serve.
 //
 // Prompt lifecycle (design #4706, closing audit #4707) — the four
 // rules every state container below obeys:
@@ -755,6 +759,57 @@ async function dispatch(message) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Shutdown session cleanup (#8313)
+// ---------------------------------------------------------------------------
+
+// The pinned serve never expires idle sessions server-side (verified
+// against the flake.lock-pinned fork: its inactivity sweep only
+// interrupts executions and evicts location caches; session records
+// are removed solely through the explicit DELETE route). Every serve
+// session this adapter created would therefore outlive it on the ONE
+// standing shared serve, so shutdown deletes the sessions it owns —
+// the keys of the sessions map. Best-effort and bounded: each delete
+// is abort-timed and exit proceeds on the same overall bound whether
+// or not the serve answers. Crash case: if the adapter is killed
+// hard (SIGKILL, host death) no cleanup runs and its sessions persist
+// until the serve restarts — accepted residual, recorded on #8313.
+const SHUTDOWN_CLEANUP_BUDGET_MS = 2000;
+
+async function deleteOwnedServeSessions() {
+  const ids = [...sessions.keys()];
+  if (ids.length === 0) return;
+  debug(`shutdown: deleting ${ids.length} owned serve session(s)`);
+  const deadline = Date.now() + SHUTDOWN_CLEANUP_BUDGET_MS;
+  await Promise.allSettled(
+    ids.map(async (id) => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return;
+      try {
+        await fetch(`${serverBase}/api/session/${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+          headers: authHeaders(),
+          signal: AbortSignal.timeout(remaining),
+        });
+      } catch {
+        // Best-effort: a failed delete never blocks or fails shutdown.
+      }
+    }),
+  );
+}
+
+let shutdownStarted = false;
+function shutdown() {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  shuttingDown = true;
+  const forceExit = setTimeout(() => process.exit(0), SHUTDOWN_CLEANUP_BUDGET_MS + 500);
+  void deleteOwnedServeSessions().finally(() => {
+    clearTimeout(forceExit);
+    process.exit(0);
+  });
+}
+
 function main() {
   void runEventStream();
   const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
@@ -770,14 +825,8 @@ function main() {
     }
     void dispatch(message);
   });
-  rl.on('close', () => {
-    shuttingDown = true;
-    process.exit(0);
-  });
-  process.on('SIGTERM', () => {
-    shuttingDown = true;
-    process.exit(0);
-  });
+  rl.on('close', shutdown);
+  process.on('SIGTERM', shutdown);
   debug(`started; server=${serverBase}`);
 }
 
