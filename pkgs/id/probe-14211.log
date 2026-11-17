@@ -1,0 +1,1340 @@
+warning: missing documentation for an enum
+   --> crates/id-core/src/residency.rs:199:1
+    |
+199 | pub enum Decision {
+    | ^^^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W missing-docs`
+
+warning: `id-core` (lib) generated 1 warning
+warning: unused import: `futures_lite::StreamExt`
+  --> src/commands/list.rs:31:5
+   |
+31 | use futures_lite::StreamExt;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `open_store`
+  --> src/commands/list.rs:38:44
+   |
+38 | use crate::store::{load_or_create_keypair, open_store};
+   |                                            ^^^^^^^^^^
+
+warning: unused import: `FILE_NAME as GROUPS_FILE_NAME`
+  --> src/commands/serve.rs:82:26
+   |
+82 | use crate::groups::log::{FILE_NAME as GROUPS_FILE_NAME, GroupLog};
+   |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unnecessary qualification
+   --> src/commands/serve.rs:707:39
+    |
+707 |     writers.extend(load_allowed_nodes(std::path::Path::new(".")));
+    |                                       ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W unused-qualifications`
+help: remove the unnecessary path segments
+    |
+707 -     writers.extend(load_allowed_nodes(std::path::Path::new(".")));
+707 +     writers.extend(load_allowed_nodes(Path::new(".")));
+    |
+
+warning: unnecessary qualification
+   --> src/commands/serve.rs:950:16
+    |
+950 |         path: &std::path::Path,
+    |                ^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+950 -         path: &std::path::Path,
+950 +         path: &Path,
+    |
+
+warning: unnecessary qualification
+    --> src/commands/serve.rs:2190:12
+     |
+2190 |     path: &std::path::Path,
+     |            ^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+2190 -     path: &std::path::Path,
+2190 +     path: &Path,
+     |
+
+warning: unnecessary qualification
+    --> src/commands/world.rs:1347:33
+     |
+1347 |     let mut paths: Vec<(String, std::path::PathBuf)> = Vec::new();
+     |                                 ^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1347 -     let mut paths: Vec<(String, std::path::PathBuf)> = Vec::new();
+1347 +     let mut paths: Vec<(String, PathBuf)> = Vec::new();
+     |
+
+warning: unnecessary qualification
+    --> src/commands/world.rs:1350:31
+     |
+1350 |         let mut siblings: Vec<std::path::PathBuf> = std::fs::read_dir(source)
+     |                               ^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1350 -         let mut siblings: Vec<std::path::PathBuf> = std::fs::read_dir(source)
+1350 +         let mut siblings: Vec<PathBuf> = std::fs::read_dir(source)
+     |
+
+warning: usage of an `unsafe` block
+   --> src/directory_mail.rs:112:12
+    |
+112 |         if unsafe { libc::killpg(pgid, libc::SIGKILL) } == 0 {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W unsafe-code`
+
+warning: unnecessary qualification
+   --> src/event_store/chat.rs:213:15
+    |
+213 |     applied: &std::collections::HashSet<Hash>,
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+213 -     applied: &std::collections::HashSet<Hash>,
+213 +     applied: &HashSet<Hash>,
+    |
+
+warning: unnecessary qualification
+   --> src/event_store/chat.rs:240:20
+    |
+240 |     let mut seen = std::collections::HashSet::new();
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+240 -     let mut seen = std::collections::HashSet::new();
+240 +     let mut seen = HashSet::new();
+    |
+
+warning: unnecessary qualification
+   --> src/event_store/resolve.rs:197:28
+    |
+197 |                 .collect::<std::collections::HashSet<_>>()
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+197 -                 .collect::<std::collections::HashSet<_>>()
+197 +                 .collect::<HashSet<_>>()
+    |
+
+warning: unused imports: `HashMap` and `HashSet`
+ --> src/idset/view.rs:5:44
+  |
+5 | use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+  |                                            ^^^^^^^  ^^^^^^^
+
+warning: unused imports: `Excluded` and `Unbounded`
+ --> src/idset/view.rs:6:23
+  |
+6 | use std::ops::Bound::{Excluded, Unbounded};
+  |                       ^^^^^^^^  ^^^^^^^^^
+
+warning: unused imports: `Excludes` and `Rescind`
+  --> src/idset/view.rs:13:20
+   |
+13 | use super::{Entry, Excludes, Rescind, WriterSet};
+   |                    ^^^^^^^^  ^^^^^^^
+
+warning: unnecessary qualification
+   --> src/protocol.rs:268:30
+    |
+268 | pub const DEFAULT_BLOB_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+    |                              ^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+268 - pub const DEFAULT_BLOB_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+268 + pub const DEFAULT_BLOB_WAIT: Duration = std::time::Duration::from_secs(5);
+    |
+
+warning: unnecessary qualification
+   --> src/protocol.rs:268:52
+    |
+268 | pub const DEFAULT_BLOB_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+    |                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+268 - pub const DEFAULT_BLOB_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+268 + pub const DEFAULT_BLOB_WAIT: std::time::Duration = Duration::from_secs(5);
+    |
+
+warning: unnecessary qualification
+   --> src/protocol.rs:597:20
+    |
+597 |     pub blob_wait: std::time::Duration,
+    |                    ^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+597 -     pub blob_wait: std::time::Duration,
+597 +     pub blob_wait: Duration,
+    |
+
+warning: unnecessary qualification
+   --> src/world/actor.rs:201:23
+    |
+201 |         trust: Option<crate::world::TrustDecision>,
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+201 -         trust: Option<crate::world::TrustDecision>,
+201 +         trust: Option<TrustDecision>,
+    |
+
+warning: unnecessary qualification
+   --> src/world/actor.rs:213:23
+    |
+213 |         trust: Option<crate::world::TrustDecision>,
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+213 -         trust: Option<crate::world::TrustDecision>,
+213 +         trust: Option<TrustDecision>,
+    |
+
+warning: unnecessary qualification
+   --> src/world/actor.rs:766:33
+    |
+766 |                     let error = crate::world_caps::CapError::bad_args_with(format!(
+    |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+766 -                     let error = crate::world_caps::CapError::bad_args_with(format!(
+766 +                     let error = CapError::bad_args_with(format!(
+    |
+
+warning: unnecessary qualification
+    --> src/world/handle.rs:1019:23
+     |
+1019 |         trust: Option<crate::world::TrustDecision>,
+     |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+help: remove the unnecessary path segments
+     |
+1019 -         trust: Option<crate::world::TrustDecision>,
+1019 +         trust: Option<TrustDecision>,
+     |
+
+warning: unused import: `MAX_CHECKPOINT_PART_BYTES`
+  --> src/world/replication.rs:85:44
+   |
+85 | use super::{JOURNAL_VERSION, JournalEntry, MAX_CHECKPOINT_PART_BYTES, MAX_JOURNAL_VERSION};
+   |                                            ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `core::AdminHistoryByteLedger`
+  --> src/world/mod.rs:52:16
+   |
+52 | pub(crate) use core::AdminHistoryByteLedger;
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `pre_fix_sanitize_display_name`
+  --> src/world/mod.rs:82:5
+   |
+82 |     pre_fix_sanitize_display_name, sanitize_chat, sanitize_display_name, token_digest,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unnecessary qualification
+   --> src/world_replication_net.rs:352:8
+    |
+352 |     F: std::future::Future<Output = Result<T>>,
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+352 -     F: std::future::Future<Output = Result<T>>,
+352 +     F: Future<Output = Result<T>>,
+    |
+
+warning: unused import: `SessionId`
+  --> src/world_session/types.rs:12:62
+   |
+12 |     CapabilityBounds, FileScope, Isolation, MetricsSnapshot, SessionId, WorldEvent, WorldHandle,
+   |                                                              ^^^^^^^^^
+
+warning: unnecessary qualification
+   --> src/world_session/mod.rs:778:19
+    |
+778 |         let hash: iroh_blobs::Hash = expected_hash
+    |                   ^^^^^^^^^^^^^^^^
+    |
+help: remove the unnecessary path segments
+    |
+778 -         let hash: iroh_blobs::Hash = expected_hash
+778 +         let hash: Hash = expected_hash
+    |
+
+warning: use of deprecated method `std::sync::atomic::Atomic::<u64>::fetch_update`: renamed to `try_update` for consistency
+    --> src/world_net.rs:2355:14
+     |
+2355 |             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+     |              ^^^^^^^^^^^^
+     |
+     = note: `#[warn(deprecated)]` on by default
+help: replace the use of the deprecated method
+     |
+2355 -             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+2355 +             .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+     |
+
+warning: unused variable: `web_token`
+    --> src/commands/serve.rs:1116:9
+     |
+1116 |         web_token,
+     |         ^^^^^^^^^ help: try ignoring the field: `web_token: _`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `web_cookie_secure`
+    --> src/commands/serve.rs:1117:9
+     |
+1117 |         web_cookie_secure,
+     |         ^^^^^^^^^^^^^^^^^ help: try ignoring the field: `web_cookie_secure: _`
+
+warning: unused variable: `web_bindings`
+    --> src/commands/serve.rs:1200:9
+     |
+1200 |     let web_bindings = resolve_web_bindings(
+     |         ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_web_bindings`
+
+warning: type `world::JournalAdminHistory` is more private than the item `world::JournalEntry::Checkpoint::admin_history`
+    --> src/world/mod.rs:1550:9
+     |
+1550 |         admin_history: Option<JournalAdminHistory>,
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ field `world::JournalEntry::Checkpoint::admin_history` is reachable at visibility `pub`
+     |
+note: but type `world::JournalAdminHistory` is only usable at visibility `pub(crate)`
+    --> src/world/mod.rs:1562:1
+     |
+1562 | pub(crate) struct JournalAdminHistory {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     = note: `#[warn(private_interfaces)]` on by default
+
+warning: function `serialize` is never used
+   --> src/groups/log.rs:245:16
+    |
+245 |         pub fn serialize<S: Serializer>(
+    |                ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variant `HostView` is never constructed
+   --> src/world/actor.rs:169:5
+    |
+ 86 | pub(crate) enum WorldCommand {
+    |                 ------------ variant in this enum
+...
+169 |     HostView {
+    |     ^^^^^^^^
+
+warning: method `tracked` is never used
+  --> src/world/core.rs:99:19
+   |
+60 | impl AdminHistoryByteLedger {
+   | --------------------------- method in this implementation
+...
+99 |     pub(crate) fn tracked(&self) -> usize {
+   |                   ^^^^^^^
+
+warning: methods `handoff_transfers` and `write_lease` are never used
+    --> src/world/core.rs:1580:19
+     |
+ 286 | impl WorldCore {
+     | -------------- methods in this implementation
+...
+1580 |     pub(crate) fn handoff_transfers(&self) -> &[HandoffTransferState] {
+     |                   ^^^^^^^^^^^^^^^^^
+...
+1587 |     pub(crate) fn write_lease(&self) -> &WriteLease {
+     |                   ^^^^^^^^^^^
+
+warning: method `host_view` is never used
+   --> src/world/handle.rs:857:25
+    |
+ 27 | impl WorldHandle {
+    | ---------------- method in this implementation
+...
+857 |     pub(crate) async fn host_view(&self) -> Result<(WorldSnapshot, Option<String>)> {
+    |                         ^^^^^^^^^
+
+warning: field `profile` is never read
+   --> src/world_manifest.rs:191:9
+    |
+189 |     struct ProfileProbe {
+    |            ------------ field in this struct
+190 |         #[serde(default)]
+191 |         profile: Option<ProfileKeysProbe>,
+    |         ^^^^^^^
+
+warning: multiple fields are never read
+   --> src/world_manifest.rs:198:9
+    |
+196 |     struct ProfileKeysProbe {
+    |            ---------------- fields in this struct
+197 |         #[serde(default)]
+198 |         wasm_fuel: Option<serde::de::IgnoredAny>,
+    |         ^^^^^^^^^
+199 |         #[serde(default)]
+200 |         wasm_memory_bytes: Option<serde::de::IgnoredAny>,
+    |         ^^^^^^^^^^^^^^^^^
+201 |         #[serde(default)]
+202 |         wasm_message_bytes: Option<serde::de::IgnoredAny>,
+    |         ^^^^^^^^^^^^^^^^^^
+203 |         #[serde(default)]
+204 |         native_memory_bytes: Option<serde::de::IgnoredAny>,
+    |         ^^^^^^^^^^^^^^^^^^^
+205 |         #[serde(default)]
+206 |         native_cpu_seconds: Option<serde::de::IgnoredAny>,
+    |         ^^^^^^^^^^^^^^^^^^
+207 |         #[serde(default)]
+208 |         native_call_deadline_ms: Option<serde::de::IgnoredAny>,
+    |         ^^^^^^^^^^^^^^^^^^^^^^^
+209 |         #[serde(default)]
+210 |         total_memory_bytes: Option<serde::de::IgnoredAny>,
+    |         ^^^^^^^^^^^^^^^^^^
+
+warning: method `tier` is never used
+  --> src/world_terminal.rs:58:19
+   |
+53 | impl TerminalProfile {
+   | -------------------- method in this implementation
+...
+58 |     pub(crate) fn tier(self) -> PresentationTier {
+   |                   ^^^^
+
+warning: enum `PresentationTier` is never used
+  --> src/world_terminal.rs:71:17
+   |
+71 | pub(crate) enum PresentationTier {
+   |                 ^^^^^^^^^^^^^^^^
+
+warning: method `tier` is never used
+  --> src/world_terminal.rs:93:19
+   |
+91 | impl ProbeOutcome {
+   | ----------------- method in this implementation
+92 |     /// Return the conservative Tier 3 profile when complete reports conflict.
+93 |     pub(crate) fn tier(&self) -> PresentationTier {
+   |                   ^^^^
+
+warning: struct `ProbeDemux` is never constructed
+   --> src/world_terminal.rs:120:19
+    |
+120 | pub(crate) struct ProbeDemux {
+    |                   ^^^^^^^^^^
+
+warning: associated items `new`, `push`, `expire`, `outcome`, and `tier` are never used
+   --> src/world_terminal.rs:128:19
+    |
+126 | impl ProbeDemux {
+    | --------------- associated items in this implementation
+127 |     /// Start an empty demultiplexer for one startup probe.
+128 |     pub(crate) fn new() -> Self {
+    |                   ^^^
+...
+133 |     pub(crate) fn push(&mut self, bytes: &[u8]) -> Vec<u8> {
+    |                   ^^^^
+...
+157 |     pub(crate) fn expire(&mut self) -> Vec<u8> {
+    |                   ^^^^^^
+...
+163 |     pub(crate) fn outcome(&self) -> ProbeOutcome {
+    |                   ^^^^^^^
+...
+172 |     pub(crate) fn tier(&self) -> PresentationTier {
+    |                   ^^^^
+
+warning: struct `PresenterCounters` is never constructed
+   --> src/world_terminal.rs:320:19
+    |
+320 | pub(crate) struct PresenterCounters {
+    |                   ^^^^^^^^^^^^^^^^^
+
+warning: method `record` is never used
+   --> src/world_terminal.rs:331:19
+    |
+329 | impl PresenterCounters {
+    | ---------------------- method in this implementation
+330 |     /// Record one successful presenter write.
+331 |     pub(crate) fn record(&mut self, bytes: usize, full_render: bool) {
+    |                   ^^^^^^
+
+warning: missing documentation for an associated function
+   --> src/abuse.rs:635:5
+    |
+635 |     pub fn new() -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: requested on the command line with `-W missing-docs`
+
+warning: missing documentation for an associated function
+   --> src/abuse.rs:795:5
+    |
+795 |     pub fn new(policy: AbusePolicy, local_node: NodeId) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/app_manifest.rs:105:5
+    |
+105 |     pub app: AppInfo,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/app_manifest.rs:106:5
+    |
+106 |     pub interfaces: Interfaces,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/app_manifest.rs:108:5
+    |
+108 |     pub program: Option<Program>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/app_manifest.rs:110:5
+    |
+110 |     pub capabilities: Option<Capabilities>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/app_manifest.rs:112:5
+    |
+112 |     pub resources: Option<Resources>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/app_manifest.rs:117:1
+    |
+117 | pub struct AppInfo {
+    | ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/app_manifest.rs:118:5
+    |
+118 |     pub id: String,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/app_manifest.rs:119:5
+    |
+119 |     pub name: String,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/app_manifest.rs:120:5
+    |
+120 |     pub version: String,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/app_manifest.rs:122:5
+    |
+122 |     pub description: Option<String>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/app_manifest.rs:127:1
+    |
+127 | pub struct Program {
+    | ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/app_manifest.rs:128:5
+    |
+128 |     pub kind: String,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/app_manifest.rs:130:5
+    |
+130 |     pub source: Option<PathBuf>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/app_manifest.rs:132:5
+    |
+132 |     pub module_hash: Option<String>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/app_manifest.rs:137:1
+    |
+137 | pub struct Interfaces {
+    | ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/app_manifest.rs:139:5
+    |
+139 |     pub cli: Option<CliInterface>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/app_manifest.rs:141:5
+    |
+141 |     pub web: Option<WebInterface>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/app_manifest.rs:146:1
+    |
+146 | pub struct CliInterface {
+    | ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/app_manifest.rs:147:5
+    |
+147 |     pub commands: Vec<String>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/app_manifest.rs:152:1
+    |
+152 | pub struct WebInterface {
+    | ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/app_manifest.rs:153:5
+    |
+153 |     pub mode: String,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/app_manifest.rs:154:5
+    |
+154 |     pub route: String,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/app_manifest.rs:156:5
+    |
+156 |     pub socket: Option<String>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/app_manifest.rs:161:1
+    |
+161 | pub struct Capabilities {
+    | ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/app_manifest.rs:163:5
+    |
+163 |     pub request: Vec<String>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> src/app_manifest.rs:168:1
+    |
+168 | pub struct Resources {
+    | ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/app_manifest.rs:170:5
+    |
+170 |     pub files: Vec<String>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/app_manifest.rs:176:5
+    |
+176 |     pub path: PathBuf,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/app_manifest.rs:177:5
+    |
+177 |     pub manifest: AppManifest,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/app_manifest.rs:184:5
+    |
+184 |     pub apps: Vec<DiscoveredApp>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/app_manifest.rs:185:5
+    |
+185 |     pub errors: Vec<String>,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a constant
+  --> src/backup.rs:82:1
+   |
+82 | pub const DOWNLOAD_HOUR_WINDOW_MS: u64 = 3_600_000;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a constant
+  --> src/backup.rs:83:1
+   |
+83 | pub const DOWNLOAD_DAY_LIMIT: u64 = 50;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a constant
+  --> src/backup.rs:84:1
+   |
+84 | pub const DOWNLOAD_DAY_WINDOW_MS: u64 = 86_400_000;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/backup.rs:154:18
+    |
+154 |     StaleEpoch { current: u64, presented: u64 },
+    |                  ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/backup.rs:154:32
+    |
+154 |     StaleEpoch { current: u64, presented: u64 },
+    |                                ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/backup.rs:159:18
+    |
+159 |     Tombstoned { final_epoch: u64 },
+    |                  ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/backup.rs:162:30
+    |
+162 |     DownloadBudgetExceeded { retry_after_ms: u64 },
+    |                              ^^^^^^^^^^^^^^^^^^^
+
+warning: type does not implement `Debug`; consider adding `#[derive(Debug)]` or a manual implementation
+   --> src/backup.rs:465:1
+    |
+465 | / pub struct BackupStore {
+466 | |     entries: HashMap<[u8; 32], BackupEntry>,
+467 | |     bound_devices: HashMap<[u8; 32], Vec<[u8; 32]>>,
+468 | |     restore_pending: HashMap<[u8; 32], RestoreToken>,
+...   |
+472 | |     generations: HashMap<[u8; 32], u64>,
+473 | | }
+    | |_^
+    |
+    = note: requested on the command line with `-W missing-debug-implementations`
+
+warning: type does not implement `Debug`; consider adding `#[derive(Debug)]` or a manual implementation
+   --> src/backup.rs:791:1
+    |
+791 | / pub struct CreatedBackup {
+792 | |     /// The v1 key envelope bytes, ready to upload.
+793 | |     pub envelope: Vec<u8>,
+794 | |     /// Set when the passphrase is weak; the client surfaces this at
+795 | |     /// creation time.
+796 | |     pub passphrase_warning: Option<&'static str>,
+797 | | }
+    | |_^
+
+warning: missing documentation for an enum
+   --> src/cli.rs:576:1
+    |
+576 | pub enum Command {
+    | ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+    --> src/cli.rs:1394:9
+     |
+1394 |         command: KeyCommand,
+     |         ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> src/commands/put.rs:403:1
+    |
+403 | / pub async fn cmd_put_multi(
+404 | |     files: Vec<String>,
+405 | |     content_mode: bool,
+406 | |     from_stdin: bool,
+407 | |     hash_only: bool,
+408 | |     no_relay: bool,
+409 | | ) -> Result<()> {
+    | |_______________^
+
+warning: missing documentation for a function
+    --> src/commands/serve.rs:1094:1
+     |
+1094 | pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:31:5
+   |
+31 |     pub numerator: u128,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:32:5
+   |
+32 |     pub denominator: u128,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:33:5
+   |
+33 |     pub authorisation_id: String,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:56:5
+   |
+56 |     pub conversion_id: u128,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:61:5
+   |
+61 |     pub user_source: AccountId,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:62:5
+   |
+62 |     pub lp_source: AccountId,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:63:5
+   |
+63 |     pub fee_account: Option<AccountId>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:64:5
+   |
+64 |     pub lp_dest: AccountId,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:65:5
+   |
+65 |     pub user_dest: AccountId,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:66:5
+   |
+66 |     pub source_ledger: u32,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:67:5
+   |
+67 |     pub dest_ledger: u32,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:68:5
+   |
+68 |     pub amount_in: u128,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:71:5
+   |
+71 |     pub quote: RateQuote,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: type does not implement `Debug`; consider adding `#[derive(Debug)]` or a manual implementation
+  --> src/currency_poc/executor.rs:76:1
+   |
+76 | / pub struct ConversionExecutor<B: LedgerBackend, S: IntentStore> {
+77 | |     pub backend: B,
+78 | |     pub store: S,
+79 | | }
+   | |_^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:77:5
+   |
+77 |     pub backend: B,
+   |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/executor.rs:78:5
+   |
+78 |     pub store: S,
+   |     ^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> src/currency_poc/executor.rs:82:5
+   |
+82 |     pub fn new(backend: B, store: S) -> Self {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: type does not implement `Debug`; consider adding `#[derive(Debug)]` or a manual implementation
+  --> src/currency_poc/harness.rs:79:1
+   |
+79 | / pub struct TestCluster {
+80 | |     dir: PathBuf,
+81 | |     child: Option<Child>,
+82 | |     /// The `host:port` address clients should connect to.
+83 | |     pub address: String,
+84 | | }
+   | |_^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/intent.rs:64:5
+   |
+64 |     pub conversion_id: u128,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/intent.rs:69:5
+   |
+69 |     pub user_source: AccountId,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/intent.rs:70:5
+   |
+70 |     pub lp_source: AccountId,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/intent.rs:71:5
+   |
+71 |     pub fee_account: Option<AccountId>,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/intent.rs:72:5
+   |
+72 |     pub lp_dest: AccountId,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/intent.rs:73:5
+   |
+73 |     pub user_dest: AccountId,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/intent.rs:74:5
+   |
+74 |     pub source_ledger: u32,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/intent.rs:75:5
+   |
+75 |     pub dest_ledger: u32,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/intent.rs:76:5
+   |
+76 |     pub amount_in: u128,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/intent.rs:77:5
+   |
+77 |     pub amount_out: u128,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/intent.rs:78:5
+   |
+78 |     pub fee_amount: u128,
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/intent.rs:82:5
+   |
+82 |     pub state: IntentState,
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> src/currency_poc/intent.rs:86:5
+   |
+86 |     pub fn transfer_ids(&self) -> Vec<u128> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/intent.rs:99:5
+   |
+99 |     pub path: PathBuf,
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/currency_poc/intent.rs:100:5
+    |
+100 |     pub reason: String,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> src/currency_poc/intent.rs:116:5
+    |
+116 |     fn get(&self, conversion_id: u128) -> io::Result<Option<IntentRecord>>;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: type does not implement `Debug`; consider adding `#[derive(Debug)]` or a manual implementation
+   --> src/currency_poc/intent.rs:140:1
+    |
+140 | / pub struct InMemoryIntentStore {
+141 | |     records: HashMap<u128, IntentRecord>,
+142 | | }
+    | |_^
+
+warning: missing documentation for an associated function
+   --> src/currency_poc/intent.rs:145:5
+    |
+145 |     pub fn new() -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: type does not implement `Debug`; consider adding `#[derive(Debug)]` or a manual implementation
+   --> src/currency_poc/intent.rs:198:1
+    |
+198 | / pub struct FileIntentStore {
+199 | |     dir: PathBuf,
+200 | |     /// Entries skipped by the most recent `unresolved` listing
+201 | |     /// (#4125); behind a `RefCell` because listing takes `&self`.
+202 | |     unreadable: RefCell<Vec<UnreadableIntent>>,
+203 | | }
+    | |_^
+
+warning: missing documentation for an associated function
+   --> src/currency_poc/intent.rs:206:5
+    |
+206 |     pub fn open(dir: PathBuf) -> io::Result<Self> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:41:5
+   |
+41 |     pub id: AccountId,
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:42:5
+   |
+42 |     pub ledger: u32,
+   |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:43:5
+   |
+43 |     pub code: u16,
+   |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:44:5
+   |
+44 |     pub flags: AccountFlags,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:52:5
+   |
+52 |     pub id: TransferId,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:53:5
+   |
+53 |     pub debit_account_id: AccountId,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:54:5
+   |
+54 |     pub credit_account_id: AccountId,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:55:5
+   |
+55 |     pub amount: u128,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:56:5
+   |
+56 |     pub ledger: u32,
+   |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:59:5
+   |
+59 |     pub code: u16,
+   |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:60:5
+   |
+60 |     pub linked: bool,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:66:5
+   |
+66 |     pub debits_posted: u128,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+  --> src/currency_poc/ledger.rs:67:5
+   |
+67 |     pub credits_posted: u128,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/currency_poc/ledger.rs:111:5
+    |
+111 |     DebitAccountNotFound,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/currency_poc/ledger.rs:112:5
+    |
+112 |     CreditAccountNotFound,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/currency_poc/ledger.rs:113:5
+    |
+113 |     AccountsMustBeDifferent,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/currency_poc/ledger.rs:114:5
+    |
+114 |     AmountMustNotBeZero,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/currency_poc/ledger.rs:119:5
+    |
+119 |     DebitsMustNotExceedCredits,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/currency_poc/ledger.rs:120:5
+    |
+120 |     CreditsMustNotExceedDebits,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> src/currency_poc/ledger.rs:125:5
+    |
+125 |     fn create_accounts(&mut self, accounts: &[Account]) -> Vec<Result<(), AccountError>>;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> src/currency_poc/ledger.rs:156:5
+    |
+156 |     fn lookup_transfer(&self, id: TransferId) -> Option<Transfer>;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> src/currency_poc/ledger.rs:157:5
+    |
+157 |     fn lookup_account(&self, id: AccountId) -> Option<Account>;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> src/currency_poc/ledger.rs:158:5
+    |
+158 |     fn account_balance(&self, id: AccountId) -> Option<AccountBalance>;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: type does not implement `Debug`; consider adding `#[derive(Debug)]` or a manual implementation
+   --> src/currency_poc/ledger.rs:168:1
+    |
+168 | / pub struct InMemoryLedger {
+169 | |     accounts: HashMap<AccountId, Account>,
+170 | |     balances: HashMap<AccountId, AccountBalance>,
+171 | |     transfers: HashMap<TransferId, Transfer>,
+172 | |     failed_transfers: HashMap<TransferId, TransferError>,
+173 | |     transfer_order: Vec<TransferId>,
+174 | | }
+    | |_^
+
+warning: missing documentation for an associated function
+   --> src/currency_poc/ledger.rs:177:5
+    |
+177 |     pub fn new() -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: type does not implement `Debug`; consider adding `#[derive(Debug)]` or a manual implementation
+   --> src/idset/expand.rs:115:1
+    |
+115 | / pub struct Expander<'a> {
+116 | |     membership: &'a mut Membership,
+117 | |     admins_at: &'a AdminsAtPosition<'a>,
+118 | |     cache: HashMap<CacheKey, BTreeMap<AuthorKey, Role>>,
+119 | | }
+    | |_^
+
+warning: missing documentation for a struct
+   --> src/idset/expand.rs:115:1
+    |
+115 | pub struct Expander<'a> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/serve_proxy.rs:142:5
+    |
+142 |     UdpBlocked,
+    |     ^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/serve_proxy.rs:143:5
+    |
+143 |     PeerOffline,
+    |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/serve_proxy.rs:144:5
+    |
+144 |     ProxyAuthRequired,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/serve_proxy.rs:145:5
+    |
+145 |     BrokerRefused,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/serve_proxy.rs:146:5
+    |
+146 |     CreditOverrun,
+    |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/serve_proxy.rs:147:5
+    |
+147 |     ProtocolViolation,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> src/serve_proxy.rs:148:5
+    |
+148 |     Internal,
+    |     ^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/serve_proxy.rs:181:5
+    |
+181 |     pub ty: FrameType,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/serve_proxy.rs:186:5
+    |
+186 |     pub payload: Vec<u8>,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+   --> src/serve_proxy.rs:190:5
+    |
+190 |     pub fn new(ty: FrameType, stream_id: u32, seq: u64, payload: Vec<u8>) -> Result<Self> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+   --> src/serve_proxy.rs:331:5
+    |
+331 |     pub fn new() -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+   --> src/serve_proxy.rs:363:5
+    |
+363 |     pub fn new(initial: u64) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+   --> src/serve_proxy.rs:367:5
+    |
+367 |     pub fn per_stream() -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+   --> src/serve_proxy.rs:371:5
+    |
+371 |     pub fn per_connection() -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> src/serve_proxy.rs:375:5
+    |
+375 |     pub fn available(&self) -> u64 {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+   --> src/protocol.rs:422:1
+    |
+422 | pub enum MetaResponse {
+    | ^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> src/repl/input.rs:620:1
+    |
+620 | pub fn preprocess_repl_line(line: &str) -> Result<ReplInput> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+    --> src/tags.rs:1547:28
+     |
+1547 |     EmptyQuotedComponent { term: String },
+     |                            ^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+    --> src/tags.rs:1549:25
+     |
+1549 |     UnterminatedQuote { term: String },
+     |                         ^^^^^^^^^^^^
+
+warning: missing documentation for a method
+    --> src/world/core.rs:1599:5
+     |
+1599 |     pub const fn execution_profile(&self) -> crate::world_limits::WorldExecutionProfile {
+     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> src/world_compile.rs:709:1
+    |
+709 | pub fn locate_roc() -> Result<String> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/world_session/types.rs:299:5
+    |
+299 |     pub public_key: String,
+    |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> src/world_session/types.rs:300:5
+    |
+300 |     pub signature: String,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: `id` (lib) generated 181 warnings (run `cargo fix --lib -p id` to apply 31 suggestions)
+   Compiling id v0.1.0 (/home/user/git/fleet/14211/pkgs/id)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 32s
+     Running tests/probe_replication_sign.rs (target/debug/deps/probe_replication_sign-97c809a51ea38cec)
+
+running 1 test
+test probe_signer_refuses_dead_on_arrival_envelopes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
