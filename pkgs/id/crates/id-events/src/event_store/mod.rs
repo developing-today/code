@@ -227,6 +227,19 @@ const ACTIONS: TableDefinition<'static, &'static [u8], &'static [u8]> =
 /// commitment and the body's author checked against the event's signer.
 const DEVICE_OPS: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("device_ops");
+
+/// The outcome of [`EventStore::recover_device_ops`] (issue #8160, item 4): the
+/// device-operation rows rebuilt from the bodies the store holds, and the stored
+/// events that could not be rebuilt locally.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DeviceOpsRecovery {
+    /// Events whose device-operation row was rebuilt from their held body.
+    pub recovered: Vec<Hash>,
+    /// Stored events that commit to a body the store does not hold, or whose held
+    /// body no longer decodes as a device operation: if such an event carried a
+    /// device operation, only re-delivery of its body can restore the row.
+    pub unrecoverable: Vec<Hash>,
+}
 /// The IDs of the applied events, with an empty value. Written by the resolution.
 const APPLIED: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("applied");
@@ -460,6 +473,10 @@ impl EventStore {
             unusable: false,
         };
         store.reload(now_ms)?;
+        // A store written before device-operation rows existed gains them
+        // here, rebuilt from the verified bodies it holds (issue #8160,
+        // item 4). Idempotent: a store whose rows are complete scans clean.
+        store.recover_device_ops()?;
         Ok(store)
     }
 
@@ -598,6 +615,67 @@ impl EventStore {
         let bodies = txn.open_table(BODIES)?;
         let stored = bodies.get(id.as_bytes().as_slice())?;
         Ok(stored.map(|body| body.value().to_vec()))
+    }
+
+    /// Rebuilds the device-operation rows of a store written before they
+    /// existed (issue #8160, item 4). Every stored event whose verified body
+    /// the store holds in `bodies` and that carries a device operation gains
+    /// its row, in one transaction, so the resolution folds the operation
+    /// again — an upgraded store's Admin-device grants and revocations stop
+    /// being invisible to claims. The bodies are the ones the store itself
+    /// verified against their headers when they were stored, so a rebuilt
+    /// row is exactly the operation the signer published. A stored event
+    /// whose header commits to a body the store does not hold cannot be
+    /// rebuilt locally; it is named in the report's
+    /// [`DeviceOpsRecovery::unrecoverable`] instead of being passed over
+    /// silently. Runs on every open (see [`EventStore::open_with`]) and may
+    /// be called directly; it is idempotent.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redb or corruption error if the store cannot be read or
+    /// written.
+    pub fn recover_device_ops(&mut self) -> Result<DeviceOpsRecovery, StoreError> {
+        let txn = self.db.begin_write()?;
+        let mut recovered = Vec::new();
+        let mut unrecoverable = Vec::new();
+        {
+            let events = txn.open_table(EVENTS)?;
+            let bodies = txn.open_table(BODIES)?;
+            let mut device_ops = txn.open_table(DEVICE_OPS)?;
+            let mut stored = Vec::new();
+            for entry in events.iter()? {
+                let (_, value) = entry?;
+                stored.push(decode_stored(value.value())?);
+            }
+            for event in stored {
+                let id = event.id;
+                if device_ops.get(id.as_bytes().as_slice())?.is_some() {
+                    continue;
+                }
+                match bodies.get(id.as_bytes().as_slice())? {
+                    Some(body) => match ingest::body_device_op(&event, Some(body.value())) {
+                        Ok(Some((op, group))) => {
+                            let encoded = resolve::encode_device_op(&op, group.as_ref())?;
+                            device_ops.insert(id.as_bytes().as_slice(), encoded.as_slice())?;
+                            recovered.push(id);
+                        }
+                        Ok(None) => {}
+                        Err(_) => unrecoverable.push(id),
+                    },
+                    None => {
+                        if event.header.payload_hash.is_some() {
+                            unrecoverable.push(id);
+                        }
+                    }
+                }
+            }
+        }
+        txn.commit()?;
+        Ok(DeviceOpsRecovery {
+            recovered,
+            unrecoverable,
+        })
     }
 
     /// The fork proof that freezes `author`'s chain: the one at the author's lowest fork point, if

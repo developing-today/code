@@ -95,6 +95,7 @@ use p2panda_auth::group::GroupAction;
 use p2panda_core::{Hash, SeqNum};
 use redb::{ReadableTable, ReadableTableMetadata, WriteTransaction};
 
+use super::BODIES;
 use super::resolve::{self, decode_action, encode_action, encode_device_op};
 use super::waiting_rows::{Hold, Mirror};
 use super::{
@@ -211,45 +212,13 @@ impl EventStore {
                 Err(refusal) => return Ok(Ingest::Refused(refusal)),
             }
         };
-        let result = self.ingest_event(event, action.as_ref(), body, now_ms)?;
+        let result = self.ingest_event(event, action.as_ref(), body, device.as_ref(), now_ms)?;
         if let Some(body) = retain_body
             && !matches!(result, Ingest::Refused(_))
         {
             self.record_writer_body(&event_id, body)?;
         }
-        if let Some((op, group)) = &device
-            && !matches!(result, Ingest::Refused(_))
-        {
-            self.record_device_op(&event_id, op, group.as_ref())?;
-        }
         Ok(result)
-    }
-
-    /// Records the device operation a verified `group.event` body carries, by event ID
-    /// (issue #5656). Written after the ingest decision, in its own transaction, like
-    /// [`EventStore::record_writer_body`]: the row is keyed by the event's ID and read
-    /// back only for events the store holds, so recording one for an event that is held
-    /// or later released is inert until the event is stored, and a duplicate delivery
-    /// simply rewrites the same row.
-    ///
-    /// # Errors
-    ///
-    /// Returns a redb error if the write fails, or [`StoreError::Corrupt`] if the op
-    /// does not encode.
-    fn record_device_op(
-        &self,
-        id: &Hash,
-        op: &crate::groups::DeviceOp,
-        group: Option<&Hash>,
-    ) -> Result<(), StoreError> {
-        let encoded = encode_device_op(op, group)?;
-        let txn = self.db.begin_write()?;
-        {
-            let mut device_ops = txn.open_table(DEVICE_OPS)?;
-            device_ops.insert(id.as_bytes().as_slice(), encoded.as_slice())?;
-        }
-        txn.commit()?;
-        Ok(())
     }
 
     /// Verifies one received event, which may be a group operation, and applies what it allows.
@@ -270,7 +239,7 @@ impl EventStore {
             Ok(event) => event,
             Err(err) => return Ok(Ingest::Refused(Refusal::Malformed(err.to_string()))),
         };
-        self.ingest_event(event, action, None, now_ms)
+        self.ingest_event(event, action, None, None, now_ms)
     }
 
     /// Runs a decoded event through the store's transaction, with its action.
@@ -279,11 +248,19 @@ impl EventStore {
         event: Event,
         action: Option<&GroupAction<AuthId, ()>>,
         body: Option<&[u8]>,
+        device: Option<&(crate::groups::DeviceOp, Option<Hash>)>,
         now_ms: u64,
     ) -> Result<Ingest, StoreError> {
         self.transact(now_ms, |mirror| {
-            let (staged, changed) =
-                ingest_in(mirror, event, action, body, now_ms, Labels::AsStored)?;
+            let (staged, changed) = ingest_in(
+                mirror,
+                event,
+                action,
+                body,
+                device,
+                now_ms,
+                Labels::AsStored,
+            )?;
             Ok((staged.finish(mirror.txn)?, changed))
         })
     }
@@ -303,7 +280,10 @@ impl EventStore {
         events: Vec<Event>,
         now_ms: u64,
     ) -> Result<Vec<Ingest>, StoreError> {
-        let events = events.into_iter().map(|event| (event, None)).collect();
+        let events = events
+            .into_iter()
+            .map(|event| (event, None, None))
+            .collect();
         self.ingest_events_inner(events, now_ms)
     }
 
@@ -319,7 +299,11 @@ impl EventStore {
         now_ms: u64,
     ) -> Result<Vec<Ingest>, StoreError> {
         let mut refusals: Vec<Option<Ingest>> = Vec::with_capacity(events.len());
-        let mut accepted: Vec<(Event, Option<Vec<u8>>)> = Vec::with_capacity(events.len());
+        let mut accepted: Vec<(
+            Event,
+            Option<Vec<u8>>,
+            Option<(crate::groups::DeviceOp, Option<Hash>)>,
+        )> = Vec::with_capacity(events.len());
         for (event, body) in events {
             match body {
                 Some(body) if committed(&event, &body).is_err() => {
@@ -328,10 +312,15 @@ impl EventStore {
                             .to_owned(),
                     ))));
                 }
-                body => {
-                    refusals.push(None);
-                    accepted.push((event, body));
-                }
+                body => match body_device_op(&event, body.as_deref()) {
+                    Ok(device) => {
+                        refusals.push(None);
+                        accepted.push((event, body, device));
+                    }
+                    Err(refusal) => {
+                        refusals.push(Some(Ingest::Refused(refusal)));
+                    }
+                },
             }
         }
         let mut stored = self.ingest_events_inner(accepted, now_ms)?.into_iter();
@@ -352,10 +341,17 @@ impl EventStore {
     /// storing each event's verified body with it.
     fn ingest_events_inner(
         &mut self,
-        events: Vec<(Event, Option<Vec<u8>>)>,
+        events: Vec<(
+            Event,
+            Option<Vec<u8>>,
+            Option<(crate::groups::DeviceOp, Option<Hash>)>,
+        )>,
         now_ms: u64,
     ) -> Result<Vec<Ingest>, StoreError> {
-        let fork_check: Vec<Event> = events.iter().map(|(event, _body)| event.clone()).collect();
+        let fork_check: Vec<Event> = events
+            .iter()
+            .map(|(event, _body, _device)| event.clone())
+            .collect();
         self.transact(now_ms, |mirror| {
             let labels = if batch_may_fork(mirror, &fork_check)? {
                 Labels::AsStored
@@ -367,9 +363,16 @@ impl EventStore {
             // the production path (`attach_action`).
             let mut staged = Vec::with_capacity(events.len());
             let mut changed = false;
-            for (event, body) in events {
-                let (outcome, did_change) =
-                    ingest_in(mirror, event, None, body.as_deref(), now_ms, labels)?;
+            for (event, body, device) in events {
+                let (outcome, did_change) = ingest_in(
+                    mirror,
+                    event,
+                    None,
+                    body.as_deref(),
+                    device.as_ref(),
+                    now_ms,
+                    labels,
+                )?;
                 changed |= did_change;
                 staged.push(outcome);
             }
@@ -469,7 +472,7 @@ const GROUP_EVENT_CLAIM: &[u8] = b"\x87\x6bgroup.event";
 /// does not decode is refused, as is one whose named author is not the event's
 /// signer: the grant a device operation records is the signer's, so a body naming
 /// another author is not the operation it claims to be.
-fn body_device_op(
+pub(super) fn body_device_op(
     event: &Event,
     body: Option<&[u8]>,
 ) -> Result<Option<(crate::groups::DeviceOp, Option<Hash>)>, Refusal> {
@@ -621,6 +624,7 @@ fn ingest_in(
     event: Event,
     action: Option<&GroupAction<AuthId, ()>>,
     body: Option<&[u8]>,
+    device: Option<&(crate::groups::DeviceOp, Option<Hash>)>,
     now: u64,
     labels: Labels,
 ) -> Result<(Staged, bool), StoreError> {
@@ -628,7 +632,7 @@ fn ingest_in(
     let id = event.id;
     let author = author_of(&event);
     let rivals = held_rivals(m.pool, &event);
-    let settled = settle(m, event, action, body, &rivals, now, false, labels)?;
+    let settled = settle(m, event, action, body, device, &rivals, now, false, labels)?;
     let attached = matches!(settled, Settled::Duplicate { attached: true });
     let changed = expired > 0
         || attached
@@ -687,6 +691,7 @@ fn settle(
     event: Event,
     action: Option<&GroupAction<AuthId, ()>>,
     body: Option<&[u8]>,
+    device: Option<&(crate::groups::DeviceOp, Option<Hash>)>,
     rivals: &[Event],
     now: u64,
     from_pool: bool,
@@ -700,6 +705,9 @@ fn settle(
             }
             if let Some(body) = body {
                 store_body(m.txn, &id, body)?;
+            }
+            if let Some((op, group)) = device {
+                store_device_op(m.txn, &id, op, group.as_ref())?;
             }
             // In a store with no group state every stored event applies, so the label is known
             // now, whatever the batch does later. Otherwise the label waits for the resolution.
@@ -734,6 +742,9 @@ fn settle(
                 if is_stored(m.txn, &id)? {
                     store_body(m.txn, &id, body)?;
                     stored_body = true;
+                    if let Some((op, group)) = device {
+                        store_device_op(m.txn, &id, op, group.as_ref())?;
+                    }
                 }
             }
             Settled::Duplicate {
@@ -747,6 +758,9 @@ fn settle(
                 return Err(corrupt("a batch that cannot fork found a fork"));
             }
             drop_released(m, &event, from_pool)?;
+            if from_pool {
+                remove_device_op(m.txn, &id)?;
+            }
             refresh(m.txn)?;
             let mut released = Vec::new();
             for header in proof {
@@ -756,6 +770,9 @@ fn settle(
         }
         Decision::Refuse(refusal) => {
             drop_released(m, &event, from_pool)?;
+            if from_pool {
+                remove_device_op(m.txn, &id)?;
+            }
             Settled::Refused(refusal)
         }
         Decision::Wait(deps) => {
@@ -771,6 +788,9 @@ fn settle(
                 if let Some(body) = body {
                     store_body(m.txn, &id, body)?;
                 }
+                if let Some((op, group)) = device {
+                    store_device_op(m.txn, &id, op, group.as_ref())?;
+                }
             }
             held(hold)
         }
@@ -782,6 +802,9 @@ fn settle(
                 }
                 if let Some(body) = body {
                     store_body(m.txn, &id, body)?;
+                }
+                if let Some((op, group)) = device {
+                    store_device_op(m.txn, &id, op, group.as_ref())?;
                 }
             }
             held(hold)
@@ -836,7 +859,18 @@ fn drain(
         let id = event.id;
         let rivals = held_rivals(m.pool, &event);
         let action = stored_action(m.txn, &id)?;
-        match settle(m, event, action.as_ref(), None, &rivals, now, true, labels)? {
+        let device = stored_device_op(m.txn, &event)?;
+        match settle(
+            m,
+            event,
+            action.as_ref(),
+            None,
+            device.as_ref(),
+            &rivals,
+            now,
+            true,
+            labels,
+        )? {
             Settled::Stored { applied, released } => {
                 // A label that is not read yet keeps the event as a candidate. Its label decides
                 // whether it stays in the list, once the batch has resolved.
@@ -982,6 +1016,52 @@ fn store_action(
     let mut actions = txn.open_table(ACTIONS)?;
     actions.insert(id.as_bytes().as_slice(), encoded.as_slice())?;
     Ok(())
+}
+
+/// Writes the device operation an event's verified body carries, by event ID, in the
+/// caller's transaction (issue #8160, item 3): the row commits or aborts with the
+/// ingest decision itself — stored, duplicate and waiting paths alike — so a crash
+/// or a failed write can no longer leave a stored event without the operation its
+/// body carries, or an operation without its event. The resolution reads the row
+/// back only for events the store holds.
+fn store_device_op(
+    txn: &WriteTransaction,
+    id: &Hash,
+    op: &crate::groups::DeviceOp,
+    group: Option<&Hash>,
+) -> Result<(), StoreError> {
+    let encoded = encode_device_op(op, group)?;
+    let mut device_ops = txn.open_table(DEVICE_OPS)?;
+    device_ops.insert(id.as_bytes().as_slice(), encoded.as_slice())?;
+    Ok(())
+}
+
+/// Removes an event's device-operation row, in the caller's transaction. Used when
+/// an event that carried a row stops being held without being stored — a held
+/// event that expires, or a released event that is refused or forks — so the row
+/// never outlives the event it describes (issue #8160, item 2). Removing a row
+/// that does not exist is not an error.
+fn remove_device_op(txn: &WriteTransaction, id: &Hash) -> Result<(), StoreError> {
+    let mut device_ops = txn.open_table(DEVICE_OPS)?;
+    device_ops.remove(id.as_bytes().as_slice())?;
+    Ok(())
+}
+
+/// The device operation carried by the body the store already holds for `event`,
+/// for an event the waiting pool releases: the body was verified against the
+/// header when it was stored, so a body that no longer decodes is corruption.
+fn stored_device_op(
+    txn: &WriteTransaction,
+    event: &Event,
+) -> Result<Option<(crate::groups::DeviceOp, Option<Hash>)>, StoreError> {
+    let bodies = txn.open_table(BODIES)?;
+    let Some(body) = bodies.get(event.id.as_bytes().as_slice())? else {
+        return Ok(None);
+    };
+    let body = body.value().to_vec();
+    body_device_op(event, Some(&body)).map_err(|_| {
+        corrupt("a stored body no longer decodes as it did when it was stored".to_owned())
+    })
 }
 
 /// Attaches the action of a group operation to a stored event that has none. Such an event was
@@ -2129,6 +2209,277 @@ mod tests {
 
     fn ingest_op(store: &mut EventStore, event: &Event, body: &[u8]) {
         store.ingest_with_body(&event.bytes, Some(body), 0).unwrap();
+    }
+
+    /// A signed device-operation event (a `group.event` body carrying a
+    /// [`crate::groups::DeviceOp`]) and its encoded body, for the production
+    /// path: the body the header commits to is the wire encoding of the op.
+    fn device_event(
+        key: &SigningKey,
+        seq: SeqNum,
+        backlink: Option<Hash>,
+        after: Vec<Hash>,
+        group: Hash,
+        op: crate::groups::DeviceOp,
+    ) -> (Event, Vec<u8>) {
+        let wire = crate::groups::Event {
+            id: Hash::digest(b"device-op-wire"),
+            author: author(key),
+            after: after.clone(),
+            group: Some(group),
+            body: crate::groups::Body::Device(op),
+        };
+        let body = crate::groups::event::encode(&wire).unwrap();
+        let ext = ChainExt {
+            kind: "group.event".to_owned(),
+            group: Some(group),
+            after,
+            tag: None,
+            document: None,
+            removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
+            chat: None,
+            anchor: None,
+        };
+        let event = sign(key, seq, backlink, Some(&body), ext).unwrap();
+        (event, body)
+    }
+
+    /// Whether the store holds a device-operation row for `id`.
+    fn device_op_row(store: &EventStore, id: &Hash) -> bool {
+        let txn = store.db.begin_read().unwrap();
+        let table = txn.open_table(super::super::DEVICE_OPS).unwrap();
+        table.get(id.as_bytes().as_slice()).unwrap().is_some()
+    }
+
+    /// A group created by Alice, the scenario every device-op test builds on:
+    /// Alice is the group's Admin, so her device operations apply.
+    fn device_group(store: &mut EventStore, alice: &SigningKey) -> (Event, Hash) {
+        let create = GroupAction::Create {
+            initial_members: vec![(individual(alice), p2panda_auth::Access::manage())],
+        };
+        let (create_event, create_body) = group_op(alice, 0, None, vec![], None, &create);
+        let group = create_event.id;
+        ingest_op(store, &create_event, &create_body);
+        (create_event, group)
+    }
+
+    fn device_grant(
+        store: &mut EventStore,
+        alice: &SigningKey,
+        seq: SeqNum,
+        backlink: Option<Hash>,
+        group: Hash,
+        device: &SigningKey,
+    ) -> (Event, Vec<u8>) {
+        let op = crate::groups::DeviceOp::Add {
+            device: author(device),
+            scope: crate::groups::Role::Write,
+        };
+        let (event, body) = device_event(alice, seq, backlink, vec![], group, op);
+        store
+            .ingest_with_body(&event.bytes, Some(&body), 0)
+            .unwrap();
+        (event, body)
+    }
+
+    /// Items 3 + 2: a device operation on an event that must wait is written
+    /// in the ingest transaction (the row is there while the event is held,
+    /// before any resolution could read it), and when the held event expires
+    /// the row goes with it instead of leaking.
+    #[test]
+    fn test_device_op_row_written_while_waiting_and_removed_on_expiry() {
+        let (_dir, mut store) = open();
+        let alice = key(41);
+        let carol = key(43);
+        let (create_event, group) = device_group(&mut store, &alice);
+
+        // A seq-1 event that is never delivered yet: the grant at seq 2 waits.
+        let seq1 = sign(
+            &alice,
+            1,
+            Some(create_event.id),
+            None,
+            ChainExt {
+                kind: "message".to_owned(),
+                group: Some(group),
+                after: vec![],
+                tag: None,
+                document: None,
+                removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
+                rotation: None,
+                chat: None,
+                anchor: None,
+            },
+        )
+        .unwrap();
+        let op = crate::groups::DeviceOp::Add {
+            device: author(&carol),
+            scope: crate::groups::Role::Write,
+        };
+        let (grant, grant_body) = device_event(&alice, 2, Some(seq1.id), vec![], group, op);
+        let outcome = store
+            .ingest_with_body(&grant.bytes, Some(&grant_body), 0)
+            .unwrap();
+        assert!(matches!(outcome, Ingest::Waiting { .. }), "{outcome:?}");
+        assert!(device_op_row(&store, &grant.id));
+
+        // Expiry drops the held event and its row together.
+        assert_eq!(store.expire_waiting(WEEK_MS).unwrap(), 1);
+        assert_eq!(store.waiting_len(), 0);
+        assert!(!device_op_row(&store, &grant.id));
+    }
+
+    /// Items 3 + 2, the other half: a held device operation that is released
+    /// keeps its row, and the released event folds the operation.
+    #[test]
+    fn test_device_op_row_kept_when_waiting_event_is_released() {
+        let (_dir, mut store) = open();
+        let alice = key(44);
+        let carol = key(45);
+        let (create_event, group) = device_group(&mut store, &alice);
+
+        let seq1 = sign(
+            &alice,
+            1,
+            Some(create_event.id),
+            None,
+            ChainExt {
+                kind: "message".to_owned(),
+                group: Some(group),
+                after: vec![],
+                tag: None,
+                document: None,
+                removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
+                rotation: None,
+                chat: None,
+                anchor: None,
+            },
+        )
+        .unwrap();
+        let op = crate::groups::DeviceOp::Add {
+            device: author(&carol),
+            scope: crate::groups::Role::Write,
+        };
+        let (grant, grant_body) = device_event(&alice, 2, Some(seq1.id), vec![], group, op);
+        let outcome = store
+            .ingest_with_body(&grant.bytes, Some(&grant_body), 0)
+            .unwrap();
+        assert!(matches!(outcome, Ingest::Waiting { .. }), "{outcome:?}");
+
+        // Delivering the missing predecessor releases the grant: it is
+        // stored, its row survives, and the fold applies it.
+        ingest(&mut store, &seq1);
+        assert!(store.event_applied(&grant.id).unwrap());
+        assert!(device_op_row(&store, &grant.id));
+    }
+
+    /// Item 1: range sync's receiver path (`ingest_events_with_bodies`)
+    /// folds the device operation a delivered body carries — a fresh peer
+    /// ends up with the row and the applied grant, exactly as if the event
+    /// had arrived through the production path. A body that claims to be a
+    /// device operation and does not decode refuses its event in place.
+    #[test]
+    fn test_range_sync_batch_records_device_ops() {
+        let (_dir, mut store) = open();
+        let alice = key(46);
+        let carol = key(47);
+        let create = GroupAction::Create {
+            initial_members: vec![(individual(&alice), p2panda_auth::Access::manage())],
+        };
+        let (create_event, create_body) = group_op(&alice, 0, None, vec![], None, &create);
+        let group = create_event.id;
+        let op = crate::groups::DeviceOp::Add {
+            device: author(&carol),
+            scope: crate::groups::Role::Write,
+        };
+        let (grant, grant_body) = device_event(&alice, 1, Some(group), vec![], group, op);
+
+        let outcomes = store
+            .ingest_events_with_bodies(
+                vec![
+                    (create_event, Some(create_body)),
+                    (grant.clone(), Some(grant_body)),
+                ],
+                0,
+            )
+            .unwrap();
+        assert!(outcomes.iter().all(|o| !matches!(o, Ingest::Refused(_))));
+        assert!(device_op_row(&store, &grant.id));
+        assert!(store.event_applied(&grant.id).unwrap());
+
+        // A claimed device body that does not decode: refused in place.
+        let mut bad_body = b"\x87\x6bgroup.event".to_vec();
+        bad_body.extend_from_slice(b"not-a-device-op");
+        let ext = ChainExt {
+            kind: "group.event".to_owned(),
+            group: Some(group),
+            after: vec![],
+            tag: None,
+            document: None,
+            removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
+            chat: None,
+            anchor: None,
+        };
+        let bad = sign(&alice, 2, Some(grant.id), Some(&bad_body), ext).unwrap();
+        let outcomes = store
+            .ingest_events_with_bodies(vec![(bad, Some(bad_body))], 0)
+            .unwrap();
+        assert!(matches!(outcomes[0], Ingest::Refused(_)));
+    }
+
+    /// Item 4: a store written before device-operation rows existed (a row
+    /// deleted here to simulate one) rebuilds the row from the verified body
+    /// it holds, and an event whose committed body was never held is named
+    /// unrecoverable instead of passed over silently.
+    #[test]
+    fn test_recover_device_ops_rebuilds_rows_and_reports_the_rest() {
+        let (_dir, mut store) = open();
+        let alice = key(48);
+        let carol = key(49);
+        let (create_event, group) = device_group(&mut store, &alice);
+        let (grant, _grant_body) =
+            device_grant(&mut store, &alice, 1, Some(create_event.id), group, &carol);
+        assert!(device_op_row(&store, &grant.id));
+
+        // Simulate the upgraded store: the grant's row predates the table.
+        {
+            let txn = store.db.begin_write().unwrap();
+            txn.open_table(super::super::DEVICE_OPS)
+                .unwrap()
+                .remove(grant.id.as_bytes().as_slice())
+                .unwrap();
+            txn.commit().unwrap();
+        }
+        assert!(!device_op_row(&store, &grant.id));
+
+        // A second grant whose body is never delivered: header only.
+        let op = crate::groups::DeviceOp::Add {
+            device: author(&carol),
+            scope: crate::groups::Role::Read,
+        };
+        let (header_only, _body) = device_event(&alice, 2, Some(grant.id), vec![], group, op);
+        store.ingest(&header_only.bytes, 0).unwrap();
+        assert!(!device_op_row(&store, &header_only.id));
+
+        let report = store.recover_device_ops().unwrap();
+        assert!(report.recovered.contains(&grant.id), "{report:?}");
+        assert!(report.unrecoverable.contains(&header_only.id), "{report:?}");
+        assert!(device_op_row(&store, &grant.id));
+        assert!(store.event_applied(&grant.id).unwrap());
     }
 
     fn individual(key: &SigningKey) -> p2panda_auth::group::GroupMember<AuthId> {

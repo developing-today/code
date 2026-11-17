@@ -19,7 +19,9 @@
 use p2panda_core::{Hash, SeqNum};
 use redb::{ReadableMultimapTable, ReadableTable, WriteTransaction};
 
-use super::{StoreError, WAITING, WAITING_BY_DEP, be_u64, corrupt, hash_of, row_event, seq_num};
+use super::{
+    DEVICE_OPS, StoreError, WAITING, WAITING_BY_DEP, be_u64, corrupt, hash_of, row_event, seq_num,
+};
 use id_core::waiting::{AuthorKey, WaitRefusal, WaitingPool};
 use id_store::chain::Event;
 
@@ -202,6 +204,15 @@ impl Mirror<'_> {
     /// releasing call itself the one that effects the expiry, in its own transaction.
     fn flush_expired(&mut self, now: u64) -> Result<usize, StoreError> {
         let expired = self.pool.expire(now);
+        if !expired.is_empty() {
+            // A held event that expires takes its device-operation row with
+            // it (issue #8160, item 2): the row exists so a released event
+            // can fold its operation, and an expired event never folds.
+            let mut device_ops = self.txn.open_table(DEVICE_OPS)?;
+            for (_author, event) in &expired {
+                device_ops.remove(event.id.as_bytes().as_slice())?;
+            }
+        }
         for (_author, event) in &expired {
             delete(self.txn, &event.id)?;
         }
