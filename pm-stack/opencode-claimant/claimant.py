@@ -301,10 +301,13 @@ def _load_poll_module():
 
 
 def get_active_root_session_count() -> int:
-    """Get the count of active root sessions from the OpenCode server.
+    """Get the count of active CLAIMANT root sessions from the OpenCode
+    server.
 
     Delegates to poll.py: fetch the session list and the server's
-    active set, then count_active_roots over both. Returns -1
+    active set, then count_active_claimant_roots over both — scheduled
+    fleet sessions (lane runners, the claimant's own fire) are outside
+    the cap per ruling `session-cap-5016` (#5016). Returns -1
     (unknown) when either read fails, so cap_step fails closed."""
     try:
         poll = _load_poll_module()
@@ -314,7 +317,9 @@ def get_active_root_session_count() -> int:
         active_ids = poll.fetch_active_ids()
         if active_ids is None:
             return -1  # Unknown
-        count = poll.count_active_roots(sessions, int(time.time() * 1000), active_ids)
+        count = poll.count_active_claimant_roots(
+            sessions, int(time.time() * 1000), active_ids
+        )
         return -1 if count is None else count
     except Exception as e:
         print(f"Warning: Could not get active session count: {e}")
