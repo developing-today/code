@@ -48,6 +48,8 @@ var implementedEffectProbes = map[string]string{
 	"plumbing.strictUnknownKeys": "TestStrictUnknownKeysRefusesATypo",
 	"paths.state":                "TestStateDirectoryIsReachableAsASetting",
 	"paths.configFile":           "TestPathsConfigFileChangesWhichConfigLoads",
+	"paths.scripts":              "TestPathsScriptsFindsRecipesThatLiveOnlyThere",
+	"paths.cache":                "TestPathsCacheChangesTheDoctorDirectory",
 	"search.limit":               "TestSearchLimitCapsTheResults",
 	"registry.pageSize":          "TestRegistryPageSizeChangesWhatTheCLIAsksFor",
 	"registry.limit":             "TestRegistryLimitReachesTheCLI",
@@ -59,8 +61,23 @@ var implementedEffectProbes = map[string]string{
 	"paths.deps":                 "TestPathsDepsExtendsManifestDiscovery",
 	"proxy.timeout":              "TestProxyUpstreamTimeoutIsReachableFromTheEnvironment",
 	"tasks.maxAge":               "TestTasksMaxAgeIsReachableFromEnvironment",
+	"stats.top":                  "TestStatsTopLimitsTheRowsTheStatsAPIReports",
 	"proto.askPoll":              "TestAskPollCeilingIsReachableFromTheEnvironment",
 	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
+	"http.bodyLimit":             "TestHTTPBodyLimitsRejectOversizedBodies",
+	"http.callBodyLimit":         "TestHTTPBodyLimitsRejectOversizedBodies",
+	"http.controlBodyLimit":      "TestHTTPBodyLimitsRejectOversizedBodies",
+	"http.ssePing":               "TestHTTPEventStreamSettingsChangeTheStream",
+	"http.sseRetry":              "TestHTTPEventStreamSettingsChangeTheStream",
+	"http.readHeaderTimeout":     "TestHTTPReadHeaderTimeoutClosesSlowClients",
+	"http.shutdownGrace":         "TestHTTPShutdownGraceBoundsHowLongAStopWaits",
+	"http.requestTimeout":        "TestHTTPRequestTimeoutBoundsAClientCall",
+	"http.streamBufferMax":       "TestHTTPStreamBufferMaxEndsAnOversizedEventLine",
+	"transport.bearerToken":      "TestTransportBearerTokenGatesTheDaemon",
+	"transport.allowedOrigins":   "TestTransportAllowedOriginsAreServed",
+	"transport.sessionMetaKeys":  "TestTransportSessionMetaKeysNameTheSession",
+	"transport.sseKeepAlive":     "TestTransportSSEKeepAliveCommentsOnAQuietStream",
+	"transport.stdioDrain":       "TestTransportStdioDrainBoundsServeShutdown",
 }
 
 // effectProbeFuncs anchors every declared probe name to the actual
@@ -74,6 +91,8 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestLoggingFileOffWritesNoDurableLog":                   TestLoggingFileOffWritesNoDurableLog,
 	"TestOutputJSONIsReachableFromTheEnvironment":            TestOutputJSONIsReachableFromTheEnvironment,
 	"TestPathsConfigFileChangesWhichConfigLoads":             TestPathsConfigFileChangesWhichConfigLoads,
+	"TestPathsScriptsFindsRecipesThatLiveOnlyThere":          TestPathsScriptsFindsRecipesThatLiveOnlyThere,
+	"TestPathsCacheChangesTheDoctorDirectory":                TestPathsCacheChangesTheDoctorDirectory,
 	"TestProxyUpstreamTimeoutIsReachableFromTheEnvironment":  TestProxyUpstreamTimeoutIsReachableFromTheEnvironment,
 	"TestPoolDefaultsAreReachableFromTheEnvironment":         TestPoolDefaultsAreReachableFromTheEnvironment,
 	"TestRegistryLimitReachesTheCLI":                         TestRegistryLimitReachesTheCLI,
@@ -94,8 +113,20 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestDepsPackagesPinContradictingTheManifestFailsTheRun": TestDepsPackagesPinContradictingTheManifestFailsTheRun,
 	"TestPathsDepsExtendsManifestDiscovery":                  TestPathsDepsExtendsManifestDiscovery,
 	"TestTasksMaxAgeIsReachableFromEnvironment":              TestTasksMaxAgeIsReachableFromEnvironment,
+	"TestStatsTopLimitsTheRowsTheStatsAPIReports":            TestStatsTopLimitsTheRowsTheStatsAPIReports,
 	"TestAskPollCeilingIsReachableFromTheEnvironment":        TestAskPollCeilingIsReachableFromTheEnvironment,
 	"TestDaemonAddressIsReachableFromTheEnvironment":         TestDaemonAddressIsReachableFromTheEnvironment,
+	"TestHTTPBodyLimitsRejectOversizedBodies":                TestHTTPBodyLimitsRejectOversizedBodies,
+	"TestHTTPEventStreamSettingsChangeTheStream":             TestHTTPEventStreamSettingsChangeTheStream,
+	"TestHTTPReadHeaderTimeoutClosesSlowClients":             TestHTTPReadHeaderTimeoutClosesSlowClients,
+	"TestHTTPRequestTimeoutBoundsAClientCall":                TestHTTPRequestTimeoutBoundsAClientCall,
+	"TestHTTPShutdownGraceBoundsHowLongAStopWaits":           TestHTTPShutdownGraceBoundsHowLongAStopWaits,
+	"TestHTTPStreamBufferMaxEndsAnOversizedEventLine":        TestHTTPStreamBufferMaxEndsAnOversizedEventLine,
+	"TestTransportAllowedOriginsAreServed":                   TestTransportAllowedOriginsAreServed,
+	"TestTransportBearerTokenGatesTheDaemon":                 TestTransportBearerTokenGatesTheDaemon,
+	"TestTransportSSEKeepAliveCommentsOnAQuietStream":        TestTransportSSEKeepAliveCommentsOnAQuietStream,
+	"TestTransportSessionMetaKeysNameTheSession":             TestTransportSessionMetaKeysNameTheSession,
+	"TestTransportStdioDrainBoundsServeShutdown":             TestTransportStdioDrainBoundsServeShutdown,
 }
 
 func TestEffectProbeDeclarationsMatchTheProbesThatExist(t *testing.T) {
@@ -193,14 +224,17 @@ func TestScriptTypecheckOnRefusesATypeError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Off by default: the annotation is stripped and the script runs.
+	saved := e.envVars
+	defer func() { e.envVars = saved }()
+
+	// Off: the annotation is stripped and the script runs. run checks by
+	// default (#1868 point 4), so off has to be asked for.
+	e.envVars = append(append([]string{}, saved...), "MCPX_SCRIPT_TYPECHECK=off")
 	if out := e.run("run", script); !strings.Contains(out, "not a number") {
 		t.Fatalf("with typecheck off the script should run:\n%s", out)
 	}
 
-	saved := e.envVars
 	e.envVars = append(append([]string{}, saved...), "MCPX_SCRIPT_TYPECHECK=on")
-	defer func() { e.envVars = saved }()
 
 	out, err := e.try("run", script)
 	if err == nil {

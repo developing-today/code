@@ -238,7 +238,9 @@ impl SignedAnnouncement {
     pub fn sign(key: &SigningKey, announcement: Announcement) -> Result<Self> {
         announcement.validate()?;
         if key.verifying_key().to_bytes() != announcement.world_id {
-            bail!("announcement world_id is not the signing key: it verifies only against its world key");
+            bail!(
+                "announcement world_id is not the signing key: it verifies only against its world key"
+            );
         }
         let body = announcement.encode_body()?;
         let signature = key.sign(&body);
@@ -313,8 +315,7 @@ impl SignedAnnouncement {
                 bytes.len()
             );
         }
-        let value = cbor_core::Value::decode(bytes)
-            .context("signed announcement is not CBOR")?;
+        let value = cbor_core::Value::decode(bytes).context("signed announcement is not CBOR")?;
         value
             .deserialized()
             .context("signed announcement does not decode")
@@ -412,14 +413,23 @@ mod tests {
     fn print_vectors() {
         let (key, announcement) = world_announcement();
         let signed = SignedAnnouncement::sign(&key, announcement.clone()).unwrap();
-        println!("WORLD_BODY={}", hex_encode(&announcement.encode_body().unwrap()));
+        println!(
+            "WORLD_BODY={}",
+            hex_encode(&announcement.encode_body().unwrap())
+        );
         println!("WORLD_SIG={}", hex_encode(&signed.signature));
         println!("WORLD_PACKET={}", hex_encode(&signed.to_bytes().unwrap()));
         let (key2, announcement2) = program_announcement();
         let signed2 = SignedAnnouncement::sign(&key2, announcement2.clone()).unwrap();
-        println!("PROGRAM_BODY={}", hex_encode(&announcement2.encode_body().unwrap()));
+        println!(
+            "PROGRAM_BODY={}",
+            hex_encode(&announcement2.encode_body().unwrap())
+        );
         println!("PROGRAM_SIG={}", hex_encode(&signed2.signature));
-        println!("PROGRAM_PACKET={}", hex_encode(&signed2.to_bytes().unwrap()));
+        println!(
+            "PROGRAM_PACKET={}",
+            hex_encode(&signed2.to_bytes().unwrap())
+        );
     }
 
     fn world_announcement() -> (SigningKey, Announcement) {

@@ -5,6 +5,8 @@ shapes the real client (~/tools/laptop-agent.py) uses."""
 
 import json
 import os
+import base64
+import hashlib
 import subprocess
 import sys
 import threading
@@ -210,6 +212,70 @@ def main():
             and hd.get("X-File-Size") == "100",
             f"{st} {raw!r}",
         )
+
+        # #5759 /files/* transfer routes, in the exact shapes the
+        # fleet-proxy client (pkgs/fleet/crates/fleet-proxy/src/files.rs)
+        # sends them: begin -> write -> commit, then stat/read back.
+        payload = bytes(range(256)) * 8192  # 2 MiB: exactly one chunk
+        fsha = hashlib.sha256(payload).hexdigest()
+        fdest = "/tmp/parity-transfer.bin"
+        if os.path.exists(fdest):
+            os.unlink(fdest)
+        st, b = jcall(
+            "POST",
+            "/files/begin",
+            {"path": fdest, "size": len(payload), "sha256": fsha, "mode": 0o640},
+        )
+        check("files begin", st == 200 and b.get("ok") is True, str(b))
+        st, b = jcall(
+            "POST",
+            "/files/write",
+            {
+                "path": fdest,
+                "sha256": fsha,
+                "offset": 0,
+                "data_b64": base64.b64encode(payload).decode(),
+            },
+        )
+        check("files write", st == 200 and b.get("size") == len(payload), str(b))
+        check(
+            "files: destination absent before commit",
+            not os.path.exists(fdest),
+        )
+        st, b = jcall("POST", "/files/commit", {"path": fdest, "sha256": fsha})
+        check(
+            "files commit",
+            st == 200 and b.get("size") == len(payload) and b.get("sha256") == fsha,
+            str(b),
+        )
+        check(
+            "files: committed bytes identical",
+            open(fdest, "rb").read() == payload,
+        )
+        check("files: mode applied", (os.stat(fdest).st_mode & 0o777) == 0o640)
+        st, b = jcall("POST", "/files/stat", {"path": fdest, "sha256": True})
+        check(
+            "files stat",
+            st == 200
+            and b.get("exists") is True
+            and b.get("type") == "file"
+            and b.get("size") == len(payload)
+            and b.get("sha256") == fsha,
+            str(b),
+        )
+        st, b = jcall(
+            "POST", "/files/read", {"path": fdest, "offset": 0, "length": 2 << 20}
+        )
+        check(
+            "files read",
+            st == 200
+            and base64.b64decode(b.get("data_b64", "")) == payload
+            and b.get("size") == len(payload),
+            str({k: b.get(k) for k in ("size", "eof")}),
+        )
+        st, b = jcall("POST", "/files/abort", {"path": fdest, "sha256": fsha})
+        check("files abort (no temp left)", st == 200 and b.get("ok") is True, str(b))
+        os.unlink(fdest)
 
         # Restart persistence: running job becomes done+interrupted;
         # finished job stays pollable.

@@ -85,6 +85,24 @@ STUB
 } >"$BIN/rclone"
 chmod +x "$BIN/rclone"
 
+set_cs_trigger() { trig_ago "$1" >"$TRIG/cold-store-nightly.timer"; }
+set_cs_result() { printf '%s\n' "$1" >"$TRIG/cold-store-nightly.service"; }
+write_manifest() { # $1 latest backup-upload date spec, or "none"
+  mkdir -p "$HOME_DIR/.config/cold-store"
+  HOME_DIR="$HOME_DIR" python3 - "$1" <<'PYEOF'
+import os, sqlite3, subprocess, sys
+path = os.path.join(os.environ["HOME_DIR"], ".config", "cold-store", "manifest.sqlite")
+if os.path.exists(path):
+    os.remove(path)
+con = sqlite3.connect(path)
+con.execute("create table transfer_ledger (id integer primary key autoincrement, ts text not null default (datetime('now')), direction text, bytes integer, kind text, ref text)")
+if sys.argv[1] != "none":
+    ts = subprocess.check_output(["date", "-u", "-d", sys.argv[1], "+%Y-%m-%d %H:%M:%S"]).decode().strip()
+    con.execute("insert into transfer_ledger (ts, direction, bytes, kind, ref) values (?, 'upload', 100, 'backup-upload', 'fleet-queue')", (ts,))
+con.commit()
+PYEOF
+}
+
 RECORD="$TMP_ROOT/record.json"
 run_watchdog() {
   HOME="$HOME_DIR" LAPTOP_BACKUPS_RECORD="$RECORD" WATCHDOG_STUB_TRIGGERS="$TRIG" \
@@ -276,6 +294,45 @@ write_marker "40 hours ago"
 set_triggers "1 hour ago" "1 hour ago"
 run_watchdog_jobs dashboard,repo-archive
 expect_ok state-not-enabled
+
+# cold-store job: fresh trigger + success result + fresh ledger -> 0
+set_cs_trigger "1 hour ago"
+set_cs_result success
+write_manifest "1 hour ago"
+run_watchdog_jobs cold-store
+expect_ok cs-fresh
+
+# cold-store: stale ledger (nothing filed recently) -> named failure
+write_manifest "40 hours ago"
+run_watchdog_jobs cold-store
+expect_named_failure cs-stale-ledger cold-store-nightly
+
+# cold-store: failed last result, however fresh the ledger -> named
+# failure (the 2026-11-12 shape: fired, started, killed mid-export)
+set_cs_result failure
+write_manifest "10 minutes ago"
+run_watchdog_jobs cold-store
+expect_named_failure cs-failed-result cold-store-nightly
+
+# cold-store: missing manifest -> named failure
+set_cs_result success
+rm -f "$HOME_DIR/.config/cold-store/manifest.sqlite"
+run_watchdog_jobs cold-store
+expect_named_failure cs-missing-manifest cold-store-nightly
+
+# cold-store: stale timer -> named failure
+set_cs_trigger "40 hours ago"
+write_manifest "1 hour ago"
+run_watchdog_jobs cold-store
+expect_named_failure cs-stale-timer cold-store-nightly
+
+# cold-store is not in the default job set: its violations stay
+# silent for hosts/jobs that did not opt in
+RECORD_OUT="$RECORD" write_record complete "1 hour ago"
+set_triggers "1 hour ago" "1 hour ago"
+set_cs_result failure
+run_watchdog
+expect_ok cs-not-in-default-jobs
 
 if ((failures > 0)); then
   echo "laptop-backups-watchdog tests: $failures failure(s)" >&2

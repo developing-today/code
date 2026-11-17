@@ -229,9 +229,7 @@ export function buildQueueTaskWrapper(packet: EscalationPacket, at: string): Que
   const repo = packet.issueRepo;
   const n = packet.issueNumber;
   const cls = packet.failure.class ?? "unknown";
-  const repairLines = packet.failure.repairLog.map(
-    (e) => `rung ${e.rung} ${e.outcome} at ${e.at}: ${e.detail}`,
-  );
+  const repairLines = packet.failure.repairLog.map((e) => `rung ${e.rung} ${e.outcome} at ${e.at}: ${e.detail}`);
   return {
     title: `watchdog incident: ${packet.source} (${cls}) — repair the quota producer`,
     body: [
@@ -448,9 +446,10 @@ export async function applyEscalationActions(
           // dedupe): stamp the number this same run just confirmed
           // into a packet planned before the issue existed. A resume
           // packet already carries its recorded number.
-          const pkt = action.packet.issueNumber === null && issueNumber !== null
-            ? { ...action.packet, issueNumber }
-            : action.packet;
+          const pkt =
+            action.packet.issueNumber === null && issueNumber !== null
+              ? { ...action.packet, issueNumber }
+              : action.packet;
           queueTaskId = await effectors.enqueueTask(pkt);
           break;
         }

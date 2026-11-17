@@ -1,7 +1,8 @@
 /** Browser presentation for the server-authoritative world session. */
 
-import { terminalBytesForKey } from "./world-keyboard";
+import { createFormPresenter, type FormPresenter, type FormSurface } from "./world-form";
 import { advanceHostViewCursor, parseWorldHostViewPage, parseWorldInviteResponse } from "./world-http";
+import { terminalBytesForKey } from "./world-keyboard";
 import { parseWorldSeed } from "./world-seed";
 import { applyScreenPatch, renderWorldSurface, type ScreenPatch, type ScreenSurface } from "./world-surface";
 
@@ -15,6 +16,7 @@ type WorldFrame = {
     | "upload_ready"
     | "module_installed"
     | "compiled"
+    | "form_result_status"
     | "error";
   snapshot?: {
     world_id: string;
@@ -29,7 +31,12 @@ type WorldFrame = {
   };
   sequence?: number;
   data?: string;
-  surface?: ScreenSurface;
+  surface?: ScreenSurface | FormSurface;
+  form_id?: string;
+  ok?: boolean;
+  presentation_token?: string | null;
+  error?: string;
+  reason?: string;
   view_revision?: number;
   base_view_revision?: number;
   patch?: ScreenPatch;
@@ -206,6 +213,20 @@ function initWorld(): void {
     appendLine(log, "error: invalid world frame");
   };
 
+  // #8938: presented forms render as trusted widgets inside the view pane.
+  // The send callback drops a frame when the socket is not open, so a click
+  // during a reconnect never claims an answer was delivered.
+  const formPresenter: FormPresenter = createFormPresenter(view, {
+    send: (frame) => {
+      if (hostMode || socket?.readyState !== WebSocket.OPEN) {
+        setStatus("Join the world before answering a form", "error");
+        return false;
+      }
+      socket.send(JSON.stringify(frame));
+      return true;
+    },
+  });
+
   const showCapability = (value: string) => {
     capability.value = value;
     sessionStorage.setItem(storageKey, value);
@@ -294,16 +315,34 @@ function initWorld(): void {
           sendViewport();
           break;
         }
-        if (frame.surface && renderWorldSurface(view, frame.surface)) {
+        if (frame.surface && frame.surface.kind === "form") {
+          // #8938: a presented form renders trusted widgets built from this
+          // browser's own input manifest; the program supplies data only.
+          // The authoritative screen is replaced, so drop its patch base.
+          renderedSurface = null;
+          renderedViewRevision = frame.view_revision ?? null;
+          formPresenter.present(frame.surface);
+          break;
+        }
+        if (frame.surface?.kind === "screen" && renderWorldSurface(view, frame.surface)) {
+          formPresenter.present(null);
           renderedSurface = frame.surface;
           renderedViewRevision = frame.view_revision ?? null;
           break;
         }
         if (frame.data !== undefined) {
+          formPresenter.present(null);
           view.textContent = frame.data;
           renderedSurface = null;
           renderedViewRevision = frame.view_revision ?? null;
         }
+        break;
+      }
+      case "form_result_status": {
+        // #8938: the reply to one form answer. Acceptance clears the widget;
+        // a rejection that carries a fresh presentation token re-presents
+        // the form with that token, exactly as the SSH presenter does.
+        formPresenter.settle(frame);
         break;
       }
       case "records": {
