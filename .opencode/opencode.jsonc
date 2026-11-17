@@ -334,7 +334,21 @@
   // until then the legs serve and bench reactively, per the
   // tolerance above. The MiniMax and flint Zen leaves are
   // restored on the same ruling.
+  // 2026-11-16 (Drew, direct order - INTERIM): "_commandcode"
+  // JOINS the list below, and its two permanently-refused models
+  // (gpt-6.1-sol, reflection/beam:free) are commented out at their
+  // seats. This is a temporary hand measure, NOT the design. The
+  // design is the wall doctrine of 2026-11-10 (fork opencode#2256:
+  // a binding window <1% remaining AND plan-limit errors walls the
+  // pool itself - still OPEN, never built) plus the plan-wall bench
+  // (fork #2570, merged and pin-bumped in #10894, awaiting a
+  // switch). RESTORE CONDITION: remove "_commandcode" from this
+  // list and uncomment the two models once the system walls as it
+  // should - the plan-wall build deployed AND the #2256
+  // near-plus-erroring wall working. Until then the door stays
+  // dark rather than eating attempts.
   "disabled_providers": [
+    "_commandcode",
     "google",
     "google-vertex",
     "cloudflare-ai-gateway",
@@ -3216,7 +3230,7 @@
             "model": "opendesign/gpt-6.1-sol",
             "variants": { "xhigh": "high", "max": "high" }
           },
-          "_commandcode/gpt-6.1-sol"
+          // "_commandcode/gpt-6.1-sol"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -3230,7 +3244,7 @@
         "weights": {
           "openai-plan/gpt-6.1-sol": 3,
           "opendesign/gpt-6.1-sol": 1,
-          "_commandcode/gpt-6.1-sol": 0.5
+          // "_commandcode/gpt-6.1-sol": 0.5
         }
       },
       "terra-plan": {
@@ -3349,7 +3363,7 @@
         // Free, MiMo Flash Free, GLM Flash Free, Big Pickle) stay
         // last-resort in their own pools.
         "targets": [
-          "_commandcode/reflection/beam:free",
+          // "_commandcode/reflection/beam:free",
           "opencode-go-plans/beam-free",
           "zen-plans/beam-free"
         ],
@@ -3364,7 +3378,7 @@
         "weights": {
           "opencode-go-plans/beam-free": 3,
           "zen-plans/beam-free": 3,
-          "_commandcode/reflection/beam:free": 1
+          // "_commandcode/reflection/beam:free": 1
         }
       },
       "longcat-plan": {
