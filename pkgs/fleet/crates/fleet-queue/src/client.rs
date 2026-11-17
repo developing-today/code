@@ -1387,6 +1387,47 @@ fn queue_scope_from(flag: Option<String>, env: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// #8606: why a claim refuses as bare, or None when it carries
+/// intent. A claim with no task, no filter, no queue scope (flag
+/// or env), no batch count, no handoff pick, and no identity
+/// marks (worker, lane, session, pool, platform, from-session)
+/// is a probing accident, never a meaningful intent: five
+/// recorded firings (tasks 10945, 12706, 14884, 11421, 5865)
+/// each stole the queue's top task under the default identity
+/// while a lane probed the CLI's usage. Every documented claim
+/// form names at least one of these — lanes pass --worker and
+/// --lane, directed claims pass --task, designated lanes pass
+/// --filter, scoped claims pass --queue — so the refusal fires
+/// only on the zero-intent shape, before any broker contact.
+fn bare_claim_refusal(args: &Args, queue_scope: &Option<String>) -> Option<String> {
+    if queue_scope.is_some() || args.has("handoff") || args.has("bind") {
+        return None;
+    }
+    const INTENT_FLAGS: [&str; 10] = [
+        "task",
+        "filter",
+        "queue",
+        "count",
+        "worker",
+        "lane",
+        "session-id",
+        "pool",
+        "platform",
+        "from-session",
+    ];
+    if INTENT_FLAGS.iter().any(|name| args.get(name).is_some()) {
+        return None;
+    }
+    Some(
+        "claim: refusing a bare claim with no task, filter, queue, or identity \
+         arguments — a bare claim is never a meaningful intent and has repeatedly \
+         stolen the queue's top task during CLI probing (#8606). Pass the claim \
+         you mean: --worker <w> --lane <l> for a lane claim, --task <id> for a \
+         directed claim, or --filter '<expr>' / --queue <name> to scope it."
+            .to_string(),
+    )
+}
+
 fn opt_worker(args: &Args) -> String {
     args.get("worker")
         .unwrap_or_else(|| DEFAULT_WORKER.to_string())
@@ -3056,6 +3097,12 @@ fn cmd_claim(rest: &[String]) -> i32 {
         &["handoff", "bind"],
     );
     reject_extra_pos("claim", &args, 0);
+    // #8606: a zero-intent claim refuses before any broker
+    // contact (see bare_claim_refusal).
+    let queue_scope = opt_queue_scoped(&args);
+    if let Some(msg) = bare_claim_refusal(&args, &queue_scope) {
+        die(2, &msg);
+    }
     let worker = opt_worker(&args);
     let lease_seconds = match lease_seconds_or_default(args.get_i64("lease-seconds")) {
         Ok(v) => v,
@@ -3071,7 +3118,7 @@ fn cmd_claim(rest: &[String]) -> i32 {
     // in priority order. An explicit --queue still scopes the
     // claim to one stream exactly as before, so existing shift
     // bodies keep working unchanged.
-    if let Some(q) = opt_queue_scoped(&args) {
+    if let Some(q) = queue_scope {
         body["queue"] = json!(q);
     }
     // --filter '<expr>': the claimer-side boolean filter
@@ -6377,6 +6424,76 @@ mod tests {
     }
 
     #[test]
+    fn bare_claim_refuses_and_intent_claims_pass_8606() {
+        // #8606 oracle: the zero-intent claim shape that fired
+        // five times during CLI probing refuses; every documented
+        // claim form passes. Args are built through the same
+        // parser cmd_claim uses, with its own flag/bool lists.
+        let mk = |tokens: &[&str]| {
+            let rest: Vec<String> = tokens.iter().map(|s| s.to_string()).collect();
+            parse_verb_args(
+                "claim",
+                &rest,
+                &[
+                    "queue",
+                    "worker",
+                    "lease-seconds",
+                    "lane",
+                    "task",
+                    "count",
+                    "from-session",
+                    "platform",
+                    "session-id",
+                    "model-provider",
+                    "model-id",
+                    "model-variant",
+                    "filter",
+                    "pool",
+                    "launched-by",
+                    "remaining-budget-minutes",
+                ],
+                &["handoff", "bind"],
+            )
+        };
+        // Bare: no arguments at all — the probing shape.
+        assert!(bare_claim_refusal(&mk(&[]), &None).is_some());
+        // A lease alone is not intent either.
+        assert!(bare_claim_refusal(&mk(&["--lease-seconds", "60"]), &None).is_some());
+        // An env queue scope is intent even with no flags.
+        assert!(
+            bare_claim_refusal(&mk(&[]), &Some("repo-health-code-pilot".to_string())).is_none()
+        );
+        // The documented forms all pass: scoped, lane, directed,
+        // filtered, batch, handoff.
+        assert!(bare_claim_refusal(&mk(&["--queue", "repo-health-code-pilot"]), &None).is_none());
+        assert!(
+            bare_claim_refusal(
+                &mk(&[
+                    "--worker",
+                    "repo-worker-code",
+                    "--lane",
+                    "any-b",
+                    "--lease-seconds",
+                    "2700",
+                    "--remaining-budget-minutes",
+                    "120",
+                ]),
+                &None,
+            )
+            .is_none()
+        );
+        assert!(bare_claim_refusal(&mk(&["--task", "123"]), &None).is_none());
+        assert!(bare_claim_refusal(&mk(&["--filter", "repo = code"]), &None).is_none());
+        assert!(
+            bare_claim_refusal(
+                &mk(&["--count", "3", "--worker", "repo-worker-code"]),
+                &None
+            )
+            .is_none()
+        );
+        assert!(bare_claim_refusal(&mk(&["--handoff"]), &None).is_none());
+    }
+
     fn rollup_event_reads_row_task_id() {
         // Claim-link rollup: the row's own task_id column joins
         // the stamp (fleet-cli stamp details carry no task_id).
