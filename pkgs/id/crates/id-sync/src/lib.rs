@@ -21,6 +21,7 @@
 //! between a running server and the in-process local node is defined
 //! there, over this crate's [`meta_client`] plumbing.
 
+pub mod announcement;
 pub mod artifact;
 pub mod chained_message;
 pub mod dht;

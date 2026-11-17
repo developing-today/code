@@ -414,10 +414,7 @@ fn record(
     }
 }
 
-fn citation(
-    r: &FixtureRecord,
-    bytes: &[u8],
-) -> Response {
+fn citation(r: &FixtureRecord, bytes: &[u8]) -> Response {
     Response::Citation {
         occurrence_id: r.occurrence_id.clone(),
         content_id: r.content_id.clone(),
@@ -447,8 +444,24 @@ fn hand_authored_cases() -> Vec<Case> {
     // Same bytes at multiple locations/rights: each occurrence keeps its
     // own coordinates, and a caller sees only the occurrence it holds
     // rights on.
-    let occ_a = record("content-shared", "occ-a", 1, "src-1", "docs/one.txt", Some(shared), &["team-x"]);
-    let occ_b = record("content-shared", "occ-b", 1, "src-2", "docs/two.txt", Some(shared), &["team-y"]);
+    let occ_a = record(
+        "content-shared",
+        "occ-a",
+        1,
+        "src-1",
+        "docs/one.txt",
+        Some(shared),
+        &["team-x"],
+    );
+    let occ_b = record(
+        "content-shared",
+        "occ-b",
+        1,
+        "src-2",
+        "docs/two.txt",
+        Some(shared),
+        &["team-y"],
+    );
     cases.push(Case {
         name: "same_bytes_first_location",
         world: vec![occ_a.clone(), occ_b.clone()],
@@ -483,8 +496,24 @@ fn hand_authored_cases() -> Vec<Case> {
 
     // Pinned historical version: v1 stays citable after v2 lands, and an
     // unpinned request follows the current version.
-    let v1 = record("content-doc", "occ-doc", 1, "src-9", "docs/spec.txt", Some(b"version one"), &["team-x"]);
-    let v2 = record("content-doc", "occ-doc", 2, "src-9", "docs/spec.txt", Some(b"version two, revised"), &["team-x"]);
+    let v1 = record(
+        "content-doc",
+        "occ-doc",
+        1,
+        "src-9",
+        "docs/spec.txt",
+        Some(b"version one"),
+        &["team-x"],
+    );
+    let v2 = record(
+        "content-doc",
+        "occ-doc",
+        2,
+        "src-9",
+        "docs/spec.txt",
+        Some(b"version two, revised"),
+        &["team-x"],
+    );
     cases.push(Case {
         name: "pinned_historical_version",
         world: vec![v1.clone(), v2.clone()],
@@ -508,8 +537,24 @@ fn hand_authored_cases() -> Vec<Case> {
 
     // Source rename: identity and bytes are stable, the citation carries
     // the current path.
-    let pre = record("content-rn", "occ-rn", 1, "src-7", "docs/old-name.txt", Some(b"renamed source"), &["team-x"]);
-    let post = record("content-rn", "occ-rn", 2, "src-7", "docs/new-name.txt", Some(b"renamed source"), &["team-x"]);
+    let pre = record(
+        "content-rn",
+        "occ-rn",
+        1,
+        "src-7",
+        "docs/old-name.txt",
+        Some(b"renamed source"),
+        &["team-x"],
+    );
+    let post = record(
+        "content-rn",
+        "occ-rn",
+        2,
+        "src-7",
+        "docs/new-name.txt",
+        Some(b"renamed source"),
+        &["team-x"],
+    );
     cases.push(Case {
         name: "source_rename_reports_current_path",
         world: vec![pre, post.clone()],
@@ -523,7 +568,15 @@ fn hand_authored_cases() -> Vec<Case> {
 
     // Missing coverage: visible to an authorized caller as Unavailable,
     // never as a citation.
-    let mut nocov = record("content-nc", "occ-nc", 1, "src-3", "docs/uncovered.txt", Some(b"not covered"), &["team-x"]);
+    let mut nocov = record(
+        "content-nc",
+        "occ-nc",
+        1,
+        "src-3",
+        "docs/uncovered.txt",
+        Some(b"not covered"),
+        &["team-x"],
+    );
     nocov.coverage = false;
     cases.push(Case {
         name: "missing_coverage_is_unavailable",
@@ -539,7 +592,15 @@ fn hand_authored_cases() -> Vec<Case> {
     });
 
     // Deleted bytes: the record remains, the bytes do not.
-    let gone = record("content-del", "occ-del", 1, "src-4", "docs/gone.txt", None, &["team-x"]);
+    let gone = record(
+        "content-del",
+        "occ-del",
+        1,
+        "src-4",
+        "docs/gone.txt",
+        None,
+        &["team-x"],
+    );
     cases.push(Case {
         name: "deleted_bytes_are_unavailable",
         world: vec![gone],
@@ -555,7 +616,15 @@ fn hand_authored_cases() -> Vec<Case> {
 
     // Changed permissions: rights moved from team-x to team-y. The old
     // holder now gets exactly the unknown-id answer.
-    let moved = record("content-mv", "occ-mv", 1, "src-5", "docs/moved.txt", Some(b"rights changed"), &["team-y"]);
+    let moved = record(
+        "content-mv",
+        "occ-mv",
+        1,
+        "src-5",
+        "docs/moved.txt",
+        Some(b"rights changed"),
+        &["team-y"],
+    );
     cases.push(Case {
         name: "changed_permissions_old_holder_gets_not_found",
         world: vec![moved.clone()],
@@ -611,13 +680,19 @@ fn run_corpus<A: CitationAdapter>(make: impl Fn(Vec<FixtureRecord>) -> A) -> Vec
 #[test]
 fn reference_resolver_passes_hand_authored_corpus() {
     let failures = run_corpus(ReferenceResolver::new);
-    assert!(failures.is_empty(), "reference resolver failed cases: {failures:?}");
+    assert!(
+        failures.is_empty(),
+        "reference resolver failed cases: {failures:?}"
+    );
 }
 
 #[test]
 fn fake_adapter_passes_hand_authored_corpus() {
     let failures = run_corpus(FakeAdapter::new);
-    assert!(failures.is_empty(), "fake adapter failed cases: {failures:?}");
+    assert!(
+        failures.is_empty(),
+        "fake adapter failed cases: {failures:?}"
+    );
 }
 
 #[test]
@@ -635,10 +710,42 @@ fn stale_replay_implementation_is_rejected() {
     // before permissions changed, bytes were deleted, and a source was
     // renamed, so build its cases on superseded worlds.
     let stale_worlds: Vec<(&str, Vec<FixtureRecord>, Request, Response)> = {
-        let moved_then = record("content-mv", "occ-mv", 1, "src-5", "docs/moved.txt", Some(b"rights changed"), &["team-x"]);
-        let moved_now = record("content-mv", "occ-mv", 1, "src-5", "docs/moved.txt", Some(b"rights changed"), &["team-y"]);
-        let alive_then = record("content-del", "occ-del", 1, "src-4", "docs/gone.txt", Some(b"was here"), &["team-x"]);
-        let gone_now = record("content-del", "occ-del", 1, "src-4", "docs/gone.txt", None, &["team-x"]);
+        let moved_then = record(
+            "content-mv",
+            "occ-mv",
+            1,
+            "src-5",
+            "docs/moved.txt",
+            Some(b"rights changed"),
+            &["team-x"],
+        );
+        let moved_now = record(
+            "content-mv",
+            "occ-mv",
+            1,
+            "src-5",
+            "docs/moved.txt",
+            Some(b"rights changed"),
+            &["team-y"],
+        );
+        let alive_then = record(
+            "content-del",
+            "occ-del",
+            1,
+            "src-4",
+            "docs/gone.txt",
+            Some(b"was here"),
+            &["team-x"],
+        );
+        let gone_now = record(
+            "content-del",
+            "occ-del",
+            1,
+            "src-4",
+            "docs/gone.txt",
+            None,
+            &["team-x"],
+        );
         vec![
             (
                 "changed_permissions_old_holder_gets_not_found",
@@ -689,15 +796,42 @@ fn stale_replay_implementation_is_rejected() {
 #[test]
 fn visible_counts_never_leak_forbidden_or_hidden_occurrences() {
     let shared: &[u8] = b"identical bytes, two homes";
-    let occ_a = record("content-shared", "occ-a", 1, "src-1", "docs/one.txt", Some(shared), &["team-x"]);
-    let occ_b = record("content-shared", "occ-b", 1, "src-2", "docs/two.txt", Some(shared), &["team-y"]);
-    let mut hidden = record("content-hid", "occ-hid", 1, "src-6", "docs/hidden.txt", Some(b"hidden"), &["team-x"]);
+    let occ_a = record(
+        "content-shared",
+        "occ-a",
+        1,
+        "src-1",
+        "docs/one.txt",
+        Some(shared),
+        &["team-x"],
+    );
+    let occ_b = record(
+        "content-shared",
+        "occ-b",
+        1,
+        "src-2",
+        "docs/two.txt",
+        Some(shared),
+        &["team-y"],
+    );
+    let mut hidden = record(
+        "content-hid",
+        "occ-hid",
+        1,
+        "src-6",
+        "docs/hidden.txt",
+        Some(b"hidden"),
+        &["team-x"],
+    );
     hidden.hidden = true;
     let world = vec![occ_a, occ_b, hidden];
     let resolver = ReferenceResolver::new(world);
     // team-x sees exactly occ-a: occ-b is forbidden, occ-hid is hidden.
     assert_eq!(resolver.visible_count(&grants(&["team-x"])), 1);
-    assert_eq!(resolver.visible_ids(&grants(&["team-x"])), vec!["occ-a".to_string()]);
+    assert_eq!(
+        resolver.visible_ids(&grants(&["team-x"])),
+        vec!["occ-a".to_string()]
+    );
     assert_eq!(resolver.visible_count(&grants(&["team-y"])), 1);
     assert_eq!(resolver.visible_count(&grants(&["team-z"])), 0);
 }

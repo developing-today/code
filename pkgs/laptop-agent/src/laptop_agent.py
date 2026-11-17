@@ -50,6 +50,8 @@ round-trip parity for both lineages' surfaces is the acceptance
 evidence on #10131.
 """
 
+import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -129,6 +131,13 @@ STATE_DIR = Path(
 MAX_OUT = 1 << 20  # per-stream capture cap for /exec (tail kept)
 MAX_BODY = 1 << 20  # request body cap for /exec and /jobs
 FILE_CHUNK_MAX = 1 << 20  # max bytes served per GET /file request
+# #5759 transfer routes (/files/*): the fleet-proxy client ships whole
+# files in 2 MiB chunks, so a single /files/write body is much larger
+# than the /exec MAX_BODY cap. Base64 inflates by 4/3, so the route
+# body cap is the chunk size times 4/3 plus JSON envelope headroom.
+FILES_CHUNK_SIZE = 2 << 20  # 2 MiB, matches fleet-proxy CHUNK_SIZE
+FILES_BODY_MAX = (FILES_CHUNK_SIZE * 4) // 3 + (1 << 16)
+FILES_TEMP_MARK = ".fleet-part-"  # ".{name}.fleet-part-{sha256[..12]}"
 EXEC_TIMEOUT_DEFAULT = 120
 EXEC_TIMEOUT_MAX = 600
 JOB_TTL_S = 24 * 3600
@@ -156,6 +165,11 @@ JOBS_LOCK = threading.Lock()
 TRIPS_FILE = STATE_DIR / "trips.jsonl"
 EXEC_PROCS = {}  # trip -> set[Popen] currently running for /exec
 EXEC_PROCS_LOCK = threading.Lock()
+# #5759: pending chmod modes for in-flight transfers, keyed by temp path.
+# A mode rides from /files/begin to /files/commit so it is applied to
+# the temp immediately before the atomic rename publishes it.
+FILES_PENDING_MODES = {}
+FILES_PENDING_MODES_LOCK = threading.Lock()
 
 
 def read_token(path: Path) -> str:
@@ -208,6 +222,71 @@ def tail_file(path: Path, cap: int = MAX_OUT):
         return data, start > 0
     except OSError:
         return b"", False
+
+
+def files_temp_path(path: str, sha256: str) -> str:
+    """Deterministic transfer temp for (path, sha256) (#5759).
+
+    Mirrors the shipped client's `temp_path_for`: a sibling named
+    `.<name>.fleet-part-<sha256[..12]>`. An interrupted transfer
+    resumes by re-deriving this name, and the destination path never
+    shows partial content because commit renames the temp over it.
+    """
+    i = path.rfind("/")
+    if i >= 0:
+        directory, name = path[: i + 1], path[i + 1 :]
+    else:
+        directory, name = "", path
+    return f"{directory}.{name}{FILES_TEMP_MARK}{sha256[:12]}"
+
+
+def _files_validate(path):
+    """Bound a remote path the way the client and design do (#5759).
+
+    Non-empty, no NUL; no confinement (the daemon already executes
+    arbitrary commands as the same user, so file routes are not a
+    privilege change). Returns an error string, or None when valid.
+    """
+    if not isinstance(path, str) or not path:
+        return "path required"
+    if "\0" in path:
+        return "path contains a NUL byte"
+    return None
+
+
+def _files_mode_ok(mode):
+    """A chmod mode must be a plain int in 0..=0o7777."""
+    if mode is None:
+        return True
+    if not isinstance(mode, int) or isinstance(mode, bool):
+        return False
+    return 0 <= mode <= 0o7777
+
+
+def _files_sha_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def _fsync_dir(path: Path):
+    """Durably record a rename by fsyncing the containing directory.
+
+    Best-effort: a platform or filesystem that refuses a directory
+    fsync must not fail an otherwise correct commit.
+    """
+    try:
+        fd = os.open(path if str(path) else ".", os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def _kill_group(pid: int, sig: int):
@@ -1263,7 +1342,260 @@ class Handler(BaseHTTPRequestHandler):
 
                 threading.Thread(target=hard_kill, daemon=True).start()
             return self._send(200, {"ok": True, "job_id": job_id})
+        if path.startswith("/files/"):
+            return self._files_route(path, t_received_ms)
         return self._send(404, {"error": "no such route"})
+
+    # -- #5759 file transfer routes -------------------------------------
+    #
+    # Route semantics are fixed by the shipped fleet-proxy client
+    # (pkgs/fleet/crates/fleet-proxy/src/files.rs); its in-memory fake
+    # daemon in that module's tests is the oracle these handlers
+    # follow. Design invariants: deterministic transfer temps
+    # (.<name>.fleet-part-<sha12>), offset-idempotent writes,
+    # hash-checked commit followed by an atomic rename, so partial
+    # content is never visible at the destination path, and reads are
+    # bounded by FILES_CHUNK_SIZE.
+
+    def _files_body(self):
+        """Read a /files/* request body under the transfer cap.
+
+        The chunk bodies the client sends exceed the /exec MAX_BODY;
+        this reads them while still refusing an unbounded body.
+        """
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            raise FramingError("invalid Content-Length header")
+        if n < 0:
+            raise FramingError("invalid Content-Length header")
+        if n > FILES_BODY_MAX:
+            raise FramingError("request body too large")
+        raw = self.rfile.read(n) if n else b"{}"
+        try:
+            body = json.loads(raw or b"{}")
+        except ValueError:
+            raise ValueError("request body is not valid JSON")
+        if not isinstance(body, dict):
+            raise ValueError("request body must be a JSON object")
+        return body
+
+    def _files_route(self, path, t_received_ms):
+        try:
+            body = self._files_body()
+        except FramingError as e:
+            return self._send(400, {"error": str(e) or "bad request"}, close=True)
+        handler = {
+            "/files/stat": self._files_stat,
+            "/files/begin": self._files_begin,
+            "/files/write": self._files_write,
+            "/files/commit": self._files_commit,
+            "/files/abort": self._files_abort,
+            "/files/read": self._files_read,
+        }.get(path)
+        if handler is None:
+            return self._send(404, {"error": "no such route"})
+        reply = handler(body)
+        if "_t_received" not in reply:
+            reply["_t_received"] = t_received_ms
+        return self._send(200, reply)
+
+    def _files_stat(self, body):
+        path = body.get("path")
+        err = _files_validate(path)
+        if err:
+            return {"error": err}
+        try:
+            st = os.stat(path)
+        except FileNotFoundError:
+            return {"exists": False, "type": "missing", "size": 0}
+        except OSError as e:
+            return {"error": f"stat {path}: {e}"}
+        is_dir = os.path.isdir(path)
+        out = {
+            "exists": True,
+            "type": "dir" if is_dir else "file",
+            "size": 0 if is_dir else st.st_size,
+            "mtime": int(st.st_mtime),
+        }
+        # The client asks for the hash only on a get, and only the hash
+        # of a regular file: hashing a directory or a device is not
+        # meaningful and could block.
+        if body.get("sha256") and not is_dir and os.path.isfile(path):
+            try:
+                out["sha256"] = _files_sha_file(Path(path))
+            except OSError as e:
+                return {"error": f"hash {path}: {e}"}
+        return out
+
+    def _files_begin(self, body):
+        path = body.get("path")
+        err = _files_validate(path)
+        if err:
+            return {"error": err}
+        sha = body.get("sha256")
+        if not isinstance(sha, str) or not sha:
+            return {"error": "sha256 required"}
+        mode = body.get("mode")
+        if not _files_mode_ok(mode):
+            return {"error": "mode must be an integer in 0..0o7777"}
+        temp = Path(files_temp_path(path, sha))
+        parent = temp.parent
+        try:
+            if not parent.exists():
+                return {"error": f"no such directory: {parent}"}
+            if not parent.is_dir():
+                return {"error": f"not a directory: {parent}"}
+            # Resume: an existing temp for the same (path, sha) is kept
+            # and never truncated -- the client re-derives the name and
+            # stat()s it to learn where to resume.
+            fd = os.open(temp, os.O_WRONLY | os.O_CREAT, 0o600)
+            os.close(fd)
+        except OSError as e:
+            return {"error": f"begin {temp}: {e}"}
+        if mode is not None:
+            with FILES_PENDING_MODES_LOCK:
+                FILES_PENDING_MODES[str(temp)] = int(mode)
+        return {"ok": True}
+
+    def _files_write(self, body):
+        path = body.get("path")
+        err = _files_validate(path)
+        if err:
+            return {"error": err}
+        sha = body.get("sha256")
+        if not isinstance(sha, str) or not sha:
+            return {"error": "sha256 required"}
+        try:
+            offset = int(body.get("offset", 0))
+        except (TypeError, ValueError):
+            return {"error": "offset must be an integer"}
+        if offset < 0:
+            return {"error": "offset must be >= 0"}
+        data_b64 = body.get("data_b64")
+        if not isinstance(data_b64, str):
+            return {"error": "data_b64 required"}
+        try:
+            data = base64.b64decode(data_b64, validate=True)
+        except (binascii.Error, ValueError):
+            return {"error": "data_b64 is not valid base64"}
+        if len(data) > FILES_CHUNK_SIZE:
+            return {"error": f"chunk exceeds {FILES_CHUNK_SIZE} bytes"}
+        temp = Path(files_temp_path(path, sha))
+        try:
+            with open(temp, "r+b" if temp.exists() else "w+b") as f:
+                f.seek(0, os.SEEK_END)
+                have = f.tell()
+                if offset > have:
+                    return {"error": "offset beyond end of temp"}
+                # Offset-idempotent: bytes already present must match a
+                # re-sent chunk (a resumed write replays the boundary
+                # chunk), and a genuine conflict is refused rather than
+                # silently corrupting the transfer.
+                overlap = min(have - offset, len(data))
+                if overlap > 0:
+                    f.seek(offset)
+                    existing = f.read(overlap)
+                    if existing != data[:overlap]:
+                        return {"error": "conflicting rewrite at offset"}
+                f.seek(offset + overlap)
+                f.write(data[overlap:])
+                f.flush()
+                os.fsync(f.fileno())
+                size = offset + len(data)
+            return {"size": size}
+        except OSError as e:
+            return {"error": f"write {temp}: {e}"}
+
+    def _files_commit(self, body):
+        path = body.get("path")
+        err = _files_validate(path)
+        if err:
+            return {"error": err}
+        sha = body.get("sha256")
+        if not isinstance(sha, str) or not sha:
+            return {"error": "sha256 required"}
+        temp = Path(files_temp_path(path, sha))
+        if not temp.exists():
+            return {"error": "no transfer in progress for this path and sha256"}
+        try:
+            actual = _files_sha_file(temp)
+        except OSError as e:
+            return {"error": f"hash {temp}: {e}"}
+        if actual != sha:
+            # Keep the temp: the client surfaces the daemon's words and
+            # a later attempt can resume or abort it.
+            return {"error": "sha256 mismatch", "actual": actual}
+        size = temp.stat().st_size
+        with FILES_PENDING_MODES_LOCK:
+            mode = FILES_PENDING_MODES.pop(str(temp), None)
+        try:
+            if mode is not None:
+                os.chmod(temp, mode)
+            # Atomic publish: the rename is what makes partial content
+            # at the destination impossible.
+            os.replace(temp, path)
+            _fsync_dir(Path(path).parent)
+        except OSError as e:
+            return {"error": f"commit {temp} -> {path}: {e}"}
+        return {"size": size, "sha256": actual}
+
+    def _files_abort(self, body):
+        path = body.get("path")
+        err = _files_validate(path)
+        if err:
+            return {"error": err}
+        sha = body.get("sha256")
+        if not isinstance(sha, str) or not sha:
+            return {"error": "sha256 required"}
+        temp = Path(files_temp_path(path, sha))
+        with FILES_PENDING_MODES_LOCK:
+            FILES_PENDING_MODES.pop(str(temp), None)
+        try:
+            temp.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            return {"error": f"abort {temp}: {e}"}
+        return {"ok": True}
+
+    def _files_read(self, body):
+        path = body.get("path")
+        err = _files_validate(path)
+        if err:
+            return {"error": err}
+        try:
+            offset = int(body.get("offset", 0))
+            length = int(body.get("length", FILES_CHUNK_SIZE))
+        except (TypeError, ValueError):
+            return {"error": "offset/length must be integers"}
+        if offset < 0:
+            return {"error": "offset must be >= 0"}
+        if length <= 0:
+            return {"error": "length must be >= 1"}
+        length = min(length, FILES_CHUNK_SIZE)
+        try:
+            st = os.stat(path)
+        except FileNotFoundError:
+            return {"error": "no such file"}
+        except OSError as e:
+            return {"error": f"stat {path}: {e}"}
+        if not os.path.isfile(path):
+            return {"error": "not a regular file"}
+        if offset > st.st_size:
+            return {"error": "offset beyond end of file", "size": st.st_size}
+        try:
+            with open(path, "rb") as f:
+                f.seek(offset)
+                data = f.read(length)
+        except OSError as e:
+            return {"error": f"read {path}: {e}"}
+        return {
+            "data_b64": base64.b64encode(data).decode("ascii"),
+            "eof": offset + len(data) >= st.st_size,
+            "size": st.st_size,
+            "mtime": int(st.st_mtime),
+        }
 
 
 def _reaper_loop():

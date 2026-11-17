@@ -59,6 +59,10 @@ type askCall struct {
 	Server  string
 	Key     string
 	Session string
+	// taskCancelled records that this call was abandoned because the
+	// protocol task that owned it was cancelled (SEP-2663): the write
+	// ledger consults it before recording an unknown outcome (#8922).
+	taskCancelled bool
 	// Run is the exec run id when this call is a script, "" otherwise.
 	Run string
 
@@ -477,6 +481,32 @@ func (r *Registry) beginAsk(id, server, key, session string) {
 
 func (r *Registry) endAsk(id string) { r.asks.end(id) }
 
+// markAskTaskCancelled flags the ask call id as abandoned by its owning
+// protocol task's cancellation. The abandon route calls it before
+// cancelling the ask, so the flag is in place before the call unwinds
+// into the write ledger.
+func (r *Registry) markAskTaskCancelled(id string) {
+	if r.asks == nil {
+		return
+	}
+	r.asks.mu.Lock()
+	defer r.asks.mu.Unlock()
+	if a, ok := r.asks.byID[id]; ok {
+		a.taskCancelled = true
+	}
+}
+
+// askTaskCancelled reports whether the ask call id was so flagged.
+func (r *Registry) askTaskCancelled(id string) bool {
+	if r.asks == nil || id == "" {
+		return false
+	}
+	r.asks.mu.Lock()
+	defer r.asks.mu.Unlock()
+	a, ok := r.asks.byID[id]
+	return ok && a.taskCancelled
+}
+
 // Asks exposes the table so the routes below can read it.
 func (r *Registry) Asks() *askTable { return r.asks }
 
@@ -568,6 +598,13 @@ func (s *Server) handleAskBegin(w http.ResponseWriter, r *http.Request) {
 		// by value rather than through r.Context().
 		ctx = mcpclient.WithClientCapabilities(ctx, mcpclient.ClientCapabilitiesFrom(caps))
 		ctx = mcpclient.WithCallerVersion(ctx, mcpclient.CallerVersionFrom(caps))
+		if mcpclient.TaskExecutionFrom(caps) {
+			// The call is a protocol task's inner call (SEP-2663): the
+			// mark rides by value like the caps above, so the write
+			// ledger can tell the task's cancellation from an unknown
+			// write outcome (#8922).
+			ctx = mcpclient.WithTaskExecution(ctx)
+		}
 		ctx = withCallSettings(ctx, cs)
 		var (
 			raw json.RawMessage
@@ -863,6 +900,18 @@ func answerFromResult(id, method string, raw json.RawMessage) (elicit.Answer, er
 
 func (s *Server) handleAskAbandon(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	// A task's cancellation is flagged before the cancel lands, so the
+	// write ledger sees it when the call unwinds (#8922). The body is
+	// optional: ordinary abandons send none.
+	var body struct {
+		TaskCancelled bool `json:"taskCancelled"`
+	}
+	if bodyReader := http.MaxBytesReader(w, r.Body, s.bodyBytes("http.controlBodyLimit", defaults.HTTPControlBodyLimit)); r.Body != nil {
+		_ = json.NewDecoder(bodyReader).Decode(&body)
+	}
+	if body.TaskCancelled {
+		s.reg.markAskTaskCancelled(id)
+	}
 	askRelays.Delete(id)
 	t, ok := s.taskStore().Cancel(id)
 	if !ok {

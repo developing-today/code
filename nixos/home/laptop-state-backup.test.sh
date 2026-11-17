@@ -24,8 +24,10 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 
 make_home() { # $1 dir; fake opencode state + ssh + one sops secret
   local h="$1"
-  mkdir -p "$h/.local/state/opencode" "$h/.ssh" "$h/secrets" "$h/.config/bws"
+  mkdir -p "$h/.local/state/opencode" "$h/.local/state/opencode-claimant" "$h/.ssh" "$h/secrets" "$h/.config/bws"
   echo '{"x":1}' >"$h/.local/state/opencode/service-prod.json"
+  echo "full" >"$h/.local/state/opencode-claimant/mode"
+  echo "log" >"$h/.local/state/opencode-claimant/claimant-fire-x.out"
   echo "fake-key" >"$h/.ssh/id_ed25519"
   echo "ciphertext" >"$h/secrets/pm-stack.sops.yaml"
   echo "fake-token" >"$h/.config/bws/access-token"
@@ -90,6 +92,8 @@ check "local repo snapshotted" grep -q "laptop-state-daily" "$H/backups/restic/l
 check "three backups (local+r2+drive)" [ "$(grep -c ' backup ' "$C" 2>/dev/null || echo 0)" = "3" ]
 check "tag used" grep -q "laptop-state-daily" "$C"
 check "opencode state backed up" grep -q "state/opencode" "$C"
+check "claimant state backed up" grep -q "state/opencode-claimant" "$C"
+check "claimant logs excluded" grep -q -- "--exclude .*opencode-claimant/\*.out" "$C"
 check "ssh backed up" grep -q ".ssh" "$C"
 check "sops secret backed up" grep -q "sops.yaml" "$C"
 check "check per backend" [ "$(grep -c ' check' "$C" 2>/dev/null || echo 0)" = "3" ]

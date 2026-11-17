@@ -43,6 +43,18 @@ for a in "$@"; do
   case "${a}" in http*) url="${a}" ;; esac
   prev="${a}"
 done
+if [[ "${url}" == */dump ]]; then
+  # STUB_DUMP_FAIL_FIRST=N: the first N dump downloads fail the way
+  # the 2026-11-17 run did (server closes the stream mid-transfer).
+  d=0
+  [[ -f "${cap}/dump-count" ]] && d="$(cat "${cap}/dump-count")"
+  d=$((d + 1))
+  echo "${d}" > "${cap}/dump-count"
+  if [[ "${d}" -le "${STUB_DUMP_FAIL_FIRST:-0}" ]]; then
+    echo "curl: (18) transfer closed with outstanding read data remaining" >&2
+    exit 18
+  fi
+fi
 body=""
 case "${url}" in
   */auth/tokens) body='{"jwt":"__JWT__"}' ;;
@@ -89,6 +101,7 @@ class TestExportTursoArgv(unittest.TestCase):
             "TURSO_API_BASE": "http://api.test",
             "TURSO_DUMP_BASE": "http://dump.test",
             "COLD_STORE_BIN": str(cold),
+            "TURSO_DUMP_RETRY_PASS_DELAY_SECONDS": "0",
         }
 
     def tearDown(self):
@@ -140,13 +153,45 @@ class TestExportTursoArgv(unittest.TestCase):
                 return lines
         self.fail("no dump invocation recorded by the stub curl")
 
-    def test_dump_uses_default_max_time_and_one_retry(self):
+    def test_dump_uses_default_max_time_and_three_spaced_retries(self):
         result = self.run_script()
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = self.dump_argv_lines()
         self.assertEqual(lines[lines.index("--max-time") + 1], "1800")
-        self.assertEqual(lines[lines.index("--retry") + 1], "1")
+        self.assertEqual(lines[lines.index("--retry") + 1], "3")
+        self.assertEqual(lines[lines.index("--retry-delay") + 1], "30")
         self.assertIn("--retry-all-errors", lines)
+
+    def dump_calls(self):
+        f = self.capture / "dump-count"
+        return int(f.read_text()) if f.exists() else 0
+
+    def test_failed_dump_is_retried_in_a_second_pass_and_filed(self):
+        # 2026-11-17: curl 18 on 4 of 42 databases; a second pass at the
+        # end of the run must pick them up instead of failing the step.
+        env = {**self.env, "STUB_DUMP_FAIL_FIRST": "1"}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("dump download failed", result.stderr)
+        self.assertIn("retrying 1 failed database(s) after 0s", result.stdout)
+        self.assertIn("all 1 database(s) filed", result.stdout)
+        self.assertEqual(self.dump_calls(), 2)
+        self.assertIn("put-backup", (self.capture / "cold-store.log").read_text())
+
+    def test_database_failing_both_passes_fails_the_run(self):
+        env = {**self.env, "STUB_DUMP_FAIL_FIRST": "99"}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("1 of 1 database(s) FAILED", result.stderr)
+        self.assertEqual(self.dump_calls(), 2)
+        self.assertFalse((self.capture / "cold-store.log").exists())
+
+    def test_retry_pass_delay_must_be_an_integer(self):
+        env = {**self.env, "TURSO_DUMP_RETRY_PASS_DELAY_SECONDS": "soon"}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("must be a non-negative integer", result.stderr)
+        self.assertEqual(list(self.capture.glob("argv-*.log")), [])
 
     def test_dump_requests_compression(self):
         # --compressed keeps GB-class dumps under the sandbox proxy's
