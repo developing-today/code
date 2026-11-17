@@ -193,9 +193,7 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
     match get("required_budget_minutes") {
         None | Some(Value::Null) => {}
         Some(Value::Number(n)) if n.as_i64().map(|v| v >= 1).unwrap_or(false) => {}
-        _ => errs.push(
-            "payload.required_budget_minutes: must be a positive integer".to_string(),
-        ),
+        _ => errs.push("payload.required_budget_minutes: must be a positive integer".to_string()),
     }
     if let Some(value) = get("max_attempts") {
         if !valid_max_attempts(value) {
@@ -972,9 +970,7 @@ pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
     // integer.
     if let Some(value) = obj.get("required_budget_minutes").filter(|v| !v.is_null()) {
         if !matches!(value, Value::Number(n) if n.as_i64().map(|v| v >= 1).unwrap_or(false)) {
-            errors.push(
-                "packet.required_budget_minutes: must be a positive integer".to_string(),
-            );
+            errors.push("packet.required_budget_minutes: must be a positive integer".to_string());
         }
     }
 
@@ -1107,7 +1103,11 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
     let required_budget = packet
         .get("required_budget_minutes")
         .filter(|v| !v.is_null())
-        .or_else(|| payload.get("required_budget_minutes").filter(|v| !v.is_null()))
+        .or_else(|| {
+            payload
+                .get("required_budget_minutes")
+                .filter(|v| !v.is_null())
+        })
         .cloned()
         .unwrap_or(Value::Null);
     if !required_budget.is_null() {
@@ -1252,7 +1252,10 @@ mod tests {
                     .any(|e| e.contains("required_budget")),
                 "{packet}"
             );
-            assert_eq!(task_from_packet(&packet, "q")["required_budget_minutes"], Value::Null);
+            assert_eq!(
+                task_from_packet(&packet, "q")["required_budget_minutes"],
+                Value::Null
+            );
         }
         // Bad values fail at their own level.
         for bad in [json!(0), json!(-5), json!(1.5), json!("120"), json!(-1)] {

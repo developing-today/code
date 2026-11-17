@@ -62,9 +62,7 @@ class FakeActivityRemote implements ActivityRemote {
 class FakeSnapshotsRemote implements SnapshotsRemote {
   rows = new Map<string, SnapshotRecord>();
   async readAll(): Promise<SnapshotRecord[]> {
-    return [...this.rows.values()]
-      .map((r) => structuredClone(r))
-      .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+    return [...this.rows.values()].map((r) => structuredClone(r)).sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
   }
   async append(records: readonly SnapshotRecord[]): Promise<number> {
     let inserted = 0;
@@ -397,9 +395,7 @@ describe("Supabase row mapping", () => {
   });
 
   test("document remote upserts the aa-last-good document with the writer recorded", async () => {
-    const rec = recordingClient((sql) =>
-      sql.startsWith("select") ? [{ version: 1, document: { batch: "b" } }] : [],
-    );
+    const rec = recordingClient((sql) => (sql.startsWith("select") ? [{ version: 1, document: { batch: "b" } }] : []));
     const remote = createSupabaseDocumentRemote(async () => rec.client, "pm-aggregator-migrate");
     expect(await remote.load(AA_LAST_GOOD_DOCUMENT)).toEqual({ version: 1, document: { batch: "b" } });
     await remote.save(AA_LAST_GOOD_DOCUMENT, 1, { batch: "b" });

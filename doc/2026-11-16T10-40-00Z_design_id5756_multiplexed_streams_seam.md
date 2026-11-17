@@ -26,7 +26,7 @@ and concurrency pays serialized CONNECT setup.
   `pkgs/fleet/crates/fleet-proxy/src/tunnel.rs` (and `connect_udp.rs`).
 - **The wire-contract discipline of `fleet-proxy-proto`** — framing is the
   proven 8-byte big-endian length prefix + one JSON object per frame; the
-  first frame is the hello exchange whose services map *is* the capability
+  first frame is the hello exchange whose services map _is_ the capability
   negotiation; versioning accepts protocol majors N and N−1, fields additive
   within a major, unknown fields ignored. This record extends that contract;
   nothing here redefines framing elsewhere (the crate's own rule).
@@ -36,12 +36,12 @@ and concurrency pays serialized CONNECT setup.
 
 ## 3. Endpoint owners
 
-| End | Owner (code) | Owns | Must change |
-|---|---|---|---|
-| Client | fleet client stack on the sandbox side — `fleet-proxy/src/client.rs` and the laptop-agent client path that speaks to the broker | Stream open/close per call, per-stream timeout ceiling, trip-id minting, fallback selection | Open streams instead of pooled CONNECTs when the peer advertises the mux capability (§5); keep the pooled path intact as fallback |
-| Proxy | `fleet proxy serve` — `fleet-proxy/src/serve.rs`, `tunnel.rs` | The 1–2 persistent tunnels, stream↔tunnel assignment, tunnel keepalive, single-flight reconnect (inherited from #6490) | Terminate and originate streams; interleave frames by stream id; never let one stream's stall block the tunnel (frame-size bound, §4) |
-| Broker / daemon | the laptop-side broker speaking `fleet-proxy-proto` (Rust broker; the Python broker remains a legacy major-0 peer) | Stream dispatch against the hello services map (port → service), response interleaving, trip-id echo | Dispatch each stream to the advertised service for its port; an unadvertised port fails the stream fast (the proxy-level capability stub), never the tunnel |
-| Wire contract | `fleet-proxy-proto` | The versioned frame types and negotiation semantics | Add the stream frame kinds and the `proxy-mux` capability (§4); no other crate redefines them |
+| End             | Owner (code)                                                                                                                    | Owns                                                                                                                   | Must change                                                                                                                                                 |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Client          | fleet client stack on the sandbox side — `fleet-proxy/src/client.rs` and the laptop-agent client path that speaks to the broker | Stream open/close per call, per-stream timeout ceiling, trip-id minting, fallback selection                            | Open streams instead of pooled CONNECTs when the peer advertises the mux capability (§5); keep the pooled path intact as fallback                           |
+| Proxy           | `fleet proxy serve` — `fleet-proxy/src/serve.rs`, `tunnel.rs`                                                                   | The 1–2 persistent tunnels, stream↔tunnel assignment, tunnel keepalive, single-flight reconnect (inherited from #6490) | Terminate and originate streams; interleave frames by stream id; never let one stream's stall block the tunnel (frame-size bound, §4)                       |
+| Broker / daemon | the laptop-side broker speaking `fleet-proxy-proto` (Rust broker; the Python broker remains a legacy major-0 peer)              | Stream dispatch against the hello services map (port → service), response interleaving, trip-id echo                   | Dispatch each stream to the advertised service for its port; an unadvertised port fails the stream fast (the proxy-level capability stub), never the tunnel |
+| Wire contract   | `fleet-proxy-proto`                                                                                                             | The versioned frame types and negotiation semantics                                                                    | Add the stream frame kinds and the `proxy-mux` capability (§4); no other crate redefines them                                                               |
 
 ## 4. Decision D1 — wire protocol: extend the existing framing with a stream layer
 
@@ -63,7 +63,7 @@ capability, `proxy-mux`. Stream frames:
   are `rst`: the per-stream timeout ceiling is a client-side timer
   (default 10 s, hard cap below the historical 16–26 s failure cluster);
   on expiry the client sends `rst`, frees the stream, and may retry once
-  on a *fresh stream* if the tunnel is alive (per #5756 §4).
+  on a _fresh stream_ if the tunnel is alive (per #5756 §4).
 - `ping`/`pong` — application-level keepalive on the tunnel, carrying the
   #5756 starting constants (KEEPALIVE_S=180; the broker must not idle-exit
   while a tunnel with healthy streams is up — exit only when the tunnel is
@@ -86,7 +86,7 @@ CONNECTs the way the pool of 50 did.
   dispatch. Cost without a compensating gain at this scale.
 - **yamux (crate) framing:** yamux's own header format is likewise a second
   framing dialect layered over the tunnel, and its session/window defaults
-  would need re-tuning to the bounds above regardless. The *shape* of this
+  would need re-tuning to the bounds above regardless. The _shape_ of this
   decision is yamux-style (stream ids, window updates, rst) — implemented
   as frame kinds in the existing contract rather than as a foreign framing.
 - **QUIC:** out on the issue's own evidence — the runtime proxy path is
@@ -104,7 +104,7 @@ CONNECTs the way the pool of 50 did.
   (majors N and N−1) is unchanged; stream frames are additive within
   major 1, and a peer that never advertises the capability never receives
   one.
-- **No-one-sided-shipment rule (#5756):** neither side ships mux *behavior*
+- **No-one-sided-shipment rule (#5756):** neither side ships mux _behavior_
   alone. A side may land its code behind the capability at any time —
   dormant until negotiated — but no release may make the mux the only path
   or remove the pooled fallback until the acceptance harness (§6) passes

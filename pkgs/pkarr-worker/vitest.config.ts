@@ -12,31 +12,31 @@ const retentionSettings = ["0", "7d", "8640000000000", "3600"];
 export default defineConfig({
   test: {
     projects: [
-    {
-      plugins: [
-        cloudflareTest({
-          wrangler: { configPath: "./wrangler.jsonc" },
-        }),
-      ],
-      test: {
-        include: ["test/worker.test.ts", "test/deploy-*.test.ts"],
-        name: "default",
+      {
+        plugins: [
+          cloudflareTest({
+            wrangler: { configPath: "./wrangler.jsonc" },
+          }),
+        ],
+        test: {
+          include: ["test/worker.test.ts", "test/deploy-*.test.ts"],
+          name: "default",
+        },
       },
-    },
-    ...retentionSettings.map((setting) => ({
-      plugins: [
-        cloudflareTest({
-          wrangler: { configPath: "./wrangler.jsonc" },
-          miniflare: {
-            bindings: { RETENTION_SECONDS: setting },
-          },
-        }),
-      ],
-      test: {
-        include: ["test/worker.retention.test.ts"],
-        name: `retention-${setting}`,
-      },
-    })),
+      ...retentionSettings.map((setting) => ({
+        plugins: [
+          cloudflareTest({
+            wrangler: { configPath: "./wrangler.jsonc" },
+            miniflare: {
+              bindings: { RETENTION_SECONDS: setting },
+            },
+          }),
+        ],
+        test: {
+          include: ["test/worker.retention.test.ts"],
+          name: `retention-${setting}`,
+        },
+      })),
     ],
   },
 });

@@ -1566,7 +1566,8 @@ mod tests {
     fn gh_section_parses_and_applies_default_port() {
         // Oracle: code#10742 — a bare host without a port gets the
         // default port; an explicit port is kept.
-        let (_dir, path) = write_temp("[gh]\ncache_local = \"127.0.0.1\"\ncache_laptop = \"laptop:9999\"\n");
+        let (_dir, path) =
+            write_temp("[gh]\ncache_local = \"127.0.0.1\"\ncache_laptop = \"laptop:9999\"\n");
         let cfg = Config::load_from(&path).unwrap();
         assert_eq!(
             cfg.gh_cache_addrs(),
@@ -1587,10 +1588,7 @@ mod tests {
             Config::with_default_port("::1"),
             format!("::1:{}", DEFAULT_GH_CACHE_PORT)
         );
-        assert_eq!(
-            Config::with_default_port("[::1]:1234"),
-            "[::1]:1234"
-        );
+        assert_eq!(Config::with_default_port("[::1]:1234"), "[::1]:1234");
     }
 
     #[test]

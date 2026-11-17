@@ -57,17 +57,17 @@ From §4.1, §4.4, and the #3125 reconciliation:
 Rules are data, evaluated identically by the reporter and (later) the
 live runner. One record per (class, tier) pair:
 
-| field | meaning |
-| --- | --- |
-| `class` | classification-manifest vocabulary: `code`, `docs`, `session logs`, `chat logs`, `generated reports` (extensible by manifest amendment, not by rule edit) |
-| `tier` | `hot` or `cold` — the tier the rule's retirements move versions out of |
-| `date_days` | by-date trigger threshold (days since ingestion); `null` disables the trigger for this row |
-| `keep_newest_n` | increments floor: never retire any of the newest N versions via increments; also the increments trigger threshold (versions with ≥ N newer siblings are trigger-eligible) |
-| `access_window_days` | by-access trigger: never-surfaced, or not surfaced within this many days; `null` disables |
-| `override_owner` | who may write this rule record and promote it (§4.2's overrides column: repo owner, corpus owner, program owner, generating job's owner) |
-| `mode` | `dry-run`, `live-cold`, or `live-delete` (§5); every new or changed rule starts at `dry-run` |
-| `version`, `effective_from`, `supersedes` | rule records are themselves versioned; evaluation names the exact rule-set version it used |
-| `promoted_from_reports` | the dry-run run ids that earned the current mode (§5); empty in `dry-run` |
+| field                                     | meaning                                                                                                                                                                   |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `class`                                   | classification-manifest vocabulary: `code`, `docs`, `session logs`, `chat logs`, `generated reports` (extensible by manifest amendment, not by rule edit)                 |
+| `tier`                                    | `hot` or `cold` — the tier the rule's retirements move versions out of                                                                                                    |
+| `date_days`                               | by-date trigger threshold (days since ingestion); `null` disables the trigger for this row                                                                                |
+| `keep_newest_n`                           | increments floor: never retire any of the newest N versions via increments; also the increments trigger threshold (versions with ≥ N newer siblings are trigger-eligible) |
+| `access_window_days`                      | by-access trigger: never-surfaced, or not surfaced within this many days; `null` disables                                                                                 |
+| `override_owner`                          | who may write this rule record and promote it (§4.2's overrides column: repo owner, corpus owner, program owner, generating job's owner)                                  |
+| `mode`                                    | `dry-run`, `live-cold`, or `live-delete` (§5); every new or changed rule starts at `dry-run`                                                                              |
+| `version`, `effective_from`, `supersedes` | rule records are themselves versioned; evaluation names the exact rule-set version it used                                                                                |
+| `promoted_from_reports`                   | the dry-run run ids that earned the current mode (§5); empty in `dry-run`                                                                                                 |
 
 Semantics are fixed, not per-rule options: triggers combine by OR
 (any one firing makes a version a candidate); the class row is the

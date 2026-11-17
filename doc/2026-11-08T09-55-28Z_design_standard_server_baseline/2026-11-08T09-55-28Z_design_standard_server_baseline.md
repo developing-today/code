@@ -120,7 +120,7 @@ a defect in that report.
   scenarios, that is a version event for this record, not a reason
   to move the whole baseline now.
 - **Container with enforced CPU/memory limits as canonical:**
-  rejected as the *sole* definition. Limits bound CPU and memory but
+  rejected as the _sole_ definition. Limits bound CPU and memory but
   not storage latency or memory bandwidth, the two resources several
   workloads actually measure. Containers remain welcome for fixture
   isolation inside a run; they do not define the environment.
@@ -150,13 +150,13 @@ median-of-≥5 with minimum, per scale, per interface where the
 workload touches the network (#5896 runs the matrix; this record
 defines what a cell measures).
 
-| Workload | Operation mix (per measured rep) | What it represents |
-|---|---|---|
-| W1 identity operations | Create identity; resolve/lookup by petname and by key; sign and verify a message; rotate a key | Joining and being found |
-| W2 capability checks | Grant a capability; check an allowed action; check a denied action; check through one delegation hop | The authorisation hot path every request pays |
-| W3 journal append/read | Append events (the F11.8 sizes: 2,000-entry journals); read a full journal; read a tail slice; checkpoint/compaction | The event-store core, continuous with the F11.8 journal baselines |
-| W4 world sync | A peer joins a world; catch-up replay of world history up to the replay cap (S0: 2,000 committed events matching S0 history; S1 and S2: 10,000 committed events matching the F11.8 replay size); live fan-out to the scale's client count | Multi-client world behaviour, continuous with F11.8 replay/fan-out |
-| W5 blob transfer | Store and fetch blobs at 4 KiB, 1 MiB, and 64 MiB; fetch a blob the peer must retrieve from another peer | Attachments and content movement |
+| Workload               | Operation mix (per measured rep)                                                                                                                                                                                                          | What it represents                                                 |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| W1 identity operations | Create identity; resolve/lookup by petname and by key; sign and verify a message; rotate a key                                                                                                                                            | Joining and being found                                            |
+| W2 capability checks   | Grant a capability; check an allowed action; check a denied action; check through one delegation hop                                                                                                                                      | The authorisation hot path every request pays                      |
+| W3 journal append/read | Append events (the F11.8 sizes: 2,000-entry journals); read a full journal; read a tail slice; checkpoint/compaction                                                                                                                      | The event-store core, continuous with the F11.8 journal baselines  |
+| W4 world sync          | A peer joins a world; catch-up replay of world history up to the replay cap (S0: 2,000 committed events matching S0 history; S1 and S2: 10,000 committed events matching the F11.8 replay size); live fan-out to the scale's client count | Multi-client world behaviour, continuous with F11.8 replay/fan-out |
+| W5 blob transfer       | Store and fetch blobs at 4 KiB, 1 MiB, and 64 MiB; fetch a blob the peer must retrieve from another peer                                                                                                                                  | Attachments and content movement                                   |
 
 Dataset shapes are fixed per scale (§4) and generated from the
 recorded seed. Changing a mix, a size, or a shape is a workload
@@ -164,11 +164,11 @@ version change (§5).
 
 ## 4. Scales
 
-| Scale | Identities | Worlds | Membership | Journal history per world | W4 catch-up replay | Connected clients during W4 | Blobs pre-seeded |
-|---|---|---|---|---|---|---|---|
-| S0 single user | 1 | 1 | 1 member | 2,000 events | 2,000 events | 1 | 10 |
-| S1 small community | 50 | 5 | up to 50 per world | 10,000 events | 10,000 events | 32 | 500 |
-| S2 large world | 5,000 | 20 | up to 1,000 in the largest world | 100,000 events in the largest world | 10,000 events | 256 | 10,000 |
+| Scale              | Identities | Worlds | Membership                       | Journal history per world           | W4 catch-up replay | Connected clients during W4 | Blobs pre-seeded |
+| ------------------ | ---------- | ------ | -------------------------------- | ----------------------------------- | ------------------ | --------------------------- | ---------------- |
+| S0 single user     | 1          | 1      | 1 member                         | 2,000 events                        | 2,000 events       | 1                           | 10               |
+| S1 small community | 50         | 5      | up to 50 per world               | 10,000 events                       | 10,000 events      | 32                          | 500              |
+| S2 large world     | 5,000      | 20     | up to 1,000 in the largest world | 100,000 events in the largest world | 10,000 events      | 256                         | 10,000           |
 
 The S0/S1 sizes deliberately reuse the F11.8 full-size workloads
 (2,000-entry journals, 10,000-event replay at S1, 32 fan-out clients) so
@@ -231,8 +231,8 @@ programme.
 
 ## 7. What this record does not decide
 
-- Gate budgets, noise bands, and the waiver/re-baselining *approval*
-  procedure: #5897 (this record defines what a version event *is*;
+- Gate budgets, noise bands, and the waiver/re-baselining _approval_
+  procedure: #5897 (this record defines what a version event _is_;
   who may approve one is #5897's ruling, and the parent's open
   question about repeated waivers stays with it).
 - CI tier placement and time budgets for these workloads: #5893.

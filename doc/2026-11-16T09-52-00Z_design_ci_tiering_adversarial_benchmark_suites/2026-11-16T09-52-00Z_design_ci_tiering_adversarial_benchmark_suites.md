@@ -65,11 +65,11 @@ reference machine class.
 
 ## 1. The tiers
 
-| Tier | Trigger | Adversarial contents | Benchmark contents | Verdict |
-|---|---|---|---|---|
-| Smoke | Every PR / push that touches `pkgs/id/**` or the suites' own paths | The in-process refusal suite (`world_dos.rs`) plus, per changed surface, the #5892 canary profile (1 valid op/s canary under a light adversarial modifier) and cap / cap+1 boundary spot checks | `--quick` micro-benchmarks for changed hot paths (the existing F11.8 `--quick` shape) | Gate (behaviour assertions; bench numbers report-only and never committed as baselines, per #5894) |
-| Scheduled | Nightly schedule + merge queue | The full #5892 catalogue at its fixed fixture profiles (30 s attack + 30 s recovery per scenario), deadline-bound scenarios via test-only deadline override where one exists | The full honest matrix (workload × scale × interface) at #5894 scales; on the reference machine class when the run is baseline-comparable, otherwise labelled a CI comparability run | Gate (DoS behaviour assertions; bench budgets/waivers per #5897) |
-| Soak | Weekly schedule + release gate | Extended profiles at production deadlines (deadline-bound scenarios without an override, e.g. SSH inactivity at ten minutes), long-duration fairness / noisy-neighbour and state-exhaustion scenarios | Long-duration honest runs and the release-gate run of the standard server against the current `server-baseline` version | Report + findings loop (failures file hardening follow-ups per the parent); release-gate bench run gates the release, not merges |
+| Tier      | Trigger                                                            | Adversarial contents                                                                                                                                                                                  | Benchmark contents                                                                                                                                                                   | Verdict                                                                                                                          |
+| --------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| Smoke     | Every PR / push that touches `pkgs/id/**` or the suites' own paths | The in-process refusal suite (`world_dos.rs`) plus, per changed surface, the #5892 canary profile (1 valid op/s canary under a light adversarial modifier) and cap / cap+1 boundary spot checks       | `--quick` micro-benchmarks for changed hot paths (the existing F11.8 `--quick` shape)                                                                                                | Gate (behaviour assertions; bench numbers report-only and never committed as baselines, per #5894)                               |
+| Scheduled | Nightly schedule + merge queue                                     | The full #5892 catalogue at its fixed fixture profiles (30 s attack + 30 s recovery per scenario), deadline-bound scenarios via test-only deadline override where one exists                          | The full honest matrix (workload × scale × interface) at #5894 scales; on the reference machine class when the run is baseline-comparable, otherwise labelled a CI comparability run | Gate (DoS behaviour assertions; bench budgets/waivers per #5897)                                                                 |
+| Soak      | Weekly schedule + release gate                                     | Extended profiles at production deadlines (deadline-bound scenarios without an override, e.g. SSH inactivity at ten minutes), long-duration fairness / noisy-neighbour and state-exhaustion scenarios | Long-duration honest runs and the release-gate run of the standard server against the current `server-baseline` version                                                              | Report + findings loop (failures file hardening follow-ups per the parent); release-gate bench run gates the release, not merges |
 
 The existing `id-bench` workflow is the seed of the scheduled bench
 run, not a fourth tier: its main-tier, non-blocking reporting shape
@@ -105,11 +105,11 @@ Budgets are wall-clock caps per tier invocation, enforced by job
 timeouts; per-scenario cost inside scheduled is already bounded by
 the #5892 fixture profiles.
 
-| Tier | Budget | Basis |
-|---|---|---|
-| Smoke | ≤ 10 minutes per PR (job timeout 15) | Must stay cheaper than the existing required checks it rides with; contents are canary/boundary/`--quick` shapes only |
+| Tier      | Budget                                      | Basis                                                                                                                                                     |
+| --------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Smoke     | ≤ 10 minutes per PR (job timeout 15)        | Must stay cheaper than the existing required checks it rides with; contents are canary/boundary/`--quick` shapes only                                     |
 | Scheduled | ≤ 120 minutes per nightly / merge-queue run | Full catalogue at 30 s + 30 s per scenario plus the full bench matrix; the bench portion keeps the existing 60-minute `id-bench` cap inside this envelope |
-| Soak | ≤ 6 hours per weekly run | Deadline-bound scenarios run at production deadlines (ten-minute SSH inactivity is the floor case) plus long-duration fairness/exhaustion profiles |
+| Soak      | ≤ 6 hours per weekly run                    | Deadline-bound scenarios run at production deadlines (ten-minute SSH inactivity is the floor case) plus long-duration fairness/exhaustion profiles        |
 
 A run that hits its job timeout is a failed run, not a slow pass:
 the tier's contents are re-assigned per §2 or split, and the failure

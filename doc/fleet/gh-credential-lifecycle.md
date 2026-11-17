@@ -27,7 +27,7 @@ instead of failing the caller.
 Tokens are never printed, logged, or written to a file. Provider
 errors name the source and the stage only, never a value. Attempts
 are silent by default; `FLEET_GH_TRACE=1` names each attempt's token
-*source* (never the token) on stderr. Attempt output is captured
+_source_ (never the token) on stderr. Attempt output is captured
 (piped), not streamed, because the failure text is what classifies a
 failover.
 
@@ -40,11 +40,11 @@ failover.
 2. **Installation tokens of the fleet's three GitHub Apps**, in App
    order, minted in-process per owner (see "Minting" below):
 
-   | Leg (label prefix) | App | App ID source | Key secret name | Default owners |
-   |---|---|---|---|---|
-   | `app:<owner>` | "developing.today fleet" | compiled-in constant `5612056` (override: `FLEET_GH_APP_ID`) | `github-app.developing-today-fleet.private-key` | `developing-today`, `developing-today-forks`, `dezren39` |
-   | `devtoday:<owner>` | developing.today | broker secret `kaneo.github-app-id` | `kaneo.github-app-private-key` | `developing-today`, `dezren39` |
-   | `backup:<owner>` | developing-today-backup | broker secret `github-app.backup-app-id` | `github-app.backup-private-key` | `developing-today` |
+   | Leg (label prefix) | App                      | App ID source                                                | Key secret name                                 | Default owners                                           |
+   | ------------------ | ------------------------ | ------------------------------------------------------------ | ----------------------------------------------- | -------------------------------------------------------- |
+   | `app:<owner>`      | "developing.today fleet" | compiled-in constant `5612056` (override: `FLEET_GH_APP_ID`) | `github-app.developing-today-fleet.private-key` | `developing-today`, `developing-today-forks`, `dezren39` |
+   | `devtoday:<owner>` | developing.today         | broker secret `kaneo.github-app-id`                          | `kaneo.github-app-private-key`                  | `developing-today`, `dezren39`                           |
+   | `backup:<owner>`   | developing-today-backup  | broker secret `github-app.backup-app-id`                     | `github-app.backup-private-key`                 | `developing-today`                                       |
 
    App IDs and keys are resolved **by name** through the secrets
    broker (next section); no key or token value is ever in argv, in
@@ -58,7 +58,7 @@ Credentials resolve by name through the fleet secrets resolver
 
 1. **Secrets broker first** — a framed request through the session
    broker to the secrets broker (`GET /secret/<name>`), with the
-   token *file* named in the request (the broker reads the file; the
+   token _file_ named in the request (the broker reads the file; the
    token value does not travel in the request either). On the laptop
    a direct broker leg is probed first where the broker's own socket
    answers. A broker leg that cannot answer is retried under a
@@ -101,7 +101,7 @@ behind a TLS-intercepting egress proxy (the sandbox) present the
 proxy's CA, which lives only in the platform store.
 
 Within one process, a built JWT is reused per App and a minted
-token is reused per (App, owner) pair. That is the *only* caching
+token is reused per (App, owner) pair. That is the _only_ caching
 that exists — see the next section.
 
 ## INTERIM: no cross-invocation caching
@@ -128,16 +128,16 @@ The rotation's leg lists are **compiled-in constants** in `gh.rs`
 `BACKUP_DEFAULT_OWNERS` constants and `GhApp::ALL` order). They can
 be replaced at runtime, per invocation, without a rebuild:
 
-| Variable | Effect |
-|---|---|
-| `FLEET_GH_APP_OWNERS` | Comma list replacing the fleet App's owners |
-| `FLEET_GH_DEVTODAY_OWNERS` | Comma list replacing the developing.today App's owners |
-| `FLEET_GH_BACKUP_OWNERS` | Comma list replacing the backup App's owners |
-| `FLEET_GH_APP_ID` | Overrides the fleet App's compiled-in App ID |
-| `FLEET_GH_ORDER` | Comma list fixing the whole rotation exactly (grammar below) |
-| `FLEET_GH_BIN` | The `gh` binary to run (default: `gh`) |
-| `FLEET_GH_TRACE=1` | Name each attempt's token source on stderr |
-| `FLEET_GH_RAW=1` | Raw mode (below); same as a leading `--raw` |
+| Variable                   | Effect                                                       |
+| -------------------------- | ------------------------------------------------------------ |
+| `FLEET_GH_APP_OWNERS`      | Comma list replacing the fleet App's owners                  |
+| `FLEET_GH_DEVTODAY_OWNERS` | Comma list replacing the developing.today App's owners       |
+| `FLEET_GH_BACKUP_OWNERS`   | Comma list replacing the backup App's owners                 |
+| `FLEET_GH_APP_ID`          | Overrides the fleet App's compiled-in App ID                 |
+| `FLEET_GH_ORDER`           | Comma list fixing the whole rotation exactly (grammar below) |
+| `FLEET_GH_BIN`             | The `gh` binary to run (default: `gh`)                       |
+| `FLEET_GH_TRACE=1`         | Name each attempt's token source on stderr                   |
+| `FLEET_GH_RAW=1`           | Raw mode (below); same as a leading `--raw`                  |
 
 `FLEET_GH_ORDER` grammar: comma-separated entries, each either
 `personal`, or `<prefix>:<owner>` where `<prefix>` is `app` (fleet
@@ -151,7 +151,7 @@ first-class (not env-only, not compiled-in) is code#10311.
 
 When the call names a repo or org — via `--repo`/`-R owner/repo`,
 `--owner org`, an `api repos/<owner>/…` path, or a `github.com`
-URL — that owner is the *hint*. Within **each** App leg, the hinted
+URL — that owner is the _hint_. Within **each** App leg, the hinted
 owner's installation (if that owner is already in the leg's list)
 moves to the front, because an installation token only sees its own
 installation's scope.
@@ -165,7 +165,7 @@ leg. There is no dynamic minting for an unlisted org.
   in a leg's (possibly env-overridden) owner list.
 - A call scoped to an unlisted org is therefore attempted under the
   personal token first, then under installation tokens scoped to
-  *other* owners. An installation token cannot see the unlisted
+  _other_ owners. An installation token cannot see the unlisted
   org, so a scoped call under a wrong-org leg fails with a
   permission/403-class refusal ("Resource not accessible by
   integration" and similar) — which is a pre-execution refusal, so
@@ -182,7 +182,7 @@ leg. There is no dynamic minting for an unlisted org.
 ## Retry safety (why a write is, or is not, repeated)
 
 A **write** is repeated under a fresh token only when the failure
-proves GitHub refused the request *before processing it*:
+proves GitHub refused the request _before processing it_:
 rate-limit rejections (the limiter answers before the mutation
 runs) and permission/scope rejections (`INSUFFICIENT_SCOPES`,
 "Resource not accessible by …", `Bad credentials`/401 shapes). Any
@@ -193,12 +193,12 @@ field flags and no non-GET method) repeat on any failure class.
 
 ## Exit codes
 
-| Code | Meaning |
-|---|---|
-| `0` | The (final) `gh` attempt succeeded — or, for `fleet gh tiers`, every rotation source answered |
-| *gh's own code* | The final attempt's exit code is propagated as-is |
-| `2` | Usage error shape reserved in the domain (`EXIT_USAGE`) |
-| `3` | **No token source could be resolved at all** — every source failed to resolve/mint and no `gh` attempt produced output. Also: `fleet gh tiers` exits 3 when *any* source is down, and a failure to spawn the `gh` binary at all returns 3. Exit 3 is a fleet-side credential/transport problem, never a GitHub answer about your request |
+| Code            | Meaning                                                                                                                                                                                                                                                                                                                                  |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`             | The (final) `gh` attempt succeeded — or, for `fleet gh tiers`, every rotation source answered                                                                                                                                                                                                                                            |
+| _gh's own code_ | The final attempt's exit code is propagated as-is                                                                                                                                                                                                                                                                                        |
+| `2`             | Usage error shape reserved in the domain (`EXIT_USAGE`)                                                                                                                                                                                                                                                                                  |
+| `3`             | **No token source could be resolved at all** — every source failed to resolve/mint and no `gh` attempt produced output. Also: `fleet gh tiers` exits 3 when _any_ source is down, and a failure to spawn the `gh` binary at all returns 3. Exit 3 is a fleet-side credential/transport problem, never a GitHub answer about your request |
 
 ## Raw mode: the first-class bypass
 

@@ -9,7 +9,14 @@
 // This module is pure parsing/mapping (no I/O except fetchProjectSnapshot,
 // whose fetch is injectable for tests), shared by the collector and
 // the live source so the wire shape is parsed exactly once.
-import type { GhItem, OrchestrationSection, ProjectAudit, ProjectPoolEdgeDiagnostic, ProjectPoolItem, RefKey } from "./model.ts";
+import type {
+  GhItem,
+  OrchestrationSection,
+  ProjectAudit,
+  ProjectPoolEdgeDiagnostic,
+  ProjectPoolItem,
+  RefKey,
+} from "./model.ts";
 import { isValidRef, refKey } from "./model.ts";
 import { canonicalStatusFor, type CanonicalStatus } from "./status-taxonomy.ts";
 import { isIsoDate, isRecord, isTimestampNotFuture } from "./validate.ts";

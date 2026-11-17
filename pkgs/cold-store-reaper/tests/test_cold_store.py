@@ -847,7 +847,7 @@ class TestAtomicPrivateJson(ColdStoreTestBase):
         # #10820: Path.read_text() decodes before json.loads runs, so
         # non-UTF-8 bytes raised a raw UnicodeDecodeError, never the
         # ColdStoreError contract PR #4361 established.
-        self.store.state_path.write_bytes(b'{\xff\xfe not utf-8 \x80\x81')
+        self.store.state_path.write_bytes(b"{\xff\xfe not utf-8 \x80\x81")
         with self.assertRaises(cold_store.ColdStoreError) as ctx:
             self.store.load_state()
         self.assertNotIsInstance(ctx.exception, UnicodeDecodeError)
@@ -856,7 +856,7 @@ class TestAtomicPrivateJson(ColdStoreTestBase):
 
     def test_non_utf8_credentials_raises_cold_store_error(self):
         # #10820: same decode-before-parse gap as state.json.
-        self.store.credentials_path.write_bytes(b'{\xff\xfe not utf-8 \x80\x81')
+        self.store.credentials_path.write_bytes(b"{\xff\xfe not utf-8 \x80\x81")
         with self.assertRaises(cold_store.ColdStoreError) as ctx:
             self.store.load_credentials()
         self.assertNotIsInstance(ctx.exception, UnicodeDecodeError)

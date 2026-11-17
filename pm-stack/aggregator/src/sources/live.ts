@@ -851,9 +851,13 @@ async function tursoOverlay(cfg: Config, services: SaasService[]): Promise<SaasS
   const res = await readQuotaCurrentFile(cfg.quotaCurrentFile);
   if (res.verdict === "ok" && res.file) return overlayTursoUsage(services, res.file);
   if (res.verdict === "transport") {
-    console.error(`[quota] WARNING: quota-current read transport failure (${res.error ?? "unknown"}) — base services stand (#10816)`);
+    console.error(
+      `[quota] WARNING: quota-current read transport failure (${res.error ?? "unknown"}) — base services stand (#10816)`,
+    );
   } else if (res.verdict === "unparseable") {
-    console.error(`[quota] WARNING: quota-current file unparseable (${res.error ?? "unknown"}) — base services stand (#10816)`);
+    console.error(
+      `[quota] WARNING: quota-current file unparseable (${res.error ?? "unknown"}) — base services stand (#10816)`,
+    );
   }
   return services;
 }
@@ -1484,9 +1488,13 @@ export function liveSource(
     const res = await readQuotaCurrentFile(cfg.quotaCurrentFile);
     if (res.verdict === "ok" && res.file) return overlayQuotaCurrent(base, res.file);
     if (res.verdict === "transport") {
-      console.error(`[quota] WARNING: quota-current read transport failure (${res.error ?? "unknown"}) — base view stands (#10816)`);
+      console.error(
+        `[quota] WARNING: quota-current read transport failure (${res.error ?? "unknown"}) — base view stands (#10816)`,
+      );
     } else if (res.verdict === "unparseable") {
-      console.error(`[quota] WARNING: quota-current file unparseable (${res.error ?? "unknown"}) — base view stands (#10816)`);
+      console.error(
+        `[quota] WARNING: quota-current file unparseable (${res.error ?? "unknown"}) — base view stands (#10816)`,
+      );
     }
     return base;
   }
@@ -1857,10 +1865,14 @@ export function liveSource(
         }
         if (res.verdict === "transport") {
           provenance.quota += " · gatherer read transport failure (retry exhausted)";
-          console.error(`[quota] WARNING: quota-current read transport failure (${res.error ?? "unknown"}) — base view stands (#10816)`);
+          console.error(
+            `[quota] WARNING: quota-current read transport failure (${res.error ?? "unknown"}) — base view stands (#10816)`,
+          );
         } else if (res.verdict === "unparseable") {
           provenance.quota += " · gatherer file unparseable";
-          console.error(`[quota] WARNING: quota-current file unparseable (${res.error ?? "unknown"}) — base view stands (#10816)`);
+          console.error(
+            `[quota] WARNING: quota-current file unparseable (${res.error ?? "unknown"}) — base view stands (#10816)`,
+          );
         }
       } catch {
         /* no gatherer file (or unreadable): base view stands */

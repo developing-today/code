@@ -64,8 +64,15 @@ def heading_slugs(path):
     return slugs
 
 
-def core_errors(crosswalk, dispositions, requirement_ids, commands, slice_map,
-                pinned_commit, anchor_index):
+def core_errors(
+    crosswalk,
+    dispositions,
+    requirement_ids,
+    commands,
+    slice_map,
+    pinned_commit,
+    anchor_index,
+):
     """Validate crosswalk relationships without filesystem I/O.
 
     dispositions: {occurrence_id: disposition row}
@@ -78,7 +85,8 @@ def core_errors(crosswalk, dispositions, requirement_ids, commands, slice_map,
     #    curated inventory requirement set.
     if len(crosswalk) != EXPECTED_REQUIREMENT_COUNT:
         errors.append(
-            f"crosswalk has {len(crosswalk)} rows, expected {EXPECTED_REQUIREMENT_COUNT}")
+            f"crosswalk has {len(crosswalk)} rows, expected {EXPECTED_REQUIREMENT_COUNT}"
+        )
     seen = Counter()
     for row in crosswalk:
         rid = row.get("requirement_id")
@@ -88,7 +96,9 @@ def core_errors(crosswalk, dispositions, requirement_ids, commands, slice_map,
         seen[rid] += 1
     for rid, count in sorted(seen.items()):
         if count != 1:
-            errors.append(f"requirement {rid} occurs {count} times, expected exactly once")
+            errors.append(
+                f"requirement {rid} occurs {count} times, expected exactly once"
+            )
     crosswalk_ids = set(seen)
     if requirement_ids is not None and crosswalk_ids != set(requirement_ids):
         missing = sorted(set(requirement_ids) - crosswalk_ids)
@@ -115,8 +125,10 @@ def core_errors(crosswalk, dispositions, requirement_ids, commands, slice_map,
         if modality not in MODALITIES:
             errors.append(f"{rid}: modality {modality!r} not in allowed vocabulary")
         elif modality != "requirement" and not row.get("candidate_disposition"):
-            errors.append(f"{rid}: {modality} modality without candidate_disposition "
-                          "(source modality must be preserved explicitly)")
+            errors.append(
+                f"{rid}: {modality} modality without candidate_disposition "
+                "(source modality must be preserved explicitly)"
+            )
 
         # 4. Every occurrence citation resolves to the disposition ledger,
         #    with matching source file and line (span).
@@ -128,7 +140,9 @@ def core_errors(crosswalk, dispositions, requirement_ids, commands, slice_map,
         for occ in occ_ids:
             referenced.add(occ)
             if occ not in dispositions:
-                errors.append(f"{rid}: occurrence {occ} missing from disposition ledger")
+                errors.append(
+                    f"{rid}: occurrence {occ} missing from disposition ledger"
+                )
         for ref in refs:
             disp = dispositions.get(ref.get("occurrence_id"))
             if disp is None:
@@ -136,11 +150,13 @@ def core_errors(crosswalk, dispositions, requirement_ids, commands, slice_map,
             if disp.get("source_file") != ref.get("source_file"):
                 errors.append(
                     f"{rid}: occurrence {ref.get('occurrence_id')} source_file "
-                    f"{ref.get('source_file')!r} != ledger {disp.get('source_file')!r}")
+                    f"{ref.get('source_file')!r} != ledger {disp.get('source_file')!r}"
+                )
             if (disp.get("locator") or {}).get("line") != ref.get("line"):
                 errors.append(
                     f"{rid}: occurrence {ref.get('occurrence_id')} span line "
-                    f"{ref.get('line')} != ledger line {(disp.get('locator') or {}).get('line')}")
+                    f"{ref.get('line')} != ledger line {(disp.get('locator') or {}).get('line')}"
+                )
 
         # 5. Group/alias edges resolve; duplicate links are preserved.
         for child in row.get("child_requirement_ids") or []:
@@ -153,7 +169,9 @@ def core_errors(crosswalk, dispositions, requirement_ids, commands, slice_map,
             if dup == rid:
                 errors.append(f"{rid}: duplicate_of points to itself")
             elif dup not in crosswalk_ids:
-                errors.append(f"{rid}: duplicate_of target {dup} not found in crosswalk")
+                errors.append(
+                    f"{rid}: duplicate_of target {dup} not found in crosswalk"
+                )
 
         # 6. Evidence object: verified/partial rows carry the full bounded
         #    evidence fields at the pinned commit; every row carries the
@@ -165,10 +183,12 @@ def core_errors(crosswalk, dispositions, requirement_ids, commands, slice_map,
             for field in EVIDENCE_FIELDS:
                 if not evidence.get(field):
                     errors.append(
-                        f"{rid}: {status} row without source evidence field {field!r}")
+                        f"{rid}: {status} row without source evidence field {field!r}"
+                    )
             if evidence.get("pin") and evidence["pin"] != pinned_commit:
                 errors.append(
-                    f"{rid}: evidence pin {evidence['pin']!r} != census pin {pinned_commit!r}")
+                    f"{rid}: evidence pin {evidence['pin']!r} != census pin {pinned_commit!r}"
+                )
 
         # 7. Design anchors are real: file known, heading slug present.
         for ref in row.get("design_refs") or []:
@@ -194,18 +214,24 @@ def core_errors(crosswalk, dispositions, requirement_ids, commands, slice_map,
                 if cref.get("primary_slice") != mapped.get("primary_slice"):
                     errors.append(
                         f"{rid}: command {key} primary_slice {cref.get('primary_slice')!r} "
-                        f"!= slice map {mapped.get('primary_slice')!r}")
+                        f"!= slice map {mapped.get('primary_slice')!r}"
+                    )
 
     # 9. Command map integrity: 215 keys on both sides, identical sets,
     #    and no wildcard anywhere in keys or slice assignments.
     if len(commands) != EXPECTED_COMMAND_COUNT:
-        errors.append(f"command inventory has {len(commands)} keys, "
-                      f"expected {EXPECTED_COMMAND_COUNT}")
+        errors.append(
+            f"command inventory has {len(commands)} keys, "
+            f"expected {EXPECTED_COMMAND_COUNT}"
+        )
     if set(commands) != set(slice_map):
         errors.append("command-slice-map keys differ from command inventory keys")
     for key, mapped in slice_map.items():
-        values = [key, mapped.get("primary_slice") or "",
-                  *(mapped.get("supporting_slices") or [])]
+        values = [
+            key,
+            mapped.get("primary_slice") or "",
+            *(mapped.get("supporting_slices") or []),
+        ]
         if any("*" in str(v) for v in values):
             errors.append(f"wildcard in command mapping for {key!r}")
 
@@ -217,10 +243,13 @@ def core_errors(crosswalk, dispositions, requirement_ids, commands, slice_map,
         if occ in referenced:
             continue
         unmapped.setdefault(disp.get("disposition"), []).append(occ)
-        if disp.get("disposition") in SEMANTIC_DISPOSITIONS and not disp.get("semantic_refs"):
+        if disp.get("disposition") in SEMANTIC_DISPOSITIONS and not disp.get(
+            "semantic_refs"
+        ):
             errors.append(
                 f"occurrence {occ}: semantic disposition "
-                f"{disp.get('disposition')!r} unmapped and without semantic_refs")
+                f"{disp.get('disposition')!r} unmapped and without semantic_refs"
+            )
     return errors, unmapped
 
 
@@ -257,8 +286,14 @@ def run_check(root):
             anchor_index[file_part] = heading_slugs(path)
 
     errors, unmapped = core_errors(
-        crosswalk, dispositions, requirement_ids, commands, slice_map,
-        pinned_commit, anchor_index)
+        crosswalk,
+        dispositions,
+        requirement_ids,
+        commands,
+        slice_map,
+        pinned_commit,
+        anchor_index,
+    )
     for occ in duplicate_occurrences:
         errors.append(f"occurrence {occ} duplicated in disposition ledger")
 
@@ -271,7 +306,8 @@ def run_check(root):
     elif int(stated.group(1).replace(",", "")) != len(disposition_rows):
         errors.append(
             f"requirements-crosswalk.md states {stated.group(1)} disposition rows, "
-            f"ledger has {len(disposition_rows)}")
+            f"ledger has {len(disposition_rows)}"
+        )
 
     print(f"crosswalk rows: {len(crosswalk)}")
     print(f"disposition ledger rows: {len(disposition_rows)}")
@@ -284,41 +320,85 @@ def run_check(root):
             print(f"ERROR: {error}")
         print(f"FAIL: {len(errors)} validation error(s)")
         return 1
-    print("OK: crosswalk integrity validated "
-          f"({len(crosswalk)} IDs, {len(disposition_rows)} dispositions, "
-          f"{len(commands)} command keys)")
+    print(
+        "OK: crosswalk integrity validated "
+        f"({len(crosswalk)} IDs, {len(disposition_rows)} dispositions, "
+        f"{len(commands)} command keys)"
+    )
     return 0
 
 
 def run_self_test():
     """Synthetic negative/positive cases, mirroring the test module."""
     base_row = {
-        "requirement_id": "C-R001", "status": "design-only",
-        "modality": "requirement", "candidate_disposition": None,
+        "requirement_id": "C-R001",
+        "status": "design-only",
+        "modality": "requirement",
+        "candidate_disposition": None,
         "source_occurrence_ids": ["C-001"],
-        "source_refs": [{"occurrence_id": "C-001", "source_file": "02_charter_v1_1.md",
-                         "line": 1, "quote": "x"}],
-        "child_requirement_ids": [], "is_group_node": False, "duplicate_of": None,
-        "existing_evidence": {"pin": None, "path": None, "symbol": None,
-                              "lines": None, "test": None, "timestamp": None},
+        "source_refs": [
+            {
+                "occurrence_id": "C-001",
+                "source_file": "02_charter_v1_1.md",
+                "line": 1,
+                "quote": "x",
+            }
+        ],
+        "child_requirement_ids": [],
+        "is_group_node": False,
+        "duplicate_of": None,
+        "existing_evidence": {
+            "pin": None,
+            "path": None,
+            "symbol": None,
+            "lines": None,
+            "test": None,
+            "timestamp": None,
+        },
         "design_refs": ["components/x.md#real-anchor"],
         "command_inventory_refs": [],
     }
-    dispositions = {"C-001": {"occurrence_id": "C-001", "source_file": "02_charter_v1_1.md",
-                              "locator": {"line": 1}, "disposition": "requirement_link",
-                              "semantic_refs": ["C-R001"]}}
+    dispositions = {
+        "C-001": {
+            "occurrence_id": "C-001",
+            "source_file": "02_charter_v1_1.md",
+            "locator": {"line": 1},
+            "disposition": "requirement_link",
+            "semantic_refs": ["C-R001"],
+        }
+    }
     commands = {f"cmd.{i}": {} for i in range(EXPECTED_COMMAND_COUNT)}
-    slice_map = {k: {"primary_slice": "CLI-02", "supporting_slices": []} for k in commands}
+    slice_map = {
+        k: {"primary_slice": "CLI-02", "supporting_slices": []} for k in commands
+    }
     anchors = {"components/x.md": {"real-anchor"}}
     rows = [dict(base_row, requirement_id=f"C-R{i:03d}") for i in range(1, 390)]
-    errors, _ = core_errors(rows, dispositions, {r["requirement_id"] for r in rows},
-                            commands, slice_map, "pin", anchors)
+    errors, _ = core_errors(
+        rows,
+        dispositions,
+        {r["requirement_id"] for r in rows},
+        commands,
+        slice_map,
+        "pin",
+        anchors,
+    )
     assert not errors, f"positive synthetic case failed: {errors[:3]}"
     bad = [dict(r) for r in rows]
-    bad[0] = dict(bad[0], source_occurrence_ids=["C-999"],
-                  source_refs=[{"occurrence_id": "C-999",
-                                "source_file": "02_charter_v1_1.md", "line": 1, "quote": "x"}])
-    errors, _ = core_errors(bad, dispositions, None, commands, slice_map, "pin", anchors)
+    bad[0] = dict(
+        bad[0],
+        source_occurrence_ids=["C-999"],
+        source_refs=[
+            {
+                "occurrence_id": "C-999",
+                "source_file": "02_charter_v1_1.md",
+                "line": 1,
+                "quote": "x",
+            }
+        ],
+    )
+    errors, _ = core_errors(
+        bad, dispositions, None, commands, slice_map, "pin", anchors
+    )
     assert any("C-999" in e for e in errors), "missing occurrence not rejected"
     print("self-test OK")
     return 0
@@ -327,7 +407,9 @@ def run_self_test():
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--check", action="store_true", help="validate the live census files")
+    group.add_argument(
+        "--check", action="store_true", help="validate the live census files"
+    )
     group.add_argument("--self-test", action="store_true", help="run synthetic cases")
     args = parser.parse_args(argv)
     if args.self_test:

@@ -599,7 +599,8 @@ if [ "$SUPA_MODE" = "auto" ] && [ "$SUPA_BACKEND" = "supabase" ]; then
   supa_export agg_store_documents "store"
   # An export that wrote something psql did not print as a JSON array is
   # a failed export, not a backup of zero rows.
-  SUPA_COUNTS="$(python3 - "$STAGE/supabase" <<'PYEOF'
+  SUPA_COUNTS="$(
+    python3 - "$STAGE/supabase" <<'PYEOF'
 import json, os, sys
 d = sys.argv[1]
 out = []

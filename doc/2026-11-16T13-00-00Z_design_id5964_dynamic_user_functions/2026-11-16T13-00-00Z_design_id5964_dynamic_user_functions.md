@@ -17,7 +17,7 @@ This doc fixes the five things #5964's Done criteria name: the interface contrac
 
 **Deferred past v1** (per the #5996 record's reopen cases, not silently dropped): component-model dynamic instantiation (the likely v2 if WASI dynamic linking matures — strictly better link-time mismatch errors, but the host has no component runtime today); per-function native processes (the native-worker tier is the only process-shaped target); any in-process native DLL swap (foreclosed by the #5995 evidence, not merely deferred).
 
-**Not this:** the authoring hot-swap loop (`id world dev`, [#558](https://github.com/developing-today/code/issues/558) / [#5541](https://github.com/developing-today/code/issues/5541)) swaps *world* code for its *author* during development. This design swaps *per-user functions inside a live world for its players*. Where the mechanics coincide (compile → instantiate → activate) they are the same host seams; the trust model (§5) and the budget model (§4) are different, and neither is borrowed from the authoring loop.
+**Not this:** the authoring hot-swap loop (`id world dev`, [#558](https://github.com/developing-today/code/issues/558) / [#5541](https://github.com/developing-today/code/issues/5541)) swaps _world_ code for its _author_ during development. This design swaps _per-user functions inside a live world for its players_. Where the mechanics coincide (compile → instantiate → activate) they are the same host seams; the trust model (§5) and the budget model (§4) are different, and neither is borrowed from the authoring loop.
 
 ## 1. Interface contract
 
@@ -45,7 +45,7 @@ Mismatch is an **activation-time** verdict, never a call-time one:
 
 - A candidate version whose interface hash differs from the interface hash the binding expects is **not activated**. The previously published version keeps running — the stated default — and the publish is recorded as rejected with the two hashes, so the publisher can see exactly what diverged.
 - There is no coercion, no adapter synthesis, and no partial activation: either the candidate matches the expected interface hash and the full §3 sequence runs, or nothing changes.
-- A world that *wants* a new interface publishes a new binding expectation first (a mapping change, itself versioned); only then can a candidate carrying the new hash activate. Interface evolution is therefore always an explicit two-step, never a side effect of a code publish.
+- A world that _wants_ a new interface publishes a new binding expectation first (a mapping change, itself versioned); only then can a candidate carrying the new hash activate. Interface evolution is therefore always an explicit two-step, never a side effect of a code publish.
 
 ## 2. Server compile pipeline
 

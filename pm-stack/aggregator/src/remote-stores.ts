@@ -133,9 +133,7 @@ export function actionFromRow(row: Record<string, unknown>): DashAction {
   return action;
 }
 
-export function createSupabaseActionsRemote(
-  getClient: GetClient = getSupabaseClient,
-): ActionsRemote {
+export function createSupabaseActionsRemote(getClient: GetClient = getSupabaseClient): ActionsRemote {
   return {
     async loadAll(): Promise<DashAction[]> {
       const db = await requireClient(getClient);
@@ -169,9 +167,7 @@ export function createSupabaseActionsRemote(
 // activity-ingestion.json -> public.agg_activity_ingestion + gaps
 // ---------------------------------------------------------------------
 
-export function createSupabaseActivityRemote(
-  getClient: GetClient = getSupabaseClient,
-): ActivityRemote {
+export function createSupabaseActivityRemote(getClient: GetClient = getSupabaseClient): ActivityRemote {
   return {
     async load(): Promise<IngestionFile | null> {
       const db = await requireClient(getClient);
@@ -286,9 +282,7 @@ export function snapshotRowValues(r: SnapshotRecord): string {
   );
 }
 
-export function createSupabaseSnapshotsRemote(
-  getClient: GetClient = getSupabaseClient,
-): SnapshotsRemote {
+export function createSupabaseSnapshotsRemote(getClient: GetClient = getSupabaseClient): SnapshotsRemote {
   return {
     async readAll(): Promise<SnapshotRecord[]> {
       const db = await requireClient(getClient);

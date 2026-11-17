@@ -93,7 +93,8 @@ pub struct Cache<B> {
 }
 
 impl<B: Backend> Cache<B> {
-    pub fn new(backend: B) -> Cache<B> {        Cache {
+    pub fn new(backend: B) -> Cache<B> {
+        Cache {
             backend,
             mu: Mutex::new(State {
                 entries: HashMap::new(),
@@ -202,10 +203,8 @@ impl<B: Backend> Cache<B> {
             .find(|(login, _)| login.eq_ignore_ascii_case(owner))
             .map(|(_, id)| *id)
             .ok_or_else(|| format!("no app installation found for owner '{owner}'"))?;
-        self.get_or_mint(&format!("token:{app}:{owner}"), |b| {
-            b.mint_token(app, id)
-        })
-        .map(|(v, _)| v)
+        self.get_or_mint(&format!("token:{app}:{owner}"), |b| b.mint_token(app, id))
+            .map(|(v, _)| v)
     }
 
     /// The status snapshot: per-kind entry counts, hit/miss
@@ -245,7 +244,12 @@ impl<B: Backend> Cache<B> {
 /// `jwt`, `token` or `status`; `app`/`owner` qualify `jwt`/`token`,
 /// and `name` carries the secret name for the `personal` op (so the
 /// daemon never hardcodes which secret personal means).
-pub fn request(op: &str, app: Option<&str>, owner: Option<&str>, name: Option<&str>) -> serde_json::Value {
+pub fn request(
+    op: &str,
+    app: Option<&str>,
+    owner: Option<&str>,
+    name: Option<&str>,
+) -> serde_json::Value {
     let mut req = serde_json::json!({"v": PROTOCOL_VERSION, "op": op});
     if let Some(app) = app {
         req["app"] = app.into();
@@ -290,11 +294,14 @@ pub fn answer<B: Backend>(cache: &Cache<B>, req: &serde_json::Value) -> serde_js
             }
         }
         "status" => serde_json::json!({"ok": true, "status": cache.snapshot()}),
-        _ => err(format!("unknown op {op:?} (want personal|jwt|token|status)")),
+        _ => err(format!(
+            "unknown op {op:?} (want personal|jwt|token|status)"
+        )),
     }
 }
 
-fn ok_token(token: &str, ttl: u64) -> serde_json::Value {    serde_json::json!({"ok": true, "token": token, "expires_in": ttl})
+fn ok_token(token: &str, ttl: u64) -> serde_json::Value {
+    serde_json::json!({"ok": true, "token": token, "expires_in": ttl})
 }
 
 /// Parse a daemon response line: `Ok(token)` on success,
@@ -564,7 +571,10 @@ mod tests {
 
         fn list_installations(&self, app: &str) -> Result<Vec<(String, i64)>, String> {
             self.mints.fetch_add(1, Ordering::SeqCst);
-            Ok(vec![("developing-today".to_string(), 7), (app.to_string(), 9)])
+            Ok(vec![
+                ("developing-today".to_string(), 7),
+                (app.to_string(), 9),
+            ])
         }
 
         fn mint_token(&self, app: &str, id: i64) -> Result<(String, u64), String> {
@@ -584,7 +594,12 @@ mod tests {
         assert_eq!(cache.secret("s").unwrap(), "tok-secret");
         assert_eq!(cache.secret("s").unwrap(), "tok-secret");
         assert_eq!(cache.jwt("fleet").unwrap(), "jwt-fleet");
-        assert_eq!(cache.installation_token("fleet", "developing-today").unwrap(), "ghs-fleet-7");
+        assert_eq!(
+            cache
+                .installation_token("fleet", "developing-today")
+                .unwrap(),
+            "ghs-fleet-7"
+        );
         // secret + jwt + installations-list + token = 4 mints;
         // the repeats above served from cache.
         assert_eq!(
@@ -599,7 +614,9 @@ mod tests {
     #[test]
     fn unknown_owner_names_the_owner() {
         let cache = Cache::new(FakeBackend::new());
-        let err = cache.installation_token("fleet", "nobody-here").unwrap_err();
+        let err = cache
+            .installation_token("fleet", "nobody-here")
+            .unwrap_err();
         assert!(err.contains("nobody-here"), "{err}");
     }
 
@@ -693,7 +710,11 @@ mod tests {
             let resp = fetch_one(&addr, &req, Duration::from_secs(2)).unwrap();
             assert_eq!(response_token(&resp).unwrap(), "tok-loopback");
         }
-        assert_eq!(mints.load(Ordering::SeqCst), 1, "daemon cached across connections");
+        assert_eq!(
+            mints.load(Ordering::SeqCst),
+            1,
+            "daemon cached across connections"
+        );
 
         // A bad version is a loud error, never a guess.
         let bad = serde_json::json!({"v": 999u32, "op": "personal"});
@@ -752,7 +773,14 @@ mod tests {
         assert_eq!(response_token(&resp).unwrap(), "tok-secret");
         let resp = fetch_one(&addr, &req, Duration::from_secs(2)).unwrap();
         assert_eq!(response_token(&resp).unwrap(), "tok-secret");
-        assert_eq!(counter.load(Ordering::SeqCst), 1, "daemon cached across connections");
-        assert!(!server.is_finished(), "serve() returned while its listener was healthy");
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "daemon cached across connections"
+        );
+        assert!(
+            !server.is_finished(),
+            "serve() returned while its listener was healthy"
+        );
     }
 }

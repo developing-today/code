@@ -26,7 +26,7 @@ conversion-layer convention, never parser grammar.**
 
 ### 1.1 Surface layer (parser)
 
-The fork generalizes annotation *placement and multiplicity* only:
+The fork generalizes annotation _placement and multiplicity_ only:
 annotations may appear on every part (node name, each argument, property
 keys, property values, the children block — the #344/#362 asks) and a
 part may carry several. What sits inside the parentheses remains a
@@ -38,7 +38,7 @@ spec-valid today, where those characters are ordinary identifier
 characters — a direct §4a violation. It would also make every payload
 unreadable to strict tooling even when the document uses no other
 extension. `limit.kdl`'s packing (`(object#book#author:BrianGriffin)`,
-`(yes:yes:no:::bool)`) is *authoring practice inside an opaque string*,
+`(yes:yes:no:::bool)`) is _authoring practice inside an opaque string_,
 and the spec-shaped surface keeps that practice fully expressible.
 
 ### 1.2 Structure layer (converter): the parameter convention
@@ -54,7 +54,7 @@ segment  := [ key ":" ] value           ; keyed or positional parameter
 - `(object#book#author:BrianGriffin)` → path `object`; parameters:
   positional `book`, keyed `author = BrianGriffin`.
 - `(document:object)rdf` → path `document:object`, no parameters.
-- `(yes:yes:no:::bool)` → path segments `yes`, `yes`, `no`, ``, ``,
+- `(yes:yes:no:::bool)` → path segments `yes`, `yes`, `no`, `, `,
   `bool` (the string before the first `#`, split on `:`). Empty path
   segments are legal and preserved; the example is a torture case from
   `limit.kdl`, not a shape to optimize for — and the raw-payload rule
@@ -65,8 +65,8 @@ identical to a spec type hint.
 
 ### 1.3 Triple decomposition (under #5688 §2)
 
-Per #5688 §2.3 — namespaces and qualifiers are *more triples, never
-special cases* — an annotation occurrence decomposes as:
+Per #5688 §2.3 — namespaces and qualifiers are _more triples, never
+special cases_ — an annotation occurrence decomposes as:
 
 - The annotated part is (or hangs off) a statement node `S` in the
   triple stream. For each annotation occurrence `A` on that part, in
@@ -109,10 +109,10 @@ kdlx version=1 extensions="multi-annotation prop-key-annotation children-annotat
 - A strict-KDL consumer detects extension use by reading the first node
   only — O(first node), no full parse — and can warn precisely
   ("this document declares prop-key-annotation; strict KDL will reject
-  or drop it") *before* choking, which is what §5 Q2 asks for.
+  or drop it") _before_ choking, which is what §5 Q2 asks for.
 - Spec-valid documents carry no declaration and need none (§4a).
 - Our parser does not require the declaration: extension syntax parses
-  with or without it. A document that *uses* extension syntax without
+  with or without it. A document that _uses_ extension syntax without
   declaring is a lint warning in our tooling, not an error — the
   declaration protects other consumers, and making it load-bearing for
   our own parse would punish hand-authored files for a bookkeeping
@@ -176,7 +176,7 @@ of it (§5 Q4's own caveat):
 1. **Use-case follow-ups on Discussions #344 and #362** — the
    maintainers' objection was use-case-shaped ("can just be expressed
    with a property"; "asked for a use case"). We now have the use
-   cases: the #5688 triples pipeline, where the annotation *is* the
+   cases: the #5688 triples pipeline, where the annotation _is_ the
    statement structure and a property cannot carry it. Post the
    `limit.kdl`-derived examples (anonymized shapes are already public
    in #5753) and this record's Q1 decomposition as the worked answer.

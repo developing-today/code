@@ -174,15 +174,13 @@ function strictEnvMillis(name: string, raw: string | undefined, fallback: number
     const value = Number(raw);
     if (value >= 1 && value <= 2147483647) return value;
   }
-  throw new Error(
-    `${name}="${raw}" is not a valid millisecond count (expected an integer 1-2147483647)`
-  );
+  throw new Error(`${name}="${raw}" is not a valid millisecond count (expected an integer 1-2147483647)`);
 }
 
 const subcommandTimeoutMs = strictEnvMillis(
   "QUOTA_SUBCOMMAND_TIMEOUT_MS",
   process.env.QUOTA_SUBCOMMAND_TIMEOUT_MS,
-  240_000
+  240_000,
 );
 const OBSERVED_BY = "quota-gatherer";
 

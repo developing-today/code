@@ -28,7 +28,7 @@ describe("error-boundary responses (#1211)", () => {
   });
 
   test("not found: a page path with HTML metacharacters is escaped, never reflected raw (#2267 class, #10865)", async () => {
-    const raw = '/x<script>alert(1)</script>"q\'a&b';
+    const raw = "/x<script>alert(1)</script>\"q'a&b";
     const page = notFoundResponse(raw);
     expect(page.status).toBe(404);
     const body = await page.text();

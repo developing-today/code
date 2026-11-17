@@ -154,8 +154,18 @@ describe("epicGraph", () => {
     expect(g.nodes.map((n) => n.ref)).not.toContain(unsafe);
     expect(g.edges).toContainEqual({ from: R(2), to: R(3), type: "dependency" });
     expect(g.edges).toContainEqual({ from: R(4), to: R(2), type: "dependency" });
-    expect(g.edgeDiagnostics).toContainEqual({ sourceRef: R(2), relation: "blockedBy", state: "malformed", target: "812" });
-    expect(g.edgeDiagnostics).toContainEqual({ sourceRef: R(2), relation: "blocks", state: "malformed", target: unsafe });
+    expect(g.edgeDiagnostics).toContainEqual({
+      sourceRef: R(2),
+      relation: "blockedBy",
+      state: "malformed",
+      target: "812",
+    });
+    expect(g.edgeDiagnostics).toContainEqual({
+      sourceRef: R(2),
+      relation: "blocks",
+      state: "malformed",
+      target: unsafe,
+    });
     expect(g.edgeDiagnostics.some((d) => d.target === R(99))).toBe(false);
     expect(g.rankedBlocked.find((r) => r.ref === R(2))?.blockers).toEqual([R(3)]);
 
@@ -391,25 +401,29 @@ describe("epicGraph", () => {
       item({ number: 4, epicRef: R(1), blockedBy: [R(2)] }),
     ];
     const graph = epicGraph(pool, R(1));
-    expect(graph.cycleGroups).toEqual([{ kind: "dependency", name: "Dependency cycle 1 (2 items)", members: [R(2), R(3)] }]);
+    expect(graph.cycleGroups).toEqual([
+      { kind: "dependency", name: "Dependency cycle 1 (2 items)", members: [R(2), R(3)] },
+    ]);
     expect(graph.rankedBlocked.some((row) => row.ref === R(2) || row.ref === R(3))).toBe(false);
     expect(graph.rankedBlocked.find((row) => row.ref === R(4))?.downstreamCount).toBe(0);
   });
-  test('a cycle through an external endpoint is detected and suppresses ranking (Codex P2, #7868)', () => {
+  test("a cycle through an external endpoint is detected and suppresses ranking (Codex P2, #7868)", () => {
     const pool = [
-      item({ number: 1, title: 'Epic', kind: 'Epic' }),
+      item({ number: 1, title: "Epic", kind: "Epic" }),
       item({ number: 2, epicRef: R(1), blockedBy: [R(99)], blocks: [R(99)] }),
       item({ number: 3, epicRef: R(1), blockedBy: [R(2)] }),
     ];
     const graph = epicGraph(pool, R(1));
-    expect(graph.cycleGroups).toEqual([{ kind: 'dependency', name: 'Dependency cycle 1 (2 items)', members: [R(2), R(99)] }]);
+    expect(graph.cycleGroups).toEqual([
+      { kind: "dependency", name: "Dependency cycle 1 (2 items)", members: [R(2), R(99)] },
+    ]);
     expect(graph.rankedBlocked.some((row) => row.ref === R(2))).toBe(false);
     expect(graph.blockedCount).toBe(2);
   });
 
-  test('an epic whose only blocked members are cyclic still counts them blocked (Codex P2, #7868)', () => {
+  test("an epic whose only blocked members are cyclic still counts them blocked (Codex P2, #7868)", () => {
     const pool = [
-      item({ number: 1, title: 'Epic', kind: 'Epic' }),
+      item({ number: 1, title: "Epic", kind: "Epic" }),
       item({ number: 2, epicRef: R(1), blockedBy: [R(3)] }),
       item({ number: 3, epicRef: R(1), blockedBy: [R(2)] }),
     ];
@@ -428,7 +442,9 @@ describe("epicGraph", () => {
     ];
     const graph = epicGraph(pool, R(1));
     expect(graph.nodes.map((node) => node.ref)).not.toContain(R(4));
-    expect(graph.cycleGroups).toEqual([{ kind: "dependency", name: "Dependency cycle 1 (3 items)", members: [R(2), R(3), R(4)] }]);
+    expect(graph.cycleGroups).toEqual([
+      { kind: "dependency", name: "Dependency cycle 1 (3 items)", members: [R(2), R(3), R(4)] },
+    ]);
     expect(graph.rankedBlocked.some((row) => row.ref === R(2))).toBe(false);
   });
 
@@ -446,7 +462,9 @@ describe("epicGraph", () => {
       name: "Hierarchy cycle 1 (3 items)",
       members: [R(2), R(3), R(4)],
     });
-    expect(graph.nodes.find((node) => node.ref === R(2))?.depth).toBe(graph.nodes.find((node) => node.ref === R(3))?.depth);
+    expect(graph.nodes.find((node) => node.ref === R(2))?.depth).toBe(
+      graph.nodes.find((node) => node.ref === R(3))?.depth,
+    );
   });
 
   test("hierarchy cycles farther up a member's parent chain still produce warning groups", () => {
@@ -486,7 +504,11 @@ describe("epicGraph", () => {
     expect(graph.edgeDiagnostics).toEqual([
       { sourceRef: R(2), relation: "blockedBy", state: "unavailable", target: null },
     ]);
-    expect(graph.nodes.find((node) => node.ref === R(99))).toMatchObject({ unresolved: true, title: null, state: null });
+    expect(graph.nodes.find((node) => node.ref === R(99))).toMatchObject({
+      unresolved: true,
+      title: null,
+      state: null,
+    });
     expect(graph.externalCount).toBe(1);
   });
 
@@ -582,7 +604,19 @@ const PROV: Provenance = {
 function renderWith(pool: ProjectPoolItem[], graphActions?: Parameters<typeof renderProgramProject>[10]): string {
   const config = projectConfigById("pm-dashboard")!;
   const items = new Map<RefKey, GhItem>();
-  return renderProgramProject(buildProjectDetail(config, items, pool, []), items, PROV, undefined, pool, null, null, null, null, null, graphActions);
+  return renderProgramProject(
+    buildProjectDetail(config, items, pool, []),
+    items,
+    PROV,
+    undefined,
+    pool,
+    null,
+    null,
+    null,
+    null,
+    null,
+    graphActions,
+  );
 }
 
 describe("renderProgramProject per-epic dependency graph (#3973)", () => {
@@ -688,7 +722,13 @@ describe("renderProgramProject per-epic dependency graph (#3973)", () => {
           `gh:${R(2)}`,
           [
             action({}),
-            action({ id: "action-2", clientToken: "token-2", verb: "snooze", state: "rejected", resultNote: "Consumer declined" }),
+            action({
+              id: "action-2",
+              clientToken: "token-2",
+              verb: "snooze",
+              state: "rejected",
+              resultNote: "Consumer declined",
+            }),
           ],
         ],
       ]),
@@ -705,7 +745,9 @@ describe("renderProgramProject per-epic dependency graph (#3973)", () => {
     expect(html).toContain('data-verb="reject-proposal"');
     expect(html.indexOf('class="propbox"')).toBeLessThan(html.indexOf('data-verb="approve-proposal"'));
     expect(html).toContain('fetch("/api/actions"');
-    expect(html).toContain("No inline action: this item is not in the currently published Needs User or Needs Orchestrator tier.");
+    expect(html).toContain(
+      "No inline action: this item is not in the currently published Needs User or Needs Orchestrator tier.",
+    );
     expect(html).not.toContain('data-object="gh:developing-today/code#3"');
   });
 
@@ -723,7 +765,9 @@ describe("renderProgramProject per-epic dependency graph (#3973)", () => {
     expect(html).toContain("Malformed relation reference");
     expect(html).toContain("Unavailable edge data");
     expect(html).toContain("not in this pool / status unknown — unresolved");
-    expect(html).not.toContain("Malformed relation reference: <a href=\"https://github.com/developing-today/code/issues/99\"");
+    expect(html).not.toContain(
+      'Malformed relation reference: <a href="https://github.com/developing-today/code/issues/99"',
+    );
   });
 
   test("the vertical list names blockers and states as text, external refs as unknown", () => {

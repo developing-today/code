@@ -691,7 +691,8 @@ export async function readQuotaCurrentFile(
     sleep?: (ms: number) => Promise<void>;
   },
 ): Promise<QuotaCurrentReadResult> {
-  const read = deps?.readFile ?? ((await import("node:fs/promises")).readFile as typeof import("node:fs/promises").readFile);
+  const read =
+    deps?.readFile ?? ((await import("node:fs/promises")).readFile as typeof import("node:fs/promises").readFile);
   const sleep = deps?.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   let raw: string | null = null;
   let firstErr: unknown = null;

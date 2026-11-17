@@ -21,18 +21,18 @@ you operate. Five parts:
    (Socket Mode), signing secret (verifies inbound webhooks if used).
    Tokens live in Bitwarden / Secure Vault, never in files or chat.
 4. **Inbound path — pick one:**
-   - *Socket Mode:* a long-running process on Muse's VM holds an
+   - _Socket Mode:_ a long-running process on Muse's VM holds an
      outbound WebSocket to Slack; events arrive with no public URL.
      Needs a supervised daemon that survives VM recycles (systemd +
      init.sh pattern we already have).
-   - *HTTPS Events API:* Slack POSTs events to a public endpoint
+   - _HTTPS Events API:_ Slack POSTs events to a public endpoint
      (a Cloudflare Worker fits our stack). Must verify the signature,
      ack within 3 s, dedupe retries.
-   - *Polling:* no listener at all — a scheduled job pulls new messages
+   - _Polling:_ no listener at all — a scheduled job pulls new messages
      with the bot token (see the puller below). Simplest and most
      robust; latency is the polling interval.
-   Events worth subscribing to if used: `app_mention`, `message.im`,
-   `message.channels`, `message.groups`, `message.mpim`.
+     Events worth subscribing to if used: `app_mention`, `message.im`,
+     `message.channels`, `message.groups`, `message.mpim`.
 5. **Brain loop + state.** Event/message → verify & dedupe → enqueue →
    an agent run reads it with context → reply in thread as Archer via
    `chat.postMessage`. Durable state (what has been seen, what is
@@ -79,13 +79,13 @@ if polling ever stops scaling.
 
 Keep both; they do different jobs.
 
-| | Built-in Muse connector | Custom Archer app |
-|---|---|---|
-| Identity | Drew | Archer (own user) |
-| Direction | Pull only, when asked in Muse chat | Push (events) or scheduled pull |
-| Cost to run | Zero build, Meta maintains it | Build ~a day + ongoing care |
-| Best at | Ad-hoc search/read across Drew's Slack, drafts, sending as Drew (incl. owner authority with the Dot) | Being addressable in Slack, reliable incremental review, agent-to-agent channels |
-| Limits seen live | MCP search 429'd twice under light use (Oct 25); semantic search, no completeness guarantee | Slack API tiers; scope reinstalls; our uptime is our problem |
+|                  | Built-in Muse connector                                                                              | Custom Archer app                                                                |
+| ---------------- | ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| Identity         | Drew                                                                                                 | Archer (own user)                                                                |
+| Direction        | Pull only, when asked in Muse chat                                                                   | Push (events) or scheduled pull                                                  |
+| Cost to run      | Zero build, Meta maintains it                                                                        | Build ~a day + ongoing care                                                      |
+| Best at          | Ad-hoc search/read across Drew's Slack, drafts, sending as Drew (incl. owner authority with the Dot) | Being addressable in Slack, reliable incremental review, agent-to-agent channels |
+| Limits seen live | MCP search 429'd twice under light use (Oct 25); semantic search, no completeness guarantee          | Slack API tiers; scope reinstalls; our uptime is our problem                     |
 
 Phase 1 (recommended): create the app from the manifest, skip the
 daemon — scheduled watermark puller over a few watched channels +

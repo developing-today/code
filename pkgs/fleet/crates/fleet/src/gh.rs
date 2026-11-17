@@ -733,8 +733,7 @@ impl TokenProvider for FleetTokenProvider {
     fn token_for(&mut self, source: &TokenSource) -> Result<String, String> {
         match source {
             TokenSource::Personal => {
-                let req =
-                    gh_cache::request("personal", None, None, Some(PERSONAL_SECRET_NAME));
+                let req = gh_cache::request("personal", None, None, Some(PERSONAL_SECRET_NAME));
                 self.via(req, |cache| {
                     let hosts = cache.secret(PERSONAL_SECRET_NAME)?;
                     parse_hosts_yml_token(&hosts).ok_or_else(|| {
@@ -744,9 +743,7 @@ impl TokenProvider for FleetTokenProvider {
             }
             TokenSource::AppInstallation { app, owner } => {
                 let req = gh_cache::request("token", Some(app.slug()), Some(owner), None);
-                self.via(req, |cache| {
-                    cache.installation_token(app.slug(), owner)
-                })
+                self.via(req, |cache| cache.installation_token(app.slug(), owner))
             }
         }
     }
@@ -1321,19 +1318,27 @@ fn summarize_status(resp: &serde_json::Value) -> String {
         .get("kinds")
         .and_then(|k| k.as_object())
         .map(|m| {
-            let mut rows: Vec<String> =
-                m.iter().map(|(k, v)| format!("{k}={v}")).collect();
+            let mut rows: Vec<String> = m.iter().map(|(k, v)| format!("{k}={v}")).collect();
             rows.sort();
             rows.join(" ")
         })
         .unwrap_or_default();
     format!(
         "entries={} kinds:[{kinds}] hits={} misses={} min_ttl={}s uptime={}s",
-        status.get("live_entries").and_then(|v| v.as_u64()).unwrap_or(0),
+        status
+            .get("live_entries")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
         status.get("hits").and_then(|v| v.as_u64()).unwrap_or(0),
         status.get("misses").and_then(|v| v.as_u64()).unwrap_or(0),
-        status.get("min_ttl_secs").and_then(|v| v.as_u64()).unwrap_or(0),
-        status.get("uptime_secs").and_then(|v| v.as_u64()).unwrap_or(0),
+        status
+            .get("min_ttl_secs")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        status
+            .get("uptime_secs")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
     )
 }
 

@@ -123,7 +123,7 @@ hosted instance is the public backstop, never a requirement.
   world state — its working memory, its owner's private
   configuration, credentials for its own tools — is sealed to the
   agent key. The host stores and transports sealed state; it
-  cannot read it. What a host *can* see is exactly what any world
+  cannot read it. What a host _can_ see is exactly what any world
   participant can see: the agent's world actions and their audit
   records.
 - **The backstop instance adds no privilege.** Our hosted
@@ -155,13 +155,13 @@ hosted instance is the public backstop, never a requirement.
 
 - **No marketplace mechanics.** No payments, pricing, bidding, or
   revenue share between owners, operators, and agent authors.
-  Quota ledgers (v2 §2.3) account for *world* resources; paying
+  Quota ledgers (v2 §2.3) account for _world_ resources; paying
   for hosting is an out-of-protocol arrangement between the
   parties, if it exists at all (§5 question 2).
 - **No new agent-to-agent channel.** Hiring does not reopen v2
   §2.4: hosted agents coordinate only through world state (v3
   §2.1), exactly like local ones.
-- **No central registry monopoly.** This outline designs *a*
+- **No central registry monopoly.** This outline designs _a_
   registry protocol and record shape; federated or per-community
   registries that speak it are in-scope by design, a single
   canonical registry is not assumed.
@@ -210,7 +210,7 @@ where v4 makes them concrete; 3–4 are new in v4.
    agents make this unavoidable: the agent, its owner, the world
    owner, and the host operator can be four different parties.
 2. **Is hosting itself a chargeable world resource:** does the
-   *host's* cost (compute for always-on presence) enter any
+   _host's_ cost (compute for always-on presence) enter any
    ledger the protocol tracks, or is hosting purely an
    out-of-protocol arrangement (§3)? The answer decides whether
    §2.5's resource reporting is accounting or merely telemetry.
@@ -222,7 +222,7 @@ where v4 makes them concrete; 3–4 are new in v4.
 4. **Acceptance authority for hosted work (carries v3 §5 Q2):**
    v3 asked whether a reviewer-role agent may formally accept
    another agent's work. For hosted agents the question sharpens:
-   if acceptance is agent-delegable at all, may a *hosted*
+   if acceptance is agent-delegable at all, may a _hosted_
    reviewer accept — closing the loop with no human and no
    locally-run agent in it — or does hosted work always require
    acceptance from a non-hosted party?

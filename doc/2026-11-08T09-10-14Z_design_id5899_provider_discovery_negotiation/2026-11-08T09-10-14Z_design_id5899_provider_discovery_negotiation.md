@@ -35,7 +35,7 @@ grants — and leaves three questions to this record:
    and what may a consumer's cached view assume?
 
 Verified at origin/main `2b3ca04ac8` (2026-11-08): the code has a
-*static* provider catalog only — `ProviderManifest`
+_static_ provider catalog only — `ProviderManifest`
 (`pkgs/id/crates/id-core/src/world_caps.rs:200-217`: name, contract
 version, kind, argument schema, bounds, required scope, default-ceiling
 flag) and a `ProviderRegistry` over statically registered manifests
@@ -56,7 +56,7 @@ provider-kind class, liveness — behind an unlinkable rotating handle,
 never an identity or an inventory); only a negotiation counterpart or
 grant holder sees a full manifest, and only for the capabilities in
 play. Negotiation is **pre-grant, authority-free metadata exchange**
-(§4) that can only *narrow* the declared terms, is bounded in rounds,
+(§4) that can only _narrow_ the declared terms, is bounded in rounds,
 and concludes in a **terms record**; a grant (#5900) may be issued only
 against a concluded terms record and never wider than it. Staleness is
 a **lease-like lifecycle on the declaration** (§5): heartbeat-renewed
@@ -91,11 +91,11 @@ full manifest never leaves its home scope through discovery.
 
 ### 3.2 Visibility tiers
 
-| Tier | Who | What a discovery query returns |
-| --- | --- | --- |
-| A — outsider | No membership in the scope (e.g. an unauthorised browser) | **Nothing.** Queries return the same empty result as for a scope with no providers; existence is not leaked. |
-| B — member, no grant | A member of the world / server scope with no grant from this provider | **Minimised card only:** capability name and class, provider-kind class (constrained-device / host / web / engine / phone), liveness state (§5), and a rotating discovery handle (§3.3). Never: provider identity, owner, device inventory detail, exact rate/size limits (class bands only), declaration history. |
-| C — counterpart | A party with a concluded terms record or a live grant for a capability | The **full manifest for those capabilities only** (exact versions, schemas, bounds), plus the provider's stable identity as bound in the terms/grant record. |
+| Tier                 | Who                                                                    | What a discovery query returns                                                                                                                                                                                                                                                                                     |
+| -------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| A — outsider         | No membership in the scope (e.g. an unauthorised browser)              | **Nothing.** Queries return the same empty result as for a scope with no providers; existence is not leaked.                                                                                                                                                                                                       |
+| B — member, no grant | A member of the world / server scope with no grant from this provider  | **Minimised card only:** capability name and class, provider-kind class (constrained-device / host / web / engine / phone), liveness state (§5), and a rotating discovery handle (§3.3). Never: provider identity, owner, device inventory detail, exact rate/size limits (class bands only), declaration history. |
+| C — counterpart      | A party with a concluded terms record or a live grant for a capability | The **full manifest for those capabilities only** (exact versions, schemas, bounds), plus the provider's stable identity as bound in the terms/grant record.                                                                                                                                                       |
 
 Rules that make the tiers real rather than advisory:
 
@@ -104,7 +104,7 @@ Rules that make the tiers real rather than advisory:
   learns which minimised cards match; it cannot enumerate by provider,
   by owner, or by handle history, and result counts are per-card, not
   per-device (one device offering five capabilities is five cards —
-  the inventory is the set of joins a consumer *cannot* make, because
+  the inventory is the set of joins a consumer _cannot_ make, because
   cards carry no shared identifier).
 - **Rate and shape limits on discovery itself.** Per-consumer query
   rate limits and a maximum page size apply in every tier, so the
@@ -126,9 +126,9 @@ internally — and worthless for anything else: it is not an identity, it
 grants nothing, and handles from two scopes or two windows cannot be
 joined to track a device. This is the concrete form of #5686's
 minimisation requirement: the honest answer to "what does an
-unauthorised browser learn" is *nothing* (Tier A), and to "what does a
-fellow world member learn" is *that a capability class is available
-from something of a kind class, currently live* — not whose, not what
+unauthorised browser learn" is _nothing_ (Tier A), and to "what does a
+fellow world member learn" is _that a capability class is available
+from something of a kind class, currently live_ — not whose, not what
 else it offers, not where it is.
 
 ## 4. Negotiation: pre-grant, narrowing-only, terms-recorded
@@ -138,12 +138,12 @@ else it offers, not where it is.
 Negotiation requires **Tier-B visibility and nothing more**: it is
 pre-grant by design, because its whole purpose is to find out whether
 a grant is worth requesting. This follows the principle #5931 records
-from the writer-set design (#5545): *ingest is a validity gate, never
-an authority gate* — symmetrically here, negotiation is a *terms* gate,
+from the writer-set design (#5545): _ingest is a validity gate, never
+an authority gate_ — symmetrically here, negotiation is a _terms_ gate,
 never an authority gate. A concluded negotiation confers no right to
 invoke anything; it produces a terms record (§4.3) that a grant
 request (#5900) can cite. Negotiation traffic is authenticated as to
-*scope membership* (you may only negotiate for cards you can see),
+_scope membership_ (you may only negotiate for cards you can see),
 rate-limited, and logged in scope — negotiation is discoverable
 metadata exchange, and treating it as free and unlogged would reopen
 the inventory leak through the side door (probe-by-negotiation).
@@ -162,7 +162,7 @@ terms records):
    range: one version, one encoding, one rate, one quality, one
    lifetime — or a typed refusal (§4.4).
 3. **Counter-offer (either side, at most 3 rounds total):** may only
-   *narrow* — lower rate, coarser quality, shorter lifetime, a version
+   _narrow_ — lower rate, coarser quality, shorter lifetime, a version
    inside the intersection already established, an encoding both sides
    already listed. A counter-offer that widens any dimension beyond
    the counterparty's last stated bound, the consumer's original
@@ -204,7 +204,7 @@ rather than decorative:
 ### 4.4 Failure reasons (typed, closed set)
 
 `version-gap`, `rate-floor` (provider cannot meet the consumer's
-minimum rate — or consumer cannot accept the provider's), 
+minimum rate — or consumer cannot accept the provider's),
 `quality-floor`, `encoding-gap`, `policy` (ceiling / scope rules
 forbid the pairing), `widening-counter-offer`, `rounds-exhausted`,
 `provider-vanished` (§5 transition mid-negotiation). A failure ends
@@ -231,11 +231,11 @@ Every declaration carries a TTL class and is kept live by heartbeats
 (provider → scope discovery view). Defaults, tunable per class without
 protocol change:
 
-| Provider class | Heartbeat | TTL (stale after) | Rationale |
-| --- | --- | --- | --- |
-| Session-bound (web tab, engine session, phone foreground) | 15 s | 45 s | The provider dies with the session; discovery must notice within a minute. |
-| Host (terminal, local services) | 30 s | 120 s | Processes are longer-lived; two missed minutes is a real signal, not a hiccup. |
-| Constrained device via bridge (ESP32/MQTT) | bridge-attested, 60 s | 300 s | The *bridge* heartbeats liveness for sleeping devices; the TTL bounds bridge attestation, not device wakefulness — a device may sleep inside its TTL, what expires is the bridge's claim that it will answer. |
+| Provider class                                            | Heartbeat             | TTL (stale after) | Rationale                                                                                                                                                                                                     |
+| --------------------------------------------------------- | --------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Session-bound (web tab, engine session, phone foreground) | 15 s                  | 45 s              | The provider dies with the session; discovery must notice within a minute.                                                                                                                                    |
+| Host (terminal, local services)                           | 30 s                  | 120 s             | Processes are longer-lived; two missed minutes is a real signal, not a hiccup.                                                                                                                                |
+| Constrained device via bridge (ESP32/MQTT)                | bridge-attested, 60 s | 300 s             | The _bridge_ heartbeats liveness for sleeping devices; the TTL bounds bridge attestation, not device wakefulness — a device may sleep inside its TTL, what expires is the bridge's claim that it will answer. |
 
 States:
 
@@ -261,7 +261,7 @@ States:
 - **Cached views expire with the record.** A consumer may cache a
   minimised card or manifest view only until the earlier of the
   record's TTL or its own cache policy, and must present expired
-  cache entries as *unknown*, never as live. There is no
+  cache entries as _unknown_, never as live. There is no
   serve-stale in discovery: a capability that might be gone is
   negotiated against only after a fresh view confirms it.
 - **In-flight invocations** at the stale transition complete or fail
@@ -272,7 +272,7 @@ States:
   interchangeable with the first (that would be a declaration-level
   claim, #5898, and it is not made by default).
 - **Stale is not revoked.** Staleness is a statement about
-  *reachability*, not *authority*: grants (#5900) survive a stale
+  _reachability_, not _authority_: grants (#5900) survive a stale
   period unchanged, and revocation remains #5900's separate,
   deliberate act. Conflating the two would make every tab close a
   revocation event and every return a re-approval — the UX failure
@@ -285,8 +285,8 @@ A returning provider re-declares: same identity, **epoch = previous
 epoch + 1**, fresh TTL. The new declaration supersedes the tombstone
 (if any) in discovery, and the epoch advance is precisely what voids
 old terms records (§4.3) and re-arms negotiation. Grants cite the
-terms record they were issued against; a grant issued under epoch *n*
-is invocable under epoch *n+1* only if its own terms (capability,
+terms record they were issued against; a grant issued under epoch _n_
+is invocable under epoch _n+1_ only if its own terms (capability,
 version, limits) are unchanged in the new declaration — checked
 mechanically against the two manifests at first invocation after
 return, and recorded. Anything else requires a fresh negotiation.
@@ -296,15 +296,15 @@ they cannot go stale because they cannot leave.
 
 ## 6. Rejected alternatives
 
-| Alternative | Why rejected |
-| --- | --- |
-| **Open broadcast discovery** (announce-to-all, mDNS-style) | Leaks the device inventory #5686 explicitly forbids; no scope or tier concept exists to minimise against. |
-| **A central global registry service** for all scopes | Creates a cross-scope correlation point (the inventory, again, one query away), a single point of failure for a world-local operation, and a second database to keep consistent with the declarations. The journal-resident declaration view (§3.1) needs none of it. |
-| **MCP `tools/list` as the discovery protocol** | Per #5931 §6.1, MCP is a declaration + invocation surface for a session; the spec is explicitly silent on policy and visibility, and its authorisation story is token-centric. MCP is a legitimate *mouth* — a provider may be projected as an MCP server, and the projection of a minimised card into `tools/list` is a fine Tier-B rendering — but the discovery *layer* (scopes, tiers, staleness) is ID's, not MCP's. |
-| **CapTP-style live-reference discovery** (#5931 §6.3) | Authority-as-possession works for live, connection-scoped sessions; discovery records here must survive offline, sync, and audit in a journal. CapTP discipline may inform live session handling; it cannot be the discovery ledger. |
-| **Negotiation folded into grant issuance** (#5900) | Conflates agreeing terms with conferring authority; makes partial agreement and typed failure awkward exactly where #5686 demands them, and would require a grant (an authority act, possibly human-approved) before two parties can even learn whether their versions intersect. |
-| **Serve-stale discovery caches** | A consumer acting on a provider that vanished an hour ago fails later, worse, and with the failure misattributed to the invocation layer. Expired = unknown (§5.2). |
-| **Staleness as revocation** | §5.2: reachability ≠ authority; merging them makes routine vanish/return cycles into re-approval churn and destroys the audit distinction between "left" and "was removed". |
+| Alternative                                                | Why rejected                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Open broadcast discovery** (announce-to-all, mDNS-style) | Leaks the device inventory #5686 explicitly forbids; no scope or tier concept exists to minimise against.                                                                                                                                                                                                                                                                                                                 |
+| **A central global registry service** for all scopes       | Creates a cross-scope correlation point (the inventory, again, one query away), a single point of failure for a world-local operation, and a second database to keep consistent with the declarations. The journal-resident declaration view (§3.1) needs none of it.                                                                                                                                                     |
+| **MCP `tools/list` as the discovery protocol**             | Per #5931 §6.1, MCP is a declaration + invocation surface for a session; the spec is explicitly silent on policy and visibility, and its authorisation story is token-centric. MCP is a legitimate _mouth_ — a provider may be projected as an MCP server, and the projection of a minimised card into `tools/list` is a fine Tier-B rendering — but the discovery _layer_ (scopes, tiers, staleness) is ID's, not MCP's. |
+| **CapTP-style live-reference discovery** (#5931 §6.3)      | Authority-as-possession works for live, connection-scoped sessions; discovery records here must survive offline, sync, and audit in a journal. CapTP discipline may inform live session handling; it cannot be the discovery ledger.                                                                                                                                                                                      |
+| **Negotiation folded into grant issuance** (#5900)         | Conflates agreeing terms with conferring authority; makes partial agreement and typed failure awkward exactly where #5686 demands them, and would require a grant (an authority act, possibly human-approved) before two parties can even learn whether their versions intersect.                                                                                                                                         |
+| **Serve-stale discovery caches**                           | A consumer acting on a provider that vanished an hour ago fails later, worse, and with the failure misattributed to the invocation layer. Expired = unknown (§5.2).                                                                                                                                                                                                                                                       |
+| **Staleness as revocation**                                | §5.2: reachability ≠ authority; merging them makes routine vanish/return cycles into re-approval churn and destroys the audit distinction between "left" and "was removed".                                                                                                                                                                                                                                               |
 
 ## 7. Invariants implementation must hold
 
@@ -348,9 +348,9 @@ they cannot go stale because they cannot leave.
   negotiation input (§4.3). Grant issuance flows, approval UX by
   sensitivity class, and revocation are #5900's.
 - **#5904 (offline / degraded):** what a provider or consumer queues
-  *while disconnected* — including whether discovery views sync for
+  _while disconnected_ — including whether discovery views sync for
   later use — is #5904's. This record settles only what freshness a
-  view must have when it is *used* (§5.2).
+  view must have when it is _used_ (§5.2).
 - **#5905 (security model):** attestation strength for declarations
   per provider class, and the threat model for handle derivation, are
   #5905's. This record assumes signed declarations; it does not set

@@ -18,16 +18,16 @@ sensitive.
 
 ## 1. Basement fleet — the Threadripper machines
 
-| Item | What the sources say |
-|---|---|
-| Count | **~12 machines** ("a dozen") |
-| Platform | Threadripper. Core machines are **identical motherboard, same CPU, same specs — except SSDs** |
-| Named board | **ASUS Pro WS WRX80E-SAGE** ("WRX80 Sage") — firmware update applied (2026-10-20 note). Sources do not say whether every core box is this board or only one is |
-| Dell machines | Some Dell machines were also picked up; **no firmware updates could be found for them**; BIOS got a best effort |
-| State today | **No OS installed** (deliberate — nothing hand-built that "just existed forever"). Every machine's CPU at least boots; **all RAM works**; **nothing load-tested yet** |
+| Item              | What the sources say                                                                                                                                                                                                        |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Count             | **~12 machines** ("a dozen")                                                                                                                                                                                                |
+| Platform          | Threadripper. Core machines are **identical motherboard, same CPU, same specs — except SSDs**                                                                                                                               |
+| Named board       | **ASUS Pro WS WRX80E-SAGE** ("WRX80 Sage") — firmware update applied (2026-10-20 note). Sources do not say whether every core box is this board or only one is                                                              |
+| Dell machines     | Some Dell machines were also picked up; **no firmware updates could be found for them**; BIOS got a best effort                                                                                                             |
+| State today       | **No OS installed** (deliberate — nothing hand-built that "just existed forever"). Every machine's CPU at least boots; **all RAM works**; **nothing load-tested yet**                                                       |
 | Remote management | Core machines have **enterprise BMC/IPMI** (dictated as "ASM" / built-in enterprise KVM) — versions and every setting still to be audited; first cluster task is confirming core machines are setting-for-setting identical |
-| Blockers | **Basement power capacity and general mess.** Getting all 12 running is a long tail; the build target is **3–5 machines first** (best / most-identical first) |
-| Planned OS/stack | Talos Linux + Cozystack, bootstrapped declaratively with TALM; Postgres (CNPG), RustFS, NATS, FluxCD, Cloudflare Tunnel, Tailscale, DRBD+LINSTOR. **Hard rule: no HashiCorp anything** |
+| Blockers          | **Basement power capacity and general mess.** Getting all 12 running is a long tail; the build target is **3–5 machines first** (best / most-identical first)                                                               |
+| Planned OS/stack  | Talos Linux + Cozystack, bootstrapped declaratively with TALM; Postgres (CNPG), RustFS, NATS, FluxCD, Cloudflare Tunnel, Tailscale, DRBD+LINSTOR. **Hard rule: no HashiCorp anything**                                      |
 
 Existing hardware documentation (not re-copied here):
 
@@ -41,13 +41,13 @@ Existing hardware documentation (not re-copied here):
 
 ## 2. Storage
 
-| Item | What the sources say |
-|---|---|
-| HDDs | **15–16 × 16 TB** helium Western Digital server pulls (Drew also said "at least 12" once — register records both). Bought **before storage prices spiked** (the only price-timing note in any source) |
-| HDD state | **8 are still in the box (uninstalled)** — no SMART/baseline data exists for the HDDs yet |
-| RAM | **≥ 3 TB DDR4 server ECC RAM** across the fleet. All works; not load-tested |
-| NVMe / SSDs | Every machine has some consumer NVMe boot drive; best are prosumer **Samsung 990 Pro**. Mid tier: 980s, smaller 990s, other good consumer SSDs. Per-machine SSDs are the one spec that differs between core boxes |
-| Firmware/SMART data | A **backup hard drive holds SMART data + manufacturer firmware data for every NVMe** (not the HDDs). Firmware updates were run wherever findable |
+| Item                | What the sources say                                                                                                                                                                                              |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| HDDs                | **15–16 × 16 TB** helium Western Digital server pulls (Drew also said "at least 12" once — register records both). Bought **before storage prices spiked** (the only price-timing note in any source)             |
+| HDD state           | **8 are still in the box (uninstalled)** — no SMART/baseline data exists for the HDDs yet                                                                                                                         |
+| RAM                 | **≥ 3 TB DDR4 server ECC RAM** across the fleet. All works; not load-tested                                                                                                                                       |
+| NVMe / SSDs         | Every machine has some consumer NVMe boot drive; best are prosumer **Samsung 990 Pro**. Mid tier: 980s, smaller 990s, other good consumer SSDs. Per-machine SSDs are the one spec that differs between core boxes |
+| Firmware/SMART data | A **backup hard drive holds SMART data + manufacturer firmware data for every NVMe** (not the HDDs). Firmware updates were run wherever findable                                                                  |
 
 ### Storage design sketch (Drew's, to be validated)
 
@@ -78,14 +78,14 @@ Explicitly **not a compute resource** — no local model-farm plans:
 
 ## 4. Networking
 
-| Item | What the sources say |
-|---|---|
-| Core-machine NICs | High-speed NICs; dictated as **"at least 200 Gb ports"** — **exact spec TBD in inventory**; register's reading: likely dual high-speed ports per core box. **This is an open question, not a confirmed spec** |
-| Switches | **Not specified in any source read.** The code repo has `doc/inventory/routing-and-switching.md` (named in the register) — its contents were not part of this pass; switch make/model/count is **MISSING** here until that file is folded in |
-| Home WAN | **2 Gbps symmetric fiber, Brightspeed** — the only fiber provider in his part of Osseo. A second line would make 4 Gbps. Cable is 100 Mbps and more expensive (possible redundancy pickup). TriCounty Communications fiber may reach his part of Osseo later — then buy both fibers |
-| Backup/emergency | Hotspot plans and Starlink investigated; Starlink would likely need business plans to avoid cancellation for this use |
-| Egress doctrine | Egress is the scarce resource, not compute: tunnel/shunt bulk traffic to Cloudflare / Turso / Tailscale and other cheap/free-egress SaaS; compress aggressively. The fleet's value = fast CPUs, huge RAM/storage at ~zero marginal cost vs renting equivalent cloud boxes |
-| House | Plans to stay in the Osseo house long-term (10+ years, possibly 40) — home Ethernet hardwiring is a standing project |
+| Item              | What the sources say                                                                                                                                                                                                                                                                |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Core-machine NICs | High-speed NICs; dictated as **"at least 200 Gb ports"** — **exact spec TBD in inventory**; register's reading: likely dual high-speed ports per core box. **This is an open question, not a confirmed spec**                                                                       |
+| Switches          | **Not specified in any source read.** The code repo has `doc/inventory/routing-and-switching.md` (named in the register) — its contents were not part of this pass; switch make/model/count is **MISSING** here until that file is folded in                                        |
+| Home WAN          | **2 Gbps symmetric fiber, Brightspeed** — the only fiber provider in his part of Osseo. A second line would make 4 Gbps. Cable is 100 Mbps and more expensive (possible redundancy pickup). TriCounty Communications fiber may reach his part of Osseo later — then buy both fibers |
+| Backup/emergency  | Hotspot plans and Starlink investigated; Starlink would likely need business plans to avoid cancellation for this use                                                                                                                                                               |
+| Egress doctrine   | Egress is the scarce resource, not compute: tunnel/shunt bulk traffic to Cloudflare / Turso / Tailscale and other cheap/free-egress SaaS; compress aggressively. The fleet's value = fast CPUs, huge RAM/storage at ~zero marginal cost vs renting equivalent cloud boxes           |
+| House             | Plans to stay in the Osseo house long-term (10+ years, possibly 40) — home Ethernet hardwiring is a standing project                                                                                                                                                                |
 
 ## 5. ESP32 wing
 
@@ -104,13 +104,13 @@ Explicitly **not a compute resource** — no local model-farm plans:
 
 ## 6. Personal / workstation hardware
 
-| Item | What the sources say |
-|---|---|
+| Item             | What the sources say                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Framework laptop | Drew's primary personal workstation: **Framework laptop running NixOS, KDE Plasma**; editors Neovim + VS Code. In the Turso Pro-month plan it is specified further: **4 TB Samsung 990 Pro**, always-on, assumed non-failing for planning — designated **canonical warm store + ingest factory** for Atlas (full corpus, SQLite shards, embedding compute, consolidation). Tailscale access for Muse via the laptop: promised by Drew, pending (2026-10-20) |
-| Work Mac | From his Vertex job (confirmed by Drew 2026-10-19): a Mac running Python 3.13/Poetry work tooling (the "viper" CLI etc.). Model/spec: **not in sources** |
-| Phone | **OnePlus 12R**, dual nano-SIM (US Mobile) plus eSIM. Budget mobile setup: US Mobile by-the-gig/light plans, multi-network |
-| Reading | E-reader + Calibre library (Calibre set up on Omarchy Sep 2026). Omarchy (Arch-based Linux) runs on at least one machine alongside NixOS — which machine: **not in sources** |
-| Keyboards | Mechanical keyboards, especially vintage Model F and customization (hobby note; no inventory) |
+| Work Mac         | From his Vertex job (confirmed by Drew 2026-10-19): a Mac running Python 3.13/Poetry work tooling (the "viper" CLI etc.). Model/spec: **not in sources**                                                                                                                                                                                                                                                                                                    |
+| Phone            | **OnePlus 12R**, dual nano-SIM (US Mobile) plus eSIM. Budget mobile setup: US Mobile by-the-gig/light plans, multi-network                                                                                                                                                                                                                                                                                                                                  |
+| Reading          | E-reader + Calibre library (Calibre set up on Omarchy Sep 2026). Omarchy (Arch-based Linux) runs on at least one machine alongside NixOS — which machine: **not in sources**                                                                                                                                                                                                                                                                                |
+| Keyboards        | Mechanical keyboards, especially vintage Model F and customization (hobby note; no inventory)                                                                                                                                                                                                                                                                                                                                                               |
 
 ## 7. Prices — what is and isn't in the sources
 
@@ -124,7 +124,7 @@ in any source read for this draft.** Specifically:
 - Framework laptop: capacity of its SSD (4 TB 990 Pro) is stated; its
   price is not.
 - The only dollar figures anywhere near the hardware program are
-  *cloud* budget tiers (Turso $5 / Cloudflare $5 in play, $25–30
+  _cloud_ budget tiers (Turso $5 / Cloudflare $5 in play, $25–30
   later, $75 out) — those belong to the plan docs, not this one.
 
 If a priced inventory is wanted, the likely home of the raw data is

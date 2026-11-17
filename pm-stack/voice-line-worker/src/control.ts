@@ -5,9 +5,7 @@
 // non-object value is rejected here with an error the client can see,
 // instead of escaping the handler as an uncaught TypeError.
 
-export type ControlFrame =
-  | { ok: true; type: unknown }
-  | { ok: false; error: string };
+export type ControlFrame = { ok: true; type: unknown } | { ok: false; error: string };
 
 export function parseControlFrame(message: string): ControlFrame {
   let value: unknown;

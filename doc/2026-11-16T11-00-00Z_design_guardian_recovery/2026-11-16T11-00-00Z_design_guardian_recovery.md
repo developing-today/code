@@ -30,7 +30,7 @@ axioms:
 - **Approvals never reconstruct the existing key** (#2060 §6.3). Any
   scheme that hands guardians shares of key material (Shamir splitting
   of the identity or its unwrap key) gives k colluding guardians the
-  *existing* signing key immediately, before any delay or veto can
+  _existing_ signing key immediately, before any delay or veto can
   run, and epoch binding does not revoke that. Shamir splitting is
   therefore excluded, as #2382 itself directs. Guardians authorise a
   **successor** key; the existing key is never reconstructed,
@@ -43,7 +43,7 @@ axioms:
 ## Decision 1 — where the records live: keyset chain + recovery annex
 
 The guardian set lives in the identity's #2380 keyset log, in the
-entry the ADR already reserved. Recovery *process* records cannot be
+entry the ADR already reserved. Recovery _process_ records cannot be
 ordinary chain entries: a chain record is valid only if its author
 was authorised at its position (ADR Decision 4 rule 3), and a
 recovery request is authored by a brand-new successor key that holds
@@ -214,9 +214,9 @@ ancestor of the canonical head) and the directory marks it consumed.
   `created_at`. A directory first-seen time **earlier** than
   `created_at` is impossible for an honest relay, so verifiers
   reject any attestation chain with `request_first_seen <
-  created_at`, and compute the delay from
+created_at`, and compute the delay from
   `max(created_at, request_first_seen)`. A malicious or compromised
-  relay can therefore only *lengthen* the delay (by withholding) or
+  relay can therefore only _lengthen_ the delay (by withholding) or
   refuse service — availability attacks, not safety attacks. It
   cannot forge an approval (signatures), cannot mint a cancellation
   (signatures), and cannot backdate (this rule).
@@ -259,17 +259,17 @@ guardian set. Authority lives in the fold rule, not in a joint key.
 
 Rationale, against the alternative (a FROST-style threshold
 identity, #2060 §4.4 option 2, where the identity key itself is a
-threshold key and recovery signs under the *same* public key):
+threshold key and recovery signs under the _same_ public key):
 
 - §8.5.4's gap is specifically about **no-successor-needed
   rotation** — keeping one public key across recovery. #2382 does
   not ask for that; it asks for successor-key rotation with delay
   and cancel, which the investigation's own §6.3 names as the
   property that closes the reconstruction hole ("shares authorise
-  a *new* key and the existing signing key is never
+  a _new_ key and the existing signing key is never
   reconstructed"). A threshold-of-signatures delivers exactly
   that property with zero new primitives.
-- A threshold identity key changes key *generation* for every
+- A threshold identity key changes key _generation_ for every
   account (distributed key generation among guardians, resharing
   on guardian churn — the liveness problem §8.5.5 flags as
   unsolved), not just the recovery path. That is a programme-level
@@ -298,7 +298,7 @@ slow one:
 1. **Adding is instant; removing is delayed.** A
    `GuardianSetUpdated` that only adds guardians or raises the
    threshold folds immediately. One that **removes a guardian or
-   lowers the threshold** is a *delayed change*: the fold records
+   lowers the threshold** is a _delayed change_: the fold records
    it as pending with the same 72h delay (directory timestamps,
    Decision 4 math), the pre-change set remains the effective set
    until the delay elapses, and any admin key can cancel the
@@ -317,7 +317,7 @@ slow one:
    guardian who is notified can warn the user out of band, and a
    surviving device cancels the pending change or the recovery.
 4. **Bounded residual.** An attacker who holds an admin key
-   *undetected for longer than the delay* can complete an
+   _undetected for longer than the delay_ can complete an
    eviction. No record format prevents that; the mitigations are
    the delay, the notifications, and checkpoint finality (a
    checkpoint-final head cannot be displaced by a forked
@@ -348,7 +348,7 @@ equivalents) in `pkgs/id` test suites, in the `directory_log` /
    device-key cancellation before the delay ends the request.
 8. `rotation_before_delay_rejected` — first-seen arithmetic,
    including a backdated relay attestation (`first_seen <
-   created_at`) rejected.
+created_at`) rejected.
 9. `guardian_eviction_attack_fails_within_delay` — remove honest
    guardians + add sockpuppets + request recovery inside the
    window: rotation rejected (set pinned at request head;

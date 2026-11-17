@@ -295,7 +295,6 @@ expect_rejected "#6815 empty snapshot unit" "INSERT INTO public.agg_usage_snapsh
 expect_rejected "#6815 document version below 1" "INSERT INTO public.agg_store_documents (store, version, document)
   VALUES ('aa-last-good', 0, '{}')"
 
-
 if psql_test <"$down2" >/dev/null 2>&1; then
   echo "#6815 down migration should refuse populated tables" >&2
   exit 1

@@ -497,7 +497,13 @@ export async function renewMetaSession(deps: MetaRenewalDeps): Promise<MetaRenew
   // per-cycle fields (attempted/result) restart every cycle.
   let restore: MetaRestoreState = normalizeRestore(previous?.restore);
   if (doc?.status === "ok") {
-    restore = { attempted: false, result: "not-attempted", attempts: 0, lastAttemptAt: restore.lastAttemptAt, nextAttemptAt: null };
+    restore = {
+      attempted: false,
+      result: "not-attempted",
+      attempts: 0,
+      lastAttemptAt: restore.lastAttemptAt,
+      nextAttemptAt: null,
+    };
   } else {
     restore = { ...restore, attempted: false, result: "not-attempted" };
   }
@@ -507,7 +513,10 @@ export async function renewMetaSession(deps: MetaRenewalDeps): Promise<MetaRenew
   let sessionDeadSignal = false;
 
   const finish = async (
-    partial: Omit<MetaRenewalState, "provider" | "checkedAt" | "alertSince" | "exporterStatus" | "lastGoodAt" | "restore">,
+    partial: Omit<
+      MetaRenewalState,
+      "provider" | "checkedAt" | "alertSince" | "exporterStatus" | "lastGoodAt" | "restore"
+    >,
   ): Promise<MetaRenewalState> => {
     let notification: MetaRenewalState["notification"] = partial.notification;
     const isNewEpisode = Boolean(partial.alert) && !previous?.alert;

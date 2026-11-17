@@ -2118,7 +2118,8 @@ export function renderItem(
   const linkedHeader =
     links.length > 0 && linkedResolved < links.length
       ? `Linked issues / PRs — ${links.length} linked · ${linkedResolved} resolved — ${
-          /\+ fixtures for \d+ ref\(s\) outside the pool/.test(provenance.items) || provenance.items.startsWith("fixtures")
+          /\+ fixtures for \d+ ref\(s\) outside the pool/.test(provenance.items) ||
+          provenance.items.startsWith("fixtures")
             ? "resolution fell back to fixtures (projector off, #1199)"
             : "some linked refs could not be resolved from the current sources"
         }`
@@ -7201,9 +7202,10 @@ function graphNodeActionsHtml(nodeRef: RefKey, context?: EpicGraphActionContext)
   const objectRef = tierItemObjectRef(item);
   const actions = context?.actionsByObject?.get(objectRef);
   const state = cardState(actions);
-  const disabledReason = item.source === "watchdog" || context?.orchestrationState === "live"
-    ? undefined
-    : `the tier source is ${context?.orchestrationState ?? "unavailable"}, so this item cannot be confirmed against the orchestrator's current published queues`;
+  const disabledReason =
+    item.source === "watchdog" || context?.orchestrationState === "live"
+      ? undefined
+      : `the tier source is ${context?.orchestrationState ?? "unavailable"}, so this item cannot be confirmed against the orchestrator's current published queues`;
   const controls = context?.identities
     ? triageActionsHtml(
         objectRef,
@@ -7227,7 +7229,9 @@ function graphNodeActionsHtml(nodeRef: RefKey, context?: EpicGraphActionContext)
       const sessionActions = context?.actionsByObject?.get(sessionRef);
       sessionControls = `${actionBadgesHtml(sessionActions)}${sessionActionsHtml(item.sessionId, sessionSource, { identities: context.identities })}<details class="carddetail"><summary>Session action history</summary>${actionHistoryHtml(sessionActions)}</details>`;
     } else {
-      const reason = support.find((entry) => entry.reason)?.reason ?? "this published item has no supported live session control channel";
+      const reason =
+        support.find((entry) => entry.reason)?.reason ??
+        "this published item has no supported live session control channel";
       sessionControls = `<p class="muted">Session action unavailable: ${esc(reason)}.</p>`;
     }
   }
@@ -7260,9 +7264,10 @@ function epicGraphOneHtml(
               return `<li>${poolRefLink(ref)}${member?.title ? ` — ${esc(member.title)}` : ""}</li>`;
             })
             .join("");
-          const explanation = group.kind === "dependency"
-            ? "The dependency data is contradictory. Resolving one member alone does not clear this cycle; correct the cycle edges."
-            : "The parent links are cyclic. These members are one hierarchy warning group, not independent roots; correct the parent edges.";
+          const explanation =
+            group.kind === "dependency"
+              ? "The dependency data is contradictory. Resolving one member alone does not clear this cycle; correct the cycle edges."
+              : "The parent links are cyclic. These members are one hierarchy warning group, not independent roots; correct the parent edges.";
           return `<section class="banner" role="alert"><strong>⚠ ${esc(group.name)}</strong><p>${explanation}</p><ul>${members}</ul></section>`;
         })
         .join("")}</div>`
@@ -7270,8 +7275,12 @@ function epicGraphOneHtml(
   const edgeDiagnosticsHtml = g.edgeDiagnostics.length
     ? `<section class="banner" role="status"><strong>⚠ Relation edge data needs review</strong><ul>${g.edgeDiagnostics
         .map((diagnostic) => {
-          const relation = diagnostic.relation === "parent" ? "parent" : diagnostic.relation === "blockedBy" ? "blocked-by" : "blocks";
-          const issue = diagnostic.target === null ? "endpoint unavailable" : `malformed endpoint <code>${esc(diagnostic.target)}</code>`;
+          const relation =
+            diagnostic.relation === "parent" ? "parent" : diagnostic.relation === "blockedBy" ? "blocked-by" : "blocks";
+          const issue =
+            diagnostic.target === null
+              ? "endpoint unavailable"
+              : `malformed endpoint <code>${esc(diagnostic.target)}</code>`;
           const state = diagnostic.state === "unavailable" ? "Unavailable edge data" : "Malformed relation reference";
           return `<li>${state}: ${poolRefLink(diagnostic.sourceRef)} ${relation} edge — ${issue}; it was not treated as an external issue.</li>`;
         })

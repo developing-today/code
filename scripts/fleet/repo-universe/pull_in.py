@@ -75,14 +75,32 @@ DISPOSITION_LABELS = (
 MARKER_RE = re.compile(r"<!-- repo-universe:source=([\w.-]+/[\w.-]+#\d+) -->")
 
 LABEL_DEFINITIONS = {
-    SOURCE_LABEL: ("2da44e", "Mirror of an issue tracked by the repo-universe tracker (#1511)"),
+    SOURCE_LABEL: (
+        "2da44e",
+        "Mirror of an issue tracked by the repo-universe tracker (#1511)",
+    ),
     "universe/owned": ("0e8a16", "Repo-universe class: owned repo"),
     "universe/fork": ("fbca04", "Repo-universe class: fork"),
-    "universe/upstream-dependency": ("5319e7", "Repo-universe class: upstream dependency"),
-    "universe/archive-nested": ("6e7781", "Repo-universe class: archive-nested (inventory only)"),
-    "universe/waiting-on-upstream": ("cfd3d7", "Universe mirror disposition: waiting on upstream"),
-    "universe/contribute-fix": ("1d76db", "Universe mirror disposition: contribute a fix upstream"),
-    "universe/local-workaround": ("d93f0b", "Universe mirror disposition: local workaround"),
+    "universe/upstream-dependency": (
+        "5319e7",
+        "Repo-universe class: upstream dependency",
+    ),
+    "universe/archive-nested": (
+        "6e7781",
+        "Repo-universe class: archive-nested (inventory only)",
+    ),
+    "universe/waiting-on-upstream": (
+        "cfd3d7",
+        "Universe mirror disposition: waiting on upstream",
+    ),
+    "universe/contribute-fix": (
+        "1d76db",
+        "Universe mirror disposition: contribute a fix upstream",
+    ),
+    "universe/local-workaround": (
+        "d93f0b",
+        "Universe mirror disposition: local workaround",
+    ),
 }
 
 
@@ -172,7 +190,10 @@ def parse_inventory_classes(text: str) -> list[dict]:
         over = overrides.get(repo["name"], {})
         if over.get("watch", repo.get("watch")) == "issues":
             watched.append(
-                {"name": repo["name"], "class": over.get("class", repo.get("class", "owned"))}
+                {
+                    "name": repo["name"],
+                    "class": over.get("class", repo.get("class", "owned")),
+                }
             )
     return watched
 
@@ -209,9 +230,18 @@ class GhMirrorStore:
     def find_mirror(self, key: str) -> dict | None:
         out = self._gh(
             [
-                "issue", "list", "--repo", self.target_repo, "--state", "all",
-                "--search", f'"repo-universe:source={key}" in:body',
-                "--json", "number,title,body,state,labels", "--limit", "50",
+                "issue",
+                "list",
+                "--repo",
+                self.target_repo,
+                "--state",
+                "all",
+                "--search",
+                f'"repo-universe:source={key}" in:body',
+                "--json",
+                "number,title,body,state,labels",
+                "--limit",
+                "50",
             ]
         )
         try:
@@ -231,7 +261,16 @@ class GhMirrorStore:
         return None
 
     def create_mirror(self, title: str, body: str, labels: list[str]) -> dict:
-        args = ["issue", "create", "--repo", self.target_repo, "--title", title, "--body", body]
+        args = [
+            "issue",
+            "create",
+            "--repo",
+            self.target_repo,
+            "--title",
+            title,
+            "--body",
+            body,
+        ]
         for label in labels:
             args += ["--label", label]
         out = self._gh(args)
@@ -239,14 +278,31 @@ class GhMirrorStore:
         m = re.search(r"/issues/(\d+)$", url)
         if not m:
             raise MirrorError(f"gh issue create returned no issue URL: {url!r}")
-        return {"number": int(m.group(1)), "title": title, "body": body,
-                "state": "open", "labels": list(labels)}
+        return {
+            "number": int(m.group(1)),
+            "title": title,
+            "body": body,
+            "state": "open",
+            "labels": list(labels),
+        }
 
     def update_title(self, number: int, title: str) -> None:
-        self._gh(["issue", "edit", str(number), "--repo", self.target_repo, "--title", title])
+        self._gh(
+            ["issue", "edit", str(number), "--repo", self.target_repo, "--title", title]
+        )
 
     def comment(self, number: int, body: str) -> None:
-        self._gh(["issue", "comment", str(number), "--repo", self.target_repo, "--body", body])
+        self._gh(
+            [
+                "issue",
+                "comment",
+                str(number),
+                "--repo",
+                self.target_repo,
+                "--body",
+                body,
+            ]
+        )
 
     def close(self, number: int) -> None:
         self._gh(["issue", "close", str(number), "--repo", self.target_repo])
@@ -256,8 +312,18 @@ class GhMirrorStore:
 
     def ensure_label(self, name: str, color: str, description: str) -> None:
         self._gh(
-            ["label", "create", name, "--repo", self.target_repo,
-             "--color", color, "--description", description, "--force"]
+            [
+                "label",
+                "create",
+                name,
+                "--repo",
+                self.target_repo,
+                "--color",
+                color,
+                "--description",
+                description,
+                "--force",
+            ]
         )
 
 
@@ -288,8 +354,14 @@ class FixtureMirrorStore:
         raise MirrorError(f"fixture mirror {number} not found")
 
     def create_mirror(self, title: str, body: str, labels: list[str]) -> dict:
-        mirror = {"number": self._next, "title": title, "body": body,
-                  "state": "open", "labels": list(labels), "comments": []}
+        mirror = {
+            "number": self._next,
+            "title": title,
+            "body": body,
+            "state": "open",
+            "labels": list(labels),
+            "comments": [],
+        }
         self._next += 1
         self.mirrors.append(mirror)
         return mirror
@@ -331,8 +403,14 @@ class DryRunStore:
     def create_mirror(self, title: str, body: str, labels: list[str]) -> dict:
         self.planned.append(f"create: {title} labels={labels}")
         m = MARKER_RE.search(body)
-        return {"number": -1, "title": title, "body": body, "state": "open",
-                "labels": list(labels), "_key": m.group(1) if m else None}
+        return {
+            "number": -1,
+            "title": title,
+            "body": body,
+            "state": "open",
+            "labels": list(labels),
+            "_key": m.group(1) if m else None,
+        }
 
     def update_title(self, number: int, title: str) -> None:
         self.planned.append(f"retitle #{number}: {title}")
@@ -374,7 +452,9 @@ def run_pull_in(inventory_text: str, state: dict, fetch, store, now: str):
         if prior_entry is not None and not check_issues._valid_prior_entry(prior_entry):
             had_error = True
             lines.append(f"## {repo}")
-            lines.append("- ERROR: persisted state entry is malformed; repo skipped, state left untouched")
+            lines.append(
+                "- ERROR: persisted state entry is malformed; repo skipped, state left untouched"
+            )
             lines.append("")
             continue
         try:
@@ -385,7 +465,9 @@ def run_pull_in(inventory_text: str, state: dict, fetch, store, now: str):
             lines.append(f"- ERROR: fetch failed: {exc}")
             lines.append("")
             continue
-        result = check_issues.diff_repo(prior_entry["issues"] if prior_entry else None, issues)
+        result = check_issues.diff_repo(
+            prior_entry["issues"] if prior_entry else None, issues
+        )
         entry = {
             "watermark": max((i["updated_at"] or "" for i in issues), default=None),
             "issues": result["state"],
@@ -409,7 +491,10 @@ def run_pull_in(inventory_text: str, state: dict, fetch, store, now: str):
         else:
             lines.append("- no changes")
         lines.append("")
-    lines.insert(2, f"Repos checked: {len(repos)}; mirror actions: {len(actions)}; errors: {'yes' if had_error else 'no'}")
+    lines.insert(
+        2,
+        f"Repos checked: {len(repos)}; mirror actions: {len(actions)}; errors: {'yes' if had_error else 'no'}",
+    )
     new_state = {"version": 1, "last_run": now, "repos": new_repos}
     return new_state, lines, had_error, actions
 
@@ -422,28 +507,44 @@ def _act_on_delta(repo: str, repo_class: str, result: dict, store) -> list[str]:
         existing = store.find_mirror(key)
         if existing is not None:
             if existing["state"] == "closed":
-                store.comment(existing["number"], f"Source {key} is open again ({issue['html_url']}); reopening this mirror.")
+                store.comment(
+                    existing["number"],
+                    f"Source {key} is open again ({issue['html_url']}); reopening this mirror.",
+                )
                 store.reopen(existing["number"])
-                actions.append(f"reopened mirror #{existing['number']} for {key} (was resolved, source open)")
+                actions.append(
+                    f"reopened mirror #{existing['number']} for {key} (was resolved, source open)"
+                )
             elif existing["title"] != mirror_title(repo, issue):
                 store.update_title(existing["number"], mirror_title(repo, issue))
                 actions.append(f"retitled mirror #{existing['number']} for {key}")
             else:
-                actions.append(f"mirror exists for {key}: #{existing['number']} (no duplicate created)")
+                actions.append(
+                    f"mirror exists for {key}: #{existing['number']} (no duplicate created)"
+                )
             continue
-        created = store.create_mirror(mirror_title(repo, issue), mirror_body(repo, repo_class, issue), labels)
+        created = store.create_mirror(
+            mirror_title(repo, issue), mirror_body(repo, repo_class, issue), labels
+        )
         actions.append(f"created mirror #{created['number']} for {key}")
     for issue in sorted(result["changed"], key=lambda i: i["number"]):
         key = source_key(repo, issue["number"])
         existing = store.find_mirror(key)
-        if existing is not None and existing["state"] == "open" and existing["title"] != mirror_title(repo, issue):
+        if (
+            existing is not None
+            and existing["state"] == "open"
+            and existing["title"] != mirror_title(repo, issue)
+        ):
             store.update_title(existing["number"], mirror_title(repo, issue))
             actions.append(f"retitled mirror #{existing['number']} for {key}")
     for issue in sorted(result["reopened"], key=lambda i: i["number"]):
         key = source_key(repo, issue["number"])
         existing = store.find_mirror(key)
         if existing is not None and existing["state"] == "closed":
-            store.comment(existing["number"], f"Source {key} reopened ({issue['html_url']}); reopening this mirror.")
+            store.comment(
+                existing["number"],
+                f"Source {key} reopened ({issue['html_url']}); reopening this mirror.",
+            )
             store.reopen(existing["number"])
             actions.append(f"reopened mirror #{existing['number']} for {key}")
     for issue in sorted(result["closed"], key=lambda i: i["number"]):
@@ -455,20 +556,36 @@ def _act_on_delta(repo: str, repo_class: str, result: dict, store) -> list[str]:
             continue
         if existing["state"] == "closed":
             continue
-        store.comment(existing["number"], f"Source {key} closed ({issue['html_url']}); resolving this mirror.")
+        store.comment(
+            existing["number"],
+            f"Source {key} closed ({issue['html_url']}); resolving this mirror.",
+        )
         store.close(existing["number"])
-        actions.append(f"resolved mirror #{existing['number']} for {key} (source closed)")
+        actions.append(
+            f"resolved mirror #{existing['number']} for {key} (source closed)"
+        )
     return actions
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--inventory", default="doc/fleet/repo-universe.yaml")
-    parser.add_argument("--state-dir", default="~/.local/state/repo-universe-issue-checker")
+    parser.add_argument(
+        "--state-dir", default="~/.local/state/repo-universe-issue-checker"
+    )
     parser.add_argument("--target-repo", default=TARGET_REPO_DEFAULT)
-    parser.add_argument("--fixture", help="JSON fixture replacing GitHub fetches (checker shape)")
-    parser.add_argument("--fixture-mirrors", help="JSON file used as the mirror store instead of live GitHub")
-    parser.add_argument("--dry-run", action="store_true", help="plan actions against the store without mutating it")
+    parser.add_argument(
+        "--fixture", help="JSON fixture replacing GitHub fetches (checker shape)"
+    )
+    parser.add_argument(
+        "--fixture-mirrors",
+        help="JSON file used as the mirror store instead of live GitHub",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="plan actions against the store without mutating it",
+    )
     parser.add_argument("--now", help="ISO-8601 run timestamp (default: now, UTC)")
     args = parser.parse_args(argv)
 
@@ -502,7 +619,9 @@ def main(argv: list[str] | None = None) -> int:
         for name, (color, description) in LABEL_DEFINITIONS.items():
             store.ensure_label(name, color, description)
         try:
-            new_state, lines, had_error, actions = run_pull_in(inventory_text, state, fetch, store, now)
+            new_state, lines, had_error, actions = run_pull_in(
+                inventory_text, state, fetch, store, now
+            )
         except check_issues.FetchError as exc:
             print(f"error: {exc}; no report or state written", file=sys.stderr)
             return 2

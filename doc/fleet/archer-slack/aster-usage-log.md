@@ -55,6 +55,7 @@ starting line, not an attribution.
 ## Entries
 
 ### 2026-10-25 ~08:43–08:47 CDT — "how do you work" Q&A (#alignment)
+
 - Ask: three questions (receiving/tracking, where work happens + what
   bills, standing arrangement with Archer). Sent as Drew via connector
   after Aster ignored the same questions from the Archer bot for ~35 min.
@@ -67,6 +68,7 @@ starting line, not an attribution.
   it starts or manages count.
 
 ### 2026-10-26 ~22:26 CDT — cost explorer retrieval ask (#alignment)
+
 - Ask: share the URL (or a zip) of the cost explorer Drew and Aster
   built in ChatGPT, for tonight's model pool routing review; side
   question whether a model called "Reflective Beam" was in the

@@ -7,7 +7,7 @@ d=json.load(sys.stdin)
 if not d or d.get('id') is None: print('NO_TASK'); sys.exit(0)
 p=d.get('payload') or {}
 print('ID',d['id']); print('TITLE',d.get('title')); print('KIND',p.get('kind')); print('ISSUE',(p.get('issue') or {}).get('number')); print('ACCEPT', json.dumps(p.get('acceptance'))[:800]); print('SCOPE', json.dumps(p.get('scope'))[:800])
-" > /tmp/claim-summary.txt
+" >/tmp/claim-summary.txt
 cat /tmp/claim-summary.txt
 grep -q NO_TASK /tmp/claim-summary.txt && exit 0
 TID=$(grep '^ID' /tmp/claim-summary.txt | awk '{print $2}')

@@ -12,7 +12,11 @@ for i in $(seq 1 55); do
     echo
     exit 0
   fi
-  case "$S" in COMPLETED/FAILURE|COMPLETED/CANCELLED) echo "BASIC CHECK NOT GREEN: $S"; exit 1;; esac
+  case "$S" in COMPLETED/FAILURE | COMPLETED/CANCELLED)
+    echo "BASIC CHECK NOT GREEN: $S"
+    exit 1
+    ;;
+  esac
   sleep 60
 done
 echo "TIMEOUT waiting for basic check on $PR"

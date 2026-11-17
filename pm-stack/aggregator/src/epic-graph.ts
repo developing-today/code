@@ -271,8 +271,12 @@ function stronglyConnectedComponents(
 }
 
 function cycleComponents(refs: Iterable<RefKey>, edges: readonly EpicGraphEdge[], kind: EpicGraphEdgeType): RefKey[][] {
-  const selfLoops = new Set(edges.filter((edge) => edge.type === kind && edge.from === edge.to).map((edge) => edge.from));
-  return stronglyConnectedComponents(refs, edges, kind).filter((component) => component.length > 1 || selfLoops.has(component[0]!));
+  const selfLoops = new Set(
+    edges.filter((edge) => edge.type === kind && edge.from === edge.to).map((edge) => edge.from),
+  );
+  return stronglyConnectedComponents(refs, edges, kind).filter(
+    (component) => component.length > 1 || selfLoops.has(component[0]!),
+  );
 }
 
 function safeRefs(value: unknown): RefKey[] {
@@ -399,13 +403,19 @@ export function epicGraph(
   const sccDependencyEdges = [...poolDependencyEdges];
   for (const item of pool) {
     for (const blocker of safeRefs(item.blockedBy)) {
-      if (externalDependencyRefs.has(blocker)) sccDependencyEdges.push({ from: item.ref, to: blocker, type: "dependency" });
+      if (externalDependencyRefs.has(blocker))
+        sccDependencyEdges.push({ from: item.ref, to: blocker, type: "dependency" });
     }
     for (const blocked of safeRefs(item.blocks)) {
-      if (externalDependencyRefs.has(blocked)) sccDependencyEdges.push({ from: blocked, to: item.ref, type: "dependency" });
+      if (externalDependencyRefs.has(blocked))
+        sccDependencyEdges.push({ from: blocked, to: item.ref, type: "dependency" });
     }
   }
-  const fullDependencyCycles = cycleComponents([...byRef.keys(), ...externalDependencyRefs], sccDependencyEdges, "dependency");
+  const fullDependencyCycles = cycleComponents(
+    [...byRef.keys(), ...externalDependencyRefs],
+    sccDependencyEdges,
+    "dependency",
+  );
   const cyclicDependencyRefs = new Set(fullDependencyCycles.flat());
   const dependencyChildren = new Map<RefKey, RefKey[]>();
   for (const edge of sccDependencyEdges) {
@@ -435,7 +445,8 @@ export function epicGraph(
   const ancestorStack = [...allRefs];
   while (ancestorStack.length) {
     const item = byRef.get(ancestorStack.pop()!);
-    if (!item || !isValidRef(item.parentRef) || !byRef.has(item.parentRef) || hierarchyRelevantRefs.has(item.parentRef)) continue;
+    if (!item || !isValidRef(item.parentRef) || !byRef.has(item.parentRef) || hierarchyRelevantRefs.has(item.parentRef))
+      continue;
     hierarchyRelevantRefs.add(item.parentRef);
     ancestorStack.push(item.parentRef);
   }
@@ -462,7 +473,10 @@ export function epicGraph(
     if (item.parentRef !== undefined && !isValidRef(item.parentRef)) {
       addDiagnostic(item.ref, { relation: "parent", state: "malformed", target: String(item.parentRef) });
     }
-    for (const [relation, raw] of [["blockedBy", item.blockedBy], ["blocks", item.blocks]] as const) {
+    for (const [relation, raw] of [
+      ["blockedBy", item.blockedBy],
+      ["blocks", item.blocks],
+    ] as const) {
       if (raw === undefined) continue;
       if (!Array.isArray(raw)) {
         addDiagnostic(item.ref, { relation, state: "unavailable", target: null });
@@ -473,8 +487,12 @@ export function epicGraph(
       }
     }
   }
-  diagnosticRows.sort((a, b) =>
-    a.sourceRef.localeCompare(b.sourceRef) || a.relation.localeCompare(b.relation) || a.state.localeCompare(b.state) || (a.target ?? "").localeCompare(b.target ?? ""),
+  diagnosticRows.sort(
+    (a, b) =>
+      a.sourceRef.localeCompare(b.sourceRef) ||
+      a.relation.localeCompare(b.relation) ||
+      a.state.localeCompare(b.state) ||
+      (a.target ?? "").localeCompare(b.target ?? ""),
   );
 
   // Lay out the hierarchy condensation graph. A cycle is one layout group,
@@ -509,7 +527,9 @@ export function epicGraph(
     for (const ref of hierarchyComponents[index]!) {
       if (shownRefs.has(ref)) layout.set(ref, { depth, row: layout.size });
     }
-    for (const child of [...componentChildren.get(index)!].sort((a, b) => byRefOrder(componentKey(a), componentKey(b)))) {
+    for (const child of [...componentChildren.get(index)!].sort((a, b) =>
+      byRefOrder(componentKey(a), componentKey(b)),
+    )) {
       visitComponent(child, depth + 1);
     }
   };

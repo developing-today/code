@@ -58,7 +58,7 @@ close. The gate is the **contract** that promotion runs under.
 ## 2. Vocabulary and the unit of work
 
 - **Batch** — the unit the gate judges. In #5669 terms a batch is a
-  *staging unit*: one queue task, session, epic or notes batch, identified by
+  _staging unit_: one queue task, session, epic or notes batch, identified by
   its unit id. A long-lived epic unit promotes in **increments** (§5.4), and
   each increment is judged as its own batch.
 - **Staging shard** — the unit's staging DB (§5669 `atlas_stage` v1:
@@ -84,8 +84,8 @@ passed it. Absence of a record is never interpreted as success.
 
 Each stage is a pure function of the batch plus the stage's inputs, and
 returns `(verdict, reason_codes, counts, artifacts)`. Stages run in order;
-a `fail` at stage *n* sends the batch to quarantine (§7) and stages
-*n+1…5* do not run.
+a `fail` at stage _n_ sends the batch to quarantine (§7) and stages
+_n+1…5_ do not run.
 
 ### 3.1 Stage 1 — write
 
@@ -153,7 +153,7 @@ are shingle-set overlap at or above the #5733 threshold (≈0.9 Jaccard).
 - `near-duplicate-of:<chunk_id>@<score>` — an edge recorded, not a deletion.
 
 **Fails when** a row has no disposition, or when the dedup stage would
-have to *delete* something to proceed — deletion on a similarity score is
+have to _delete_ something to proceed — deletion on a similarity score is
 forbidden (#5733: "dedup findings are data, not deletions").
 
 **Semantics of each disposition at publish:** `new` publishes normally.
@@ -207,8 +207,8 @@ search-visible catalog; it never writes into an already-active shard.
 **Passes when** all of:
 
 - every surviving row was promoted exactly once — `rows_in == rows_promoted
-  + rows_deduped_into_occurrences + rows_quarantined_at_publish`, and the
-  identity holds by count **and** by content hash;
+  - rows_deduped_into_occurrences + rows_quarantined_at_publish`, and the
+    identity holds by count **and** by content hash;
 - all candidate chunk rows and exact-duplicate occurrence additions were
   written to immutable, not-yet-visible batch artifacts; no active shard or
   visible occurrence set was mutated;
@@ -231,18 +231,18 @@ remain invisible while reconciliation runs (§6.4).
 
 ## 4. Per-stage pass/fail semantics, in one table
 
-| stage | pass | skip allowed when | failure class |
-|---|---|---|---|
-| write | registered unit, supported schema, every row has locator + hash, non-empty | batch empty | `write_invalid` / `write_bypass` |
-| classify | every row has one of three levels at acceptable confidence | never | `classify_unresolved` |
-| dedup | every row has a disposition; no deletion required | never | `dedup_undispositioned` |
-| provenance-check | every mark parses, content resolves, attestation present, occurrences spanned | never | `provenance_unresolvable` |
-| publish | count + hash identity, bounded candidate writes, hidden prepare, atomic catalog commit, committed snapshot id, tier split | tier unit had zero survivors after dedup suppression **and no occurrence additions pending** | `publish_partial` |
+| stage            | pass                                                                                                                      | skip allowed when                                                                            | failure class                    |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | -------------------------------- |
+| write            | registered unit, supported schema, every row has locator + hash, non-empty                                                | batch empty                                                                                  | `write_invalid` / `write_bypass` |
+| classify         | every row has one of three levels at acceptable confidence                                                                | never                                                                                        | `classify_unresolved`            |
+| dedup            | every row has a disposition; no deletion required                                                                         | never                                                                                        | `dedup_undispositioned`          |
+| provenance-check | every mark parses, content resolves, attestation present, occurrences spanned                                             | never                                                                                        | `provenance_unresolvable`        |
+| publish          | count + hash identity, bounded candidate writes, hidden prepare, atomic catalog commit, committed snapshot id, tier split | tier unit had zero survivors after dedup suppression **and no occurrence additions pending** | `publish_partial`                |
 
 `skip` is never a pass and never advances a snapshot id. Only the write
 stage (empty batch) and publish (zero survivors **and** no occurrence
 additions pending) can be skipped, and each requires a recorded reason.
-A tier unit whose every chunk was suppressed into occurrences is *not*
+A tier unit whose every chunk was suppressed into occurrences is _not_
 skippable: publish is the only stage that writes the visible occurrence
 set (§3.5), so skipping it would drop exactly the occurrence records
 §3.3 requires suppressed near-duplicates to leave behind. Occurrence-only
@@ -445,7 +445,7 @@ implementation is split so each part lands against the sibling that owns it:
 
 1. **Gate record + state machine** (depends on #5669 registry) — the
    per-batch gate record, the `open → closing → gated → published |
-   quarantined` transition set, and the fail-closed "no verdict = not
+quarantined` transition set, and the fail-closed "no verdict = not
    passed" rule.
 2. **Stage 1–2 wiring** (depends on #5669, #6021) — write contract checks
    and the classify gate, including the no-default-to-internal rule.

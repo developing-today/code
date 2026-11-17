@@ -1391,6 +1391,7 @@ First weekly-monitor pass (watermark: the register date 2026-11-11; setup baseli
 The idea engine kept running after the register's 2026-11-11 cutoff: 27 new dated ideas in the log (`cloud-ideas-log.md`, lab-cluster goal), none in Appendix A and none on the ideas board. All 27 were added by this monitor to org Project #5 as draft items, Status = Idea, Theme set as grouped below. Running totals: edge/cache 25 · storage 20 · observability 19 · security 41 · agents/compute 53 = **158**. (The 2026-11-11 20:25 R2 placement plane post-dates the register synthesis cutoff the same day and is included here.) Pickup status: not recorded for any of them, except Rocket Loader (noted in place).
 
 ### Edge / cache (+7)
+
 - Static-assets co-deploy plane (every static property ships as Workers Static Assets attached to its dynamic Worker, `run_worker_first` declared per path class, routing ledger in Turso) — 2026-11-12
 - Cache-policy plane (Cache Rules declare eligibility, Edge/Browser TTL, and cache key per path class, wire-verified nightly, policy ledger in Turso) — 2026-11-12
 - Canonical redirect plane (Single Redirects declare every deliberate public URL move, wire-verified nightly, redirect ledger in Turso) — 2026-11-12
@@ -1400,13 +1401,16 @@ The idea engine kept running after the register's 2026-11-11 cutoff: 27 new date
 - Rocket Loader trial plane (script deferral declared in git — zone baseline stays off, one page class at a time earns it after a script inventory, exclusion ledger in Turso) — 2026-11-15 — **picked up: Drew approved the trial 2026-11-15; log records it implemented the same day**
 
 ### Storage (+1)
+
 - R2 placement plane (every bucket's location declared in git before creation — Location Hint for performance, jurisdiction only where a guarantee is needed, placement ledger in Turso) — 2026-11-11
 
 ### Observability (+2)
+
 - Vendor-signal inbox (Cloudflare Platform Notifications delivered by generic webhook to one receiver Worker, alert ledger in Turso) — 2026-11-14
 - Rendered-truth plane (Browser Run Quick Actions screenshot/snapshot every public property on a schedule, captures in R2, render ledger in Turso) — 2026-11-15
 
 ### Security (+12)
+
 - Origin request-header plane (Request Header Transform Rules declare exactly what headers each origin class receives, origin-echo-verified nightly, header ledger in Turso) — 2026-11-12
 - DDoS posture plane (the HTTP DDoS managed ruleset's ONE Free override declared in git, spike-correlated ledger in Turso) — 2026-11-12
 - Canary credential plane (unique honeytokens per placement — Worker-checked decoy keys, canary hostnames, canary inbox addresses — trip ledger in Turso) — 2026-11-12
@@ -1421,6 +1425,7 @@ The idea engine kept running after the register's 2026-11-11 cutoff: 27 new date
 - Edge certificate lifecycle plane (Universal SSL certificate packs + backup certificate declared in git, renewal / CA-change ledger in Turso) — 2026-11-16
 
 ### Agents / compute (+5)
+
 - Edge-resident resumable coding agent (Nanocode harness in a Durable Object, remote hands on the fleet, session index in Turso) — 2026-11-13
 - Cancellation-aware edge plane (Request.signal threaded through every expensive Worker route, compat-date bump declared per Worker, cancellation ledger in Turso) — 2026-11-13
 - Hands-free basement voice line (push-to-talk WebSocket in a Durable Object, Whisper in / MeloTTS out, read-only status intents, session ledger in Turso) — 2026-11-13

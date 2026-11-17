@@ -39,8 +39,15 @@ DEFAULT_OUTPUT = HERE.parent / "research" / "priority-exploration-experiment.md"
 # each must come from in the artifact. Anything absent is reported
 # missing under its name here — this list is the contract the first
 # oracle test (test_report.py) pins.
-REQUIRED = ("run_id", "seed", "sample_count", "oracle",
-            "uncertainty", "fixture_provenance", "threshold")
+REQUIRED = (
+    "run_id",
+    "seed",
+    "sample_count",
+    "oracle",
+    "uncertainty",
+    "fixture_provenance",
+    "threshold",
+)
 
 
 def load_artifact(raw: bytes) -> dict:
@@ -97,7 +104,9 @@ def render_report(a: dict, digest: str) -> str:
     lines.append("")
     lines.append("Verbatim from the artifact; the writer adds nothing here.")
     lines.append("")
-    lines.append(f"- Fixture SHA-256 (provenance): `{inputs.get('fixture_sha256', 'MISSING')}`")
+    lines.append(
+        f"- Fixture SHA-256 (provenance): `{inputs.get('fixture_sha256', 'MISSING')}`"
+    )
     runtime = a.get("runtime") or {}
     lines.append(f"- PRNG: {runtime.get('prng', 'MISSING')}")
     for limit in a.get("limits") or []:
@@ -106,38 +115,50 @@ def render_report(a: dict, digest: str) -> str:
     lines.append("## Measured model outputs")
     lines.append("")
     lines.append(f"- Result: `{a.get('result', 'MISSING')}`")
-    lines.append(f"- Seed: {inputs.get('seed', 'MISSING')}; cases: "
-                 f"{inputs.get('cases', 'MISSING')}; draws: {inputs.get('draws', 'MISSING')}")
-    lines.append(f"- Oracle checks recorded: {sum(counts.values())} "
-                 f"across {len(counts)} named oracles")
+    lines.append(
+        f"- Seed: {inputs.get('seed', 'MISSING')}; cases: "
+        f"{inputs.get('cases', 'MISSING')}; draws: {inputs.get('draws', 'MISSING')}"
+    )
+    lines.append(
+        f"- Oracle checks recorded: {sum(counts.values())} "
+        f"across {len(counts)} named oracles"
+    )
     for name, err in sorted((a.get("max_errors") or {}).items()):
         lines.append(f"- Max error, {name}: {err}")
-    lines.append("- Preregistered tolerances (thresholds fixed before the run, "
-                 "not chosen post hoc):")
+    lines.append(
+        "- Preregistered tolerances (thresholds fixed before the run, "
+        "not chosen post hoc):"
+    )
     for name, tol in sorted((a.get("tolerances") or {}).items()):
         lines.append(f"  - {name}: {tol}")
     lines.append("")
     lines.append("## Inference")
     lines.append("")
-    lines.append("The synthetic reference model agreed with its independent "
-                 "oracles inside the preregistered tolerances above. That is "
-                 "evidence about the model's internal consistency only. This "
-                 "is a synthetic simulation: it is not a production result, "
-                 "and no production benefit is claimed from it.")
+    lines.append(
+        "The synthetic reference model agreed with its independent "
+        "oracles inside the preregistered tolerances above. That is "
+        "evidence about the model's internal consistency only. This "
+        "is a synthetic simulation: it is not a production result, "
+        "and no production benefit is claimed from it."
+    )
     lines.append("")
     lines.append("## Recommendation")
     lines.append("")
-    lines.append("None for production. Do not enable exploration, choose "
-                 "production thresholds, or cite simulated benefit from this "
-                 "artifact alone; production adoption is a separately "
-                 "authorized stage with its own evidence.")
+    lines.append(
+        "None for production. Do not enable exploration, choose "
+        "production thresholds, or cite simulated benefit from this "
+        "artifact alone; production adoption is a separately "
+        "authorized stage with its own evidence."
+    )
     lines.append("")
     lines.append("## Missing measurements")
     lines.append("")
     if missing:
         for name in missing:
-            lines.append(f"- MISSING: {name} — the artifact does not carry it; "
-                         "this report marks it instead of inventing it.")
+            lines.append(
+                f"- MISSING: {name} — the artifact does not carry it; "
+                "this report marks it instead of inventing it."
+            )
     else:
         lines.append("None — every required measurement is present in the artifact.")
     lines.append("")

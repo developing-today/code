@@ -4,6 +4,7 @@ Full-scope archive of the deep research on Meta's Muse personal AI agent.
 Companion web page: the "Muse Research Report" artifact (slug `muse-research-report`) — same content, browsable.
 
 ## What's here
+
 - `report.md` — the complete dossier (11 sections + open questions + 47-source register).
   Every substantive claim is labeled OFFICIAL (Meta docs/statements), PRESS, or RUMOR (unverified).
 - `notes/source-01-official.md` — per-source notes, official Meta materials.
@@ -13,6 +14,7 @@ Companion web page: the "Muse Research Report" artifact (slug `muse-research-rep
   community reactions) saved from /tmp before it could be lost. Custom text format, not valid XML.
 
 ## The 11 sections
+
 1. Release & creation — launched Sept 8, 2026; Meta's "personal superintelligence" pitch.
 2. Relation to other Meta offerings — separate product from the Meta AI app and Muse Code (CLI);
    same Muse Spark model family; no announced merger.
@@ -36,6 +38,7 @@ Companion web page: the "Muse Research Report" artifact (slug `muse-research-rep
     long chats compacted into summaries; Goals tab + Artifacts; "forget" command.
 
 ## Open questions the dossier could not resolve
+
 - Free-tier token number in official docs (see section 8 caveat).
 - Whether a payment card is truly required for the free tier (press conflicts).
 - GA dates for agent email, Realtime Avatar, glasses integration, Charm pricing, Confidential VM.

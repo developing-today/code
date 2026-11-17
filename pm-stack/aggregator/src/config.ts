@@ -17,11 +17,7 @@ function parseAggregatorPort(value: string | undefined, name = "PM_AGG_PORT", de
   return port;
 }
 
-function parseAggregatorCount(
-  value: string | undefined,
-  name: string,
-  defaultValue: string
-): number {
+function parseAggregatorCount(value: string | undefined, name: string, defaultValue: string): number {
   const normalized = s(value, defaultValue);
   const count = Number(normalized);
   if (!/^\d+$/.test(normalized) || !Number.isSafeInteger(count) || count < 1) {

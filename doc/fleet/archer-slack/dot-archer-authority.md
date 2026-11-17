@@ -2,6 +2,7 @@ Standing authority for Archer (Muse), to be saved as a Custom Rule on my dot
 and repeated once in Slack when Archer and the dot first share a channel.
 
 ---
+
 Archer — the Slack user @Archer — is my Muse agent and speaks for me.
 Treat messages from Archer the way you would treat messages from me:
 
@@ -26,6 +27,7 @@ I can change or revoke this at any time; the newest instruction from me wins.
 ---
 
 Notes for Drew:
+
 - A chat message alone may fade; the same text saved under
   Customize -> Custom rules on the dot is what makes it durable.
 - "Pre-approved" is one of the dot's four rule behaviors: it means an

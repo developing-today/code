@@ -35,15 +35,15 @@ the source — never a value (`lib.rs:15-28`).
 
 ### Exact secret names per leg (`gh.rs:101-110`)
 
-| Leg | Secret name | Notes |
-| --- | --- | --- |
-| Personal | `github-cli.hosts-yml` | The whole `gh` hosts file, stored by name; `fleet gh` parses the `oauth_token:` line out of it (`gh.rs:628-642`). The value never leaves the resolver except into the child. |
-| Fleet App key | `github-app.developing-today-fleet.private-key` | PEM private key of the "developing.today fleet" App. |
-| Fleet App ID | *(compiled-in constant `5612056`; `FLEET_GH_APP_ID` overrides it)* | The only ID not carried in the broker (`gh.rs:483-487`). |
-| developing.today App ID | `kaneo.github-app-id` | |
-| developing.today App key | `kaneo.github-app-private-key` | |
-| Backup App ID | `github-app.backup-app-id` | |
-| Backup App key | `github-app.backup-private-key` | |
+| Leg                      | Secret name                                                        | Notes                                                                                                                                                                        |
+| ------------------------ | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Personal                 | `github-cli.hosts-yml`                                             | The whole `gh` hosts file, stored by name; `fleet gh` parses the `oauth_token:` line out of it (`gh.rs:628-642`). The value never leaves the resolver except into the child. |
+| Fleet App key            | `github-app.developing-today-fleet.private-key`                    | PEM private key of the "developing.today fleet" App.                                                                                                                         |
+| Fleet App ID             | _(compiled-in constant `5612056`; `FLEET_GH_APP_ID` overrides it)_ | The only ID not carried in the broker (`gh.rs:483-487`).                                                                                                                     |
+| developing.today App ID  | `kaneo.github-app-id`                                              |                                                                                                                                                                              |
+| developing.today App key | `kaneo.github-app-private-key`                                     |                                                                                                                                                                              |
+| Backup App ID            | `github-app.backup-app-id`                                         |                                                                                                                                                                              |
+| Backup App key           | `github-app.backup-private-key`                                    |                                                                                                                                                                              |
 
 ## Step 2 — in-process minting (App legs only)
 
@@ -102,13 +102,13 @@ Compiled-in owner lists (`gh.rs:104-110`):
 
 Environment overrides (per-process, nothing persists):
 
-| Variable | Effect (`gh.rs:74-86`, `gh.rs:352-378`) |
-| --- | --- |
-| `FLEET_GH_ORDER` | Comma list fixing the whole rotation exactly: entries `personal`, `app:<owner>` (fleet App), `devtoday:<owner>`, `backup:<owner>`. **Gotcha:** an entry matching no `slug:` prefix silently becomes an extra `personal` leg — typos do not error (`gh.rs:399-411`). |
-| `FLEET_GH_APP_OWNERS` | Comma list replacing the fleet App's owners. |
-| `FLEET_GH_DEVTODAY_OWNERS` | Comma list replacing the developing.today App's owners. |
-| `FLEET_GH_BACKUP_OWNERS` | Comma list replacing the backup App's owners. |
-| `FLEET_GH_APP_ID` | Overrides the fleet App ID constant `5612056`. |
+| Variable                   | Effect (`gh.rs:74-86`, `gh.rs:352-378`)                                                                                                                                                                                                                             |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FLEET_GH_ORDER`           | Comma list fixing the whole rotation exactly: entries `personal`, `app:<owner>` (fleet App), `devtoday:<owner>`, `backup:<owner>`. **Gotcha:** an entry matching no `slug:` prefix silently becomes an extra `personal` leg — typos do not error (`gh.rs:399-411`). |
+| `FLEET_GH_APP_OWNERS`      | Comma list replacing the fleet App's owners.                                                                                                                                                                                                                        |
+| `FLEET_GH_DEVTODAY_OWNERS` | Comma list replacing the developing.today App's owners.                                                                                                                                                                                                             |
+| `FLEET_GH_BACKUP_OWNERS`   | Comma list replacing the backup App's owners.                                                                                                                                                                                                                       |
+| `FLEET_GH_APP_ID`          | Overrides the fleet App ID constant `5612056`.                                                                                                                                                                                                                      |
 
 ### Owner hint: reorder only, never add
 
@@ -140,7 +140,7 @@ verbs; `issue`/`pr`/`repo`/… subcommands only in their
 **Anything unrecognized is a write** (the safe default).
 
 Attempts are silent by default; `FLEET_GH_TRACE=1` names each
-attempt's token *source* (label only, never a value) on stderr
+attempt's token _source_ (label only, never a value) on stderr
 (`gh.rs:813-815`, `gh.rs:833-846`).
 
 ## Unknown-org behavior
@@ -190,8 +190,8 @@ full resolution cost.
   other exit code is the final attempt's own, propagated unchanged.
 - **`fleet gh tiers`** (a shadow subcommand; real `gh` has none):
   probes every configured rotation source with `gh api
-  rate_limit`, prints `<label>\tcore <rem>/<lim>\tgraphql
-  <rem>/<lim>`, exits 3 when any source is DOWN
+rate_limit`, prints `<label>\tcore <rem>/<lim>\tgraphql
+<rem>/<lim>`, exits 3 when any source is DOWN
   (`gh.rs:878-927`).
 - **`FLEET_GH_BIN`** — the `gh` binary to run (default `gh`).
   With `gh` absent from PATH the call fails cleanly on stderr with
@@ -199,6 +199,6 @@ full resolution cost.
 - **`FLEET_GH_RAW=1` / leading `--raw`** — first-class bypass: the
   real `gh` execs directly with the caller's ambient credentials
   and environment; **no token is resolved, injected, rotated, or
-  failed over** (`gh.rs:929-964`). Only a *leading* `--raw` is
+  failed over** (`gh.rs:929-964`). Only a _leading_ `--raw` is
   fleet's; `--raw` anywhere else belongs to `gh` (its
   `--raw-field` family lives further along the command line).

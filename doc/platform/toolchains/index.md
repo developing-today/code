@@ -5,20 +5,20 @@ Rule for every doc in this folder: secrets are referenced by **Bitwarden item NA
 
 Every doc follows the same cycle: **Download → Install → Gather secrets → Configure → Test → Known quirks & what has NOT worked.**
 
-| Doc | Tool | Verified in sandbox 2026-10-21 |
-|---|---|---|
-| [nix.md](nix.md) | Nix 2.35.2 (single-user, symlinked store) | `nix (Nix) 2.35.2` |
-| [git.md](git.md) | Git + GitHub CLI (`gh`) | git 2.43.0; gh 2.101.0, logged in as `dezren39` |
-| [bitwarden-bws.md](bitwarden-bws.md) | Bitwarden Secrets Manager CLI (`bws`) | bws 2.1.0 |
-| [cloudflare-wrangler.md](cloudflare-wrangler.md) | Cloudflare API / `cf` first, Wrangler fallback | cf 1.0.0-beta.20; wrangler 4.147.0 |
-| [onepassword-op.md](onepassword-op.md) | 1Password CLI (`op`) | op 2.41.0 |
-| [bun.md](bun.md) | Bun | bun 1.4.2 |
-| [uv.md](uv.md) | uv (Python tooling) | uv 0.12.16 |
-| [go.md](go.md) | Go | go 1.25.1 linux/amd64 |
-| [rust.md](rust.md) | Rust via rustup | toolchain stable; cargo 1.98.1 (with env set, see rust.md) |
-| [tailscale.md](tailscale.md) | Tailscale (platform wrapper, not upstream CLI) | `tailscale status` → Connected |
-| [chromium-playwright.md](chromium-playwright.md) | Real browser (managed Chromium) + Playwright status | No local chromium/playwright binary found — see doc |
-| [muse-cli.md](muse-cli.md) | Muse CLI | **NOT found on PATH in this sandbox on 2026-10-21** — see doc |
+| Doc                                              | Tool                                                | Verified in sandbox 2026-10-21                                |
+| ------------------------------------------------ | --------------------------------------------------- | ------------------------------------------------------------- |
+| [nix.md](nix.md)                                 | Nix 2.35.2 (single-user, symlinked store)           | `nix (Nix) 2.35.2`                                            |
+| [git.md](git.md)                                 | Git + GitHub CLI (`gh`)                             | git 2.43.0; gh 2.101.0, logged in as `dezren39`               |
+| [bitwarden-bws.md](bitwarden-bws.md)             | Bitwarden Secrets Manager CLI (`bws`)               | bws 2.1.0                                                     |
+| [cloudflare-wrangler.md](cloudflare-wrangler.md) | Cloudflare API / `cf` first, Wrangler fallback      | cf 1.0.0-beta.20; wrangler 4.147.0                            |
+| [onepassword-op.md](onepassword-op.md)           | 1Password CLI (`op`)                                | op 2.41.0                                                     |
+| [bun.md](bun.md)                                 | Bun                                                 | bun 1.4.2                                                     |
+| [uv.md](uv.md)                                   | uv (Python tooling)                                 | uv 0.12.16                                                    |
+| [go.md](go.md)                                   | Go                                                  | go 1.25.1 linux/amd64                                         |
+| [rust.md](rust.md)                               | Rust via rustup                                     | toolchain stable; cargo 1.98.1 (with env set, see rust.md)    |
+| [tailscale.md](tailscale.md)                     | Tailscale (platform wrapper, not upstream CLI)      | `tailscale status` → Connected                                |
+| [chromium-playwright.md](chromium-playwright.md) | Real browser (managed Chromium) + Playwright status | No local chromium/playwright binary found — see doc           |
+| [muse-cli.md](muse-cli.md)                       | Muse CLI                                            | **NOT found on PATH in this sandbox on 2026-10-21** — see doc |
 
 Cross-cutting sandbox facts that affect almost every tool (from TOOLS.md):
 

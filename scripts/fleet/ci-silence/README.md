@@ -14,7 +14,7 @@ read healthy.
 completed` — run history is the only evidence; workflow state and the
 actions/permissions API are never consulted). Past the repo's
 threshold (default 6h, per-repo map in the script), the repo is
-*silent* and gets exactly one tracking issue — titled
+_silent_ and gets exactly one tracking issue — titled
 `CI run silence: <repo> — …`, labelled `kind/bug`, `source/ci-watch`,
 `priority/high` — filed in that repo and **updated, not duplicated**,
 on later silent passes. Closing the issue re-arms the probe: a later

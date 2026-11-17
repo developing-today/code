@@ -13,7 +13,7 @@ issue notes it may be months out); this record is the design only.
 
 ## Fixed inputs (not re-decided here)
 
-From #5672: selective sharing exists so a server shares *subsets* instead of
+From #5672: selective sharing exists so a server shares _subsets_ instead of
 all-or-nothing replication; the existence-privacy rule (a share must not leak
 what it does not include); the receiving side may cap, pause, or drop a
 share; revocation cannot un-copy plaintext a peer already holds.
@@ -107,7 +107,7 @@ field is present, carrying an opaque token and no target data. The token
 is a per-grant keyed hash of the target id, so:
 
 - two fields in the same slice pointing at the same ungranted object
-  render as the *same* placeholder (intra-slice linkability is kept —
+  render as the _same_ placeholder (intra-slice linkability is kept —
   the peer can tell its slice references one shared external thing);
 - the token reveals neither the target's id nor anything correlatable
   across grants (each grant salts differently), so placeholders cannot

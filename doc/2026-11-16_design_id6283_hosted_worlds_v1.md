@@ -50,13 +50,13 @@
 
 ## 2. Disposition of the #6276 findings (accept / reject)
 
-| # | Findings constraint | Disposition |
-| --- | --- | --- |
-| F1 | Exactly three operator-visible lifecycle states — live, asleep, archived — with transitions as authority-frame actions (Phase 10 roles / F12.3); wake is not an authorization bypass; zero clients never archives or deletes | **Accept** — §4 |
-| F2 | Journal custody: encryption at rest is an operator/deployment property, not a journal-format change; snapshot/export is a signed, self-describing journal segment set; backup is only real with restore drills (drills owned by v2 #6284) | **Accept** — §5; drill cadence deferred to #6284 as the finding assigns |
-| F3 | Basement cluster is the first target; what breaks first, in order: egress on wake bursts, storage growth from un-archived asleep worlds, power/thermal — not CPU; capacity is counted per-state | **Accept** — §3 (target), §9 (break-first order + v1 mitigations) |
-| F4 | Parity checklist: journal format + replay result, program ceilings, membership/authority evaluation, name resolution, content addressing identical; quotas/storage tiers, abuse controls, jurisdiction partitioning, public-endpoint rate limits legitimately backend-only | **Accept** — §7, as a conformance test in the breakdown (packet P6) |
-| — | (no findings constraint rejected) | The design's own open choices are confined to §10 |
+| #   | Findings constraint                                                                                                                                                                                                                                                        | Disposition                                                             |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| F1  | Exactly three operator-visible lifecycle states — live, asleep, archived — with transitions as authority-frame actions (Phase 10 roles / F12.3); wake is not an authorization bypass; zero clients never archives or deletes                                               | **Accept** — §4                                                         |
+| F2  | Journal custody: encryption at rest is an operator/deployment property, not a journal-format change; snapshot/export is a signed, self-describing journal segment set; backup is only real with restore drills (drills owned by v2 #6284)                                  | **Accept** — §5; drill cadence deferred to #6284 as the finding assigns |
+| F3  | Basement cluster is the first target; what breaks first, in order: egress on wake bursts, storage growth from un-archived asleep worlds, power/thermal — not CPU; capacity is counted per-state                                                                            | **Accept** — §3 (target), §9 (break-first order + v1 mitigations)       |
+| F4  | Parity checklist: journal format + replay result, program ceilings, membership/authority evaluation, name resolution, content addressing identical; quotas/storage tiers, abuse controls, jurisdiction partitioning, public-endpoint rate limits legitimately backend-only | **Accept** — §7, as a conformance test in the breakdown (packet P6)     |
+| —   | (no findings constraint rejected)                                                                                                                                                                                                                                          | The design's own open choices are confined to §10                       |
 
 ## 3. Shape of the system
 
@@ -106,11 +106,11 @@ Connection-scope idle handling already exists
 (doc/2026-10-11T04-48-13Z_feature_takeover_idle_connections); v1 lifts
 it to world scope with exactly three operator-visible states:
 
-| State | Meaning | Cost while in state |
-| --- | --- | --- |
-| **live** | World process running, accepting connections | CPU/RAM of one world process |
-| **asleep** | No process; journal + modules at rest; wakes on authenticated connect or operator start | Disk only |
-| **archived** | At rest; no automatic wake — explicit operator restore to asleep first | Disk only, colder accounting (§9) |
+| State        | Meaning                                                                                 | Cost while in state               |
+| ------------ | --------------------------------------------------------------------------------------- | --------------------------------- |
+| **live**     | World process running, accepting connections                                            | CPU/RAM of one world process      |
+| **asleep**   | No process; journal + modules at rest; wakes on authenticated connect or operator start | Disk only                         |
+| **archived** | At rest; no automatic wake — explicit operator restore to asleep first                  | Disk only, colder accounting (§9) |
 
 Rules:
 
@@ -119,7 +119,7 @@ Rules:
   host uses: owner and operator may wake, pause (live → asleep), and
   archive; restore (archived → asleep) is operator-only.
 - **Wake is not an authorization bypass.** A member's connect to an
-  asleep world is a wake *request*: the supervisor starts the world,
+  asleep world is a wake _request_: the supervisor starts the world,
   and membership/authority is enforced by the world before it serves —
   exactly as if the world had been live. A non-member's connect wakes
   nothing they can use; the world may return to asleep.
@@ -217,14 +217,14 @@ in the hosted path may depend on our instance (principle 4).
 
 ## 8. Dependencies — named, not assumed
 
-| Dependency | State (fresh, 2026-11-16) | How v1 treats it |
-| --- | --- | --- |
-| #805 — F12.11 delta and binary frames (screen patches, resume tokens) | **OPEN** | **Not assumed.** Wake-burst resync (§9) is bounded by resume tokens/delta frames when #805 lands; until then v1 wakes with full resync and names the egress cost as the known v1 limitation. No v1 packet blocks on #805; P6 records resync bytes so the improvement is measurable when it lands. |
-| #806 — F12.13 journal replication (read replicas over a signed stream) | **CLOSED** (completed 2026-11-14) | Landed input: §5's signed snapshot/export segment set builds on its signed stream. Replication-based backup and read replicas are **not** v1 scope — they belong to custody depth in v2 (#6284). |
-| #1061 — F12.4 provider registry design | CLOSED (design landed) | Input only: if a hosted world registers providers, it does so under that design; v1 adds no registry behavior. |
-| #1067 — F12.10 fair scheduling / quotas design | CLOSED (design landed) | Input: §6/§9 quota posture (storage tiers, wake fairness) follows that design; v1 implements only the host-side accounting hooks (packet P1), not a new quota system. |
-| #227 — journal rollback compatibility | Done (per #6276) | §5's version discipline builds on it. |
-| #6284 / #6285 / #6286 — v2 custody & lifecycle, v3 many nodes, v4 public operation | OPEN | Successors, not dependencies: v1 must not pre-build their scope, and their designs consume this document. |
+| Dependency                                                                         | State (fresh, 2026-11-16)         | How v1 treats it                                                                                                                                                                                                                                                                                  |
+| ---------------------------------------------------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| #805 — F12.11 delta and binary frames (screen patches, resume tokens)              | **OPEN**                          | **Not assumed.** Wake-burst resync (§9) is bounded by resume tokens/delta frames when #805 lands; until then v1 wakes with full resync and names the egress cost as the known v1 limitation. No v1 packet blocks on #805; P6 records resync bytes so the improvement is measurable when it lands. |
+| #806 — F12.13 journal replication (read replicas over a signed stream)             | **CLOSED** (completed 2026-11-14) | Landed input: §5's signed snapshot/export segment set builds on its signed stream. Replication-based backup and read replicas are **not** v1 scope — they belong to custody depth in v2 (#6284).                                                                                                  |
+| #1061 — F12.4 provider registry design                                             | CLOSED (design landed)            | Input only: if a hosted world registers providers, it does so under that design; v1 adds no registry behavior.                                                                                                                                                                                    |
+| #1067 — F12.10 fair scheduling / quotas design                                     | CLOSED (design landed)            | Input: §6/§9 quota posture (storage tiers, wake fairness) follows that design; v1 implements only the host-side accounting hooks (packet P1), not a new quota system.                                                                                                                             |
+| #227 — journal rollback compatibility                                              | Done (per #6276)                  | §5's version discipline builds on it.                                                                                                                                                                                                                                                             |
+| #6284 / #6285 / #6286 — v2 custody & lifecycle, v3 many nodes, v4 public operation | OPEN                              | Successors, not dependencies: v1 must not pre-build their scope, and their designs consume this document.                                                                                                                                                                                         |
 
 ## 9. What breaks first (F3) — and the v1 mitigation for each
 

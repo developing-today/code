@@ -95,9 +95,7 @@ export function buildPacket(input: PacketInput, dedupeKey: string): Packet {
     timebox_minutes: isTriage ? 20 : 45,
     max_attempts: 1000, // #8973: Drew order 2026-11-12 - new tasks default to 1000 on every creation path
     // #3418: explicit requirement only; see PacketInput.requiredBudgetMinutes.
-    ...(input.requiredBudgetMinutes != null
-      ? { required_budget_minutes: input.requiredBudgetMinutes }
-      : {}),
+    ...(input.requiredBudgetMinutes != null ? { required_budget_minutes: input.requiredBudgetMinutes } : {}),
     context_refs: input.issue ? [input.issue.url] : [],
     dedupe: {
       checked_at: now,
@@ -178,8 +176,7 @@ export function validatePayload(payload: Record<string, unknown>): string[] {
   if (
     payload.required_budget_minutes !== undefined &&
     payload.required_budget_minutes !== null &&
-    (!Number.isInteger(payload.required_budget_minutes) ||
-      (payload.required_budget_minutes as number) < 1)
+    (!Number.isInteger(payload.required_budget_minutes) || (payload.required_budget_minutes as number) < 1)
   ) {
     errs.push("payload.required_budget_minutes: must be a positive integer");
   }

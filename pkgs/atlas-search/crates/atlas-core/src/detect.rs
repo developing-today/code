@@ -191,9 +191,8 @@ impl DetectionLedger {
                 )));
             }
         };
-        let ledger: DetectionLedger = serde_json::from_str(&text).map_err(|e| {
-            Error::backend(format!("detection ledger {}: {e}", path.display()))
-        })?;
+        let ledger: DetectionLedger = serde_json::from_str(&text)
+            .map_err(|e| Error::backend(format!("detection ledger {}: {e}", path.display())))?;
         if ledger.schema != DETECTION_LEDGER_SCHEMA {
             return Err(Error::backend(format!(
                 "detection ledger {}: unsupported schema {:?}",
@@ -213,9 +212,8 @@ impl DetectionLedger {
         }
         let text = serde_json::to_string_pretty(self)
             .map_err(|e| Error::backend(format!("detection ledger: {e}")))?;
-        std::fs::write(path, format!("{text}\n")).map_err(|e| {
-            Error::backend(format!("detection ledger {}: {e}", path.display()))
-        })
+        std::fs::write(path, format!("{text}\n"))
+            .map_err(|e| Error::backend(format!("detection ledger {}: {e}", path.display())))
     }
 
     pub fn source(&self, source: &str) -> Option<&SourceLedger> {
@@ -248,13 +246,8 @@ impl DetectionLedger {
         let from = previous.as_ref().map(|l| l.commit.clone());
         let started = Instant::now();
 
-        let mut pass = git_tree_detection(
-            repo,
-            &source,
-            from.as_deref(),
-            target,
-            previous.as_ref(),
-        )?;
+        let mut pass =
+            git_tree_detection(repo, &source, from.as_deref(), target, previous.as_ref())?;
         pass.elapsed_ms = started.elapsed().as_millis() as u64;
 
         // Merge the verdicts into the landed map. An unchanged path is
@@ -316,10 +309,7 @@ pub fn git_tree_detection(
     if let Some(landed) = landed {
         let touched: std::collections::BTreeSet<&str> = verdicts
             .iter()
-            .flat_map(|v| {
-                std::iter::once(v.path.as_str())
-                    .chain(v.previous_path.as_deref())
-            })
+            .flat_map(|v| std::iter::once(v.path.as_str()).chain(v.previous_path.as_deref()))
             .collect();
         counts.unchanged = landed
             .objects
@@ -328,7 +318,11 @@ pub fn git_tree_detection(
             .count() as u64;
     }
     let stat_presumption_rate = landed.and_then(|l| {
-        let total = l.objects.len() + verdicts.iter().filter(|v| v.verdict == Verdict::New).count();
+        let total = l.objects.len()
+            + verdicts
+                .iter()
+                .filter(|v| v.verdict == Verdict::New)
+                .count();
         (total > 0).then(|| counts.unchanged as f64 / total as f64)
     });
 
@@ -470,7 +464,10 @@ fn apply_rename_second_pass(verdicts: &mut Vec<PathVerdict>) {
 /// Resolve a commit-ish to a full object id, so the ledger stores what
 /// it can verify later.
 pub fn resolve_commit(repo: &Path, rev: &str) -> Result<String> {
-    let out = git(repo, &["rev-parse", "--verify", &format!("{rev}^{{commit}}")])?;
+    let out = git(
+        repo,
+        &["rev-parse", "--verify", &format!("{rev}^{{commit}}")],
+    )?;
     Ok(out.trim().to_string())
 }
 

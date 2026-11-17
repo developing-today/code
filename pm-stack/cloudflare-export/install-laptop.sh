@@ -15,9 +15,18 @@ SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEST_DIR="$HOME/atlas/cloudflare-export"
 UNIT_DIR="$HOME/.config/systemd/user"
 
-command -v bun >/dev/null || { echo "install-laptop: bun not found on PATH" >&2; exit 1; }
-command -v bws >/dev/null || { echo "install-laptop: bws not found on PATH" >&2; exit 1; }
-command -v jq >/dev/null || { echo "install-laptop: jq not found on PATH" >&2; exit 1; }
+command -v bun >/dev/null || {
+  echo "install-laptop: bun not found on PATH" >&2
+  exit 1
+}
+command -v bws >/dev/null || {
+  echo "install-laptop: bws not found on PATH" >&2
+  exit 1
+}
+command -v jq >/dev/null || {
+  echo "install-laptop: jq not found on PATH" >&2
+  exit 1
+}
 
 mkdir -p "$DEST_DIR" "$UNIT_DIR"
 install -m 0755 "$SRC_DIR/cloudflare-quota-export.mjs" "$DEST_DIR/cloudflare-quota-export.mjs"

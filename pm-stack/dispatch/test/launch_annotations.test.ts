@@ -11,7 +11,13 @@ import { annotateLaunch } from "../src/launch_annotations.ts";
 // never rejected — these stubs pin that contract.
 
 function stubs(
-  opts: { failComment?: boolean; failLabels?: boolean; failPatch?: boolean; failGet?: boolean; preExisting?: string | null } = {},
+  opts: {
+    failComment?: boolean;
+    failLabels?: boolean;
+    failPatch?: boolean;
+    failGet?: boolean;
+    preExisting?: string | null;
+  } = {},
 ) {
   const calls: {
     comments: [string, number, string][];

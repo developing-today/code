@@ -11,11 +11,11 @@ This repo is the only source for `mcpx`. The macOS flake in `dezren39/nix` delet
 
 ## Next
 
-| Title                                           | Status   | Intent                                                                                                                                                                                                                     | Links                                  |
-| ----------------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
-| A supervisor that owns each stdio child's pipes | idea     | Today's takeover handoff is a stopgap that passes pipes over a unix socket. A supervisor that outlives the daemon makes a daemon upgrade a plain restart of the front end.                                                 | #1384, [TODO](../../pkgs/mcpx/TODO.md) |
-| Resume upstream sessions after a cold restart   | partial  | Legacy streamable HTTP sessions persist across cold restarts, with expired-session fallback and cleanup; the graceful-shutdown DELETE question remains open.                                                               | #1414, [TODO](../../pkgs/mcpx/TODO.md) |
-| Script runtime follow-ups                       | proposed | Capability probe and clearer parse-failure diagnostics for `--runtime node`, and recipes with `@param` holes.                                                                                                              | nix#108, nix#367                       |
+| Title                                           | Status   | Intent                                                                                                                                                                     | Links                                  |
+| ----------------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
+| A supervisor that owns each stdio child's pipes | idea     | Today's takeover handoff is a stopgap that passes pipes over a unix socket. A supervisor that outlives the daemon makes a daemon upgrade a plain restart of the front end. | #1384, [TODO](../../pkgs/mcpx/TODO.md) |
+| Resume upstream sessions after a cold restart   | partial  | Legacy streamable HTTP sessions persist across cold restarts, with expired-session fallback and cleanup; the graceful-shutdown DELETE question remains open.               | #1414, [TODO](../../pkgs/mcpx/TODO.md) |
+| Script runtime follow-ups                       | proposed | Capability probe and clearer parse-failure diagnostics for `--runtime node`, and recipes with `@param` holes.                                                              | nix#108, nix#367                       |
 
 ## Later
 

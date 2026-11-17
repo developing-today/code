@@ -1,7 +1,9 @@
 #!/bin/bash
 # usage: lane-handoff.sh TASK_ID ISSUE_NUMBER "kind description"
 set -u
-T=$1; I=$2; DESC=$3
+T=$1
+I=$2
+DESC=$3
 python3 - "$T" <<'PY'
 import json,pathlib,sys
 p=pathlib.Path.home()/"hooks/state/repo-queue-code-worker-g.lock"

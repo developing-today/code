@@ -45,10 +45,10 @@ to the contract in "What a future producer must pin" below.
    different object from chunk identity, over different bytes. It
    must not be cited as the chunk `content_hash` algorithm; the
    known-answer vectors in `pkgs/atlas-search/test-vectors/
-   content-hash-v1.json` record it under its own scope solely to
+content-hash-v1.json` record it under its own scope solely to
    keep the two apart.
 3. **Trace/query hashes** — `crates/atlas-core/src/trace.rs`
-   computes SHA-256 over normalised *query* text, and trace rows
+   computes SHA-256 over normalised _query_ text, and trace rows
    carry a nullable `embed_content_hash` linkage field. Neither
    produces chunk `content_hash`.
 
@@ -64,14 +64,14 @@ to the contract in "What a future producer must pin" below.
   staging layer (`crates/atlas-core/src/stage.rs`) stores the value
   but never computes it: staging writers (unit owners) supply it.
 - `pkgs/atlas-search/eval/eval3.py` — corpus fingerprint check:
-  SHA-256 over the *stored hash strings* of sampled chunks against
+  SHA-256 over the _stored hash strings_ of sampled chunks against
   a frozen expectation (`EXPECTED_CHUNKS`/`EXPECTED_SHA`). A
   consumer-side integrity oracle over an existing corpus — it
   presupposes the hashes; it does not produce them.
 - Fixtures (`fixtures/fixture_corpus.sql`,
   `fixtures/dns-search-corpus.sql`, `fixtures/gen_fixtures.py`) and
   crate tests insert literal hash strings (e.g. `'h9002'`);
-  `gen_fixtures.py`'s SHA-256 is over fixture *files*, for
+  `gen_fixtures.py`'s SHA-256 is over fixture _files_, for
   provenance. None of these is a production producer.
 
 ## Searches performed (2026-11-16, tree at 67596fcbac55)

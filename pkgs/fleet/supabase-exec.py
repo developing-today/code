@@ -15,6 +15,7 @@ Auth: reads the Bitwarden Secrets Manager access token from
 (the sbp_ management token) from project "developing today", and uses it as
 a Bearer token. No secret is ever printed. Output is the JSON result rows.
 """
+
 import json
 import os
 import subprocess
@@ -35,12 +36,22 @@ def bws_env():
 
 
 def get_secret(env, key):
-    out = subprocess.run([BWS, "secret", "list", "-o", "json"],
-                         capture_output=True, text=True, env=env, check=True)
+    out = subprocess.run(
+        [BWS, "secret", "list", "-o", "json"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
+    )
     for s in json.loads(out.stdout):
         if s.get("key") == key:
-            got = subprocess.run([BWS, "secret", "get", s["id"], "-o", "json"],
-                                 capture_output=True, text=True, env=env, check=True)
+            got = subprocess.run(
+                [BWS, "secret", "get", s["id"], "-o", "json"],
+                capture_output=True,
+                text=True,
+                env=env,
+                check=True,
+            )
             return json.loads(got.stdout)["value"]
     raise SystemExit(f"secret {key} not found in Bitwarden")
 
@@ -50,18 +61,35 @@ def run_sql(token, ref, sql):
     # proxy intermittently die with IncompleteRead (hit repeatedly
     # 2026-10-20); curl handles the same responses reliably.
     import tempfile
+
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
         json.dump({"query": sql}, f)
         fname = f.name
     try:
         out = subprocess.run(
-            ["curl", "-sS", "-m", "120", "-A", "Mozilla/5.0", "-X", "POST",
-             "-H", f"Authorization: Bearer {token}",
-             "-H", "Content-Type: application/json",
-             "--data", f"@{fname}",
-             f"https://api.supabase.com/v1/projects/{ref}/database/query",
-             "-w", "\n%{http_code}"],
-            capture_output=True, text=True, check=True).stdout
+            [
+                "curl",
+                "-sS",
+                "-m",
+                "120",
+                "-A",
+                "Mozilla/5.0",
+                "-X",
+                "POST",
+                "-H",
+                f"Authorization: Bearer {token}",
+                "-H",
+                "Content-Type: application/json",
+                "--data",
+                f"@{fname}",
+                f"https://api.supabase.com/v1/projects/{ref}/database/query",
+                "-w",
+                "\n%{http_code}",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
         body, _, code = out.rpartition("\n")
         return int(code), body
     finally:
