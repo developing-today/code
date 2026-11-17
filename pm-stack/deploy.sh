@@ -24,6 +24,15 @@
 # The stack itself binds 127.0.0.1:5173 and stores data in the Docker
 # named volume pm-stack_postgres_data on this host.
 set -euo pipefail
+# Argument contract (#3352): at most one command, deploy (the default),
+# render or restart; anything else is a usage error before any work.
+case "$#:${1-deploy}" in
+0:deploy | 1:deploy | 1:render | 1:restart) ;;
+*)
+  echo "$0: unexpected arguments '$*'; usage: $0 [deploy|render|restart]" >&2
+  exit 2
+  ;;
+esac
 
 cd "$(dirname "$0")"
 STACK_DIR="$PWD"
@@ -98,6 +107,13 @@ deploy)
   for i in $(seq 1 30); do
     if curl --fail --silent http://127.0.0.1:5173/api/health >/dev/null; then
       echo "kaneo is healthy: $(curl --silent http://127.0.0.1:5173/api/health)"
+      # Close-authority guard (code#10137): the GitHub sync transitions
+      # live only in Kaneo's DB, and a fresh import can silently restore
+      # the dangerous upstream default. Assert them on every deploy.
+      if ! python3 "$STACK_DIR/kaneo-sync-guard.py"; then
+        echo "kaneo sync guard failed or healed drift - deploy marked failed; see output above" >&2
+        exit 1
+      fi
       exit 0
     fi
     sleep 5

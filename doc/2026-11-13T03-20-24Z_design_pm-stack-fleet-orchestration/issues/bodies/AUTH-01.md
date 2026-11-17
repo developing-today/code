@@ -51,16 +51,13 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9206→CLI-02, #9200→PRI-01, #9198→CEN-04.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
 
 - **First failing test:** `pmo_auth_rejects_unscoped_project_write; pmo_auth_protected_priority_requires_owner_policy`
 - **Oracle:** The source slice’s stated reference model, golden fixture, or invariant; compare expected and observed state explicitly. No mock-only claim of deployed/live behavior.
-- **Done command:** `verify both test names listed, then `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_auth_`. Also verify `pmo_auth_protected_priority_requires_owner_policy` is listed, then run `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_auth_protected_priority_requires_owner_policy`.`
+- **Done command:** `verify both test names listed, then `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_auth_`. Also verify `pmo_auth_protected_priority_requires_owner_policy`is listed, then run`cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_auth_protected_priority_requires_owner_policy`.`
 - Tests must first be listed by exact name in the owning target (`-- --list`); assert the test exists before execution. A zero-test filter passing is not acceptance.
 
 ## Acceptance and negative cases
@@ -100,8 +97,8 @@ Consume the existing #7030 protected expedite membership/value and the dated `pm
 
 **Tier:** crucial. **Goal:** executable field-ownership policy; every write checks authenticated principal capability and scope, work/ref/field, expected version, reason, visibility and op ID. **Owns:** `pkgs/fleet/crates/fleet-queue/src/work/authority.rs` pure policy + tests; shared CLI files excluded. **Hard blockers:** granular #9206 authority/resource identity contract; #9200 priority authority; #9198 Project sole-writer and existing Fleet `gh.rs` boundaries; #9073/#9074 are consumed only if the selected interface needs them. **First failing oracles:** `pmo_auth_rejects_unscoped_project_write` and `pmo_auth_queue_title_does_not_mutate_pr_title`. **Done command:** verify both test names listed, then `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_auth_`. **Negative:** direct Project write, ambiguous GitHub ref, stale external revision, status reason leaks note. **Migration:** if needed, audit-only comparison precedes enforcement; rollback stops new adapter writes, never creates parallel authority. **Docs:** field matrix and operator policy.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `AUTH-04` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/authority.rs`

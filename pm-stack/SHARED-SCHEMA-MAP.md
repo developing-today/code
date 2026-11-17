@@ -46,9 +46,26 @@ The first Move 1 store group is now specified by the versioned
 [action/event schema contract](shared-schema/README.md): `public.agg_actions`
 owns the aggregator's `actions.json` records, and `public.shared_events`
 holds their cross-service outcomes. The paired up/down migration and
-disposable PostgreSQL test are under `shared-schema/`. This is DDL and a
-contract only; `actions.json` / `events.json` remain authoritative, with no
-rows copied and no live reader or writer changed.
+disposable PostgreSQL test are under `shared-schema/`.
+
+#### Aggregator remote stores (#6815)
+
+[#6815](https://github.com/developing-today/code/issues/6815) makes four of
+the stores above canonical in Supabase `muse-dev2` under the switch
+`PM_AGG_STORE_BACKEND=supabase` (`file` stays the dev/test/rollback
+backend, and the local JSON is then only a rebuildable cache):
+
+| Store                           | Table(s)                                                    | Migration                                |
+| ------------------------------- | ----------------------------------------------------------- | ---------------------------------------- |
+| `actions.json`                  | `public.agg_actions`                                        | `20261105_0001_action_event_store`       |
+| `activity-ingestion.json`       | `public.agg_activity_ingestion`, `public.agg_activity_gaps` | `20261116_0001_aggregator_remote_stores` |
+| `snapshots/usage-YYYY-MM.jsonl` | `public.agg_usage_snapshots`                                | `20261116_0001_aggregator_remote_stores` |
+| `aa-last-good.json`             | `public.agg_store_documents` (key `aa-last-good`)           | `20261116_0001_aggregator_remote_stores` |
+
+The sibling stores (`freshness.json`, `notifications.jsonl`,
+`needs-drew.json`, `decisions.json`, `decision-events*.jsonl`,
+`stack-health.json`, `item-history.jsonl`) are follow-on scope (#3989) and
+still live only as laptop-local files.
 
 Read-only producer inputs (quota register/view, OpenChamber state, Cloudflare
 and Supabase exports, DNS/orchestration/charge/launch records) are not
@@ -100,7 +117,12 @@ Restore is replaying the SQL file into a scratch SQLite database;
 manifest inclusion, links-only content, and restore integrity against
 fixture databases, and the three legs inherit coverage because all three
 copy the same sha256-verified archive tarball. The aggregator's distinct
-`registry.json` is already a required archive member.
+`registry.json` is already a required archive member. The four #6815 remote
+stores have their own leg: when the deployed `PM_AGG_STORE_BACKEND` is
+`supabase`, every run exports the five `agg_` tables as JSON into
+`supabase/agg_*.json`, verified against the same manifest — the RPO path
+recorded on #6815 for #1514 (`nixos/home/pm-dashboard-backup-manifest.test.sh`
+covers it).
 Kaneo/Grist/Pad dumps are only included when the optional external dump script
 exists ([conditional dump step](../nixos/home/pm-dashboard-backup.sh#L275-L299));
 the #3142 design also calls for their own verified native restore paths.

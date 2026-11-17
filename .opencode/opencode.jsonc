@@ -16,6 +16,14 @@
   //   Gemini path is wanted one day, use the "google" provider below — it is
   //   THE token path (Gemini API key; working muse-sandbox free-tier key is
   //   in the credential store as "Google API (muse-sandbox)").
+  //   2026-11-16 (Drew): the earmark is EXERCISED -- the "google" provider
+  //   is defined and enabled below (AI Studio free tier, our own key;
+  //   see its block note).
+  //   2026-11-16 (Drew, later): reshaped the same day into per-project
+  //   aliases -- google.muse / google.gen-lang / google.personal /
+  //   google.drew (free) and google.developing-today (PAYG) -- grouped
+  //   by the google-free / google-payg provider routes below. The bare
+  //   "google" id returns to the tombstone set (no definition).
   // - THE Antigravity provider is "antigravity-ls" (warm language-server
   //   route). "antigravity-agy" (CLI spawn route) sat disabled as the
   //   fallback until 2026-10-28, when Drew re-enabled it for one seated
@@ -207,20 +215,150 @@
   // one-line targets reorder in haiku-plan, not a switchboard
   // change. Credential: ~/.claude/.credentials.json (native
   // provider reads it in place); live-probed at enable time.
+  // 2026-11-14 (Drew, direct order - code#9549): "_claude" joins the
+  // list below. Its 7-day window is at 100% until 2026-11-18 13:00 CT
+  // and every call returns a rate-limit error; sessions dealt its
+  // leaves (fable-plan, sonnet-plan, opus-plan, haiku-plan,
+  // workhorse-last-resort) do not fail over - they sit in the retry
+  // loop on the dead door (attempt counters past 10, sessions wedged
+  // 40+ minutes; the fleet minder interrupt-stopped 100+ of them on
+  // 2026-11-13/14). Drew's re-login did not revive it (probes:
+  // 236 failures / 0 successes in the trailing 30 minutes). Per the
+  // switchboard rule the definition and every seat stay in place;
+  // deleting this line re-enables it. Re-enable at the 2026-11-18
+  // reset, or sooner if a live probe shows the door answering again.
+  // 2026-11-14 (code#9856): "_antigravity" joins the list below.
+  // Google has disabled the whole Antigravity account for a Terms of
+  // Service violation - this is not a quota wall and not one dead
+  // model: route_attempt probes in the trailing 3 hours at 03:32 CT
+  // on 2026-11-14 show every _antigravity leaf failing with the same
+  // "This service has been disabled in this account for violation of
+  // Terms of Service. Please submit an appeal..." error
+  // (gemini-4-hydrogen 717 failures, gemini-4-argon 332 failures,
+  // claude-opus-5-5 failing too; last _antigravity success ~02:50 CT).
+  // Every _antigravity seat is dead: hydrogen (summit, speed,
+  // workhorse-weighted), argon (summit, specialist), sonnet-5-5
+  // (workhorse-weighted) and opus via antigravity. Per the switchboard
+  // rule the definition and every seat stay in place. CORRECTION
+  // (2026-11-14): the re-enable condition first written here was
+  // wrong. This disable is PERMANENT for fleet use, regardless of the
+  // appeal outcome: the appeal gives each account exactly one
+  // remediation, Google's terms ban third-party/wrapper access to
+  // Antigravity outright, and a single fleet call after reinstatement
+  // risks permanent suspension of the account. Do NOT delete this
+  // line, do NOT re-enable this provider, and do NOT probe it. If the
+  // account is reinstated, it is for use inside Google's own
+  // Antigravity app only.
+  // 2026-11-14 (code#9859): "_muse" joins the list below. Its
+  // subscription quota is exhausted - a quota wall, not an account
+  // death: route_attempt probes in the trailing 3 hours at 03:55 CT
+  // on 2026-11-14 show every _muse leaf failing with
+  // "Subscription quota exhausted. Your usage window resets at
+  // 2026-11-16T00:00:00Z." (muse-wonder-1.0-contributor 10 failures,
+  // muse-spark-1.3-contributor 9 failures; no _muse success in
+  // 24h). Sessions dealt its leaves do not fail over - they sit in
+  // the retry loop on the dead door (the fleet minder
+  // interrupt-stopped 9 wedged sessions in run398 alone). Every
+  // _muse seat is inert while it lasts: spark #high
+  // (workhorse-weighted), wonder #xhigh (summit), spark #xhigh
+  // (speed) and the spark-plan reserve leaf. Per the switchboard
+  // rule the definition and every seat stay in place; deleting
+  // this line re-enables it. Re-enable after the window resets at
+  // 2026-11-16T00:00:00Z (Sun 2026-11-15 18:00 CT) AND a live
+  // probe shows the door answering again.
+  // 2026-11-14 (Drew, direct order - code#10128): "_commandcode"
+  // joins the list below. Its monthly window has sat at 99.5%+
+  // ($9.95 of the $10 included credits) since 2026-11-10 - 99.513%
+  // on the 2026-11-14 09:15 CT gatherer tick, weekly 64.6%, 5h 0 -
+  // and Drew ruled today that a window at >=99.5% sustained across
+  // reads is WALLED: the residual fraction is not drawable and
+  // the door is not to be retried into new work. Every
+  // _commandcode door was already removed from the plan pools on
+  // 2026-11-13 (code#9397); this flip makes the wall formal at the
+  // switchboard and makes the provider definition's own "STILL in
+  // disabled_providers" note below true. Per the switchboard rule
+  // the definition and every seat stay in place; deleting this
+  // line re-enables it. Re-enable only when a fresh read shows
+  // the monthly window back under 99.5% after its reset AND
+  // restoration is proven by a live completion (the code#9397
+  // re-seat condition).
+  // 2026-11-15 (Drew, direct order): "_commandcode" LEAVES the list.
+  // Drew's ruling: a quota-walled provider is enabled and skipped,
+  // not disabled. _commandcode has had ZERO seats since 2026-11-13
+  // (code#9397) - no route target references it anywhere in this
+  // file (verified 2026-11-15: no "_commandcode/" or bare
+  // "commandcode/" target strings, no commandcode-plan references) -
+  // so this enable is inert: no walk can reach the door whatever the
+  // skip machinery does, and its gathered read is not even full
+  // (monthly 99.513%, no reset stated; the aggregator calls it
+  // "near", not walled). This supersedes the 2026-11-14 re-enable
+  // condition above for this provider. _claude and _muse were NOT
+  // removed in the same pass: the proactive gathered-quota skip is
+  // proven for per-credential pools (Go/Zen legs are excluded as
+  // quota-known-full with zero attempts) but NOT for provider-wide
+  // snapshot pools - opendesign (7d 100%) took 42 attempts in 6h and
+  // cline-pass (monthly 100%) 8 in the same window on 2026-11-15,
+  // all quota failures, in the running build that contains the
+  // code#8086 plant. Filed as fork issue #2479; _claude/_muse
+  // un-disable when that closes, and _claude additionally only on a
+  // build that includes fork PR #2466 (code#9549). _antigravity
+  // stays: banned account, not a quota wall.
+  // 2026-11-15 (Drew, direct order — later the same day): "restore
+  // claude and muse. do the switch." Both conditions named above
+  // are now met: fork #2479 is FIXED and merged (opencode#2480 —
+  // the gathered provider-wide wall now gates the provider scope,
+  // so a walled provider's legs are excluded before any attempt),
+  // fork PR #2466 is merged, and the fork pin in this repo points
+  // at the revision carrying both. "_claude" and "_muse" LEAVE
+  // the list below: _claude's 7d window reads 100% until
+  // 2026-11-18T19:00Z and _muse's weekly 100% until
+  // 2026-11-16T00:00Z — both stay seated, are skipped while
+  // walled, and revive at their resets. The _commandcode seats
+  // are restored in the same pass (see the per-pool notes); its
+  // gathered read is "near", not walled (monthly 99.513%, no
+  // reset stated), so its legs serve and bench reactively on
+  // failure, per Drew's stated tolerance.
+  // 2026-11-16 (Drew, correction): the pool-composition run 42
+  // unseating of _commandcode (PR #10875, R34), its MiniMax Zen
+  // leaf removal (R35), and the flint-plan emptying (PR #10882)
+  // are REVERTED in this pass. Entries stay in the pools: dead
+  // doors are sidelined by walls and benches, not by hand-removal
+  // — a quota-walled provider is enabled and skipped, not
+  // disabled and not unseated (Drew's 2026-11-15 ruling, above).
+  // Why the quota wall never fired on _commandcode: its gathered
+  // read sits at 99.5% ("near", under the wall trigger) and its
+  // refusals are permanent plan errors (the free Beam tier has
+  // ended; Sol is not in the plan), which a quota read cannot
+  // see. The fork's plan-wall bench (opencode#2570, merged
+  // 2026-11-16) walls a leaf on that error class once deployed;
+  // until then the legs serve and bench reactively, per the
+  // tolerance above. The MiniMax and flint Zen leaves are
+  // restored on the same ruling.
+  // 2026-11-16 (Drew, direct order - INTERIM): "_commandcode"
+  // JOINS the list below, and its two permanently-refused models
+  // (gpt-6.1-sol, reflection/beam:free) are commented out at their
+  // seats. This is a temporary hand measure, NOT the design. The
+  // design is the wall doctrine of 2026-11-10 (fork opencode#2256:
+  // a binding window <1% remaining AND plan-limit errors walls the
+  // pool itself - still OPEN, never built) plus the plan-wall bench
+  // (fork #2570, merged and pin-bumped in #10894, awaiting a
+  // switch). RESTORE CONDITION: remove "_commandcode" from this
+  // list and uncomment the two models once the system walls as it
+  // should - the plan-wall build deployed AND the #2256
+  // near-plus-erroring wall working. Until then the door stays
+  // dark rather than eating attempts.
   "disabled_providers": [
+    "_commandcode",
     "google",
     "google-vertex",
     "cloudflare-ai-gateway",
-    "groq",
-    "nvidia",
     "vercel",
     "huggingface",
-    "opencode",
     "github-copilot",
-    "openrouter",
     "cloudflare-workers-ai",
     "meta",
-    "deepseek"
+    "deepseek",
+    "_antigravity"
   ],
   // 2026-11-03 (Drew): muse, antigravity-ls, antigravity-agy, code-design,
   // design-code, cloudflare-gateway and chatgpt left this list together with
@@ -231,6 +369,18 @@
   // they are listed here (verified live 2026-11-03 -- with the entries removed
   // all five reappeared in the running server within minutes). The entries are
   // the only trace of them left; there are no definitions to flip back on.
+  // 2026-11-16 (Drew, free-provider pass): google LEAVES the tombstone set
+  // in this pass -- it carries a full definition again below (AI Studio
+  // free tier) and its entry leaves disabled_providers above. The other
+  // four stay tombstoned.
+  // 2026-11-16 (Drew, later the same day): google RETURNS to the
+  // tombstone set. The exercised door was reshaped into per-project
+  // alias providers (google.muse, google.gen-lang, google.personal,
+  // google.drew, google.developing-today), each with its own
+  // definition and credential row, so the bare id once again has no
+  // definition -- and without this entry the catalog would
+  // auto-activate it. The aliases are distinct ids; this entry does
+  // not touch them.
   // openai-codex followed on 2026-11-03: its ten route legs were re-seated
   // onto openai-plan (the ChatGPT provider route) and the definition was
   // deleted with the rest. It is a custom id with no catalog entry, so --
@@ -820,6 +970,244 @@
         }
       }
     },
+    // NEW 2026-11-15 (Drew, free-provider pass): Z.ai direct door.
+    // GLM-4.7-Flash and GLM-4.5-Flash are $0 per token PERMANENTLY on
+    // Z.ai's own pricing page (verified 2026-11-15, docs.z.ai pricing;
+    // live chat probes on our key the same day). Explicit model list —
+    // NOT instanceOf the built-in catalog, which would also expose the
+    // paid GLM models. Key is ours: Bitwarden `zai.api-key`, bound via
+    // a credential-store row (integrationID zai) created 2026-11-15.
+    "zai": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Z.ai (GLM Free Tier)",
+      "options": {
+        "baseURL": "https://api.z.ai/api/paas/v4"
+      },
+      "models": {
+        "glm-4.7-flash": {
+          "name": "GLM-4.7-Flash (Z.ai Free)",
+          "limit": {
+            "context": 200000
+          }
+        },
+        "glm-4.5-flash": {
+          "name": "GLM-4.5-Flash (Z.ai Free)",
+          "limit": {
+            "context": 131072
+          }
+        }
+      }
+    },
+    // EXAONE API Platform (2026-11-16, Drew: free-provider pass):
+    // K-EXAONE 2.5 by LG AI Research, behind our own EXAONE ID
+    // key -- a direct free door. The platform serves exactly one
+    // chat model (EXAONE Tabular is a structured-data model, not
+    // a chat seat). Key in Bitwarden as exaone.api-key; platform
+    // keys expire 30 days after issuance (this one issued
+    // 2026-11-16) -- re-issue at docs.exaone.ai My Profile >
+    // API Key when auth failures start. Wire-proven direct
+    // 2026-11-16 (HTTP 200 chat completion on k-exaone_v2.5).
+    // KEY EXPIRY: this key dies 2026-12-16 (30 days after its
+    // 2026-11-16 issuance); auth failures from that date are the
+    // known expiry, not a new breakage -- re-issue and rotate the
+    // Bitwarden item + credential-store row.
+    // 2026-11-16 (R33 fix): the model's limit MUST name output
+    // alongside context -- the fork's v1 config schema requires
+    // limit.output, and a context-only limit fails the whole
+    // provider's decode: normalization silently skips the provider
+    // ("$.provider.exaone kind=invalid"), the route resolves to
+    // no models, and the door draws zero attempts with no error
+    // anywhere but the server log. Output 524288 is the vendor's
+    // published max output (docs.exaone.ai Models: 512K max
+    // output; endpoint caps input + max_tokens at 524,288).
+    "exaone": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "EXAONE (K-EXAONE 2.5 Free API)",
+      "options": {
+        "baseURL": "https://api.exaone.ai/v1"
+      },
+      "models": {
+        "k-exaone_v2.5": {
+          "name": "K-EXAONE 2.5 (EXAONE API Platform Free)",
+          "limit": {
+            "context": 524288,
+            "output": 524288
+          }
+        }
+      }
+    },
+    // Cohere (2026-11-16, Drew): trial-key door, DEFINED BUT
+    // SEATED NOWHERE -- direct use only; no route or pool
+    // references it and it is not in disabled_providers (same
+    // posture as google-payg). The trial key is evaluation-only
+    // under Cohere's terms: 1,000 API calls/month across all
+    // endpoints, no production use, no payment method on file.
+    // Key in Bitwarden as `cohere.api-key`, bound via a
+    // credential-store row (integrationID cohere). Speaks
+    // Cohere's OpenAI-compatible endpoint; wire-proven
+    // 2026-11-16 on the trial key (native /v2/chat, /v2/embed,
+    // /v2/rerank, and compatibility-endpoint chat all HTTP
+    // 200). Embed and Rerank have no OpenCode seat concept --
+    // they are for scripts, not routes. Explicit model list:
+    // the current Command chat shelf only (the C4AI Aya models
+    // and the translate/arabic specialists are excluded).
+    // Context limits are Cohere's own published context_length
+    // values, read from GET /v1/models 2026-11-16.
+    "cohere": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Cohere (Trial Key, Evaluation Only)",
+      "options": {
+        "baseURL": "https://api.cohere.ai/compatibility/v1"
+      },
+      "models": {
+        "command-a-plus-05-2026": {
+          "name": "Command A+ (Cohere Trial)",
+          "limit": {
+            "context": 436000
+          }
+        },
+        "command-a-03-2025": {
+          "name": "Command A (Cohere Trial)",
+          "limit": {
+            "context": 288000
+          }
+        },
+        "command-a-reasoning-08-2025": {
+          "name": "Command A Reasoning (Cohere Trial)",
+          "limit": {
+            "context": 288768
+          }
+        },
+        "command-a-vision-07-2025": {
+          "name": "Command A Vision (Cohere Trial)",
+          "limit": {
+            "context": 128000
+          }
+        },
+        "command-r-plus-08-2024": {
+          "name": "Command R+ (Cohere Trial)",
+          "limit": {
+            "context": 128000
+          }
+        },
+        "command-r-08-2024": {
+          "name": "Command R (Cohere Trial)",
+          "limit": {
+            "context": 128000
+          }
+        },
+        "command-r7b-12-2024": {
+          "name": "Command R7B (Cohere Trial)",
+          "limit": {
+            "context": 132000
+          }
+        }
+      }
+    },
+    // Google AI Studio (Gemini) doors -- per-project alias
+    // providers (2026-11-16, Drew): one alias per Google project,
+    // following the _openai.main/_openai.alt and opencode-go.*
+    // convention. The four FREE projects (google.muse,
+    // google.gen-lang, google.personal, google.drew) are grouped
+    // by the google-free provider route (round-robin) below; the
+    // paid project (google.developing-today) is grouped by
+    // google-payg, wired and credentialed but seated NOWHERE
+    // (Drew: set up and confirmed, not configured for use).
+    // Consumers name the groups, never the raw aliases. The only
+    // working doors to the Gemini shelf while _antigravity is
+    // banned (account disabled 2026-11-14; never re-enable).
+    // Each alias is a bare instanceOf the built-in google catalog
+    // (2026-11-16, Drew: catalog and pool policy are separate
+    // layers -- what a provider makes available is the catalog's
+    // business and is inherited, never hand-copied into a provider
+    // definition; which models get used is pool policy and lives
+    // in the plans/routes). The fork's catalog layer drops
+    // deprecated and non-text models, so each alias resolves the
+    // catalog's text Gemini shelf; a model being listed here does
+    // not seat it anywhere. Seating, from free-tier serving
+    // verified live 2026-11-16 on all four free keys:
+    // gemini-3.5-flash and both Flash-Lites answer generateContent
+    // 200 on every project; gemini-4-hydrogen answers 200 on
+    // gen-lang/personal/drew and is entitled on muse (503
+    // high-demand at probe time); gemini-3.8-flash is entitled on
+    // every project (503 high-demand at probe times -- a capacity
+    // answer, not a quota or auth refusal). NOT seated:
+    // gemini-4-carbon / gemini-4-argon (429 -- no free-tier
+    // quota) and the gemini-2.5 line (404 -- retired for new
+    // users) -- unseated by the plans, not hidden by these
+    // definitions. Effort variants are the catalog's (the
+    // models.dev effort sets, spelled as flat thinkingConfig by
+    // the fork's gemini variant protocol). The hand-written
+    // 5-model blocks this replaced also carried v1-dialect
+    // options.thinkingConfig variant bags, which never reach the
+    // wire for native providers (opencode#2511) -- with catalog
+    // variants the plans' pinned efforts actually bind once this
+    // rides a switch. Free quota is per model PER PROJECT, so the
+    // four projects multiply the daily buckets; seats take each
+    // model's TOP effort variant (the tier meters requests per
+    // day, not tokens -- Drew, 2026-11-16).
+    // muse project -- the original door from PR #10618,
+    // reshaped into the alias scheme the same day. Key:
+    // Bitwarden `google.gemini-api-key` (the same key that
+    // serves /v1beta/decisions for Gemini Decision 1),
+    // credential row cred_1a1e31a2756001K8DAZCcJAYfd
+    // (integrationID google.muse), created 2026-11-16.
+    "google.muse": {
+      "instanceOf": "google",
+      "name": "Google AI Studio (Gemini Free - muse project)",
+      "options": {
+        "baseURL": "https://generativelanguage.googleapis.com/v1beta"
+      }
+    },
+    // gen-lang project -- Drew-supplied key 2026-11-16.
+    // Key: Bitwarden `google.aistudio.free-gen-lang-api-key`,
+    // credential row cred_1a1e31a2b54001V4cvy5RTp0yS
+    // (integrationID google.gen-lang), created 2026-11-16.
+    "google.gen-lang": {
+      "instanceOf": "google",
+      "name": "Google AI Studio (Gemini Free - gen-lang project)",
+      "options": {
+        "baseURL": "https://generativelanguage.googleapis.com/v1beta"
+      }
+    },
+    // personal project -- Drew-supplied key 2026-11-16.
+    // Key: Bitwarden `google.aistudio.free-personal-api-key`,
+    // credential row cred_1a1e31a2ec9001eC5fCvlVLOv7
+    // (integrationID google.personal), created 2026-11-16.
+    "google.personal": {
+      "instanceOf": "google",
+      "name": "Google AI Studio (Gemini Free - personal project)",
+      "options": {
+        "baseURL": "https://generativelanguage.googleapis.com/v1beta"
+      }
+    },
+    // Drew project -- Drew-supplied key 2026-11-16.
+    // Key: Bitwarden `google.aistudio.free-drew-api-key`,
+    // credential row cred_1a1e31a32a3001PJGZOrc1f4NN
+    // (integrationID google.drew), created 2026-11-16.
+    "google.drew": {
+      "instanceOf": "google",
+      "name": "Google AI Studio (Gemini Free - Drew project)",
+      "options": {
+        "baseURL": "https://generativelanguage.googleapis.com/v1beta"
+      }
+    },
+    // developing-today project -- the PAYG door, grouped as
+    // google-payg and seated NOWHERE (Drew: set up and
+    // confirmed, not configured for use anywhere). Key:
+    // Bitwarden `google.aistudio.payg-api-key`, credential
+    // row cred_1a1e31a32bd0012ke9R3NZh3NZ (integrationID
+    // google.developing-today), created 2026-11-16. At setup
+    // the key authenticates but its AI Studio prepay balance
+    // is depleted (402 RESOURCE_EXHAUSTED), so it cannot
+    // serve until funded -- funding is Drew's call.
+    "google.developing-today": {
+      "instanceOf": "google",
+      "name": "Google AI Studio (Gemini PAYG - developing-today project)",
+      "options": {
+        "baseURL": "https://generativelanguage.googleapis.com/v1beta"
+      }
+    },
     "deepseek": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "DeepSeek Official API",
@@ -916,18 +1304,76 @@
         "baseURL": "https://openrouter.ai/api/v1"
       },
       "models": {
-        "minimax/minimax-m3.1-flash:free": {
-          "name": "MiniMax M3.1 Flash (Free)",
+        "inclusionai/ling-3.2-flash:free": {
+          "name": "Ling 3.2 Flash (Free)",
           "limit": {
-            "context": 204800,
+            "context": 1048576,
             "output": 131072
           }
         },
-        "poolside/laguna-s-2.1:free": {
-          "name": "Poolside Laguna S 2.1 (Free)",
+        "nvidia/nemotron-3-ultra-550b-a55b:free": {
+          "name": "Nemotron 3 Ultra 550B (Free)",
           "limit": {
-            "context": 131072,
-            "output": 32768
+            "context": 1000000,
+            "output": 65536
+          }
+        },
+        "recursive/flint-v1.0:free": {
+          "name": "Flint v1.0 (Free)",
+          "limit": {
+            "context": 262144,
+            "output": 235929
+          }
+        },
+        "cohere/north-mini-code:free": {
+          "name": "North Mini Code (Free)",
+          "limit": {
+            "context": 256000,
+            "output": 64000
+          }
+        }
+      }
+    },
+    "nvidia": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "NVIDIA NIM (Free Endpoint)",
+      "options": {
+        "baseURL": "https://integrate.api.nvidia.com/v1"
+      },
+      "models": {
+        "deepseek-ai/deepseek-v4.1-flash": {
+          "name": "DeepSeek V4.1 Flash (NVIDIA)",
+          "limit": {
+            "context": 1000000,
+            "output": 131072
+          }
+        },
+        "nvidia/nemotron-3-ultra-550b-a55b": {
+          "name": "Nemotron 3 Ultra 550B (NVIDIA)",
+          "limit": {
+            "context": 1000000,
+            "output": 65536
+          }
+        },
+        "minimaxai/minimax-m3.1-flash": {
+          "name": "MiniMax M3.1 Flash (NVIDIA)",
+          "limit": {
+            "context": 262144,
+            "output": 262144
+          }
+        },
+        "google/gemma-4-31b-it": {
+          "name": "Gemma 4 31B IT (NVIDIA)",
+          "limit": {
+            "context": 256000,
+            "output": 16384
+          }
+        },
+        "mistralai/mistral-large-4-1t-a52b": {
+          "name": "Mistral Large 4 (NVIDIA)",
+          "limit": {
+            "context": 1048576,
+            "output": 131072
           }
         }
       }
@@ -956,20 +1402,11 @@
         "whisper-large-v3": {
           "name": "Whisper (Groq)"
         },
-        "llama-3.3-70b-versatile": {
-          "name": "Llama 3.3 70B (Groq)"
-        },
         "allam-2-7b": {
           "name": "ALLaM-2-7b (Groq)"
         },
         "whisper-large-v3-turbo": {
           "name": "Whisper Large V3 Turbo (Groq)"
-        },
-        "llama-3.1-8b-instant": {
-          "name": "Llama 3.1 8B (Groq)"
-        },
-        "qwen/qwen3.6-27b": {
-          "name": "Qwen 3.6 27B (Groq)"
         },
         "canopylabs/orpheus-arabic-saudi": {
           "name": "Canopy Labs Orpheus Arabic Saudi (Groq)"
@@ -1209,6 +1646,24 @@
       "instanceOf": "opencode-go",
       "name": "OpenCode Go (developing-today-0)"
     },
+    // Zen account instances (2026-11-14, Drew): mirror the Go instances —
+    // one per console workspace, re-enabling the "opencode" provider the
+    // same pass (its line leaves disabled_providers above). The bare
+    // opencode provider is NOT a member of zen-plans below: same
+    // rule as Go — it rides whichever console login is active, so its
+    // burn would land on that account unattributed.
+    "opencode.drewrypope": {
+      "instanceOf": "opencode",
+      "name": "OpenCode Zen (drewrypope)"
+    },
+    "opencode.popesdrew": {
+      "instanceOf": "opencode",
+      "name": "OpenCode Zen (popesdrew)"
+    },
+    "opencode.developing-today-0": {
+      "instanceOf": "opencode",
+      "name": "OpenCode Zen (developing-today-0)"
+    },
     "_commandcode": {
           // 2026-11-05 (code#6117, opencode#1749): repointed from the CLI proxy
           // (:18748, @ai-sdk/openai-compatible) to the in-fork native commandcode
@@ -1227,6 +1682,15 @@
           // The definition stays for the catalog; re-seat doors per pool
           // only on verified restoration (plan coverage or credits back,
           // proven by a live completion).
+          // 2026-11-15 (Drew, direct order): SUPERSEDED — every door is
+          // re-seated as it was (see the per-pool notes). Drew's record
+          // correction: the fleet was using Command Code the week of the
+          // removal (432 successes on 2026-11-10; last attempts
+          // 2026-11-13 03:35 CT via workhorse). With the fork's gathered
+          // provider-wide quota wall (opencode#2479) the provider's legs
+          // are skipped while its snapshot reads walled and revive at
+          // the stated reset — the seat no longer needs removal to stop
+          // a burn.
           "npm": "@opencode/ai/providers/commandcode",
           "name": "Command Code (native wire emulation)",
           "models": {
@@ -2046,7 +2510,8 @@
   },
   "instructions": [
     ".opencode/instructions/mcpx.md",
-    ".opencode/instructions/subagents.md"
+    ".opencode/instructions/subagents.md",
+    ".opencode/instructions/routing-policy.md"
   ],
   "compaction": {
     "reserved": 8192
@@ -2150,6 +2615,51 @@
         "providers": ["opencode-go.drewrypope", "opencode-go.popesdrew", "opencode-go.developing-today-0"],
         "selection": "weighted",
         "weights": { "opencode-go.drewrypope": 1, "opencode-go.popesdrew": 1, "opencode-go.developing-today-0": 1 }
+      },
+      // opencode-plans (2026-11-14, Drew): the OpenCode Zen plans as ONE
+      // virtual provider, mirroring opencode-go-plans. Consumers name
+      // zen-plans/<model>. Renamed the same day (Drew): the
+      // aggregate is the OpenCode Zen Plans, and the route id said so —
+      // opencode-zen-plans, display "OpenCode Zen Plans".
+      // 2026-11-15 (Drew, direct order): renamed again —
+      // opencode-zen-plans -> zen-plans. Equal split —
+      // the three workspaces are
+      // peers. Zen keys are per-workspace console keys (OPENCODE_API_KEY
+      // per workspace); per-workspace key wiring is verified by live
+      // probe after the switch, and a workspace without a working key is
+      // demoted by the router's health/quota rules, not by config edits.
+      // 2026-11-14 (Drew, later same day): the Zen free models carry
+      // limited context — they are the LAST RESORT wherever they fit.
+      // In the per-model pools the Zen leaf sits at weight 0.5 behind
+      // its Go/plan doors; in the ordered tiers the Zen routes sit last
+      // before the escalation leg.
+      "zen-plans": {
+        "providers": ["opencode.drewrypope", "opencode.popesdrew", "opencode.developing-today-0"],
+        "selection": "weighted",
+        "weights": { "opencode.drewrypope": 1, "opencode.popesdrew": 1, "opencode.developing-today-0": 1 }
+      },
+      // google-free (2026-11-16, Drew): the four AI Studio free
+      // projects as ONE virtual provider (provider route).
+      // Consumers name google-free/<model> in lieu of the
+      // per-project alias providers. Round-robin (Drew's explicit
+      // setting): free quota is per model per project, so the
+      // rotation draws all four projects' daily bucket sets
+      // evenly. Quota/health rules still demote a walled member
+      // inside the group.
+      "google-free": {
+        "providers": ["google.muse", "google.gen-lang", "google.personal", "google.drew"],
+        "selection": "round-robin"
+      },
+      // google-payg (2026-11-16, Drew): the paid developing-today
+      // AI Studio project as a provider route of one. READY BUT
+      // SEATED NOWHERE -- no route or pool names google-payg yet
+      // (Drew: the PAYG key is set up and confirmed, not
+      // configured for use). Seating it later is a one-line route
+      // change; note its prepay balance was depleted at setup
+      // (402), so it also needs funding before it can serve.
+      "google-payg": {
+        "providers": ["google.developing-today"],
+        "selection": "round-robin"
       }
     },
     "model_routes": {
@@ -2169,6 +2679,13 @@
         // ($9.95 of $10 used, no reset in the quota record; every call answers
         // "insufficient credits"; last success on the provider 2026-11-10).
         // Re-seat only after credits are verified back with a live completion.
+        // 2026-11-15 (Drew, direct order): the _commandcode door is RESTORED below, exactly as seated before the 2026-11-13 removal — the fork's gathered provider-wide quota wall (opencode#2479, merged today) now skips a walled provider's legs before any attempt, so a spent door idles instead of burning.
+        // 2026-11-14 (performance cut, code#9950 follow-up): the mistral-plan
+        // leg is REMOVED from this pool — the mistral Flash-1017 cell recorded
+        // 0 successes in 699 attempts in the 2026-11-14 per-model cut, the
+        // fleet's worst dead leaf. The mistral-plan group keeps its other
+        // models; only this model's seat goes. Re-seat only on a live
+        // completion through the mistral API leg.
         
         // 2026-10-26: per-leaf variant remaps (honored by expansion since
         // developing-today/opencode#541). ClinePass has no medium/xhigh; OpenDesign tops at
@@ -2284,26 +2801,22 @@
             "model": "opencode-go-plans/deepseek-v4.1-flash",
             "variants": { "medium": "high", "xhigh": "max" }
           },
-          {
-            "model": "cline-pass/deepseek-v4.1-flash",
-            "variants": { "medium": "high", "xhigh": "max" }
-          },
+          // 2026-11-17 (code#9961): the cline-pass seat is REMOVED from this
+                  // plan. cline-pass is monthly-walled (monthly 100%, weekly 99%;
+                  // 429 "monthly Clinepass limit" on every turn since 2026-11-14;
+                  // 37 sessions failed in one sweep and new waves wedged at retry
+                  // while the workhorse resolved through this door). The provider
+                  // definition stays in place per the switchboard rule, and per
+                  // Drew's 2026-11-15 ruling the provider is NOT disabled - only
+                  // the seat is pulled. Re-seat when the monthly window resets
+                  // (~2026-12-06, 22d from 2026-11-14) or a fresh quota read shows
+                  // monthly <100%, AND a live completion through the door proves
+                  // it answers again.
           {
             "model": "opendesign/deepseek-v4.1-flash",
             "variants": { "xhigh": "high", "max": "high" }
           },
-          {
-            "model": "mistral-plan/deepseek-v4-1-flash-1017",
-            // Variant remap: the pool's effort rungs map onto the two
-            // variants both mistral-plan legs can produce (none /
-            // high — see the vibe-direct model note). The remap keys
-            // are what let the pool keep offering its rungs with this
-            // member seated; the values keep the plan leg in front at
-            // every rung (a #low draw runs the group at "none", a
-            // #high draw at "high", both producible by vibe-direct
-            // first and the API leg alike).
-            "variants": { "low": "low", "medium": "high", "high": "high", "xhigh": "max", "max": "max" }
-          }
+          "_commandcode/deepseek/deepseek-v4.1-flash"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -2312,9 +2825,8 @@
         // even within a tier.
         "weights": {
           "opencode-go-plans/deepseek-v4.1-flash": 2,
-          "cline-pass/deepseek-v4.1-flash": 1,
           "opendesign/deepseek-v4.1-flash": 1,
-          "mistral-plan/deepseek-v4-1-flash-1017": 1
+          "_commandcode/deepseek/deepseek-v4.1-flash": 1
         },
         // #7927 (task 14574): the 10s default first-output deadline mass-killed
         // scheduled lane waves (81 sessions in 8h) when doors queued past 10s.
@@ -2352,6 +2864,7 @@
         // ($9.95 of $10 used, no reset in the quota record; every call answers
         // "insufficient credits"; last success on the provider 2026-11-10).
         // Re-seat only after credits are verified back with a live completion.
+        // 2026-11-15 (Drew, direct order): the _commandcode door is RESTORED below, exactly as seated before the 2026-11-13 removal — the fork's gathered provider-wide quota wall (opencode#2479, merged today) now skips a walled provider's legs before any attempt, so a spent door idles instead of burning.
         
         // 2026-10-27 pool redesign: Go x3 + Command Code (minor) join, per
         // the same all-workspaces rule as deepseek-flash-plan. This pool
@@ -2363,19 +2876,32 @@
             "model": "opencode-go-plans/deepseek-v4-pro",
             "variants": { "medium": "high", "xhigh": "max" }
           },
-          {
-            "model": "cline-pass/deepseek-v4-pro",
-            "variants": { "low": "high", "medium": "high", "xhigh": "max" }
-          },
+          // 2026-11-17 (code#9961): the cline-pass seat is REMOVED from this
+                  // plan. cline-pass is monthly-walled (monthly 100%, weekly 99%;
+                  // 429 "monthly Clinepass limit" on every turn since 2026-11-14;
+                  // 37 sessions failed in one sweep and new waves wedged at retry
+                  // while the workhorse resolved through this door). The provider
+                  // definition stays in place per the switchboard rule, and per
+                  // Drew's 2026-11-15 ruling the provider is NOT disabled - only
+                  // the seat is pulled. Re-seat when the monthly window resets
+                  // (~2026-12-06, 22d from 2026-11-14) or a fresh quota read shows
+                  // monthly <100%, AND a live completion through the door proves
+                  // it answers again.
           {
             "model": "opendesign/deepseek-v4-pro",
             "variants": { "xhigh": "high", "max": "high" }
-          }
+          },
+          "_commandcode/deepseek/deepseek-v4-pro"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
+        // 2026-11-15 (weights completeness): the cline-pass and
+        // opendesign legs were missing from this map — an unweighted
+        // leg's tier placement is undefined. Weighted as minor legs.
         "weights": {
-          "opencode-go-plans/deepseek-v4-pro": 3
+          "opencode-go-plans/deepseek-v4-pro": 3,
+          "_commandcode/deepseek/deepseek-v4-pro": 0.5,
+          "opendesign/deepseek-v4-pro": 1
         }
       },
       "fable-plan": {
@@ -2473,9 +2999,19 @@
         ],
         "selection": "round-robin",
         "autonomy": "rules",
+        // 2026-11-15 (weights completeness): the opendesign leg was
+        // missing from this map — an unweighted leg's tier placement
+        // is undefined. Weighted as the minor leg.
+        // 2026-11-15 (Drew): Luna rides the OpenAI subscription
+        // door. Luna through OpenCode Go spends the shared Go weekly
+        // pool — the scarce one that walls every week — on the
+        // weakest GPT-6, while the subscription door carried all
+        // 71k+ Luna successes in the trailing 7d and the Go leg was
+        // never dealt once. Subscription leads; Go is overflow only.
         "weights": {
-          "opencode-go-plans/gpt-6-luna": 6,
-          "openai-plan/gpt-6-luna": 2.5
+          "openai-plan/gpt-6-luna": 6,
+          "opencode-go-plans/gpt-6-luna": 1,
+          "opendesign/gpt-6-luna": 1
         }
       },
       "luna-effort-rr": {
@@ -2538,7 +3074,23 @@
         // Hydrogen carries a native xhigh tier (II 54), so the
         // variants clamp is max -> xhigh only. The Flash-era notes
         // above stay as written; they are this pool's history.
+        // 2026-11-16 (Drew, free-provider pass): the google AI
+        // Studio free door joins as the FIRST target -- the
+        // _antigravity account was disabled by Google 2026-11-14
+        // and every seat on it is dead, so this pool was dark.
+        // Later the same day (Drew): the door is the google-free
+        // provider route, so this leg round-robins across the
+        // four free projects' Hydrogen buckets (20 RPD each).
+        // The earlier clamp to #medium is REMOVED (Drew: the free
+        // tier meters requests, not tokens): high and xhigh pass
+        // through at Hydrogen's top variant, and max clamps to
+        // xhigh -- the highest effort the free doors serve.
+        // The _antigravity leg stays as the inert second door.
         "targets": [
+          {
+            "model": "google-free/gemini-4-hydrogen",
+            "variants": { "max": "xhigh" }
+          },
           {
             "model": "_antigravity/gemini-4-hydrogen",
             "variants": { "max": "xhigh" }
@@ -2565,6 +3117,11 @@
         // serves claude-sonnet-5-5 and bridges tool calls; the pool
         // is single-live-door on the direct door, plus claude-code's
         // return.
+        // 2026-11-16 (Drew, direct order): UNSEATED -- every live seat
+        // that consumed this plan moved to haiku-plan#high (Anthropic-door
+        // Sonnet replaced by Haiku; Fable carries the quality head on
+        // this door). The definition and both members stay, ready to
+        // re-seat.
         "targets": [
           "_claude/claude-sonnet-5-5",
           {
@@ -2606,6 +3163,7 @@
         // ($9.95 of $10 used, no reset in the quota record; every call answers
         // "insufficient credits"; last success on the provider 2026-11-10).
         // Re-seat only after credits are verified back with a live completion.
+        // 2026-11-15 (Drew, direct order): the _commandcode door is RESTORED below, exactly as seated before the 2026-11-13 removal — the fork's gathered provider-wide quota wall (opencode#2479, merged today) now skips a walled provider's legs before any attempt, so a spent door idles instead of burning.
         
         // 2026-10-30: the reserve leaf reached the Meta plan through
         // muse-proxy (provider "muse") — the direct meta door is dead
@@ -2638,7 +3196,18 @@
         // leaf in this pool.
         "targets": [
           "opencode-go-plans/muse-spark-1.3-contributor",
-          "cline-pass/muse-spark-1.3-contributor",
+          "_commandcode/meta/muse-spark-1.3-contributor",
+          // 2026-11-17 (code#9961): the cline-pass seat is REMOVED from this
+                  // plan. cline-pass is monthly-walled (monthly 100%, weekly 99%;
+                  // 429 "monthly Clinepass limit" on every turn since 2026-11-14;
+                  // 37 sessions failed in one sweep and new waves wedged at retry
+                  // while the workhorse resolved through this door). The provider
+                  // definition stays in place per the switchboard rule, and per
+                  // Drew's 2026-11-15 ruling the provider is NOT disabled - only
+                  // the seat is pulled. Re-seat when the monthly window resets
+                  // (~2026-12-06, 22d from 2026-11-14) or a fresh quota read shows
+                  // monthly <100%, AND a live completion through the door proves
+                  // it answers again.
           "_muse/muse-spark-1.3-contributor"
         ],
         "selection": "ordered",
@@ -2654,6 +3223,7 @@
         // which the router skips while walled and which revive at their
         // resets. Re-seat the door only if plan coverage returns, proven
         // by a live completion.
+        // 2026-11-15 (Drew, direct order): the _commandcode door is RESTORED below, exactly as seated before the 2026-11-13 removal — the fork's gathered provider-wide quota wall (opencode#2479, merged today) now skips a walled provider's legs before any attempt, so a spent door idles instead of burning.
         // 2026-10-27 pool-coverage audit: the two opencode-go leaves are
         // REMOVED. They pointed at gpt-5.6-sol, which OpenCode Go does not
         // list — verified in the #1249 recheck (models.dev's opencode-go
@@ -2681,12 +3251,22 @@
           {
             "model": "opendesign/gpt-6.1-sol",
             "variants": { "xhigh": "high", "max": "high" }
-          }
+          },
+          // "_commandcode/gpt-6.1-sol"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
+        // 2026-11-15 (weights completeness): the opendesign leg was
+        // missing from this map — an unweighted leg's tier placement
+        // is undefined. Weighted as the minor leg.
+        // 2026-11-15 (restoration): the _commandcode leg returns at
+        // 0.5 — pre-removal it carried no weight entry at all (the
+        // undefined placement the completeness pass abolished); 0.5
+        // is its standing minor-leg weight in the sibling pools.
         "weights": {
-          "openai-plan/gpt-6.1-sol": 3
+          "openai-plan/gpt-6.1-sol": 3,
+          "opendesign/gpt-6.1-sol": 1,
+          // "_commandcode/gpt-6.1-sol": 0.5
         }
       },
       "terra-plan": {
@@ -2756,14 +3336,25 @@
         // 2026-10-30 (Drew): the agy leaf moved to antigravity-direct —
         // the same CLI wire protocol with no CLI spawn (the agy proxy
         // service is retired). Same model, same pool position.
+        // 2026-11-15 (Drew): never paid Argon through OpenCode —
+        // the Go leg is REMOVED. It produced 1 success in 135
+        // attempts in the trailing 7d (the rest hit the Go quota
+        // wall). Carbon is the better Gemini (AA high 60.0 vs Argon
+        // 50.4) but has no working door today: not served on Go, and
+        // served on Zen only against pay-as-you-go workspace credit
+        // the fleet does not carry (probe 2026-11-15: 402). The
+        // Gemini shelf returns through a Google-direct door (the
+        // provider watch's top sweep item), not through Go quota.
+        // The _antigravity leg stays as the plan's only target; that
+        // provider is disabled, so Argon has no live door until then
+        // — which matches the wire reality above.
         "targets": [
-          "opencode-go-plans/gemini-4-argon",
           "_antigravity/gemini-4-argon"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-go-plans/gemini-4-argon": 3
+          "_antigravity/gemini-4-argon": 1
         }
       },
       "beam-plan": {
@@ -2774,19 +3365,405 @@
         // beam-free door stays: it is a different provider's offering,
         // quota-walled until the Sun 2026-11-15 Go reset, and its own
         // status gets verified from route_attempt after that reset.
+        // 2026-11-15 (Drew, direct order): the _commandcode door is RESTORED below, exactly as seated before the 2026-11-13 removal — the fork's gathered provider-wide quota wall (opencode#2479, merged today) now skips a walled provider's legs before any attempt, so a spent door idles instead of burning.
         // NEW 2026-10-27 (pool redesign): Beam 1.0 gets its own plan pool
         // (was a raw Command Code leaf inside scout). AA v5: II 18,
         // TTFT 0.59s, ~385 t/s decode — the fleet's fastest starter.
         // Doors: the Command Code free route plus OpenCode Go's beam-free
         // on all three workspaces. Leaves are seated unconditionally: the
         // router skips disabled or quota-empty leaves at runtime.
+        // 2026-11-14: cat-jam-free is the SAME model — Cat Jam was Beam's
+        // stealth codename (revealed 2026-10-16) and the provider renamed
+        // the route to beam-free. Deliberately NOT seated: one model, one
+        // seat. (The Go endpoint no longer serves cat-jam-free at all.)
+        // 2026-11-14 (Zen pass): the Zen door for the same model joins as
+        // a second leaf. Weight RULED 2026-11-14: Drew's limited-context
+        // demotion (0.5) was posed as a question, and the check answered
+        // it — models.dev lists identical context on both doors
+        // (1,048,576), so the Zen leaf sits at full weight 3 beside the
+        // Go leaf. The genuinely limited Zen SKUs (200k: DeepSeek Flash
+        // Free, MiMo Flash Free, GLM Flash Free, Big Pickle) stay
+        // last-resort in their own pools.
         "targets": [
-          "opencode-go-plans/beam-free"
+          // "_commandcode/reflection/beam:free",
+          "opencode-go-plans/beam-free",
+          "zen-plans/beam-free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        // 2026-11-15 (restoration): the _commandcode beam leg returns
+        // FIRST, as seated pre-removal; it carried no weight entry
+        // then, so it takes tier 1 here — it serves only when both
+        // free doors are ineligible. If the ended free tier still
+        // 403s, the fork benches the leg reactively; the seat stands
+        // per Drew's restore order.
+        "weights": {
+          "opencode-go-plans/beam-free": 3,
+          "zen-plans/beam-free": 3,
+          // "_commandcode/reflection/beam:free": 1
+        }
+      },
+      "longcat-plan": {
+        "name": "LongCat 2.5 - plan providers",
+        // NEW 2026-11-14 (Drew): LongCat-2.5-Free gets its own plan pool.
+        // Served free on OpenCode Go — the provider's own /models endpoint
+        // lists exactly three free models (beam-free, longcat-2.5-free,
+        // iceman-contributor-free) — and probe-verified live on all three
+        // Go workspaces 2026-11-14 (3/3 real completions). Meituan's
+        // LongCat-2.5-Preview; no Artificial Analysis listing (vendor
+        // claims only), so it is seated in scout behind Beam on probe
+        // evidence, not on a benchmark.
+        // 2026-11-14 (Zen pass): the Zen free door (longcat-2.5-free is
+        // served there too) joins as a second leaf at default weight.
+        "targets": [
+          "opencode-go-plans/longcat-2.5-free",
+          "zen-plans/longcat-2.5-free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        // Weight RULED 2026-11-14: Zen leaf at full weight 3 —
+        // models.dev lists identical context on both doors
+        // (1,000,000). See beam-plan.
+        "weights": {
+          "opencode-go-plans/longcat-2.5-free": 3,
+          "zen-plans/longcat-2.5-free": 3
+        }
+      },
+      "iceman-plan": {
+        "name": "Iceman Contributor - plan providers",
+        // NEW 2026-11-14 (Drew): Iceman Contributor Free gets its own
+        // plan pool. Served free on OpenCode Go (provider endpoint,
+        // verified 2026-11-14) and probe-verified live on all three Go
+        // workspaces (3/3 real completions). Stealth model — identity
+        // unclaimed (self-identifies as a Microsoft "MAI" model in
+        // probes, ~46 tok/s); no Artificial Analysis listing. Seated in
+        // scout as a free fallback leg, not a primary: unknown identity
+        // means unknown failure modes, so it sits behind Beam and
+        // LongCat in the ordered chain.
+        // 2026-11-14 (Zen pass): Zen's iceman-free joins as a second
+        // leaf — same stealth model, second door.
+        "targets": [
+          "opencode-go-plans/iceman-contributor-free",
+          "zen-plans/iceman-free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        // Weight RULED 2026-11-14: Zen leaf at full weight 3 —
+        // models.dev lists identical context on both doors
+        // (262,144). See beam-plan.
+        "weights": {
+          "opencode-go-plans/iceman-contributor-free": 3,
+          "zen-plans/iceman-free": 3
+        }
+      },
+      "hy4-flash-plan": {
+        "name": "Hy4 Flash Free - plan providers",
+        // NEW 2026-11-16 (provider/model watch): Tencent's Hy4 Flash,
+        // served FREE on both OpenCode Go and OpenCode Zen (the
+        // providers' own /models endpoints, verified 2026-11-16:
+        // release-dated 2026-11-16, 1,048,576 context, $0/$0, image
+        // input, reasoning efforts none/high). No Artificial
+        // Analysis benchmark exists yet; the only capability
+        // evidence is Tencent's own blind test claiming
+        // Haiku 5.5-class everyday work -- a vendor claim,
+        // unverified. The free listing may also be a launch
+        // promotion (Tencent's own page still said "scheduled for
+        // release soon" on launch morning), so its durability is
+        // unverified too. Placement per the watch's toss-up rule:
+        // background free cluster only, until route_attempt history
+        // or an AA score establishes equivalence; if the model
+        // vanishes from either roster, the watch removes its seats
+        // in the run that notices.
+        "targets": [
+          "opencode-go-plans/hy4-flash-free",
+          "zen-plans/hy4-flash-free"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-go-plans/beam-free": 3
+          "opencode-go-plans/hy4-flash-free": 3,
+          "zen-plans/hy4-flash-free": 3
+        }
+      },
+      "flash-free-plan": {
+        "name": "DeepSeek V4.1 Flash Free (Zen) - plan providers",
+        // NEW 2026-11-14 (Drew, Zen pass): Zen's free DeepSeek Flash gets
+        // its own pool instead of a leaf inside deepseek-flash-plan —
+        // that pool's leaves carry per-door variant remaps and the free
+        // door's variant surface is unverified, so it serves here as a
+        // plain leg (background tier). Same model as deepseek-flash-plan
+        // (1017): AA v5 II 33 max / 29 high / 19 non-reasoning — the
+        // strongest free model on either shelf. Zen's free tier requires
+        // OpenCode (Zen docs); our server qualifies.
+        "targets": [
+          "zen-plans/deepseek-v4.1-flash-free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "zen-plans/deepseek-v4.1-flash-free": 3
+        }
+      },
+      "groq-free-plan": {
+        "name": "Groq Free - plan providers",
+        // NEW 2026-11-15 (Drew): Groq's free tier as its own plan. Groq's live catalog for our key serves exactly three chat models (llama-3.3-70b / llama-3.1-8b / qwen3.6-27b were removed from the provider block the same day — the endpoint no longer serves them). All three probe-verified live 2026-11-15. Groq's free limits are small (per-model daily caps), so this is a scout/tiny-prompt-class seat, valued for Groq's very fast decode. HARD CEILING (code#10562, 2026-11-15): the free tier caps tokens per minute at 8000 for gpt-oss-120b/20b and the ITPM limit for qwen/qwen3.8-27b in our org is 7000, while a full agent session's first request runs ~26k tokens - no leg of this plan can EVER accept an agent session's first request (two scheduled sessions died at start on exactly this, 2026-11-15). Never seat this plan in a route that serves agent sessions (background was unseated the same day); tiny-prompt probes and completions only.
+        "targets": [
+          "groq/openai/gpt-oss-120b",
+          "groq/openai/gpt-oss-20b",
+          "groq/qwen/qwen3.8-27b"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "groq/openai/gpt-oss-120b": 3,
+          "groq/openai/gpt-oss-20b": 3,
+          "groq/qwen/qwen3.8-27b": 3
+        }
+      },
+      "nvidia-free-plan": {
+        "name": "NVIDIA NIM Free - plan providers",
+        // NEW 2026-11-15 (Drew): NVIDIA's free NIM endpoint (integrate.api.nvidia.com) as its own plan. Five chat models from its 83-model free catalog, each probe-verified live 2026-11-15 with our stored key (kimi-k2.6 and nemotron-3-super-120b are listed in the catalog but answer 404 'not found for account' — not seated). DeepSeek Flash, Nemotron Ultra and Mistral Large 4 carry ~1M context on this door; MiniMax Flash and Gemma are ~256k fallback-class. Background seat; the free endpoint is rate-limited per key and DeepSeek Flash cold-starts slowly (>90s first call).
+        "targets": [
+          "nvidia/deepseek-ai/deepseek-v4.1-flash",
+          "nvidia/nvidia/nemotron-3-ultra-550b-a55b",
+          "nvidia/minimaxai/minimax-m3.1-flash",
+          "nvidia/google/gemma-4-31b-it",
+          "nvidia/mistralai/mistral-large-4-1t-a52b"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "nvidia/deepseek-ai/deepseek-v4.1-flash": 3,
+          "nvidia/nvidia/nemotron-3-ultra-550b-a55b": 3,
+          "nvidia/minimaxai/minimax-m3.1-flash": 3,
+          "nvidia/google/gemma-4-31b-it": 3,
+          "nvidia/mistralai/mistral-large-4-1t-a52b": 3
+        }
+      },
+      "openrouter-free-plan": {
+        "name": "OpenRouter Free - plan providers",
+        // NEW 2026-11-15 (Drew): OpenRouter's :free shelf as its own plan — chosen over Hugging Face (whose Inference Providers catalog is metered credit, not per-model free). Four models at $0/$0 pricing in OpenRouter's live catalog 2026-11-15, each probe-verified live the same day. Ling and Nemotron Ultra carry ~1M context, so this plan also joins scout's free cluster; Flint and North Mini Code are ~256k. NOT seated: inkling-2-small:free (403 'agentic harnesses only' on bare API calls, and already seated via Zen) and gemma-4-31b-it:free (upstream 429 at probe time — it answers on the NVIDIA door instead). Free tier: 50 requests/day without purchase. The block's old seats (minimax-m3.1-flash:free, laguna-s-2.1:free) rotated off the free shelf and were removed.
+        "targets": [
+          "openrouter/inclusionai/ling-3.2-flash:free",
+          "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+          "openrouter/recursive/flint-v1.0:free",
+          "openrouter/cohere/north-mini-code:free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "openrouter/inclusionai/ling-3.2-flash:free": 3,
+          "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free": 3,
+          "openrouter/recursive/flint-v1.0:free": 3,
+          "openrouter/cohere/north-mini-code:free": 3
+        }
+      },
+      "inkling-plan": {
+        "name": "Inkling 2 Small Free (Zen) - plan providers",
+        // NEW 2026-11-14 (Drew, Zen pass): Thinking Machines Lab's
+        // Inkling 2 Small, free on Zen. AA v5 II 31 (launch-coverage
+        // reported) — the strongest free generalist after Flash; seated
+        // in scout behind the Go free legs.
+        "targets": [
+          "zen-plans/inkling-2-small-free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "zen-plans/inkling-2-small-free": 3
+        }
+      },
+      "glm-5-3-flash-zen-plan": {
+        "name": "GLM 5.3 Flash Free (Zen) - plan providers",
+        // NEW 2026-11-14 (Drew, Zen pass): Z AI's GLM-5.3-Flash, free on
+        // Zen. AA v5 II 28 at ~48 tok/s — capable but slow, so it is
+        // seated in the background tier only, never in scout (the old
+        // glm-flash-plan was dissolved 2026-10-27 for exactly this
+        // decode speed; this pool is a separate Zen door, not a revival
+        // of that seat).
+        "targets": [
+          "zen-plans/glm-5.3-flash-free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "zen-plans/glm-5.3-flash-free": 3
+        }
+      },
+      "glm-flash-free-plan": {
+        "name": "GLM Flash Free (Z.ai direct) - plan providers",
+        // NEW 2026-11-15 (Drew, free-provider pass): Z.ai's own free
+        // tier behind our own key — a direct door, not a Zen/Go resale.
+        // GLM-4.7-Flash (200k ctx; vendor-claimed SWE-bench Verified
+        // 59.2, no AA listing yet) leads; GLM-4.5-Flash (131k ctx) is
+        // the second leg. Plain legs, no variant remaps — the free
+        // door's variant surface is unverified (same rationale as
+        // flash-free-plan). Seated in background's last-resort free
+        // cluster per the ~200k placement law; ordering inside the
+        // cluster is provisional until fleet burn data ranks it.
+        "targets": [
+          "zai/glm-4.7-flash",
+          "zai/glm-4.5-flash"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "zai/glm-4.7-flash": 3,
+          "zai/glm-4.5-flash": 1
+        }
+      },
+      "gemini-free-plan": {
+        "name": "Gemini Free (AI Studio direct) - plan providers",
+        // NEW 2026-11-16 (Drew, free-provider pass): Google AI
+        // Studio free tier behind our own keys -- direct doors,
+        // and the only working doors to the Gemini shelf while
+        // _antigravity is dead. Every leg names the google-free
+        // provider route, so each leg round-robins across the
+        // four free projects (muse, gen-lang, personal, drew)
+        // and draws four per-model daily bucket sets. Efforts
+        // are each model's TOP variant (Drew, 2026-11-16: the
+        // free tier meters requests per day, not tokens, so a
+        // request costs the same 1 RPD at any effort -- take the
+        // highest): Hydrogen #xhigh (its top; AA v5.0.1 high
+        // II 50.8), the Flash and Flash-Lite legs #high (their
+        // top). TPM nuance: the 250k input TPM cap per model per
+        // project can pace large-context background sessions
+        // below the RPM cap -- acceptable, not a blocker. Seated
+        // in background's free cluster (1M context and free,
+        // ahead of the ~200k legs per the placement law) and as
+        // the live door inside gemini-hydrogen-plan.
+        "targets": [
+          "google-free/gemini-4-hydrogen#xhigh",
+          "google-free/gemini-3.8-flash#high",
+          "google-free/gemini-3.5-flash#high",
+          "google-free/gemini-3.5-flash-lite#high",
+          "google-free/gemini-3.1-flash-lite#high"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules"
+      },
+      "exaone-free-plan": {
+        "name": "EXAONE Free (EXAONE API Platform direct) - plan providers",
+        // NEW 2026-11-16 (Drew, free-provider pass): K-EXAONE 2.5
+        // (750B flagship-class agentic model, 524k context, Korean +
+        // English) on the EXAONE API Platform free tier behind our
+        // own key -- wire-proven direct (HTTP 200 chat completion,
+        // 2026-11-16). No AA listing in our set yet, so it is seated
+        // by the placement law on shape alone: free + 524k context
+        // puts it in the background free cluster behind the
+        // 1M-context Gemini legs and ahead of the ~200k legs. Plain
+        // leg, no variant remap -- the variant surface of the door
+        // is unverified (same rationale as glm-flash-free-plan).
+        // Platform keys expire 30 days after issuance; see the
+        // provider block above.
+        "targets": [
+          "exaone/k-exaone_v2.5"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules"
+      },
+      // REMOVED 2026-11-16 (provider-model-watch): minimax-flash-plan
+      // deleted — its only leg, zen-plans/minimax-m3.1-flash-free, was
+      // delisted from the OpenCode Zen roster (endpoint check
+      // 2026-11-16 eve: Zen 87 -> 86 served, model absent on two
+      // fetches). Per the placement law a free model that vanishes
+      // from its provider's roster loses its seats the same run. The
+      // model also never recorded a single success (cap-exhausted on
+      // all 3 workspaces from its first attempt 2026-11-15; last
+      // attempt 2026-11-15T22:20Z). Re-seat only if it returns to
+      // the Zen roster.
+      "flint-plan": {
+        "name": "Flint 40B Free (Zen) - plan providers",
+        // NEW 2026-11-14 (Drew, Zen pass): Recursive's Flint 40B coding
+        // model, free on Zen. No AA listing (vendor-claimed SWE-bench
+        // only). Seated in background as a coding-leaning free leg.
+        "targets": [
+          "zen-plans/flint-40b-free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "zen-plans/flint-40b-free": 3
+        }
+      },
+      "big-pickle-plan": {
+        "name": "Big Pickle Free (Zen) - plan providers",
+        // NEW 2026-11-14 (Drew, Zen pass): Zen's stealth free model. The
+        // backend ROTATES (community reads it as a GLM-class model,
+        // unconfirmed) — no benchmark can honestly attach to a moving
+        // target, so it is seated in background only, behind every
+        // measured free leg: bulk capacity of unknown provenance.
+        "targets": [
+          "zen-plans/big-pickle"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "zen-plans/big-pickle": 3
+        }
+      },
+      "nemotron-vl-plan": {
+        "name": "Nemotron 3.5 Super VL Free (Zen) - plan providers",
+        // NEW 2026-11-14 (Drew, Zen pass): NVIDIA's vision-language
+        // Nemotron, free on Zen. AA v5 II 13.6 (via BenchLM's AA
+        // compilation). Weak as a generalist; its seat exists for
+        // vision-carrying bulk work in the background tier.
+        "targets": [
+          "zen-plans/nemotron-3.5-super-vl-free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "zen-plans/nemotron-3.5-super-vl-free": 3
+        }
+      },
+      "nemotron-lightning-plan": {
+        "name": "Nemotron 3.5 Lightning Free (Zen) - plan providers",
+        // NEW 2026-11-14 (Drew, Zen pass): NVIDIA's small Nemotron,
+        // free on Zen. AA v5 II 5.5 (via BenchLM's AA compilation) —
+        // the weakest measured model in the fleet. Seated last in
+        // background as a free last resort ahead of metered escalation.
+        "targets": [
+          "zen-plans/nemotron-3.5-lightning-free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "zen-plans/nemotron-3.5-lightning-free": 3
+        }
+      },
+      "systemone": {
+        "name": "System One - decision models (NOT a chat pool)",
+        // NEW 2026-11-14 (Drew): the decision-model pool. System-1
+        // models answer typed questions (noul/choice/score) over a
+        // state payload — they are NOT chat models and chat calls to
+        // them return 400. This route exists so the pool name resolves
+        // for the decision wiring (design mill supplement: the config
+        // default decision pool); it must NEVER be seated in a chat
+        // tier or targeted by a chat session. First leg is the free
+        // tier: Jev 1.13 Free (TypeSafe AI). The paid decision models
+        // (jev-1.13, gpt-6-luna-decision, gemini-decision-1 — all on
+        // Zen) are natural later legs, free-first per the design.
+        // Alias note: Drew named this pool "system1"; renamed
+        // "systemone" 2026-11-15 (Drew, direct order) to match the
+        // endpoint spelling (/v1/systemone). The mill design
+        // supplement calls the same pool "decision".
+        // Paid legs — OFF by Drew's ruling 2026-11-14, kept here in
+        // paste-ready form. To enable, add to targets:
+        //   "zen-plans/jev-1.13",
+        //   "zen-plans/gpt-6-luna-decision",
+        //   "zen-plans/gemini-decision-1"
+        // and to weights:
+        //   "zen-plans/jev-1.13": 3,
+        //   "zen-plans/gpt-6-luna-decision": 3,
+        //   "zen-plans/gemini-decision-1": 3
+        "targets": [
+          "zen-plans/jev-1.13-free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "zen-plans/jev-1.13-free": 3
         }
       },
       "mimo-flash-plan": {
@@ -2796,6 +3773,18 @@
         // ($9.95 of $10 used, no reset in the quota record; every call answers
         // "insufficient credits"; last success on the provider 2026-11-10).
         // Re-seat only after credits are verified back with a live completion.
+        // 2026-11-15 (Drew, direct order): the _commandcode seat is
+        // restored in this pool's CURRENT form — this pool went
+        // free-only on 2026-11-15 (paid legs survive as paste-ready
+        // comments), so the seat returns below as a paste-ready
+        // comment with its pre-removal weight (0.5), beside the Go
+        // and OpenDesign paid legs. The other five pools restore
+        // their _commandcode doors live in the same pass.
+        // 2026-11-14 (performance cut, code#9950 follow-up): the cline-pass
+        // leg is REMOVED from this pool — its MiMo v2.6 Flash cell recorded
+        // 0 successes in 131 attempts in the 2026-11-14 per-model cut. The
+        // Go, OpenDesign and Zen leaves carry the pool. Re-seat only on a
+        // live completion through ClinePass.
         
         // NEW 2026-10-27 (pool redesign): MiMo-V2.6-Flash (AA v5:
         // II 27 at ~$0.13/task — the cheapest workhorse-adjacent
@@ -2805,15 +3794,33 @@
         // DeepSeek leaves out of the Flash pools' way is about burn
         // accounting, and MiMo is ClinePass's best seat), OpenDesign,
         // and Command Code as a minor leaf (weight 0.5, $10 credits/mo).
+        // 2026-11-15 (Drew, direct order): the Zen free door is this
+        // plan's ONLY seated leg — "why would you hit paid mimo 2.6
+        // at all". The paid legs had zero successes in the current
+        // setup (ClinePass 131/131 failures before its removal above;
+        // OpenDesign balance-exhausted), the free leg had never been
+        // attempted once (code#10497), and paid MiMo on OpenCode Go
+        // spends the shared Go weekly pool while DeepSeek carries
+        // considerable dedicated quota of its own — the per-task
+        // price comparison ignored the quota source. The paid legs
+        // survive as paste-ready comments in targets/weights below;
+        // when the free cap is spent, callers fall through to the
+        // pool's next route instead of paying for MiMo.
         "targets": [
-          "opencode-go-plans/mimo-v2.6-flash",
-          "cline-pass/mimo-v2.6-flash",
-          "opendesign/mimo-v2.6-flash"
+          "zen-plans/mimo-v2.6-flash-free"
+          // Paid legs NOT seated (see the plan comment above). To
+          // re-seat one, paste it into targets and weights:
+          //   "opencode-go-plans/mimo-v2.6-flash"
+          //   "opendesign/mimo-v2.6-flash"
+          //   "_commandcode/xiaomi/mimo-v2.6-flash"
         ],
         "selection": "round-robin",
         "autonomy": "rules",
         "weights": {
-          "opencode-go-plans/mimo-v2.6-flash": 3
+          "zen-plans/mimo-v2.6-flash-free": 3
+          // "opencode-go-plans/mimo-v2.6-flash": 1
+          // "opendesign/mimo-v2.6-flash": 1
+          // "_commandcode/xiaomi/mimo-v2.6-flash": 0.5
         }
       },
       "glm-5-3-plan": {
@@ -2866,10 +3873,10 @@
         // terminates at specialist, the sink. Full layout:
         // .opencode/route-fallbacks.md; guard:
         // bin/check-opencode-route-rules.mjs (CLASS_FALLBACKS).
-        // Scout's own edge (workhorse) is a PROPOSAL (Drew has not
-        // ruled on scout yet, 2026-11-13): routine work that
-        // exhausts the free/cheap seats escalates to the standard
-        // tier rather than erroring.
+        // Scout's edges RULED by Drew 2026-11-14: background first,
+        // then workhorse. Routine work that exhausts the free/cheap
+        // seats escalates to the patient tier, then the standard
+        // tier, rather than erroring.
         // 2026-11-11 (Drew, direct order): ordered selection, haiku-plan leg LAST (last resort).
         // 2026-11-11 (Drew): scout order — Beam ahead of DeepSeek Flash.
         // 2026-10-26 (pool remap review): all three routes addressed at #low — the rung every
@@ -2886,10 +3893,35 @@
         // dissolved — GLM's ~60 t/s decode never fit a fast tier) and Beam
         // is addressed through its new beam-plan pool instead of the raw
         // Command Code leaf.
+        // 2026-11-14 (Drew): LongCat 2.5 Free and Iceman Contributor Free
+        // join through their own plan pools, directly behind Beam — the
+        // Go provider serves exactly three free models and all three are
+        // now seated in this tier (probe-verified 2026-11-14).
+        // 2026-11-14 (Drew, Zen pass): Inkling 2 Small Free joins through
+        // inkling-plan — AA v5 II 31, the strongest free generalist on
+        // either shelf after Flash. Initially seated last on a limited-
+        // context assumption; that assumption was wrong (Inkling's
+        // context is 1,048,576), and under Drew's placement law (free +
+        // full context = front of the fitting pool, ahead of paid legs)
+        // it sits in the free cluster, behind the three Go free plans.
+        // The Zen shelf carried zero route attempts until the evening
+        // of 2026-11-14: the three Zen instances had no credentials in
+        // the credential store, so they never instantiated as providers
+        // (code#10425). Fixed live via the credential API — each Zen
+        // instance now holds its account's console key, copied from the
+        // matching Go instance credential — and verified on the wire
+        // (aggregate dealt opencode.developing-today-0/inkling-2-small-
+        // free, success; direct pin opencode.drewrypope/big-pickle,
+        // success).
         "targets": [
           "opencode-route/beam-plan",
+          "opencode-route/longcat-plan",
+          "opencode-route/iceman-plan",
+          "opencode-route/inkling-plan",
+          "opencode-route/openrouter-free-plan",
           "opencode-route/deepseek-flash-plan#low",
           "opencode-route/haiku-plan#low",
+          "opencode-route/background",
           "opencode-route/workhorse"
         ],
         "selection": "ordered",
@@ -2905,10 +3937,9 @@
         // terminates at specialist, the sink. Full layout:
         // .opencode/route-fallbacks.md; guard:
         // bin/check-opencode-route-rules.mjs (CLASS_FALLBACKS).
-        // Background's own edge (workhorse) is a PROPOSAL (Drew
-        // has not ruled on background yet, 2026-11-13): patient
-        // queue work that exhausts the value seats escalates to
-        // the standard tier rather than erroring.
+        // Background's own edge (workhorse) RULED by Drew
+        // 2026-11-14: patient queue work that exhausts the value
+        // seats escalates to the standard tier rather than erroring.
         // NEW 2026-10-27 (pool redesign): the tier for machinery-dispatched
         // work no human watches — repo sweeps, issue-queue workers,
         // stewardship cycles, batch classification. Ordered chain in value
@@ -2944,6 +3975,35 @@
         // final ungated MiMo position is the off-peak failover.
         // No agent defaults here yet — queue workers are repointed as the
         // follow-up step so the adoption is observable.
+        // 2026-11-14 (Drew, Zen pass): the Zen free shelf's patient-tier
+        // models join as plain legs ahead of the workhorse escalation —
+        // DeepSeek Flash Free (AA v5 II 33 max), MiniMax M3.1 Flash Free
+        // (29), GLM 5.3 Flash Free (28, slow at ~48 tok/s — patient tier
+        // only), Flint 40B Free (coding specialist, no AA listing), Big
+        // Pickle (stealth, rotating backend — no score can attach), and
+        // the two Nemotron free models last (VL 13.6, Lightning 5.5 —
+        // the weakest measured seats in the fleet; free last resorts).
+        // 2026-11-15 (Drew, free-provider pass): the Z.ai direct
+        // free door (glm-flash-free-plan: GLM-4.7-Flash 200k +
+        // GLM-4.5-Flash 131k, $0 on our own key) joins this cluster
+        // behind the Zen GLM seat.
+        // 2026-11-16 (Drew, free-provider pass): the Google AI Studio
+        // free door (gemini-free-plan: Hydrogen + Flash legs, 1M
+        // context, $0 on our own key) joins this cluster ahead of
+        // the ~200k legs per the placement law.
+        // 2026-11-16 (Drew, free-provider pass): the EXAONE direct
+        // free door (exaone-free-plan: K-EXAONE 2.5, 524k context,
+        // $0 on our own key) joins this cluster behind the Gemini
+        // legs and ahead of the ~200k legs per the placement law.
+        // 2026-11-16 (provider/model watch): the Hy4 Flash free
+        // door (hy4-flash-plan: Tencent Hy4 Flash, 1M context, $0
+        // on Go + Zen) joins this cluster behind the EXAONE legs --
+        // an unbenchmarked vendor-claim model, so it takes a
+        // toss-up background seat ahead of the ~200k legs, not a
+        // scout front seat, until its history proves equivalence.
+        // Drew (2026-11-14, later): the whole Zen shelf sits in this
+        // last-resort position deliberately — limited context on the
+        // Zen free models means they are never a first-choice leg.
         "targets": [
           {
             "model": "opencode-route/mimo-flash-plan",
@@ -2962,6 +4022,27 @@
             "window": "deepseek-peak-early"
           },
           "opencode-route/mimo-flash-plan",
+          "opencode-route/flash-free-plan",
+          "opencode-route/gemini-free-plan",
+          "opencode-route/exaone-free-plan",
+          "opencode-route/hy4-flash-plan",
+          "opencode-route/glm-5-3-flash-zen-plan",
+          "opencode-route/glm-flash-free-plan",
+          "opencode-route/flint-plan",
+          "opencode-route/big-pickle-plan",
+          "opencode-route/nemotron-vl-plan",
+          "opencode-route/nemotron-lightning-plan",
+          // groq-free-plan is NOT seated here (code#10562, 2026-11-15):
+          // every Groq free-tier model caps input tokens per minute
+          // below any agent session's first request (qwen/qwen3.8-27b
+          // ITPM limit 7000 in our org; gpt-oss-120b/20b publish
+          // 8000 TPM free tier) while a scheduled session's first
+          // request runs ~26k tokens, so a background session that
+          // fell through to this leg ended failed at start with a
+          // request-too-large error instead of doing its work. The
+          // plan stays defined below for tiny-prompt seats only.
+          "opencode-route/nvidia-free-plan",
+          "opencode-route/openrouter-free-plan",
           "opencode-route/workhorse"
         ],
         "selection": "ordered",
@@ -3004,8 +4085,9 @@
         "selection": "weighted",
         "autonomy": "rules"
       },
+      // Composition (2026-11-16): the deepseek-effort-rr trial route (DeepSeek Flash, high/low weighted 3:1).
       "workhorse-ordered": {
-        "name": "Workhorse ordered - DeepSeek Flash plan first, strictly ordered",
+        "name": "Workhorse ordered - first stage: strictly ordered failover, best-value seat first",
         // 2026-11-03 (Drew): a dedicated ordered pool in FRONT of
         // workhorse-primary inside the workhorse chain, seating ONLY
         // deepseek-flash-plan#high. Workhorse traffic tries this pool
@@ -3173,8 +4255,11 @@
         // while still bounding a truly dead leg to one minute.
         "health": { "firstTokenTimeoutMs": 60000 }
       },
+      // 2026-11-16 (Drew): tier-pool names describe performance/speed characteristics, not models;
+      // compositions live in comments like this one.
+      // Composition (2026-11-16): beam-plan, workhorse-ordered, workhorse-primary (emptied), workhorse-weighted, workhorse-last-resort, scout, specialist.
       "workhorse": {
-        "name": "Workhorse - standard work: Flash primary, weighted relief pool behind it, Fable #low last resort if all else is down",
+        "name": "Workhorse - standard work: ordered stages with a weighted relief pool, last-resort stage if all else is down",
         // Class fallback (Drew 2026-11-13): on exhaustion this class
         // escalates to the route(s) appended at the END of its targets.
         // Per-call visited-set semantics: the route expander prunes
@@ -3221,7 +4306,15 @@
         // 2026-11-10 (Drew, direct order): workhorse-last-resort
         // joins the chain as the FOURTH stage - reached only when
         // every stage ahead of it yields nothing (see that route).
+        // 2026-11-15 (Drew, direct order): beam-plan (the 1M-context
+        // free Beam pool) fronts workhorse as the FIRST stage, ahead
+        // of workhorse-ordered. beam-plan is a shared plan reference:
+        // it keeps its scout seat unchanged - seating it here does
+        // not move it. This route is selection "ordered" and carries
+        // no weights map (the convention for every ordered route in
+        // this file); position is the mechanism.
         "targets": [
+          "opencode-route/beam-plan",
           "opencode-route/workhorse-ordered",
           "opencode-route/workhorse-primary",
           "opencode-route/workhorse-weighted",
@@ -3237,8 +4330,9 @@
         // while still bounding a truly dead leg to one minute.
         "health": { "firstTokenTimeoutMs": 60000 }
       },
+      // Composition (2026-11-16): luna-effort-rr, Spark contributor #medium, Hydrogen #low (Antigravity), haiku-plan#high - all weight 10. (Drew 2026-11-07; Sonnet seat 2026-11-09, replaced by Haiku 2026-11-16.)
       "workhorse-weighted": {
-        "name": "Workhorse weighted - Luna medium/high round-robin (luna-effort-rr), Spark contributor #high, Gemini 4 Hydrogen #low, Claude Sonnet 5.5 #medium, all w10: last-tier fallbacks behind the Flash primary (Drew 2026-11-07; Sonnet seat 2026-11-09)",
+        "name": "Workhorse weighted - relief pool: weighted selection, all members equal weight, absorbs failover and overflow behind the primary",
         // The weighted half of workhorse's incremental structure: sessions
         // that fail over (or are demoted off) the Flash primary draw here
         // by weight. Not addressed by any agent directly.
@@ -3379,16 +4473,36 @@
         // medium-vs-high outcome record (code#1191).
         "targets": [
           "opencode-route/luna-effort-rr",
-          "_muse/muse-spark-1.3-contributor#high",
+          // 2026-11-15 (Drew, direct order): Spark #high -> #medium (all Spark seats).
+          "_muse/muse-spark-1.3-contributor#medium",
           "_antigravity/gemini-4-hydrogen#low",
-          "_antigravity/claude-sonnet-5-5#medium"
+          // 2026-11-16 (Drew, direct order): Antigravity Sonnet
+          // effort lowered one rung, #medium -> #low; the seat
+          // and its weight 10 are otherwise unchanged. PR #10711
+          // replaced this seat the same minute the correction
+          // arrived (only lower antigrav effort, otherwise leave
+          // as is); that replacement is reverted by the
+          // reconciliation PR, so the net change from pre-#10711
+          // main is this effort drop alone.
+          // 2026-11-16 (Drew, direct order; AA v5.0.1 score/price review): the Antigravity Sonnet #low seat that sat here MOVED to workhorse-last-resort (a different door as the middle resort leg); this seat is now haiku-plan#high at the same weight 10 - Haiku #high (II 29.9, $0.16/AA task) dominates Sonnet #low (II 25.6, $0.51).
+          "opencode-route/haiku-plan#high"
         ],
         "selection": "weighted",
+        // Weights keys are BARE provider/model ids on purpose
+        // (code#10725, verified against the fork 2026-11-16): the
+        // router looks a leaf target weight up by its bare
+        // provider/model id - the target #effort pin is not part
+        // of the lookup key (fork packages/core/src/config/plugin/
+        // model-routes.ts: attach() receives the leaf key as
+        // providerID + "/" + model id, no variant suffix). Do NOT
+        // suffix these keys with #effort to match the targets -
+        // a suffixed key misses the lookup and the leg silently
+        // falls back to weight 1.
         "weights": {
           "opencode-route/luna-effort-rr": 10,
           "_muse/muse-spark-1.3-contributor": 10,
           "_antigravity/gemini-4-hydrogen": 10,
-          "_antigravity/claude-sonnet-5-5": 10
+          "opencode-route/haiku-plan": 10
         },
         "autonomy": "rules",
         // #7927 (task 14574): the 10s default first-output deadline mass-killed
@@ -3397,8 +4511,9 @@
         // while still bounding a truly dead leg to one minute.
         "health": { "firstTokenTimeoutMs": 60000 }
       },
+      // Composition (2026-11-16): Haiku #high (Claude door) first, then Sonnet #low (Antigravity); Fable #low tail commented out in the targets below.
       "workhorse-last-resort": {
-        "name": "Workhorse last resort - Haiku #high from Claude first, then Fable #low, only if all else is down",
+        "name": "Workhorse last resort - final stage: two legs on different provider doors, only if all else is down",
         // NEW 2026-11-10 (Drew, direct order): the fourth and final
         // stage of the workhorse chain, reached only when
         // workhorse-ordered, workhorse-primary, and
@@ -3433,7 +4548,9 @@
         // primary-checkout reconcile (Drew's order) landed it.
         "targets": [
           "_claude/claude-haiku-5-5#high",
-          "opencode-route/fable-plan#low"
+          "_antigravity/claude-sonnet-5-5#low"
+          // 2026-11-16 (Drew, direct order): Fable tail commented out for now:
+          // "opencode-route/fable-plan#low"
         ],
         "selection": "ordered",
         "autonomy": "rules",
@@ -3442,8 +4559,9 @@
         // a truly dead leg to one minute.
         "health": { "firstTokenTimeoutMs": 60000 }
       },
+      // Composition (2026-11-16): fable-plan#low head, then haiku-plan#high, argon-plan#high, spark-plan#medium, sol-plan#medium.
       "specialist": {
-        "name": "Specialist - hard work: quality first, Fable #low head, then Claude Sonnet, Argon, Meta Spark, OpenAI",
+        "name": "Specialist - hard work: quality first, strongest head seat, ordered fallbacks across providers",
         // Class fallback (Drew 2026-11-13): specialist is the
         // SINK - no class fallback out of specialist. If every
         // specialist leg is down, the call errors; there is no
@@ -3478,17 +4596,26 @@
         // tail REMOVED: its <=36 ceiling is below this tier's band.
         "targets": [
           "opencode-route/fable-plan#low",
-          "opencode-route/sonnet-plan#high",
+          // 2026-11-16 (Drew, direct order): Anthropic-door Sonnet seat
+          // replaced by Haiku #high; Fable carries the quality head on
+          // this door.
+          "opencode-route/haiku-plan#high",
           "opencode-route/argon-plan#high",
         // 2026-11-01 (Drew): Spark seat drops max -> xhigh. AA v5: max scores 36 vs xhigh 34 — two points for roughly double the reasoning time (max measured 540s/task). Spark in specialist is the Meta-diversity seat behind Sonnet/Argon; xhigh keeps the failover responsive. This was the last #max target in the tier routes.
-          "opencode-route/spark-plan#xhigh",
+          // 2026-11-15: spark at #high — the rung our own history
+          // proves (9,243 successes at #high in workhorse-weighted in
+          // the trailing 7d vs 384 at #xhigh; AA publishes no Spark
+          // effort curve below max).
+          // 2026-11-15 (Drew, direct order): spark-plan #high -> #medium (all Spark seats).
+          "opencode-route/spark-plan#medium",
           "opencode-route/sol-plan#medium"
         ],
         "selection": "ordered",
         "autonomy": "rules"
       },
+      // Composition (2026-11-16): opus-plan#medium head, then argon-plan#high, Hydrogen #high (Antigravity), Wonder #medium, sol-plan#high, specialist last; Fable #low head commented out in the targets below.
       "summit": {
-        "name": "Summit - very complex design only, deliberate use: Fable #low head, then Opus, Argon, Hydrogen, Wonder, Sol",
+        "name": "Summit - very complex design only, deliberate use: highest-capability ordered chain, specialist as the final fallback",
         // Class fallback (Drew 2026-11-13): on exhaustion this class
         // escalates to the route(s) appended at the END of its targets.
         // Per-call visited-set semantics: the route expander prunes
@@ -3530,19 +4657,28 @@
         // $9.95 and ~30 min: the fast execution seat in the design
         // chain, drawing the Antigravity Gemini pool.
         "targets": [
-          "opencode-route/fable-plan#medium",
-          "opencode-route/opus-plan#high",
+          // 2026-11-16 (Drew, direct order): Fable #medium -> #low --
+          // Fable is low in every seat; this reverses the 2026-11-11
+          // summit raise (also Drew's order).
+          // 2026-11-16 (Drew, direct order): Fable head commented out for now.
+          // "opencode-route/fable-plan#low",
+          "opencode-route/opus-plan#medium",
           "opencode-route/argon-plan#high",
           "_antigravity/gemini-4-hydrogen#high",
-          "_muse/muse-wonder-1.0-contributor#xhigh",
-          "opencode-route/sol-plan#xhigh",
+          // 2026-11-15 (Drew, direct order): Wonder #xhigh -> #high.
+          // 2026-11-16 (Drew, direct order): Wonder seat in summit moves #high -> #medium (efficiency: Spark/Wonder effort ladder evidence points down-ladder; #high unproven).
+          "_muse/muse-wonder-1.0-contributor#medium",
+          // 2026-11-15 (Drew): sol at #high — AA xhigh 52.5 vs
+          // high 50.3; a near-flat step at materially fewer tokens.
+          "opencode-route/sol-plan#high",
           "opencode-route/specialist"
         ],
         "selection": "ordered",
         "autonomy": "rules"
       },
+      // Composition (2026-11-16): deepseek-flash-plan#high, gemini-hydrogen-plan#high, haiku-plan#high, then workhorse/summit/specialist fallbacks; the quality floor is the haiku-plan#high seat.
       "speed": {
-        "name": "Speed - fastest seats at or above the Haiku bar, for latency-bound work",
+        "name": "Speed - fastest seats above the quality floor, for latency-bound work",
         // Class fallback (Drew 2026-11-13): on exhaustion this class
         // escalates to the route(s) appended at the END of its targets.
         // Per-call visited-set semantics: the route expander prunes
@@ -3582,8 +4718,14 @@
         // renamed gemini-hydrogen-plan and now seats Gemini 4
         // Hydrogen, so this leg serves Hydrogen #high - AA v5.0.1
         // II 51 at $1.87/task, up from Flash #high II 30.8.
+        // 2026-11-14 (performance cut, code#9950 follow-up): the direct
+        // _muse Spark #xhigh seat is REMOVED — the muse-direct Spark
+        // #xhigh cell recorded 0 successes in 141 attempts in the
+        // 2026-11-14 per-model cut. Spark keeps its deliberate-tier seats
+        // (workhorse #high, spark-plan); this pool leads with the
+        // deepseek-flash-plan leg instead. Re-seat only on a live
+        // completion at #xhigh through the Meta door.
         "targets": [
-          "_muse/muse-spark-1.3-contributor#xhigh",
           "opencode-route/deepseek-flash-plan#high",
           "opencode-route/gemini-hydrogen-plan#high",
           "opencode-route/haiku-plan#high",
@@ -3664,7 +4806,7 @@
             "window": "deepseek-peak-early",
             "limit": { "context": 1000000 }
           },
-          { "model": "opencode-route/haiku-plan#medium", "limit": { "context": 388000 } }
+          { "model": "opencode-route/haiku-plan#low", "limit": { "context": 388000 } }
         ],
         "selection": "ordered",
         "autonomy": "rules"

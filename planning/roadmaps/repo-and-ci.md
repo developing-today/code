@@ -12,10 +12,10 @@ This file covers `.github/workflows`, the pm-dispatch automation (formerly Jules
 
 ## Next
 
-| Title                                         | Status      | Intent                                                                                                                                                               | Links                           |
-| --------------------------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
-| Adopt the planning folder                     | in-progress | New plans and roadmap changes go through `planning/`.                                                                                                                | [planning README](../README.md) |
-| OpenClaw babysitting-by-comment               | proposed    | The monitor's routine issue comment becomes the control channel: OpenClaw reports its session state and obeys instructions in-thread. Pilot first, then mirror mode. | #1234, #1190                    |
+| Title                           | Status      | Intent                                                                                                                                                               | Links                           |
+| ------------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| Adopt the planning folder       | in-progress | New plans and roadmap changes go through `planning/`.                                                                                                                | [planning README](../README.md) |
+| OpenClaw babysitting-by-comment | proposed    | The monitor's routine issue comment becomes the control channel: OpenClaw reports its session state and obeys instructions in-thread. Pilot first, then mirror mode. | #1234, #1190                    |
 
 ## Ideas
 

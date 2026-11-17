@@ -98,14 +98,26 @@ function parseArgs(): { files: string[]; outboxDir?: string; target?: string; st
 }
 
 async function main(): Promise<number> {
+  // Parse first, kill switch second (#9794): the operator-script
+  // contract (root AGENTS.md) requires every unaccounted-for
+  // argument to produce a non-zero usage error, and a disabled
+  // invocation is not exempt — a typo'd flag must exit 2, not
+  // silently succeed because the sync is switched off.
+  const opts = parseArgs();
   if (process.env.DECISION_EVENTS_SYNC === "0") {
     console.log("sync-decision-events: disabled by DECISION_EVENTS_SYNC=0");
     return 0;
   }
-  const opts = parseArgs();
   const files = opts.files.length > 0 ? [...opts.files] : [defaultDecisionEventsOutboxFile()];
   if (opts.outboxDir) {
-    const entries = await readdir(opts.outboxDir).catch(() => [] as string[]);
+    let entries: string[];
+    try {
+      entries = await readdir(opts.outboxDir);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`sync-decision-events: cannot read --outbox-dir ${JSON.stringify(opts.outboxDir)}: ${msg}`);
+      return 1;
+    }
     for (const name of entries.filter((n) => n.endsWith(".jsonl")).sort()) files.push(join(opts.outboxDir, name));
   }
 

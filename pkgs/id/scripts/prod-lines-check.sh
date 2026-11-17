@@ -13,10 +13,26 @@
 # shrink: any growth fails, and deleting the entry (once the split
 # lands) makes the plain 2,500 limit apply.
 #
+# Rows are keyed in package-relative `src/...` form. Before lookup a
+# scanned path is normalized by stripping a leading `crates/<crate>/`
+# (#10603), so the same row guards a module in the pre-split layout and
+# after the crate split, and moving a file between crates does not
+# silently disable its allowance or test-only exemption.
+#
 # Test seams (used by prod-lines-check-test.sh, not in CI):
 #   PROD_LINES_ROOT   scan this tree instead of pkgs/id
 #   PROD_LINES_LIMIT  compare against this limit instead of 2,500
 set -euo pipefail
+
+usage() {
+  printf 'usage: %s\n' "$(basename "$0")" >&2
+}
+
+if [[ $# -ne 0 ]]; then
+  printf '%s: unexpected argument: %s\n' "$(basename "$0")" "$1" >&2
+  usage
+  exit 2
+fi
 
 pkg_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 root="${PROD_LINES_ROOT:-$pkg_dir}"
@@ -25,37 +41,43 @@ limit="${PROD_LINES_LIMIT:-2500}"
 
 # Grandfathered over-limit production files: path|allowance|reason.
 # Allowance is lines of production code, not total lines.
+#
+# Dropped 2026-11-16 (#10603, crate split): `src/cli.rs`, `src/web/routes.rs`
+# and `src/web/markdown.rs` no longer exist at those paths and their
+# successors are under the plain limit (routes.rs is now 2,096 production
+# lines, markdown.rs 1,196; id-cli's modules were split out), so their
+# allowances guarded nothing. Add a row only for a file that is over the
+# plain limit today.
 grandfather_allowance() {
   case "$1" in
-  src/cli.rs)
-    # Baseline allowance 2026-11-08 at 2,817 production lines (Codex P1
+  crates/id-directory/src/directory.rs)
+    # Migrated from `src/directory.rs` after the crate split (#10603).
+    # Baseline allowance 2026-11-08 at 2,610 production lines (Codex P1
     # baseline disposition on PR #7187: explicit allowances at exact
     # current counts so the guard lands as a ratchet). The F11.10 split
-    # that shrinks it is tracked in #1438. Any growth fails.
-    printf '2817|F11.10 split tracked in #1438 — allowance must only shrink'
-    return 0
-    ;;
-  src/directory.rs)
-    # Baseline allowance 2026-11-08 at 2,610 production lines (Codex P1
-    # baseline disposition on PR #7187, as above); the F11.10 split
     # that shrinks it is tracked in #1438. Any growth fails.
     printf '2610|F11.10 split tracked in #1438 — allowance must only shrink'
     return 0
     ;;
-  src/web/routes.rs)
-    # Baseline allowance 2026-11-08 at 2,890 production lines (Codex P1
-    # baseline disposition on PR #7187, as above); the F11.10 split
-    # that shrinks it is tracked in #1438. Any growth fails.
-    printf '2890|F11.10 split tracked in #1438 — allowance must only shrink'
+  crates/id-cli/src/commands/serve.rs)
+    # Baseline allowance 2026-11-17 at 3,089 production lines: over the
+    # limit on main after the crate split (#10603), which failed the guard
+    # on main (#10869). Same ratchet disposition as the rows above: an
+    # exact current count, so main is green and any growth still fails.
+    # The F11.10 split that shrinks it is tracked in #1438.
+    printf '3089|F11.10 split tracked in #1438 — allowance must only shrink'
     return 0
     ;;
-  src/web/markdown.rs)
-    # Grandfathered 2026-11-03 at 5,312 production lines; baseline
-    # re-established 2026-11-08 at 6,232 production lines (growth landed
-    # on main before the guard merged; Codex P1 baseline disposition on
-    # PR #7187). The F11.10 split that shrinks it is tracked in #1438
-    # (queue task 6599). Any growth fails.
-    printf '6232|F11.10 split tracked in #1438 — allowance must only shrink'
+  crates/id-worlds/src/world/actor.rs)
+    # Baseline allowance 2026-11-17 at 4,496 production lines (#10869,
+    # ratchet as above). The split is tracked in #8592. Any growth fails.
+    printf '4496|split tracked in #8592 — allowance must only shrink'
+    return 0
+    ;;
+  crates/id-worlds/src/world/core.rs)
+    # Baseline allowance 2026-11-17 at 3,195 production lines (#10869,
+    # ratchet as above). The F11.10 split is tracked in #1438.
+    printf '3195|F11.10 split tracked in #1438 — allowance must only shrink'
     return 0
     ;;
   esac
@@ -75,8 +97,34 @@ test_only_reason() {
     printf 'module-gated test module (#[cfg(test)] mod tests in src/world_session/mod.rs)'
     return 0
     ;;
+  src/cli/tests.rs)
+    printf 'module-gated test module (#[cfg(test)] mod tests in src/cli/mod.rs)'
+    return 0
+    ;;
   esac
   return 1
+}
+
+# Package-relative lookup key: strip a leading `crates/<crate>/` so rows
+# stay valid across the crate split (#10603).
+normalize_rel() {
+  local rel="$1"
+  if [[ $rel == crates/*/* ]]; then
+    rel="${rel#crates/}"
+    printf '%s' "${rel#*/}"
+  else
+    printf '%s' "$rel"
+  fi
+}
+
+# Rows may be keyed by their real path (post-split) or by the normalized
+# `src/...` form (pre-split and across crate moves): try exact first.
+match_grandfather() {
+  grandfather_allowance "$1" || grandfather_allowance "$(normalize_rel "$1")"
+}
+
+match_test_only() {
+  test_only_reason "$1" || test_only_reason "$(normalize_rel "$1")"
 }
 
 is_skipped_dir() {
@@ -102,7 +150,7 @@ while IFS= read -r file; do
   if is_skipped_dir "$rel"; then
     continue
   fi
-  if reason="$(test_only_reason "$rel")"; then
+  if reason="$(match_test_only "$rel")"; then
     skipped_test_only=$((skipped_test_only + 1))
     echo "test-only: $rel ($reason)"
     continue
@@ -113,7 +161,7 @@ while IFS= read -r file; do
     max_lines="$count"
     max_file="$rel"
   fi
-  if entry="$(grandfather_allowance "$rel")"; then
+  if entry="$(match_grandfather "$rel")"; then
     grandfather_hits=$((grandfather_hits + 1))
     allowance="${entry%%|*}"
     greason="${entry#*|}"

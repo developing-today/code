@@ -43,6 +43,12 @@
 #   PM_DRILL_NO_POST=1     skip the GitHub comment/issue side effects
 
 set -uo pipefail
+# Argument contract (#3352): this script takes no command-line
+# arguments; anything given is a usage error before any work runs.
+if [ "$#" -gt 0 ]; then
+  echo "kill-collector-drill.sh: unexpected argument '$1'; usage: bash scripts/kill-collector-drill.sh (knobs are PM_DRILL_* environment variables)" >&2
+  exit 2
+fi
 
 STATE_DIR="${PM_DRILL_STATE_DIR:-$HOME/.local/state/pm-drills}"
 INCIDENT_FLAG="${PM_DRILL_INCIDENT_FLAG:-$STATE_DIR/incident.flag}"

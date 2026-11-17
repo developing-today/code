@@ -50,7 +50,6 @@ declare -A GRANDFATHERED=(
   ["pkgs/id/crates/id-directory/src/directory.rs"]="#8591"
   ["pkgs/id/crates/id-worlds/src/world/actor.rs"]="#8592"
   ["pkgs/id/crates/id-worlds/src/world/core.rs"]="#8593"
-  ["pkgs/id/crates/id-worlds/src/world_session/mod.rs"]="#8594"
 )
 
 # Count production lines of one file: every line that is not part of

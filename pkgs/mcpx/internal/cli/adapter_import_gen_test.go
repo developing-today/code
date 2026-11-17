@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,6 +49,38 @@ func TestParseFishCompletion(t *testing.T) {
 	list := shape.Subs[1]
 	if len(list.Flags) != 1 || list.Flags[0].Long != "all" || list.Flags[0].Short != "a" {
 		t.Errorf("list flags: %+v", list.Flags)
+	}
+}
+
+// Regression (issue #9795): an escaped apostrophe inside a single-quoted
+// fish description must not close the quote early. With the early close,
+// the quote reopening at "format'" swallowed the trailing -r -F, so
+// fd's --ignore-file lost its required parameter and rendered boolean.
+// Oracle: hand-written expected shape, as with the fixtures above.
+func TestParseFishCompletionEscapedApostrophe(t *testing.T) {
+	text := "complete -c fd -l ignore-file -d 'Add a custom ignore-file in \\'.gitignore\\' format' -r -F\n"
+	shape := parseFishCompletion(text, "fd")
+	if len(shape.Global) != 1 {
+		t.Fatalf("global flags: %+v", shape.Global)
+	}
+	f := shape.Global[0]
+	if f.Long != "ignore-file" || !f.TakesValue {
+		t.Errorf("ignore-file flag: %+v", f)
+	}
+	if f.Desc != "Add a custom ignore-file in '.gitignore' format" {
+		t.Errorf("ignore-file desc: %q", f.Desc)
+	}
+	// Token-level oracle for fish single-quote escapes: \' and \\ are
+	// escapes, any other backslash stays literal.
+	for in, want := range map[string]string{
+		`'it\'s'`: "it's",
+		`'a\\b'`:  `a\b`,
+		`'a\nb'`:  `a\nb`,
+	} {
+		got := fishTokens(in)
+		if len(got) != 1 || got[0] != want {
+			t.Errorf("fishTokens(%q) = %v, want [%q]", in, got, want)
+		}
 	}
 }
 
@@ -453,6 +487,14 @@ func TestBuildCompletionFileImport(t *testing.T) {
 	if spec.Provenance == nil || spec.Provenance.Source != "completion" || spec.Provenance.SourceDetail != path {
 		t.Errorf("provenance: %+v", spec.Provenance)
 	}
+	// Oracle (#9172): the provenance fingerprint is the SHA-256 of the
+	// exact source text the declaration was generated from -- here the
+	// completion file's own bytes, hashed independently of the import
+	// path under test.
+	sum := sha256.Sum256([]byte(fishFixture))
+	if want := hex.EncodeToString(sum[:]); spec.Provenance.SourceSHA256 != want {
+		t.Errorf("source fingerprint: got %q, want sha256(fixture) %q", spec.Provenance.SourceSHA256, want)
+	}
 	if len(spec.Tools) != 2 {
 		t.Errorf("tools: %+v", spec.Tools)
 	}
@@ -475,6 +517,32 @@ func TestBuildCompletionFileImport(t *testing.T) {
 	}
 }
 
+func TestBuildCompletionFileImportDottedProgramName(t *testing.T) {
+	// Issue #9796: a dotted program name must survive for parsing
+	// and for the spec's command; only the adapter namespace name
+	// is sanitised (dots to dashes). Before the fix the import of
+	// this fixture failed as empty, because every `complete` line
+	// is for -c toolbox.v2 while the parser was handed toolbox-v2.
+	dotted := strings.ReplaceAll(fishFixture, "-c toolbox", "-c toolbox.v2")
+	path := filepath.Join(t.TempDir(), "toolbox.v2.fish")
+	if err := os.WriteFile(path, []byte(dotted), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec, _, err := buildCompletionFileImport(importOptions{completion: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Name != "toolbox-v2" {
+		t.Errorf("adapter namespace name should be sanitised: %q", spec.Name)
+	}
+	if spec.Command != "toolbox.v2" {
+		t.Errorf("spec command should keep the original program name: %q", spec.Command)
+	}
+	if len(spec.Tools) != 2 {
+		t.Errorf("declaration should be non-empty with both subcommand tools: %+v", spec.Tools)
+	}
+}
+
 func TestParseImportArgsGenerationFlags(t *testing.T) {
 	o, err := parseImportArgs([]string{"--source", "help", "git", "--out=x.json", "--name", "g"})
 	if err != nil {
@@ -488,5 +556,28 @@ func TestParseImportArgsGenerationFlags(t *testing.T) {
 	}
 	if _, err := parseImportArgs([]string{"--completion", "x.fish", "--shell", "tcsh"}); err == nil {
 		t.Error("a bogus --shell should be refused")
+	}
+}
+
+func TestVersionDriftReadsStderrVersion(t *testing.T) {
+	// Oracle: the binary's own --version, on whichever stream it
+	// writes -- the import probe reads combined output, so the
+	// drift check must too, or an unchanged binary whose version
+	// goes to stderr reads as versionless. (Salvaged from PR #9041,
+	// #9172; main's runCapture already merges the streams, so this
+	// pins the behavior.)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "faketool")
+	script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'faketool version 1.2.3' >&2; exit 0; fi\nexit 1\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := adapter.Spec{
+		Name: "faketool", Command: path,
+		Provenance: &adapter.Provenance{Source: "help", BinaryVersion: "1.2.3"},
+	}
+	declared, found, drift := versionDrift(spec)
+	if drift || found != "1.2.3" || declared != "1.2.3" {
+		t.Fatalf("a version printed to stderr compares like any other: declared=%q found=%q drift=%v", declared, found, drift)
 	}
 }

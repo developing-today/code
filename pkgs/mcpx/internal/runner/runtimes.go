@@ -43,6 +43,11 @@ type Runtime struct {
 	// Kind decides how argv is built.
 	Kind string
 	Bin  string
+	// Invoke is the command as named before PATH resolution absolutized
+	// Bin: a declared runtime's configured command, or the requested
+	// name itself. A devshell spawn resolves Invoke inside the shell
+	// instead of running the host's Bin (Codex review, PR #8381).
+	Invoke string
 	// Perms are the rendered permission flags.
 	Perms []string
 	// ConfigArgs are the runtime's declared extra arguments (script.
@@ -325,7 +330,9 @@ func firstOr(l []string, d string) string {
 // candidate is a runtime to try: its name, kind, binary and extra args.
 type candidate struct {
 	name, kind, bin string
-	args            []string
+	// invoke is bin as named before LookPath absolutized it.
+	invoke string
+	args   []string
 }
 
 // lookup turns a requested name into a candidate.
@@ -340,6 +347,7 @@ func (s Setup) lookup(name string) (candidate, error) {
 		if c.bin == "" {
 			c.bin = name
 		}
+		c.invoke = c.bin
 		bin, err := exec.LookPath(c.bin)
 		if err != nil {
 			return c, fmt.Errorf("runtime %s: %s not found: %w", name, c.bin, err)
@@ -352,7 +360,7 @@ func (s Setup) lookup(name string) (candidate, error) {
 		return candidate{name: name}, fmt.Errorf("%s not found", name)
 	}
 	if knownKind(name) {
-		return candidate{name: name, kind: name, bin: bin}, nil
+		return candidate{name: name, kind: name, bin: bin, invoke: name}, nil
 	}
 	base := filepath.Base(bin)
 	stem := strings.TrimSuffix(base, filepath.Ext(base))
@@ -432,7 +440,7 @@ func checkNodeTransformTypes(bin string) error {
 		return fmt.Errorf("probe node runtime %s for --experimental-transform-types: create temporary TypeScript script: %w", bin, err)
 	}
 	probePath := probe.Name()
-	defer os.Remove(probePath)
+	defer func() { _ = os.Remove(probePath) }()
 	if _, err := probe.WriteString("enum McpxTransformTypesProbe { Supported }; void McpxTransformTypesProbe.Supported;\n"); err != nil {
 		_ = probe.Close()
 		return fmt.Errorf("probe node runtime %s for --experimental-transform-types: write temporary TypeScript script: %w", bin, err)
@@ -488,11 +496,15 @@ func ResolveDeferred(prefer, permSpec string, s Setup) (*Runtime, error) {
 	if ref != nil {
 		return nil, fmt.Errorf("%s", ref.msg(prefer))
 	}
-	return build(candidate{name: prefer, kind: prefer, bin: prefer}, perms), nil
+	return build(candidate{name: prefer, kind: prefer, bin: prefer, invoke: prefer}, perms), nil
 }
 
 func build(c candidate, perms []string) *Runtime {
-	rt := &Runtime{Name: c.name, Kind: c.kind, Bin: c.bin, Perms: perms,
+	invoke := c.invoke
+	if invoke == "" {
+		invoke = c.name
+	}
+	rt := &Runtime{Name: c.name, Kind: c.kind, Bin: c.bin, Invoke: invoke, Perms: perms,
 		ConfigArgs: append([]string(nil), c.args...)}
 	switch c.kind {
 	case KindDeno:

@@ -436,3 +436,77 @@ test('resolveTargetProvider: no target and no legacy is absent, never in sync (#
   assert.deepEqual(Object.keys(config.provider), ['openai']);
   assert.deepEqual(resolveTargetProvider({}, '_antigravity'), { outcome: 'absent' });
 });
+
+// --- #1799: existing entries are reconciled on the full desired state —
+// limit.output and variants drift survive no sync, and a converged entry
+// records no edits (no write churn). Oracle: the plan for an entry is
+// exactly the set of keys whose desired value differs from the entry's
+// current value under order-insensitive equality. ---
+
+const { planModelReconciliation } = new Function(
+  `${extractFunction('jsonValueEqual')}\n` +
+  `${extractFunction('planModelReconciliation')}\n` +
+  'return { planModelReconciliation };',
+)();
+
+const desiredLimits = { context: 1048576, output: 65536 };
+const desiredVariants = {
+  high: { options: { reasoning_effort: 'high' } },
+  medium: { options: { reasoning_effort: 'medium' } },
+};
+
+test('reconciliation corrects output-only drift when context already matches (#1799)', () => {
+  const existing = { limit: { context: 1048576, output: 9999 }, variants: desiredVariants };
+  assert.deepEqual(planModelReconciliation(existing, desiredLimits, desiredVariants), [
+    { key: 'limit', value: desiredLimits },
+  ]);
+});
+
+test('reconciliation corrects variants drift: a dropped effort is removed and an added one appears (#1799)', () => {
+  const existing = { limit: desiredLimits, variants: { low: { options: { reasoning_effort: 'low' } } } };
+  assert.deepEqual(planModelReconciliation(existing, desiredLimits, desiredVariants), [
+    { key: 'variants', value: desiredVariants },
+  ]);
+});
+
+test('reconciliation still corrects context drift and a missing limit (#1799)', () => {
+  assert.deepEqual(
+    planModelReconciliation({ limit: { context: 1, output: 65536 }, variants: desiredVariants }, desiredLimits, desiredVariants),
+    [{ key: 'limit', value: desiredLimits }],
+  );
+  assert.deepEqual(
+    planModelReconciliation({ variants: desiredVariants }, desiredLimits, desiredVariants),
+    [{ key: 'limit', value: desiredLimits }],
+  );
+});
+
+test('reconciliation adds variants to an entry that has none (#1799)', () => {
+  const existing = { limit: desiredLimits };
+  assert.deepEqual(planModelReconciliation(existing, desiredLimits, desiredVariants), [
+    { key: 'variants', value: desiredVariants },
+  ]);
+});
+
+test('reconciliation plans both updates when limit and variants both drift (#1799)', () => {
+  const existing = { limit: { context: 1048576, output: 1 }, variants: {} };
+  assert.deepEqual(planModelReconciliation(existing, desiredLimits, desiredVariants), [
+    { key: 'variants', value: desiredVariants },
+    { key: 'limit', value: desiredLimits },
+  ]);
+});
+
+test('an already-correct entry plans no updates, whatever the key order (#1799)', () => {
+  const existing = {
+    limit: { output: 65536, context: 1048576 },
+    variants: {
+      medium: { options: { reasoning_effort: 'medium' } },
+      high: { options: { reasoning_effort: 'high' } },
+    },
+  };
+  assert.deepEqual(planModelReconciliation(existing, desiredLimits, desiredVariants), []);
+});
+
+test('an empty desired variants set never strips existing variants (#1799)', () => {
+  const existing = { limit: desiredLimits, variants: desiredVariants };
+  assert.deepEqual(planModelReconciliation(existing, desiredLimits, {}), []);
+});

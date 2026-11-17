@@ -4,7 +4,10 @@
 # PR-derived triggers and push events other than canonical branches: [main].
 # Usage: check-ci-policy-agreement.sh [ROOT] (default: repository root).
 set -euo pipefail
-[[ $# -le 1 ]] || { echo "Usage: check-ci-policy-agreement.sh [ROOT]" >&2; exit 2; }
+[[ $# -le 1 ]] || {
+  echo "Usage: check-ci-policy-agreement.sh [ROOT]" >&2
+  exit 2
+}
 
 ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 POLICY="$ROOT/.github/ci-policy.md"
@@ -21,13 +24,13 @@ REGISTRY=(
   "workflow-lint.yml|workflow-lint|manual"
   "proxy-port-fallbacks.yml|proxy-port-fallbacks|manual"
   "fleet-search-parity-guard.yml|fleet-search-parity-guard|manual"
-  "opencode-config-guard.yml|opencode-config-guard|main"
-  "mcpx-fix-test-guard.yml|mcpx fix-test guard|main"
-  "production-line-guard.yml|production-line guard|main"
-  "go-modules-build.yml|go modules build|main"
-  "identity-build.yml|identity build|main"
-  "map-build.yml|map build|main"
-  "mcpx-nixbuild.yml|mcpx nix build|main"
+  "opencode-config-guard.yml|opencode-config-guard|nightly"
+  "mcpx-fix-test-guard.yml|mcpx fix-test guard|nightly"
+  "production-line-guard.yml|production-line guard|nightly"
+  "go-modules-build.yml|go modules build|nightly"
+  "identity-build.yml|identity build|nightly"
+  "map-build.yml|map build|nightly"
+  "mcpx-nixbuild.yml|mcpx nix build|nightly"
 )
 
 # Waivers: workflow-file|tier-leg|phase issue. Each waiver records a
@@ -750,18 +753,21 @@ fi
 for wf in "$WF_DIR"/*.yml "$WF_DIR"/*.yaml; do
   [ -f "$wf" ] || continue
   if grep -Eq "^[\"']?on[\"']?:.*[{&*]" "$wf"; then
-    echo "::error::Use explicit block-form triggers, not aliases/flow maps: $wf"; fail=1
+    echo "::error::Use explicit block-form triggers, not aliases/flow maps: $wf"
+    fail=1
   fi
   triggers="$(triggers_of "$wf")"
   if printf '%s\n' "$triggers" | grep -Eq '^(pull_request.*|merge_group)$'; then
-    echo "::error::PR-derived trigger forbidden: $wf"; fail=1
+    echo "::error::PR-derived trigger forbidden: $wf"
+    fail=1
   fi
   if printf '%s\n' "$triggers" | grep -qx push; then
     # Deliberately accept only canonical branches: [main]. Reject broad branches,
     # ignored branches, tag pushes and unfiltered/inline push events.
     block="$(awk '/^  push:/ {p=1;next} p && /^  [a-z_]+:/ {exit} p && /^[^ #]/ {exit} p {print}' "$wf")"
     if ! printf '%s\n' "$block" | grep -Eq '^    branches: \[main\][[:space:]]*(#.*)?$' || printf '%s\n' "$block" | grep -Eq '^    (tags|tags-ignore|branches-ignore):'; then
-      echo "::error::push must target only branches: [main], without tag filters: $wf"; fail=1
+      echo "::error::push must target only branches: [main], without tag filters: $wf"
+      fail=1
     fi
   fi
 done

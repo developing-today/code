@@ -53,9 +53,6 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9198→CEN-04.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -98,8 +95,8 @@ Negative coverage: zero marker eventual visibility, multiple markers, human-auth
 
 **Tier:** recommended; required before production mirror. **Goal:** update known comment ID, stable marker, serialize Fleet-owned logical role, recover lost ack and verify/conflict. **Owns:** `src/work/authority.rs` adapter-facing policy and fixture; existing adapter code `pkgs/fleet/crates/fleet/src/gh.rs` if capability approved; #9209 owns transport. **Hard blockers:** AUTH-02; REL-03 operation identity and REL-04 durable intent contract. REL-05 relay ordering integration is a **recommended integration edge, not hard design blocker**, so policy→relay does not form a cycle. #9198 adapter harness. **First failing oracle:** `pmo_auth_managed_comment_timeout_reconciles_marker_before_repost` uses apply-then-timeout fake. **Done command:** list test then run `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_auth_managed_comment_timeout_reconciles_marker_before_repost`. **Negative:** zero marker eventual visibility, multiple markers, human-authored text, edit/delete/minimize; never delete human content. **Migration:** no bulk comment adoption; persist ID only after verified match. **Docs:** duplicate cleanup requires explicit owner proof.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `AUTH-02` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/authority.rs`

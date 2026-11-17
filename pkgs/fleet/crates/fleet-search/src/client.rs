@@ -257,6 +257,52 @@ fn search_with_token(base: &str, request: &SearchRequest, token: &str) -> Result
         .map_err(|e| format!("service at {base} sent a malformed job response: {e}"))?;
     let job_url = format!("{base}/v1/search/jobs/{}", created.job_id);
 
+    // --wait off (#9942, design s3.3): do not block. One status
+    // read; a finished job falls through to the normal path, a
+    // failed one reports its error, and a queued/running one
+    // returns its handle plus an empty first page. (Port of
+    // atlas-search service.rs's wait handling.)
+    if !request.wait {
+        let mut resp = agent
+            .get(&job_url)
+            .header("Authorization", &format!("Bearer {}", created.job_token))
+            .call()
+            .map_err(|e| format!("service at {base} unreachable while checking the job ({e})"))?;
+        let status = resp.status().as_u16();
+        let body = read_body(&mut resp)?;
+        if status != 200 {
+            return Err(format!(
+                "service at {base} lost the job: {}",
+                error_detail(status, &body)
+            ));
+        }
+        let job: JobStatusResponse = serde_json::from_str(&body)
+            .map_err(|e| format!("service at {base} sent malformed job status: {e}"))?;
+        match job.status {
+            JobStatus::Done => {}
+            JobStatus::Failed => {
+                return Err(format!(
+                    "service job failed: {}",
+                    job.error.unwrap_or_else(|| "unknown error".to_string())
+                ));
+            }
+            JobStatus::Expired => {
+                return Err("service job expired before completion".to_string());
+            }
+            JobStatus::Queued | JobStatus::Running => {
+                return Ok(serde_json::json!({
+                    "job_id": created.job_id,
+                    "job_url": job_url,
+                    "status": serde_json::to_value(job.status)
+                        .expect("job status serializes"),
+                    "wait": false,
+                    "results": [],
+                    "note": "job still running; re-run with --wait or poll the job URL for the full fused result",
+                }));
+            }
+        }
+    }
+
     // Poll until the job completes. The job capability token is
     // sufficient for status and results; use it rather than the
     // client credential where the protocol allows either.

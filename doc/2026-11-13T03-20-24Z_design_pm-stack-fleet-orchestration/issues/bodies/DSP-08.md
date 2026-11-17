@@ -52,16 +52,13 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: #9178 (upstream claim/manual/takeover/resume semantics must be verified before mutation/cutover; offline compatibility models may proceed), #9179 (upstream park/resume safety semantics must be verified before mutation/cutover; offline fixtures may proceed).
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9200→PRI-01.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
 
 - **First failing test:** `pmo_dsp_08_do_now_never_bypasses_hard_eligibility; pmo_dsp_08_protected_expedite_policy_cannot_be_bypassed`
 - **Oracle:** property invariant: no action turns hard-ineligible into eligible; do-now changes directive only; revoked role denied; direct start cannot steal lease/session; merge rechecks head/checks/role. Policy table covers allowed/denied/confirmation/triage and each decision is receipted. Command: `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_dsp_08_do_now_never_bypasses_hard_eligibility`. -
-- **Done command:** `property invariant: no action turns hard-ineligible into eligible; do-now changes directive only; revoked role denied; direct start cannot steal lease/session; merge rechecks head/checks/role. Policy table covers allowed/denied/confirmation/triage and each decision is receipted. Command: `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_dsp_08_do_now_never_bypasses_hard_eligibility`. - Also verify `pmo_dsp_08_protected_expedite_policy_cannot_be_bypassed` is listed, then run `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_dsp_08_protected_expedite_policy_cannot_be_bypassed`.`
+- **Done command:** `property invariant: no action turns hard-ineligible into eligible; do-now changes directive only; revoked role denied; direct start cannot steal lease/session; merge rechecks head/checks/role. Policy table covers allowed/denied/confirmation/triage and each decision is receipted. Command: `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_dsp_08_do_now_never_bypasses_hard_eligibility`. - Also verify `pmo_dsp_08_protected_expedite_policy_cannot_be_bypassed`is listed, then run`cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_dsp_08_protected_expedite_policy_cannot_be_bypassed`.`
 - Tests must first be listed by exact name in the owning target (`-- --list`); assert the test exists before execution. A zero-test filter passing is not acceptance.
 
 ## Acceptance and negative cases
@@ -105,8 +102,8 @@ Consume the existing #7030 protected expedite membership/value and the dated `pm
 - **Done/oracle:** property invariant: no action turns hard-ineligible into eligible; do-now changes directive only; revoked role denied; direct start cannot steal lease/session; merge rechecks head/checks/role. Policy table covers allowed/denied/confirmation/triage and each decision is receipted. Command: `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_dsp_08_do_now_never_bypasses_hard_eligibility`.
 - **Dependencies:** #9200, #9178/#9179 and granular eligibility/authz contract keys, DSP-04. `manual_only` remains an eligibility property; `do_now` remains one-shot directive. Do not invent privilege names; reconcile actual Access roles and fleet owner policy first.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `DSP-04` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/operations.rs`

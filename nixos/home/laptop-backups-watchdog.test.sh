@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Tests for laptop-backups-watchdog.sh (#1026): the watchdog must exit
-# 0 only when pm-dashboard-backup's run record is fresh + complete AND
-# both backup timers fired within the threshold; every violation
-# exits non-zero naming the job/timer. Drives the REAL script with a
+# 0 only when pm-dashboard-backup's run record is fresh + complete,
+# both backup timers fired within the threshold, and the newest fresh
+# local pm-stack day dir has its named archive; every violation exits
+# non-zero naming the failed check. Drives the REAL script with a
 # stub `systemctl` (per-timer LastTriggerUSec values from files) and
 # generated record files whose timestamps are relative to now.
 set -uo pipefail
@@ -24,7 +25,8 @@ fail() {
 
 BIN="$TMP_ROOT/bin"
 TRIG="$TMP_ROOT/triggers"
-mkdir -p "$BIN" "$TRIG"
+HOME_DIR="$TMP_ROOT/home"
+mkdir -p "$BIN" "$TRIG" "$HOME_DIR"
 {
   printf '#!%s\n' "$BASH"
   cat <<'STUB'
@@ -39,9 +41,14 @@ chmod +x "$BIN/systemctl"
 iso_ago() { date -u -d "$1" +%Y-%m-%dT%H:%M:%SZ; }
 trig_ago() { date -u -d "$1" '+%a %Y-%m-%d %H:%M:%S UTC'; }
 
-set_triggers() { # $1 pm trigger spec, $2 repo-archive trigger spec
+set_triggers() { # $1 pm trigger spec, $2 repo-archive trigger spec, $3 state trigger spec
   trig_ago "$1" >"$TRIG/pm-dashboard-backup.timer"
   trig_ago "$2" >"$TRIG/repo-archive-backup.timer"
+  trig_ago "${3:-1 hour ago}" >"$TRIG/laptop-state-backup.timer"
+}
+MARKER="$TMP_ROOT/state-marker"
+write_marker() { # $1 age spec for the laptop-state success marker
+  date -d "$1" +%s >"$MARKER"
 }
 write_record() { # $1 result, $2 finished spec
   python3 - "$1" "$(iso_ago "$2")" <<'PYEOF'
@@ -80,12 +87,14 @@ chmod +x "$BIN/rclone"
 
 RECORD="$TMP_ROOT/record.json"
 run_watchdog() {
-  LAPTOP_BACKUPS_RECORD="$RECORD" WATCHDOG_STUB_TRIGGERS="$TRIG" \
+  HOME="$HOME_DIR" LAPTOP_BACKUPS_RECORD="$RECORD" WATCHDOG_STUB_TRIGGERS="$TRIG" \
+    LAPTOP_STATE_MARKER="$MARKER" \
     PATH="$BIN:$PATH" bash "$SCRIPT" 26 >"$TMP_ROOT/out.log" 2>&1
   RC=$?
 }
 run_watchdog_jobs() { # $1 jobs list
-  LAPTOP_BACKUPS_RECORD="$RECORD" WATCHDOG_STUB_TRIGGERS="$TRIG" \
+  HOME="$HOME_DIR" LAPTOP_BACKUPS_RECORD="$RECORD" WATCHDOG_STUB_TRIGGERS="$TRIG" \
+    LAPTOP_STATE_MARKER="$MARKER" \
     PATH="$BIN:$PATH" bash "$SCRIPT" 26 "$1" >"$TMP_ROOT/out.log" 2>&1
   RC=$?
 }
@@ -169,7 +178,7 @@ expect_named_failure future-timer repo-archive-backup
 # offsite check: record date is 2026-10-28 (write_record pins it).
 R2_LISTING="$TMP_ROOT/r2-listing.txt"
 run_watchdog_offsite() {
-  LAPTOP_BACKUPS_RECORD="$RECORD" WATCHDOG_STUB_TRIGGERS="$TRIG" \
+  HOME="$HOME_DIR" LAPTOP_BACKUPS_RECORD="$RECORD" WATCHDOG_STUB_TRIGGERS="$TRIG" \
     WATCHDOG_STUB_R2_LISTING="$R2_LISTING" LAPTOP_BACKUPS_OFFSITE_CHECK=1 \
     PATH="$BIN:$PATH" bash "$SCRIPT" 26 >"$TMP_ROOT/out.log" 2>&1
   RC=$?
@@ -192,6 +201,81 @@ expect_named_failure offsite-absent R2
 # (pre-#3914 behavior for jobs/hosts without the opt-in)
 run_watchdog
 expect_ok offsite-check-disabled
+
+# A missing pm-stack root is a supported host configuration; skip it.
+run_watchdog
+expect_ok pm-stack-root-absent
+
+# A fresh date dir with no archive is the failure shape: mkdir happened,
+# but the dump never produced its named archive.
+# Pin every derived day name to one captured epoch so a midnight
+# rollover mid-run cannot make the scenarios disagree about "today".
+TEST_EPOCH="$(date +%s)"
+TODAY="$(date -d "@$TEST_EPOCH" +%F)"
+PM_STACK_ROOT="$HOME_DIR/backups/pm-stack"
+YESTERDAY="$(date -d "@$((TEST_EPOCH - 86400))" +%F)"
+mkdir -p "$PM_STACK_ROOT/$YESTERDAY"
+touch "$PM_STACK_ROOT/$YESTERDAY/pm-stack-$YESTERDAY.tar.zst"
+mkdir -p "$PM_STACK_ROOT/$TODAY"
+run_watchdog
+expect_named_failure pm-stack-empty-day pm-stack-backup
+if grep -q "$TODAY" "$TMP_ROOT/out.log"; then
+  echo "ok: pm-stack-empty-day: output names date $TODAY"
+else fail "pm-stack-empty-day: output does not name date $TODAY: $(cat "$TMP_ROOT/out.log")"; fi
+if grep -q "pm-stack-$TODAY.tar.zst" "$TMP_ROOT/out.log"; then
+  echo "ok: pm-stack-empty-day: output names missing archive"
+else fail "pm-stack-empty-day: output does not name pm-stack-$TODAY.tar.zst: $(cat "$TMP_ROOT/out.log")"; fi
+
+# The same fresh day is healthy once its expected archive is present.
+touch "$PM_STACK_ROOT/$TODAY/pm-stack-$TODAY.tar.zst"
+run_watchdog
+expect_ok pm-stack-archive-present
+
+# Old empty day dirs do not create a stale-day false alarm.
+rm -f "$PM_STACK_ROOT/$TODAY/pm-stack-$TODAY.tar.zst"
+rmdir "$PM_STACK_ROOT/$TODAY"
+rm -f "$PM_STACK_ROOT/$YESTERDAY/pm-stack-$YESTERDAY.tar.zst"
+rmdir "$PM_STACK_ROOT/$YESTERDAY"
+STALE_DAY="$(date -d "@$((TEST_EPOCH - 172800))" +%F)"
+mkdir -p "$PM_STACK_ROOT/$STALE_DAY"
+touch -d "@$((TEST_EPOCH - 172800))" "$PM_STACK_ROOT/$STALE_DAY"
+run_watchdog
+expect_ok pm-stack-stale-day
+
+# --- laptop-state coverage (code#10294) --------------------------------------
+# state job enabled, fresh marker + fresh timer -> 0
+RECORD_OUT="$RECORD" write_record complete "1 hour ago"
+set_triggers "1 hour ago" "1 hour ago" "1 hour ago"
+write_marker "2 hours ago"
+run_watchdog_jobs dashboard,repo-archive,state
+expect_ok state-fresh
+
+# stale marker -> non-zero naming laptop-state-backup (the 12-day stall shape)
+write_marker "40 hours ago"
+run_watchdog_jobs dashboard,repo-archive,state
+expect_named_failure state-stale-marker laptop-state-backup
+
+# missing marker -> non-zero naming laptop-state-backup
+rm -f "$MARKER"
+run_watchdog_jobs dashboard,repo-archive,state
+expect_named_failure state-missing-marker laptop-state-backup
+
+# future marker (beyond skew tolerance) -> non-zero naming laptop-state-backup
+write_marker "2 hours"
+run_watchdog_jobs dashboard,repo-archive,state
+expect_named_failure state-future-marker laptop-state-backup
+
+# stale state timer -> non-zero naming laptop-state-backup
+write_marker "1 hour ago"
+set_triggers "1 hour ago" "1 hour ago" "40 hours ago"
+run_watchdog_jobs dashboard,repo-archive,state
+expect_named_failure state-stale-timer laptop-state-backup
+
+# state job not in the jobs list -> its stale marker is not a violation
+write_marker "40 hours ago"
+set_triggers "1 hour ago" "1 hour ago"
+run_watchdog_jobs dashboard,repo-archive
+expect_ok state-not-enabled
 
 if ((failures > 0)); then
   echo "laptop-backups-watchdog tests: $failures failure(s)" >&2

@@ -67,12 +67,15 @@ _UTS46_IGNORED = frozenset(
 # nor any later check catches them, while the Worker's WHATWG parser
 # rejects the URL outright (#516): the Ogham space mark, the line /
 # paragraph separators, Arabic format marks, the bidi marks, embedding
-# / override / isolate controls, ZWNJ / ZWJ outside their joining
-# context, and the replacement character. (The Unicode space
+# / override / isolate controls, and the replacement character.
+# (ZWNJ / ZWJ are absent from this set on purpose: they are CONTEXTJ
+# codepoints, valid inside their RFC 5892 Appendix A joining
+# contexts, and are judged per label by _judge_idna_label (#531).)
+# (The Unicode space
 # separators U+2000-200A, U+202F, U+205F and U+3000 need no entry here:
 # NFKC maps them to an ordinary space, refused by the first arm.)
 _IDNA_DISALLOWED = frozenset(
-    [0x0600, 0x061C, 0x1680, 0x200C, 0x200D, 0x200E, 0x200F, 0x2028, 0x2029, 0xFFFD]
+    [0x0600, 0x061C, 0x1680, 0x200E, 0x200F, 0x2028, 0x2029, 0xFFFD]
     + list(range(0x202A, 0x202F))
     + list(range(0x2066, 0x206A))
 )
@@ -717,8 +720,19 @@ def _judge_idna_label(label, host):
     # - it carries an unassigned codepoint (category Cn — UTS-46
     #   marks it disallowed, but the raw punycode codec happily
     #   encodes it) or a format character (category Cf — IDNA
-    #   disallows them all; the CONTEXTJ pair ZWNJ/ZWJ is refused by
-    #   the forbidden-character checks before this helper runs);
+    #   disallows them all, with the single CONTEXTJ exception
+    #   judged by the next rule);
+    # - it carries a ZWNJ / ZWJ outside its RFC 5892 Appendix A
+    #   context (#531): a ZWNJ (Appendix A.1) needs a preceding
+    #   character of Joining_Type L or D and a following one of
+    #   Joining_Type R or D, Transparent characters skipped; a ZWJ
+    #   (Appendix A.2) needs an immediately preceding character
+    #   with Canonical_Combining_Class 230 (a virama). Inside those
+    #   contexts — Arabic-script ZWNJ, Indic virama + ZWJ — the
+    #   Worker accepts the label, so the blanket refusal #530
+    #   shipped over-refused it. The judgement is delegated to the
+    #   pinned idna library's valid_contextj, which carries the
+    #   full Unicode joining tables;
     # - it begins with a combining mark (UTS-46 requires a label to
     #   start with a non-mark);
     # - it violates the bidi rule (RFC 5893): a label may not mix
@@ -811,11 +825,21 @@ def _judge_idna_label(label, host):
             f"refusing to crawl host {host}: label {label!r} "
             "contains a character that maps to a label separator"
         )
-    if any(unicodedata.category(c) in ("Cn", "Cf") for c in label):
+    if any(
+        unicodedata.category(c) in ("Cn", "Cf") and ord(c) not in (0x200C, 0x200D)
+        for c in label
+    ):
         raise ValueError(
             f"refusing to crawl host {host}: label {label!r} "
             "contains an unassigned or format character"
         )
+    for pos, c in enumerate(label):
+        if ord(c) in (0x200C, 0x200D) and not idna.core.valid_contextj(label, pos):
+            raise ValueError(
+                f"refusing to crawl host {host}: label {label!r} "
+                "carries a zero-width joiner outside its RFC 5892 "
+                "Appendix A joining context"
+            )
     if unicodedata.category(label[0]).startswith("M"):
         raise ValueError(
             f"refusing to crawl host {host}: label {label!r} "

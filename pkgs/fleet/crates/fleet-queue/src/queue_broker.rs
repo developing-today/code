@@ -611,13 +611,15 @@ fn validate_durations(path: &str, req: &Value) -> Result<(), String> {
 
 /// The not_before gate (#6426): /park and /revive carry a raw
 /// not_before that dispatch forwards to the RPC (or the turso
-/// backend) — validate it BEFORE either, with the same rule the
+/// backend), and /list carries one as a filter (#9027 — unvalidated,
+/// a garbage value silently narrowed the Turso listing) — validate
+/// it BEFORE either, with the same rule the
 /// packet validator applies on /enqueue (validate_packet runs
 /// inside both /enqueue handlers ahead of their RPC call). An
 /// absent or null not_before is untouched; a present one must be a
 /// non-empty RFC 3339 timestamp no more than 366 days out.
 fn validate_request_not_before(path: &str, req: &Value) -> Result<(), String> {
-    if !matches!(path, "/park" | "/revive") {
+    if !matches!(path, "/park" | "/revive" | "/list") {
         return Ok(());
     }
     match req.get("not_before").filter(|v| !v.is_null()) {
@@ -1218,8 +1220,17 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             if let Some(w) = req.get("worker").and_then(|s| s.as_str()) {
                 path += &format!("&worker_id=eq.{}", quote(w, ""));
             }
-            match st.postgrest("GET", &path, None, false) {
-                Ok((rows, _)) => ok(json!({"rows": rows})),
+            // #10376: request the exact count so the reply can
+            // name its total — without count=exact the
+            // Content-Range total is `*` and a limited listing
+            // reads as complete.
+            match st.postgrest("GET", &path, None, true) {
+                Ok((rows, content_range)) => {
+                    let total = content_range
+                        .as_deref()
+                        .and_then(crate::client::content_range_total);
+                    ok(crate::client::list_envelope(rows, total, offset))
+                }
                 Err(e) => fail(e.exit, e.msg),
             }
         }
@@ -1690,7 +1701,7 @@ mod tests {
         // RPC unchecked. The dispatch gate rejects garbage and
         // far-future values; absent/null and valid values pass, and
         // other verbs are untouched by the gate.
-        for path in ["/park", "/revive"] {
+        for path in ["/park", "/revive", "/list"] {
             for bad in [
                 json!("banana"),
                 json!(""),

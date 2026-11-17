@@ -422,14 +422,18 @@ export const SECTION_RISK_SECTIONS = ["workhorse", "speed", "specialist", "summi
  * existing near-wall threshold), on a pool that is not walled. */
 export const SECTION_RISK_PENDING_PERCENT = 85;
 
-const RESET_WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const resetCompactFmt = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Chicago",
+  weekday: "short",
+  hour: "numeric",
+  minute: "2-digit",
+  timeZoneName: "short",
+});
 
-/** Compact UTC reset stamp for push bodies: "Fri 14:28Z". */
+/** Compact Central reset stamp for push bodies: "Fri 8:28 AM CST"
+ * (#9553: no UTC on Drew-facing quota/reset surfaces). */
 export function formatResetCompact(ms: number): string {
-  const d = new Date(ms);
-  const hh = String(d.getUTCHours()).padStart(2, "0");
-  const mm = String(d.getUTCMinutes()).padStart(2, "0");
-  return `${RESET_WEEKDAYS[d.getUTCDay()]} ${hh}:${mm}Z`;
+  return resetCompactFmt.format(new Date(ms)).replace(",", "");
 }
 
 /** Derive stable, fixture-testable notifications from the same views the UI serves. */

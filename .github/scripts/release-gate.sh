@@ -29,7 +29,12 @@
 #        component release. Residual risk: a path-filter gap (a commit
 #        that should have triggered a watched workflow but did not) is
 #        judged on an older run. Keep the path filters accurate.
-#      - Non-push workflows (nix ci — schedule/workflow_dispatch only):
+#      Since 2026-11-16 (nightly main CI, ci-policy.md) no watched
+#      workflow has a push trigger, so every one of them takes the
+#      non-push rule below; the two push rules stay for any workflow
+#      that regains a push trigger.
+#      - Non-push workflows (schedule/workflow_dispatch only; all of the
+#        watched set since 2026-11-16):
 #        their latest completed run on main, of any event, whose head
 #        SHA is the release SHA or an ancestor of it (decision on #1782,
 #        2026-11-13, option (b) from issue note 6782949534). The judged
@@ -84,13 +89,9 @@ WATCHED_WORKFLOWS=(
 # (CodeRabbit finding on PR #4636). Keep this list in sync with the
 # push triggers.
 PATH_FILTERED_WORKFLOWS=(
-  "mcpx"
-  "mcpx conformance"
-  "mcpx nix build"
-  "go modules build"
-  "identity build"
-  "map build"
-  "id bench"
+  # Empty since 2026-11-16: every watched workflow lost its push trigger
+  # when main CI moved to a nightly schedule (ci-policy.md, "Nightly main
+  # CI"), so all of them are judged as non-push workflows below.
 )
 
 is_path_filtered() {
@@ -112,6 +113,16 @@ is_path_filtered() {
 # trigger is path-filtered).
 NON_PUSH_WORKFLOWS=(
   "nix ci"
+  # Push triggers removed 2026-11-16 (nightly main CI ruling): these now
+  # run on schedule + workflow_dispatch only.
+  "id"
+  "mcpx"
+  "mcpx conformance"
+  "mcpx nix build"
+  "go modules build"
+  "identity build"
+  "map build"
+  "id bench"
 )
 
 is_non_push() {
@@ -122,7 +133,10 @@ is_non_push() {
   return 1
 }
 
-die() { echo "release-gate: error: $*" >&2; exit 2; }
+die() {
+  echo "release-gate: error: $*" >&2
+  exit 2
+}
 verdict_fail() { echo "release-gate: REFUSED: $*"; }
 verdict_pass() { echo "release-gate: ALLOWED: $*"; }
 
@@ -155,7 +169,8 @@ is_ancestor_or_equal() {
 self_test() {
   local failures=0
   check() { # check <desc> <expected_exit> -- <args...>
-    local desc="$1" expected="$2"; shift 2
+    local desc="$1" expected="$2"
+    shift 2
     [ "${1:-}" = "--" ] && shift
     local got=0
     "$@" >/dev/null 2>&1 || got=$?
@@ -240,7 +255,11 @@ FAKE_GH
   run_gate_case failed 1
   run_gate_case missing 1
   run_gate_case pending 1
-  run_gate_case fallback 0
+  # Since 2026-11-16 no watched workflow is path-filtered (all are
+  # nightly, judged by the non-push rule), so an older run that is not
+  # the release SHA or its ancestor no longer passes: mcpx's fallback
+  # run on an unrelated SHA now refuses the release.
+  run_gate_case fallback 1
   run_gate_case fallback-red 1
   run_gate_case success 1 stale-sha
 
@@ -256,7 +275,7 @@ FAKE_GH
   parent_sha="$(git -C "$gtmp" rev-parse HEAD)"
   echo b >"$gtmp/b" && git -C "$gtmp" add b && git -C "$gtmp" commit -qm two
   child_sha="$(git -C "$gtmp" rev-parse HEAD)"
-  in_repo_ancestor() { ( cd "$gtmp" && is_ancestor_or_equal "$1" "$2" ); }
+  in_repo_ancestor() { (cd "$gtmp" && is_ancestor_or_equal "$1" "$2"); }
   check "run at release SHA is at-or-before" 0 -- in_repo_ancestor "$child_sha" "$child_sha"
   check "run at parent commit is at-or-before" 0 -- in_repo_ancestor "$parent_sha" "$child_sha"
   check "run at child is NOT at-or-before parent" 1 -- in_repo_ancestor "$child_sha" "$parent_sha"
@@ -271,9 +290,9 @@ FAKE_GH
     local fixture="$1" expected="$2" main_sha="$3" anc_sha="$4" release_sha="$5" got=0
     local script_path
     script_path="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-    ( cd "$gtmp" && GH_FIXTURE="$fixture" RELEASE_GATE_FAKE_MAIN_SHA="$main_sha" \
-        RELEASE_GATE_FAKE_ANCESTOR_SHA="$anc_sha" GH_TOKEN=fake-token GH_REPO=owner/repo \
-        GITHUB_EVENT_NAME=push PATH="$tmp/bin:$PATH" bash "$script_path" "$release_sha" ) \
+    (cd "$gtmp" && GH_FIXTURE="$fixture" RELEASE_GATE_FAKE_MAIN_SHA="$main_sha" \
+      RELEASE_GATE_FAKE_ANCESTOR_SHA="$anc_sha" GH_TOKEN=fake-token GH_REPO=owner/repo \
+      GITHUB_EVENT_NAME=push PATH="$tmp/bin:$PATH" bash "$script_path" "$release_sha") \
       >"$tmp/output" 2>&1 || got=$?
     if [ "$got" = "$expected" ]; then
       echo "ok: full gate non-push fixture $fixture (exit $got)"
@@ -310,11 +329,24 @@ SHA=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --audit) AUDIT=1; shift ;;
-    --self-test) self_test; exit $? ;;
-    --help|-h) sed -n '2,30p' "$0"; exit 0 ;;
-    --*) die "unknown flag $1" ;;
-    *) [ -z "$SHA" ] || die "only one SHA argument is accepted"; SHA="$1"; shift ;;
+  --audit)
+    AUDIT=1
+    shift
+    ;;
+  --self-test)
+    self_test
+    exit $?
+    ;;
+  --help | -h)
+    sed -n '2,30p' "$0"
+    exit 0
+    ;;
+  --*) die "unknown flag $1" ;;
+  *)
+    [ -z "$SHA" ] || die "only one SHA argument is accepted"
+    SHA="$1"
+    shift
+    ;;
   esac
 done
 
@@ -322,7 +354,7 @@ GH_REPO="${GH_REPO:-${GITHUB_REPOSITORY:-}}"
 [ -n "$GH_REPO" ] || die "GH_REPO (or GITHUB_REPOSITORY) is required"
 command -v gh >/dev/null 2>&1 || die "the gh CLI is required"
 command -v jq >/dev/null 2>&1 || die "the jq CLI is required"
-[ -n "${GH_TOKEN:-}" ] || die "GH_TOKEN is required (in CI: \${{ github.token }})"
+[ -n "${GH_TOKEN:-}" ] || die 'GH_TOKEN is required (in CI: ${{ github.token }})'
 
 if [ -z "$SHA" ]; then
   if [ -n "${GITHUB_SHA:-}" ]; then
@@ -334,7 +366,7 @@ fi
 
 refuse() {
   verdict_fail "$*"
-  echo "release-gate: override path: see .github/ci-policy.md \"Release gate\" —"
+  echo 'release-gate: override path: see .github/ci-policy.md "Release gate" —'
   echo "release-gate: fix forward on main, wait for green, re-tag the new head."
   if [ "$AUDIT" = 1 ]; then
     echo "release-gate: audit mode: not blocking (exit 0)."
@@ -345,8 +377,8 @@ refuse() {
 
 echo "release-gate: checking $SHA in $GH_REPO (main-gate: ${#WATCHED_WORKFLOWS[@]} watched workflows)"
 
-main_head="$(gh api "repos/$GH_REPO/branches/$MAIN_BRANCH" | jq -r '.commit.sha')" \
-  || die "could not read the current $MAIN_BRANCH head"
+main_head="$(gh api "repos/$GH_REPO/branches/$MAIN_BRANCH" | jq -r '.commit.sha')" ||
+  die "could not read the current $MAIN_BRANCH head"
 echo "release-gate: $MAIN_BRANCH head is $main_head"
 
 if ! verdict_for_event "${GITHUB_EVENT_NAME:-push}" "$SHA" "$main_head"; then
@@ -354,8 +386,8 @@ if ! verdict_for_event "${GITHUB_EVENT_NAME:-push}" "$SHA" "$main_head"; then
 fi
 
 failures=0
-workflows_json="$(gh api "repos/$GH_REPO/actions/workflows?per_page=100")" \
-  || die "could not list repository workflows"
+workflows_json="$(gh api "repos/$GH_REPO/actions/workflows?per_page=100")" ||
+  die "could not list repository workflows"
 for wf in "${WATCHED_WORKFLOWS[@]}"; do
   wid="$(jq -r --arg name "$wf" '.workflows[] | select(.name == $name) | .id' <<<"$workflows_json" | head -n 1)"
   if [ -z "${wid:-}" ]; then
@@ -366,8 +398,8 @@ for wf in "${WATCHED_WORKFLOWS[@]}"; do
   if is_non_push "$wf"; then
     # No push trigger: judge the latest completed run on main (any
     # event) whose head SHA is the release SHA or an ancestor of it.
-    runs_json="$(gh api "repos/$GH_REPO/actions/workflows/$wid/runs?branch=$MAIN_BRANCH&per_page=100")" \
-      || die "could not list runs for $wf"
+    runs_json="$(gh api "repos/$GH_REPO/actions/workflows/$wid/runs?branch=$MAIN_BRANCH&per_page=100")" ||
+      die "could not list runs for $wf"
     run_json=""
     while IFS= read -r cand; do
       [ -n "$cand" ] || continue
@@ -395,8 +427,8 @@ for wf in "${WATCHED_WORKFLOWS[@]}"; do
     fi
     continue
   fi
-  runs_json="$(gh api "repos/$GH_REPO/actions/workflows/$wid/runs?branch=$MAIN_BRANCH&event=push&per_page=100")" \
-    || die "could not list runs for $wf"
+  runs_json="$(gh api "repos/$GH_REPO/actions/workflows/$wid/runs?branch=$MAIN_BRANCH&event=push&per_page=100")" ||
+    die "could not list runs for $wf"
   run_json="$(jq -c --arg sha "$SHA" '[.workflow_runs[] | select(.head_sha == $sha)] | sort_by(.created_at) | last // empty' <<<"$runs_json")"
   basis="exact-SHA run"
   if [ -z "$run_json" ]; then

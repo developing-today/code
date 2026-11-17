@@ -360,7 +360,9 @@ function feedSections(feed: FleetFeed | null, now: number): FeedSectionHealth[] 
           ? "latest collection failed; no successful sync time is retained"
           : outcome?.status === "skipped"
             ? "collection was skipped; no sync time is reported"
-            : validReportedTotal !== undefined && validEmittedEntries !== undefined && validReportedTotal < validEmittedEntries
+            : validReportedTotal !== undefined &&
+                validEmittedEntries !== undefined &&
+                validReportedTotal < validEmittedEntries
               ? "emitted entry count exceeds the provider-reported total; lag is unknown"
               : "source does not report a comparable expected entry total";
     return {

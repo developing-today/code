@@ -1,8 +1,26 @@
-# CI policy — automatic push CI only on main
+# CI policy — automatic CI runs nightly on main
 
 Owner ruling, 2026-11-13: turn off all push and PR triggers and required
 checks that run CI except on main. This supersedes the fast-PR-tier rules
 from #1779/#7089 and the November 8 PR-only guard dispositions.
+
+## Nightly main CI (owner ruling, 2026-11-16)
+
+With about 1,000 push runs queued and main CI roughly 15 hours behind,
+Drew ruled to stop running CI on every commit to main. Every workflow
+that ran on `push: branches: [main]` now runs on a nightly `schedule`
+(07:17 UTC unless it already had its own nightly) plus `workflow_dispatch`.
+Workflows that already had a nightly keep it and simply lose the push leg.
+This section supersedes the push-to-main wording below wherever they
+differ: "main push" venues are nightly venues, and post-merge evidence for
+a commit is the next nightly run whose head contains it.
+
+Deploys are not CI and keep their push trigger: `container-images` (image
+publish) and `mcpx docs` (GitHub Pages). Jobs that only ran on `push`
+were widened to `schedule` where the nightly run must do the same work:
+the id arm64 world-snapshot job, the mcpx `basic: test` job, the mcpx and
+mcpx-conformance `ON_MAIN` recording, and the Go module tidy commit. To
+check one commit sooner, dispatch the workflow by hand on main.
 
 ## Merge and verification
 
@@ -43,8 +61,9 @@ A red `host-eval` therefore means "fix work is filed and routed", never
 
 ## Trigger contract
 
-- Existing push CI is restricted to exactly `branches: [main]`. Preserve
-  existing path filters, so this does not activate every suite on every merge.
+- Automatic CI runs on a nightly `schedule`, not on push (2026-11-16 ruling
+  above). The only push triggers left are deploys, and any push trigger is
+  still restricted to exactly `branches: [main]`.
 - No `pull_request`, `pull_request_target`, PR review/comment, or `merge_group`
   triggers. PR-only venues become manual-only, not new deployments on main.
 - Tag-push triggers are disabled, including `goreleaser` and `mcpx-release`.
@@ -65,19 +84,31 @@ The existing guard/build registry remains checked by
 `.github/scripts/check-ci-policy-agreement.sh`; its main-only trigger check
 also scans the full workflow directory. Main and manual venues are explicit:
 
-| Workflow | Automatic venue | Manual |
-| --- | --- | --- |
-| workflow-lint | none | yes |
-| proxy-port-fallbacks | none | yes |
-| fleet-search-parity-guard | none | yes |
-| fleet-rust-tests | main push, path gated | yes |
-| opencode-config-guard | main push | yes |
-| mcpx fix-test guard | main push contract tests | yes |
-| production-line guard | main push, path gated | yes |
-| go modules build | main push, path gated | yes |
-| identity build | main push, path gated | yes |
-| map build | main push, path gated | yes |
-| mcpx nix build | main push, path gated | yes |
+**Agreement contract (#7089).** For every workflow in the registry below,
+three records must agree: the venue this policy assigns, the triggers the
+workflow file declares, and the workflow's Actions enablement state. The
+tier-to-trigger mapping lives in the checker's registry (a `main` venue
+requires a push trigger on `branches: [main]`; a `manual` venue requires
+`workflow_dispatch`), the checker enforces the policy and trigger legs, and
+enablement is audited from the Actions API by the repo-health fleet on the
+recurring cadence recorded under #6187. A disagreement in any leg is a
+defect with exactly one recorded disposition — re-arm, fold, or retire —
+never a state that persists by default.
+
+| Workflow                  | Automatic venue  | Manual |
+| ------------------------- | ---------------- | ------ |
+| workflow-lint             | none             | yes    |
+| proxy-port-fallbacks      | none             | yes    |
+| fleet-search-parity-guard | none             | yes    |
+| fleet-rust-tests          | nightly schedule | yes    |
+| fleet-smoke               | main push, path gated | yes    |
+| opencode-config-guard     | nightly schedule | yes    |
+| mcpx fix-test guard       | nightly schedule | yes    |
+| production-line guard     | nightly schedule | yes    |
+| go modules build          | nightly schedule | yes    |
+| identity build            | nightly schedule | yes    |
+| map build                 | nightly schedule | yes    |
+| mcpx nix build            | nightly schedule | yes    |
 
 Other former PR venues retain their existing main/manual/nightly venues;
 `deploy-flake-checks` remains manually runnable. Historical `basic:` job
@@ -112,7 +143,7 @@ judged by trigger class (verified against the workflow files on main,
   exact release SHA. An older run never judges newer code (Codex P1 on
   PR #4636).
 - Path-filtered push workflows (`mcpx`, `mcpx conformance`, `mcpx nix
-  build`, `go modules build`, `identity build`, `map build`, `id bench`):
+build`, `go modules build`, `identity build`, `map build`, `id bench`):
   an exact-SHA push run when one exists, else the latest push-to-main
   run — a commit outside their paths legitimately never triggered them.
 - Non-push workflows (`nix ci`, schedule/workflow_dispatch only): the

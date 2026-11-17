@@ -6,7 +6,19 @@
     "kind": "research/benchmark",
     "runner_command": "python3 -I pkgs/id/benchmarks/run_local.py --engines redb,turso --corpus <corpus-path> --corpus-digest <sha256> --result <json-path>",
     "same_input_requirement": "same immutable corpus bytes and digest for both engines; runner refuses digest mismatch",
-    "environment_fields": ["runner_version", "git_revision", "hardware_model", "cpu_count", "memory_bytes", "os_kernel", "runtime_versions", "start_time_utc", "cache_mode", "storage_shard_count", "dataset_digest"],
+    "environment_fields": [
+      "runner_version",
+      "git_revision",
+      "hardware_model",
+      "cpu_count",
+      "memory_bytes",
+      "os_kernel",
+      "runtime_versions",
+      "start_time_utc",
+      "cache_mode",
+      "storage_shard_count",
+      "dataset_digest"
+    ],
     "result_schema": "pkgs/id/benchmarks/result-v1.schema.json",
     "purpose": "Laptop redb and Turso runs only; local values are not cloud-comparable.",
     "status": "follow-up only; do not run in this design task"
@@ -16,21 +28,105 @@
     "kind": "research/benchmark",
     "runner_command": "python3 -I pkgs/id/benchmarks/run_cloud.py --providers d1,r2 --corpus <corpus-path> --corpus-digest <sha256> --region <region> --max-spend-usd <decimal> --result <output.json>",
     "purpose": "Run provider-backed D1/R2 cloud storage workloads on a production-representative corpus; publish storage latency, metering, dated prices, durability and raw samples. No shard recommendation.",
-    "gates": ["approved credentials and spend cap", "same region/network where comparable", "corpus snapshot and dataset digest", "per-engine adapter conformance passes"],
-    "optional_atlas_owner_artifact": {"owner":"#9092", "contract":"#9133 may validate and link an owner-produced search result; verify schema version, eval-set digest, corpus digest and shard-config IDs. Do not rerun recall or recommend shards.", "missing_or_invalid":"omit link; storage report remains valid with no search/shard claim"},
+    "gates": [
+      "approved credentials and spend cap",
+      "same region/network where comparable",
+      "corpus snapshot and dataset digest",
+      "per-engine adapter conformance passes"
+    ],
+    "optional_atlas_owner_artifact": {
+      "owner": "#9092",
+      "contract": "#9133 may validate and link an owner-produced search result; verify schema version, eval-set digest, corpus digest and shard-config IDs. Do not rerun recall or recommend shards.",
+      "missing_or_invalid": "omit link; storage report remains valid with no search/shard claim"
+    },
     "acceptance": "Storage-only p50/p95/p99, throughput, errors, native bill units, dated prices, durability/RPO, replica semantics and raw samples; no placement winner without comparable repetitions and never a shard recommendation"
   },
   "logical_operations": [
-    {"id":"blob_put_if_absent","meaning":"write immutable bytes if canonical content ID absent; identical replay preserves row/references; ordinary put against tombstoned generation rejects unless explicit resurrection creates new generation and physical key", "d1":"transactional blob row + unique tenant/content key; record rows written", "r2":"conditional PutObject write by opaque generation-qualified locator + verify checksum; never reuse generation key; record Class A and bytes", "redb":"write transaction insert absent; commit; read back", "turso":"transaction insert absent; commit; record push/pull state"},
-    {"id":"blob_get","meaning":"authorized exact-ID read; verify bytes/hash", "d1":"indexed select blob row", "r2":"GetObject by broker-resolved locator", "redb":"read transaction get key", "turso":"indexed select from local DB; note sync revision"},
-    {"id":"metadata_lookup","meaning":"tenant + content ID exact metadata lookup", "d1":"indexed SELECT", "r2":"GET manifest sidecar; not transactional index", "redb":"read transaction key lookup", "turso":"indexed SELECT"},
-    {"id":"metadata_scan","meaning":"same predicate and ordered result set over fixed tenant rows", "d1":"parameterized indexed/range query; report rows_read", "r2":"list/prefix only if semantically equivalent; otherwise unsupported (object listing is not SQL scan)", "redb":"table range scan with same ordering/filter", "turso":"parameterized SQLite query"},
-    {"id":"ref_commit_if_live","meaning":"atomically add reference only if authority generation is Live(g)", "d1":"transaction conditional update + ref insert", "r2":"unsupported alone; requires external transactional authority", "redb":"single write transaction on authority DB", "turso":"single DB transaction; cross-replica conflict semantics separately tested"},
-    {"id":"ref_remove","meaning":"remove existing logical reference in authoritative ref store", "d1":"transactional ref delete", "r2":"unsupported alone; requires external transactional authority", "redb":"single write transaction on authority DB", "turso":"single DB transaction; cross-replica conflict semantics separately tested"},
-    {"id":"object_tombstone_delete","meaning":"atomically fence generation in authoritative reference store; not a physical delete and does not claim provider conditional-delete support", "d1":"authority transaction only", "r2":"external authoritative fence required before physical delete", "redb":"authority transaction only", "turso":"authority transaction only"},
-    {"id":"object_delete_captured_key","meaning":"after authority fence and grace, plain-delete only captured immutable generation-qualified physical key; key is never reused, so stale delete cannot alias resurrection", "d1":"delete captured generation row only after authority fence", "r2":"plain DeleteObject on captured never-reused key only after external fence and proven non-reuse; otherwise unsupported/disabled", "redb":"authority fence then external plain delete of captured never-reused key", "turso":"authority fence then external plain delete of captured never-reused key"}
+    {
+      "id": "blob_put_if_absent",
+      "meaning": "write immutable bytes if canonical content ID absent; identical replay preserves row/references; ordinary put against tombstoned generation rejects unless explicit resurrection creates new generation and physical key",
+      "d1": "transactional blob row + unique tenant/content key; record rows written",
+      "r2": "conditional PutObject write by opaque generation-qualified locator + verify checksum; never reuse generation key; record Class A and bytes",
+      "redb": "write transaction insert absent; commit; read back",
+      "turso": "transaction insert absent; commit; record push/pull state"
+    },
+    {
+      "id": "blob_get",
+      "meaning": "authorized exact-ID read; verify bytes/hash",
+      "d1": "indexed select blob row",
+      "r2": "GetObject by broker-resolved locator",
+      "redb": "read transaction get key",
+      "turso": "indexed select from local DB; note sync revision"
+    },
+    {
+      "id": "metadata_lookup",
+      "meaning": "tenant + content ID exact metadata lookup",
+      "d1": "indexed SELECT",
+      "r2": "GET manifest sidecar; not transactional index",
+      "redb": "read transaction key lookup",
+      "turso": "indexed SELECT"
+    },
+    {
+      "id": "metadata_scan",
+      "meaning": "same predicate and ordered result set over fixed tenant rows",
+      "d1": "parameterized indexed/range query; report rows_read",
+      "r2": "list/prefix only if semantically equivalent; otherwise unsupported (object listing is not SQL scan)",
+      "redb": "table range scan with same ordering/filter",
+      "turso": "parameterized SQLite query"
+    },
+    {
+      "id": "ref_commit_if_live",
+      "meaning": "atomically add reference only if authority generation is Live(g)",
+      "d1": "transaction conditional update + ref insert",
+      "r2": "unsupported alone; requires external transactional authority",
+      "redb": "single write transaction on authority DB",
+      "turso": "single DB transaction; cross-replica conflict semantics separately tested"
+    },
+    {
+      "id": "ref_remove",
+      "meaning": "remove existing logical reference in authoritative ref store",
+      "d1": "transactional ref delete",
+      "r2": "unsupported alone; requires external transactional authority",
+      "redb": "single write transaction on authority DB",
+      "turso": "single DB transaction; cross-replica conflict semantics separately tested"
+    },
+    {
+      "id": "object_tombstone_delete",
+      "meaning": "atomically fence generation in authoritative reference store; not a physical delete and does not claim provider conditional-delete support",
+      "d1": "authority transaction only",
+      "r2": "external authoritative fence required before physical delete",
+      "redb": "authority transaction only",
+      "turso": "authority transaction only"
+    },
+    {
+      "id": "object_delete_captured_key",
+      "meaning": "after authority fence and grace, plain-delete only captured immutable generation-qualified physical key; key is never reused, so stale delete cannot alias resurrection",
+      "d1": "delete captured generation row only after authority fence",
+      "r2": "plain DeleteObject on captured never-reused key only after external fence and proven non-reuse; otherwise unsupported/disabled",
+      "redb": "authority fence then external plain delete of captured never-reused key",
+      "turso": "authority fence then external plain delete of captured never-reused key"
+    }
   ],
-  "matrix": {"storage_shard_count":[1,4,16,64],"database_bytes":[10485760,1073741824,8589934592],"r2_object_counts":[1000,100000,1000000],"object_bytes":[4096,1048576,67108864,1073741824],"concurrency":[1,8,64],"cache_modes":["cold","warm"],"repetitions_min":5,"warmup_runs":2,"metrics":["p50_ms","p95_ms","p99_ms","throughput_ops_s","error_rate","native_billed_units","durability_rpo","replica_lag"]},
+  "matrix": {
+    "storage_shard_count": [1, 4, 16, 64],
+    "database_bytes": [10485760, 1073741824, 8589934592],
+    "r2_object_counts": [1000, 100000, 1000000],
+    "object_bytes": [4096, 1048576, 67108864, 1073741824],
+    "concurrency": [1, 8, 64],
+    "cache_modes": ["cold", "warm"],
+    "repetitions_min": 5,
+    "warmup_runs": 2,
+    "metrics": [
+      "p50_ms",
+      "p95_ms",
+      "p99_ms",
+      "throughput_ops_s",
+      "error_rate",
+      "native_billed_units",
+      "durability_rpo",
+      "replica_lag"
+    ]
+  },
   "correctness_oracle": "benchmark-workload-oracle.py executes finite reference-store and physical-generation-key transitions, computes fixture digest, and compares each transition to synthetic-workload.json; no timing assertion or provider-delete claim",
   "shard_and_recall_scope": "Owned entirely by #9092 using #8627. #9133 storage results never recommend shard configurations. Optional #9092 artifact consumption is link/validation only."
 }

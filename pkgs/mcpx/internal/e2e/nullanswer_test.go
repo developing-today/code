@@ -29,7 +29,9 @@ func TestANullSamplingAnswerIsRefusedAndTheDaemonSurvives(t *testing.T) {
 	}
 
 	// A client that declared no sampling capability, so the question goes
-	// to the broker, where anything that can reach the daemon may answer it.
+	// to the broker, where anything that can reach the daemon may answer it
+	// -- provided an answerer is present when it is raised (#2438).
+	beAnswerer(t, e)
 	done := make(chan string, 1)
 	go func() {
 		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1,

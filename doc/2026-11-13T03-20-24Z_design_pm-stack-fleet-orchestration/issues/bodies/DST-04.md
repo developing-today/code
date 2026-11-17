@@ -37,6 +37,7 @@ Deliver this bounded slice only. It enables downstream work only after its state
 At pinned source, `pm-stack/projector/src/webhook.ts:7-57` already verifies bounded raw-body HMAC-SHA256 and `pm-stack/projector/README.md:23-30,145-179` documents supported events, `event_id=delivery:subevent`, `pmp_hot_events`, per-consumer high-water cursors and monotone durable sweep acknowledgements. This is a disposable projection ledger, not canonical Fleet command acceptance or a writeback authority (`README.md:3-8`). Consume it as a verified-input/projection-fanout seam only where the current owner supports it. Add no HMAC/auth service, no priority policy or remote mutation in `webhook.ts`, no Project writer, and no loop treating a Fleet projection echo as human intent. This slice owns label-event-to-shared-command mapping and tests for actor/capability authorization at the authoritative consumer; delivery-ID dedupe remains distinct from operation idempotency.
 
 **Ownership resolution:** the source appendix's `webhook.ts` file suggestion is superseded by this V1 census overlay: do not put priority policy, command authorization, or remote writes in the HMAC helper. Existing HMAC remains read/auth intake only; Fleet's typed operation owner handles authorization/effects.
+
 ## Owned files and boundaries
 
 - `pkgs/fleet/crates/fleet-queue/src/work/distribution.rs`
@@ -56,14 +57,13 @@ Domain-starter parent references are never emitted as hard native blockers. Sour
 
 Source-local candidate aliases normalized for this packet: DST-CMD-01 → DST-01, CLI-02; DST-INTENT-01 → REL-03; AUTH-OP-01 → AUTH-01.
 
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
 
 - **First failing test:** `pmo_distribution_priority_webhook_maps_to_shared_command; pmo_distribution_protected_expedite_label_event_is_denied`
 - **Oracle:** The source slice’s stated reference model, golden fixture, or invariant; compare expected and observed state explicitly. No mock-only claim of deployed/live behavior.
-- **Done command:** `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_distribution_priority_webhook_maps_to_shared_command (verify exact test name with -- --list first). Also verify `pmo_distribution_protected_expedite_label_event_is_denied` is listed, then run `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_distribution_protected_expedite_label_event_is_denied`.`
+- **Done command:** `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_distribution_priority_webhook_maps_to_shared_command (verify exact test name with -- --list first). Also verify `pmo_distribution_protected_expedite_label_event_is_denied`is listed, then run`cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_distribution_protected_expedite_label_event_is_denied`.`
 - Tests must first be listed by exact name in the owning target (`-- --list`); assert the test exists before execution. A zero-test filter passing is not acceptance.
 
 ## Acceptance and negative cases
@@ -102,9 +102,9 @@ Consume the existing #7030 protected expedite membership/value and the dated `pm
 | `DST-04` / recommended | Extend existing Projector webhook intake as authenticated bounded transport/dedup, then fan out a typed field-scoped operation through the existing Fleet authority adapter; no new service. Reuse `pm-stack/projector/src/server.ts` route, `src/webhook.ts` HMAC/bounded-body helper, delivery ledger and hot-cursor protocol; test at `pm-stack/projector/test/priority-webhook.test.ts` plus Fleet authority module. | `DST-CMD-01`; granular `AUTH-OP-01` from #9208; `DST-INTENT-01`; existing Fleet command adapter contract. Projector deployment liveness remains unverified. | Delivery GUID dedup is distinct from Fleet operation idempotency; Projector store remains disposable/non-authoritative; authenticated principal/capability is checked by Fleet authority; no projector GH/Project mutation; unauthorized/conflicting label cannot mutate canonical state; final-label removal preserves score and requests triage. |
 **Future red-first test commands / oracles per issue:** Exact future Rust test commands are: DST-01 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_distribution_command_identity_reason_and_version`; DST-03 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_distribution_atomic_intent_revision`; DST-05 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_distribution_projection_replay`; DST-06 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_distribution_host_order_hash`; DST-07 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_distribution_unknown_version_degrades`. Before each, run that exact command with `-- --list` and assert the named test exists; zero-test success is not acceptance. DST-01 oracle enumerates each reason code and checks field-effect class/no mutation on rejection or unsupported code. DST-02: `cd pm-stack/dispatch && bun test test/validate.test.ts` proves 15/25 round-trip exactly, not current snapping. DST-04 first asserts `test -f pm-stack/projector/test/priority-webhook.test.ts`, then runs `cd pm-stack/projector && bun test test/priority-webhook.test.ts`; DST-05 likewise asserts `test -f pm-stack/projector/test/priority-reconcile.test.ts` before `cd pm-stack/projector && bun test test/priority-reconcile.test.ts`. Both projector oracles cover replay, stale revision, partial effects and readback repair. These are future red-first specs, not current tests. No test may trust `actor_ref` or client-supplied authorization. Hard blockers are granular keys above; #9079/#9081 hosted and #9201 mobile are soft consumers.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `DST-01` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/contracts.rs`
 - blocked by `DST-03` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/distribution.rs`

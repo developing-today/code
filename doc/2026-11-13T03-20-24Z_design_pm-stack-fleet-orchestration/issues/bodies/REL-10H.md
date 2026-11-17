@@ -40,7 +40,6 @@ Domain-starter parent references are never emitted as hard native blockers. Sour
 
 Source-local candidate aliases normalized for this packet: REL-10 → REL-10M, REL-10H.
 
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -83,9 +82,7 @@ Negative coverage: mixed binaries, pending legacy intent, remote success during 
 
 **Tier:** crucial rollout validation. **Goal:** additive migration/backfill/dual-read and rollback after remote effects; hosted conformance. **Owns:** `src/work/operations.rs`/`completion.rs` migration model tests; actual migration file remains existing `fleet-queue` path resolved by #9198. **Hard blockers:** Queue Table Improvements, #9198 store owner, REL-02/04/07; #9073–#9076 only if current interface required. **First failing oracle:** `pmo_rel_migration_rollback_preserves_remote_effect_receipt` simulates remote success then disable/rollback/restart. **Done command:** confirm test listed, then `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_rel_migration_rollback_preserves_remote_effect_receipt`; actual DB migration owner must also supply/run its named upgrade/rollback integration command before release. **Negative:** mixed binaries, pending legacy intent, remote success during rollback, partial schema. **Acceptance:** code, DB migration, staging, deployed telemetry, live readback, hosted parity separately reported.
 
-
 Split refinement: Compare state-machine, stale-fence, operation and completion fixtures across existing hosted targets #9079/#9081; do not reimplement either hosted service.
-
 
 ## Merged source-key/facade acceptance
 

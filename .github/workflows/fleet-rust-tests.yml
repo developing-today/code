@@ -14,16 +14,13 @@ name: fleet-rust-tests
 # (auto-fixed on main by auto-format.yml), so this basic-tier job
 # runs tests only. #6400's per-variant smoke suite
 # (pkgs/fleet/smoke.sh) is a separate venue and is NOT part of
-# this job.
+# this job (its venue is .github/workflows/fleet-smoke.yml).
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/fleet/**"
-      - ".github/workflows/fleet-rust-tests.yml"
-      - ".github/scripts/check-fleet-rust-tests.sh"
-      - ".github/scripts/check-fleet-rust-tests.test.sh"
+  schedule:
+    # Nightly instead of on every push to main (Drew, 2026-11-16; see
+    # .github/ci-policy.md "Nightly main CI").
+    - cron: "17 7 * * *"
   workflow_dispatch:
 
 permissions:

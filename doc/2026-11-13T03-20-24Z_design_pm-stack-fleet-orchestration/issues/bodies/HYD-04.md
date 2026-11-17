@@ -55,9 +55,6 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9206→CLI-03, #9208→AUTH-01, #9198→CEN-04.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -100,8 +97,8 @@ Negative coverage: 403, missing vs empty, same PR number cross-repo, hostile ins
 
 **Tier:** crucial. **Goal:** fetch all required queue, issues, PRs, comments, reviews, checks, timeline, commits/diffs, dependency/checkpoint refs and render concise summary. **Owns:** `src/work/context.rs` orchestration and `src/work/authority.rs` read-policy call; adapter extension stays in existing Fleet `gh.rs`, no new client. **Hard blockers:** HYD-01/03; granular #9206 resource-identity slice; #9208 `AUTH-01`; #9198 adapter contract. **First failing oracle:** `pmo_hyd_summary_reports_partial_and_diff_provenance` fixture includes unavailable review endpoint and renamed diff with author/committer timestamps/hunk ranges. **Done command:** confirm exact test listed, then run `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_hyd_summary_reports_partial_and_diff_provenance`. **Negative:** 403, missing vs empty, same PR number cross-repo, hostile instructions, private note leakage. **Limits:** request/time/total bytes/diff budgets and streaming memory. **Migration/rollback:** artifact-only read path, disable command preserving queue; mocked, deployed and live-read evidence separately recorded.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `HYD-03` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/context.rs`

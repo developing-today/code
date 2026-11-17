@@ -63,7 +63,8 @@ not recreate); (3) fleet-wide board-membership audit against the epic
 taxonomy below; (4) lab-cluster boards in the Clustered-Computing org.
 Personal-repo (dezren39/*) issues cannot be placed on org Project #4 —
 a settled constraint per the same ruling; their tracking home is labels
-+ milestones + this register.
+
+- milestones + this register.
 
 ## Phase 1 — the pkgs/id crate split (complete except boards)
 

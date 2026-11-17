@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 
 import { buildQuotaActions, quotaActionFlags, quotaActionTierItems } from "../src/derive.ts";
 import { renderTodayBody } from "../src/render.ts";
-import type { AttentionView, QuotaPool, QuotaView, TodayView } from "../src/model.ts";
+import type { QuotaPool, QuotaView } from "../src/model.ts";
+import type { AttentionView, TodayView } from "../src/derive.ts";
 
 const PLANS = {
   "opencode-go.personal": {
@@ -165,7 +166,7 @@ describe("buildQuotaActions (#1174)", () => {
           provider: "OpenAI",
           plan: "Codex",
           windows: [
-            { name: "5-hour", unit: "other", limit: 100, used: 99, percent: 99 },
+            { name: "5-hour", unit: "other", limit: 100, used: 99, resetsAt: null, percent: 99 },
             { name: "weekly", unit: "other", limit: 100, used: 92, resetsAt: "2026-10-30T12:00:00Z", percent: 92 },
           ],
         }),

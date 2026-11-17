@@ -40,6 +40,13 @@ pub use id_store::issuer_rotation::{IssuerId, author_id, issuer_id};
 /// Graph-native currency definitions and value-event contracts.
 pub mod graph;
 
+/// Deterministic graph-native currency fold over the graph contracts.
+pub mod fold;
+
+/// The currency gateway's signed request envelope (#2319).
+#[cfg(feature = "world")]
+pub mod gateway;
+
 /// The event kind carrying a rate authorisation body.
 pub const RATE_AUTHORISATION_KIND: &str = "currency.rate_authorisation";
 
@@ -418,6 +425,7 @@ pub fn sign_authorisation(
             rotation: None,
 
             chat: None,
+            anchor: None,
         },
     )?)
 }
@@ -453,6 +461,7 @@ pub fn sign_revoke(
             rotation: None,
 
             chat: None,
+            anchor: None,
         },
     )?)
 }

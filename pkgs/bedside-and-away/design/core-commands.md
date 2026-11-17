@@ -3,6 +3,7 @@
 Implements DM-03 and interfaces DM-01/02/08. Canonical command intent and actor bind an immutable event ID. CAS binds expected store version; event insertion and snapshot update share the existing transaction. INSERT OR IGNORE plus actor/payload predicates make concurrent command retries safe without applying changed content. Old legacy receipts without canonical intent are deliberately not replayable automatically: inspect the current state rather than guess.
 
 Dedicated POST routes:
+
 - `stores/:id/steering`: `{expectedVersion,command}` using versioned steering transition.
 - `stores/:id/variants`: `{expectedVersion,commandId,ids,options}` using server-allocated UUIDs.
 - `stores/:id/policy`: `{expectedVersion,commandId,access}` administrator-only and validates owner/caller do not lose read/write/admin access. GET returns `{access,version,members}` to administrators.

@@ -33,11 +33,7 @@ import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { extractQuotaPools } from "../src/quota-extract.ts";
-import {
-  defaultHiddenDir,
-  defaultQuotaViewPath,
-  defaultUsageOutboxPath,
-} from "../src/default-paths.ts";
+import { defaultHiddenDir, defaultQuotaViewPath, defaultUsageOutboxPath } from "../src/default-paths.ts";
 import { extractPaygLines, extractSaasServices } from "../src/saas-extract.ts";
 import {
   recordsFromPaygLines,

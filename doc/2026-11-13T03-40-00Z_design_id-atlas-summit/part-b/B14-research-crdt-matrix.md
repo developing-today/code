@@ -4,12 +4,12 @@
 
 ## Common criteria and matrix
 
-| Candidate | Data/history | Convergence/sync | Scale evidence | Signed history / interop | Authority boundary |
-|---|---|---|---|---|---|
-| Automerge | structured document change history | deterministic merge, per-document sync | binary history and project benchmarks; workload-specific | documented formats/bindings; actor ID is not signer auth | no peer authorization |
-| Diamond Types | text-oriented Eg-walker operation log | collaborative text merge | paper reports text workload results only | Rust project; agent ID is not signer auth | no federation authority |
-| Willow | scoped namespace/subspace entries | semilattice and range reconciliation | bounded/partial-sync proposals | evolving profile, Ed25519/Meadowcap | write authorization tokens, not global peer classes |
-| OCapN | object references/handoff, not CRDT | transport-separated object communication | draft; no generic reconciliation claim | living drafts | reference authority; attenuation unverified here |
+| Candidate     | Data/history                          | Convergence/sync                         | Scale evidence                                           | Signed history / interop                                 | Authority boundary                                  |
+| ------------- | ------------------------------------- | ---------------------------------------- | -------------------------------------------------------- | -------------------------------------------------------- | --------------------------------------------------- |
+| Automerge     | structured document change history    | deterministic merge, per-document sync   | binary history and project benchmarks; workload-specific | documented formats/bindings; actor ID is not signer auth | no peer authorization                               |
+| Diamond Types | text-oriented Eg-walker operation log | collaborative text merge                 | paper reports text workload results only                 | Rust project; agent ID is not signer auth                | no federation authority                             |
+| Willow        | scoped namespace/subspace entries     | semilattice and range reconciliation     | bounded/partial-sync proposals                           | evolving profile, Ed25519/Meadowcap                      | write authorization tokens, not global peer classes |
+| OCapN         | object references/handoff, not CRDT   | transport-separated object communication | draft; no generic reconciliation claim                   | living drafts                                            | reference authority; attenuation unverified here    |
 
 ## Options and revisit rule
 

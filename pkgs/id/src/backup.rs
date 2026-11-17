@@ -57,6 +57,8 @@ use id_core::key_envelope;
 /// Total v1 envelope length: 60-byte header + 32-byte wrapped key +
 /// 16-byte AEAD tag, matching `key_envelope`'s layout.
 pub const BACKUP_ENVELOPE_LEN: usize = 108;
+/// Minimum passphrase length accepted by every backup creation path.
+pub const MIN_BACKUP_PASSPHRASE_BYTES: usize = key_envelope::MIN_PASSPHRASE_BYTES;
 /// Envelope magic, mirroring `key_envelope`'s `IDKEY` header.
 const ENVELOPE_MAGIC: &[u8; 5] = b"IDKEY";
 /// Envelope version byte offset and expected v1 value.
@@ -126,10 +128,26 @@ pub fn delete_message(key_hash: &[u8; 32], epoch: u64) -> Vec<u8> {
 }
 
 /// Client side: sign an upload for `signing_key`'s identity.
-pub fn sign_upload(signing_key: &SigningKey, envelope: &[u8], epoch: u64) -> [u8; 64] {
+///
+/// The envelope must pass the same structural check every store runs
+/// at receipt ([`BackupStore::upload`] calls `validate_envelope` before
+/// it looks at the signature), so a signature is only ever produced for
+/// an envelope a store can accept (#8842). The epoch rules stay
+/// receipt-only: they depend on the store's current record.
+///
+/// # Errors
+///
+/// [`BackupError::MalformedEnvelope`] when the envelope is not a
+/// well-formed v1 key envelope.
+pub fn sign_upload(
+    signing_key: &SigningKey,
+    envelope: &[u8],
+    epoch: u64,
+) -> Result<[u8; 64], BackupError> {
+    validate_envelope(envelope)?;
     let public = signing_key.verifying_key().to_bytes();
     let msg = upload_message(&key_hash(&public), &envelope_sha256(envelope), epoch);
-    signing_key.sign(&msg).to_bytes()
+    Ok(signing_key.sign(&msg).to_bytes())
 }
 
 /// Client side: sign a delete for `signing_key`'s identity at the
@@ -160,6 +178,9 @@ pub enum BackupError {
     /// The per-identity download budget is exhausted; retry after the
     /// given number of milliseconds.
     DownloadBudgetExceeded { retry_after_ms: u64 },
+    /// A new device cannot be bound while restore notifications for
+    /// this identity are still pending.
+    RestorePending,
 }
 
 impl fmt::Display for BackupError {
@@ -180,6 +201,12 @@ impl fmt::Display for BackupError {
                 f,
                 "download budget exceeded; retry after {retry_after_ms} ms"
             ),
+            Self::RestorePending => {
+                write!(
+                    f,
+                    "cannot bind a device while restore notifications are pending"
+                )
+            }
         }
     }
 }
@@ -737,13 +764,30 @@ impl BackupStore {
         }
     }
 
-    /// Register a bound device for restore notifications.
-    pub fn bind_device(&mut self, public_key: &[u8; 32], device_public_key: [u8; 32]) {
+    /// Register a bound device for restore notifications. New devices
+    /// cannot be added while a restore's notification set is pending;
+    /// repeated registration of an already-bound device remains a no-op.
+    pub fn bind_device(
+        &mut self,
+        public_key: &[u8; 32],
+        device_public_key: [u8; 32],
+    ) -> Result<(), BackupError> {
         let hash = key_hash(public_key);
-        let devices = self.bound_devices.entry(hash).or_default();
-        if !devices.contains(&device_public_key) {
-            devices.push(device_public_key);
+        if self
+            .bound_devices
+            .get(&hash)
+            .is_some_and(|devices| devices.contains(&device_public_key))
+        {
+            return Ok(());
         }
+        if self.restore_pending.contains_key(&hash) {
+            return Err(BackupError::RestorePending);
+        }
+        self.bound_devices
+            .entry(hash)
+            .or_default()
+            .push(device_public_key);
+        Ok(())
     }
 
     /// Confirm the restore notifications for the restore named by
@@ -826,7 +870,11 @@ pub fn passphrase_warning(passphrase: &[u8]) -> Option<&'static str> {
     .iter()
     .filter(|present| **present)
     .count();
-    if text.chars().count() < 12 || (classes < 2 && text.chars().count() < 20) {
+    let mut chars = text.chars();
+    let first_char = chars.next();
+    let all_same = first_char.is_some() && chars.all(|ch| Some(ch) == first_char);
+    let char_count = text.chars().count();
+    if char_count < 12 || (classes < 2 && (char_count < 20 || all_same)) {
         Some(WEAK_PASSPHRASE_WARNING)
     } else {
         None
@@ -837,6 +885,10 @@ pub fn passphrase_warning(passphrase: &[u8]) -> Option<&'static str> {
 /// `key_envelope::encrypt` exactly — no second format — and report
 /// the weak-passphrase warning alongside.
 pub fn create_backup(passphrase: &[u8], identity_key: &[u8; 32]) -> anyhow::Result<CreatedBackup> {
+    anyhow::ensure!(
+        passphrase.len() >= MIN_BACKUP_PASSPHRASE_BYTES,
+        "passphrase must be at least {MIN_BACKUP_PASSPHRASE_BYTES} bytes"
+    );
     Ok(CreatedBackup {
         envelope: key_envelope::encrypt(passphrase, identity_key)?,
         passphrase_warning: passphrase_warning(passphrase),
@@ -857,6 +909,35 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    /// A raw upload signature with no envelope check, so receipt-side
+    /// tests can present a correctly signed malformed envelope.
+    fn sign_upload_unchecked(signing_key: &SigningKey, envelope: &[u8], epoch: u64) -> [u8; 64] {
+        let public = signing_key.verifying_key().to_bytes();
+        let msg = upload_message(&key_hash(&public), &envelope_sha256(envelope), epoch);
+        signing_key.sign(&msg).to_bytes()
+    }
+
+    /// #8842: the signer refuses every envelope a store would refuse,
+    /// with the same error, and signs a valid one exactly as before.
+    #[test]
+    fn sign_upload_refuses_malformed_envelopes_at_sign_time() {
+        let (signing, _public, secret) = identity(6);
+        let envelope = envelope_for(&secret);
+        assert_eq!(
+            sign_upload(&signing, &envelope, 1).unwrap(),
+            sign_upload_unchecked(&signing, &envelope, 1)
+        );
+        let mut bad_magic = envelope.clone();
+        bad_magic[0] = b'X';
+        let mut bad_version = envelope.clone();
+        bad_version[ENVELOPE_VERSION_OFFSET] = 2;
+        for bad in [envelope[..100].to_vec(), bad_magic, bad_version, Vec::new()] {
+            let err = sign_upload(&signing, &bad, 1).unwrap_err();
+            assert!(matches!(err, BackupError::MalformedEnvelope(_)), "{err}");
+            assert_eq!(err, validate_envelope(&bad).unwrap_err());
+        }
+    }
+
     const PASSPHRASE: &[u8] = b"correct horse battery staple";
 
     fn identity(seed: u8) -> (SigningKey, [u8; 32], [u8; 32]) {
@@ -873,7 +954,7 @@ mod tests {
         let (signing, public, secret) = identity(7);
         let envelope = envelope_for(&secret);
         let mut store = BackupStore::new();
-        let sig = sign_upload(&signing, &envelope, 1);
+        let sig = sign_upload(&signing, &envelope, 1).unwrap();
         store.upload(&public, &envelope, 1, &sig, 1_000).unwrap();
         (store, signing, public, envelope)
     }
@@ -913,17 +994,17 @@ mod tests {
         let envelope = envelope_for(&secret);
         let mut store = BackupStore::new();
 
-        let bad_sig = sign_upload(&SigningKey::from_bytes(&[9; 32]), &envelope, 1);
+        let bad_sig = sign_upload(&SigningKey::from_bytes(&[9; 32]), &envelope, 1).unwrap();
         assert_eq!(
             store.upload(&public, &envelope, 1, &bad_sig, 0),
             Err(BackupError::BadSignature)
         );
 
-        let sig = sign_upload(&signing, &envelope, 1);
+        let sig = sign_upload(&signing, &envelope, 1).unwrap();
         store.upload(&public, &envelope, 1, &sig, 0).unwrap();
 
         // Equal and lower epochs are both non-increasing.
-        let sig_equal = sign_upload(&signing, &envelope, 1);
+        let sig_equal = sign_upload(&signing, &envelope, 1).unwrap();
         assert_eq!(
             store.upload(&public, &envelope, 1, &sig_equal, 10),
             Err(BackupError::StaleEpoch {
@@ -932,7 +1013,7 @@ mod tests {
             })
         );
         let other = envelope_for(&[4; 32]);
-        let sig_higher = sign_upload(&signing, &other, 2);
+        let sig_higher = sign_upload(&signing, &other, 2).unwrap();
         let receipt = store.upload(&public, &other, 2, &sig_higher, 20).unwrap();
         assert_eq!(receipt.epoch, 2);
         assert_eq!(store.record(&public).unwrap().envelope(), other.as_slice());
@@ -945,7 +1026,7 @@ mod tests {
         let (signing, public, secret) = identity(5);
         let envelope = envelope_for(&secret);
         let mut store = BackupStore::new();
-        let sig = sign_upload(&signing, &envelope, 1);
+        let sig = sign_upload(&signing, &envelope, 1).unwrap();
 
         assert!(matches!(
             store.upload(&public, &envelope[..100], 1, &sig, 0),
@@ -1088,7 +1169,7 @@ mod tests {
     #[test]
     fn restore_increments_epoch_and_notifies_bound_devices() {
         let (mut store, _s, public, _e) = uploaded_store();
-        store.bind_device(&public, [42; 32]);
+        store.bind_device(&public, [42; 32]).unwrap();
         assert!(store.is_authoritative(&public));
         let receipt = store.download_for_restore(&public, 5_000).unwrap();
         assert_eq!(receipt.restore_epoch, 1);
@@ -1103,6 +1184,36 @@ mod tests {
         assert_eq!(store.record(&public).unwrap().restore_epoch(), 1);
     }
 
+    /// Oracle: while restore notifications are pending, a new device
+    /// cannot join the bound-device set after the receipt has snapshotted
+    /// its notification targets. The refusal leaves the pending restore
+    /// intact; after confirmation, binding is available again.
+    #[test]
+    fn binding_device_is_refused_until_restore_notifications_are_confirmed() {
+        let (mut store, _s, public, _e) = uploaded_store();
+        store.bind_device(&public, [42; 32]).unwrap();
+        let receipt = store.download_for_restore(&public, 5_000).unwrap();
+        assert_eq!(receipt.notifications.len(), 1);
+        assert_eq!(receipt.notifications[0].device_public_key, [42; 32]);
+        assert!(!store.is_authoritative(&public));
+        assert_eq!(store.bind_device(&public, [42; 32]), Ok(()));
+        assert!(!store.is_authoritative(&public));
+
+        assert_eq!(
+            store.bind_device(&public, [43; 32]),
+            Err(BackupError::RestorePending)
+        );
+        assert!(!store.is_authoritative(&public));
+        assert!(store.confirm_restore_notifications(&public, receipt.token));
+        assert!(store.is_authoritative(&public));
+
+        store.bind_device(&public, [43; 32]).unwrap();
+        let next = store.download_for_restore(&public, 6_000).unwrap();
+        assert_eq!(next.notifications.len(), 2);
+        assert_eq!(next.notifications[0].device_public_key, [42; 32]);
+        assert_eq!(next.notifications[1].device_public_key, [43; 32]);
+    }
+
     /// Oracle: Codex review on PR #7658 — a stale confirmation for
     /// restore epoch 1 must not clear restore epoch 2's pending
     /// notifications; only the current epoch's confirmation restores
@@ -1110,7 +1221,7 @@ mod tests {
     #[test]
     fn stale_restore_confirmation_does_not_clear_newer_restore() {
         let (mut store, _s, public, _e) = uploaded_store();
-        store.bind_device(&public, [42; 32]);
+        store.bind_device(&public, [42; 32]).unwrap();
         let first = store.download_for_restore(&public, 5_000).unwrap();
         assert_eq!(first.restore_epoch, 1);
         let second = store.download_for_restore(&public, 6_000).unwrap();
@@ -1131,7 +1242,7 @@ mod tests {
     #[test]
     fn stale_restore_token_does_not_confirm_recreated_backup() {
         let (mut store, signing, public, envelope) = uploaded_store();
-        store.bind_device(&public, [42; 32]);
+        store.bind_device(&public, [42; 32]).unwrap();
         let first = store.download_for_restore(&public, 5_000).unwrap();
         assert_eq!(
             first.token,
@@ -1144,7 +1255,7 @@ mod tests {
         // delivering, then recreate at a higher upload epoch.
         let delete_sig = sign_delete(&signing, 1);
         store.delete(&public, &delete_sig).unwrap();
-        let recreate_sig = sign_upload(&signing, &envelope, 2);
+        let recreate_sig = sign_upload(&signing, &envelope, 2).unwrap();
         store
             .upload(&public, &envelope, 2, &recreate_sig, 6_000)
             .unwrap();
@@ -1183,7 +1294,12 @@ mod tests {
         ] {
             let mut bad = envelope.clone();
             mutate(&mut bad);
-            let sig = sign_upload(&signing, &bad, 1);
+            assert!(matches!(
+                sign_upload(&signing, &bad, 1),
+                Err(BackupError::MalformedEnvelope(_))
+            ));
+            // Receipt refuses it too, even with a signature over it.
+            let sig = sign_upload_unchecked(&signing, &bad, 1);
             assert!(matches!(
                 store.upload(&public, &bad, 1, &sig, 0),
                 Err(BackupError::MalformedEnvelope(_))
@@ -1210,7 +1326,7 @@ mod tests {
         assert_eq!(store.tombstone(&public), Some(tombstone));
 
         // Replay: the exact pre-delete upload, signature and all.
-        let replay_sig = sign_upload(&signing, &envelope, 1);
+        let replay_sig = sign_upload(&signing, &envelope, 1).unwrap();
         assert_eq!(
             store.upload(&public, &envelope, 1, &replay_sig, 9_999),
             Err(BackupError::Tombstoned { final_epoch: 1 })
@@ -1227,15 +1343,41 @@ mod tests {
     }
 
     #[test]
+    fn passphrase_floor_rejects_short_input_and_accepts_the_exact_boundary() {
+        assert!(create_backup(b"", &[1; 32]).is_err());
+        assert!(create_backup(b"1234567", &[1; 32]).is_err());
+
+        let created = create_backup(b"12345678", &[1; 32]).unwrap();
+        assert_eq!(created.envelope.len(), BACKUP_ENVELOPE_LEN);
+        assert_eq!(
+            restore_identity_key(b"12345678", &created.envelope).unwrap(),
+            [1; 32]
+        );
+        assert_eq!(created.passphrase_warning, Some(WEAK_PASSPHRASE_WARNING));
+    }
+
+    #[test]
     fn weak_passphrases_are_warned_at_creation() {
         assert_eq!(
-            create_backup(b"short", &[1; 32])
+            create_backup(b"shorter!", &[1; 32])
+                .unwrap()
+                .passphrase_warning,
+            Some(WEAK_PASSPHRASE_WARNING)
+        );
+        assert_eq!(
+            create_backup(b"aaaaaaaaaaaaaaaaaaaa", &[1; 32])
                 .unwrap()
                 .passphrase_warning,
             Some(WEAK_PASSPHRASE_WARNING)
         );
         assert_eq!(
             create_backup(PASSPHRASE, &[1; 32])
+                .unwrap()
+                .passphrase_warning,
+            None
+        );
+        assert_eq!(
+            create_backup(b"abcdefghijklmnopqrst", &[1; 32])
                 .unwrap()
                 .passphrase_warning,
             None

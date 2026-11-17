@@ -22,6 +22,8 @@ export function ghItemLike(item: GhItem, pool?: ProjectPoolItem | null): ViewIte
     owner: item.author,
     state: item.state,
     epic: pool?.epicRef ?? null,
+    status: pool?.status ?? null,
+    kind: pool?.kind ?? null,
   };
 }
 

@@ -2,32 +2,57 @@
   "fixture_schema": "pmo-offline-fixtures/v1",
   "priority_and_eligibility": {
     "items": [
-      {"canonical_id": "9007199254741001", "urgency": 15, "peer_rank": "10", "created_at": "2026-01-01T00:00:00Z"},
-      {"canonical_id": "9007199254740999", "urgency": 15, "peer_rank": "9", "created_at": "2026-01-01T00:00:00Z"},
-      {"canonical_id": "9007199254741003", "urgency": 10, "peer_rank": "9999999999999999", "created_at": "2026-01-02T00:00:00Z"},
-      {"canonical_id": "9007199254741002", "urgency": 15, "peer_rank": "9", "created_at": "2026-01-01T00:00:00Z"}
+      { "canonical_id": "9007199254741001", "urgency": 15, "peer_rank": "10", "created_at": "2026-01-01T00:00:00Z" },
+      { "canonical_id": "9007199254740999", "urgency": 15, "peer_rank": "9", "created_at": "2026-01-01T00:00:00Z" },
+      {
+        "canonical_id": "9007199254741003",
+        "urgency": 10,
+        "peer_rank": "9999999999999999",
+        "created_at": "2026-01-02T00:00:00Z"
+      },
+      { "canonical_id": "9007199254741002", "urgency": 15, "peer_rank": "9", "created_at": "2026-01-01T00:00:00Z" }
     ],
     "expected_order": ["9007199254741003", "9007199254740999", "9007199254741002", "9007199254741001"],
     "eligibility": [
-      {"task": {"repo": "code", "requires": {"platform": "linux"}}, "claimer": {"repo": "code", "platform": "linux"}, "filter": {"repo": "code"}, "expected": true},
-      {"task": {"repo": "code", "requires": {"platform": "linux"}}, "claimer": {"repo": "code", "platform": "windows"}, "filter": {"repo": "code"}, "expected": false},
-      {"task": {"repo": "code", "requires": {"platform": "linux"}}, "claimer": {"repo": "code", "platform": "linux"}, "filter": {"repo": "opencode"}, "expected": false},
-      {"task": {"repo": "code", "requires": {"platform": "linux"}}, "claimer": {"repo": "code", "platform": "windows"}, "filter": {"repo": "opencode"}, "expected": false}
+      {
+        "task": { "repo": "code", "requires": { "platform": "linux" } },
+        "claimer": { "repo": "code", "platform": "linux" },
+        "filter": { "repo": "code" },
+        "expected": true
+      },
+      {
+        "task": { "repo": "code", "requires": { "platform": "linux" } },
+        "claimer": { "repo": "code", "platform": "windows" },
+        "filter": { "repo": "code" },
+        "expected": false
+      },
+      {
+        "task": { "repo": "code", "requires": { "platform": "linux" } },
+        "claimer": { "repo": "code", "platform": "linux" },
+        "filter": { "repo": "opencode" },
+        "expected": false
+      },
+      {
+        "task": { "repo": "code", "requires": { "platform": "linux" } },
+        "claimer": { "repo": "code", "platform": "windows" },
+        "filter": { "repo": "opencode" },
+        "expected": false
+      }
     ]
   },
   "graph": {
     "nodes": ["blocker", "middle", "dependent", "parent", "advisory_target"],
     "edges": [
-      {"from": "blocker", "to": "middle", "kind": "hard_blocker"},
-      {"from": "middle", "to": "dependent", "kind": "hard_blocker"},
-      {"from": "parent", "to": "advisory_target", "kind": "parent"},
-      {"from": "advisory_target", "to": "parent", "kind": "advisory"}
+      { "from": "blocker", "to": "middle", "kind": "hard_blocker" },
+      { "from": "middle", "to": "dependent", "kind": "hard_blocker" },
+      { "from": "parent", "to": "advisory_target", "kind": "parent" },
+      { "from": "advisory_target", "to": "parent", "kind": "advisory" }
     ],
     "expected_blocker_to_dependent": true,
     "expected_parent_and_advisory_blocking": false
   },
   "exploration": {
-    "profile": {"r": 1.25, "d": 200, "alpha": 0.5, "bucket_width": 200},
+    "profile": { "r": 1.25, "d": 200, "alpha": 0.5, "bucket_width": 200 },
     "epsilon_values": ["0", "0.05", "1"],
     "population": {
       "ids": ["work-100", "work-101", "work-102", "work-103", "work-104", "work-105"],
@@ -39,9 +64,22 @@
   },
   "completion": {
     "required_effects": ["immutable-operation-effect"],
-    "prepare_requires": {"current_fence": true, "authorized": true, "dependencies_clear": true, "stale_owner": false, "unauthorized": false, "blocked_dependency": false},
+    "prepare_requires": {
+      "current_fence": true,
+      "authorized": true,
+      "dependencies_clear": true,
+      "stale_owner": false,
+      "unauthorized": false,
+      "blocked_dependency": false
+    },
     "send_response_lost": "unknown_until_remote_readback",
-    "finalize_requires": ["same operation", "all required effects readback verified", "no hold", "no newer work operation", "current completing state"],
+    "finalize_requires": [
+      "same operation",
+      "all required effects readback verified",
+      "no hold",
+      "no newer work operation",
+      "current completing state"
+    ],
     "remote_effect_key": "immutable operation id",
     "webhook_role": "deduplicated hint only; cannot send or finalize"
   }

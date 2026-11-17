@@ -64,9 +64,7 @@
       "kind": "implementation",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S1.21"
-      ],
+      "statements": ["S1.21"],
       "goal": "Key lifecycle: rotation, generation overlap, and preserving validity of data signed by a then-current key as an independently reviewable contract and implementation increment.",
       "enables": "Provides key lineage so future signed events remain attributable across rotation.",
       "owned_files": [
@@ -111,11 +109,7 @@
       "kind": "implementation",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S1.22",
-        "S1.84",
-        "S1.86"
-      ],
+      "statements": ["S1.22", "S1.84", "S1.86"],
       "goal": "Implement minimal V2 key/peer emergency disable, revocation and quarantine for previously accepted data; preserve evidence and do not claim signing-time proof from issuer timestamps.",
       "enables": "Provides mandatory V2 emergency containment before advanced takeover automation.",
       "owned_files": [
@@ -168,9 +162,7 @@
       "kind": "implementation",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S1.23"
-      ],
+      "statements": ["S1.23"],
       "goal": "Replay/freshness rules for re-presented signed data as an independently reviewable contract and implementation increment.",
       "enables": "Prevents a previously admitted signed event from being replayed as new.",
       "owned_files": [
@@ -219,9 +211,7 @@
       "kind": "implementation",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S1.24"
-      ],
+      "statements": ["S1.24"],
       "goal": "Signature-suite agility and algorithm deprecation/migration as an independently reviewable contract and implementation increment. Initial new profile is Ed25519 + deterministic CBOR with allowlisted suites; unknown suite fails closed.",
       "enables": "Allows versioned Ed25519 suite policy and fails closed on unallowed suites.",
       "owned_files": [
@@ -270,9 +260,7 @@
       "kind": "implementation",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S1.17\u2013S1.18"
-      ],
+      "statements": ["S1.17\u2013S1.18"],
       "goal": "Signer identity binding and validation distinct from mere signature presence as an independently reviewable contract and implementation increment. Also preserve compatibility vectors for the existing SignedBody serde_json signature preimage mismatch; do not alter legacy signed bytes. Preserve legacy SignedBody serde_json preimage compatibility vectors and document the existing docs/code mismatch without changing old bytes.",
       "enables": "Provides key-to-signer binding and preserves legacy artifact bytes as compatibility contract.",
       "owned_files": [
@@ -321,10 +309,7 @@
       "kind": "implementation",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S1.19",
-        "S1.25"
-      ],
+      "statements": ["S1.19", "S1.25"],
       "goal": "Observable, recordable rejection events at the universal signed-ingest gate as an independently reviewable contract and implementation increment.",
       "enables": "Makes gate rejection observable for operators and later evidence policy.",
       "owned_files": [
@@ -377,9 +362,7 @@
       "kind": "implementation",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S1.34\u2013S1.38"
-      ],
+      "statements": ["S1.34\u2013S1.38"],
       "goal": "First-class conflict-report artifact: versions, signers/sources, disputed data, retention/actionability as an independently reviewable contract and implementation increment.",
       "enables": "Makes conflicts durable and reviewable before any resolution.",
       "owned_files": [
@@ -432,10 +415,7 @@
       "kind": "implementation",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S1.26-S1.27",
-        "S1.28-S1.31"
-      ],
+      "statements": ["S1.26-S1.27", "S1.28-S1.31"],
       "goal": "Define implicit-trust internal sync toward 1:1 sameness within reason: authorized scope, capacity, retention, tenant/trust boundaries; detect divergence and exclusions.",
       "enables": "Defines authorized convergence scope and explicit 1:1-within-reason boundary.",
       "owned_files": [
@@ -485,9 +465,7 @@
       "kind": "implementation",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S1.32\u2013S1.40"
-      ],
+      "statements": ["S1.32\u2013S1.40"],
       "goal": "Divergence detection and anti-entropy/reconciliation requirements before any later merge as an independently reviewable contract and implementation increment.",
       "enables": "Detects scoped divergence and exchanges anti-entropy deltas without silent merge.",
       "owned_files": [
@@ -540,9 +518,7 @@
       "kind": "research",
       "version": "V4",
       "tier": "contingent",
-      "statements": [
-        "S1.41"
-      ],
+      "statements": ["S1.41"],
       "goal": "Automerge fit/evaluation against the shared CRDT criteria; produce evidence and conditional/non-adoption result, not merge code.",
       "enables": "Provides Automerge-specific evidence to the #9143 adopt/defer/none decision. Existing research.md and slice-specific reports remain cited evidence; this issue creates the separate machine-readable result artifact.",
       "owned_files": [
@@ -597,9 +573,7 @@
       "kind": "research",
       "version": "V4",
       "tier": "contingent",
-      "statements": [
-        "S1.42"
-      ],
+      "statements": ["S1.42"],
       "goal": "Identify \u201cdiamonds\u201d as Diamond Types and evaluate it on the shared criteria; produce evidence and conditional/non-adoption result, not merge code.",
       "enables": "Provides Diamond Types-specific evidence while retaining referent uncertainty. Existing research.md and slice-specific reports remain cited evidence; this issue creates the separate machine-readable result artifact.",
       "owned_files": [
@@ -654,9 +628,7 @@
       "kind": "research",
       "version": "V4",
       "tier": "contingent",
-      "statements": [
-        "S1.43"
-      ],
+      "statements": ["S1.43"],
       "goal": "Willow protocol fit against reconciliation, scoping and signed-only acceptance; produce evidence and conditional/non-adoption result, not merge code.",
       "enables": "Provides Willow-specific evidence and proposal caveats. Existing research.md and slice-specific reports remain cited evidence; this issue creates the separate machine-readable result artifact.",
       "owned_files": [
@@ -711,9 +683,7 @@
       "kind": "research",
       "version": "V4",
       "tier": "contingent",
-      "statements": [
-        "S1.44"
-      ],
+      "statements": ["S1.44"],
       "goal": "Evaluate what cited OCapN sources establish about object references and handoff; treat attenuation as an open application-level option, not a verified OCapN feature.",
       "enables": "Provides OCapN authority/handoff evidence without asserting unverified attenuation. Existing research.md and slice-specific reports remain cited evidence; this issue creates the separate machine-readable result artifact.",
       "owned_files": [
@@ -768,9 +738,7 @@
       "kind": "research",
       "version": "V4",
       "tier": "contingent",
-      "statements": [
-        "S1.45\u2013S1.46"
-      ],
+      "statements": ["S1.45\u2013S1.46"],
       "goal": "Common comparison matrix, non-exhaustive prior art and revisit threshold/recommendation; produce evidence and conditional/non-adoption result, not merge code.",
       "enables": "Joins project evidence under common criteria and permits adopt-none outcome. Existing research.md and slice-specific reports remain cited evidence; this issue creates the separate machine-readable result artifact.",
       "owned_files": [
@@ -844,9 +812,7 @@
       "kind": "implementation",
       "version": "V3",
       "tier": "recommended",
-      "statements": [
-        "S1.47\u2013S1.53"
-      ],
+      "statements": ["S1.47\u2013S1.53"],
       "goal": "Prioritized remote selection: inputs, ordering, and treatment of a remote negative answer as an independently reviewable contract and implementation increment.",
       "enables": "Orders eligible remotes without converting score into authority or global absence.",
       "owned_files": [
@@ -908,10 +874,7 @@
       "kind": "implementation",
       "version": "V3",
       "tier": "recommended",
-      "statements": [
-        "S1.54\u2013S1.57",
-        "S1.61"
-      ],
+      "statements": ["S1.54\u2013S1.57", "S1.61"],
       "goal": "Trusted-relay permission, max-hop propagation, and breadth\u00d7depth resource bounds as an independently reviewable contract and implementation increment. Account atomically at query, authenticated requester/origin, supplying peer, authorized tenant and node scopes; refund only unused amounts; retries reuse exact multidimensional reservation.",
       "enables": "Bounds recursive query resource use at requester and honest-node scopes.",
       "owned_files": [
@@ -982,9 +945,7 @@
       "kind": "implementation",
       "version": "V3",
       "tier": "recommended",
-      "statements": [
-        "S1.58\u2013S1.62"
-      ],
+      "statements": ["S1.58\u2013S1.62"],
       "goal": "Query/relay/response signature validation, end-to-end responder provenance and stable request identity as an independently reviewable contract and implementation increment.",
       "enables": "Defines immutable signed request and relay grant contracts with end-to-end responder provenance.",
       "owned_files": [
@@ -1050,9 +1011,7 @@
       "kind": "implementation",
       "version": "V3",
       "tier": "recommended",
-      "statements": [
-        "S1.63"
-      ],
+      "statements": ["S1.63"],
       "goal": "Privacy surface of query-interest disclosure and explicit mitigation/acceptance decision as an independently reviewable contract and implementation increment.",
       "enables": "Makes query-interest disclosure explicit and testable.",
       "owned_files": [
@@ -1114,9 +1073,7 @@
       "kind": "implementation",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S1.100\u2013S1.104"
-      ],
+      "statements": ["S1.100\u2013S1.104"],
       "goal": "Define the V2 shared signed receipt enum and binding fields, independently of V3 query fanout. #9115 existence uses verified_present; stored_unverified is inventory-only and never accepted content.",
       "enables": "Provides shared V2 receipt semantics for #9115 and later federation consumers.",
       "owned_files": [
@@ -1169,10 +1126,7 @@
       "kind": "implementation",
       "version": "V3",
       "tier": "recommended",
-      "statements": [
-        "S1.64",
-        "S1.70\u2013S1.72"
-      ],
+      "statements": ["S1.64", "S1.70\u2013S1.72"],
       "goal": "Request identity, duplicate-vs-loop classification, finite dedup state and expiry as an independently reviewable contract and implementation increment.",
       "enables": "Provides nonce-bound request identity and bounded replay/dedup keys.",
       "owned_files": [
@@ -1217,9 +1171,7 @@
       "kind": "implementation",
       "version": "V3",
       "tier": "recommended",
-      "statements": [
-        "S1.67\u2013S1.68"
-      ],
+      "statements": ["S1.67\u2013S1.68"],
       "goal": "Short-circuit and deduplicate in-flight/answered requests into coherent results as an independently reviewable contract and implementation increment.",
       "enables": "Avoids repeated in-flight work and forms one provenance-preserving result set.",
       "owned_files": [
@@ -1268,10 +1220,7 @@
       "kind": "implementation",
       "version": "V3",
       "tier": "recommended",
-      "statements": [
-        "S1.65\u2013S1.66",
-        "S1.69"
-      ],
+      "statements": ["S1.65\u2013S1.66", "S1.69"],
       "goal": "Inform requester/parties about duplicates and specifically signal detected loops as an independently reviewable contract and implementation increment.",
       "enables": "Surfaces duplicate and verified-cycle status to relevant request parties.",
       "owned_files": [
@@ -1324,9 +1273,7 @@
       "kind": "implementation",
       "version": "V3",
       "tier": "recommended",
-      "statements": [
-        "S1.73\u2013S1.76"
-      ],
+      "statements": ["S1.73\u2013S1.76"],
       "goal": "Routing-state freshness, periodic validation, and detection of peer/topology changes as an independently reviewable contract and implementation increment.",
       "enables": "Provides signed, expiring partial routing observations.",
       "owned_files": [
@@ -1379,9 +1326,7 @@
       "kind": "implementation",
       "version": "V3",
       "tier": "recommended",
-      "statements": [
-        "S1.77\u2013S1.78"
-      ],
+      "statements": ["S1.77\u2013S1.78"],
       "goal": "Signed/validated routing updates and protection against poisoning, suppression and manufactured loops as an independently reviewable contract and implementation increment.",
       "enables": "Periodically checks observed topology with nonce-bound probes.",
       "owned_files": [
@@ -1430,9 +1375,7 @@
       "kind": "implementation",
       "version": "V4",
       "tier": "contingent",
-      "statements": [
-        "S1.79\u2013S1.82"
-      ],
+      "statements": ["S1.79\u2013S1.82"],
       "goal": "Evidence-based ratings and explicit way reputation affects prioritization/class changes as an independently reviewable contract and implementation increment.",
       "enables": "Provides local evidence-weighted priority/class inputs with accountable attribution.",
       "owned_files": [
@@ -1487,10 +1430,7 @@
       "kind": "research",
       "version": "V4",
       "tier": "contingent",
-      "statements": [
-        "S1.88\u2013S1.91",
-        "S1.99"
-      ],
+      "statements": ["S1.88\u2013S1.91", "S1.99"],
       "goal": "Abuse-protection research: manipulation, retaliation, Sybils, whitewashing, collusion and spam claims as an independently reviewable contract and implementation increment.",
       "enables": "Provides abuse-control research without implementing reputation policy. Existing research.md and slice-specific reports remain cited evidence; this issue creates the separate machine-readable result artifact.",
       "owned_files": [
@@ -1544,9 +1484,7 @@
       "kind": "implementation",
       "version": "V4",
       "tier": "contingent",
-      "statements": [
-        "S1.92\u2013S1.98"
-      ],
+      "statements": ["S1.92\u2013S1.98"],
       "goal": "Public signed append-only claims/disputes log, right of reply, and use of evidence in reputation as an independently reviewable contract and implementation increment.",
       "enables": "Provides attributable append-only claims/replies without verdict authority.",
       "owned_files": [
@@ -1596,9 +1534,7 @@
       "kind": "implementation",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S1.83\u2013S1.87"
-      ],
+      "statements": ["S1.83\u2013S1.87"],
       "goal": "Implement the #9148 V2-crucial takeover safety response as a separate issue/PR: immediate peer/key disable, identify bounded prior-data blast radius and quarantine pending revalidation; never infer signing time from issuer wall-clock.",
       "enables": "Bounds and records incident blast radius beyond V2 emergency disable.",
       "owned_files": [
@@ -1649,9 +1585,7 @@
       "kind": "implementation",
       "version": "V4",
       "tier": "contingent",
-      "statements": [
-        "S1.100\u2013S1.108"
-      ],
+      "statements": ["S1.100\u2013S1.108"],
       "goal": "Ack/recipient-list contradiction detection, evidence retention, collusion threshold and public-log integration as an independently reviewable contract and implementation increment.",
       "enables": "Distinguishes provable contradictions from incomparable or missing evidence.",
       "owned_files": [
@@ -1705,9 +1639,7 @@
       "kind": "implementation",
       "version": "V4",
       "tier": "contingent",
-      "statements": [
-        "S1.109\u2013S1.113"
-      ],
+      "statements": ["S1.109\u2013S1.113"],
       "goal": "Federated-search tampering threat model: omission/injection/reordering/staleness and completeness claims as an independently reviewable contract and implementation increment.",
       "enables": "Defines what result tampering is detectable and where omission proof is absent.",
       "owned_files": [
@@ -1762,9 +1694,7 @@
       "kind": "implementation",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S1.1-S1.11"
-      ],
+      "statements": ["S1.1-S1.11"],
       "goal": "Implement the peer class operation matrix: fully_trusted is configured bidirectional policy but no bypass; send_only rejects inbound acceptance; accept_signed_from accepts only validated authorized data; unknown defaults to no acceptance; classes grant no relay by themselves.",
       "enables": "Implements explicit directional peer classes and restrictive unknown-peer default.",
       "owned_files": [
@@ -1810,9 +1740,7 @@
       "kind": "implementation",
       "version": "V2",
       "tier": "crucial",
-      "statements": [
-        "S1.12-S1.20"
-      ],
+      "statements": ["S1.12-S1.20"],
       "goal": "Enforce signature, signer-binding, semantic validation, authorization and replay checks before admission from local, loopback, internal, hosted or remote paths; local producers sign before admission and use the same gate.",
       "enables": "Enforces the mandatory signature and validation gate before admission.",
       "owned_files": [

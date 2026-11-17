@@ -50,7 +50,8 @@ classify Fleet-caused source activity via op/session/outbox ID and remote IDs; i
 - **P-R051 — design-only (candidate)**; occurrences `P-1681, P-1682, P-1683, P-1684, P-1685, P-1686, P-1687`; full trace: census/requirements-crosswalk.jsonl
 - **P-R065 — design-only (candidate)**; occurrences `P-1672, P-1673, P-1674, P-1675, P-1676, P-1677, P-1678, P-1679, P-1680`; full trace: census/requirements-crosswalk.jsonl
 - **P-R066 — design-only (candidate)**; occurrences `P-1681, P-1682, P-1683, P-1684, P-1685, P-1686, P-1687`; full trace: census/requirements-crosswalk.jsonl
-Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+  Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+
 ## Owned files and boundaries
 
 - `pkgs/fleet/crates/fleet-queue/src/work/activity.rs`
@@ -65,9 +66,6 @@ Hard blockers named by the source slice, after granular-key normalization: REL-0
 File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9209→REL-03, #9206→CLI-05.
-
-
-
 
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
@@ -111,8 +109,8 @@ Negative coverage: coincidental same-body human comment, stale mapping.
 
 **Tier:** recommended (hard before exposing `--external-only`); canonical attribution classifier. **Goal:** classify Fleet-caused source activity via op/session/outbox ID and remote IDs; include uncertain events as external by default. **Owns:** `src/work/activity.rs` mapping/confidence and `pmo_hyd_external_only_includes_uncertain_shared_actor`. #9208 AUTH-05 defines the shared principal/provenance-record contract and references this acceptance; it does not add a second activity classifier. **Hard blockers:** granular #9209 operation identity/receipt; granular #9206 session identity; HYD-06 revision store. **First failing oracle:** this test uses same bot login from two sessions with only one op/remote-ID map. **Done command:** confirm exact test listed, then run `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_hyd_external_only_includes_uncertain_shared_actor`. **Negative:** coincidental same-body human comment, stale mapping. **Migration:** legacy uncertain; username never assigns session. Dispatch/#6533 remain #9203 only.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `HYD-06` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/activity.rs`

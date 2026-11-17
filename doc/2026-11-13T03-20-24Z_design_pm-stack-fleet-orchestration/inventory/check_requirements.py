@@ -5,6 +5,7 @@ Usage: python3 -I check_requirements.py --check | --self-test
 Semantic completeness is not machine-provable; this checks IDs, trace links,
 source bytes, disposition coverage, and declared modality consistency only.
 """
+
 import argparse
 import hashlib
 import json
@@ -20,7 +21,18 @@ SOURCE_PREFIX = {
     "04_recovered_original_combined_design.md": "O",
     "05_supplemental_raw_note.md": "S",
 }
-DOMAINS = {"#9198", "#9199", "#9200", "#9201", "#9203", "#9204", "#9206", "#9207", "#9208", "#9209"}
+DOMAINS = {
+    "#9198",
+    "#9199",
+    "#9200",
+    "#9201",
+    "#9203",
+    "#9204",
+    "#9206",
+    "#9207",
+    "#9208",
+    "#9209",
+}
 DISPOSITION_MODALITY = {
     "requirement_link": "requirement",
     "candidate_link": "candidate",
@@ -82,7 +94,13 @@ def core_errors(seed, requirements, dispositions):
                 errors.append(f"{rid}/{oid}: source-section hint mismatch")
             if ref.get("quote") != source.get("quote"):
                 errors.append(f"{rid}/{oid}: quote differs from source ledger")
-            for key in ("line", "char_start", "char_end_exclusive", "byte_start", "byte_end_exclusive"):
+            for key in (
+                "line",
+                "char_start",
+                "char_end_exclusive",
+                "byte_start",
+                "byte_end_exclusive",
+            ):
                 if ref.get(key) != source.get("locator", {}).get(key):
                     errors.append(f"{rid}/{oid}: {key} differs from source ledger")
     disposition_ids = [row.get("occurrence_id") for row in dispositions]
@@ -102,7 +120,13 @@ def core_errors(seed, requirements, dispositions):
             continue
         if row.get("source_file") != source.get("source_file"):
             errors.append(f"{oid}: disposition source_file mismatch")
-        for key in ("line", "char_start", "char_end_exclusive", "byte_start", "byte_end_exclusive"):
+        for key in (
+            "line",
+            "char_start",
+            "char_end_exclusive",
+            "byte_start",
+            "byte_end_exclusive",
+        ):
             if row.get("locator", {}).get(key) != source.get("locator", {}).get(key):
                 errors.append(f"{oid}: disposition locator {key} mismatch")
         category = row.get("disposition")
@@ -114,7 +138,9 @@ def core_errors(seed, requirements, dispositions):
             errors.append(f"{oid}: {category} disposition must not carry semantic refs")
         if category in DISPOSITION_MODALITY:
             if not refs:
-                errors.append(f"{oid}: {category} disposition has no semantic reference")
+                errors.append(
+                    f"{oid}: {category} disposition has no semantic reference"
+                )
                 continue
             found_required_modality = False
             for ref in refs:
@@ -123,15 +149,22 @@ def core_errors(seed, requirements, dispositions):
                 if requirement is None:
                     errors.append(f"{oid}: unknown semantic requirement {rid!r}")
                     continue
-                if oid not in {x.get("occurrence_id") for x in requirement.get("source_occurrence_refs", [])}:
+                if oid not in {
+                    x.get("occurrence_id")
+                    for x in requirement.get("source_occurrence_refs", [])
+                }:
                     errors.append(f"{oid}: {rid} does not cite this source occurrence")
                 if requirement.get("modality") == DISPOSITION_MODALITY[category]:
                     found_required_modality = True
             if not found_required_modality:
-                errors.append(f"{oid}: {category} has no linked row with matching modality")
+                errors.append(
+                    f"{oid}: {category} has no linked row with matching modality"
+                )
         elif category == "unresolved_substantive":
             if refs:
-                errors.append(f"{oid}: unresolved_substantive must not claim a semantic link")
+                errors.append(
+                    f"{oid}: unresolved_substantive must not claim a semantic link"
+                )
             if not row.get("reason"):
                 errors.append(f"{oid}: unresolved substantive gap lacks a reason")
         elif category not in NONSEMANTIC:
@@ -142,29 +175,79 @@ def core_errors(seed, requirements, dispositions):
 
 
 def run_self_test():
-    seed = [{"id": "H-001", "source_file": "01_handoff_pm_stack_fleet_orchestration.md",
-             "quote": "ok", "statement": "ok", "locator": {"section": "test", "line": 1,
-             "char_start": 0, "char_end_exclusive": 2, "byte_start": 0, "byte_end_exclusive": 2}}]
-    req = [{"id": "H-R001", "source_file": seed[0]["source_file"], "modality": "requirement",
-            "source_occurrence_refs": [{"occurrence_id": "H-001", "source_section": "test", "quote": "ok",
-              "line": 1, "char_start": 0, "char_end_exclusive": 2, "byte_start": 0, "byte_end_exclusive": 2}]}]
-    disp = [{"occurrence_id": "H-001", "source_file": seed[0]["source_file"], "locator": {k: seed[0]["locator"][k]
-             for k in ("line", "char_start", "char_end_exclusive", "byte_start", "byte_end_exclusive")},
-             "disposition": "requirement_link", "semantic_refs": [{"requirement_id": "H-R001"}], "reason": "fixture"}]
+    seed = [
+        {
+            "id": "H-001",
+            "source_file": "01_handoff_pm_stack_fleet_orchestration.md",
+            "quote": "ok",
+            "statement": "ok",
+            "locator": {
+                "section": "test",
+                "line": 1,
+                "char_start": 0,
+                "char_end_exclusive": 2,
+                "byte_start": 0,
+                "byte_end_exclusive": 2,
+            },
+        }
+    ]
+    req = [
+        {
+            "id": "H-R001",
+            "source_file": seed[0]["source_file"],
+            "modality": "requirement",
+            "source_occurrence_refs": [
+                {
+                    "occurrence_id": "H-001",
+                    "source_section": "test",
+                    "quote": "ok",
+                    "line": 1,
+                    "char_start": 0,
+                    "char_end_exclusive": 2,
+                    "byte_start": 0,
+                    "byte_end_exclusive": 2,
+                }
+            ],
+        }
+    ]
+    disp = [
+        {
+            "occurrence_id": "H-001",
+            "source_file": seed[0]["source_file"],
+            "locator": {
+                k: seed[0]["locator"][k]
+                for k in (
+                    "line",
+                    "char_start",
+                    "char_end_exclusive",
+                    "byte_start",
+                    "byte_end_exclusive",
+                )
+            },
+            "disposition": "requirement_link",
+            "semantic_refs": [{"requirement_id": "H-R001"}],
+            "reason": "fixture",
+        }
+    ]
     if core_errors(seed, req, disp):
         raise AssertionError("valid fixture rejected")
-    bad = json.loads(json.dumps(req)); bad[0]["source_occurrence_refs"][0]["quote"] = "wrong"
+    bad = json.loads(json.dumps(req))
+    bad[0]["source_occurrence_refs"][0]["quote"] = "wrong"
     if not core_errors(seed, bad, disp):
         raise AssertionError("wrong quote fixture passed")
     if not core_errors(seed, req, []):
         raise AssertionError("deleted disposition fixture passed")
-    bad = json.loads(json.dumps(disp)); bad[0]["semantic_refs"][0]["requirement_id"] = "C-R999"
+    bad = json.loads(json.dumps(disp))
+    bad[0]["semantic_refs"][0]["requirement_id"] = "C-R999"
     if not core_errors(seed, req, bad):
         raise AssertionError("missing requirement reference fixture passed")
-    bad = json.loads(json.dumps(disp)); bad[0]["disposition"] = "candidate_link"
+    bad = json.loads(json.dumps(disp))
+    bad[0]["disposition"] = "candidate_link"
     if not core_errors(seed, req, bad):
         raise AssertionError("modality mismatch fixture passed")
-    print("OK: self-tests reject wrong source quote, deleted disposition, missing requirement reference, and modality mismatch")
+    print(
+        "OK: self-tests reject wrong source quote, deleted disposition, missing requirement reference, and modality mismatch"
+    )
 
 
 def main():
@@ -195,7 +278,9 @@ def main():
     valid_conflicts = set(re.findall(r"^\|\s*(CF-\d+)\s+—", conflict_text, re.M))
     represented_sources = {r.get("source_file") for r in seed}
     if represented_sources != set(SOURCE_PREFIX):
-        errors.append("seed ledger does not contain exactly the five declared source files")
+        errors.append(
+            "seed ledger does not contain exactly the five declared source files"
+        )
     target_by_domain = {}
     sequence = Counter()
     for row in requirements:
@@ -206,7 +291,10 @@ def main():
         else:
             prefix, number = m.group(1), int(m.group(2))
             sequence[prefix] += 1
-            if row.get("source_file") not in SOURCE_PREFIX or SOURCE_PREFIX[row["source_file"]] != prefix:
+            if (
+                row.get("source_file") not in SOURCE_PREFIX
+                or SOURCE_PREFIX[row["source_file"]] != prefix
+            ):
                 errors.append(f"{rid}: prefix/source_file mismatch")
             if f"## {rid} — {row.get('modality')}" not in markdown:
                 errors.append(f"{rid}: missing/mismatched Markdown heading")
@@ -218,15 +306,21 @@ def main():
             if domain not in DOMAINS:
                 errors.append(f"{rid}: unknown starter domain {domain}")
         target_starters = [t.get("starter") for t in row.get("design_targets", [])]
-        if set(target_starters) != set(row.get("domains", [])) or len(target_starters) != len(set(target_starters)):
-            errors.append(f"{rid}: design target starters do not match declared planned domains")
+        if set(target_starters) != set(row.get("domains", [])) or len(
+            target_starters
+        ) != len(set(target_starters)):
+            errors.append(
+                f"{rid}: design target starters do not match declared planned domains"
+            )
         for target in row.get("design_targets", []):
             if not target.get("filename") or not target.get("section"):
                 errors.append(f"{rid}: target must name a planned filename and section")
             starter = target.get("starter")
             pair = (target.get("filename"), target.get("section"))
             if starter in target_by_domain and target_by_domain[starter] != pair:
-                errors.append(f"{rid}: planned target for {starter} differs from its other rows")
+                errors.append(
+                    f"{rid}: planned target for {starter} differs from its other rows"
+                )
             target_by_domain[starter] = pair
         kind = row.get("node_kind", "atomic")
         if kind not in ("atomic", "group", "alias"):
@@ -244,7 +338,10 @@ def main():
             errors.append(f"{rid}: unknown child requirement ID")
         if row.get("duplicate_of") == rid:
             errors.append(f"{rid}: cannot duplicate itself")
-        if row.get("duplicate_of") is not None and row.get("duplicate_of") not in req_by_id:
+        if (
+            row.get("duplicate_of") is not None
+            and row.get("duplicate_of") not in req_by_id
+        ):
             errors.append(f"{rid}: unknown duplicate_of {row.get('duplicate_of')}")
         if row.get("duplicate_of") is not None and row.get("duplicate_of") == rid:
             errors.append(f"{rid}: self-referential duplicate_of")
@@ -253,7 +350,11 @@ def main():
                 errors.append(f"{rid}: unresolved conflict reference {conflict}")
     for prefix, count in sequence.items():
         expected = {f"{prefix}-R{i:03d}" for i in range(1, count + 1)}
-        actual = {r.get("id") for r in requirements if r.get("id", "").startswith(prefix + "-R")}
+        actual = {
+            r.get("id")
+            for r in requirements
+            if r.get("id", "").startswith(prefix + "-R")
+        }
         if expected != actual:
             errors.append(f"{prefix}: requirement sequence has gaps")
     for filename, prefix in SOURCE_PREFIX.items():
@@ -263,7 +364,11 @@ def main():
         except OSError as exc:
             errors.append(f"missing source {filename}: {exc}")
             continue
-        expected = coverage.get("source_coverage", {}).get(filename, {}).get("sha256_repo_bytes")
+        expected = (
+            coverage.get("source_coverage", {})
+            .get(filename, {})
+            .get("sha256_repo_bytes")
+        )
         if hashlib.sha256(raw).hexdigest() != expected:
             errors.append(f"source hash differs from saved manifest: {filename}")
     for row in seed:
@@ -271,7 +376,9 @@ def main():
         if len(section) > 160:
             errors.append(f"{row.get('id')}: section hint exceeds 160 characters")
         if row.get("id", "").startswith("O-") and "provisional" not in section:
-            errors.append(f"{row.get('id')}: flattened locator lacks provisional marker")
+            errors.append(
+                f"{row.get('id')}: flattened locator lacks provisional marker"
+            )
     for md in inventory.glob("*.md"):
         for number, line in enumerate(md.read_text().splitlines(), 1):
             if line.rstrip(" \t") != line:
@@ -286,16 +393,23 @@ def main():
     flattened = sum(r["id"].startswith("O-") for r in seed)
     provisional_section_refs = sum(
         "provisional" in ref.get("source_section", "")
-        for row in requirements for ref in row.get("source_occurrence_refs", [])
+        for row in requirements
+        for ref in row.get("source_occurrence_refs", [])
     )
     unresolved = by_disposition.get("unresolved_substantive", 0)
     aliases = sum(row.get("node_kind") == "alias" for row in requirements)
     groups = sum(row.get("node_kind") == "group" for row in requirements)
     atomic = sum(row.get("node_kind", "atomic") == "atomic" for row in requirements)
-    print(f"OK: {len(requirements)} requirement records ({atomic} atomic, {groups} groups, {aliases} aliases); {len(dispositions)} dispositions cover every seed occurrence exactly once")
+    print(
+        f"OK: {len(requirements)} requirement records ({atomic} atomic, {groups} groups, {aliases} aliases); {len(dispositions)} dispositions cover every seed occurrence exactly once"
+    )
     print(f"Modalities: {dict(by_modality)}; dispositions: {dict(by_disposition)}")
-    print(f"Review flags: {provisional} provisional occurrence classifications; {flattened} flattened-source occurrences; {provisional_section_refs} provisional section citations; {unresolved} explicit substantive gaps")
-    print("This validates trace integrity and declared modality consistency, not semantic completeness or implementation/issue coverage.")
+    print(
+        f"Review flags: {provisional} provisional occurrence classifications; {flattened} flattened-source occurrences; {provisional_section_refs} provisional section citations; {unresolved} explicit substantive gaps"
+    )
+    print(
+        "This validates trace integrity and declared modality consistency, not semantic completeness or implementation/issue coverage."
+    )
     return 0
 
 

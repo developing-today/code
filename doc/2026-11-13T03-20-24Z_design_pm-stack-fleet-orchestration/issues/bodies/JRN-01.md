@@ -53,7 +53,6 @@ Domain-starter parent references are never emitted as hard native blockers. Sour
 
 Source-local candidate aliases normalized for this packet: DEP-01 → CEN-04.
 
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -96,8 +95,8 @@ Negative coverage: missing authenticated principal, duplicate op, private payloa
 
 **Tier:** crucial. **Goal:** extend existing event/task history only after proving current semantics; event envelope with before/after, schema version, per-work sequence/version, authenticated-principal provenance, operation/source refs and visibility; do not claim full replay absent coverage. **Owns:** `pkgs/fleet/crates/fleet-queue/src/work/journal.rs`, existing `turso_queue.rs` integration only after audit. **Hard blockers:** DEP-01; #9198 migration audit; granular #9209 operation ID/fence attrs; #3424/#9178 source requirements. **First failing oracle:** `pmo_journal_correction_appends_superseding_event_without_rewriting_prior` tests immutable history and before/after. **Done command:** list exact filter then run `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_journal_correction_appends_superseding_event_without_rewriting_prior`. **Negative:** missing authenticated principal, duplicate op, private payload, unknown schema, sequence gap after rollback. **Migration/rollback:** additive event semantics; existing events unknown/telemetry unless validated; preserve rows. **Docs:** retention/reconstruction limits.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `CLI-05` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/journal.rs`

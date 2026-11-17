@@ -203,6 +203,10 @@ describe("freshness SSE stream", () => {
     expect(text.match(/event: datastar-patch-elements/g)).toHaveLength(1);
     expect(text).toContain("data: selector #board-main");
     expect(text).toContain("data: mode outer");
+    // #10605: the re-mounted skeleton re-issues its fragment GET via the
+    // Datastar v1 one-shot `data-init` (the old `data-on-load` never fired).
+    expect(text).toContain(`data-init="@get('/frag/board')"`);
+    expect(text).not.toContain("data-on-load");
   });
 
   test("reconnect honors Last-Event-ID by replaying only later retained notices", async () => {

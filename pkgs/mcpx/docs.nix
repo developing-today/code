@@ -43,6 +43,28 @@ let
     env.GOPROXY = "off";
   };
 
+  # The agent-twin emitter (#1947): same stdlib-only pattern as
+  # docsHistory above. Runs after mdbook build to write the per-page
+  # .html.md twins + llms files into the site tree, then gates the
+  # build on every page having a current twin.
+  docsTwins = buildGo127Module {
+    pname = "docs-twins";
+    version = "0.0.0";
+    src = lib.fileset.toSource {
+      root = ./.;
+      fileset = lib.fileset.unions [
+        ./go.mod
+        ./go.sum
+        ./tools/docs-twins
+      ];
+    };
+    vendorHash = null;
+    proxyVendor = true;
+    subPackages = [ "tools/docs-twins" ];
+    env.CGO_ENABLED = "0";
+    env.GOPROXY = "off";
+  };
+
   # Only the book inputs enter the store: book.toml plus the docs tree.
   # The Go sources next to them are not book content and stay out.
   src = lib.fileset.toSource {
@@ -50,6 +72,8 @@ let
     fileset = lib.fileset.unions [
       ./book.toml
       ./docs
+      # Hand-written agent twins (overrides) for docs-twins emit.
+      ./agents-docs
     ];
   };
 in
@@ -58,6 +82,7 @@ runCommand "mcpx-docs"
     nativeBuildInputs = [
       mdbook
       docsHistory
+      docsTwins
     ];
     meta = {
       description = "mcpx documentation book (mdBook rendering of pkgs/mcpx/docs)";
@@ -87,4 +112,11 @@ runCommand "mcpx-docs"
     # Bake the base URL into the book (see the siteUrl argument above).
     export MDBOOK_OUTPUT__HTML__SITE_URL="${siteUrl}"
     mdbook build --dest-dir $out
+    # Agent twins (#1947): emit the per-page .html.md twins, llms.txt
+    # and llms-full.txt into the built site (twin content is the
+    # docs-history agent render of each page; the home page comes from
+    # agents-docs), inject the discovery <link> tags, then gate: the
+    # build fails if any page lacks a current twin.
+    docs-twins emit --docs docs --agents agents-docs --out $out --history-bin docs-history
+    docs-twins check --docs docs --agents agents-docs --out $out --history-bin docs-history
   ''

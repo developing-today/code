@@ -17,12 +17,18 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 use id_core::frames::{read_frame_from, write_frame_to};
 use id_worlds::world_net::WorldClient;
+use id_worlds::world_store::ReplicaStatus;
 
 use crate::{
     CLIENT_KEY_FILE,
-    cli::{WorldCommand, WorldVia},
+    cli::{JournalCommand, WorldCommand, WorldVia},
     is_node_id, load_or_create_keypair,
 };
+
+mod journal;
+#[cfg(test)]
+use journal::check_journal_bytes;
+use journal::{journal_backup, print_journal_check, print_world_provenance, world_provenance};
 
 /// Dial a world host and open one session.
 async fn connect(
@@ -203,6 +209,33 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             endpoint.close().await;
             replica.shutdown().await;
             Ok(())
+        }
+        WorldCommand::Replica(args) => {
+            let crate::cli::WorldReplicaArgs {
+                node,
+                dir,
+                admin_token,
+                world,
+                source,
+                lease,
+                once,
+                follow,
+                addrs,
+                no_relay,
+            } = args;
+            cmd_replica(
+                &node,
+                &dir,
+                &admin_token,
+                &world,
+                source.as_deref(),
+                lease.as_deref(),
+                once,
+                follow,
+                &addrs,
+                no_relay,
+            )
+            .await
         }
         WorldCommand::Download(args) => {
             let crate::cli::WorldDownloadArgs {
@@ -960,104 +993,11 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             json,
         } => fork_world_on_disk(&source, &dir, name.as_deref(), template, json),
         WorldCommand::Provenance { dir, json } => print_world_provenance(&dir, json),
+        WorldCommand::Journal(args) => match args.action {
+            JournalCommand::Check { dir, json } => print_journal_check(&dir, json),
+            JournalCommand::Backup { dir, out } => journal_backup(&dir, &out),
+        },
     }
-}
-
-/// Read a world directory's journal entries for inspection, without
-/// opening the journal for append. A torn final fragment (a crash
-/// mid-append, never acknowledged) is skipped, mirroring
-/// `FileJournal::open`; any other unparseable line is corruption.
-fn read_world_journal(dir: &std::path::Path) -> Result<Vec<id_worlds::world::JournalEntry>> {
-    let path = dir.join("journal.jsonl");
-    let bytes = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
-    let mut lines: Vec<&[u8]> = bytes.split(|byte| *byte == b'\n').collect();
-    if bytes.last() != Some(&b'\n') {
-        // The final chunk is an unterminated fragment (or the empty tail
-        // of an empty file): it was never durably acknowledged, so it is
-        // dropped even when it happens to parse — the same rule
-        // `FileJournal::open` and the store-level fork reader apply.
-        lines.pop();
-    }
-    let mut entries = Vec::new();
-    for line in lines {
-        if line.is_empty() {
-            continue;
-        }
-        let entry: id_worlds::world::JournalEntry = serde_json::from_slice(line)
-            .with_context(|| format!("{} is corrupt", path.display()))?;
-        entries.push(entry);
-    }
-    Ok(entries)
-}
-
-/// A world directory's provenance, read from its journal: the `Created`
-/// header's id plus the `Forked` entry a fork appends, if any.
-struct WorldProvenance {
-    world_id: String,
-    forked: Option<(String, String, bool, u64)>,
-}
-
-fn world_provenance(dir: &std::path::Path) -> Result<WorldProvenance> {
-    let entries = read_world_journal(dir)?;
-    let Some(id_worlds::world::JournalEntry::Created { world_id, .. }) = entries.first() else {
-        bail!(
-            "{} has no Created header",
-            dir.join("journal.jsonl").display()
-        );
-    };
-    let world_id = world_id.clone();
-    let forked = entries.iter().rev().find_map(|entry| match entry {
-        id_worlds::world::JournalEntry::Forked {
-            from_world_id,
-            from_module_hash,
-            template,
-            at_sequence,
-        } => Some((
-            from_world_id.clone(),
-            from_module_hash.clone(),
-            *template,
-            *at_sequence,
-        )),
-        _ => None,
-    });
-    Ok(WorldProvenance { world_id, forked })
-}
-
-/// `id world provenance`: print a world directory's provenance, so a
-/// template fork is identifiable without opening the world.
-fn print_world_provenance(dir: &std::path::Path, json: bool) -> Result<()> {
-    let provenance = world_provenance(dir)?;
-    if json {
-        let (from_world_id, from_module_hash, template, at_sequence) = match &provenance.forked {
-            Some((from, hash, template, at)) => {
-                (Some(from.clone()), Some(hash.clone()), *template, Some(*at))
-            }
-            None => (None, None, false, None),
-        };
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "world_id": provenance.world_id,
-                "dir": dir.display().to_string(),
-                "forked_from": from_world_id,
-                "from_module_hash": from_module_hash,
-                "template": template,
-                "at_sequence": at_sequence,
-            }))?
-        );
-    } else {
-        println!("world: {}", provenance.world_id);
-        match &provenance.forked {
-            Some((from, hash, template, at)) => {
-                println!("forked_from: {from}");
-                println!("from_module_hash: {hash}");
-                println!("template: {template}");
-                println!("at_sequence: {at}");
-            }
-            None => println!("forked_from: none"),
-        }
-    }
-    Ok(())
 }
 
 /// `id world fork`: wire the store-level `fork_world` (F12.2) into the
@@ -2051,16 +1991,27 @@ where
     W: tokio::io::AsyncWrite + Unpin,
 {
     write_frame_to(&mut send, first.as_bytes()).await?;
+    // Set once the reader has printed at least one server frame. The
+    // stdin-EOF arm below reads it: EOF before the first frame must
+    // not end the pump (see that arm); EOF after frames is the
+    // scripted client's normal leave.
+    let frames_printed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let frames_flag = frames_printed.clone();
     let mut reader = tokio::spawn(async move {
         while let Some(body) = read_frame_from(&mut recv).await? {
             println!("{}", String::from_utf8_lossy(&body));
+            frames_flag.store(true, std::sync::atomic::Ordering::SeqCst);
         }
         anyhow::Ok(())
     });
     let mut lines = BufReader::new(PreloadedStdin::new(replay)).lines();
+    // True once stdin hit EOF before the first server frame: the
+    // stdin arm is then disabled (it would return EOF forever) and
+    // the reader arm ends the pump when the stream closes.
+    let mut eof_before_first_frame = false;
     let result = loop {
         tokio::select! {
-            line = lines.next_line() => match line? {
+            line = lines.next_line(), if !eof_before_first_frame => match line? {
                 Some(line) => {
                     let line = line.trim();
                     if line.is_empty() { continue; }
@@ -2089,7 +2040,24 @@ where
                 // closing stdin (interactive users have Ctrl-C). Keeping
                 // the pump alive past EOF hung every scripted join until
                 // the server happened to close the connection first.
-                None => break Ok(()),
+                // One exception to that rule: EOF before the first server
+                // frame. The join request
+                // has been sent but its answer, a snapshot or a refusal
+                // frame such as "join denied", is still in flight, and
+                // breaking here aborts the reader before the answer can
+                // print, so a scripted join with stdin already closed
+                // (the one-shot probe shape) could never observe a
+                // refusal. A refusal closes the stream right after the
+                // error frame, so the pump waits: the stdin arm is
+                // disabled and the reader arm ends the pump when the
+                // stream closes, after the refusal has printed.
+                None => {
+                    if frames_printed.load(std::sync::atomic::Ordering::SeqCst) {
+                        break Ok(());
+                    }
+                    eof_before_first_frame = true;
+                    continue;
+                }
             },
             ended = &mut reader => {
                 break ended.context("reader task")?;
@@ -2220,8 +2188,9 @@ fn pump_plain(line: &str) -> PumpLine {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
-        PumpLine, check_contract, local_transcript_record, pump_command, scaffold_world,
-        step_is_applied, world_list_plain_row,
+        PumpLine, check_contract, check_journal_bytes, journal_backup, local_transcript_record,
+        print_journal_check, pump_command, scaffold_world, step_is_applied, world_list_plain_row,
+        world_provenance,
     };
 
     /// #3089: a world name containing LF must not forge an extra row in
@@ -2484,7 +2453,7 @@ mod tests {
         .join("\n");
         assert_eq!(
             check_contract(&good).unwrap(),
-            "3 frames conform to shell contract v1.7"
+            "3 frames conform to shell contract v1.9"
         );
         let bad = [
             r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#,
@@ -2556,4 +2525,191 @@ mod tests {
         assert!(super::measure_module(wasm, 7, &["zz".to_owned()], None).is_err());
         assert!(super::measure_module(b"not wasm", 7, &[], None).is_err());
     }
+}
+
+/// Lowercase hex for status output (source keys, chain digests).
+fn hex_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Wall-clock now in unix milliseconds, for the admission gate's
+/// open-time status (`id_worlds::world::unix_ms` is crate-private).
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+/// The one-line JSON status a replica operator reads (acceptance
+/// item 1 of #806 phase 5): pinned source, world, the verified
+/// cursor it stands at, and its policy-B staleness — how much of the
+/// admission window remains, and whether a NEW spectator would be
+/// admitted right now.
+fn replica_status_json(
+    status: &ReplicaStatus,
+    chain: id_worlds::world::ReplicationCursor,
+) -> serde_json::Value {
+    serde_json::json!({
+        "world": status.world_id,
+        "source": hex_bytes(&status.source),
+        "cursor": {
+            "entries": status.cursor.entries,
+            "sequence": status.cursor.sequence,
+            "header_version": status.cursor.header_version,
+        },
+        "chain_cursor": {
+            "ordinal": chain.ordinal,
+            "digest": hex_bytes(&chain.digest),
+        },
+        "lease_expires_at_unix_ms": status.lease_expires_at_unix_ms,
+        "lease_remaining_ms": status.lease_remaining_ms,
+        "admits_new_spectators": status.admits_new_spectators,
+    })
+}
+
+/// `id world replica`: follow a pinned writer into a durable replica
+/// directory, open the replica under the policy-B admission gate,
+/// report its status, and serve it (F12.13 phase 5, item 1).
+///
+/// Modes: `--once` syncs and reports only; `--follow` keeps the
+/// journal current across reconnects without serving; the default
+/// syncs once, reports, then serves the replica's world sessions
+/// until interrupted. The replica never re-exports the journal feed:
+/// it cannot sign for the pinned source, so it serves sessions only.
+#[allow(clippy::too_many_arguments)]
+async fn cmd_replica(
+    node: &str,
+    dir: &std::path::Path,
+    admin_token: &str,
+    world: &str,
+    source_hex: Option<&str>,
+    lease_path: Option<&std::path::Path>,
+    once: bool,
+    follow: bool,
+    addrs: &[SocketAddr],
+    no_relay: bool,
+) -> Result<()> {
+    use id_worlds::world::{DurableReceiver, SignedAdmissionLease};
+    use iroh::protocol::Router;
+
+    if !is_node_id(node) {
+        bail!("`{node}` is not a node ID (expected 64 hex characters)");
+    }
+    let node_id: EndpointId = node.parse().context("parse node ID")?;
+    let source_hex = source_hex.unwrap_or(node);
+    if !is_node_id(source_hex) {
+        bail!("`{source_hex}` is not a source key (expected 64 hex characters)");
+    }
+    let source_id: EndpointId = source_hex.parse().context("parse source key")?;
+    let source = *source_id.as_bytes();
+
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("create replica directory {}", dir.display()))?;
+    let mut receiver = DurableReceiver::open(dir, world, source)
+        .map_err(|error| anyhow::anyhow!("open replica receiver: {error}"))?;
+
+    let endpoint = client_endpoint(addrs, no_relay).await?;
+    let addr = EndpointAddr::from_parts(node_id, addrs.iter().copied().map(TransportAddr::Ip));
+
+    if follow {
+        loop {
+            let outcome = id_worlds::world_replication_net::follow_replica_session(
+                &endpoint,
+                addr.clone(),
+                Some(world),
+                admin_token,
+                &mut receiver,
+                &mut |cursor| {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "replica_committed",
+                            "world": world,
+                            "ordinal": cursor.ordinal,
+                            "digest": hex_bytes(&cursor.digest),
+                        })
+                    );
+                },
+            )
+            .await;
+            match outcome {
+                Ok(commits) => {
+                    eprintln!(
+                        "replica follow: session ended after {commits} commit(s); reconnecting"
+                    );
+                }
+                Err(error) => {
+                    eprintln!("replica follow: session failed: {error:#}; reconnecting");
+                }
+            }
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => break,
+                () = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+            }
+        }
+        endpoint.close().await;
+        return Ok(());
+    }
+
+    let chain = id_worlds::world_replication_net::sync_replica_once(
+        &endpoint,
+        addr,
+        Some(world),
+        admin_token,
+        &mut receiver,
+    )
+    .await?;
+    drop(receiver);
+    endpoint.close().await;
+
+    let lease = lease_path
+        .map(|path| -> Result<SignedAdmissionLease> {
+            let bytes = std::fs::read(path)
+                .with_context(|| format!("read admission lease {}", path.display()))?;
+            serde_json::from_slice(&bytes)
+                .with_context(|| format!("parse admission lease {}", path.display()))
+        })
+        .transpose()?;
+
+    let (service, _report, _cursor, status) = id_worlds::world_store::open_replica_with_admission(
+        dir,
+        world,
+        source,
+        id_worlds::world::WorldLimits::default(),
+        id_worlds::world_limits::RuntimeLimits::default(),
+        |handle| id_worlds::world_session::WorldService::new(handle, None),
+        lease,
+        now_unix_ms(),
+    )
+    .await?;
+    println!("{}", replica_status_json(&status, chain));
+    if once {
+        service.world().shutdown().await?;
+        return Ok(());
+    }
+
+    let serve_endpoint = client_endpoint(&[], no_relay).await?;
+    let serve_node = serve_endpoint.id();
+    let router = Router::builder(serve_endpoint.clone())
+        .accept(
+            id_worlds::world_net::WORLD_ALPN,
+            id_worlds::world_net::WorldProtocol::new(id_worlds::world_hub::WorldHub::single_named(
+                world, service,
+            )),
+        )
+        .spawn();
+    println!(
+        "{}",
+        serde_json::json!({
+            "event": "replica_serving",
+            "world": world,
+            "node": serve_node.to_string(),
+        })
+    );
+    tokio::signal::ctrl_c().await?;
+    let _ = router.shutdown().await;
+    serve_endpoint.close().await;
+    Ok(())
 }

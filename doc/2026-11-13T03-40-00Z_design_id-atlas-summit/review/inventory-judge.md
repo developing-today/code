@@ -30,17 +30,17 @@ Ran `bash "$(git rev-parse --show-toplevel)/scripts/worker-preflight.sh"`: clean
 
 Independently read the proto section 2 with a small inline `python3 -I` extractor (count headers and `Sx.n` definitions; no import/use of the worker checker or JSON map). Results:
 
-| Section | Expected | Independently found |
-|---|---:|---:|
-| S0 | 17 | 17 |
-| S1 | 120 | 120 |
-| S2 | 19 | 19 |
-| S3 | 38 | 38 |
-| S4 | 93 | 93 |
-| S5 | 64 | 64 |
-| S6 | 17 | 17 |
-| S7 | 16 | 16 |
-| **Total** | **384** | **384** |
+| Section   | Expected | Independently found |
+| --------- | -------: | ------------------: |
+| S0        |       17 |                  17 |
+| S1        |      120 |                 120 |
+| S2        |       19 |                  19 |
+| S3        |       38 |                  38 |
+| S4        |       93 |                  93 |
+| S5        |       64 |                  64 |
+| S6        |       17 |                  17 |
+| S7        |       16 |                  16 |
+| **Total** |  **384** |             **384** |
 
 All IDs are contiguous from `.1` through the declared maximum; no duplicate, missing, or extra IDs. This independently confirms the numerical inventory claim (the proto’s section 2 source, not merely the checker’s result).
 
@@ -60,7 +60,7 @@ The successful normal checker run recorded in `inventory/audit.md` is plausible 
 
 Independent JSON enumeration of `inventory-live/live-issues.json` found 52 records for 52 requested issue numbers, no `missing:true` records, and no requested number absent. Issues #9107–#9148 are OPEN in this snapshot; #9106 is CLOSED. Parent evidence in the records is consistent with the declared program/part split: #9107/#9108/#9109 have parent #9106, and their respective component children have parent #9107/#9108/#9109. The #9106 closed state is correctly qualified as intake closure, not design completion.
 
-**Hierarchy audit inconsistency (BLOCKER):** `semantic-audit.md` lines 68–69 says the snapshot has “six native child edges (the six children of #9106)” and says the component issues have no native child issues. The JSON does show six *direct* children on #9106, but also lists 20 native children on #9107, 8 on #9108, and 8 on #9109: **42 native-child edges total**, of which 36 are the component issues. These are also corroborated by the child records’ `parent.number` values. Correct the audit to distinguish six direct edges from the 42 total, and state that the 36 component issues have no children of their own. This is a mismatch between audit claim and its cited snapshot, not a missing-issue finding.
+**Hierarchy audit inconsistency (BLOCKER):** `semantic-audit.md` lines 68–69 says the snapshot has “six native child edges (the six children of #9106)” and says the component issues have no native child issues. The JSON does show six _direct_ children on #9106, but also lists 20 native children on #9107, 8 on #9108, and 8 on #9109: **42 native-child edges total**, of which 36 are the component issues. These are also corroborated by the child records’ `parent.number` values. Correct the audit to distinguish six direct edges from the 42 total, and state that the 36 component issues have no children of their own. This is a mismatch between audit claim and its cited snapshot, not a missing-issue finding.
 
 Other live-audit conclusions needing disposition:
 

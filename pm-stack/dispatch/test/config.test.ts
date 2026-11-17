@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { APP_INSTALLED_REPOS, FLEET_REPOS, REPO_DIRS, REPO_QUEUES, loadConfig } from "../src/config.ts";
 
-/** loadConfig requires SUPABASE_URL (#5120); tests use a fixture project. */
-const ENV = { SUPABASE_URL: "https://fixture.supabase.co" };
+/** loadConfig needs no fixture secrets (#9028: no Supabase config remains). */
+const ENV = {};
 
 describe("fleet config", () => {
   for (const value of ["abc", "4879.5", "0", "-1", "99999", "0x1234", "1e4"]) {
@@ -40,17 +40,24 @@ describe("fleet config", () => {
     expect(loadConfig({ ...ENV }).repoAllowlist).toEqual([...FLEET_REPOS]);
   });
 
-  test("SUPABASE_URL is required and has no default (#5120)", () => {
-    expect(() => loadConfig({})).toThrow("SUPABASE_URL is not set");
-    expect(() => loadConfig({ SUPABASE_URL: "" })).toThrow("SUPABASE_URL is not set");
-    expect(() => loadConfig({ SUPABASE_URL: "   " })).toThrow("SUPABASE_URL is not set");
+  test("the queue broker defaults to the laptop tailnet broker (#9028)", () => {
+    const c = loadConfig({});
+    expect(c.queueBrokerUrl).toBe("http://100.99.113.103:4801");
+    expect(c.queueBrokerTokenFile).toMatch(/\.config\/queue-broker\/token$/);
+    expect(c.queueBrokerToken).toBeNull();
   });
 
-  test("SUPABASE_URL is used verbatim, minus a trailing slash", () => {
-    expect(loadConfig({ SUPABASE_URL: "https://fixture.supabase.co" }).supabaseUrl).toBe("https://fixture.supabase.co");
-    expect(loadConfig({ SUPABASE_URL: "https://fixture.supabase.co/" }).supabaseUrl).toBe(
-      "https://fixture.supabase.co",
-    );
+  test("QUEUE_BROKER_URL is used verbatim, minus a trailing slash; token env wins over the file", () => {
+    const c = loadConfig({ QUEUE_BROKER_URL: "http://broker.test:4801/", QUEUE_BROKER_TOKEN: " tok ", QUEUE_BROKER_TOKEN_FILE: "/tmp/tok" });
+    expect(c.queueBrokerUrl).toBe("http://broker.test:4801");
+    expect(c.queueBrokerToken).toBe("tok");
+    expect(c.queueBrokerTokenFile).toBe("/tmp/tok");
+  });
+
+  test("no Supabase config remains in the loaded config (#9028)", () => {
+    const c = loadConfig({ SUPABASE_URL: "https://fixture.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "k" }) as unknown as Record<string, unknown>;
+    expect(c.supabaseUrl).toBeUndefined();
+    expect(c.supabaseServiceRoleKey).toBeUndefined();
   });
 
   test("every fleet repo has a queue and a session directory", () => {

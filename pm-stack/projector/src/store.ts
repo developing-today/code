@@ -1,7 +1,7 @@
 // Database wiring: connection + schema migration + a small store layer.
 // Uses @libsql/client, which speaks both a local SQLite file (file: URL) and
 // Turso/libSQL over HTTP or WebSocket (libsql:// or https:// + auth token).
-import { createClient, type Client } from "@libsql/client";
+import { createClient, type Client, type InStatement } from "@libsql/client";
 
 export interface DbEnv {
   /** libSQL connection URL. Defaults to a local file DB. */
@@ -130,7 +130,7 @@ export async function getItemDeletion(db: Client, ref: string): Promise<ItemDele
 }
 
 /** Upsert an item. Monotonic: a stale source (older updated_at) never overwrites. */
-export async function upsertItem(db: Client, i: Omit<ItemRow, "fetched_at">): Promise<void> {
+export function upsertItemStatements(i: Omit<ItemRow, "fetched_at">): InStatement[] {
   // Deletion is absorbing (#6782): an item whose ref carries a deletion
   // marker is not recreated by an event at or before the deletion's source
   // timestamp (stale webhook replays, in-flight reconcile responses). An
@@ -156,99 +156,100 @@ export async function upsertItem(db: Client, i: Omit<ItemRow, "fetched_at">): Pr
   // whenever the incoming row does not carry them. (A single INSERT ...
   // ON CONFLICT cannot do this: excluded.draft would already be the
   // COALESCE'd insert value.)
-  await db.batch(
-    [
-      {
-        sql: `DELETE FROM pmp_item_deletions WHERE ref = ? AND source_updated_at < ?`,
-        args: [i.ref, i.source_updated_at],
-      },
-      {
-        sql: `INSERT OR IGNORE INTO pmp_items (
-                ref, repo, number, kind, url, api_url, title, state, state_reason,
-                draft, merged, author, labels, assignees, created_at, updated_at,
-                closed_at, merged_at, source_updated_at, fetched_at
-              ) SELECT ?,?,?,?,?,?,?,?,?,COALESCE(?,0),COALESCE(?,0),?,?,?,?,?,?,?,?,?
-                WHERE NOT EXISTS (
-                  SELECT 1 FROM pmp_item_deletions
-                  WHERE ref = ? AND source_updated_at >= ?
-                )`,
-        args: [
-          i.ref,
-          i.repo,
-          i.number,
-          i.kind,
-          i.url,
-          i.api_url,
-          i.title,
-          i.state,
-          i.state_reason,
-          i.draft,
-          i.merged,
-          i.author,
-          i.labels,
-          i.assignees,
-          i.created_at,
-          i.updated_at,
-          i.closed_at,
-          i.merged_at,
-          i.source_updated_at,
-          now(),
-          i.ref,
-          i.source_updated_at,
-        ],
-      },
-      {
-        sql: `UPDATE pmp_items SET
-                repo = ?, number = ?, kind = ?, url = ?, api_url = ?, title = ?,
-                state = ?, state_reason = ?,
-                draft = COALESCE(?, draft),
-                merged = COALESCE(?, merged),
-                author = ?, labels = ?, assignees = ?, created_at = ?, updated_at = ?,
-                closed_at = ?,
-                merged_at = CASE WHEN ? IS NULL THEN merged_at ELSE ? END,
-                source_updated_at = ?, fetched_at = ?
-              WHERE ref = ? AND ? >= source_updated_at
-                AND NOT EXISTS (
-                  SELECT 1 FROM pmp_item_deletions
-                  WHERE ref = pmp_items.ref AND source_updated_at >= ?
-                )`,
-        args: [
-          i.repo,
-          i.number,
-          i.kind,
-          i.url,
-          i.api_url,
-          i.title,
-          i.state,
-          i.state_reason,
-          i.draft,
-          i.merged,
-          i.author,
-          i.labels,
-          i.assignees,
-          i.created_at,
-          i.updated_at,
-          i.closed_at,
-          i.merged,
-          i.merged_at,
-          i.source_updated_at,
-          now(),
-          i.ref,
-          i.source_updated_at,
-          i.source_updated_at,
-        ],
-      },
-    ],
-    "write",
-  );
+  return [
+    {
+      sql: `DELETE FROM pmp_item_deletions WHERE ref = ? AND source_updated_at < ?`,
+      args: [i.ref, i.source_updated_at],
+    },
+    {
+      sql: `INSERT OR IGNORE INTO pmp_items (
+              ref, repo, number, kind, url, api_url, title, state, state_reason,
+              draft, merged, author, labels, assignees, created_at, updated_at,
+              closed_at, merged_at, source_updated_at, fetched_at
+            ) SELECT ?,?,?,?,?,?,?,?,?,COALESCE(?,0),COALESCE(?,0),?,?,?,?,?,?,?,?,?
+              WHERE NOT EXISTS (
+                SELECT 1 FROM pmp_item_deletions
+                WHERE ref = ? AND source_updated_at >= ?
+              )`,
+      args: [
+        i.ref,
+        i.repo,
+        i.number,
+        i.kind,
+        i.url,
+        i.api_url,
+        i.title,
+        i.state,
+        i.state_reason,
+        i.draft,
+        i.merged,
+        i.author,
+        i.labels,
+        i.assignees,
+        i.created_at,
+        i.updated_at,
+        i.closed_at,
+        i.merged_at,
+        i.source_updated_at,
+        now(),
+        i.ref,
+        i.source_updated_at,
+      ],
+    },
+    {
+      sql: `UPDATE pmp_items SET
+              repo = ?, number = ?, kind = ?, url = ?, api_url = ?, title = ?,
+              state = ?, state_reason = ?,
+              draft = COALESCE(?, draft),
+              merged = COALESCE(?, merged),
+              author = ?, labels = ?, assignees = ?, created_at = ?, updated_at = ?,
+              closed_at = ?,
+              merged_at = CASE WHEN ? IS NULL THEN merged_at ELSE ? END,
+              source_updated_at = ?, fetched_at = ?
+            WHERE ref = ? AND ? >= source_updated_at
+              AND NOT EXISTS (
+                SELECT 1 FROM pmp_item_deletions
+                WHERE ref = pmp_items.ref AND source_updated_at >= ?
+              )`,
+      args: [
+        i.repo,
+        i.number,
+        i.kind,
+        i.url,
+        i.api_url,
+        i.title,
+        i.state,
+        i.state_reason,
+        i.draft,
+        i.merged,
+        i.author,
+        i.labels,
+        i.assignees,
+        i.created_at,
+        i.updated_at,
+        i.closed_at,
+        i.merged,
+        i.merged_at,
+        i.source_updated_at,
+        now(),
+        i.ref,
+        i.source_updated_at,
+        i.source_updated_at,
+      ],
+    },
+  ];
 }
 
-export async function getItems(db: Client, refs: string[]): Promise<ItemRow[]> {
+export async function upsertItem(db: Client, i: Omit<ItemRow, "fetched_at">): Promise<void> {
+  await db.batch(upsertItemStatements(i), "write");
+}
+
+export async function getItems(db: Client, refs: string[], opts: { limit?: number } = {}): Promise<ItemRow[]> {
   if (refs.length === 0) return [];
   const placeholders = refs.map(() => "?").join(",");
   const r = await db.execute({
-    sql: `SELECT * FROM pmp_items WHERE ref IN (${placeholders}) ORDER BY updated_at DESC`,
-    args: refs,
+    sql: `SELECT * FROM pmp_items WHERE ref IN (${placeholders}) ORDER BY updated_at DESC LIMIT ?`,
+    args: [...refs, opts.limit ?? 200],
   });
   return r.rows as unknown as ItemRow[];
 }
@@ -284,8 +285,8 @@ export async function listItems(
 // Comments
 // ---------------------------------------------------------------------------
 
-export async function upsertComment(db: Client, c: Omit<CommentRow, "fetched_at">): Promise<void> {
-  await db.execute({
+export function commentUpsertStatement(c: Omit<CommentRow, "fetched_at">): InStatement {
+  return {
     sql: `INSERT INTO pmp_comments (
             id, ref, kind, author, body, created_at, updated_at, url, path,
             line, diff_hunk, review_state, submitted_at, commit_id, deleted,
@@ -350,7 +351,44 @@ export async function upsertComment(db: Client, c: Omit<CommentRow, "fetched_at"
       c.source_updated_at,
       now(),
     ],
-  });
+  };
+}
+
+export async function upsertComment(db: Client, c: Omit<CommentRow, "fetched_at">): Promise<void> {
+  await db.execute(commentUpsertStatement(c));
+}
+
+/**
+ * Bulk upserts for the reconcile streams (#9850). A reconcile pass writes
+ * every row it read; doing that as one awaited round trip per row over the
+ * remote libSQL connection flooded the single shared client for hours and
+ * queued /health behind the flood. The bulk forms flatten each row's own
+ * statements — unchanged, in order — into chunked write batches: a few
+ * round trips per stream instead of one per row. Chunking never splits a
+ * row's statements across batches, so upsertItem's per-row atomicity (the
+ * deletion-marker decision and the item writes land together) is preserved.
+ */
+const UPSERT_BATCH_STATEMENTS = 300;
+
+export async function upsertItems(db: Client, rows: Omit<ItemRow, "fetched_at">[]): Promise<void> {
+  const rowsPerBatch = Math.max(1, Math.floor(UPSERT_BATCH_STATEMENTS / 3));
+  for (let at = 0; at < rows.length; at += rowsPerBatch) {
+    const chunk = rows.slice(at, at + rowsPerBatch);
+    await db.batch(
+      chunk.flatMap((i) => upsertItemStatements(i)),
+      "write",
+    );
+  }
+}
+
+export async function upsertComments(db: Client, rows: Omit<CommentRow, "fetched_at">[]): Promise<void> {
+  for (let at = 0; at < rows.length; at += UPSERT_BATCH_STATEMENTS) {
+    const chunk = rows.slice(at, at + UPSERT_BATCH_STATEMENTS);
+    await db.batch(
+      chunk.map((c) => commentUpsertStatement(c)),
+      "write",
+    );
+  }
 }
 
 /** Persist a delete tombstone, even when the delete arrives before the first upsert. */
@@ -494,9 +532,12 @@ export async function deleteItem(db: Client, ref: string, sourceUpdatedAt?: stri
     "write",
   );
 }
-export async function getLinks(db: Client, opts: { subject?: string; ref?: string } = {}): Promise<LinkRow[]> {
+export async function getLinks(
+  db: Client,
+  opts: { subject?: string; ref?: string; limit?: number; offset?: number } = {},
+): Promise<LinkRow[]> {
   const clauses: string[] = [];
-  const args: string[] = [];
+  const args: (string | number)[] = [];
   if (opts.subject) {
     clauses.push("subject = ?");
     args.push(opts.subject);
@@ -507,8 +548,10 @@ export async function getLinks(db: Client, opts: { subject?: string; ref?: strin
   }
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   const r = await db.execute({
-    sql: `SELECT * FROM pmp_links ${where} ORDER BY created_at DESC`,
-    args,
+    sql: `SELECT * FROM pmp_links ${where}
+          ORDER BY created_at DESC, subject ASC, ref ASC, relation ASC
+          LIMIT ? OFFSET ?`,
+    args: [...args, opts.limit ?? 500, opts.offset ?? 0],
   });
   return r.rows as unknown as LinkRow[];
 }

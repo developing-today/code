@@ -720,6 +720,38 @@ let
               bash ${../pkgs/mcpx/packaging-test.sh} ${mcpx}
               touch $out
             '';
+
+        # Drift guard for the generated root just-recipes.json (#8029):
+        # fails when the checked-in JSON disagrees with the root justfile
+        # on the semantic recipe fields — the root counterpart of the
+        # pkgs/id just-recipes-drift guard (#2729). The script projects
+        # out generation noise (absolute source path, body
+        # serialisation), so this is green on any correctly regenerated
+        # file. Runs in a copied tree: `just --dump` at the root needs
+        # the root justfile, root.just, and the pkgs/id module file.
+        just-recipes-root-drift =
+          pkgs.runCommand "just-recipes-root-drift-test"
+            {
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.jq
+                pkgs.just
+              ];
+            }
+            ''
+              tree=$PWD/tree
+              mkdir -p $tree/pkgs/id $tree/scripts
+              cp ${../justfile} $tree/justfile
+              cp ${../root.just} $tree/root.just
+              cp ${../just-recipes.json} $tree/just-recipes.json
+              cp ${../pkgs/id/justfile} $tree/pkgs/id/justfile
+              cp ${../scripts/just-recipes-root-check.sh} $tree/scripts/just-recipes-root-check.sh
+              cp ${../scripts/just-recipes-root-check-test.sh} $tree/scripts/just-recipes-root-check-test.sh
+              cd $tree
+              bash scripts/just-recipes-root-check.sh
+              bash scripts/just-recipes-root-check-test.sh
+              touch $out
+            '';
       };
       apps = (pkgs.lib.mapAttrs mkRecipeApp publicRecipes) // {
         id-mail-deploy = mkApp idMailDeploy "Deploy the mail Worker from this checkout (needs Bitwarden and sops access)";
@@ -1179,6 +1211,7 @@ let
     let
       pkgs = import inputs.nixpkgs-unstable { inherit system; };
       suites = [
+        "atlas-backup"
         "laptop-autocommit-in-progress"
         "laptop-autocommit-merge-abort"
         "laptop-backups-watchdog"

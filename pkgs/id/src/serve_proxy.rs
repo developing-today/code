@@ -15,8 +15,11 @@
 //! +-------------------+---------------- frame body -------------------+
 //! ```
 //!
+//! - OPEN, DATA, and CLOSE carry a nonzero stream ID. WINDOW_UPDATE uses
+//!   stream ID 0 for connection credit or a nonzero ID for stream credit.
+//!   PING, PONG, RESUME, RESUME_ACK, and ERROR use stream ID 0.
 //! - `seq` is the per-stream DATA sequence number (decision §5); it is 0
-//!   and ignored for frame types that carry no sequence.
+//!   for every non-DATA frame.
 //! - DATA payloads are capped at [`MAX_DATA_PAYLOAD`] (16 KiB, decision
 //!   §2 / invariant 4). The cap is enforced on encode and on decode.
 //! - Stream IDs are scoped to a leg: odd IDs are opened by the leg's
@@ -179,9 +182,10 @@ impl ErrorReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Frame {
     pub ty: FrameType,
-    /// Leg-scoped stream ID; 0 for leg-level frames (PING, RESUME, …).
+    /// Leg-scoped stream ID; nonzero for OPEN/DATA/CLOSE, optionally nonzero
+    /// for WINDOW_UPDATE, and 0 for leg-level frames.
     pub stream_id: u32,
-    /// Per-stream DATA sequence number (decision §5); 0 for other types.
+    /// Per-stream DATA sequence number (decision §5); 0 for non-DATA frames.
     pub seq: u64,
     pub payload: Vec<u8>,
 }
@@ -205,15 +209,15 @@ impl Frame {
         Self::new(FrameType::Data, stream_id, seq, payload)
     }
 
-    /// An ERROR frame: payload is the reason byte plus a UTF-8 message.
+    /// A leg-level ERROR frame: payload is the reason byte plus a UTF-8 message.
     /// Messages are metadata for operators; they must never contain
     /// payload bytes (invariant 2).
-    pub fn error(stream_id: u32, reason: ErrorReason, message: &str) -> Self {
+    pub fn error(reason: ErrorReason, message: &str) -> Self {
         let mut payload = vec![reason.to_u8()];
         payload.extend_from_slice(message.as_bytes());
         Self {
             ty: FrameType::Error,
-            stream_id,
+            stream_id: 0,
             seq: 0,
             payload,
         }
@@ -245,6 +249,23 @@ impl Frame {
     }
 
     fn validate(&self) -> Result<()> {
+        let requires_stream = matches!(
+            self.ty,
+            FrameType::Open | FrameType::Data | FrameType::Close
+        );
+        let allows_stream = requires_stream || self.ty == FrameType::WindowUpdate;
+        if requires_stream && self.stream_id == 0 {
+            bail!("{:?} frame must name a nonzero stream ID", self.ty);
+        }
+        if !allows_stream && self.stream_id != 0 {
+            bail!("{:?} frame is leg-level and must use stream ID 0", self.ty);
+        }
+        if self.ty != FrameType::Data && self.seq != 0 {
+            bail!("{:?} frame must use sequence number 0", self.ty);
+        }
+        if self.ty == FrameType::WindowUpdate && self.payload.len() != 4 {
+            bail!("WINDOW_UPDATE payload must be exactly 4 bytes");
+        }
         if self.ty == FrameType::Data && self.payload.len() > MAX_DATA_PAYLOAD {
             bail!(
                 "DATA payload of {} bytes exceeds the {MAX_DATA_PAYLOAD}-byte cap",
@@ -380,26 +401,52 @@ impl FrameDecoder {
 /// [`CreditWindow::try_consume`] refuses rather than going negative,
 /// and the leg's reaction to a peer that overruns is an ERROR frame
 /// with [`ErrorReason::CreditOverrun`], built by the mux slice.
+///
+/// The window is also bounded above (#8970): the relay backpressure
+/// design requires hard finite per-stream and aggregate
+/// per-connection limits, with credit returning only as bounded
+/// buffer space is released. Each window therefore carries an
+/// explicit `ceiling` set at construction from the effective
+/// configuration — the design delegates the limit to configuration,
+/// so no universal deployment limit is invented here. The built-in
+/// constructors are fixed-size windows (ceiling = the configured
+/// initial credit): a WINDOW_UPDATE can only return credit the
+/// sender has actually consumed. A deployment that negotiates a
+/// larger maximum constructs the window with that ceiling via
+/// [`CreditWindow::new`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CreditWindow {
     available: u64,
+    ceiling: u64,
 }
 
 impl CreditWindow {
-    pub fn new(initial: u64) -> Self {
-        Self { available: initial }
+    /// A window holding `initial` credit that may never hold more
+    /// than `ceiling`. A ceiling below the initial grant is raised
+    /// to the initial grant: a window must always be able to hold
+    /// the credit it was constructed with.
+    pub fn new(initial: u64, ceiling: u64) -> Self {
+        Self {
+            available: initial,
+            ceiling: ceiling.max(initial),
+        }
     }
 
     pub fn per_stream() -> Self {
-        Self::new(INITIAL_STREAM_CREDIT)
+        Self::new(INITIAL_STREAM_CREDIT, INITIAL_STREAM_CREDIT)
     }
 
     pub fn per_connection() -> Self {
-        Self::new(INITIAL_CONNECTION_CREDIT)
+        Self::new(INITIAL_CONNECTION_CREDIT, INITIAL_CONNECTION_CREDIT)
     }
 
     pub fn available(&self) -> u64 {
         self.available
+    }
+
+    /// The finite maximum this window may ever hold.
+    pub fn ceiling(&self) -> u64 {
+        self.ceiling
     }
 
     /// Consume `bytes` of credit; `false` (and no state change) when the
@@ -412,9 +459,27 @@ impl CreditWindow {
         true
     }
 
-    /// Grant additional credit (a received WINDOW_UPDATE).
-    pub fn grant(&mut self, bytes: u64) {
-        self.available = self.available.saturating_add(bytes);
+    /// Grant additional credit (a received WINDOW_UPDATE). A grant
+    /// that would push the window past its ceiling — or overflow —
+    /// is an explicit protocol/resource error (the mux slice maps it
+    /// to [`ErrorReason::CreditOverrun`]): the window is left
+    /// unchanged, never silently saturated (#8970).
+    pub fn grant(&mut self, bytes: u64) -> Result<()> {
+        let next = self.available.checked_add(bytes).with_context(|| {
+            format!(
+                "credit grant of {bytes} bytes overflows the window ({} available)",
+                self.available
+            )
+        })?;
+        if next > self.ceiling {
+            bail!(
+                "credit grant of {bytes} bytes exceeds the window ceiling ({} available, {} ceiling)",
+                self.available,
+                self.ceiling
+            );
+        }
+        self.available = next;
+        Ok(())
     }
 }
 
@@ -441,22 +506,23 @@ mod tests {
             any::<u64>(),
             prop::collection::vec(any::<u8>(), 0..64),
         )
-            .prop_map(|(ty, stream_id, seq, payload)| {
+            .prop_map(|(ty, stream_id, seq, mut payload)| {
                 // WINDOW_UPDATE payloads are a fixed 4-byte amount.
-                let payload = if ty == FrameType::WindowUpdate {
-                    payload
-                        .iter()
-                        .chain(&[0, 0, 0])
-                        .copied()
-                        .take(4)
-                        .collect::<Vec<u8>>()
-                } else {
-                    payload
-                };
+                if ty == FrameType::WindowUpdate {
+                    payload.truncate(4);
+                    payload.resize(4, 0);
+                }
                 Frame {
                     ty,
-                    stream_id,
-                    seq,
+                    stream_id: if matches!(ty, FrameType::Open | FrameType::Data | FrameType::Close)
+                    {
+                        stream_id.max(1)
+                    } else if ty == FrameType::WindowUpdate {
+                        stream_id
+                    } else {
+                        0
+                    },
+                    seq: if ty == FrameType::Data { seq } else { 0 },
                     payload,
                 }
             })
@@ -493,7 +559,10 @@ mod tests {
         }
 
         /// Oracle: credit is never exceeded — any consume sequence the
-        /// window accepts sums to at most initial + granted.
+        /// window accepts sums to at most initial + granted, and the
+        /// window never holds more than its ceiling (#8970): a grant
+        /// the window refuses changes neither the accounting nor the
+        /// window state.
         #[test]
         fn credit_is_never_exceeded(
             ops in prop::collection::vec((any::<bool>(), 0u64..200_000), 0..32),
@@ -503,15 +572,57 @@ mod tests {
             let mut consumed = 0u64;
             for (is_grant, amount) in ops {
                 if is_grant {
-                    window.grant(amount);
-                    granted += amount;
+                    if window.grant(amount).is_ok() {
+                        granted += amount;
+                    }
                 } else if window.try_consume(amount) {
                     consumed += amount;
                 }
                 prop_assert!(consumed <= granted);
                 prop_assert_eq!(window.available(), granted - consumed);
+                prop_assert!(window.available() <= window.ceiling());
             }
         }
+    }
+
+    #[test]
+    fn credit_grant_returns_consumed_credit_up_to_the_ceiling() {
+        // #8970: normal credit return — consume, then a WINDOW_UPDATE
+        // returns exactly the consumed space.
+        let mut window = CreditWindow::per_stream();
+        assert!(window.try_consume(1_000));
+        window.grant(1_000).unwrap();
+        assert_eq!(window.available(), INITIAL_STREAM_CREDIT);
+        // An exact-ceiling grant on a drained window is accepted.
+        let mut drained = CreditWindow::per_stream();
+        assert!(drained.try_consume(INITIAL_STREAM_CREDIT));
+        drained.grant(INITIAL_STREAM_CREDIT).unwrap();
+        assert_eq!(drained.available(), drained.ceiling());
+    }
+
+    #[test]
+    fn credit_grant_past_the_ceiling_is_refused_without_state_change() {
+        // #8970: over-ceiling and repeated WINDOW_UPDATE grants are
+        // explicit errors and never mutate the window (no silent
+        // saturation toward u64::MAX).
+        let mut window = CreditWindow::per_stream();
+        let before = window;
+        assert!(window.grant(1).is_err());
+        assert_eq!(window, before);
+        for _ in 0..4 {
+            assert!(window.grant(u64::from(u32::MAX)).is_err());
+        }
+        assert_eq!(window, before);
+        // Overflow itself is an error, not a saturation.
+        assert!(window.grant(u64::MAX).is_err());
+        assert_eq!(window, before);
+        // A configured ceiling above the initial grant admits grants
+        // up to that ceiling and no further.
+        let mut configured = CreditWindow::new(100, 250);
+        configured.grant(150).unwrap();
+        assert_eq!(configured.available(), 250);
+        assert!(configured.grant(1).is_err());
+        assert_eq!(configured.available(), 250);
     }
 
     #[test]
@@ -529,6 +640,68 @@ mod tests {
         wire.extend_from_slice(&u32::try_from(body.len()).unwrap().to_be_bytes());
         wire.extend_from_slice(&body);
         assert!(Frame::decode_prefix(&wire).is_err());
+    }
+
+    #[test]
+    fn frame_scope_and_sequence_semantics_are_validated_on_construction_and_wire() {
+        assert!(Frame::data(0, 0, Vec::new()).is_err());
+        assert!(Frame::new(FrameType::Ping, 1, 0, Vec::new()).is_err());
+        assert!(Frame::new(FrameType::Data, 1, 1, Vec::new()).is_ok());
+        assert!(Frame::new(FrameType::Close, 1, 1, Vec::new()).is_err());
+
+        for ty in [
+            FrameType::Ping,
+            FrameType::Pong,
+            FrameType::Resume,
+            FrameType::ResumeAck,
+            FrameType::Error,
+        ] {
+            assert!(Frame::new(ty, 0, 0, Vec::new()).is_ok(), "{ty:?}");
+        }
+        for ty in [FrameType::Open, FrameType::Data, FrameType::Close] {
+            assert!(Frame::new(ty, 1, 0, Vec::new()).is_ok(), "{ty:?}");
+        }
+        assert!(Frame::new(FrameType::WindowUpdate, 0, 0, 4u32.to_be_bytes().to_vec()).is_ok());
+        assert!(Frame::new(FrameType::WindowUpdate, 1, 0, 4u32.to_be_bytes().to_vec()).is_ok());
+        assert!(Frame::new(FrameType::WindowUpdate, 0, 0, vec![0; 3]).is_err());
+
+        let invalid_frames = [
+            Frame {
+                ty: FrameType::Data,
+                stream_id: 0,
+                seq: 0,
+                payload: Vec::new(),
+            },
+            Frame {
+                ty: FrameType::Close,
+                stream_id: 1,
+                seq: 1,
+                payload: Vec::new(),
+            },
+            Frame {
+                ty: FrameType::Ping,
+                stream_id: 1,
+                seq: 0,
+                payload: Vec::new(),
+            },
+            Frame {
+                ty: FrameType::WindowUpdate,
+                stream_id: 0,
+                seq: 0,
+                payload: vec![0; 3],
+            },
+        ];
+        for frame in invalid_frames {
+            assert!(frame.encode().is_err(), "{frame:?}");
+            let mut body = vec![frame.ty.to_u8()];
+            body.extend_from_slice(&frame.stream_id.to_be_bytes());
+            body.extend_from_slice(&frame.seq.to_be_bytes());
+            body.extend_from_slice(&frame.payload);
+            let mut wire = Vec::new();
+            wire.extend_from_slice(&u32::try_from(body.len()).unwrap().to_be_bytes());
+            wire.extend_from_slice(&body);
+            assert!(Frame::decode_prefix(&wire).is_err(), "{frame:?}");
+        }
     }
 
     #[test]
@@ -567,7 +740,7 @@ mod tests {
 
     #[test]
     fn error_reason_round_trip() {
-        let frame = Frame::error(0, ErrorReason::CreditOverrun, "credit exceeded");
+        let frame = Frame::error(ErrorReason::CreditOverrun, "credit exceeded");
         assert_eq!(
             frame.error_reason().unwrap(),
             Some(ErrorReason::CreditOverrun)

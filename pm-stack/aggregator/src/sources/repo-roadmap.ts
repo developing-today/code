@@ -330,7 +330,10 @@ export function mergeRoadmapRows(gristRows: RoadmapRow[], repoRows: RoadmapRow[]
     for (const link of grist.links) {
       if (!seenLinks.has(`${link.ref}|${link.relation}`)) twin.links.push(link);
     }
-    twin.notes = [twin.notes, `Also tracked in the Grist roadmap (${grist.subject}); collapsed in favour of this repo-file row (#1738).`]
+    twin.notes = [
+      twin.notes,
+      `Also tracked in the Grist roadmap (${grist.subject}); collapsed in favour of this repo-file row (#1738).`,
+    ]
       .filter(Boolean)
       .join("\n");
   }

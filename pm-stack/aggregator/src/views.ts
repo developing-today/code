@@ -38,9 +38,11 @@ export interface ViewFilters {
   owner?: string;
   state?: string;
   epic?: string;
+  status?: string;
+  kind?: string;
 }
 
-export const VIEW_FILTER_KEYS = ["repo", "area", "horizon", "owner", "state", "epic"] as const;
+export const VIEW_FILTER_KEYS = ["repo", "area", "horizon", "owner", "state", "epic", "status", "kind"] as const;
 
 export interface SavedView {
   id: string;
@@ -161,6 +163,8 @@ export interface ViewItemLike {
   owner?: string | null;
   state?: string | null;
   epic?: string | null;
+  status?: string | null;
+  kind?: string | null;
 }
 
 function eq(a: string | null | undefined, b: string): boolean {
@@ -177,6 +181,8 @@ export function itemMatchesView(item: ViewItemLike, filters: ViewFilters): boole
   if (filters.owner && !eq(item.owner, filters.owner)) return false;
   if (filters.state && !eq(item.state, filters.state)) return false;
   if (filters.epic && !eq(item.epic, filters.epic)) return false;
+  if (filters.status && !eq(item.status, filters.status)) return false;
+  if (filters.kind && !eq(item.kind, filters.kind)) return false;
   return true;
 }
 

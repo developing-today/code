@@ -325,9 +325,20 @@ export async function applyEvent(
         await store.upsertItem(itemRow);
         addRef(itemRef(repo, pr.number));
         const ref = itemRef(repo, pr.number);
+        // Decision 4 (#4302, origin #3087): a review's timestamps are its
+        // submitted_at. The webhook review object carries no created_at /
+        // updated_at, so commentCommon's chain would fabricate delivery-time
+        // "now" for created_at and the guard key — derive both from
+        // submitted_at (payload created_at as fallback) so the webhook row
+        // matches reconcile's row for the same review. A review carrying
+        // neither timestamp writes no row.
+        const reviewTs = iso(review.submitted_at) ?? iso(review.created_at);
+        if (!reviewTs) break;
         const base = commentCommon(review, repo, ref, "review");
+        base.created_at = reviewTs;
+        base.source_updated_at = reviewTs;
         base.review_state = iso(review.state);
-        base.submitted_at = iso(review.submitted_at) ?? base.created_at;
+        base.submitted_at = reviewTs;
         base.commit_id = iso(review.commit_id);
         await store.upsertComment(base);
         hot(`review:${review.id}`, {

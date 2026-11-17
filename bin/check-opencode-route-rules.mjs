@@ -33,7 +33,7 @@ export const CLASS_FALLBACKS = {
   workhorse: ['scout', 'specialist'],
   summit: ['specialist'],
   specialist: [],
-  scout: ['workhorse'],
+  scout: ['background', 'workhorse'],
   background: ['workhorse'],
 };
 const CLASS_FALLBACK_PAIRS = new Set(

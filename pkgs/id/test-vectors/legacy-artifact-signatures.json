@@ -1,0 +1,121 @@
+{
+  "schema": "id-atlas-signed-artifact-profiles/v1",
+  "issue": "https://github.com/developing-today/code/issues/10146",
+  "slice": "9110-R1",
+  "manifest_sha256": "3b5bce3523945bf5adaa28739f0b90b7b70ff1d6522b4ac827246654e8ff6b06",
+  "design_basis": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/crosscut/versioned-design.md#cross-part-identity-profiles-consumed-by-the-ports (S0.7, S0.13, S0.15)",
+  "test_key": {
+    "warning": "TEST-ONLY Ed25519 key (seed = 32 bytes of 0x07). Never a production key.",
+    "seed_hex": "0707070707070707070707070707070707070707070707070707070707070707",
+    "author_public_key_hex": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
+  },
+  "legacy_profile": {
+    "name": "id-artifact-serde-json (legacy, immutable)",
+    "source": "pkgs/id/crates/id-sync/src/artifact.rs: signed_bytes() / SignedBody / SignedArtifact::build_signed / check_authenticity",
+    "signed_bytes_definition": "serde_json::to_vec(SignedBody) — compact JSON, no whitespace; fields in declaration order author, seq, prev, kind, body, after; 'after' is OMITTED when empty (skip_serializing_if Vec::is_empty); body is a serde_json::Value whose object keys serialize in sorted (BTreeMap) order because preserve_order is not enabled; serde_json string escaping (quote, backslash, \\n, \\r, \\t short forms; other C0 controls as \\u00xx lowercase hex; non-ASCII emitted as raw UTF-8).",
+    "hash": "hex lowercase SHA-256 over signed_bytes",
+    "signature": "hex lowercase Ed25519 (ed25519-dalek, verify_strict on read) over signed_bytes",
+    "doc_code_mismatch": "The signed_bytes doc comment claims the bytes are 'length-prefixed and domain-separated'; the implementation applies NO length prefixes and NO domain separation — it is exactly serde_json::to_vec(SignedBody). The verified bytes below are the immutable legacy behavior; the comment must not be treated as an interoperability claim.",
+    "vectors": [
+      {
+        "after": [],
+        "author": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+        "body": {
+          "alpha": true,
+          "title": "hello",
+          "zeta": 1
+        },
+        "hash": "588e0b7b15fb7260e611fdfd8d3b03c7527e3946b15c429dfcd607e58b7dbb27",
+        "kind": "document",
+        "name": "legacy-01-document-minimal",
+        "prev": "",
+        "seq": 1,
+        "signature": "96bfbb78a4f1071a2d630c9398aa95cc9e0c663a81f584e0e8cf8e2335e046073f7377d798b7c690229aa6ba6e17f37dd99ff2939dfccb798deeb9453f806a05",
+        "signed_bytes_hex": "7b22617574686f72223a2265613461366336336532396335323061626566353530376231333265633566393935343737366165626562653762393234323165656136393134343664323263222c22736571223a312c2270726576223a22222c226b696e64223a22646f63756d656e74222c22626f6479223a7b22616c706861223a747275652c227469746c65223a2268656c6c6f222c227a657461223a317d7d",
+        "signed_bytes_utf8": "{\"author\":\"ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c\",\"seq\":1,\"prev\":\"\",\"kind\":\"document\",\"body\":{\"alpha\":true,\"title\":\"hello\",\"zeta\":1}}"
+      },
+      {
+        "after": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        ],
+        "author": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+        "body": {
+          "servers": [
+            {
+              "endpoint": "node123",
+              "world_id": "w1"
+            }
+          ]
+        },
+        "hash": "cb9094b3e7e1921d7a64155e2dc6d277d2a46150533bdc543c50a3217e7d50d0",
+        "kind": "home_declared",
+        "name": "legacy-02-home-declared-after",
+        "prev": "588e0b7b15fb7260e611fdfd8d3b03c7527e3946b15c429dfcd607e58b7dbb27",
+        "seq": 2,
+        "signature": "c11da814968984aa0c0b1f364c7155baed546c16b6c5d1630c850ed3377b743d4abd33f4ff316859e1bc9a59495890b88b5bd054a9ce8283dd7b39d2b3ca310a",
+        "signed_bytes_hex": "7b22617574686f72223a2265613461366336336532396335323061626566353530376231333265633566393935343737366165626562653762393234323165656136393134343664323263222c22736571223a322c2270726576223a2235383865306237623135666237323630653631316664666438643362303363373532376533393436623135633432396466636436303765353862376462623237222c226b696e64223a22686f6d655f6465636c61726564222c22626f6479223a7b2273657276657273223a5b7b22656e64706f696e74223a226e6f6465313233222c22776f726c645f6964223a227731227d5d7d2c226166746572223a5b2261616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c2230313233343536373839616263646566303132333435363738396162636465663031323334353637383961626364656630313233343536373839616263646566225d7d",
+        "signed_bytes_utf8": "{\"author\":\"ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c\",\"seq\":2,\"prev\":\"588e0b7b15fb7260e611fdfd8d3b03c7527e3946b15c429dfcd607e58b7dbb27\",\"kind\":\"home_declared\",\"body\":{\"servers\":[{\"endpoint\":\"node123\",\"world_id\":\"w1\"}]},\"after\":[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"]}"
+      },
+      {
+        "after": [],
+        "author": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+        "body": {
+          "ctrl": "a\u0001b",
+          "f": 1.5,
+          "n": 42,
+          "text": "café \"quoted\" back\\slash line\nbreak tab\there"
+        },
+        "hash": "bc478c3c5273f75c52a99a76ab1e709d64fe672c3dbbe52df57f6752384ef5c6",
+        "kind": "document",
+        "name": "legacy-03-escapes-unicode",
+        "prev": "cb9094b3e7e1921d7a64155e2dc6d277d2a46150533bdc543c50a3217e7d50d0",
+        "seq": 3,
+        "signature": "9a5d74f39280ded32a1fdfec96dace3d2294b879e1a19eddf1d3d0b550c3e78ef8e84f5609a3ec9d77b049462f12d99979feaa4fef568733f9d48eb3a56bca0f",
+        "signed_bytes_hex": "7b22617574686f72223a2265613461366336336532396335323061626566353530376231333265633566393935343737366165626562653762393234323165656136393134343664323263222c22736571223a332c2270726576223a2263623930393462336537653139323164376136343135356532646336643237376432613436313530353333626463353433633530613332313765376435306430222c226b696e64223a22646f63756d656e74222c22626f6479223a7b226374726c223a22615c753030303162222c2266223a312e352c226e223a34322c2274657874223a22636166c3a9205c2271756f7465645c22206261636b5c5c736c617368206c696e655c6e627265616b207461625c7468657265227d7d",
+        "signed_bytes_utf8": "{\"author\":\"ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c\",\"seq\":3,\"prev\":\"cb9094b3e7e1921d7a64155e2dc6d277d2a46150533bdc543c50a3217e7d50d0\",\"kind\":\"document\",\"body\":{\"ctrl\":\"a\\u0001b\",\"f\":1.5,\"n\":42,\"text\":\"café \\\"quoted\\\" back\\\\slash line\\nbreak tab\\there\"}}"
+      },
+      {
+        "after": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "588e0b7b15fb7260e611fdfd8d3b03c7527e3946b15c429dfcd607e58b7dbb27"
+        ],
+        "author": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+        "body": {
+          "label": "x",
+          "target": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        },
+        "hash": "81d1a56278bf4e36f2a8ef333ab95b7950aacd5e9cfdd77e255a336cc97df24f",
+        "kind": "tag",
+        "name": "legacy-04-tag-multi-after",
+        "prev": "bc478c3c5273f75c52a99a76ab1e709d64fe672c3dbbe52df57f6752384ef5c6",
+        "seq": 4,
+        "signature": "1afb3ac309a097d432135bec59903c54140bc53bb72778d1a04a238603cbdfb8acd2b8e03823e33deabf1ef140029ee2e46213a1f2b8342de87e3477b06d5b0e",
+        "signed_bytes_hex": "7b22617574686f72223a2265613461366336336532396335323061626566353530376231333265633566393935343737366165626562653762393234323165656136393134343664323263222c22736571223a342c2270726576223a2262633437386333633532373366373563353261393961373661623165373039643634666536373263336462626535326466353766363735323338346566356336222c226b696e64223a22746167222c22626f6479223a7b226c6162656c223a2278222c22746172676574223a2230313233343536373839616263646566303132333435363738396162636465663031323334353637383961626364656630313233343536373839616263646566227d2c226166746572223a5b2261616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c2230313233343536373839616263646566303132333435363738396162636465663031323334353637383961626364656630313233343536373839616263646566222c2235383865306237623135666237323630653631316664666438643362303363373532376533393436623135633432396466636436303765353862376462623237225d7d",
+        "signed_bytes_utf8": "{\"author\":\"ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c\",\"seq\":4,\"prev\":\"bc478c3c5273f75c52a99a76ab1e709d64fe672c3dbbe52df57f6752384ef5c6\",\"kind\":\"tag\",\"body\":{\"label\":\"x\",\"target\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"},\"after\":[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"588e0b7b15fb7260e611fdfd8d3b03c7527e3946b15c429dfcd607e58b7dbb27\"]}"
+      }
+    ]
+  },
+  "new_profile": {
+    "name": "id-signed-record-cbor (design-stage; NOT implemented in production code)",
+    "basis": "Settled V2 design, Cross-part identity profiles: canonical Body commits payload ID, length, domain and context; detached signature over domain-prefix + canonical Body; Body EXCLUDES signature and EnvelopeId; EnvelopeId hashes the complete canonical signed envelope INCLUDING signature and never includes itself in its preimage; deterministic CBOR encoding.",
+    "instantiation_notes": "Worked example only, to make the design's invariants checkable: hash = SHA-256 where the design leaves the digest unnamed for PayloadId/EnvelopeId; domain prefix = utf8(domain) || 0x00. A follow-on implementation slice may adopt or amend these concrete choices; the invariants (exclusion from preimage, deterministic encoding) are the design's, not this file's.",
+    "example": {
+      "payload_utf8": "hello atlas",
+      "payload_sha256_hex": "f9e10541696124d0875bebcaa1777f208d21ef3e4fbece2c0c85919d2054517d",
+      "body_fields": {
+        "context": "id-atlas/9110-r1-example",
+        "domain": "id-atlas/signed-record/v2",
+        "payload_id_hex": "f9e10541696124d0875bebcaa1777f208d21ef3e4fbece2c0c85919d2054517d",
+        "payload_len": 11
+      },
+      "body_cbor_hex": "a466646f6d61696e781969642d61746c61732f7369676e65642d7265636f72642f763267636f6e74657874781869642d61746c61732f393131302d72312d6578616d706c656a7061796c6f61645f69645820f9e10541696124d0875bebcaa1777f208d21ef3e4fbece2c0c85919d2054517d6b7061796c6f61645f6c656e0b",
+      "preimage": "utf8(domain) || 0x00 || body_cbor",
+      "preimage_hex": "69642d61746c61732f7369676e65642d7265636f72642f763200a466646f6d61696e781969642d61746c61732f7369676e65642d7265636f72642f763267636f6e74657874781869642d61746c61732f393131302d72312d6578616d706c656a7061796c6f61645f69645820f9e10541696124d0875bebcaa1777f208d21ef3e4fbece2c0c85919d2054517d6b7061796c6f61645f6c656e0b",
+      "signature_hex": "39e5b62295b239631cf1f277be84a0abff432a9fc3fe967e2d5f3985ea31f54070d1c6cbf675c4a491d5a5931805f373c57b8e398f5f7d180bb588f261937805",
+      "envelope_cbor_hex": "a264626f6479587fa466646f6d61696e781969642d61746c61732f7369676e65642d7265636f72642f763267636f6e74657874781869642d61746c61732f393131302d72312d6578616d706c656a7061796c6f61645f69645820f9e10541696124d0875bebcaa1777f208d21ef3e4fbece2c0c85919d2054517d6b7061796c6f61645f6c656e0b697369676e6174757265584039e5b62295b239631cf1f277be84a0abff432a9fc3fe967e2d5f3985ea31f54070d1c6cbf675c4a491d5a5931805f373c57b8e398f5f7d180bb588f261937805",
+      "envelope_id_sha256_hex": "c661ef2de9f6e5936ad2ea0d9045114aa7aa486cfbf2b3033c3d3a0b979a53f3"
+    }
+  }
+}

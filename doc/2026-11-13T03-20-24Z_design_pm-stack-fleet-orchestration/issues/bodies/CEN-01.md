@@ -82,7 +82,8 @@ prove each of the 389 semantic record IDs occurs exactly once in the crosswalk, 
 - **P-R055 — design-only (candidate)**; occurrences `P-1716, P-1717, P-1718, P-1719, P-1720, P-1721, P-1722, P-1723, P-1724, P-1725, P-1726, P-1727`; full trace: census/requirements-crosswalk.jsonl
 - **P-R070 — design-only (candidate)**; occurrences `P-1716, P-1717, P-1718, P-1719, P-1720, P-1721, P-1722, P-1723, P-1724, P-1725, P-1726, P-1727`; full trace: census/requirements-crosswalk.jsonl
 - **S-R009 — design-only (candidate)**; occurrences `S-056, S-057, S-058, S-059`; full trace: census/requirements-crosswalk.jsonl
-Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+  Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+
 ## Owned files and boundaries
 
 - `doc/2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration/census/requirements-crosswalk.jsonl`
@@ -101,16 +102,13 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: none.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
 
 - **First failing test:** `test_requirements_crosswalk_rejects_missing_duplicate_occurrence_and_unresolved_design_anchor`
 - **Oracle:** The source slice’s stated reference model, golden fixture, or invariant; compare expected and observed state explicitly. No mock-only claim of deployed/live behavior.
-- **Done command:** ``python3 -I inventory/check_inventory.py --check` and `python3 -I inventory/check_requirements.py --check` remain passing; `python3 -I census/check_requirements_crosswalk.py --check` validates 389 IDs, group/alias edges, source occurrences, exact status vocabulary, evidence object on verified/partial, real anchors, 215 command-map keys and no wildcard. Check emits explicit per-class unmapped rows; it never treats absence of a join as zero gaps. -`
+- **Done command:** ``python3 -I inventory/check_inventory.py --check`and`python3 -I inventory/check_requirements.py --check`remain passing;`python3 -I census/check_requirements_crosswalk.py --check` validates 389 IDs, group/alias edges, source occurrences, exact status vocabulary, evidence object on verified/partial, real anchors, 215 command-map keys and no wildcard. Check emits explicit per-class unmapped rows; it never treats absence of a join as zero gaps. -`
 - Tests must first be listed by exact name in the owning target (`-- --list`); assert the test exists before execution. A zero-test filter passing is not acceptance.
 
 ## Acceptance and negative cases
@@ -151,4 +149,3 @@ Negative coverage: duplicate ID, missing occurrence, wrong quote/span, dead file
 - **Done check:** `python3 -I inventory/check_inventory.py --check` and `python3 -I inventory/check_requirements.py --check` remain passing; `python3 -I census/check_requirements_crosswalk.py --check` validates 389 IDs, group/alias edges, source occurrences, exact status vocabulary, evidence object on verified/partial, real anchors, 215 command-map keys and no wildcard. Check emits explicit per-class unmapped rows; it never treats absence of a join as zero gaps.
 - **Negative / rollback:** duplicate ID, missing occurrence, wrong quote/span, dead file/heading, status typo, partial row with no source evidence, group child not found and wildcard command mapping each fail. Research artifacts only; rollback is restore the prior generated crosswalk, not to edit source ledgers.
 - **Operator-script contract:** the future validator accepts only `--check`; it parses the complete argv before opening any source/output, writes nothing in check mode, rejects unknown/extra args, and follows the strict sibling argument pattern.
-

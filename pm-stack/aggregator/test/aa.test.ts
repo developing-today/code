@@ -684,6 +684,9 @@ describe("aa-explorer manifest + render", () => {
     expect(html).toContain('id="xpl-c4"'); // tasks completed vs duration
     expect(html).toContain('id="xpl-c5"'); // multiples of the baseline
     expect(html).toContain('id="xpl-c6"'); // scores-only bars
+    expect(html).toContain('id="xpl-unpriced"'); // #1400: unpriced-variant detail buttons mount under the charts
+    expect(html).toContain("Scored configurations without a published cost");
+    expect(html).toContain("unpricedScoredPoints"); // the explorer script wires the button list from the computations module
     expect(html).toContain('data-sizeby="xpl-c1"');
     expect(html).toContain('data-dl="xpl-c2"');
     expect(html).toContain('data-tmode="tot"');
@@ -913,7 +916,14 @@ describe("aa chart expand + zoom/pan (#3298)", () => {
     // the zoom/pan behavior the executable tests in
     // aa-explorer-computations.test.ts drive is the module's — the
     // page must import it, not carry an inline copy that could drift
-    for (const name of ["parseChartViewBox", "effectiveChartView", "zoomChartView", "panChartView", "resetChartView", "chartClickSuppressed"]) {
+    for (const name of [
+      "parseChartViewBox",
+      "effectiveChartView",
+      "zoomChartView",
+      "panChartView",
+      "resetChartView",
+      "chartClickSuppressed",
+    ]) {
       expect(imported).toContain(name);
       expect(html).not.toMatch(new RegExp("function " + name + "\\s*\\("));
     }

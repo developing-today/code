@@ -61,7 +61,8 @@ reserve once against canonical task, apply #9178/#9179 gates, invoke existing `f
 - **P-R009 — design-only (candidate)**; occurrences `P-227, P-228, P-229, P-230, P-231, P-232, P-233, P-234, P-235, P-236, P-237, P-238, P-239, P-240, P-241, P-242, P-243, P-244, P-245, P-246, P-247, P-248, P-249, P-250, P-251, P-252, P-253, P-254, P-255, P-256, P-257, P-258, P-259, P-260, P-261, P-262, P-263, P-264, P-265, P-266, P-267, P-268, P-269, P-270, P-271, P-272, P-273, P-274, P-275, P-276, P-277, P-278, P-279, P-280, P-281, P-282, P-283, P-284, P-285, P-286, P-287, P-288, P-289, P-290, P-291, P-292, P-293, P-294, P-295, P-296, P-297, P-298, P-299, P-300, P-301, P-302, P-303, P-304, P-305, P-306, P-307, P-308, P-309, P-310, P-311, P-312, P-313, P-314, P-315, P-316, P-317, P-318, P-319, P-320, P-321, P-322, P-323, P-324, P-325, P-326, P-327, P-328, P-329, P-330, P-331, P-332, P-333, P-334, P-335, P-336, P-337, P-338, P-339, P-340, P-341, P-342, P-343, P-344, P-345, P-346, P-347, P-348, P-349, P-350, P-351, P-352, P-353, P-354, P-355, P-356, P-357, P-358, P-359, P-360, P-361, P-362, P-363, P-364, P-365, P-366, P-367, P-368, P-369, P-370, P-371, P-372, P-373, P-374, P-375, P-376, P-377, P-378, P-379, P-380, P-381, P-382, P-383, P-384, P-385, P-386, P-387, P-388, P-389, P-390, P-391, P-392, P-393, P-394, P-395, P-396, P-397, P-398, P-399, P-400, P-401, P-402, P-403, P-404, P-405, P-406, P-407, P-408, P-409`; full trace: census/requirements-crosswalk.jsonl
 - **S-R002 — design-only (candidate)**; occurrences `S-014, S-015, S-016, S-017, S-018`; full trace: census/requirements-crosswalk.jsonl
 - **S-R004 — partially implemented (candidate)**; occurrences `S-023, S-024, S-025, S-026, S-027, S-028`; full trace: census/requirements-crosswalk.jsonl
-Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+  Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+
 ## Owned files and boundaries
 
 - `pkgs/fleet/crates/fleet-queue/src/work/operations.rs`
@@ -79,7 +80,6 @@ Existing issue references retained as non-blocking runtime/evidence gates: #9028
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: none.
 
 Source-local candidate aliases normalized for this packet: DSP-03 → REL-03.
-
 
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
@@ -127,8 +127,8 @@ Negative coverage: stale input, duplicate/replay, ambiguous resource, unauthoriz
 - **Done/oracle:** generated crash-cut MBT proves concurrent operation has one task/session; duplicate event reuses IDs; hard gate/cap/lease rejects; timeout after remote create binds existing session after readback without a second launch. Command: `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_dsp_06_direct_launch_timeout_reconciles_without_duplicate`; PM service seam: `cd pm-stack/dispatch && bun test test/direct-launch-reservation.test.ts`. Gated on #9028 and #9178/#9179; no parallel queue/scheduler.
 - **Dependencies:** DSP-03/04; #9028, #8581, #9178/#9179; #9241 (local alias `QTI-RECON-01`) gates schema-coupled implementation only.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `DSP-05` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/operations.rs`

@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
@@ -105,6 +106,13 @@ func runExample(t *testing.T, mcpx, fake, name, script string) {
 		if out, err := runIn(context.Background(), dir, env, mcpx, "stop", "--all"); err != nil {
 			t.Logf("cleanup: mcpx stop --all failed: %v\n%s", err, out)
 		}
+		// Stopping the daemon does not stop its supervised servers: a
+		// supervisor outlives the daemon by design, so a later daemon can
+		// reattach to the same child. This suite's state directory is
+		// throwaway — nothing will ever reattach — so terminate this
+		// test's supervisors explicitly, or they and their fixture
+		// servers leak past the suite and trip the #1971 sweep (#10853).
+		terminateSupervisors(t, filepath.Join(dir, "state"))
 	})
 
 	args := []string{"run", runPath}
@@ -225,4 +233,42 @@ func mustGetwd(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+// terminateSupervisors asks every supervisor listening in stateDir to
+// terminate (kill its child and exit). A supervisor refuses while a
+// daemon is attached; `stop --all` above detaches asynchronously, so
+// retry briefly before giving up and logging.
+//
+// The glob alone is not enough: when the state path is long (a nix
+// build's deeply nested TMPDIR), SupervisorSocketPath falls back to a
+// hashed socket under os.TempDir()/mcpx-sup instead of stateDir, so a
+// supervisor bound there is invisible to the glob and leaks past the
+// suite with its fixture server (#9351). Ask the product's own path
+// function where this suite's one configured server ("demo", see
+// configTemplate) would put its socket and terminate that too.
+func terminateSupervisors(t *testing.T, stateDir string) {
+	t.Helper()
+	socks, err := filepath.Glob(filepath.Join(stateDir, "sup-*.sock"))
+	if err != nil {
+		t.Logf("cleanup: glob supervisor sockets: %v", err)
+		return
+	}
+	if sock := mcpclient.SupervisorSocketPath(stateDir, "demo"); !slices.Contains(socks, sock) {
+		if _, err := os.Stat(sock); err == nil {
+			socks = append(socks, sock)
+		}
+	}
+	for _, sock := range socks {
+		var err error
+		for attempt := 0; attempt < 10; attempt++ {
+			if err = mcpclient.TerminateSupervisorSocket(sock); err == nil {
+				break
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		if err != nil {
+			t.Logf("cleanup: terminate supervisor %s: %v", sock, err)
+		}
+	}
 }

@@ -1052,6 +1052,7 @@ skipped launcher phases).
 | `script.checkOnError` | enum | `fail` | client | no | `--script-check-on-error` | `MCPX_SCRIPT_CHECK_ON_ERROR` | what to do when script checking finds an error |
 | `script.checkOnUnsupported` | enum | `warn` | client | no | `--script-check-on-unsupported` | `MCPX_SCRIPT_CHECK_ON_UNSUPPORTED` | what to do when the selected runtime cannot check the script |
 | `script.cwd` | enum | `caller` | client | no | `--script-cwd` | `MCPX_SCRIPT_CWD` | where a script runs: caller, script, config or workdir |
+| `script.devshell` | string | `host` | client | no | `--script-devshell` | `MCPX_SCRIPT_DEVSHELL` | environment the script runs inside: host, or flake:<ref> for a Nix flake devshell |
 | `script.env` | list | *(empty)* | client | no | `--script-env`, `--env` | `MCPX_SCRIPT_ENV` | KEY=VALUE pairs added to the script's environment |
 | `script.imports` | enum | `report` | client | no | `--script-imports` | `MCPX_SCRIPT_IMPORTS` | resolve the script's import graph before running it |
 | `script.importsCrossProject` | enum | `isolate` | client | no | `--script-imports-cross-project` | `MCPX_SCRIPT_IMPORTS_CROSS_PROJECT` | how to handle a file edge into another project's manifest |
@@ -1059,6 +1060,7 @@ skipped launcher phases).
 | `script.importsOnDynamic` | enum | `warn` | client | no | `--script-imports-on-dynamic` | `MCPX_SCRIPT_IMPORTS_ON_DYNAMIC` | what to do about an import() whose specifier is computed |
 | `script.importsOnMissing` | enum | `fail` | client | no | `--script-imports-on-missing` | `MCPX_SCRIPT_IMPORTS_ON_MISSING` | how to handle a package absent from the dependency set |
 | `script.interpreter` | string | *(empty)* | client | no | `--script-interpreter`, `--interpreter`, `--shell` | `MCPX_SCRIPT_INTERPRETER` | command line that runs scripts instead of a JavaScript runtime |
+| `script.language` | enum | `auto` | client | no | `--script-language`, `--language` | `MCPX_SCRIPT_LANGUAGE` | language a script is written in: auto, typescript, javascript or python |
 | `script.launcher` | source | *(empty)* | client | no | `--script-launcher` | `MCPX_SCRIPT_LAUNCHER` | replace the generated launcher entirely |
 | `script.onError` | source | *(empty)* | client | no | `--script-on-error` | `MCPX_SCRIPT_ON_ERROR` | runs when the script throws; the error still propagates |
 | `script.onSuccess` | source | *(empty)* | client | no | `--script-on-success` | `MCPX_SCRIPT_ON_SUCCESS` | runs when the script returns without throwing |
@@ -1152,6 +1154,63 @@ scripts on, not the one a declaration asks for. A relative `command` resolves
 against the declaration's `dir`, then `PATH`. Without `runtime`, nothing
 changes: `command` is looked up on `PATH` and exec'd directly. `mcpx adapter
 check` reports a missing interpreter or script.
+
+### Generating a declaration: `mcpx adapter import`
+
+Hand-writing is not the only way in. `mcpx adapter import <binary>`
+generates one declaration deterministically — no model anywhere in the
+loop — from the most machine-regular source it can find, in this order
+(`--source auto|completion|man|help` pins one rung):
+
+1. **Completions.** Packager-shipped files in the system completion
+   directories first (fish, then zsh, then bash), then the binary's own
+   `completion <shell>` output (the cobra/clap convention).
+   `mcpx adapter import --completion <file>` parses a completion script
+   handed to it directly — the only path when the binary is not
+   installed.
+2. **Man.** The rendered man page's OPTIONS section.
+3. **`--help`.** Usage lines, flag blocks and subcommand tables, with
+   one level of subcommand `--help` recursion.
+
+Import runs the binary to do this (`--help`, `--version`, and the
+completion probe), so only import programs you were about to expose as
+tools anyway. A source that parses to nothing is a clear error naming
+what was tried, never a partial declaration.
+
+Output goes to stdout by default; `--out FILE` writes the file
+atomically instead. Either way, import emits **one standalone
+declaration file** and never merges into an existing adapters file:
+re-importing produces a fresh file, and hand edits in the old one are
+not carried over — diff and replace by hand. A generated declaration
+records its provenance (source, resolved binary path, the version read
+from `--version`, a fingerprint of the source text, generation date),
+`mcpx adapter check` reports version drift against that record, and
+generated declarations load through the same validation and
+de-duplication as hand-written ones.
+
+```sh
+mcpx adapter import git > git.json
+mcpx adapter import --completion ./_jq --name jq
+```
+
+### Passthrough declarations: `--bare`
+
+`mcpx adapter import --bare <binary> --description "what it is for"`
+declares the binary as a single passthrough tool that takes an argv
+array: no per-subcommand validation, and no schema for an agent to
+reason about. The description is required, the import prints a loud
+warning about what passthrough costs, and `mcpx adapter list` marks
+the entry `bare`.
+
+A bare adapter is an **argv** hole, not a **shell** hole: mcpx builds
+an argv and execs it directly, with no shell in between. The exception
+is a binary with its own argv-level exec escape — passthrough on one
+of those is a shell escape mcpx cannot see. Common offenders: `git`
+(`-c core.pager=...` and friends run commands), `ssh`
+(`-o ProxyCommand=...`), `find` (`-exec`), and anything with an
+editor, pager, or "run this command" option of its own. Declare those
+with generated or hand-written tools instead, so each subcommand is
+named and checked.
 
 ### Example: tailscale, no credential
 

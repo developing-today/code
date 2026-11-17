@@ -12,6 +12,7 @@ import type { CheckoutDrift } from "./checkout-drift.ts";
 import { isProjectAudit, isProjectPoolItem } from "./projects.ts";
 import { isRepoCensus, type RepoCensus } from "./coverage.ts";
 import { isSessionRecord } from "./registry.ts";
+import { isDependencyStatus } from "./orchestration-dependency.ts";
 import {
   arrayOf,
   isFiniteNumber,
@@ -381,14 +382,11 @@ function isTierElement(v: unknown): boolean {
   return isRecord(v) && typeof v.id === "string";
 }
 
-const DEPENDENCY_STATUSES: readonly string[] = ["in-progress", "queued", "stalled", "done", "unknown"];
-
 function isDependencyElement(v: unknown): boolean {
   if (!isRecord(v)) return false;
   return (
     typeof v.task === "string" &&
-    typeof v.status === "string" &&
-    DEPENDENCY_STATUSES.includes(v.status) &&
+    isDependencyStatus(v.status) &&
     (v.ref === undefined || typeof v.ref === "string") &&
     (v.taskRef === undefined || typeof v.taskRef === "string") &&
     (v.workerSessionId === undefined || typeof v.workerSessionId === "string") &&
@@ -1084,6 +1082,19 @@ export function isPaygLine(v: unknown): v is PaygLine {
     nullableNonNegative(v.accruedUsd) &&
     (v.collectedUsd === undefined || nullableNonNegative(v.collectedUsd)) &&
     (v.estimate === undefined || isEstimate(v.estimate)) &&
+    (v.settledUsd === undefined || nullableNonNegative(v.settledUsd)) &&
+    (v.settledAt === undefined || v.settledAt === null || isIsoDate(v.settledAt)) &&
+    (v.settledTs === undefined || v.settledTs === null || typeof v.settledTs === "string") &&
+    (v.settledSource === undefined ||
+      v.settledSource === null ||
+      v.settledSource === "api" ||
+      v.settledSource === "console" ||
+      v.settledSource === "manual" ||
+      v.settledSource === "estimate" ||
+      v.settledSource === "invoice") &&
+    (v.settledVarianceUsd === undefined || v.settledVarianceUsd === null || isFiniteNumber(v.settledVarianceUsd)) &&
+    (v.estimatePeriodEnd === undefined || v.estimatePeriodEnd === null || isIsoDate(v.estimatePeriodEnd)) &&
+    (v.staleEstimate === undefined || typeof v.staleEstimate === "boolean") &&
     nullableNonNegative(v.unbilledUsd) &&
     typeof v.note === "string" &&
     (v.measuredAt === null || isIsoDate(v.measuredAt)) &&

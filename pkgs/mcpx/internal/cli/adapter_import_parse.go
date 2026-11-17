@@ -7,7 +7,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"time"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // The source parsers for adapter import (#1962). Each is a pure function
@@ -24,7 +25,9 @@ import (
 
 // fishTokens splits a fish line the way fish would for the simple shapes
 // completion files use: single and double quotes group, backslash
-// escapes inside double quotes and outside quotes.
+// escapes inside double quotes and outside quotes, and inside single
+// quotes backslash escapes only a quote or another backslash (fish
+// semantics) -- an escaped apostrophe must not close the quote early.
 func fishTokens(line string) []string {
 	var out []string
 	var cur strings.Builder
@@ -41,6 +44,9 @@ func fishTokens(line string) []string {
 			if c == quote {
 				quote = 0
 			} else if c == '\\' && quote == '"' && i+1 < len(line) {
+				i++
+				cur.WriteByte(line[i])
+			} else if c == '\\' && quote == '\'' && i+1 < len(line) && (line[i+1] == '\'' || line[i+1] == '\\') {
 				i++
 				cur.WriteByte(line[i])
 			} else {
@@ -431,12 +437,14 @@ func manShape(binary string) (*importShape, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parseManText(out), nil
+	shape := parseManText(out)
+	shape.SourceText = out
+	return shape, nil
 }
 
 // runCaptureEnv is runCapture with extra environment.
 func runCaptureEnv(env map[string]string, binary string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), defaults.PreflightProbeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Env = os.Environ()
@@ -537,6 +545,7 @@ func helpShape(binary string) (*importShape, error) {
 		return nil, err
 	}
 	shape := parseHelpText(out)
+	shape.SourceText = out
 	// One level of recursion: a subcommand's own --help carries its
 	// flags, and without them the generated tools would be names only.
 	for i, sub := range shape.Subs {
@@ -545,6 +554,7 @@ func helpShape(binary string) (*importShape, error) {
 			continue
 		}
 		subShape := parseHelpText(subOut)
+		shape.SourceText += subOut
 		shape.Subs[i].Flags = subShape.Global
 		shape.Subs[i].Positionals = subShape.Positionals
 		if shape.Subs[i].Desc == "" {
@@ -562,7 +572,7 @@ func firstSentence(s string) string {
 }
 
 var helpRowRE = regexp.MustCompile(`^\s{1,6}(\S+)\s{2,}(\S.*)$`)
-var usageBracketRE = regexp.MustCompile("\\[([^\\[\\]]*)\\]")
+var usageBracketRE = regexp.MustCompile(`\[([^\[\]]*)\]`)
 
 // optionalPositionalNames extracts the positional names a help text's
 // usage block marks optional: the bracketed [name] form (argparse

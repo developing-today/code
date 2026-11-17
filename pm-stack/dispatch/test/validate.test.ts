@@ -8,6 +8,7 @@ import {
   parseModel,
   parseSessionRequest,
   parseTaskRequest,
+  RATIFIED_BAND_VALUES,
   resolvePriority,
   resolveSessionDirectory,
   titleFromPrompt,
@@ -31,6 +32,17 @@ describe("priority mapping", () => {
     for (const v of [10, 20, 30, 40, 50, 70, 90]) expect(resolvePriority(v)).toBe(v);
   });
 
+  test("resolve_priority_preserves_ratified_15_25_without_snapping", () => {
+    // DST-02 (#9452): ratified expedite=15 and next-up=25 are preserved
+    // losslessly — never aliased to 10/20 or to each other.
+    expect(resolvePriority(15)).toBe(15);
+    expect(resolvePriority(25)).toBe(25);
+    expect(resolvePriority("15")).toBe(15);
+    expect(resolvePriority("25")).toBe(25);
+    expect(RATIFIED_BAND_VALUES).toContain(15);
+    expect(RATIFIED_BAND_VALUES).toContain(25);
+  });
+
   test("decimal integer strings follow the numeric scale and validation", () => {
     for (let v = 10; v <= 90; v++) expect(resolvePriority(String(v))).toBe(resolvePriority(v));
     for (const v of ["5", "95", "50.5", "", "0x32", "5e1"]) {
@@ -38,9 +50,12 @@ describe("priority mapping", () => {
     }
   });
 
-  test("off-scale integers in range snap to the nearest scale value", () => {
-    expect(resolvePriority(15)).toBe(10); // tie -> down
+  test("off-scale integers in range snap to the nearest standard scale value", () => {
+    // Ratified band values (15, 25) are preserved losslessly and excluded as
+    // snap targets so nothing aliases onto them (#9452 DST-02).
     expect(resolvePriority(16)).toBe(20);
+    expect(resolvePriority(24)).toBe(20); // tie between 20 and 30 -> down
+    expect(resolvePriority(26)).toBe(30);
     expect(resolvePriority(45)).toBe(40); // tie -> down
     expect(resolvePriority(60)).toBe(50); // tie -> down
     expect(resolvePriority(80)).toBe(70); // tie -> down
@@ -347,6 +362,67 @@ describe("session blank title/directory parsing (issue #2664)", () => {
     });
     expect(r.title).toBe("My session");
     expect(r.directory).toBe("/home/user/git/code/pkgs");
+  });
+
+  test("padded title and directory are trimmed (issue #10835)", () => {
+    const r = parseSessionRequest({
+      repo: "developing-today/code",
+      prompt: "do the thing",
+      title: "  My session  ",
+      directory: "  /home/user/git/code/pkgs  ",
+    });
+    expect(r.title).toBe("My session");
+    expect(r.directory).toBe("/home/user/git/code/pkgs");
+  });
+});
+
+describe("task blank dedupe_key parsing (issue #10739)", () => {
+  const base = {
+    repo: "developing-today/code",
+    title: "triage the queue",
+    prompt: "look at the backlog",
+  };
+  test("empty and whitespace-only dedupe_key parse as omitted", () => {
+    expect(parseTaskRequest({ ...base, dedupe_key: "" }).dedupeKey).toBeUndefined();
+    expect(parseTaskRequest({ ...base, dedupe_key: " \t " }).dedupeKey).toBeUndefined();
+    // Omitted and null already meant omitted; blanks now join them so a
+    // blank key falls through to the canonical key instead of defeating
+    // it with "" (which deduped unrelated tasks together).
+    expect(parseTaskRequest(base).dedupeKey).toBeUndefined();
+    expect(parseTaskRequest({ ...base, dedupe_key: null }).dedupeKey).toBeUndefined();
+  });
+
+  test("a nonblank dedupe_key is preserved verbatim", () => {
+    const key = "repo-health:v1:fix:developing-today/code:issue:6430";
+    expect(parseTaskRequest({ ...base, dedupe_key: key }).dedupeKey).toBe(key);
+  });
+
+  test("padded dedupe_key is trimmed so mirror padding cannot defeat dedupe (issue #10835)", () => {
+    expect(parseTaskRequest({ ...base, dedupe_key: "  abc  " }).dedupeKey).toBe("abc");
+  });
+
+  test("a non-string dedupe_key is still rejected", () => {
+    expect(() => parseTaskRequest({ ...base, dedupe_key: 42 })).toThrow(/dedupe_key/);
+  });
+});
+
+describe("#3418 required_budget_minutes parsing", () => {
+  const base = {
+    repo: "developing-today/code",
+    title: "long job",
+    prompt: "a job needing a full shift",
+  };
+  test("omitted and null parse as omitted", () => {
+    expect(parseTaskRequest(base).requiredBudgetMinutes).toBeUndefined();
+    expect(parseTaskRequest({ ...base, required_budget_minutes: null }).requiredBudgetMinutes).toBeUndefined();
+  });
+  test("a positive integer is preserved", () => {
+    expect(parseTaskRequest({ ...base, required_budget_minutes: 120 }).requiredBudgetMinutes).toBe(120);
+  });
+  test("non-positive, fractional, and non-numeric values are rejected", () => {
+    for (const bad of [0, -5, 1.5, "120", true]) {
+      expect(() => parseTaskRequest({ ...base, required_budget_minutes: bad })).toThrow(/required_budget_minutes/);
+    }
   });
 });
 

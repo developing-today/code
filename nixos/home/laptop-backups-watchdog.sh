@@ -3,8 +3,8 @@
 # exists so a stopped backup gets named").
 #
 # Read-only: it changes nothing and attempts no repair. It exits 0
-# only when BOTH hold, and otherwise exits 1 with one line per
-# violation naming the job/timer:
+# only when all applicable checks hold, and otherwise exits 1 with one
+# line per violation naming the job, timer, day, or archive:
 #   (a) pm-dashboard-backup's run record ($HOME/backups/dashboard/
 #       .last-run.json, written by modules/pm-dashboard-backup.sh on
 #       every exit path) says result=complete and finished within
@@ -22,6 +22,18 @@
 #       only an object listing sees the absence. Credentials come
 #       from Bitwarden exactly as in pm-dashboard-backup.sh, and
 #       rclone/bws resolve via PATH so tests can stub both.
+#   (d) when $HOME/backups/pm-stack exists, the newest valid day dir
+#       whose mtime is within the threshold contains its
+#       pm-stack-<date>.tar.zst archive. The directory is created before
+#       dumps run, so an empty fresh dir is not evidence of a backup.
+#       Hosts without this independent backup root skip the check.
+#   (e) when the state job is enabled, laptop-state-backup's success
+#       marker ($HOME/backups/restic/.laptop-state-last-success-epoch,
+#       an epoch written only after local + R2 + Drive all succeed)
+#       must exist and be fresher than the threshold, and its timer
+#       must have triggered within the threshold (via (b)). A timer
+#       that never fires writes no marker, so the stall that ran
+#       2026-11-02..2026-11-14 (code#10294) is named within a day.
 # repo-archive-backup is covered via its timer's last-trigger time
 # only: its script and restic credentials live outside this repo, so
 # no run record is required of it (stated in laptop-backups.nix too).
@@ -30,8 +42,8 @@
 #   max-age-hours   (default 26, a little over one daily period; the
 #                   module option services.laptop-backups.watchdog
 #                   .maxAgeHours feeds this argument).
-#   jobs            comma-separated subset of dashboard,repo-archive
-#                   (default both). The module passes only the jobs
+#   jobs            comma-separated subset of dashboard,repo-archive,state,opencode-db
+#                   (default dashboard,repo-archive). The module passes only the jobs
 #                   whose enable flag is on: a disabled job has no
 #                   record and no timer, so requiring them would fail
 #                   the watchdog forever in a supported configuration.
@@ -94,6 +106,8 @@ fi
 timers=()
 want_job dashboard && timers+=(pm-dashboard-backup.timer)
 want_job repo-archive && timers+=(repo-archive-backup.timer)
+want_job state && timers+=(laptop-state-backup.timer)
+want_job opencode-db && timers+=(opencode-db-backup.timer)
 for timer in "${timers[@]}"; do
   job="${timer%.timer}"
   raw="$(systemctl --user show -p LastTriggerUSec --value "$timer" 2>/dev/null || true)"
@@ -113,6 +127,30 @@ for timer in "${timers[@]}"; do
     complain "$job: timer $timer last triggered $((age / 3600))h ago (threshold ${MAX_AGE_HOURS}h)"
   fi
 done
+
+# --- (e) opencode-db success marker (completion evidence, code#10297) -------
+# opencode-db-backup.sh writes the epoch of its last fully successful
+# run (all three restic legs verified) to the marker; a stale, future,
+# unreadable or missing marker names the job, exactly like the
+# dashboard run record in (a). Timer coverage comes from (b) above.
+OPENCODE_DB_MARKER="${LAPTOP_BACKUPS_OPENCODE_DB_MARKER:-$HOME/backups/restic/.opencode-db-last-success-epoch}"
+if want_job opencode-db; then
+  if [ ! -f "$OPENCODE_DB_MARKER" ]; then
+    complain "opencode-db-backup: no success marker at $OPENCODE_DB_MARKER"
+  else
+    marker_epoch="$(head -1 "$OPENCODE_DB_MARKER" 2>/dev/null || true)"
+    if ! [[ $marker_epoch =~ ^[0-9]+$ ]]; then
+      complain "opencode-db-backup: success marker at $OPENCODE_DB_MARKER is unreadable"
+    else
+      age=$((NOW_EPOCH - marker_epoch))
+      if [ "$age" -lt "$((-SKEW_TOLERANCE_SEC))" ]; then
+        complain "opencode-db-backup: success marker is $((-age))s in the future (skew tolerance ${SKEW_TOLERANCE_SEC}s)"
+      elif [ "$age" -gt "$MAX_AGE_SEC" ]; then
+        complain "opencode-db-backup: last success $((age / 3600))h ago (threshold ${MAX_AGE_HOURS}h)"
+      fi
+    fi
+  fi
+fi
 
 # --- (c) offsite presence on R2 ----------------------------------------------
 if want_job dashboard && [ "${LAPTOP_BACKUPS_OFFSITE_CHECK:-0}" = "1" ]; then
@@ -166,6 +204,64 @@ for s in json.load(sys.stdin):
       *"dashboard-$offsite_date.tar.zst"*) ;;
       *) complain "pm-dashboard-backup: offsite absence on R2: dashboard/$offsite_date/dashboard-$offsite_date.tar.zst not found (run record says complete)" ;;
       esac
+    fi
+  fi
+fi
+
+# --- (d) local pm-stack archive presence -------------------------------------
+PM_STACK_ROOT="$HOME/backups/pm-stack"
+if [ -d "$PM_STACK_ROOT" ]; then
+  newest_pm_stack_day=""
+  # nullglob: an unmatched glob must expand to nothing, not to the
+  # literal pattern (which the [ -d ] guard below would have to catch).
+  shopt -s nullglob
+  for day_dir in "$PM_STACK_ROOT"/*/; do
+    [ -d "$day_dir" ] || continue
+    day="${day_dir%/}"
+    day="${day##*/}"
+    [[ $day =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || continue
+    normalized_day="$(date -d "$day" +%F 2>/dev/null || true)"
+    [ "$normalized_day" = "$day" ] || continue
+
+    # The backup script creates the dated directory before its dumps;
+    # its mtime therefore detects a fresh failed run even when no file
+    # was ever written. Select by the ISO date, not mtime ordering, in
+    # case a later write touches an older day directory.
+    day_mtime="$(stat -c %Y -- "$day_dir" 2>/dev/null || true)"
+    [[ $day_mtime =~ ^[0-9]+$ ]] || continue
+    age=$((NOW_EPOCH - day_mtime))
+    [ "$age" -lt "$((-SKEW_TOLERANCE_SEC))" ] && continue
+    [ "$age" -gt "$MAX_AGE_SEC" ] && continue
+    if [[ -z $newest_pm_stack_day || $day > $newest_pm_stack_day ]]; then
+      newest_pm_stack_day="$day"
+    fi
+  done
+  shopt -u nullglob
+
+  if [ -n "$newest_pm_stack_day" ]; then
+    expected_archive="$PM_STACK_ROOT/$newest_pm_stack_day/pm-stack-$newest_pm_stack_day.tar.zst"
+    if [ ! -f "$expected_archive" ]; then
+      complain "pm-stack-backup: day $newest_pm_stack_day missing archive $expected_archive"
+    fi
+  fi
+fi
+
+# --- (e) laptop-state success marker -----------------------------------------
+if want_job state; then
+  MARKER="${LAPTOP_STATE_MARKER:-$HOME/backups/restic/.laptop-state-last-success-epoch}"
+  if [ ! -f "$MARKER" ]; then
+    complain "laptop-state-backup: no success marker at $MARKER"
+  else
+    marker_epoch="$(tr -d '[:space:]' <"$MARKER" 2>/dev/null || true)"
+    if ! [[ $marker_epoch =~ ^[0-9]+$ ]]; then
+      complain "laptop-state-backup: success marker at $MARKER is unreadable"
+    else
+      marker_age=$((NOW_EPOCH - marker_epoch))
+      if [ "$marker_age" -lt "$((-SKEW_TOLERANCE_SEC))" ]; then
+        complain "laptop-state-backup: success marker is $((-marker_age))s in the future (skew tolerance ${SKEW_TOLERANCE_SEC}s)"
+      elif [ "$marker_age" -gt "$MAX_AGE_SEC" ]; then
+        complain "laptop-state-backup: last success $((marker_age / 3600))h ago (threshold ${MAX_AGE_HOURS}h)"
+      fi
     fi
   fi
 fi

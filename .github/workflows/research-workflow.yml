@@ -1,25 +1,10 @@
 name: research-workflow
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "AGENTS.md"
-      - "CLAUDE.md"
-      - ".agents/**"
-      - "planning/**"
-      - "doc/README.md"
-      - "doc/DOCUMENTATION_PROTOCOL.md"
-      - "doc/**/main.md"
-      - "doc/**/transcript.txt"
-      - "doc/**/concepts/**"
-      - "doc/**/notes/**"
-      - "doc/**/receipts/**"
-      - "doc/**/decisions/**"
-      - "scripts/*research*workflow*.py"
-      - "scripts/tests/test_*workflow*.py"
-      - "scripts/tests/test_plan_check.py"
-      - ".github/workflows/research-workflow.yml"
+  schedule:
+    # Nightly instead of on every push to main (Drew, 2026-11-16; see
+    # .github/ci-policy.md "Nightly main CI").
+    - cron: "17 7 * * *"
   workflow_dispatch:
 
 permissions:

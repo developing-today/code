@@ -99,7 +99,8 @@ export interface ProjectPoolItem {
   /** Issue graph edges (#2399, part 1 of #1122): the data contract the
    *  weighted render (part 2, #2400) consumes. All edges are issue-only
    *  (PRs and drafts never carry them) and all are absence-friendly: a
-   *  missing edge means "GitHub has none", never an error. Refs use the
+   *  missing edge means "GitHub has none", never an error; incomplete
+   *  returned endpoints are retained in edgeDiagnostics. Refs use the
    *  same "owner/repo#123" canonical key as ref. */
   /** Sub-issue parent of the linked issue. Absent when it has none. */
   parentRef?: RefKey;
@@ -107,12 +108,23 @@ export interface ProjectPoolItem {
   blockedBy?: RefKey[];
   /** Refs this item blocks (GitHub "blocks"). Absent when none. */
   blocks?: RefKey[];
+  /** Project relation endpoints the collector could not turn into refs.
+   *  These are retained so a graph can distinguish incomplete source data
+   *  from a valid ref outside the loaded pool. */
+  edgeDiagnostics?: ProjectPoolEdgeDiagnostic[];
   /** Epic membership: the nearest sub-issue ancestor (following
    *  parentRef chains within the fetched pool) whose pool item has
    *  Project Kind "Epic". Absent for epics themselves, for items with
    *  no epic ancestor, and when the parent chain leaves the pool (the
    *  collector only knows Kind for items on the board). */
   epicRef?: RefKey;
+}
+
+export interface ProjectPoolEdgeDiagnostic {
+  relation: "parent" | "blockedBy" | "blocks";
+  state: "unavailable" | "malformed";
+  /** Best-effort raw canonical ref; null when the endpoint had no usable identity. */
+  target: string | null;
 }
 
 /** One configured field on Project #4, exported for repository-readable audits. */
@@ -248,7 +260,7 @@ export interface Provenance {
 export interface ProvenanceFacet {
   /** The provenance string, unchanged — also the chip's tooltip. */
   text: string;
-  state: "live" | "fixtures" | "stale" | "absent" | "invalid" | "error";
+  state: "live" | "partial-fixtures" | "fixtures" | "stale" | "absent" | "invalid" | "error";
   ageMs?: number;
   count?: number;
   countLabel?: string;
@@ -632,7 +644,7 @@ export interface DependencyRef {
   task: string;
   /** "owner/repo#123" when the prerequisite is a GitHub item. */
   ref?: RefKey;
-  status: "in-progress" | "queued" | "stalled" | "done" | "unknown";
+  status: import("./orchestration-dependency.ts").DependencyStatus;
   /** Session working the blocker, when one is. */
   workerSessionId?: string;
   /** Human label for the worker, e.g. "opencode-laptop · Jules 4259…". */
@@ -1432,6 +1444,28 @@ export interface PaygLine {
   accruedUsd: number | null;
   collectedUsd?: number | null;
   estimate?: PaygEstimate | null;
+  /** Settled figure reconciled against an invoice record (#1056) — or,
+   * for the Meta line, the collected console figure (money that actually
+   * moved). Present only once the line has been reconciled. */
+  settledUsd?: number | null;
+  /** ISO date of the settling invoice/record. */
+  settledAt?: string | null;
+  /** Full timestamp of the settling record, when the line was reconciled
+   * from one — settledAt is date-only, and the write-back in
+   * recordsFromPaygLines must preserve the record's original instant so
+   * a same-day correction orders correctly (CodeRabbit, PR #10433). */
+  settledTs?: string | null;
+  /** Source class of the settling record ("invoice" for Cloudflare). */
+  settledSource?: UsageSourceClass | null;
+  /** settledUsd minus the comparison figure (the estimate's high when the
+   * line carries an estimate, else accruedUsd), signed USD. */
+  settledVarianceUsd?: number | null;
+  /** ISO date the estimate's period ended, when known — drives the
+   * stale-estimate flag below. */
+  estimatePeriodEnd?: string | null;
+  /** Stewardship flag rule (#1056): an unreconciled estimate whose period
+   * ended more than one invoice cycle ago, with no settled record. */
+  staleEstimate?: boolean;
   /** Unbilled accrual counted toward the $5 bubble (the counted figure). */
   unbilledUsd: number | null;
   note: string;

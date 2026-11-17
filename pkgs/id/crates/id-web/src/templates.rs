@@ -256,6 +256,8 @@ pub fn render_file_list_content(page: &FileListPage) -> String {
         html.push_str("<input type=\"text\" id=\"bulk-tag-key\" aria-label=\"Bulk tag key\" class=\"input input-bordered input-xs w-24 bg-base-100\" placeholder=\"key\" />");
         html.push_str("<input type=\"text\" id=\"bulk-tag-value\" aria-label=\"Bulk tag value\" class=\"input input-bordered input-xs w-24 bg-base-100\" placeholder=\"value (optional)\" />");
         html.push_str("<button class=\"btn btn-ghost btn-xs font-mono\" aria-label=\"Add bulk tag\" onclick=\"window.idApp?.bulkAddTag?.()\">+ add tag</button>");
+        html.push_str("<input type=\"text\" id=\"bulk-send-dest\" aria-label=\"Destination server node ID\" class=\"input input-bordered input-xs w-32 bg-base-100\" placeholder=\"destination node ID\" />");
+        html.push_str("<button class=\"btn btn-ghost btn-xs font-mono\" aria-label=\"Send selected files to server\" onclick=\"window.idApp?.bulkSendToServer?.()\">Send to server\u{2026}</button>");
         html.push_str("<button class=\"btn btn-ghost btn-xs font-mono text-base-content/50\" aria-label=\"Clear file selection\" onclick=\"window.idApp?.bulkClearSelection?.()\">clear</button>");
         html.push_str("</div>");
 
@@ -536,7 +538,7 @@ pub fn render_editor(doc_id: &str, name: &str, content: &str, hash: &str) -> Str
     html.push_str("            <button class=\"btn btn-ghost btn-xs font-mono\" id=\"save-btn\" title=\"Save (Ctrl+S)\" aria-label=\"Save document\" onclick=\"window.idApp?.triggerSave?.()\" disabled>save</button>\n");
     // Download dropdown
     html.push_str("            <span class=\"relative\" id=\"download-dropdown\">\n");
-    html.push_str("                <button class=\"btn btn-ghost btn-xs font-mono\" id=\"download-btn\" title=\"Download\" aria-label=\"Download\">dl</button>\n");
+    html.push_str("                <button class=\"btn btn-ghost btn-xs font-mono\" id=\"download-btn\" title=\"Download\" aria-label=\"Download\" aria-haspopup=\"true\" aria-expanded=\"false\" aria-controls=\"download-menu\">dl</button>\n");
     html.push_str("                <span class=\"dropdown-menu\" id=\"download-menu\">\n");
     html.push_str(
         "                    <button class=\"px-3 py-1 text-xs hover:bg-base-300 cursor-pointer text-left whitespace-nowrap\" data-dl-format=\"raw\">raw</button>\n",

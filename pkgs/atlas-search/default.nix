@@ -32,6 +32,7 @@
   rustPlatform,
   callPackage,
   python3,
+  git,
   craneLib ? null,
 }:
 
@@ -115,10 +116,22 @@ if craneLib != null then
       src = packageSrc;
       inherit cargoArtifacts meta;
 
+      # The server tests run jobs end to end, and every job writes
+      # traces under home_dir()/.local/state/atlas-search (server.rs).
+      # The build sandbox's HOME is /homeless-shelter (unwritable), so
+      # without this every server::tests job fails on the trace sink
+      # and the suite goes red (verified 2026-11-14).
+      preCheck = ''
+        export HOME=$TMPDIR
+      '';
+
       # Preserve the buildRustPackage behaviour this package had:
       # the test suite runs in the check phase, and the smoke
       # installCheck runs against the installed tree.
       doCheck = true;
+
+      # The atlas-core detection tests spawn git (code#10993).
+      nativeCheckInputs = [ git ];
 
       nativeInstallCheckInputs = [ python3 ];
       doInstallCheck = true;
@@ -133,10 +146,22 @@ else
 
     cargoLock.lockFile = ./Cargo.lock;
 
+    # The atlas-core detection tests spawn git (code#10993).
+    nativeCheckInputs = [ git ];
+
     env = ortLibEnv;
 
     nativeInstallCheckInputs = [ python3 ];
     doInstallCheck = true;
+    # The server tests run jobs end to end, and every job writes
+    # traces under home_dir()/.local/state/atlas-search (server.rs).
+    # The build sandbox's HOME is /homeless-shelter (unwritable), so
+    # without this every server::tests job fails on the trace sink
+    # and the suite goes red (verified 2026-11-14).
+    preCheck = ''
+      export HOME=$TMPDIR
+    '';
+
     # The smoke: fixture FTS-only + embedded queries byte-compared
     # with the recorded Python envelopes, plus the closure-ONNX
     # load probe (an empty model dir must fail at the tokenizer,

@@ -9,7 +9,7 @@
 
 use super::*;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
@@ -183,6 +183,11 @@ pub struct WorldCore {
     /// Schedule-delivery consent by peer world (#1355 part 2): this
     /// world's half of the reciprocal F12.14 grant pair.
     pub(crate) schedule_grants: BTreeMap<String, ScheduleGrant>,
+    /// This world's F12.14 portal grant book (code#1068 wiring
+    /// slice): the admin-written registry of portal peers, restored
+    /// from `PortalGrantSet` journal entries. One half of the mutual
+    /// check — a send also reads the peer world's book.
+    pub(crate) portal_grants: id_caps::portal::PortalGrants,
     /// Cross-world schedule fires this world has durably accepted, keyed
     /// by (source world, schedule id, planned due time): the receipts a
     /// source retry is answered from (#1355 part 2).
@@ -231,8 +236,9 @@ pub struct WorldCore {
     /// Author keys bound to participants for signed move capture (#2814):
     /// participant id to the player's ed25519 verifying key bytes. A bound
     /// participant's inputs must arrive player-signed (see
-    /// [`signed`](super::signed)). Runtime state in this first pass;
-    /// journal persistence of bindings is a follow-up.
+    /// [`signed`](super::signed)). Journaled since #4346: bindings,
+    /// chain positions, and accepted records are rebuilt by journal
+    /// replay and preserved across compaction by `checkpoint_entries`.
     pub(crate) author_keys: HashMap<u64, [u8; 32]>,
     /// Each bound participant's expected signed-move chain position.
     pub(crate) move_chains: HashMap<u64, signed::MoveChain>,
@@ -462,6 +468,7 @@ impl WorldCore {
             caps_ceiling: crate::world_caps::default_ceiling_names(),
             schedules: BTreeMap::new(),
             schedule_grants: BTreeMap::new(),
+            portal_grants: id_caps::portal::PortalGrants::new(),
             schedule_receipts: BTreeSet::new(),
             isolation: Isolation::default(),
             cross_world_write: false,
@@ -834,6 +841,127 @@ impl WorldCore {
                         );
                     }
                 }
+                JournalEntry::AuthorKeyBound {
+                    participant_id,
+                    author,
+                } => {
+                    let author =
+                        hex_decode_32(&author).context("malformed author key in journal")?;
+                    ensure!(
+                        core.capabilities.contains_key(&participant_id),
+                        "journal binds an author key to unknown participant {participant_id}"
+                    );
+                    if let Some(bound) = core.author_keys.get(&participant_id) {
+                        ensure!(
+                            *bound == author,
+                            "journal binds a different author key to participant {participant_id}"
+                        );
+                    } else {
+                        core.author_keys.insert(participant_id, author);
+                        core.move_chains.entry(participant_id).or_default();
+                    }
+                }
+                JournalEntry::SignedMoveAccepted { record } => {
+                    let record = record
+                        .to_record()
+                        .context("malformed signed move in journal")?;
+                    ensure!(
+                        core.capabilities.contains_key(&record.participant_id),
+                        "journal accepts a signed move for unknown participant {}",
+                        record.participant_id
+                    );
+                    let author = core
+                        .author_keys
+                        .get(&record.participant_id)
+                        .copied()
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "journal accepts a signed move for participant {} with no bound author key",
+                                record.participant_id
+                            )
+                        })?;
+                    ensure!(
+                        author == record.author,
+                        "journal signed move author does not match the bound key for participant {}",
+                        record.participant_id
+                    );
+                    // Cross-reference the committed input while it is
+                    // retained: with it, replay recomputes the payload
+                    // commitment exactly as the live seam did. Once the
+                    // input has aged out of the retained window under
+                    // compaction, replay falls back to the header checks
+                    // (see MoveChain::verify_journaled).
+                    let committed_input = match core
+                        .events
+                        .iter()
+                        .find(|event| event.sequence == record.world_sequence)
+                    {
+                        Some(event) => {
+                            // The referenced sequence is still retained,
+                            // so it must be this participant's input.
+                            // Anything else is a false cross-reference,
+                            // not history that aged out (Codex review on
+                            // PR #9037).
+                            ensure!(
+                                event.participant_id == record.participant_id,
+                                "journal signed move references world sequence {} \
+                                 committed by participant {}, not {}",
+                                record.world_sequence,
+                                event.participant_id,
+                                record.participant_id
+                            );
+                            match &event.kind {
+                                WorldEventKind::Input(input) => Some(input.clone()),
+                                _ => bail!(
+                                    "journal signed move references world sequence {} \
+                                     which is not a committed input",
+                                    record.world_sequence
+                                ),
+                            }
+                        }
+                        None => {
+                            // Header-only verification is legitimate only
+                            // for an input that genuinely aged out of the
+                            // retained window: its sequence must already
+                            // have committed at this point in the replay
+                            // AND have fallen off the front of the window.
+                            ensure!(
+                                record.world_sequence >= 1
+                                    && record.world_sequence <= core.sequence,
+                                "journal signed move references world sequence {} \
+                                 beyond the restored sequence {}",
+                                record.world_sequence,
+                                core.sequence
+                            );
+                            if let Some(front) = core.events.front() {
+                                ensure!(
+                                    record.world_sequence < front.sequence,
+                                    "journal signed move references world sequence {} \
+                                     inside the retained window, but no input event \
+                                     is retained for it",
+                                    record.world_sequence
+                                );
+                            }
+                            None
+                        }
+                    };
+                    let world_id = core.world_id.clone();
+                    let chain = core.move_chains.entry(record.participant_id).or_default();
+                    let event = match &committed_input {
+                        Some(input) => chain
+                            .verify(&record.bytes, &world_id, input, &author)
+                            .context("journal signed move does not re-verify")?,
+                        None => chain
+                            .verify_journaled(&record.bytes, &world_id, &author)
+                            .context("journal signed move does not re-verify")?,
+                    };
+                    ensure!(
+                        event.id == record.event_id && event.header.seq_num == record.author_seq,
+                        "journal signed move record does not match its signed bytes"
+                    );
+                    chain.accept(&event);
+                    core.signed_moves.push(record);
+                }
                 JournalEntry::CapsGranted { granted } => {
                     for name in &granted {
                         ensure!(
@@ -931,6 +1059,18 @@ impl WorldCore {
                     } else {
                         core.schedule_grants.remove(&peer);
                     }
+                }
+                JournalEntry::PortalGrantSet { peer, granted } => {
+                    crate::world_hub::validate_world_name(&peer)
+                        .context("invalid portal grant peer in journal")?;
+                    core.portal_grants.restore_state(
+                        &peer,
+                        Some(if granted {
+                            id_caps::portal::PortalGrantState::Granted
+                        } else {
+                            id_caps::portal::PortalGrantState::Revoked
+                        }),
+                    );
                 }
                 JournalEntry::ScheduleReceived { source, id, at_ms } => {
                     crate::world_caps::validate_schedule_id(&id)
@@ -1649,6 +1789,15 @@ impl WorldCore {
                 receive: grant.receive,
             });
         }
+        // Portal grants ride along like the schedule grants: without
+        // them compaction could forget a grant (and re-refuse a live
+        // portal) or a revocation (and resurrect one).
+        for (peer, state) in self.portal_grants.peers() {
+            entries.push(JournalEntry::PortalGrantSet {
+                peer: peer.to_owned(),
+                granted: state == id_caps::portal::PortalGrantState::Granted,
+            });
+        }
         for (source, id, at_ms) in &self.schedule_receipts {
             entries.push(JournalEntry::ScheduleReceived {
                 source: source.clone(),
@@ -1743,6 +1892,26 @@ impl WorldCore {
                 "checkpoint scalar fields exceed the encoded size limit ({MAX_CHECKPOINT_PART_BYTES} bytes); keep the journal untrimmed"
             );
             entries.push(checkpoint);
+        }
+        // Signed play rides through compaction behind the checkpoint
+        // itself (issue #4346): bindings first, then every accepted
+        // record in world order, so replay cross-references the
+        // checkpoint's retained events and re-verifies each chain in
+        // sequence. An older binary refuses these entries at the
+        // header (version 8) instead of restoring a world that lost
+        // its chains.
+        let mut bound_ids: Vec<u64> = self.author_keys.keys().copied().collect();
+        bound_ids.sort_unstable();
+        for participant_id in bound_ids {
+            entries.push(JournalEntry::AuthorKeyBound {
+                participant_id,
+                author: hex_encode(&self.author_keys[&participant_id]),
+            });
+        }
+        for record in &self.signed_moves {
+            entries.push(JournalEntry::SignedMoveAccepted {
+                record: JournalSignedMove::from_record(record),
+            });
         }
         // The compacted journal keeps the rollback contract (see
         // `JOURNAL_VERSION`): when the checkpoint re-emits an entry a
@@ -2386,17 +2555,36 @@ impl WorldCore {
     /// Fails if the capability does not authorize input, or a different
     /// key is already bound to the participant.
     pub fn bind_author_key(&mut self, token: &JoinCapability, author_key: [u8; 32]) -> Result<u64> {
+        self.bind_author_key_entry(token, author_key)
+            .map(|(participant_id, _entry)| participant_id)
+    }
+
+    /// As [`WorldCore::bind_author_key`], also returning the journal
+    /// entry for a binding this call newly made (`None` for a same-key
+    /// re-bind), so the actor can persist it (#4346).
+    pub(crate) fn bind_author_key_entry(
+        &mut self,
+        token: &JoinCapability,
+        author_key: [u8; 32],
+    ) -> Result<(u64, Option<JournalEntry>)> {
         let participant_id = self.authorize(token, WorldScopes::INPUT)?;
         if let Some(bound) = self.author_keys.get(&participant_id) {
             ensure!(
                 *bound == author_key,
                 "participant {participant_id} already has a different author key bound"
             );
+            Ok((participant_id, None))
         } else {
             self.author_keys.insert(participant_id, author_key);
             self.move_chains.entry(participant_id).or_default();
+            Ok((
+                participant_id,
+                Some(JournalEntry::AuthorKeyBound {
+                    participant_id,
+                    author: hex_encode(&author_key),
+                }),
+            ))
         }
-        Ok(participant_id)
     }
 
     /// Validate a player-signed input and prepare its event, verifying
@@ -2466,7 +2654,31 @@ impl WorldCore {
         &mut self,
         event: &WorldEvent,
         signed: &crate::chain::Event,
-    ) -> Result<()> {
+    ) -> Result<signed::SignedMoveRecord> {
+        let record = self.signed_move_record(event, signed)?;
+        let chain = self.move_chains.entry(record.participant_id).or_default();
+        chain.accept(signed);
+        self.signed_moves.push(record.clone());
+        Ok(record)
+    }
+
+    /// Compute the journal record for a signed move WITHOUT applying it:
+    /// validate the move against the author's bound key and current chain
+    /// position and build the record the journal persists. The actor
+    /// persists this record atomically with the committed input (one
+    /// journal transaction) BEFORE applying either in memory, then calls
+    /// [`WorldCore::record_signed_move`] to apply — which recomputes the
+    /// same record from unchanged state and advances the chain.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the participant has no bound author key, or the signed
+    /// move is not the author's expected next move.
+    pub(crate) fn signed_move_record(
+        &self,
+        event: &WorldEvent,
+        signed: &crate::chain::Event,
+    ) -> Result<signed::SignedMoveRecord> {
         let participant_id = event.participant_id;
         let author = self
             .author_keys
@@ -2475,21 +2687,23 @@ impl WorldCore {
             .ok_or_else(|| {
                 anyhow::anyhow!("participant {participant_id} has no bound author key")
             })?;
-        let chain = self.move_chains.entry(participant_id).or_default();
+        let chain = self
+            .move_chains
+            .get(&participant_id)
+            .cloned()
+            .unwrap_or_default();
         ensure!(
             signed.header.seq_num == chain.next_seq() && signed.header.backlink == chain.frontier(),
             "signed move is no longer the author's expected next move at commit"
         );
-        chain.accept(signed);
-        self.signed_moves.push(signed::SignedMoveRecord {
+        Ok(signed::SignedMoveRecord {
             world_sequence: event.sequence,
             participant_id,
             author,
             author_seq: signed.header.seq_num,
             event_id: signed.id,
             bytes: signed.bytes.clone(),
-        });
-        Ok(())
+        })
     }
 
     /// Commit a player-signed game input (#2814): the move is verified
@@ -2518,7 +2732,63 @@ impl WorldCore {
         &self.signed_moves
     }
 
+    /// Ingest every accepted signed move's bytes into `store`, in world
+    /// sequence order (#4346): the documented hand-off between the world
+    /// and the event store. The store's existing ingest rules do the
+    /// rest — a rival signed move at an already-accepted author sequence
+    /// produces a fork proof there, whether it arrives before or after
+    /// this hand-off. Returns one ingest outcome per record, in the
+    /// same order; re-ingesting the same records is a duplicate, not an
+    /// error.
+    ///
+    /// # Errors
+    ///
+    /// Returns the event store's error if an ingest fails at the
+    /// storage layer. Refusals are outcomes, not errors.
+    pub fn ingest_signed_moves(
+        &self,
+        store: &mut id_events::event_store::EventStore,
+        now_ms: u64,
+    ) -> Result<Vec<id_events::event_store::Ingest>> {
+        let mut outcomes = Vec::with_capacity(self.signed_moves.len());
+        for record in &self.signed_moves {
+            outcomes.push(store.ingest(&record.bytes, now_ms)?);
+        }
+        Ok(outcomes)
+    }
+
     pub(crate) fn prepare_input(&self, token: &JoinCapability, input: &[u8]) -> Result<WorldEvent> {
+        let sequence = self
+            .sequence
+            .checked_add(1)
+            .context("world event sequence exhausted")?;
+        self.prepare_input_at(token, input, sequence, &HashMap::new())
+    }
+
+    /// Prepare one input of a group-commit batch (#8239): the caller assigns
+    /// `sequence` explicitly (batch staging cannot use `prepare_input`,
+    /// which always prepares at `sequence + 1` without advancing it), and
+    /// `staged_spends` carries the uses already staged earlier in the batch
+    /// for each capability in the chain, so a batch from one participant
+    /// cannot over-admit past a uses limit that `spend` only reaches at
+    /// commit time.
+    pub(crate) fn prepare_input_staged(
+        &self,
+        token: &JoinCapability,
+        input: &[u8],
+        sequence: u64,
+        staged_spends: &HashMap<u64, u32>,
+    ) -> Result<WorldEvent> {
+        self.prepare_input_at(token, input, sequence, staged_spends)
+    }
+
+    fn prepare_input_at(
+        &self,
+        token: &JoinCapability,
+        input: &[u8],
+        sequence: u64,
+        staged_spends: &HashMap<u64, u32>,
+    ) -> Result<WorldEvent> {
         let participant_id = self.authorize(token, WorldScopes::INPUT)?;
         ensure!(
             !self.author_keys.contains_key(&participant_id),
@@ -2528,22 +2798,61 @@ impl WorldCore {
             !self.limits.region_sharded,
             "region-sharded worlds require entity-addressed input"
         );
-        self.ensure_uses_left(participant_id)?;
+        self.ensure_uses_left_staged(participant_id, staged_spends)?;
         ensure!(
             input.len() <= self.limits.input_bytes,
             "world input exceeds {} bytes",
             self.limits.input_bytes
         );
         ensure!(!input.is_empty(), "world input must not be empty");
-        let sequence = self
-            .sequence
-            .checked_add(1)
-            .context("world event sequence exhausted")?;
         Ok(WorldEvent {
             sequence,
             participant_id,
             kind: WorldEventKind::Input(input.to_vec()),
         })
+    }
+
+    /// `ensure_uses_left` against committed uses plus the spends a batch has
+    /// already staged (#8239): each capability in the chain must still have
+    /// a use left after both.
+    pub(crate) fn ensure_uses_left_staged(
+        &self,
+        participant_id: u64,
+        staged_spends: &HashMap<u64, u32>,
+    ) -> Result<()> {
+        let mut left: Option<u32> = None;
+        let mut current = Some(participant_id);
+        while let Some(id) = current {
+            let Some(record) = self.capabilities.get(&id) else {
+                break;
+            };
+            if let Some(limit) = record.bounds.uses {
+                let staged = staged_spends.get(&id).copied().unwrap_or(0);
+                let remaining = limit.saturating_sub(record.used.saturating_add(staged));
+                left = Some(left.map_or(remaining, |so_far: u32| so_far.min(remaining)));
+            }
+            current = record.parent;
+        }
+        ensure!(
+            left.is_none_or(|left| left > 0),
+            "world capability has no uses left"
+        );
+        Ok(())
+    }
+
+    /// Record one staged spend against the participant and each ancestor,
+    /// mirroring `spend`'s chain walk, so the next staged prepare in the
+    /// same batch sees it (#8239).
+    pub(crate) fn note_staged_spend(
+        &self,
+        participant_id: u64,
+        staged_spends: &mut HashMap<u64, u32>,
+    ) {
+        let mut current = Some(participant_id);
+        while let Some(id) = current {
+            *staged_spends.entry(id).or_insert(0) += 1;
+            current = self.capabilities.get(&id).and_then(|record| record.parent);
+        }
     }
 
     pub(crate) fn prepare_entity_input(
@@ -2701,8 +3010,12 @@ impl WorldCore {
     }
 
     pub(crate) fn commit_prepared(&mut self, event: WorldEvent) -> Result<WorldEvent> {
+        let next_sequence = self
+            .sequence
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("world sequence exhausted"))?;
         ensure!(
-            event.sequence == self.sequence.saturating_add(1),
+            event.sequence == next_sequence,
             "prepared world event is stale"
         );
         self.sequence = event.sequence;

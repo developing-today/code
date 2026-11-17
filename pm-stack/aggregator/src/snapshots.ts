@@ -558,11 +558,25 @@ export async function withSnapshotStoreLock<T>(dir: string, fn: () => Promise<T>
   }
 }
 
+export interface SnapshotsRemote {
+  /** Every observation, oldest first (rollups are a file-store artifact). */
+  readAll(): Promise<SnapshotRecord[]>;
+  /** Insert records, skipping duplicates by snapshot key. Returns how
+   *  many were actually inserted. */
+  append(records: readonly SnapshotRecord[]): Promise<number>;
+}
+
 export class SnapshotStore {
-  constructor(private readonly dir: string) {}
+  constructor(
+    private readonly dir: string,
+    /** #6815: when set, the store uses this backend instead of the dir.
+     *  The directory is then never read or written (no dual write). */
+    private readonly remote?: SnapshotsRemote,
+  ) {}
 
   /** Every valid record in the store, oldest first. Malformed lines are skipped. */
   async readAll(): Promise<SnapshotRecord[]> {
+    if (this.remote) return this.remote.readAll();
     let names: string[];
     try {
       names = (await readdir(this.dir)).filter((n) => FILE_RE.test(n) || ROLLUP_RE.test(n)).sort();
@@ -608,6 +622,7 @@ export class SnapshotStore {
 
   /** Dedupe keys of every observation already compacted into rollups. */
   async rollupKeys(): Promise<string[]> {
+    if (this.remote) return []; // DB history is never compacted into rollups
     let names: string[];
     try {
       names = (await readdir(this.dir)).filter((n) => ROLLUP_RE.test(n)).sort();
@@ -639,6 +654,19 @@ export class SnapshotStore {
    * compaction appends nothing.
    */
   async append(records: SnapshotRecord[]): Promise<number> {
+    if (this.remote) {
+      // Same readback refusal (#1540) as the file path: a record that
+      // cannot survive a JSON round-trip is not accepted.
+      const valid = records.filter(isSnapshotRecord).filter((r) => {
+        try {
+          return isSnapshotRecord(JSON.parse(JSON.stringify(r)));
+        } catch {
+          return false;
+        }
+      });
+      if (!valid.length) return 0;
+      return this.remote.append(valid);
+    }
     return withSnapshotStoreLock(this.dir, () => this.appendLocked(records));
   }
 
@@ -685,6 +713,22 @@ export class SnapshotStore {
    * is computed and nothing on disk changes.
    */
   async compact(opts: { now?: Date; retentionMonths?: number; dryRun?: boolean } = {}): Promise<CompactionReport> {
+    if (this.remote) {
+      // Raw history lives in the database and is not compacted into
+      // monthly rollups; retention is a database concern.
+      const retentionMonths = opts.retentionMonths ?? 13;
+      if (!Number.isInteger(retentionMonths) || retentionMonths < 1) {
+        throw new RangeError(
+          `SnapshotStore.compact: retentionMonths must be a positive integer, got ${opts.retentionMonths}`,
+        );
+      }
+      const currentMonth = (opts.now ?? new Date()).toISOString().slice(0, 7);
+      return {
+        cutoffMonth: shiftMonth(currentMonth, -retentionMonths),
+        months: [],
+        dryRun: opts.dryRun ?? false,
+      };
+    }
     if (opts.dryRun) return this.compactInner(opts);
     return withSnapshotStoreLock(this.dir, () => this.compactInner(opts));
   }

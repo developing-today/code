@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
+# Usage: hardware-doc-init.sh
 # Ensure the hardware-doc knowledge base is present beside this repository and
-# symlinked into place at doc/hardware.
+# symlinked into place at doc/hardware. Accepts no positional arguments;
+# configuration is via HARDWARE_DOC_URL and HARDWARE_DOC_DIR_NAME.
 #
 #   hardware-doc is a SEPARATE repository: https://github.com/developing-today/hardware-doc
 #   It is deliberately not a submodule and not committed here — it is ~440 MB, which
@@ -20,6 +22,12 @@
 #   * Only ever fast-forwards. No merge, no rebase, no reset, no checkout of tracked files.
 #   * Re-runnable. Doing nothing is a success.
 set -uo pipefail
+
+if [ "$#" -ne 0 ]; then
+  printf 'hardware-doc-init: usage error: unexpected argument(s): %s\n' "$*" >&2
+  printf 'usage: hardware-doc-init.sh\n' >&2
+  exit 2
+fi
 
 REPO_URL="${HARDWARE_DOC_URL:-https://github.com/developing-today/hardware-doc.git}"
 DIR_NAME="${HARDWARE_DOC_DIR_NAME:-hardware-doc}"

@@ -1,9 +1,9 @@
-// Supabase access for the aggregator — the exact path the fleet-feed
-// collector uses for muse-dev2 (scripts/collect-fleet-feed.ts): SQL
+// Supabase access for the aggregator — the same Management API path the
+// fleet-feed collector uses (scripts/collect-fleet-feed.ts): SQL
 // over the Management API query endpoint, authenticated with the
 // Bitwarden secret named `supabase.muse-dev2.access-token-muse-cli` (the sbp_
-// management token), project ref from $SUPABASE_PROJECT_REF, else the
-// Bitwarden `supabase.muse-dev2.project-ref` secret, else the muse-dev2 ref.
+// management token), project ref from $SUPABASE_PROJECT_REF or the canonical
+// Bitwarden `supabase.project-ref` pointer.
 // The token is only ever sent to api.supabase.com; it is never logged.
 import { resolveBwsSecret } from "./secrets.ts";
 
@@ -29,6 +29,20 @@ export interface SupabaseClient {
   query<T = Record<string, unknown>>(sql: string): Promise<T[]>;
 }
 
+/** Resolve the current project ref without pinning a project in source. */
+export async function resolveSupabaseProjectRef(
+  resolveSecret: typeof resolveBwsSecret = resolveBwsSecret,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): Promise<string | null> {
+  const override = env.SUPABASE_PROJECT_REF?.trim();
+  if (override) return override;
+  // #6815: the canonical BWS entry is the environment-scoped
+  // `supabase.muse-dev2.project-ref`; the older unscoped pointer is kept
+  // as a first choice for deployments that still carry it.
+  const ref = (await resolveSecret("supabase.project-ref")) ?? (await resolveSecret("supabase.muse-dev2.project-ref"));
+  return ref?.trim() || null;
+}
+
 async function supabaseQuery(token: string, ref: string, sql: string): Promise<unknown> {
   const res = await fetch(`https://api.supabase.com/v1/projects/${ref}/database/query`, {
     method: "POST",
@@ -41,7 +55,7 @@ async function supabaseQuery(token: string, ref: string, sql: string): Promise<u
 }
 
 /**
- * Create the shared muse-dev2 client resolver. In-flight calls share one
+ * Create the shared Supabase client resolver. In-flight calls share one
  * attempt and successful clients stay cached; a null result is fail-soft
  * but not permanent, so a later call can recover.
  * Lazy-init contract (success-only memoization): README "Lazy-initialization contract" (#3879).
@@ -56,10 +70,8 @@ export function createSupabaseClientGetter(
       const pending = (async () => {
         const token = await resolveSecret("supabase.muse-dev2.access-token-muse-cli");
         if (!token) return null;
-        const ref =
-          process.env.SUPABASE_PROJECT_REF ??
-          (await resolveSecret("supabase.muse-dev2.project-ref")) ??
-          "keihfchslgjetkmnmzra";
+        const ref = await resolveSupabaseProjectRef(resolveSecret);
+        if (!ref) return null;
         return {
           ref,
           async query<T = Record<string, unknown>>(sql: string): Promise<T[]> {
@@ -77,5 +89,5 @@ export function createSupabaseClientGetter(
   };
 }
 
-/** The shared muse-dev2 client, fail-soft while its management token is unavailable. */
+/** The shared Supabase client, fail-soft while its management token or project ref is unavailable. */
 export const getSupabaseClient = createSupabaseClientGetter();

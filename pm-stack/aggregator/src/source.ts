@@ -2,6 +2,12 @@
 // whether they are looking at fixtures or live readers — swapping one for
 // the other is a config change (PM_AGG_SOURCE), not a code change.
 import type { SectionDiagnosis } from "./feed.ts";
+import type { QueueSnapshot } from "./queue.ts";
+import type { Phase12Snapshot } from "./phase12.ts";
+import type { PhaseMappingSnapshot } from "./phase-mapping.ts";
+import type { ProjectDocSnapshot, ProjectDocTarget } from "./project-doc.ts";
+import type { BuildHealthSnapshot } from "./build-health.ts";
+import type { F12PrRef } from "./f12-readiness.ts";
 import type { NeedsDrewCensus } from "./needs-drew.ts";
 import type { RepoCensus } from "./coverage.ts";
 import type {
@@ -80,6 +86,45 @@ export interface Source {
    *  omit it and the attention view renders the census as unavailable
    *  instead of as an empty queue. */
   needsDrew?(): Promise<NeedsDrewCensus | null>;
+  /** The #1235 issue-body snapshot for the Path to Phase 12 panel
+   * (#9922); null = not collected / the body feed could not be read.
+   * Optional like needsDrew: sources that cannot read issue bodies
+   * omit it and the panel renders unavailable instead of inventing
+   * a step list. */
+  phase12?(): Promise<Phase12Snapshot | null>;
+  /** The Phase tracker F-item mapping snapshot (#9923 step 3),
+   * parsed from planning/roadmaps/id.md in the code checkout;
+   * null = unavailable. Optional like phase12: sources that cannot
+   * read the checkout omit it and the panel withholds mapped
+   * progress instead of inventing it. */
+  phaseMapping?(): Promise<PhaseMappingSnapshot | null>;
+  /** The project description + latest-status snapshot (#1108
+   * remainder), derived from the project's roadmap file and the
+   * newest doc/ status record in the code checkout; null = the
+   * checkout could not be read. Optional like phaseMapping:
+   * sources that cannot read the checkout omit it and the project
+   * page falls back to the registry text. */
+  projectDoc?(target: ProjectDocTarget): Promise<ProjectDocSnapshot | null>;
+  /** The Actions-API build-health snapshot for the id section's
+   * Build health panel (#9924); null = not collected / unavailable.
+   * Optional like phase12: sources that cannot read the Actions API
+   * omit it and the panel renders unavailable. */
+  buildHealth?(): Promise<BuildHealthSnapshot | null>;
+  /** The #534 issue-body snapshot for the Phase 12 readiness panel's
+   * design column (#9926); null = unavailable. Optional like
+   * phase12: sources that cannot read issue bodies omit it. */
+  phase12Design?(): Promise<Phase12Snapshot | null>;
+  /** PR cross-references per issue number, from issue timelines, for
+   * the readiness panel's PR column (#9926); null = the timeline
+   * read is unavailable. Optional like phase12Design. */
+  f12PrRefs?(): Promise<Map<number, F12PrRef[]> | null>;
+  /** The read-only fleet-queue collector snapshot (#9920): per-queue
+   * counts + task rows from the queue-broker's /health and /list
+   * read verbs, with the source timestamp and stale/unavailable
+   * state on the payload. Optional like phase12: sources that
+   * cannot read the broker omit it and the panels render the queue
+   * source as unavailable instead of inventing counts. */
+  queue?(): Promise<QueueSnapshot | null>;
   /** Which session sources are wired, for the coverage note (slice 2). */
   coverage(): Promise<SourceCoverage[]>;
   provenance(): Provenance;

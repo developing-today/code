@@ -46,14 +46,13 @@ Domain-starter parent references are never emitted as hard native blockers. Sour
 
 Source-local candidate aliases normalized for this packet: DST-CMD-01 → DST-01, CLI-02; PRI-PROFILE-01 → PRI-01.
 
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
 
 - **First failing test:** `resolve_priority_preserves_ratified_15_25_without_snapping`
 - **Oracle:** The source slice’s stated reference model, golden fixture, or invariant; compare expected and observed state explicitly. No mock-only claim of deployed/live behavior.
-- **Done command:** `Add `resolve_priority_preserves_ratified_15_25_without_snapping` to `pm-stack/dispatch/test/validate.test.ts`, prove it fails against the current 15→10/25→20 behavior, then run `cd pm-stack/dispatch && bun test test/validate.test.ts`; the file's existing priority tests and new regression must execute.`
+- **Done command:** `Add `resolve_priority_preserves_ratified_15_25_without_snapping`to`pm-stack/dispatch/test/validate.test.ts`, prove it fails against the current 15→10/25→20 behavior, then run `cd pm-stack/dispatch && bun test test/validate.test.ts`; the file's existing priority tests and new regression must execute.`
 - Tests must first be listed by exact name in the owning target (`-- --list`); assert the test exists before execution. A zero-test filter passing is not acceptance.
 
 ## Acceptance and negative cases
@@ -88,9 +87,9 @@ Negative coverage: stale input, duplicate/replay, ambiguous resource, unauthoriz
 | `DST-02` / crucial | Preserve ratified `expedite=15`/`next-up=25` band values losslessly. Owns existing `pm-stack/dispatch/src/validate.ts`, `pm-stack/dispatch/test/validate.test.ts`. | #7030 evidence; `DST-CMD-01`; `PRI-PROFILE-01` contract | Named TS tests prove 15/25 survive exactly and do not alias 10/20; tests are listed/nonzero; unsupported values have typed outcome. |
 **Future red-first test commands / oracles per issue:** Exact future Rust test commands are: DST-01 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_distribution_command_identity_reason_and_version`; DST-03 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_distribution_atomic_intent_revision`; DST-05 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_distribution_projection_replay`; DST-06 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_distribution_host_order_hash`; DST-07 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_distribution_unknown_version_degrades`. Before each, run that exact command with `-- --list` and assert the named test exists; zero-test success is not acceptance. DST-01 oracle enumerates each reason code and checks field-effect class/no mutation on rejection or unsupported code. DST-02: `cd pm-stack/dispatch && bun test test/validate.test.ts` proves 15/25 round-trip exactly, not current snapping. DST-04 first asserts `test -f pm-stack/projector/test/priority-webhook.test.ts`, then runs `cd pm-stack/projector && bun test test/priority-webhook.test.ts`; DST-05 likewise asserts `test -f pm-stack/projector/test/priority-reconcile.test.ts` before `cd pm-stack/projector && bun test test/priority-reconcile.test.ts`. Both projector oracles cover replay, stale revision, partial effects and readback repair. These are future red-first specs, not current tests. No test may trust `actor_ref` or client-supplied authorization. Hard blockers are granular keys above; #9079/#9081 hosted and #9201 mobile are soft consumers.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `PRI-01` — `shared-file:pm-stack/dispatch/src/validate.ts`
 - blocked by `PRI-01` — `shared-file:pm-stack/dispatch/test/validate.test.ts`

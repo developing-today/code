@@ -2,6 +2,7 @@ package mcpclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 )
 
@@ -70,7 +71,14 @@ func (c *Client) negotiatedVersion() string {
 func rpcErrorFor(err error) *rpcError {
 	var coded interface{ RPCCode() int }
 	if errors.As(err, &coded) {
-		return &rpcError{Code: coded.RPCCode(), Message: err.Error()}
+		r := &rpcError{Code: coded.RPCCode(), Message: err.Error()}
+		// A code that carries a data member keeps it (#2438: a -32021's
+		// requiredCapabilities is what the client acts on).
+		var datad interface{ RPCData() json.RawMessage }
+		if errors.As(err, &datad) {
+			r.Data = datad.RPCData()
+		}
+		return r
 	}
 	return &rpcError{Code: -32603, Message: err.Error()}
 }

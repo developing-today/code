@@ -50,7 +50,8 @@ public status category is allowlisted; private note mirrors only with explicit c
 - **P-R027 — design-only (candidate)**; occurrences `P-1662, P-1663, P-1664, P-1665, P-1666, P-1667, P-1668, P-1669, P-1670, P-1671, P-1672, P-1673, P-1674, P-1675, P-1676, P-1677, P-1678, P-1679, P-1680, P-1681, P-1682, P-1683, P-1684, P-1685, P-1686, P-1687, P-1688, P-1689, P-1690, P-1691, P-1692, P-1693, P-1694, P-1695, P-1696, P-1697, P-1698, P-1699, P-1700, P-1701, P-1702, P-1703, P-1704, P-1705, P-1706, P-1707, P-1708, P-1709, P-1710, P-1711, P-1712, P-1713, P-1714, P-1715, P-1716, P-1717, P-1718, P-1719, P-1720, P-1721, P-1722, P-1723, P-1724, P-1725, P-1726, P-1727`; full trace: census/requirements-crosswalk.jsonl
 - **P-R035 — design-only (example)**; occurrences `P-1080, P-1081, P-1082, P-1083, P-1084, P-1085, P-1086, P-1087, P-1088, P-1089, P-1090, P-1091, P-1092, P-1093, P-1094, P-1095, P-1096, P-1097, P-1098, P-1099, P-1100, P-1101, P-1102, P-1103, P-1104, P-1105, P-1106, P-1107, P-1108, P-1109, P-1110, P-1111, P-1112, P-1113, P-1114, P-1115, P-1116, P-1117, P-1118, P-1119, P-1120, P-1121, P-1122, P-1123, P-1124, P-1125, P-1126, P-1127, P-1128, P-1129, P-1130, P-1131, P-1132, P-1133, P-1134, P-1135, P-1136, P-1137, P-1138, P-1139, P-1140, P-1141, P-1142, P-1143, P-1144, P-1145, P-1146, P-1147, P-1148, P-1149, P-1150, P-1151, P-1152, P-1153, P-1154, P-1155, P-1156, P-1157, P-1158, P-1159, P-1160, P-1161, P-1162, P-1163, P-1164, P-1165, P-1166, P-1167, P-1168, P-1169, P-1170, P-1171, P-1172, P-1173, P-1174, P-1175, P-1176, P-1177, P-1178, P-1179, P-1180, P-1181, P-1182, P-1183, P-1184, P-1185, P-1186, P-1187, P-1188, P-1189, P-1190, P-1191, P-1192, P-1193, P-1194, P-1195, P-1196, P-1197, P-1198, P-1199, P-1200, P-1201, P-1202, P-1203, P-1204, P-1205, P-1206, P-1207, P-1208, P-1209, P-1210, P-1211, P-1212, P-1213`; full trace: census/requirements-crosswalk.jsonl
 - **P-R036 — design-only (example)**; occurrences `P-1214, P-1215, P-1216, P-1217, P-1218, P-1219, P-1220, P-1221, P-1222, P-1223, P-1224, P-1225, P-1226, P-1227, P-1228, P-1229, P-1230, P-1231, P-1232, P-1233, P-1234, P-1235, P-1236, P-1237, P-1238, P-1239, P-1240, P-1241, P-1242, P-1243, P-1244, P-1245, P-1246, P-1247, P-1248, P-1249, P-1250, P-1251, P-1252, P-1253, P-1254, P-1255, P-1256, P-1257, P-1258, P-1259, P-1260, P-1261, P-1262, P-1263, P-1264, P-1265, P-1266, P-1267, P-1268, P-1269, P-1270, P-1271, P-1272, P-1273, P-1274, P-1275, P-1276, P-1277, P-1278, P-1279, P-1280, P-1281, P-1282, P-1283, P-1284, P-1285, P-1286, P-1287, P-1288, P-1289, P-1290, P-1291, P-1292, P-1293, P-1294, P-1295, P-1296, P-1297, P-1298, P-1299, P-1300, P-1301, P-1302, P-1303, P-1304, P-1305, P-1306, P-1307, P-1308, P-1309, P-1310, P-1311, P-1312, P-1313, P-1314, P-1315, P-1316, P-1317, P-1318, P-1319, P-1320, P-1321, P-1322, P-1323, P-1324, P-1325, P-1326, P-1327, P-1328, P-1329, P-1330, P-1331, P-1332, P-1333, P-1334, P-1335, P-1336, P-1337, P-1338, P-1339, P-1340, P-1341, P-1342, P-1343, P-1344, P-1345, P-1346, P-1347, P-1348, P-1349, P-1350, P-1351, P-1352, P-1353, P-1354, P-1355, P-1356, P-1357, P-1358, P-1359, P-1360, P-1361, P-1362, P-1363, P-1364, P-1365, P-1366, P-1367, P-1368, P-1369, P-1370, P-1371, P-1372, P-1373, P-1374, P-1375, P-1376, P-1377, P-1378, P-1379, P-1380, P-1381, P-1382`; full trace: census/requirements-crosswalk.jsonl
-Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+  Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+
 ## Owned files and boundaries
 
 - `pkgs/fleet/crates/fleet-queue/src/work/authority.rs`
@@ -65,9 +66,6 @@ Hard blockers named by the source slice, after granular-key normalization: JRN-0
 File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9209→REL-03, #9198→CEN-04.
-
-
-
 
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
@@ -111,13 +109,12 @@ Negative coverage: missing mirror opt-in, ambiguous target, lost POST response, 
 
 **Tier:** crucial before any note mirror; body-section path contingent. **Goal:** public status category is allowlisted; private note mirrors only with explicit consent, exact text/target and durable operation; default private. **Owns:** `src/work/authority.rs` policy/tests; adapter extension at existing `pkgs/fleet/crates/fleet/src/gh.rs` only for delivery; #9209 owns outbox transport. **Hard blockers:** JRN-02, granular #9209 operation contract, #9198 adapter. **First failing oracle:** `pmo_auth_mirror_requires_scope_and_excludes_private_checkpoint`. **Done command:** confirm listed then `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_auth_mirror_requires_scope_and_excludes_private_checkpoint`. **Negative:** missing mirror opt-in, ambiguous target, lost POST response, shared bot, revoked permission. **Migration:** never silently adopt existing comments; additive. **Docs:** consent/recovery.
 
-
 ## Merged source-key/facade acceptance
 
 - `CLI-07` → `AUTH-02`: Metadata, managed content, notes/privacy acceptance is merged across AUTH-01/AUTH-02/JRN-02/AUTH-03; no second backend. Exact command rows allocated here: flag.add, flag.file, flag.managed, flag.mirror, flag.note, flag.remove, flag.section, flag.text, fleet-gh.metadata-query, metadata.fields, metadata.get, metadata.labels, metadata.patch, metadata.priority, metadata.summary, metadata.title.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `JRN-02` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/authority.rs`

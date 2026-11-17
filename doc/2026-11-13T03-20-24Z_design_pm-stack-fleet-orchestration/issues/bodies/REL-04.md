@@ -46,7 +46,8 @@ atomic local state+journal+intent transaction, immutable intent payload, attempt
 - **P-R029 — design-only (candidate)**; occurrences `P-1761, P-1762, P-1763, P-1764, P-1765, P-1766, P-1767, P-1768, P-1769, P-1770, P-1771, P-1772, P-1773, P-1774, P-1775, P-1776`; full trace: census/requirements-crosswalk.jsonl
 - **P-R033 — design-only (candidate)**; occurrences `P-456, P-457, P-458, P-459, P-460, P-461, P-462, P-463, P-464, P-465, P-466, P-467, P-468, P-469, P-470, P-471, P-472, P-473, P-474, P-475, P-476, P-477`; full trace: census/requirements-crosswalk.jsonl
 - **P-R038 — design-only (candidate)**; occurrences `P-1383, P-1384`; full trace: census/requirements-crosswalk.jsonl
-Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+  Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+
 ## Owned files and boundaries
 
 - `pkgs/fleet/crates/fleet-queue/src/work/operations.rs`
@@ -62,9 +63,6 @@ Hard blockers named by the source slice, after granular-key normalization: REL-0
 File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: none.
-
-
-
 
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
@@ -108,9 +106,9 @@ Negative coverage: intent absent when state commits, duplicate key, reordered pe
 
 **Tier:** crucial. **Goal:** atomic local state+journal+intent transaction, immutable intent payload, attempt log/status/event order. **Owns:** `src/work/operations.rs` plus existing `src/turso_queue.rs` migration/storage seam after owner approval; creation pilot remains isolated. **Hard blockers:** REL-03; Queue Table Improvements; proven DB transaction contract. **First failing oracle:** `pmo_rel_state_and_intent_commit_or_rollback_together` injects failure after each local write. **Done command:** verify exact test listed, then run `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_rel_state_and_intent_commit_or_rollback_together`. **Negative:** intent absent when state commits, duplicate key, reordered per-target op, DB busy. **Rollback:** disable producer but preserve pending intents/remote effects. No new DB/relay.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `HYD-05` — `shared-file:pkgs/fleet/crates/fleet-queue/src/turso_queue.rs`
 - blocked by `DSP-09` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/operations.rs`

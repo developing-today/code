@@ -180,12 +180,12 @@ let
           nspr
           nss
           udev
-          xorg.libX11
-          xorg.libXcursor
-          xorg.libXext
-          xorg.libXi
-          xorg.libXrandr
-          xorg.libXrender
+          libx11
+          libxcursor
+          libxext
+          libxi
+          libxrandr
+          libxrender
           zlib
         ];
       runScript = "${squareline-run}/bin/squareline-run";
@@ -444,6 +444,11 @@ let
 in
 {
   nixpkgs.overlays = [
+    # antigravity-cli (agy) from the auto-tracking flake (flake.nix
+    # input antigravity-cli-nix): newest upstream (1.5.9 as of
+    # 2026-11-16) in place of the fleet nixpkgs pin's 1.4.8. Drew's
+    # order: agy tracks the newest Google release, not the pin.
+    inputs.antigravity-cli-nix.overlays.default
     # zulip-term: 4 tests fail on nixpkgs master 2026-08-21 (upstream test breakage)
     (final: prev: {
       zulip-term = prev.zulip-term.overridePythonAttrs (_: {
@@ -462,11 +467,11 @@ in
         doCheck = false;
       });
     })
-    # cargo-llvm-cov 0.9.0 (code#5275): its integration tests emit profraw
-    # that the pinned llvm-22.1.8 llvm-profdata refuses to merge
-    # ("no profile can be merged") -- package-vs-LLVM drift at the
-    # current nixpkgs pin, same class as zulip-term/mise above.
-    # Package stays in the system; only its check phase is skipped.
+    # cargo-llvm-cov 0.9.0: its integration tests spawn LLVM-instrumented
+    # test binaries that SIGSEGV under the pinned Rust 1.99 toolchain in
+    # the sandbox (14 tests fail, verified 2026-11-14 against the drv
+    # log); the tool itself builds and runs — the failing suite is
+    # upstreams, not the fleets.
     (final: prev: {
       cargo-llvm-cov = prev.cargo-llvm-cov.overrideAttrs (_: {
         doCheck = false;
@@ -877,7 +882,10 @@ in
       # pkgs/latest-cli as an upstream prebuilt musl-static release binary --
       # see the `++ [ ... ]` block below.
       antigravity-ide # google agentic IDE (unfree). `antigravity` is an alias.
-      antigravity-cli # google, mainProgram "antigravity"
+      # antigravity-cli moved out of this list: the nixpkgs-unstable package
+      # here is unoverlaid 1.4.8. Taken from pkgs instead, where
+      # inputs.antigravity-cli-nix overlays the auto-tracked 1.5.9 -- see the
+      # `++ (with pkgs; [ antigravity-cli ])` block just below.
       # gemini-cli: nixpkgs carries a removal notice ("Unpaid tier and Google AI
       # Pro/Ultra users: Gemini CLI was replaced by Antigravity CLI"), which is
       # an eval *warning*, not a build failure -- 0.47.0 builds and runs fine.
@@ -885,6 +893,10 @@ in
       # alive.
       gemini-cli
     ])
+    # antigravity-cli (agy): pkgs, not the unstable channel, so the system
+    # profile gets the overlay's auto-tracked release (1.5.9 today) instead of
+    # nixpkgs-unstable's unoverlaid 1.4.8.
+    ++ (with pkgs; [ antigravity-cli ])
     ++ (with inputs.nixpkgs-unstable.legacyPackages.${system}; [
       ghostty
       zed-editor

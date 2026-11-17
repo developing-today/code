@@ -2,11 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  mergeRoadmapRows,
-  parseRepoRoadmapFile,
-  readRepoRoadmaps,
-} from "./repo-roadmap.ts";
+import { mergeRoadmapRows, parseRepoRoadmapFile, readRepoRoadmaps } from "./repo-roadmap.ts";
 import type { RoadmapRow } from "../model.ts";
 
 // An id.md-shaped code roadmap file: horizon lives in the ## heading,
@@ -65,7 +61,9 @@ describe("parseRepoRoadmapFile — code planning/roadmaps shape", () => {
   test("the id program appears with zero Grist rows", () => {
     expect(rows.length).toBe(3);
     expect(rows.every((r) => r.area === "id")).toBe(true);
-    expect(rows.every((r) => r.subject.startsWith("repo-file:developing-today/code/planning/roadmaps/id.md/"))).toBe(true);
+    expect(rows.every((r) => r.subject.startsWith("repo-file:developing-today/code/planning/roadmaps/id.md/"))).toBe(
+      true,
+    );
   });
 
   test("horizon comes from the section heading; Ideas is its own bucket, not an error", () => {
@@ -121,7 +119,10 @@ const gristRow = (title: string, subject: string): RoadmapRow => ({
 describe("mergeRoadmapRows — dedupe prefers the repo row", () => {
   test("a Grist duplicate collapses into the repo row with provenance noted", () => {
     const repo = parseRepoRoadmapFile(CODE_FILE, CODE_META).map((r, i) => ({ ...r, id: -1 - i }));
-    const grist = [gristRow("Many Worlds Per Node!", "grist:doc/Roadmap/7"), gristRow("Only in Grist", "grist:doc/Roadmap/8")];
+    const grist = [
+      gristRow("Many Worlds Per Node!", "grist:doc/Roadmap/7"),
+      gristRow("Only in Grist", "grist:doc/Roadmap/8"),
+    ];
     const { rows, collapsedCount } = mergeRoadmapRows(grist, repo);
     expect(collapsedCount).toBe(1);
     expect(rows.some((r) => r.subject === "grist:doc/Roadmap/7")).toBe(false);
@@ -139,7 +140,10 @@ describe("readRepoRoadmaps — section states say why (#1500)", () => {
     await writeFile(join(root, "code", "planning", "roadmaps", "id.md"), CODE_FILE);
     await mkdir(join(root, "nix"), { recursive: true });
     await writeFile(join(root, "nix", "ROADMAP.md"), NIX_FILE);
-    const { rows, sections } = await readRepoRoadmaps({ codeCheckout: join(root, "code"), nixCheckout: join(root, "nix") });
+    const { rows, sections } = await readRepoRoadmaps({
+      codeCheckout: join(root, "code"),
+      nixCheckout: join(root, "nix"),
+    });
     expect(rows.length).toBe(5);
     expect(new Set(rows.map((r) => r.id)).size).toBe(5);
     expect(rows.every((r) => r.id < 0)).toBe(true);
@@ -148,7 +152,10 @@ describe("readRepoRoadmaps — section states say why (#1500)", () => {
 
   test("missing: neither checkout carries the files", async () => {
     const root = await mkdtemp(join(tmpdir(), "repo-roadmap-"));
-    const { rows, sections } = await readRepoRoadmaps({ codeCheckout: join(root, "code"), nixCheckout: join(root, "nix") });
+    const { rows, sections } = await readRepoRoadmaps({
+      codeCheckout: join(root, "code"),
+      nixCheckout: join(root, "nix"),
+    });
     expect(rows).toEqual([]);
     expect(sections.map((s) => s.state)).toEqual(["missing", "missing"]);
     expect(sections[0].reason).toContain("PM_AGG_CODE_CHECKOUT");

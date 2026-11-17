@@ -179,6 +179,15 @@ export interface PrRow extends IssueRow {
   head_sha: string | null;
   head_ref: string | null;
   base_ref: string | null;
+  /**
+   * The version of the comments count, kept separate from the
+   * snapshot version (gh_updated_at): the backfill sweep joins the
+   * count from the issues-list object, whose updated_at is the
+   * count's own version. Webhook payloads carry no separate field,
+   * so buildPrRow falls back to the PR's updated_at — the count and
+   * the snapshot then share one object and one version, as before.
+   */
+  comments_gh_updated_at: string | null;
 }
 
 export function buildPrRow(payload: Obj, repo: string, bodyHash: string | null): PrRow {
@@ -186,6 +195,7 @@ export function buildPrRow(payload: Obj, repo: string, bodyHash: string | null):
   const base = buildIssueRow({ issue: pr }, repo, bodyHash);
   return {
     ...base,
+    comments_gh_updated_at: str(pr, "comments_updated_at") ?? base.gh_updated_at,
     merged: pr.merged === true || typeof pr.merged_at === "string" ? 1 : 0,
     draft: pr.draft === true ? 1 : 0,
     head_sha: str((pr.head ?? {}) as Obj, "sha"),
@@ -330,6 +340,189 @@ async function mirrorBatch(env: SinkEnv, event: string, repo: string, stmts: Stm
   await q.batch([...stmts, metaStamp(repo, event, at)]);
 }
 
+/**
+ * Sweep support (#8580 remainder, task 16834): the backfill/repair
+ * sweep (scripts/backfill.ts) reconciles the mirror from the GitHub
+ * API. It reuses the same statement builders as the webhook paths —
+ * one definition of every guard — but writes WITHOUT the webhook
+ * meta stamp: last_webhook_at must keep meaning "a webhook landed",
+ * so the sweep stamps only last_backfill_at, once per repo per run.
+ */
+
+/** Ensure the mirror schema without stamping any meta row. */
+export async function ensureMirrorSchema(env: SinkEnv): Promise<void> {
+  const q = new Turso(env.TURSO_QUEUE_URL, env.TURSO_QUEUE_TOKEN);
+  await q.batch(MIRROR_DDL.map((sql) => ({ sql })));
+  await ensureMirrorColumns(q);
+}
+
+/** Run sweep statements (no meta stamp; see backfillStampStmt). */
+export async function mirrorSweepBatch(env: SinkEnv, stmts: Stmt[]): Promise<void> {
+  if (stmts.length === 0) return;
+  const q = new Turso(env.TURSO_QUEUE_URL, env.TURSO_QUEUE_TOKEN);
+  await q.batch(stmts);
+}
+
+/** The sweep's meta stamp: last_backfill_at only, never the webhook fields. */
+export function backfillStampStmt(repo: string, at: string): Stmt {
+  return {
+    sql: `INSERT INTO github_mirror_meta (repo, last_backfill_at)
+          VALUES (?, ?)
+          ON CONFLICT(repo) DO UPDATE SET last_backfill_at = excluded.last_backfill_at`,
+    args: [tArg(repo), tArg(at)],
+  };
+}
+
+/**
+ * Remove an item the sweep found missing on GitHub: tombstone first
+ * (a version-less marker absorbs every later insertion — GitHub never
+ * reuses a number, so no genuine snapshot can post-date it), then the
+ * row deletes in both tables (numbers share one namespace per repo).
+ */
+export function tombstoneDeleteStmts(repo: string, number: number): Stmt[] {
+  return [
+    {
+      sql: `INSERT INTO github_mirror_tombstones (repo, number, gh_updated_at, mirrored_at)
+            VALUES (?, ?, NULL, ?)
+            ON CONFLICT(repo, number) DO UPDATE SET
+              gh_updated_at = excluded.gh_updated_at,
+              mirrored_at = excluded.mirrored_at`,
+      args: [tArg(repo), iArg(number), tArg(queueNow())],
+    },
+    {
+      sql: "DELETE FROM github_mirror_issues WHERE repo = ? AND number = ?",
+      args: [tArg(repo), iArg(number)],
+    },
+    {
+      sql: "DELETE FROM github_mirror_pull_requests WHERE repo = ? AND number = ?",
+      args: [tArg(repo), iArg(number)],
+    },
+  ];
+}
+
+/**
+ * Clear a stored agent-note pointer the sweep proved stale — the
+ * pointed-at comment was deleted, or edited so it is no longer an
+ * agent note. The clear is CONDITIONAL on the pointer still naming
+ * the inspected comment: a webhook may have installed a newer note
+ * after the sweep listed comments, and stale sweep work must never
+ * erase it. When the comment is gone (not merely edited), its
+ * deletion is also recorded in github_mirror_deleted_notes, so a
+ * delayed created/edited delivery of that comment cannot resurrect
+ * the pointer through the comment path's empty-pointer branch.
+ */
+/**
+ * Sweep-only repair: set a row's comments count + version directly.
+ * The version guard on the upserts is the right rule for webhooks,
+ * but it cannot repair a count that a previous sweep wrote with a
+ * WRONG count under a NEWER version stamp (the 2026-11-14 truncated
+ * list run stamped pulls-list versions onto zeroed counts). The
+ * write is conditional on the stored comments version still being
+ * the exact stamp the sweep diffed against (guardVersion): if a
+ * webhook has updated the row since, its version differs and this
+ * statement is a no-op — a repair never overwrites a newer webhook
+ * count with an older API count. The sweep re-reads the API count
+ * immediately before repairing, so the value written is current.
+ * Never used by a webhook path.
+ */
+export function forceCommentsStmt(
+  repo: string,
+  number: number,
+  isPr: boolean,
+  comments: number,
+  commentsGhUpdatedAt: string | null,
+  guardVersion: string | null,
+): Stmt {
+  const table = isPr ? "github_mirror_pull_requests" : "github_mirror_issues";
+  return {
+    sql: `UPDATE ${table} SET comments = ?, comments_gh_updated_at = ?, mirrored_at = ?
+          WHERE repo = ? AND number = ? AND comments_gh_updated_at IS ?`,
+    args: [iArg(comments), tArg(commentsGhUpdatedAt), tArg(queueNow()), tArg(repo), iArg(number), tArg(guardVersion)],
+  };
+}
+
+export function clearAgentNotePointerStmts(
+  repo: string,
+  number: number,
+  isPr: boolean,
+  noteId: number,
+  recordDeletion: boolean,
+): Stmt[] {
+  const table = isPr ? "github_mirror_pull_requests" : "github_mirror_issues";
+  return [
+    ...(recordDeletion
+      ? [
+          {
+            sql: `INSERT INTO github_mirror_deleted_notes
+                    (repo, number, comment_id, mirrored_at)
+                  VALUES (?, ?, ?, ?)
+                  ON CONFLICT(repo, number, comment_id) DO NOTHING`,
+            args: [tArg(repo), iArg(number), iArg(noteId), tArg(queueNow())],
+          },
+        ]
+      : []),
+    {
+      sql: `UPDATE ${table} SET latest_agent_note_id = NULL,
+              latest_agent_note_url = NULL, mirrored_at = ?
+            WHERE repo = ? AND number = ? AND latest_agent_note_id = ?`,
+      args: [tArg(queueNow()), tArg(repo), iArg(number), iArg(noteId)],
+    },
+  ];
+}
+
+/** The issue snapshot upsert as a statement (shared by the webhook path and the sweep). */
+export function issueUpsertStmt(row: IssueRow): Stmt {
+  return {
+    sql: `INSERT INTO github_mirror_issues (repo, number, title, body_hash, state,
+            labels, assignees, comments, comments_gh_updated_at, author,
+            html_url, gh_created_at, gh_updated_at, mirrored_at)
+          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          WHERE ${TOMBSTONE_GUARD_SQL}
+          ON CONFLICT(repo, number) DO UPDATE SET
+            title = excluded.title, body_hash = excluded.body_hash,
+            state = excluded.state, labels = excluded.labels,
+            assignees = excluded.assignees,
+            comments = CASE
+              WHEN excluded.gh_updated_at IS NULL
+                   OR github_mirror_issues.comments_gh_updated_at IS NULL
+                   OR excluded.gh_updated_at >= github_mirror_issues.comments_gh_updated_at
+              THEN excluded.comments ELSE github_mirror_issues.comments END,
+            comments_gh_updated_at = CASE
+              WHEN excluded.gh_updated_at IS NULL
+                   OR github_mirror_issues.comments_gh_updated_at IS NULL
+                   OR excluded.gh_updated_at >= github_mirror_issues.comments_gh_updated_at
+              THEN COALESCE(excluded.gh_updated_at, github_mirror_issues.comments_gh_updated_at)
+              ELSE github_mirror_issues.comments_gh_updated_at END,
+            author = excluded.author, html_url = excluded.html_url,
+            gh_created_at = excluded.gh_created_at,
+            gh_updated_at = excluded.gh_updated_at,
+            mirrored_at = excluded.mirrored_at
+          WHERE excluded.gh_updated_at IS NULL
+             OR github_mirror_issues.gh_updated_at IS NULL
+             OR excluded.gh_updated_at >= github_mirror_issues.gh_updated_at`,
+    args: [
+      tArg(row.repo),
+      iArg(row.number),
+      tArg(row.title),
+      tArg(row.body_hash),
+      tArg(row.state),
+      tArg(row.labels),
+      tArg(row.assignees),
+      iArg(row.comments),
+      tArg(row.gh_updated_at),
+      tArg(row.author),
+      tArg(row.html_url),
+      tArg(row.gh_created_at),
+      tArg(row.gh_updated_at),
+      tArg(queueNow()),
+      tArg(row.repo),
+      iArg(row.number),
+      tArg(row.gh_updated_at),
+      tArg(row.gh_updated_at),
+    ],
+  };
+}
+
 /** Upsert the issue mirror row from an `issues` webhook payload. */
 export async function mirrorIssueEvent(env: SinkEnv, payload: Obj, repo: string): Promise<void> {
   if (payload.action === "deleted") {
@@ -365,124 +558,75 @@ export async function mirrorIssueEvent(env: SinkEnv, payload: Obj, repo: string)
     return;
   }
   const row = buildIssueRow(payload, repo, await bodyHashOf((payload.issue ?? {}) as Obj));
-  await mirrorBatch(env, "issues", repo, [
-    {
-      sql: `INSERT INTO github_mirror_issues (repo, number, title, body_hash, state,
-              labels, assignees, comments, comments_gh_updated_at, author,
-              html_url, gh_created_at, gh_updated_at, mirrored_at)
-            SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-            WHERE ${TOMBSTONE_GUARD_SQL}
-            ON CONFLICT(repo, number) DO UPDATE SET
-              title = excluded.title, body_hash = excluded.body_hash,
-              state = excluded.state, labels = excluded.labels,
-              assignees = excluded.assignees,
-              comments = CASE
-                WHEN excluded.gh_updated_at IS NULL
-                     OR github_mirror_issues.comments_gh_updated_at IS NULL
-                     OR excluded.gh_updated_at >= github_mirror_issues.comments_gh_updated_at
-                THEN excluded.comments ELSE github_mirror_issues.comments END,
-              comments_gh_updated_at = CASE
-                WHEN excluded.gh_updated_at IS NULL
-                     OR github_mirror_issues.comments_gh_updated_at IS NULL
-                     OR excluded.gh_updated_at >= github_mirror_issues.comments_gh_updated_at
-                THEN COALESCE(excluded.gh_updated_at, github_mirror_issues.comments_gh_updated_at)
-                ELSE github_mirror_issues.comments_gh_updated_at END,
-              author = excluded.author, html_url = excluded.html_url,
-              gh_created_at = excluded.gh_created_at,
-              gh_updated_at = excluded.gh_updated_at,
-              mirrored_at = excluded.mirrored_at
-            WHERE excluded.gh_updated_at IS NULL
-               OR github_mirror_issues.gh_updated_at IS NULL
-               OR excluded.gh_updated_at >= github_mirror_issues.gh_updated_at`,
-      args: [
-        tArg(row.repo),
-        iArg(row.number),
-        tArg(row.title),
-        tArg(row.body_hash),
-        tArg(row.state),
-        tArg(row.labels),
-        tArg(row.assignees),
-        iArg(row.comments),
-        tArg(row.gh_updated_at),
-        tArg(row.author),
-        tArg(row.html_url),
-        tArg(row.gh_created_at),
-        tArg(row.gh_updated_at),
-        tArg(queueNow()),
-        tArg(row.repo),
-        iArg(row.number),
-        tArg(row.gh_updated_at),
-        tArg(row.gh_updated_at),
-      ],
-    },
-  ]);
+  await mirrorBatch(env, "issues", repo, [issueUpsertStmt(row)]);
+}
+/** The PR snapshot upsert as a statement (shared by the webhook path and the sweep). */
+export function prUpsertStmt(row: PrRow): Stmt {
+  return {
+    sql: `INSERT INTO github_mirror_pull_requests (repo, number, title, body_hash,
+            state, merged, draft, head_sha, head_ref, base_ref, labels,
+            assignees, comments, comments_gh_updated_at, author, html_url,
+            gh_created_at, gh_updated_at, mirrored_at)
+          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          WHERE ${TOMBSTONE_GUARD_SQL}
+          ON CONFLICT(repo, number) DO UPDATE SET
+            title = excluded.title, body_hash = excluded.body_hash,
+            state = excluded.state, merged = excluded.merged,
+            draft = excluded.draft, head_sha = excluded.head_sha,
+            head_ref = excluded.head_ref, base_ref = excluded.base_ref,
+            labels = excluded.labels, assignees = excluded.assignees,
+            comments = CASE
+              WHEN excluded.comments_gh_updated_at IS NULL
+                   OR github_mirror_pull_requests.comments_gh_updated_at IS NULL
+                   OR excluded.comments_gh_updated_at >= github_mirror_pull_requests.comments_gh_updated_at
+              THEN excluded.comments ELSE github_mirror_pull_requests.comments END,
+            comments_gh_updated_at = CASE
+              WHEN excluded.comments_gh_updated_at IS NULL
+                   OR github_mirror_pull_requests.comments_gh_updated_at IS NULL
+                   OR excluded.comments_gh_updated_at >= github_mirror_pull_requests.comments_gh_updated_at
+              THEN COALESCE(excluded.comments_gh_updated_at, github_mirror_pull_requests.comments_gh_updated_at)
+              ELSE github_mirror_pull_requests.comments_gh_updated_at END,
+            author = excluded.author,
+            html_url = excluded.html_url,
+            gh_created_at = excluded.gh_created_at,
+            gh_updated_at = excluded.gh_updated_at,
+            mirrored_at = excluded.mirrored_at
+          WHERE excluded.gh_updated_at IS NULL
+             OR github_mirror_pull_requests.gh_updated_at IS NULL
+             OR excluded.gh_updated_at >= github_mirror_pull_requests.gh_updated_at`,
+    args: [
+      tArg(row.repo),
+      iArg(row.number),
+      tArg(row.title),
+      tArg(row.body_hash),
+      tArg(row.state),
+      iArg(row.merged),
+      iArg(row.draft),
+      tArg(row.head_sha),
+      tArg(row.head_ref),
+      tArg(row.base_ref),
+      tArg(row.labels),
+      tArg(row.assignees),
+      iArg(row.comments),
+      tArg(row.comments_gh_updated_at),
+      tArg(row.author),
+      tArg(row.html_url),
+      tArg(row.gh_created_at),
+      tArg(row.gh_updated_at),
+      tArg(queueNow()),
+      tArg(row.repo),
+      iArg(row.number),
+      tArg(row.gh_updated_at),
+      tArg(row.gh_updated_at),
+    ],
+  };
 }
 
 /** Upsert the PR mirror row from a `pull_request` webhook payload. */
 export async function mirrorPrEvent(env: SinkEnv, payload: Obj, repo: string): Promise<void> {
   const row = buildPrRow(payload, repo, await bodyHashOf((payload.pull_request ?? {}) as Obj));
-  await mirrorBatch(env, "pull_request", repo, [
-    {
-      sql: `INSERT INTO github_mirror_pull_requests (repo, number, title, body_hash,
-              state, merged, draft, head_sha, head_ref, base_ref, labels,
-              assignees, comments, comments_gh_updated_at, author, html_url,
-              gh_created_at, gh_updated_at, mirrored_at)
-            SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-            WHERE ${TOMBSTONE_GUARD_SQL}
-            ON CONFLICT(repo, number) DO UPDATE SET
-              title = excluded.title, body_hash = excluded.body_hash,
-              state = excluded.state, merged = excluded.merged,
-              draft = excluded.draft, head_sha = excluded.head_sha,
-              head_ref = excluded.head_ref, base_ref = excluded.base_ref,
-              labels = excluded.labels, assignees = excluded.assignees,
-              comments = CASE
-                WHEN excluded.gh_updated_at IS NULL
-                     OR github_mirror_pull_requests.comments_gh_updated_at IS NULL
-                     OR excluded.gh_updated_at >= github_mirror_pull_requests.comments_gh_updated_at
-                THEN excluded.comments ELSE github_mirror_pull_requests.comments END,
-              comments_gh_updated_at = CASE
-                WHEN excluded.gh_updated_at IS NULL
-                     OR github_mirror_pull_requests.comments_gh_updated_at IS NULL
-                     OR excluded.gh_updated_at >= github_mirror_pull_requests.comments_gh_updated_at
-                THEN COALESCE(excluded.gh_updated_at, github_mirror_pull_requests.comments_gh_updated_at)
-                ELSE github_mirror_pull_requests.comments_gh_updated_at END,
-              author = excluded.author,
-              html_url = excluded.html_url,
-              gh_created_at = excluded.gh_created_at,
-              gh_updated_at = excluded.gh_updated_at,
-              mirrored_at = excluded.mirrored_at
-            WHERE excluded.gh_updated_at IS NULL
-               OR github_mirror_pull_requests.gh_updated_at IS NULL
-               OR excluded.gh_updated_at >= github_mirror_pull_requests.gh_updated_at`,
-      args: [
-        tArg(row.repo),
-        iArg(row.number),
-        tArg(row.title),
-        tArg(row.body_hash),
-        tArg(row.state),
-        iArg(row.merged),
-        iArg(row.draft),
-        tArg(row.head_sha),
-        tArg(row.head_ref),
-        tArg(row.base_ref),
-        tArg(row.labels),
-        tArg(row.assignees),
-        iArg(row.comments),
-        tArg(row.gh_updated_at),
-        tArg(row.author),
-        tArg(row.html_url),
-        tArg(row.gh_created_at),
-        tArg(row.gh_updated_at),
-        tArg(queueNow()),
-        tArg(row.repo),
-        iArg(row.number),
-        tArg(row.gh_updated_at),
-        tArg(row.gh_updated_at),
-      ],
-    },
-  ]);
+  await mirrorBatch(env, "pull_request", repo, [prUpsertStmt(row)]);
 }
-
 /**
  * Apply an `issue_comment` payload: refresh the comments count and, when
  * the comment is an agent note, the latest-agent-note pointer — replaced
@@ -498,14 +642,14 @@ export async function mirrorPrEvent(env: SinkEnv, payload: Obj, repo: string): P
  * the backfill sweep. A row the mirror has never seen is seeded minimal
  * (the sweep fills the rest).
  */
-export async function mirrorCommentEvent(env: SinkEnv, payload: Obj, repo: string): Promise<void> {
-  const touch = buildCommentTouch(payload, repo);
+/** The comment-touch statements as a list (shared by the webhook path and the sweep). */
+export function commentTouchStmts(touch: CommentTouch): Stmt[] {
   const table = touch.isPr ? "github_mirror_pull_requests" : "github_mirror_issues";
-  await mirrorBatch(env, "issue_comment", repo, [
+  return [
     {
       sql: `INSERT INTO ${table} (repo, number, mirrored_at) SELECT ?, ?, ?
-            WHERE ${TOMBSTONE_GUARD_SQL}
-            ON CONFLICT(repo, number) DO NOTHING`,
+          WHERE ${TOMBSTONE_GUARD_SQL}
+          ON CONFLICT(repo, number) DO NOTHING`,
       args: [
         tArg(touch.repo),
         iArg(touch.number),
@@ -518,33 +662,33 @@ export async function mirrorCommentEvent(env: SinkEnv, payload: Obj, repo: strin
     },
     {
       sql: `UPDATE ${table} SET
-              comments = CASE
-                WHEN ? IS NULL OR comments_gh_updated_at IS NULL
-                     OR ? >= comments_gh_updated_at
-                THEN ? ELSE comments END,
-              comments_gh_updated_at = CASE
-                WHEN ? IS NULL OR comments_gh_updated_at IS NULL
-                     OR ? >= comments_gh_updated_at
-                THEN COALESCE(?, comments_gh_updated_at)
-                ELSE comments_gh_updated_at END,
-              mirrored_at = ?,
-              latest_agent_note_id = CASE
-                WHEN ? IS NOT NULL
-                 AND NOT EXISTS (
-                       SELECT 1 FROM github_mirror_deleted_notes d
-                       WHERE d.repo = ? AND d.number = ? AND d.comment_id = ?)
-                 AND (latest_agent_note_id IS NULL
-                      OR ? >= latest_agent_note_id)
-                THEN ? ELSE latest_agent_note_id END,
-              latest_agent_note_url = CASE
-                WHEN ? IS NOT NULL
-                 AND NOT EXISTS (
-                       SELECT 1 FROM github_mirror_deleted_notes d
-                       WHERE d.repo = ? AND d.number = ? AND d.comment_id = ?)
-                 AND (latest_agent_note_id IS NULL
-                      OR ? >= latest_agent_note_id)
-                THEN ? ELSE latest_agent_note_url END
-            WHERE repo = ? AND number = ? AND ${TOMBSTONE_GUARD_SQL}`,
+            comments = CASE
+              WHEN ? IS NULL OR comments_gh_updated_at IS NULL
+                   OR ? >= comments_gh_updated_at
+              THEN ? ELSE comments END,
+            comments_gh_updated_at = CASE
+              WHEN ? IS NULL OR comments_gh_updated_at IS NULL
+                   OR ? >= comments_gh_updated_at
+              THEN COALESCE(?, comments_gh_updated_at)
+              ELSE comments_gh_updated_at END,
+            mirrored_at = ?,
+            latest_agent_note_id = CASE
+              WHEN ? IS NOT NULL
+               AND NOT EXISTS (
+                     SELECT 1 FROM github_mirror_deleted_notes d
+                     WHERE d.repo = ? AND d.number = ? AND d.comment_id = ?)
+               AND (latest_agent_note_id IS NULL
+                    OR ? >= latest_agent_note_id)
+              THEN ? ELSE latest_agent_note_id END,
+            latest_agent_note_url = CASE
+              WHEN ? IS NOT NULL
+               AND NOT EXISTS (
+                     SELECT 1 FROM github_mirror_deleted_notes d
+                     WHERE d.repo = ? AND d.number = ? AND d.comment_id = ?)
+               AND (latest_agent_note_id IS NULL
+                    OR ? >= latest_agent_note_id)
+              THEN ? ELSE latest_agent_note_url END
+          WHERE repo = ? AND number = ? AND ${TOMBSTONE_GUARD_SQL}`,
       args: [
         tArg(touch.ghUpdatedAt),
         tArg(touch.ghUpdatedAt),
@@ -582,18 +726,23 @@ export async function mirrorCommentEvent(env: SinkEnv, payload: Obj, repo: strin
             // redelivery of this comment must not resurrect the
             // pointer through the empty-pointer branch (Codex P2).
             sql: `INSERT INTO github_mirror_deleted_notes
-                    (repo, number, comment_id, mirrored_at)
-                  VALUES (?, ?, ?, ?)
-                  ON CONFLICT(repo, number, comment_id) DO NOTHING`,
+                  (repo, number, comment_id, mirrored_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(repo, number, comment_id) DO NOTHING`,
             args: [tArg(touch.repo), iArg(touch.number), iArg(touch.deletedNoteId), tArg(queueNow())],
           },
           {
             sql: `UPDATE ${table} SET latest_agent_note_id = NULL,
-                    latest_agent_note_url = NULL, mirrored_at = ?
-                  WHERE repo = ? AND number = ? AND latest_agent_note_id = ?`,
+                  latest_agent_note_url = NULL, mirrored_at = ?
+                WHERE repo = ? AND number = ? AND latest_agent_note_id = ?`,
             args: [tArg(queueNow()), tArg(touch.repo), iArg(touch.number), iArg(touch.deletedNoteId)],
           },
         ]
       : []),
-  ]);
+  ];
+}
+
+export async function mirrorCommentEvent(env: SinkEnv, payload: Obj, repo: string): Promise<void> {
+  const touch = buildCommentTouch(payload, repo);
+  await mirrorBatch(env, "issue_comment", repo, commentTouchStmts(touch));
 }

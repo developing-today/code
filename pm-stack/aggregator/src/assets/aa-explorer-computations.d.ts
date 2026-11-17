@@ -49,6 +49,30 @@ export function computeRecommendations<
   empty: string | null;
 };
 export function normName(value: unknown): string;
+export function baselineRatios<
+  T extends { key: string; score?: number | null; cost?: number | null; time?: number | null },
+>(
+  rows: T[],
+  baselineKeys: string[],
+): Record<
+  string,
+  {
+    scorePerCost: number | null;
+    scorePerSpeed: number | null;
+    vs: Record<string, { scorePerCost: number | null; scorePerSpeed: number | null }>;
+  }
+>;
+export function sortRows<T extends { key: string }>(
+  rows: T[],
+  key: string | ((row: T) => number | string | null | undefined) | null,
+  dir: "asc" | "desc",
+): T[];
+export function applyDominanceFilters<
+  T extends { key: string; score?: number | null; cost?: number | null; time?: number | null },
+>(rows: T[], opts: { dominated?: boolean; slower?: boolean; dumber?: boolean; pricier?: boolean }): T[];
+export function unpricedScoredPoints<
+  T extends { score?: number | null; cost?: number | null; family?: string; effort?: string | null },
+>(points: T[]): T[];
 export function projectTask(
   model: any,
   settings: Record<string, number | string>,

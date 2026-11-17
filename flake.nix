@@ -78,6 +78,19 @@ rec {
     # ESP-IDF 6.0.1 packaging candidate; kept separate from the supported 5.5 toolchain.
     esp-dev-6.url = "github:dvdvgt/nixpkgs-esp-dev/f9b1e211262a4cc9c1a265b227def56ef01c2d56";
     nix-flatpak.url = "github:gmodena/nix-flatpak"; # ?shallow=1";
+    # Antigravity CLI (agy), newest-upstream tracking (2026-11-16):
+    # nixpkgs' antigravity-cli lags Google (fleet pin carries 1.4.8,
+    # nixpkgs master carries 1.5.6, upstream is 1.5.9). selfhost-it's
+    # flake repackages the official binary and auto-tracks Google's
+    # auto-updater manifest (deterministic update.sh, daily PRs), so
+    # its pin is the newest release. Consumed as an overlay in
+    # nixos/environment (nixpkgs.overlays). To move the pin:
+    # nix flake update antigravity-cli-nix.
+    antigravity-cli-nix = {
+      url = "github:selfhost-it/antigravity-cli-nix";
+      inputs.nixpkgs.follows = "nixpkgs-unstable";
+      inputs.flake-utils.follows = "flake-utils";
+    };
     # determinate.url = "https://flakehub.com/f/DeterminateSystems/determinate/0.1"; # "; #?shallow=1
     ssh-to-age.url = "github:Mic92/ssh-to-age"; # ?shallow=1";
     impermanence.url = "github:Nix-community/impermanence"; # ?shallow=1";
@@ -190,7 +203,6 @@ rec {
       #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
       inputs.flake-compat.follows = "flake-compat";
-      inputs.flake-utils.follows = "flake-utils";
     };
     nixvim = {
       # url = "github:nix-community/nixvim"; # ?shallow=1";
@@ -220,8 +232,6 @@ rec {
       # TODO: revert to nixpkgs, relates to 26 breaking changings, either impermanence/nix-sops conflict with systemd-mounts change or the breaking wireless hardening changes
       #inputs.nixpkgs.follows = "nixpkgs";
       inputs.nixpkgs.follows = "nixpkgs-unstable";
-      inputs.flake-utils.follows = "flake-utils";
-      inputs.pre-commit-hooks.follows = "pre-commit-hooks";
     };
     pre-commit-hooks = {
       # TODO: use this?
@@ -300,8 +310,13 @@ rec {
     # OpenClaw: declarative packaging for the OpenClaw gateway (peer
     # intelligence source on the laptop). Home Manager module + overlay;
     # consumed by home/openclaw. Pinned by flake.lock like everything else.
+    # developing-today fork (code#2257): carries the sessions_spawn
+    # headless patch (allow-sessions-spawn-headless) in the gateway
+    # build; upstream openclaw/nix-openclaw has no such patch. Keep
+    # the fork rebased on upstream; drop the fork when upstream takes
+    # the patch or the gate changes.
     nix-openclaw = {
-      url = "github:openclaw/nix-openclaw";
+      url = "github:developing-today/nix-openclaw";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.home-manager.follows = "home-manager";
     };
@@ -353,7 +368,6 @@ rec {
       url = "github:nix-community/bun2nix";
       inputs = {
         flake-parts.follows = "id-flake-parts";
-        import-tree.follows = "id-import-tree";
         nixpkgs.follows = "id-nixpkgs";
         systems.follows = "id-systems";
       };

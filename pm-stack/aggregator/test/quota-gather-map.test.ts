@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID,
   ANTIGRAVITY_GEMINI_SERVICE_ID,
+  GO_DEVELOPING_TODAY_0_SERVICE_ID,
   GO_POPESDREW_SERVICE_ID,
   GO_DREWRYPOPE_SERVICE_ID,
   OPENAI_ALTERNATE_SERVICE_ID,
@@ -22,6 +23,7 @@ import {
   serviceIdFor,
   type QuotaProviderResult,
 } from "../src/quota-gather-map.ts";
+import { extractQuotaPools } from "../src/quota-extract.ts";
 
 // A cline-pass-shaped result, as the OpenChamber module answers it
 // (resetAt in epoch milliseconds, fetchedAt likewise).
@@ -611,6 +613,136 @@ describe("serviceIdFor", () => {
     // (the silent-mismatch family Drew ruled out, 2026-11-03).
     expect(serviceIdFor("command-code")).toBe("commandcode");
     expect(serviceIdFor("_openai.alt")).toBe("_openai.alt");
+  });
+
+  test("OpenCode Zen door ids alias onto the Go pools (#10443)", () => {
+    // The Zen door (zen-plans in .opencode/route-fallbacks.md;
+    // named opencode-zen-plans until the 2026-11-15 rename)
+    // reads the same plan meters as the Go door — on the 2026-11-15
+    // ticks its rows carried windows and reset instants identical to
+    // the matching opencode-go.* rows — so its measured rows file
+    // under the existing Go pool ids, never as duplicate pools.
+    expect(serviceIdFor("opencode.drewrypope")).toBe(GO_DREWRYPOPE_SERVICE_ID);
+    expect(serviceIdFor("opencode.popesdrew")).toBe(GO_POPESDREW_SERVICE_ID);
+    expect(serviceIdFor("opencode.developing-today-0")).toBe(GO_DEVELOPING_TODAY_0_SERVICE_ID);
+  });
+
+  test("a Zen result keeps its provider id and files under the Go pool (#10443)", () => {
+    const zen: QuotaProviderResult = {
+      providerId: "opencode.developing-today-0",
+      providerName: "OpenCode Zen",
+      ok: true,
+      configured: true,
+      fetchedAt: 1763249446170,
+      usage: {
+        windows: {
+          monthly: {
+            usedPercent: 54,
+            remainingPercent: 46,
+            windowSeconds: 2592000,
+            resetAt: 1796779781000,
+            resetAfterSeconds: 3530335,
+          },
+        },
+      },
+    };
+    const entry = entryFromResult(zen, "2026-11-15T08:30:46.170Z");
+    expect(entry.providerId).toBe("opencode.developing-today-0");
+    expect(entry.serviceId).toBe(GO_DEVELOPING_TODAY_0_SERVICE_ID);
+    expect(entry.state).toBe("ok");
+  });
+});
+
+describe("measured-provider census (#10443)", () => {
+  // Oracle: the providerIds the gatherer actually published in the
+  // quota-current tick generatedAt 2026-11-15T08:30:15.319Z (verified
+  // live on the laptop aggregator state dir). Every measured provider
+  // must resolve, through serviceIdFor, to a registered pool
+  // (POOL_SPECS + SHELL_POOLS, via extractQuotaPools) or to one of the
+  // documented non-pool service ids (quota-current.ts
+  // NON_POOL_SERVICE_IDS: combined/SaaS rows that never render as
+  // pools of their own). An unregistered measured provider fails here
+  // instead of silently synthesizing a duplicate pool at serve time.
+  const MEASURED_PROVIDER_IDS_2026_11_15 = [
+    "_antigravity",
+    "_claude",
+    "cline-pass",
+    "_openai",
+    "_commandcode",
+    "mistral",
+    "opencode-go",
+    "opendesign",
+    "_openai.alt",
+    "_openai.main",
+    "opencode-go.drewrypope",
+    "opencode-go.popesdrew",
+    "opencode-go.developing-today-0",
+    "opencode.drewrypope",
+    "opencode.popesdrew",
+    "opencode.developing-today-0",
+    "turso",
+    "_muse",
+    "deepseek",
+  ];
+  const NON_POOL_SERVICE_IDS = new Set(["turso", "antigravity", "_antigravity", "opencode-go", "groq"]);
+
+  test("every measured provider resolves to a registered pool or a documented non-pool id", () => {
+    const registered = new Set(extractQuotaPools("", new Date("2026-11-15T08:30:15.319Z")).map((pool) => pool.id));
+    for (const providerId of MEASURED_PROVIDER_IDS_2026_11_15) {
+      const serviceId = serviceIdFor(providerId);
+      expect(
+        registered.has(serviceId) || NON_POOL_SERVICE_IDS.has(serviceId),
+        `${providerId} -> ${serviceId} is not a registered pool`,
+      ).toBe(true);
+    }
+  });
+});
+
+describe("measured-provider census (#10575)", () => {
+  // Oracle: the providerIds the Plans Space Freshness Keeper found in
+  // the quota-current tick generatedAt 2026-11-16T00:21:59.701Z that
+  // the #10443 census did not cover — the free-tier doors enabled
+  // 2026-11-15 (commit b68f134124). Registration decision (#10575):
+  // openrouter is a registered shell pool (measured ok, a real
+  // monthly window), groq is a documented non-pool service (no quota
+  // surface exists for it; its row is permanently error-state with
+  // no windows, so no pool may be synthesized for it).
+  const NON_POOL_SERVICE_IDS = new Set(["turso", "antigravity", "_antigravity", "opencode-go", "groq"]);
+
+  test("groq resolves to a documented non-pool id and openrouter to a registered pool", () => {
+    const registered = new Set(extractQuotaPools("", new Date("2026-11-16T00:21:59.701Z")).map((pool) => pool.id));
+    for (const providerId of ["groq", "openrouter"]) {
+      const serviceId = serviceIdFor(providerId);
+      expect(
+        registered.has(serviceId) || NON_POOL_SERVICE_IDS.has(serviceId),
+        `${providerId} -> ${serviceId} is not a registered pool`,
+      ).toBe(true);
+    }
+    expect(serviceIdFor("groq")).toBe("groq");
+    expect(NON_POOL_SERVICE_IDS.has(serviceIdFor("groq"))).toBe(true);
+    expect(registered.has("openrouter")).toBe(true);
+  });
+});
+
+describe("measured-provider census (no-quota-surface providers, 2026-11-17)", () => {
+  // Oracle: current quota-current.json reports these additional providers
+  // as no-quota-surface; their service ids must not become synthesized pools.
+  const EXPECTED_NON_POOL_SERVICE_IDS = [
+    "exaone",
+    "google.muse",
+    "google.gen-lang",
+    "google.personal",
+    "google.drew",
+    "google.developing-today",
+  ];
+
+  test("no-quota-surface provider ids are explicitly documented non-pools", () => {
+    const registered = new Set(extractQuotaPools("", new Date("2026-11-17T01:20:44.821Z")).map((pool) => pool.id));
+    for (const providerId of EXPECTED_NON_POOL_SERVICE_IDS) {
+      const serviceId = serviceIdFor(providerId);
+      expect(serviceId).toBe(providerId);
+      expect(registered.has(serviceId), `${providerId} -> ${serviceId} unexpectedly became a pool`).toBe(false);
+    }
   });
 });
 

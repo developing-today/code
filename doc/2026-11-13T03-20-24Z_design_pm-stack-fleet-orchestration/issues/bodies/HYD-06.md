@@ -50,7 +50,8 @@ detect new comments and edits to older comments, retain revision/tombstone/minim
 - **P-R051 — design-only (candidate)**; occurrences `P-1681, P-1682, P-1683, P-1684, P-1685, P-1686, P-1687`; full trace: census/requirements-crosswalk.jsonl
 - **P-R065 — design-only (candidate)**; occurrences `P-1672, P-1673, P-1674, P-1675, P-1676, P-1677, P-1678, P-1679, P-1680`; full trace: census/requirements-crosswalk.jsonl
 - **P-R066 — design-only (candidate)**; occurrences `P-1681, P-1682, P-1683, P-1684, P-1685, P-1686, P-1687`; full trace: census/requirements-crosswalk.jsonl
-Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+  Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+
 ## Owned files and boundaries
 
 - `pkgs/fleet/crates/fleet-queue/src/work/activity.rs`
@@ -66,16 +67,13 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9208→JRN-01, #9206→CLI-05.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
 
 - **First failing test:** `pmo_hyd_refresh_observes_edit_behind_creation_cursor`
 - **Oracle:** The source slice’s stated reference model, golden fixture, or invariant; compare expected and observed state explicitly. No mock-only claim of deployed/live behavior.
-- **Done command:** `confirm both listed with `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker -- --list`; then run `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_hyd_refresh_observes_edit_behind_creation_cursor` and the same command filtered by `pmo_hyd_replay_deduplicates_revision_not_creation`.`
+- **Done command:** `confirm both listed with `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker -- --list`; then run `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_hyd_refresh_observes_edit_behind_creation_cursor`and the same command filtered by`pmo_hyd_replay_deduplicates_revision_not_creation`.`
 - Tests must first be listed by exact name in the owning target (`-- --list`); assert the test exists before execution. A zero-test filter passing is not acceptance.
 
 ## Acceptance and negative cases
@@ -111,8 +109,8 @@ Negative coverage: equal `updated_at`, shifting pages, absent deletion, minimize
 
 **Tier:** crucial. **Goal:** detect new comments and edits to older comments, retain revision/tombstone/minimized observations, distinguish occurrence/observation/update times. **Owns:** `src/work/activity.rs` normalized records/revisions/change projection; append seam in `src/work/journal.rs`. **Hard blockers:** HYD-05; #9208 journal contract; granular #9206 session/checkpoint-ref slice. **First failing oracles:** `pmo_hyd_refresh_observes_edit_behind_creation_cursor` and `pmo_hyd_replay_deduplicates_revision_not_creation`; fake API edits old comment after ID watermark. **Done command:** confirm both listed with `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker -- --list`; then run `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_hyd_refresh_observes_edit_behind_creation_cursor` and the same command filtered by `pmo_hyd_replay_deduplicates_revision_not_creation`. **Acceptance:** per source/resource/endpoint/query/API cursor; cursor post-durable; overlap not proof; deletion gap reported. **Negative:** equal `updated_at`, shifting pages, absent deletion, minimized records. **Migration:** unknown full snapshot; rollback disables incremental and retains generations. **Performance:** O(new+overlap pages/bytes), bounded RAM.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `HYD-05` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/activity.rs`

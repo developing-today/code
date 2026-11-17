@@ -21,13 +21,10 @@ name: id bench
 # CI tier policy: see .github/ci-policy.md
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/id/**"
-      - ".github/workflows/id-bench.yml"
-      - ".github/scripts/id-bench-compare.sh"
-      - ".github/scripts/id-bench-compare.test.sh"
+  schedule:
+    # Nightly instead of on every push to main (Drew, 2026-11-16; see
+    # .github/ci-policy.md "Nightly main CI").
+    - cron: "17 7 * * *"
   workflow_dispatch:
 
 permissions:
@@ -78,10 +75,17 @@ jobs:
       # Full-size workloads, exactly as the baselines were taken
       # (BASELINES.md): --quick numbers are smoke sizes and are never
       # comparable to the committed baselines.
+      # The matrix bundle (#5896) is stamped with the ci-runner machine
+      # class (#5894: a relative-only series, never compared against
+      # the fleet-laptop baselines) and this run's commit.
       - name: Run benchmarks
         id: bench
         continue-on-error: true
         working-directory: pkgs/id
+        env:
+          ID_BENCH_MACHINE_CLASS: ci-runner
+          ID_BENCH_GIT_SHA: ${{ github.sha }}
+          ID_BENCH_RESULTS: ${{ github.workspace }}/results.jsonl
         run: |
           nix develop --command just bench 2>&1 | tee "$GITHUB_WORKSPACE/bench-output.txt"
 
@@ -97,6 +101,22 @@ jobs:
             exit 0
           fi
           .github/scripts/id-bench-compare.sh bench-output.txt pkgs/id/benches/baseline.txt | tee bench-report.md >> "$GITHUB_STEP_SUMMARY"
+          # Matrix comparison (#5896): keyed on the full matrix
+          # identity. The committed baseline.jsonl is the fleet-laptop
+          # class and this run is ci-runner, so rows report as
+          # incomparable (machine class differs) until a ci-runner
+          # baseline is committed — cross-class comparison is never
+          # performed. The job summary is an index: it links the
+          # uploaded bundle below, it is not the record.
+          if [ -f results.jsonl ]; then
+            {
+              echo
+              echo "Matrix results bundle: \`results.jsonl\` in the **bench-output** artifact of this run (run ${{ github.run_id }})."
+            } >> "$GITHUB_STEP_SUMMARY"
+            if [ -f pkgs/id/benches/baseline.jsonl ]; then
+              .github/scripts/id-bench-compare.sh results.jsonl pkgs/id/benches/baseline.jsonl | tee -a bench-report.md >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
 
       - name: Upload benchmark output
         if: always()
@@ -106,4 +126,5 @@ jobs:
           path: |
             bench-output.txt
             bench-report.md
+            results.jsonl
           if-no-files-found: ignore

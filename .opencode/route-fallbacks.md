@@ -25,7 +25,7 @@ match this table and the config; the guard fails on drift).
    and prunes re-entry into a route already on it, so the legal pairs
    workhorse → scout / scout → workhorse cannot loop.)
 
-## Class routes (confirmed by Drew, except the two marked PROPOSAL)
+## Class routes (all confirmed by Drew; scout and background edges ruled 2026-11-14)
 
 | Route | Regular chain (in order) | Class fallback | Why |
 | --- | --- | --- | --- |
@@ -34,8 +34,8 @@ match this table and the config; the guard fails on drift).
 | workhorse | workhorse-ordered → workhorse-primary (empty stage) → workhorse-weighted → workhorse-last-resort | → scout → specialist | Workhorse's failure mode is quota exhaustion; scout diversifies onto different doors (free Beam via CommandCode, DeepSeek #low, Haiku #low). Scout-first was main's recommendation, wired 2026-11-13 pending Drew's pick. |
 | summit | fable-plan #medium → opus-plan #high → argon-plan #high → Hydrogen #high (direct) → Wonder #xhigh (direct) → sol-plan #xhigh | → specialist | Confirmed: the deliberate tier falls back to the hard-work tier. |
 | specialist | fable-plan #low → sonnet-plan #high → argon-plan #high → spark-plan #xhigh → sol-plan #medium | — (SINK) | No class fallback out of specialist; if every leg is down the call errors. |
-| scout | beam-plan → deepseek-flash-plan #low → haiku-plan #low | → workhorse (PROPOSAL) | Drew has not ruled on scout yet (2026-11-13): routine work that exhausts the free/cheap seats escalates to the standard tier. |
-| background | MiMo Flash / DeepSeek Flash #high, peak-window aware (see config) | → workhorse (PROPOSAL) | Drew has not ruled on background yet (2026-11-13): patient queue work escalates to the standard tier. |
+| scout | beam-plan → longcat-plan → iceman-plan → deepseek-flash-plan #low → haiku-plan #low → inkling-plan | → background → workhorse | Ruled by Drew 2026-11-14: routine work that exhausts the free/cheap seats escalates to the patient tier first, then the standard tier. |
+| background | MiMo Flash / DeepSeek Flash #high, peak-window aware (see config) → Zen free shelf: flash-free-plan → minimax-flash-plan → glm-5-3-flash-zen-plan → flint-plan → big-pickle-plan → nemotron-vl-plan → nemotron-lightning-plan | → workhorse | Ruled by Drew 2026-11-14: patient queue work escalates to the standard tier. |
 
 ## Workhorse stages and trial routes (no own class edges — escalation is workhorse's)
 
@@ -70,10 +70,21 @@ between, in the pool's selection order.
 | spark-plan | OpenCode Go → CommandCode → ClinePass → _muse (ordered) | Meta Spark across four doors. |
 | argon-plan | OpenCode Go → Antigravity (round-robin) | |
 | gemini-hydrogen-plan | Antigravity only | **Single door — no internal failover.** |
-| beam-plan | CommandCode (beam:free) → OpenCode Go (beam-free) (round-robin) | The free-tier pool behind scout. |
-| mimo-flash-plan | OpenCode Go → ClinePass → OpenDesign → CommandCode (round-robin) | |
+| beam-plan | OpenCode Go (beam-free) → OpenCode Zen (beam-free) (round-robin) | The free-tier pool behind scout. (CommandCode door removed 2026-11-13, #9397; cat-jam-free is the same model — deliberately not seated. Zen door at full weight 3 since 2026-11-14: Drew’s limited-context demotion was posed as a question; models.dev lists identical context on both doors, 1,048,576.) |
+| longcat-plan | OpenCode Go (longcat-2.5-free) → OpenCode Zen (longcat-2.5-free) (round-robin) | Free LongCat 2.5 pool behind scout (2026-11-14, probe-verified 3/3 workspaces). No AA listing. |
+| iceman-plan | OpenCode Go (iceman-contributor-free) → OpenCode Zen (iceman-free) (round-robin) | Free Iceman pool behind scout (2026-11-14, probe-verified 3/3 workspaces). Stealth model, identity unclaimed; no AA listing. |
+| mimo-flash-plan | OpenCode Go → ClinePass → OpenDesign → CommandCode → OpenCode Zen (mimo-v2.6-flash-free) (round-robin) | |
 | glm-5-3-plan | _vibe (Mistral) only | **Single door — no internal failover.** |
 | glm-5-3-flash-plan | _vibe (Mistral) only | **Single door — no internal failover.** |
+| flash-free-plan | OpenCode Zen (deepseek-v4.1-flash-free) (round-robin) | Zen's free DeepSeek Flash (AA v5 II 33 max) behind background (2026-11-14). Own pool: deepseek-flash-plan's leaves carry variant remaps the free door is not verified against. |
+| inkling-plan | OpenCode Zen (inkling-2-small-free) (round-robin) | Free Inkling 2 Small (AA v5 II 31) behind scout (2026-11-14). |
+| glm-5-3-flash-zen-plan | OpenCode Zen (glm-5.3-flash-free) (round-robin) | Free GLM 5.3 Flash (AA v5 II 28, ~48 tok/s) behind background (2026-11-14). Named distinctly from the _vibe glm-5-3-flash-plan above. |
+| minimax-flash-plan | OpenCode Zen (minimax-m3.1-flash-free) (round-robin) | Free MiniMax M3.1 Flash (AA v5 II 29) behind background (2026-11-14). Rarely abstains — bulk work only. |
+| flint-plan | OpenCode Zen (flint-40b-free) (round-robin) | Free Flint 40B coding model behind background (2026-11-14). No AA listing. |
+| big-pickle-plan | OpenCode Zen (big-pickle) (round-robin) | Zen stealth free model behind background (2026-11-14). Rotating backend — no benchmark attaches. |
+| nemotron-vl-plan | OpenCode Zen (nemotron-3.5-super-vl-free) (round-robin) | Free Nemotron VL (AA v5 II 13.6) behind background (2026-11-14). |
+| nemotron-lightning-plan | OpenCode Zen (nemotron-3.5-lightning-free) (round-robin) | Free Nemotron Lightning (AA v5 II 5.5) — last free leg in background (2026-11-14). |
+| systemone | OpenCode Zen (jev-1.13-free) | **Decision models — NOT a chat pool.** System-1 typed-question endpoint; never seated in a chat tier (2026-11-14). |
 
 ## Provider routes (door sets, expanded per model)
 
@@ -82,6 +93,7 @@ between, in the pool's selection order.
 | openai-plan | _openai.alt, _openai.main (server-side round-robin) |
 | mistral-plan | _vibe, mistral |
 | opencode-go-plans | opencode-go.drewrypope, opencode-go.popesdrew, opencode-go.developing-today-0 |
+| zen-plans | opencode.drewrypope, opencode.popesdrew, opencode.developing-today-0 |
 
 ## Guard
 

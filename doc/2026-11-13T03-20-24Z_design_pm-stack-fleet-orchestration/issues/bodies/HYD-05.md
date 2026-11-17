@@ -49,7 +49,8 @@ follow `Link` continuation and persist page data/cursor atomically only after du
 - **P-R051 — design-only (candidate)**; occurrences `P-1681, P-1682, P-1683, P-1684, P-1685, P-1686, P-1687`; full trace: census/requirements-crosswalk.jsonl
 - **P-R065 — design-only (candidate)**; occurrences `P-1672, P-1673, P-1674, P-1675, P-1676, P-1677, P-1678, P-1679, P-1680`; full trace: census/requirements-crosswalk.jsonl
 - **P-R066 — design-only (candidate)**; occurrences `P-1681, P-1682, P-1683, P-1684, P-1685, P-1686, P-1687`; full trace: census/requirements-crosswalk.jsonl
-Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+  Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+
 ## Owned files and boundaries
 
 - `pkgs/fleet/crates/fleet-queue/src/work/activity.rs`
@@ -65,9 +66,6 @@ Hard blockers named by the source slice, after granular-key normalization: HYD-0
 File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9198→CEN-04, #9209→REL-03.
-
-
-
 
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
@@ -111,8 +109,8 @@ Negative coverage: absent/malformed Link, duplicate/reordered entries, documente
 
 **Tier:** crucial. **Goal:** follow `Link` continuation and persist page data/cursor atomically only after durable processing. **Owns:** `src/work/activity.rs` page iterator/cursor model and existing `src/turso_queue.rs` transaction integration after storage approval. **Hard blockers:** HYD-01; #9198 actual DB/artifact transaction contract; #9209 operation/outbox coordination if shared storage. **First failing oracle:** `pmo_hyd_page_ingest_and_cursor_commit_atomically` crashes before/after page-2 ingest; model asserts no skipped item. **Done command:** confirm exact filter listed, then run `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_hyd_page_ingest_and_cursor_commit_atomically`. **Acceptance:** `Link` continuation; cap explicit truncation; idempotent repeated page; query/API version fingerprint. **Negative:** absent/malformed Link, duplicate/reordered entries, documented 250 commits/3000 files caps, object-store success + DB failure, cursor without events. **Migration/rollback:** unknown cursor forces full snapshot; legacy `last_checked_at` not trusted. No new scheduler.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `REL-02` — `shared-file:pkgs/fleet/crates/fleet-queue/src/turso_queue.rs`

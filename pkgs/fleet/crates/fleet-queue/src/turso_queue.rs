@@ -62,6 +62,7 @@ const TASK_COLS: &str = "id, queue, title, body, payload, dedupe_key, priority, 
     not_before, worker_id, claimed_at, lease_until, lane_id, platform, attempts, max_attempts, \
     claim_provider, claim_model, claim_variant, claim_session_id, \
     progress, result, last_error, park_kind, wait_kind, ready_condition, \
+    required_budget_minutes, \
     last_checked_at, check_outcome, created_at, updated_at, completed_at, \
     blocked_deps, dep_next_recheck_at, dep_blocked_until, dep_recheck_seconds";
 const LEDGER_COLS: &str = "id, queue, task_id, assigned_lane, executed_lane, \
@@ -451,127 +452,99 @@ pub struct TursoBackend {
 
 type TErr = String;
 
-/// The canonical fleet lane registry (#6853, re-based on the
-/// post-rename universe under #8097): every lane id a fleet worker
-/// may claim with, the worker that owns it, and the enabled flag a
-/// missing registration is restored with. The queue binding is the
-/// one-queue default ("*": the lane may claim any stream; see
-/// lane_queue_binds).
+/// The canonical fleet lane registry (#6853): every lane id a
+/// fleet worker may claim with, the worker that owns it, and the
+/// enabled flag a missing registration is restored with. The
+/// queue binding is the one-queue default ("*": the lane may
+/// claim any stream; see lane_queue_binds).
 ///
-/// The set is EXACTLY the live registry universe left by the
-/// 2026-11-11 lane rename and trims (#8097), plus one lane
-/// added later the same day: 36 lanes — code-a..j,
-/// not-code-a..g, any-a..s — 17 of them enabled. The added
-/// lane is not-code-g, the nix event-hook worker's OWN lane
-/// (Drew, 2026-11-11: the nix worker does not share a lane
-/// row with a Muse shift — it had been parked on
-/// not-code-a, the disabled Muse not-code-a shift's row;
-/// #8097 record, catch #6853). Lane ids Drew
-/// deleted (the code-k..z overhang, nix-a/b, opencode-a/b,
-/// openchamber-a/b) are deliberately ABSENT: the pre-rename seed
-/// still named them, so each schema ensure resurrected
-/// hand-deleted rows from it — openchamber-a/b came back enabled
-/// after being deleted on 2026-11-10. A lane outside this set is
-/// never seeded; a lane inside it that is deleted by hand comes
-/// back with exactly these fields. Registrations for
-/// session-scoped lanes (UUID ids) are created by their sessions
-/// and are not part of the canonical set; the OpenChamber lanes
-/// renamed out of UUID ids on 2026-11-11 are canonical under
-/// their final names below.
-fn canonical_lanes() -> Vec<(&'static str, &'static str, bool)> {
-    let mut lanes: Vec<(&'static str, &'static str, bool)> = Vec::new();
-    // code group: code-a..d (Muse) and code-f..j (OpenChamber),
-    // all owned by repo-worker-code. code-e (Muse) is disabled
-    // per the 2026-11-10 trims; the other nine are enabled.
-    for c in 'a'..='j' {
-        // Leak-free: the ids are built from a fixed alphabet by a
-        // match on the letter so the strings stay 'static.
-        lanes.push((code_lane_id(c), "repo-worker-code", c != 'e'));
-    }
-    // not-code group: not-code-d (OpenChamber) and not-code-g
-    // (the nix event-hook worker's own lane, added 2026-11-11)
-    // are enabled. Worker ids follow each lane's predecessor
-    // row: not-code-a was nix-a, not-code-b was opencode-a, and
-    // not-code-e was the opencode-project OpenChamber task.
-    for c in 'a'..='g' {
-        let worker = match c {
-            'a' | 'g' => "repo-worker-nix",
-            'b' | 'e' => "repo-worker-opencode",
-            'd' => "repo-worker-openchamber",
-            _ => "repo-worker-code",
-        };
-        lanes.push((not_code_lane_id(c), worker, c == 'd' || c == 'g'));
-    }
-    // any group: any-a..d (Muse) and any-n, any-o (OpenChamber)
-    // are enabled; any-e..m and any-p..s are disabled per the
-    // 2026-11-10 trims. All owned by repo-worker-code.
-    for c in 'a'..='s' {
-        let enabled = matches!(c, 'a' | 'b' | 'c' | 'd' | 'n' | 'o');
-        lanes.push((any_lane_id(c), "repo-worker-code", enabled));
+/// Drew, 2026-11-16: the registry knows EVERY variation -- each
+/// family spans the full a..=z suffix space and every canonical
+/// lane is enabled. This supersedes the 2026-11-10 trims and the
+/// #8097 36-lane set (code-a..j, not-code-a..g, any-a..s, most of
+/// them disabled or absent): those trims are why live claims kept
+/// meeting "unknown lane_id" (opencode-a/b, openchamber-a/b and
+/// nix-a/b were not seeded at all) and "lane is disabled"
+/// (not-code-c and most of the any-* range). The seed stays
+/// INSERT OR IGNORE, so it fills missing rows with exactly these
+/// fields and never touches a row that already exists -- a lane
+/// disabled by hand stays disabled until it is re-enabled by
+/// hand, and a pre-existing row keeps its recorded worker.
+/// Registrations for session-scoped lanes (UUID ids) are created
+/// by their sessions and are not part of the canonical set.
+fn canonical_lanes() -> Vec<(String, &'static str, bool)> {
+    const FAMILIES: [(&str, &str); 6] = [
+        ("code", "repo-worker-code"),
+        ("any", "repo-worker-code"),
+        ("not-code", "repo-worker-code"),
+        ("opencode", "repo-worker-opencode"),
+        ("openchamber", "repo-worker-openchamber"),
+        ("nix", "repo-worker-nix"),
+    ];
+    let mut lanes = Vec::with_capacity(FAMILIES.len() * 26);
+    for (family, worker) in FAMILIES {
+        for c in 'a'..='z' {
+            let id = format!("{family}-{c}");
+            let worker = not_code_lane_owner(&id).unwrap_or(worker);
+            lanes.push((id, worker, true));
+        }
     }
     lanes
 }
 
-fn code_lane_id(c: char) -> &'static str {
-    match c {
-        'a' => "code-a",
-        'b' => "code-b",
-        'c' => "code-c",
-        'd' => "code-d",
-        'e' => "code-e",
-        'f' => "code-f",
-        'g' => "code-g",
-        'h' => "code-h",
-        'i' => "code-i",
-        'j' => "code-j",
-        _ => unreachable!("code lane letters are a..=j"),
+/// The five not-code lanes that belong to another worker than the
+/// family default. They predate the full-universe seed (#8097's
+/// not-code-a..g set): not-code-a was nix-a and not-code-g is the
+/// nix event-hook worker's own lane, not-code-b was opencode-a and
+/// not-code-e is the opencode-project OpenChamber task, not-code-d
+/// is OpenChamber's. Live rows carry these owners, and claim_preamble
+/// refuses a claim whose worker is not the row's, so a re-seed (a
+/// fresh database, or a row deleted by hand) must restore the same
+/// owner or that worker's claims fail with "lane ... belongs to
+/// worker repo-worker-code".
+fn not_code_lane_owner(lane_id: &str) -> Option<&'static str> {
+    match lane_id {
+        "not-code-a" | "not-code-g" => Some("repo-worker-nix"),
+        "not-code-b" | "not-code-e" => Some("repo-worker-opencode"),
+        "not-code-d" => Some("repo-worker-openchamber"),
+        _ => None,
     }
 }
 
-fn not_code_lane_id(c: char) -> &'static str {
-    match c {
-        'a' => "not-code-a",
-        'b' => "not-code-b",
-        'c' => "not-code-c",
-        'd' => "not-code-d",
-        'e' => "not-code-e",
-        'f' => "not-code-f",
-        'g' => "not-code-g",
-        _ => unreachable!("not-code lane letters are a..=g"),
+/// The family of a lane id shaped `<family>-<suffix>`, when the
+/// family is one the broker knows and the suffix is a nonempty
+/// lowercase alphabetic string ("code-a", "not-code-c",
+/// "darwin-nix-a"). claim_preamble uses this as the wildcard
+/// rule (Drew, 2026-11-16): a claim naming a known-family lane
+/// with no registry row auto-provisions the row instead of
+/// failing with "unknown lane_id". darwin-nix is wildcard-only:
+/// it is deliberately not part of the canonical seed set above,
+/// but a darwin-nix lane claim provisions its row on first use.
+fn lane_family_of(lane_id: &str) -> Option<&str> {
+    const FAMILIES: [&str; 7] = [
+        "code",
+        "any",
+        "not-code",
+        "opencode",
+        "openchamber",
+        "nix",
+        "darwin-nix",
+    ];
+    let (family, suffix) = lane_id.rsplit_once('-')?;
+    if suffix.is_empty() || !suffix.bytes().all(|b| b.is_ascii_lowercase()) {
+        return None;
     }
-}
-
-fn any_lane_id(c: char) -> &'static str {
-    match c {
-        'a' => "any-a",
-        'b' => "any-b",
-        'c' => "any-c",
-        'd' => "any-d",
-        'e' => "any-e",
-        'f' => "any-f",
-        'g' => "any-g",
-        'h' => "any-h",
-        'i' => "any-i",
-        'j' => "any-j",
-        'k' => "any-k",
-        'l' => "any-l",
-        'm' => "any-m",
-        'n' => "any-n",
-        'o' => "any-o",
-        'p' => "any-p",
-        'q' => "any-q",
-        'r' => "any-r",
-        's' => "any-s",
-        _ => unreachable!("any lane letters are a..=s"),
-    }
+    FAMILIES.contains(&family).then_some(family)
 }
 
 /// The registry seed statement (#6853): INSERT OR IGNORE, so it
-/// restores a missing registration with its canonical fields —
-/// including a disabled lane's enabled = 0 — and can never
-/// resurrect or re-enable a lane whose row already exists in any
-/// state. Lanes outside the canonical set are never seeded at
-/// all (#8097).
+/// restores a missing registration with its canonical fields and
+/// can never resurrect or re-enable a lane whose row already
+/// exists in any state -- a lane disabled by hand stays disabled
+/// across broker restarts until it is re-enabled by hand. Lanes
+/// outside the canonical set are never seeded at all; the
+/// claim-time wildcard (lane_family_of) provisions known-family
+/// lanes the seed does not name.
 fn lane_seed_sql() -> String {
     let values: Vec<String> = canonical_lanes()
         .iter()
@@ -802,6 +775,7 @@ impl TursoBackend {
             ("dep_next_recheck_at", "TEXT"),
             ("dep_blocked_until", "TEXT"),
             ("dep_recheck_seconds", "INTEGER"),
+            ("required_budget_minutes", "INTEGER"),
         ] {
             let has = cols
                 .iter()
@@ -888,10 +862,11 @@ const SCHEMA: [&str; 17] = [
         priority INTEGER, status TEXT NOT NULL DEFAULT 'queued', \
         not_before TEXT, worker_id TEXT, claimed_at TEXT, lease_until TEXT, \
         lane_id TEXT, platform TEXT, attempts INTEGER NOT NULL DEFAULT 0, \
-        max_attempts INTEGER NOT NULL DEFAULT 4, \
+        max_attempts INTEGER NOT NULL DEFAULT 1000, \
         claim_provider TEXT, claim_model TEXT, claim_variant TEXT, claim_session_id TEXT, \
         progress TEXT NOT NULL DEFAULT '{}', result TEXT NOT NULL DEFAULT '{}', \
         last_error TEXT, park_kind TEXT, wait_kind TEXT, ready_condition TEXT, \
+        required_budget_minutes INTEGER, \
         last_checked_at TEXT, check_outcome TEXT, \
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL, \
         completed_at TEXT, \
@@ -1182,17 +1157,30 @@ fn verb_events_count(t: &TursoBackend, req: &Value) -> Value {
 /// `kind` narrows to one kind; `limit` defaults to 200 and is
 /// clamped to 1..=1000.
 fn verb_events_list(t: &TursoBackend, req: &Value) -> Value {
-    let Some(task_id) = req_i64(req, "task_id") else {
-        return fail(2, "task_id is required".to_string());
-    };
-    let limit = req_i64(req, "limit").unwrap_or(200).clamp(1, 1000);
-    let mut sql = "SELECT id, worker_id, kind, detail, created_at FROM events \
-                   WHERE task_id = ?"
+    // #9046 per-task read, widened for the claim-link rollup
+    // (#10357): task_id is optional — without it the verb lists
+    // across tasks inside a `since` window (kind-filtered), the
+    // read `repo-queue models` aggregates over. Rows always
+    // carry their task_id so cross-task rows join back.
+    let task_id = req_i64(req, "task_id");
+    let limit = req_i64(req, "limit")
+        .unwrap_or(200)
+        .clamp(1, if task_id.is_some() { 1000 } else { 50_000 });
+    let mut sql = "SELECT id, task_id, worker_id, kind, detail, created_at FROM events \
+                   WHERE 1 = 1"
         .to_string();
-    let mut args: Vec<Arg> = vec![Arg::Int(task_id)];
+    let mut args: Vec<Arg> = vec![];
+    if let Some(id) = task_id {
+        sql += " AND task_id = ?";
+        args.push(Arg::Int(id));
+    }
     if let Some(k) = req_str(req, "kind") {
         sql += " AND kind = ?";
         args.push(Arg::Text(k.to_string()));
+    }
+    if let Some(s) = req_str(req, "since") {
+        sql += " AND created_at >= ?";
+        args.push(Arg::Text(s.to_string()));
     }
     sql += &format!(" ORDER BY id ASC LIMIT {limit}");
     let work = (|| -> Result<Value, TErr> {
@@ -1507,7 +1495,29 @@ fn verb_sweep(t: &TursoBackend, req: &Value) -> Value {
         if let Some(s) = dep_summary {
             out["dep_recheck"] = s;
         }
-        if expired > 0 || do_revalidate || do_prune || dep_checked > 0 {
+        // #10648: the quarantine rechecker rides the sweep beside
+        // the dep rechecker, on the same expire timer — a blocked
+        // row whose recorded claim-path quarantine no longer
+        // reproduces is requeued automatically, so a repaired
+        // packet can never fossilize in blocked again. Opt out
+        // per call: quarantine_recheck=false.
+        let quarantine_summary = if req_bool(req, "quarantine_recheck").unwrap_or(true) {
+            Some(run_quarantine_rechecks(
+                t,
+                req_i64(req, "quarantine_limit").unwrap_or(200),
+            )?)
+        } else {
+            None
+        };
+        let quarantine_checked = quarantine_summary
+            .as_ref()
+            .and_then(|s| s.get("checked"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        if let Some(s) = quarantine_summary {
+            out["quarantine_recheck"] = s;
+        }
+        if expired > 0 || do_revalidate || do_prune || dep_checked > 0 || quarantine_checked > 0 {
             event(t, Some("fleet-sweeper"), None, "sweep", &out)?;
         }
         Ok(out)
@@ -1791,7 +1801,7 @@ fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
         let max_attempts = row
             .get("max_attempts")
             .and_then(|v| v.as_i64())
-            .unwrap_or(4);
+            .unwrap_or(crate::validate::TASK_DEFAULT_MAX_ATTEMPTS as i64);
         let at_cap =
             !to_sink && expiry_disposition(attempts, max_attempts) == ExpiryDisposition::FailAtCap;
         let upd = if at_cap {
@@ -2056,8 +2066,8 @@ fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
         }
         let ins = t.exec(
             "INSERT INTO tasks (queue, title, body, payload, dedupe_key, priority, \
-               status, not_before, max_attempts, platform, progress, result, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, '{}', '{}', ?, ?)",
+               status, not_before, max_attempts, required_budget_minutes, platform, progress, result, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, '{}', '{}', ?, ?)",
             &[
                 Arg::Text(queue.clone()),
                 arg_str(task.get("title").and_then(|v| v.as_str())),
@@ -2074,7 +2084,19 @@ fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                 task.get("max_attempts")
                     .and_then(|v| v.as_i64())
                     .map(Arg::Int)
-                    .unwrap_or(Arg::Int(4)),
+                    .unwrap_or(Arg::Int(
+                        crate::validate::TASK_DEFAULT_MAX_ATTEMPTS as i64,
+                    )),
+                // #3418: persist the effective requirement in the
+                // queryable column (task_from_packet selects
+                // packet > payload, absent in both = NULL =
+                // legacy claim behavior). The claim predicate
+                // COALESCEs column-then-payload, so this stamp
+                // and the payload mirror stay equivalent.
+                task.get("required_budget_minutes")
+                    .and_then(|v| v.as_i64())
+                    .map(Arg::Int)
+                    .unwrap_or(Arg::Null),
                 arg_str(platform.as_deref()),
                 Arg::Text(now.clone()),
                 Arg::Text(now),
@@ -2167,6 +2189,14 @@ fn verb_revive(t: &TursoBackend, req: &Value) -> Value {
         .unwrap_or("fleet-queue-cli")
         .to_string();
     let reason = req_str(req, "reason").unwrap_or("").to_string();
+    // #9179: same storage-layer rule as verb_park — a garbage
+    // not_before stored on a revived (queued) row hits the same
+    // TEXT comparison in the claim predicate and never lapses.
+    if let Some(nb) = req_str(req, "not_before") {
+        if let Err(e) = validate_stored_not_before(nb) {
+            return fail(2, format!("revive_task: {e}"));
+        }
+    }
     let not_before = req_str(req, "not_before")
         .map(str::to_string)
         .unwrap_or_else(now_iso);
@@ -2183,7 +2213,7 @@ fn verb_revive(t: &TursoBackend, req: &Value) -> Value {
         let max_attempts = row
             .get("max_attempts")
             .and_then(|v| v.as_i64())
-            .unwrap_or(4);
+            .unwrap_or(crate::validate::TASK_DEFAULT_MAX_ATTEMPTS as i64);
         revive_eligible(&status, attempts, max_attempts)
             .map_err(|e| format!("revive_task: task {task_id}: {e}"))?;
         t.exec(
@@ -2666,6 +2696,34 @@ fn sink_return_sql() -> &'static str {
 /// Anything else (claimed, blocked, a genuine wait park — a
 /// 'parked' row is never a sink row since #8234, whatever its
 /// progress carries) is not claimable by id.
+/// The live holder of a row, when the row is claimed and its lease
+/// has not lapsed at `now`: (worker_id, lane_id, lease_until).
+/// #6985 recurrence (task 17490, 2026-11-16): two lanes sharing
+/// worker_id repo-worker-code both believed they held one task, and
+/// nothing in the task's record showed the second claim attempt.
+/// A claim surface that refuses a row because a live claim stands
+/// must be able to name that claim — from the row's lease fields,
+/// never from the claimer's worker identity, which all lanes share.
+fn live_claim_holder(row: &Value, now: &str) -> Option<(String, Option<String>, String)> {
+    if row.get("status").and_then(|v| v.as_str()) != Some("claimed") {
+        return None;
+    }
+    let lease_until = row.get("lease_until").and_then(|v| v.as_str())?;
+    if lease_until < now {
+        return None;
+    }
+    let worker = row
+        .get("worker_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let lane = row
+        .get("lane_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    Some((worker, lane, lease_until.to_string()))
+}
+
 fn by_id_claimable(row: &Value, now: &str) -> bool {
     // #8187: platform is a mark, not a filter — a by-id claim takes
     // the row whatever platform either side carries (or none).
@@ -2944,24 +3002,26 @@ fn claim_by_id(
     if let Some(reason) = claim_guard_reason(&row) {
         quarantine_task(t, task_id, &reason)?;
         return Ok(None);
-        // #8217: the plain by-id path honors the same recorded
-        // platform limitation the transfer claim enforces (#8210):
-        // an invalid (reason-less) stored limitation is cleared,
-        // never enforced; a valid one refuses a claim from any
-        // other family (or none) — the row simply reads unclaimable
-        // by id, like any other by-id refusal.
-        if let Some(ledger) = get_ledger(t, task_id)? {
-            let limit = ledger.get("platform_limit").and_then(|v| v.as_str());
-            let limit_reason = ledger.get("platform_limit_reason").and_then(|v| v.as_str());
-            if platform_limit_invalid(limit, limit_reason) {
-                t.exec(
-                    "UPDATE repo_task_lane_ledger SET platform_limit = NULL, \
-                   platform_limit_reason = NULL, updated_at = ? WHERE task_id = ?",
-                    &[Arg::Text(now_iso()), Arg::Int(task_id)],
-                )?;
-            } else if platform_limit_refusal(limit, limit_reason, family).is_some() {
-                return Ok(None);
-            }
+    }
+    // #8217/#8456: the plain by-id path honors the same recorded
+    // platform limitation the transfer claim enforces (#8210):
+    // an invalid (reason-less) stored limitation is cleared,
+    // never enforced; a valid one refuses a claim from any
+    // other family (or none) — the row simply reads unclaimable
+    // by id, like any other by-id refusal. This block must stay
+    // OUTSIDE the claim-guard block above: inside it, it sat
+    // after that block's `return Ok(None)` and never ran (G7).
+    if let Some(ledger) = get_ledger(t, task_id)? {
+        let limit = ledger.get("platform_limit").and_then(|v| v.as_str());
+        let limit_reason = ledger.get("platform_limit_reason").and_then(|v| v.as_str());
+        if platform_limit_invalid(limit, limit_reason) {
+            t.exec(
+                "UPDATE repo_task_lane_ledger SET platform_limit = NULL, \
+               platform_limit_reason = NULL, updated_at = ? WHERE task_id = ?",
+                &[Arg::Text(now_iso()), Arg::Int(task_id)],
+            )?;
+        } else if platform_limit_refusal(limit, limit_reason, family).is_some() {
+            return Ok(None);
         }
     }
     let status = row
@@ -2972,6 +3032,32 @@ fn claim_by_id(
     let now_unix = now_unix();
     let now = iso(now_unix);
     if !by_id_claimable(&row, &now) {
+        // #6985: a by-id claim refused because a live claim stands
+        // leaves a claim-transition event naming the holder's lease
+        // (worker, lane, lease_until from the row) and the refused
+        // claimer — a refused claim is part of the task's record,
+        // not a silent no-op. The pick path's lost races stay
+        // event-free by design (ordinary contention, re-picked in
+        // the same call); a by-id refusal names its row explicitly,
+        // so it is recorded exactly once here.
+        if let Some((holder_worker, holder_lane, holder_lease_until)) =
+            live_claim_holder(&row, &now)
+        {
+            let _ = event(
+                t,
+                Some(worker),
+                Some(task_id),
+                "claim_refused",
+                &json!({
+                    "via": "claim_by_id",
+                    "reason": "already_claimed",
+                    "holder_worker_id": holder_worker,
+                    "holder_lane_id": holder_lane,
+                    "holder_lease_until": holder_lease_until,
+                    "claimer_lane_id": lane,
+                }),
+            );
+        }
         return Ok(None);
     }
     // One-queue union matching (#8097, 2026-11-10): a by-id
@@ -3908,6 +3994,7 @@ fn claim_update_sql(pick_predicate: &str) -> String {
            attempts = attempts + (CASE WHEN status IN ('parked', 'handed_off') THEN 0 ELSE 1 END), \
            lane_id = ?, platform = COALESCE(?, platform), \
            park_kind = NULL, wait_kind = NULL, not_before = NULL, \
+           required_budget_minutes = NULL, \
            updated_at = ? \
          WHERE id = ? \
            AND ( {pick_predicate} ) {PLATFORM_LIMIT_PICK_CLAUSE}"
@@ -3931,12 +4018,45 @@ fn claim_update_sql(pick_predicate: &str) -> String {
 /// needs no sink exclusion — genuine wait parks release through
 /// claim at not_before, and only there. The sink branch carries
 /// no `?` placeholder, so the pick SELECT and the claim UPDATE
-/// re-check keep their two `now` arguments.
+/// re-check keep their four leading arguments: the two `now`s of
+/// the queued/parked branches, then the claimer's declared
+/// remaining budget twice (#3418: the capacity-wait bypass gate
+/// and the outer budget gate).
+/// #3418: a row's effective required budget in minutes — the
+/// park-stamped column wins; otherwise the packet's own declared
+/// `required_budget_minutes`. NULL means no requirement: the row
+/// matches every claim exactly as before this feature.
+const REQUIRED_BUDGET_EXPR: &str = "COALESCE(required_budget_minutes, \
+    CAST(json_extract(payload, '$.required_budget_minutes') AS INTEGER))";
+
+/// #3418: the budget gate. A requirement-bearing row matches only
+/// a claim declaring at least that many remaining minutes; the
+/// placeholder binds NULL for an undeclared budget and
+/// COALESCE(?, -1) makes an undeclared budget fail every
+/// requirement (a claimer that cannot state its budget cannot
+/// prove the fit) while requirement-free rows pass for all claims.
+fn budget_gate_sql() -> String {
+    format!("({REQUIRED_BUDGET_EXPR} IS NULL OR COALESCE(?, -1) >= {REQUIRED_BUDGET_EXPR})")
+}
+
+/// #3418: the capacity-wait timer bypass. Only a requirement-
+/// bearing capacity park may be taken before its timer by a
+/// claim whose declared budget fits — a requirement-free
+/// capacity park (a quota-reset wait is the standing example)
+/// keeps its timer exactly as before.
+fn budget_bypass_sql() -> String {
+    format!("({REQUIRED_BUDGET_EXPR} IS NOT NULL AND COALESCE(?, -1) >= {REQUIRED_BUDGET_EXPR})")
+}
+
 fn default_pick_predicate() -> String {
+    let gate = budget_gate_sql();
+    let bypass = budget_bypass_sql();
     format!(
-        "(status = 'queued' AND attempts < max_attempts \
+        "(((status = 'queued' AND attempts < max_attempts \
          AND (not_before IS NULL OR not_before <= ?)) \
-       OR (status = 'parked' AND not_before IS NOT NULL AND not_before <= ?) \
+       OR (status = 'parked' AND ((not_before IS NOT NULL AND not_before <= ?) \
+         OR (wait_kind = 'capacity' AND {bypass})))) \
+       AND {gate}) \
        OR ({HANDOFF_SQL})"
     )
 }
@@ -3970,6 +4090,35 @@ fn lane_decision(
     } else {
         ("direct", "default_direct")
     }
+}
+
+/// The session a lane row is *live*-bound to (#8368): the ledger
+/// session_id, unless the broker itself cleared that exact binding
+/// (progress.session_cleared.session_id, stamped by clear_binding
+/// when park/release/expire dropped it). A broker-cleared session is
+/// not bound in any live sense — a row still carrying its id must
+/// behave as unbound for reassignment, or the task loops claim/park
+/// across lanes with no lane-side exit (no flip, no transfer, no
+/// fresh launch).
+fn bound_session<'a>(
+    session_id: Option<&'a str>,
+    cleared_session_id: Option<&str>,
+) -> Option<&'a str> {
+    let sid = session_id.map(str::trim).unwrap_or("");
+    if sid.is_empty() || cleared_session_id == Some(sid) {
+        None
+    } else {
+        session_id
+    }
+}
+
+/// The session id the broker recorded as cleared on a task's
+/// progress (clear_binding's session_cleared stamp), if any (#8368).
+fn cleared_session_id(task: &Value) -> Option<&str> {
+    task.get("progress")
+        .and_then(|p| p.get("session_cleared"))
+        .and_then(|c| c.get("session_id"))
+        .and_then(|v| v.as_str())
 }
 
 /// Whether an EXISTING ledger row flips to direct (#8187): only an
@@ -4171,8 +4320,37 @@ fn claim_preamble(
             &[Arg::Text(lane_id.clone())],
             &[],
         )?;
-        let Some(l) = lanes.into_iter().next() else {
-            return Err(format!("claim_repo_task: unknown lane_id {lane_id}"));
+        let l = match lanes.into_iter().next() {
+            Some(l) => l,
+            None => {
+                // Wildcard acceptance (Drew, 2026-11-16; #6853): a
+                // lane id in a known family (<family>-<suffix>, see
+                // lane_family_of) with no registry row yet is
+                // provisioned on first claim -- owned by the
+                // claiming worker, enabled, unbound queue -- and
+                // then validated by the same checks below. An
+                // existing row always takes precedence: a lane
+                // disabled by hand keeps refusing. Ids outside
+                // every known family keep the unknown-lane refusal.
+                if lane_family_of(lane_id).is_none() {
+                    return Err(format!("claim_repo_task: unknown lane_id {lane_id}"));
+                }
+                t.exec(
+                    "INSERT OR IGNORE INTO lanes (lane_id, worker_id, queue, enabled) VALUES (?, ?, '*', 1)",
+                    &[Arg::Text(lane_id.clone()), Arg::Text(worker.to_string())],
+                )?;
+                let lanes = t.query_objs(
+                    "SELECT lane_id, worker_id, queue, enabled FROM lanes WHERE lane_id = ?",
+                    &[Arg::Text(lane_id.clone())],
+                    &[],
+                )?;
+                match lanes.into_iter().next() {
+                    Some(l) => l,
+                    None => {
+                        return Err(format!("claim_repo_task: unknown lane_id {lane_id}"));
+                    }
+                }
+            }
         };
         if l.get("worker_id").and_then(|v| v.as_str()) != Some(worker) {
             return Err(format!(
@@ -4217,6 +4395,7 @@ fn claim_pick_once(
     claim_session: Option<String>,
     model: &Option<ClaimModel>,
     handoff_pick: bool,
+    remaining_budget_minutes: Option<i64>,
 ) -> Result<Option<Value>, TErr> {
     let now_unix = now_unix();
     let now = iso(now_unix);
@@ -4229,9 +4408,17 @@ fn claim_pick_once(
     // #5444: the pick loops past rows the guard quarantines —
     // a skipped row degrades to the next candidate or to no
     // claim, never to a handed-out invalid packet.
+    // #9609: race losses and quarantines carry SEPARATE budgets.
+    // The race budget bounds contention retries; the quarantine
+    // budget bounds how much defective head-of-queue one call
+    // chews through. They shared one 32-cap until 2026-11-16,
+    // when a ~460-packet defective intake wave made every claim
+    // call spend its whole budget quarantining and return "no
+    // claimable task" while claimable rows sat behind the wave.
     let mut row: Value;
     let mut id: i64;
     let mut skipped = 0usize;
+    let mut quarantined = 0usize;
     loop {
         // #7617: pick the candidate id FIRST, then claim THAT row by
         // id, and read it back by id. The previous shape claimed via
@@ -4271,10 +4458,16 @@ fn claim_pick_once(
          ORDER BY (priority IS NULL), priority ASC, created_at ASC LIMIT 1",
             scope.sql
         );
+        let budget_arg = match remaining_budget_minutes {
+            Some(v) => Arg::Int(v),
+            None => Arg::Null,
+        };
         let mut pick_args: Vec<Arg> = Vec::new();
         if !handoff_pick {
             pick_args.push(Arg::Text(now.clone()));
             pick_args.push(Arg::Text(now.clone()));
+            pick_args.push(budget_arg.clone());
+            pick_args.push(budget_arg.clone());
         }
         pick_args.push(arg_str(family.as_deref()));
         pick_args.push(arg_str(family.as_deref()));
@@ -4299,6 +4492,8 @@ fn claim_pick_once(
         if !handoff_pick {
             upd_args.push(Arg::Text(now.clone()));
             upd_args.push(Arg::Text(now.clone()));
+            upd_args.push(budget_arg.clone());
+            upd_args.push(budget_arg.clone());
         }
         upd_args.push(arg_str(family.as_deref()));
         upd_args.push(arg_str(family.as_deref()));
@@ -4325,8 +4520,8 @@ fn claim_pick_once(
         if let Some(reason) = claim_guard_reason(&candidate) {
             let cid = candidate.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
             quarantine_task(t, cid, &reason)?;
-            skipped += 1;
-            if skipped >= 32 {
+            quarantined += 1;
+            if quarantined >= MAX_CLAIM_QUARANTINES_PER_CALL {
                 return Ok(None);
             }
             continue;
@@ -4407,6 +4602,19 @@ fn claim_pick_once(
     Ok(Some(row))
 }
 
+/// The most rows one claim call may quarantine before giving up
+/// (#9609). Quarantines do not consume the claim loop's race-loss
+/// budget: the two bound different things — the race budget bounds
+/// contention retries, this one bounds how much defective
+/// head-of-queue a single call chews through. The shared 32-cap
+/// let the 2026-11-16 defective intake wave (~460 packets in one
+/// queue) starve the stream for a shift: every call burned its
+/// budget on quarantines and returned no claim. 512 absorbs a
+/// wave of that size in one call while keeping one call's write
+/// load bounded; a larger wave still drains across calls and via
+/// the quarantine rechecker's releases.
+pub const MAX_CLAIM_QUARANTINES_PER_CALL: usize = 512;
+
 /// The most tasks one batch claim may take (#8217). A batch is
 /// only legitimate paired with immediate per-item dispatch, and
 /// the dispatcher must launch + verify-bind every item inside one
@@ -4446,6 +4654,7 @@ fn verb_claim_batch(
     claim_session: &Option<String>,
     model: &Option<ClaimModel>,
     handoff_pick: bool,
+    remaining_budget_minutes: Option<i64>,
     count: i64,
 ) -> Value {
     let work = (|| -> Result<Vec<Value>, TErr> {
@@ -4462,6 +4671,7 @@ fn verb_claim_batch(
                 claim_session.clone(),
                 model,
                 handoff_pick,
+                remaining_budget_minutes,
             )?
             else {
                 break;
@@ -4510,6 +4720,11 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
     // task's own requires.pool, never as a filter.
     let pool = req_str(req, "pool").map(str::to_string);
     let lease_seconds = req_i64(req, "lease_seconds").unwrap_or(CLAIM_DEFAULT_LEASE_SECONDS);
+    // #3418: the claimer's declared remaining shift budget. Absent
+    // is a claim that cannot prove budget fit: requirement-bearing
+    // rows skip it (see budget_gate_sql); requirement-free rows
+    // behave exactly as before.
+    let remaining_budget_minutes = req_i64(req, "remaining_budget_minutes");
     let lane = req_str(req, "lane").map(str::to_string);
     // #8187 (demoting #8097 Rule 2): the claim's declared platform
     // is a MARK, never a filter — it is stamped on the claimed row
@@ -4590,6 +4805,7 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
             &claim_session,
             &model,
             handoff_pick,
+            remaining_budget_minutes,
             count,
         );
     }
@@ -4645,14 +4861,100 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
             claim_session,
             &model,
             handoff_pick,
+            remaining_budget_minutes,
         )
     })();
     match work {
         Ok(Some(row)) => ok(json!({"row": row})),
-        Ok(None) => ok(json!({"row": Value::Null})),
+        Ok(None) => {
+            // #3418 (#4712): surface the budget-skip summary on an
+            // empty default pick so impossible-fit work escalates
+            // instead of skipping silently forever. By-id and
+            // handoff picks name their row/mode, so no summary.
+            let mut resp = json!({"row": Value::Null});
+            if !handoff_pick && req_i64(req, "task_id").is_none() {
+                let summary =
+                    budget_skip_summary(t, &iso(now_unix()), &scope, remaining_budget_minutes);
+                if let Some(obj) = resp.as_object_mut() {
+                    if let Some(s) = summary.as_object() {
+                        for (k, v) in s {
+                            obj.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+            }
+            ok(resp)
+        }
         Err(e) if e.starts_with("claim_repo_task:") => fail(4, e),
         Err(e) => terr(e),
     }
+}
+
+/// #3418 (#4712): impossible-fit surfacing. When a default-pick
+/// claim finds no claimable row, count the otherwise-eligible rows
+/// skipped purely on budget and report the largest requirement
+/// seen, so a lane or orchestrator can escalate work no shift can
+/// fit instead of silently skipping it forever. The liveness
+/// predicate mirrors default_pick_predicate minus the budget gate
+/// (queued-due rows under the attempts cap; parked rows whose
+/// timer passed, plus capacity parks, which the budget bypass can
+/// take early). Scope (queue/filter/requirements) applies, so the
+/// summary describes exactly the stream this claim searched.
+/// #3418 (#4712): the impossible-fit summary query shape. Counts
+/// otherwise-eligible rows skipped purely on budget and reports the
+/// largest requirement seen. The liveness predicate mirrors
+/// default_pick_predicate minus the budget gate; scope applies so
+/// the summary describes exactly the stream the claim searched.
+fn budget_skip_sql(scope_sql: &str) -> String {
+    let req_expr = REQUIRED_BUDGET_EXPR;
+    format!(
+        "SELECT COUNT(*) AS n, MAX({req_expr}) AS m FROM tasks \
+         WHERE payload IS NOT NULL AND payload <> '' AND payload <> '{{}}' \
+         AND (((status = 'queued' AND attempts < max_attempts \
+           AND (not_before IS NULL OR not_before <= ?)) \
+         OR (status = 'parked' AND ((not_before IS NOT NULL AND not_before <= ?) \
+           OR wait_kind = 'capacity'))) \
+         AND {req_expr} IS NOT NULL \
+         AND {req_expr} > COALESCE(?, -1)){scope_sql}"
+    )
+}
+
+fn budget_skip_summary(
+    t: &TursoBackend,
+    now: &str,
+    scope: &ClaimScope,
+    remaining_budget_minutes: Option<i64>,
+) -> Value {
+    let sql = budget_skip_sql(&scope.sql);
+    let remaining_arg = match remaining_budget_minutes {
+        Some(v) => Arg::Int(v),
+        None => Arg::Null,
+    };
+    let mut args: Vec<Arg> = vec![
+        Arg::Text(now.to_string()),
+        Arg::Text(now.to_string()),
+        remaining_arg,
+    ];
+    for a in &scope.args {
+        args.push(a.clone());
+    }
+    let (n, m) = match t.query_objs(&sql, &args, &[]) {
+        Ok(rows) => {
+            let first = rows.into_iter().next();
+            let n = first
+                .as_ref()
+                .and_then(|r| r.get("n"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let m = first.and_then(|mut r| r.get_mut("m").map(|v| v.take()));
+            (n, m.unwrap_or(Value::Null))
+        }
+        Err(_) => return json!({}),
+    };
+    json!({
+        "budget_skipped": n,
+        "max_required_budget_minutes": m,
+    })
 }
 
 fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
@@ -4745,18 +5047,22 @@ fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            // #8368: the binding that counts is the *live* one —
+            // a ledger session_id the broker itself cleared (it
+            // matches progress.session_cleared) is not bound, and a
+            // row carrying it flips like an unbound row.
+            let bound = bound_session(
+                existing.get("session_id").and_then(|v| v.as_str()),
+                cleared_session_id(&task),
+            );
             // #8187 reassignment: an unbound opencode row flips to
             // direct when the caller passes --exclusion-reason (a
             // Muse lane taking a sink/legacy opencode task direct).
             // The progress.lane re-sync below then stamps direct.
-            if lane_reassignment_flip(
-                &lane,
-                existing.get("session_id").and_then(|v| v.as_str()),
-                exclusion.as_deref(),
-            ) {
+            if lane_reassignment_flip(&lane, bound, exclusion.as_deref()) {
                 t.exec(
                     "UPDATE repo_task_lane_ledger SET assigned_lane = 'direct', \
-                       exclusion_reason = ?, updated_at = ? WHERE task_id = ?",
+                       session_id = NULL, exclusion_reason = ?, updated_at = ? WHERE task_id = ?",
                     &[
                         arg_str(exclusion.as_deref()),
                         Arg::Text(now_iso()),
@@ -4786,14 +5092,10 @@ fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
             // task to opencode with a stated reason) and no
             // session is bound. The progress.lane re-sync below
             // then stamps opencode.
-            if lane_flip_to_opencode(
-                &lane,
-                existing.get("session_id").and_then(|v| v.as_str()),
-                opencode_reason.as_deref(),
-            ) {
+            if lane_flip_to_opencode(&lane, bound, opencode_reason.as_deref()) {
                 t.exec(
                     "UPDATE repo_task_lane_ledger SET assigned_lane = 'opencode', \
-                       opencode_reason = ?, exclusion_reason = NULL, updated_at = ? \
+                       session_id = NULL, opencode_reason = ?, exclusion_reason = NULL, updated_at = ? \
                      WHERE task_id = ?",
                     &[
                         arg_str(opencode_reason.as_deref()),
@@ -4818,6 +5120,28 @@ fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
                     ),
                 )?;
                 lane = "opencode".to_string();
+            }
+            // #8368: a requested flip that a *live* bound session
+            // refuses is an explicit error naming the session —
+            // never the silent unchanged row, which lanes cannot
+            // distinguish from success.
+            if exclusion.is_some() && lane == "opencode" {
+                if let Some(sid) = bound {
+                    return Err(format!(
+                        "assign_repo_task_lane: task {task_id} is bound to session {sid} \
+                         (live, not cleared) \u{2014} the #8187 exclusion flip is refused \
+                         for a live bound session; its owner must release or transfer it"
+                    ));
+                }
+            }
+            if opencode_reason.is_some() && lane == "direct" {
+                if let Some(sid) = bound {
+                    return Err(format!(
+                        "assign_repo_task_lane: task {task_id} is bound to session {sid} \
+                         (live, not cleared) \u{2014} the #8210 opencode flip is refused \
+                         for a live bound session; its owner must release or transfer it"
+                    ));
+                }
             }
             let cur = task
                 .get("progress")
@@ -5258,6 +5582,28 @@ fn apply_wait_floor(
     }
 }
 
+/// #3418: the required budget a park records. An explicit
+/// `required_budget_minutes` in the park request wins. Otherwise a
+/// capacity wait (ready-condition kind `capacity`) defaults the
+/// requirement from the packet's own `timebox_minutes` — the
+/// natural default source in the #3418 design sketch — so a
+/// capacity park is budget-matched without the parker restating
+/// the packet's number. Any other park records no requirement and
+/// keeps behaving exactly as before. Non-positive values record
+/// no requirement.
+fn park_required_budget(explicit: Option<i64>, condition: &Value, payload: &Value) -> Option<i64> {
+    if let Some(v) = explicit {
+        return (v > 0).then_some(v);
+    }
+    if condition.get("kind").and_then(|k| k.as_str()) == Some("capacity") {
+        return payload
+            .get("timebox_minutes")
+            .and_then(|v| v.as_i64())
+            .filter(|v| *v > 0);
+    }
+    None
+}
+
 fn verb_park(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
@@ -5266,6 +5612,17 @@ fn verb_park(t: &TursoBackend, req: &Value) -> Value {
         Ok(r) => r,
         Err(v) => return v,
     };
+    // #9179: an explicit not_before is validated HERE, at the
+    // storage layer — the dispatch gate (#6426) only covers
+    // requests that pass through it, and the audit's malformed
+    // rows ("3600"/"7200" stored verbatim) prove a path around it
+    // existed. A value that fails the rule fails the park before
+    // any state changes.
+    if let Some(nb) = req_str(req, "not_before") {
+        if let Err(e) = validate_stored_not_before(nb) {
+            return fail(2, format!("park_task: {e}"));
+        }
+    }
     let (not_before, park_kind) = match req_str(req, "not_before") {
         Some(nb) => (nb.to_string(), "absolute"),
         None => (
@@ -5301,6 +5658,22 @@ fn verb_park(t: &TursoBackend, req: &Value) -> Value {
     } else {
         condition
     };
+    // #3418: the budget requirement this park records (explicit in
+    // the request, or defaulted from the packet timebox for a
+    // capacity wait). A capacity park stays timer-floored as
+    // before, but a claim declaring enough remaining budget takes
+    // it immediately through the pick predicate's capacity bypass;
+    // external-wait parks record no requirement unless the parker
+    // sets one explicitly, and the two conditions then compose.
+    let required_budget = park_required_budget(
+        req_i64(req, "required_budget_minutes"),
+        &condition,
+        row.get("payload").unwrap_or(&Value::Null),
+    );
+    let required_budget_arg = match required_budget {
+        Some(v) => Arg::Int(v),
+        None => Arg::Null,
+    };
     let (progress, cleared) = clear_binding(
         &row.get("progress").cloned().unwrap_or(json!({})),
         "park_task",
@@ -5318,14 +5691,27 @@ fn verb_park(t: &TursoBackend, req: &Value) -> Value {
     // triage classification above is a genuine wait by #8184's own
     // rule and never sinks.
     let to_sink = wk != "triage" && handoff_park(&progress, condition_defaulted, &condition);
+    // #8368: an explicit caller delay (delay_seconds / not_before in
+    // the request) is a caller-declared wait. The sink landing below
+    // keeps it as not_before even though every other wait field is
+    // NULL — discarding it re-served bound tasks immediately,
+    // defeating the park.
+    let explicit_delay = req.get("not_before").is_some_and(|v| !v.is_null())
+        || req.get("delay_seconds").is_some_and(|v| !v.is_null());
     let work = (|| -> Result<Value, TErr> {
         if to_sink {
             t.exec(
                 "UPDATE tasks SET status = 'handed_off', worker_id = NULL, lease_until = NULL, \
-                   not_before = NULL, park_kind = NULL, wait_kind = NULL, ready_condition = NULL, \
+                   not_before = ?, park_kind = NULL, wait_kind = NULL, ready_condition = NULL, \
+                   required_budget_minutes = NULL, \
                    last_checked_at = ?, check_outcome = NULL, progress = ?, result = ?, \
                    updated_at = ? WHERE id = ?",
                 &[
+                    if explicit_delay {
+                        Arg::Text(not_before.clone())
+                    } else {
+                        Arg::Null
+                    },
                     Arg::Text(now_iso()),
                     Arg::Text(progress.to_string()),
                     Arg::Text(result.to_string()),
@@ -5337,6 +5723,7 @@ fn verb_park(t: &TursoBackend, req: &Value) -> Value {
             t.exec(
                 "UPDATE tasks SET status = 'parked', worker_id = NULL, lease_until = NULL, \
                    not_before = ?, park_kind = ?, wait_kind = ?, ready_condition = ?, \
+                   required_budget_minutes = ?, \
                    last_checked_at = ?, check_outcome = NULL, progress = ?, result = ?, \
                    updated_at = ? WHERE id = ?",
                 &[
@@ -5344,6 +5731,7 @@ fn verb_park(t: &TursoBackend, req: &Value) -> Value {
                     Arg::Text(park_kind.to_string()),
                     Arg::Text(wk.to_string()),
                     Arg::Text(condition.to_string()),
+                    required_budget_arg,
                     Arg::Text(now_iso()),
                     Arg::Text(progress.to_string()),
                     Arg::Text(result.to_string()),
@@ -5360,7 +5748,12 @@ fn verb_park(t: &TursoBackend, req: &Value) -> Value {
             json!({
                 "reason": reason, "status": "handed_off",
                 "park_kind": Value::Null, "wait_kind": Value::Null,
-                "not_before": Value::Null, "ready_condition": Value::Null,
+                "not_before": if explicit_delay {
+                    Value::String(not_before.clone())
+                } else {
+                    Value::Null
+                },
+                "ready_condition": Value::Null,
                 "cleared_session_id": cleared,
             })
         } else {
@@ -5368,6 +5761,7 @@ fn verb_park(t: &TursoBackend, req: &Value) -> Value {
                 "reason": reason, "status": "parked",
                 "park_kind": park_kind, "wait_kind": wk,
                 "not_before": not_before, "ready_condition": condition,
+                "required_budget_minutes": required_budget,
                 "cleared_session_id": cleared,
             })
         };
@@ -5560,11 +5954,11 @@ fn verb_block(t: &TursoBackend, req: &Value) -> Value {
             &row.get("progress").cloned().unwrap_or(json!({})),
             &req.get("progress").cloned().unwrap_or(json!({})),
         ),
-        &json!({"blocker": blocker, "reason_class": reason_class}),
+        &json!({"blocker": blocker, "reason_class": reason_class, "blocked_via": "lane"}),
     );
     let result = merge_obj(
         &row.get("result").cloned().unwrap_or(json!({})),
-        &json!({"blocker": blocker, "reason_class": reason_class}),
+        &json!({"blocker": blocker, "reason_class": reason_class, "blocked_via": "lane"}),
     );
     // #8276: typed deps, when the request carries them — the block
     // becomes data the broker watches (see run_dep_rechecks). The
@@ -5596,10 +5990,19 @@ fn verb_block(t: &TursoBackend, req: &Value) -> Value {
         None => (None, None, None, None, json!({})),
     };
     let work = (|| -> Result<Value, TErr> {
+        // #10714: a lane block supersedes any stale last_error. The
+        // quarantine rechecker (#10648) selects blocked rows by a
+        // `last_error LIKE 'quarantined by claim path%'` prefix, so a
+        // row that once carried a repaired #5444 quarantine error
+        // would be requeued within one sweep minute after a lane
+        // blocked it. Clearing the fossil here keeps the lane's block
+        // authoritative; the rechecker's release branch also refuses
+        // lane-blocked rows (defence in depth).
         t.exec(
             "UPDATE tasks SET status = 'blocked', worker_id = NULL, lease_until = NULL, \
                progress = ?, result = ?, blocked_deps = ?, dep_next_recheck_at = ?, \
-               dep_blocked_until = ?, dep_recheck_seconds = ?, updated_at = ? WHERE id = ?",
+               dep_blocked_until = ?, dep_recheck_seconds = ?, last_error = NULL, updated_at = ? \
+             WHERE id = ?",
             &[
                 Arg::Text(progress.to_string()),
                 Arg::Text(result.to_string()),
@@ -5855,6 +6258,294 @@ pub fn run_dep_rechecks(t: &TursoBackend, limit: i64) -> Result<Value, TErr> {
     }))
 }
 
+/// The #10648 quarantine recheck verdict for one row — the pure
+/// decision the sweep driver and the /quarantine-recheck verb
+/// share. A row is this pass's business only when it is blocked,
+/// carries no dep record (dep-blocked rows belong to the dep
+/// rechecker), and its recorded error is a claim-path quarantine:
+/// exactly the fossil shape the 2026-11-16 blocked-pile audit
+/// found — rows whose recorded validation error had stopped
+/// reproducing (in 99 cases both max_attempts copies already
+/// agreed again) yet sat blocked forever, because nothing ever
+/// re-validated a blocked row.
+#[derive(Debug, PartialEq)]
+enum QuarantineRecheck {
+    NotApplicable,
+    /// The recorded quarantine error no longer reproduces: the row
+    /// passes the claim guard today and must be requeued.
+    Release,
+    /// The row still fails the claim guard; carries the CURRENT
+    /// reason, which may differ from the recorded one.
+    StillQuarantined(String),
+}
+
+/// #10714: was this row blocked by a lane (verb_block) rather than by
+/// the #5444 claim-path quarantine? verb_block records the blocker and
+/// the `blocked_via: "lane"` marker in both progress and result;
+/// quarantine_task records neither. Rows blocked by a lane before the
+/// marker existed still carry `blocker`/`reason_class`, so the check
+/// covers legacy rows too. The quarantine rechecker must never undo a
+/// lane's block, even when a fossil quarantine last_error survives on
+/// the row.
+fn lane_blocked(row: &Value) -> bool {
+    fn marks_lane(v: Option<&Value>) -> bool {
+        let Some(o) = v.filter(|v| v.is_object()) else {
+            return false;
+        };
+        o.get("blocked_via").and_then(|v| v.as_str()) == Some("lane")
+            || o.get("blocker")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.is_empty())
+            || o.get("reason_class")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| !s.is_empty())
+    }
+    marks_lane(row.get("progress")) || marks_lane(row.get("result"))
+}
+
+fn quarantine_recheck_verdict(row: &Value) -> QuarantineRecheck {
+    if row.get("status").and_then(|v| v.as_str()) != Some("blocked") {
+        return QuarantineRecheck::NotApplicable;
+    }
+    if dep_block_active(row) {
+        return QuarantineRecheck::NotApplicable;
+    }
+    // #10714 defence in depth: a lane block owns the row. Its
+    // last_error may be a fossil of a repaired #5444 quarantine.
+    if lane_blocked(row) {
+        return QuarantineRecheck::NotApplicable;
+    }
+    let recorded = row.get("last_error").and_then(|v| v.as_str()).unwrap_or("");
+    if !recorded.starts_with("quarantined by claim path") {
+        return QuarantineRecheck::NotApplicable;
+    }
+    match claim_guard_reason(row) {
+        None => QuarantineRecheck::Release,
+        Some(reason) => QuarantineRecheck::StillQuarantined(reason),
+    }
+}
+
+// Snapshot the raw stored columns before query_objs parses JSON. Comparing
+// this opaque string avoids lossy malformed-JSON normalization and detects
+// same-second replacements, not only updated_at changes. The event ID is
+// selected in the same SQLite statement; unknown block provenance fails closed.
+// Conservatively require the latest event, including non-transition events: an
+// unrelated newer event or pruned provenance needs explicit reconciliation, not
+// automatic release. This patch does not solve sweep fairness/history repair.
+fn quarantine_select() -> String {
+    format!(
+        "SELECT {TASK_COLS}, json_array({TASK_COLS}) AS quarantine_snapshot, \
+         (SELECT MAX(id) FROM events WHERE task_id = tasks.id) AS quarantine_event_id \
+         FROM tasks"
+    )
+}
+
+fn quarantine_transition_sql() -> String {
+    include_str!("quarantine_transition.sql")
+        .replace("{snapshot}", &format!("json_array({TASK_COLS})"))
+}
+
+fn quarantine_transition(
+    t: &TursoBackend,
+    row: &Value,
+    status: &str,
+    error: Option<&str>,
+) -> Result<bool, TErr> {
+    let Some(snapshot) = row.get("quarantine_snapshot").and_then(Value::as_str) else {
+        return Ok(false);
+    };
+    let Some(event_id) = row.get("quarantine_event_id").and_then(Value::as_i64) else {
+        return Ok(false);
+    };
+    let Some(id) = row.get("id").and_then(Value::as_i64) else {
+        return Ok(false);
+    };
+    let result = t.exec(
+        &quarantine_transition_sql(),
+        &[
+            Arg::Text(status.to_string()),
+            arg_str(error),
+            Arg::Text(now_iso()),
+            Arg::Int(id),
+            Arg::Text(snapshot.to_string()),
+            Arg::Int(event_id),
+        ],
+    )?;
+    Ok(result.affected == 1)
+}
+
+/// Rotation touch for the quarantine recheck window (#9609): a
+/// row the rechecker evaluated and left blocked without any
+/// other write gets updated_at bumped — deliberately no event,
+/// so the minutely sweep stays log-quiet — moving it to the back
+/// of the recheck's ORDER BY updated_at ASC window. Without it,
+/// any quarantine backlog larger than one pass's limit
+/// fossilizes: the front rows are rechecked every pass and the
+/// rows behind them are never reached.
+fn touch_recheck_cursor(t: &TursoBackend, id: i64) -> Result<(), TErr> {
+    t.exec(
+        "UPDATE tasks SET updated_at = ? WHERE id = ? AND status = 'blocked'",
+        &[Arg::Text(now_iso()), Arg::Int(id)],
+    )?;
+    Ok(())
+}
+
+/// Apply one row's quarantine recheck verdict. Returns the outcome
+/// name ("released" / "still_quarantined" / "not_applicable" /
+/// "release_raced"). Release mirrors verb_unblock's shape (queued,
+/// lease-free) plus clearing the recorded error —
+/// the rechecker's whole point is that the recorded error is
+/// stale — and the event names the discarded error, like the dep
+/// override names discarded deps. A still-quarantined row whose
+/// CURRENT reason differs from the recorded one gets its
+/// last_error refreshed (with an event); an unchanged reason
+/// writes no event and no error refresh, so the minutely sweep
+/// cannot spam the log — the only write is the rotation touch on
+/// updated_at (#9609), which lets the sweep's window advance
+/// past the row.
+fn quarantine_recheck_one(t: &TursoBackend, row: &Value) -> Result<&'static str, TErr> {
+    let id = row.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+    let recorded = row
+        .get("last_error")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    match quarantine_recheck_verdict(row) {
+        QuarantineRecheck::NotApplicable => {
+            touch_recheck_cursor(t, id)?;
+            Ok("not_applicable")
+        }
+        QuarantineRecheck::Release => {
+            if !quarantine_transition(t, row, "queued", None)? {
+                // #10671 fairness: a guarded write that did not apply
+                // leaves the row as it is, so it rotates like the other
+                // no-write outcomes. Without the touch, rows whose
+                // provenance or lease keeps failing the guard pin the
+                // front of the window every pass.
+                touch_recheck_cursor(t, id)?;
+                return Ok("release_raced");
+            }
+            // No lease deletion: a quarantined row must be lease-free at
+            // the atomic write. A subsequent claimant owns its new lease.
+            event(
+                t,
+                Some("quarantine-rechecker"),
+                Some(id),
+                "unblocked",
+                &json!({
+                    "reason": "recorded claim-path quarantine no longer reproduces; packet passes the claim guard (#10648 recheck)",
+                    "via": "quarantine_recheck",
+                    "discarded_error": recorded,
+                }),
+            )?;
+            Ok("released")
+        }
+        QuarantineRecheck::StillQuarantined(reason) => {
+            if reason != recorded {
+                if !quarantine_transition(t, row, "blocked", Some(&reason))? {
+                    touch_recheck_cursor(t, id)?;
+                    return Ok("release_raced");
+                }
+                event(
+                    t,
+                    Some("quarantine-rechecker"),
+                    Some(id),
+                    "blocked",
+                    &json!({"reason": reason, "via": "quarantine_recheck"}),
+                )?;
+            } else {
+                touch_recheck_cursor(t, id)?;
+            }
+            Ok("still_quarantined")
+        }
+    }
+}
+
+/// The #10648 quarantine recheck pass: every blocked, dep-free
+/// row whose recorded error is a claim-path quarantine is re-run
+/// through the claim guard; a row whose error no longer
+/// reproduces is requeued automatically. Lane-blocked rows are
+/// excluded (#10714): a lane block owns the row, and a fossil
+/// quarantine error under it must not undo that block. Rides the
+/// sweep beside the dep rechecker (same timer, same opt-out shape), and
+/// /quarantine-recheck runs it directly. This is the blocked-row
+/// re-validation the dep rechecker never provided: it watches
+/// dep-blocked rows only, and a quarantine block carries no deps.
+/// Rows a pass evaluates and leaves blocked without any other
+/// write get a bare updated_at touch (quarantine_recheck_one), so
+/// the ORDER BY window below rotates: every quarantined row is
+/// reached within ceil(population / limit) passes instead of the
+/// front rows being rechecked forever (#9609 — at 1,687
+/// quarantined rows against the sweep's 200-row window, the same
+/// 197 rows were rechecked every minute while releasable rows
+/// behind them fossilized).
+pub fn run_quarantine_rechecks(t: &TursoBackend, limit: i64) -> Result<Value, TErr> {
+    let rows = t.query_objs(
+        &format!(
+            "{} WHERE status = 'blocked' \
+             AND last_error LIKE 'quarantined by claim path%' \
+             ORDER BY updated_at ASC LIMIT {limit}",
+            quarantine_select()
+        ),
+        &[],
+        &TASK_JSON_COLS,
+    )?;
+    let (mut checked, mut released, mut still_quarantined, mut raced) = (0i64, 0i64, 0i64, 0i64);
+    for row in &rows {
+        match quarantine_recheck_one(t, row)? {
+            "released" => {
+                checked += 1;
+                released += 1;
+            }
+            "still_quarantined" => {
+                checked += 1;
+                still_quarantined += 1;
+            }
+            "release_raced" => raced += 1,
+            _ => {}
+        }
+    }
+    Ok(json!({
+        "checked": checked, "released": released,
+        "still_quarantined": still_quarantined, "raced": raced,
+    }))
+}
+
+/// /quarantine-recheck (#10648): run the recheck pass, or — with
+/// a task_id — force one blocked task's recheck right now. The
+/// manual trigger lanes and the monitor use to prove the
+/// machinery; production cadence is the sweep's.
+fn verb_quarantine_recheck(t: &TursoBackend, req: &Value) -> Value {
+    let work = (|| -> Result<Value, TErr> {
+        if let Some(task_id) = req_i64(req, "task_id") {
+            let Some(row) = t
+                .query_objs(
+                    &format!("{} WHERE id = ?", quarantine_select()),
+                    &[Arg::Int(task_id)],
+                    &TASK_JSON_COLS,
+                )?
+                .into_iter()
+                .next()
+            else {
+                return Ok(json!({"task_id": task_id, "outcome": "no_such_task"}));
+            };
+            if row.get("status").and_then(|v| v.as_str()) != Some("blocked") {
+                return Ok(json!({"task_id": task_id, "outcome": "not_blocked"}));
+            }
+            let outcome = quarantine_recheck_one(t, &row)?;
+            let after = get_task(t, task_id)?.unwrap_or(Value::Null);
+            return Ok(json!({
+                "task_id": task_id, "outcome": outcome, "row": after,
+            }));
+        }
+        run_quarantine_rechecks(t, req_i64(req, "limit").unwrap_or(200))
+    })();
+    match work {
+        Ok(v) => ok(json!({"row": v})),
+        Err(e) => terr(e),
+    }
+}
+
 /// /dep-recheck (#8276): run the due pass, or — with a task_id —
 /// force one dep-blocked task's recheck right now, schedule or
 /// no schedule. The manual trigger lanes and the monitor use to
@@ -6028,7 +6719,7 @@ fn verb_fail(t: &TursoBackend, req: &Value) -> Value {
     let max_attempts = row
         .get("max_attempts")
         .and_then(|v| v.as_i64())
-        .unwrap_or(4);
+        .unwrap_or(crate::validate::TASK_DEFAULT_MAX_ATTEMPTS as i64);
     let requeue = reason_class == "transient" && attempts < max_attempts;
     let new_status = if requeue {
         "queued"
@@ -6336,9 +7027,9 @@ fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
                         };
                         let ins = t.exec(
                             "INSERT INTO tasks (queue, title, body, payload, dedupe_key, \
-                               priority, status, max_attempts, progress, result, \
+                               priority, status, max_attempts, required_budget_minutes, progress, result, \
                                created_at, updated_at) \
-                             VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, '{}', ?, ?)",
+                             VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, '{}', ?, ?)",
                             &[
                                 Arg::Text(queue.clone()),
                                 arg_str(row.get("title").and_then(|v| v.as_str())),
@@ -6353,8 +7044,18 @@ fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
                                     fpayload
                                         .get("max_attempts")
                                         .and_then(|v| v.as_i64())
-                                        .unwrap_or(4),
+                                        .unwrap_or(
+                                            crate::validate::TASK_DEFAULT_MAX_ATTEMPTS as i64,
+                                        ),
                                 ),
+                                // #3418: fpayload clones the triage
+                                // source payload, so an explicit
+                                // requirement rides along here.
+                                fpayload
+                                    .get("required_budget_minutes")
+                                    .and_then(|v| v.as_i64())
+                                    .map(Arg::Int)
+                                    .unwrap_or(Arg::Null),
                                 Arg::Text(fprogress.to_string()),
                                 Arg::Text(now_iso()),
                                 Arg::Text(now_iso()),
@@ -6428,46 +7129,46 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
     // an unnamed queue must not become `queue = ''`, which by
     // construction returns zero rows and breaks exact-task readback
     // ({"task": id} / {"dedupe_key": key} with no queue).
-    let mut sql = format!("SELECT {select} FROM tasks WHERE 1 = 1");
+    let mut conds = String::from(" WHERE 1 = 1");
     let mut args: Vec<Arg> = vec![];
     if !queue.is_empty() {
-        sql += " AND queue = ?";
+        conds += " AND queue = ?";
         args.push(Arg::Text(queue));
     }
     if let Some(s) = req_str(req, "status") {
-        sql += " AND status = ?";
+        conds += " AND status = ?";
         args.push(Arg::Text(s.to_string()));
     }
     // #5444: recover a lane's or worker's live claims before lease
     // expiry — list filters end-to-end (client -> broker -> here).
     if let Some(l) = req_str(req, "lane") {
-        sql += " AND lane_id = ?";
+        conds += " AND lane_id = ?";
         args.push(Arg::Text(l.to_string()));
     }
     if let Some(w) = req_str(req, "worker") {
-        sql += " AND worker_id = ?";
+        conds += " AND worker_id = ?";
         args.push(Arg::Text(w.to_string()));
     }
     if let Some(nb) = req_str(req, "not_before") {
-        sql += " AND (not_before IS NULL OR not_before <= ?)";
+        conds += " AND (not_before IS NULL OR not_before <= ?)";
         args.push(Arg::Text(nb.to_string()));
     }
     // #7871: --task narrows to one task id (the PostgREST /list
     // path applies the same filter), and the client's paged fetch
     // advances OFFSET page by page.
     if let Some(id) = req_i64(req, "task") {
-        sql += " AND id = ?";
+        conds += " AND id = ?";
         args.push(Arg::Int(id));
     }
     // #9420: dedupe_key narrows to the task carrying that key (the
     // delivery publisher's enqueue readback verifies by dedupe key).
     if let Some(d) = req_str(req, "dedupe_key") {
-        sql += " AND dedupe_key = ?";
+        conds += " AND dedupe_key = ?";
         args.push(Arg::Text(d.to_string()));
     }
     let offset = crate::client::list_offset_or_default(req_i64(req, "offset"));
-    sql += &format!(
-        " ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT {limit} OFFSET {offset}"
+    let sql = format!(
+        "SELECT {select} FROM tasks{conds} ORDER BY (priority IS NULL), priority ASC, created_at ASC, id ASC LIMIT {limit} OFFSET {offset}"
     );
     let json_cols: &[&str] = if rich {
         &["progress", "payload", "blocked_deps"]
@@ -6475,7 +7176,18 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
         &[]
     };
     match t.query_objs(&sql, &args, json_cols) {
-        Ok(rows) => ok(json!({"rows": rows})),
+        Ok(rows) => {
+            // #10376 parity with the PostgREST /list: name the
+            // total matching count so a limited listing cannot
+            // read as complete. A failed count leaves the total
+            // unknown (null), never a fabricated number.
+            let count_sql = format!("SELECT COUNT(*) AS n FROM tasks{conds}");
+            let total = t
+                .query_objs(&count_sql, &args, &[])
+                .ok()
+                .and_then(|rs| rs.first().and_then(|r| r.get("n")).and_then(|v| v.as_i64()));
+            ok(crate::client::list_envelope(json!(rows), total, offset))
+        }
         Err(e) => terr(e),
     }
 }
@@ -6486,7 +7198,7 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
 fn health_entry(queue: &str) -> Value {
     json!({
         "queue": queue, "queued": 0, "at_cap_queued": 0, "claimed": 0,
-        "parked": 0, "handed_off": 0, "blocked": 0, "dep_blocked": 0, "done": 0, "cancelled": 0,
+        "parked": 0, "malformed_parked": 0, "handed_off": 0, "blocked": 0, "dep_blocked": 0, "done": 0, "cancelled": 0,
         "failed": 0, "total": 0, "oldest_queued_at": Value::Null,
         "terminal_events_24h": 0, "terminal_events_7d": 0,
     })
@@ -6520,6 +7232,40 @@ fn apply_dep_blocked(by_queue: &mut Map<String, Value>, rows: &[Value]) {
         let n = r.get("n").and_then(|v| v.as_i64()).unwrap_or(0);
         if let Some(obj) = by_queue.get_mut(q).and_then(|e| e.as_object_mut()) {
             obj.insert("dep_blocked".to_string(), json!(n));
+        }
+    }
+}
+
+/// The storage-layer not_before rule (#9179, closing the #6426
+/// bypass): every value a verb stores in a row's not_before must
+/// satisfy the same rule the client flag validator and the broker
+/// dispatch gate apply — a non-empty RFC 3339 timestamp no more
+/// than 366 days out. The dispatch gate covers requests that pass
+/// through it; the verbs are the last line, because a stored
+/// "3600" (delay-seconds semantics in the absolute field) sorts
+/// after every real timestamp in the claim predicate's TEXT
+/// comparison and the parked row can never lapse.
+fn validate_stored_not_before(raw: &str) -> Result<(), String> {
+    crate::validate::validate_not_before(&json!(raw), "not_before")
+}
+
+/// Fold per-queue malformed parked counts (#9179 hygiene) into
+/// health entries: parked rows whose stored not_before fails the
+/// rule above are invisible to the lapse path until woken by hand,
+/// so health names them instead of letting them hide inside the
+/// ordinary parked count. Rows arrive as {queue, not_before}.
+fn apply_malformed_parked(by_queue: &mut Map<String, Value>, rows: &[Value]) {
+    let mut counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for r in rows {
+        let nb = r.get("not_before").and_then(|v| v.as_str()).unwrap_or("");
+        if validate_stored_not_before(nb).is_err() {
+            let q = r.get("queue").and_then(|v| v.as_str()).unwrap_or("");
+            *counts.entry(q.to_string()).or_insert(0) += 1;
+        }
+    }
+    for (q, n) in counts {
+        if let Some(obj) = by_queue.get_mut(&q).and_then(|e| e.as_object_mut()) {
+            obj.insert("malformed_parked".to_string(), json!(n));
         }
     }
 }
@@ -6596,6 +7342,19 @@ fn verb_health(t: &TursoBackend, req: &Value) -> Value {
         dsql += " GROUP BY queue";
         let drows = t.query_objs(&dsql, &dargs, &[])?;
         apply_dep_blocked(&mut by_queue, &drows);
+        // Malformed parked rows (#9179 hygiene): fetched as raw
+        // values because the failure test is the shared validator,
+        // not a SQL predicate; parked counts are small.
+        let mut hsql = "SELECT queue, not_before FROM tasks \
+             WHERE status = 'parked' AND not_before IS NOT NULL"
+            .to_string();
+        let mut hargs: Vec<Arg> = Vec::new();
+        if let Some(q) = &queue_filter {
+            hsql += " AND queue = ?";
+            hargs.push(Arg::Text(q.clone()));
+        }
+        let hrows = t.query_objs(&hsql, &hargs, &[])?;
+        apply_malformed_parked(&mut by_queue, &hrows);
         // Terminal-event counters, the agent.repo_queue_health
         // view's terminal_events_24h/7d (#5690): events and tasks
         // share this database, so the JOIN the PG view did is a
@@ -7688,6 +8447,7 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
         "/block" => verb_block(t, req),
         "/unblock" => verb_unblock(t, req),
         "/dep-recheck" => verb_dep_recheck(t, req),
+        "/quarantine-recheck" => verb_quarantine_recheck(t, req),
         "/cancel" => verb_cancel(t, req),
         "/fail" => verb_fail(t, req),
         "/complete" => verb_complete(t, req),
@@ -7718,6 +8478,181 @@ pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn budget_gate_3418_predicate_shape() {
+        // #3418 oracle (broker level): the default pick predicate
+        // budget-gates BOTH the queued and the parked branches,
+        // gives capacity waits a budget bypass of their timer, and
+        // carries exactly four placeholders ahead of the
+        // platform-limit clause — the two branch `now`s, then the
+        // claimer's declared remaining budget twice (bypass gate,
+        // outer gate). claim_pick_once pushes its arguments in
+        // exactly that order for both the pick SELECT and the
+        // claim UPDATE re-check, which embeds the same predicate.
+        let pred = default_pick_predicate();
+        assert_eq!(pred.matches('?').count(), 4, "{pred}");
+        assert_eq!(pred.matches("COALESCE(?, -1)").count(), 2, "{pred}");
+        assert!(pred.contains("wait_kind = 'capacity'"), "{pred}");
+        assert!(
+            pred.contains("json_extract(payload, '$.required_budget_minutes')"),
+            "{pred}"
+        );
+        assert!(claim_update_sql(&pred).contains(&pred));
+        assert!(claim_update_sql(&pred).contains("required_budget_minutes = NULL"));
+        // An undeclared budget (NULL) fails the gate for a
+        // requirement-bearing row and passes a requirement-free
+        // one — that is the COALESCE(?, -1) shape asserted above:
+        // -1 >= any positive requirement is false, and the
+        // `IS NULL` arm passes rows with no requirement.
+    }
+
+    #[test]
+    fn park_required_budget_3418_defaults() {
+        // #3418: explicit wins; a capacity wait defaults from the
+        // packet timebox; every other park records no requirement.
+        let payload = json!({"timebox_minutes": 120});
+        let capacity = json!({"kind": "capacity"});
+        let ci = json!({"kind": "ci", "pr": 1});
+        assert_eq!(park_required_budget(None, &capacity, &payload), Some(120));
+        assert_eq!(park_required_budget(None, &ci, &payload), None);
+        assert_eq!(
+            park_required_budget(Some(30), &capacity, &payload),
+            Some(30)
+        );
+        assert_eq!(park_required_budget(Some(30), &ci, &payload), Some(30));
+        assert_eq!(park_required_budget(None, &capacity, &json!({})), None);
+        assert_eq!(park_required_budget(Some(0), &capacity, &payload), None);
+    }
+
+    #[test]
+    fn enqueue_insert_stamps_required_budget_column_3418() {
+        // #3418 (#4712) oracle: the live enqueue INSERT persists the
+        // effective requirement in the queryable column (NULL when
+        // the packet declares none), and the triage follow-on
+        // INSERT carries the cloned payload's requirement the same
+        // way. Both inserts must name the column exactly once.
+        let src = include_str!("turso_queue.rs");
+        // Both INSERT sites name the column exactly once: the main
+        // enqueue INSERT and the triage follow-on INSERT below it
+        // (matched here by its distinct column list).
+        assert!(
+            src.contains("status, not_before, max_attempts, required_budget_minutes, platform"),
+            "main enqueue INSERT stamps the column"
+        );
+        assert!(
+            src.contains("max_attempts, required_budget_minutes, progress, result,"),
+            "triage follow-on INSERT stamps the column"
+        );
+    }
+
+    #[test]
+    fn budget_skip_summary_query_shape_3418() {
+        // #3418 (#4712) oracle: the impossible-fit summary counts
+        // otherwise-eligible rows whose effective requirement
+        // exceeds the claimer's declared budget, and reports the
+        // max. Placeholders: the two liveness `now`s, then the
+        // declared budget once. No `IS NULL` pass arm — a NULL
+        // requirement is not a skip.
+        let sql = budget_skip_sql(" AND queue = ?");
+        assert_eq!(sql.matches('?').count(), 4, "{sql}");
+        assert!(sql.contains("COUNT(*) AS n"), "{sql}");
+        assert!(sql.contains("MAX("), "{sql}");
+        assert!(sql.contains("wait_kind = 'capacity'"), "{sql}");
+        assert!(
+            sql.contains("json_extract(payload, '$.required_budget_minutes')"),
+            "{sql}"
+        );
+        assert!(!sql.contains("IS NULL OR COALESCE"), "{sql}");
+        assert!(sql.ends_with(" AND queue = ?"), "{sql}");
+    }
+
+    #[test]
+    fn task_creation_defaults_max_attempts_1000_per_8973() {
+        // #8973 oracle: every task-creation default in this crate is
+        // 1000 (Drew order 2026-11-12) - the tasks schema default
+        // and the enqueue insert fallback (which reads the one
+        // TASK_DEFAULT_MAX_ATTEMPTS constant in validate.rs; the
+        // task_from_packet default is covered in validate tests).
+        // #10799: the four former hard-coded-4 copies of the task
+        // default (the expire-leases, revive, and fail-disposition
+        // read fallbacks, and the triage follow-on insert fallback)
+        // are unified on the same constant, so no stale copy can
+        // drift back. The creation_outbox retry cap is a different
+        // domain (GitHub-filing delivery attempts, #3706 bounded
+        // pilot - it never becomes a task row value) and
+        // intentionally stays at its own DEFAULT_MAX_ATTEMPTS.
+        let src = include_str!("turso_queue.rs");
+        assert!(
+            src.contains("max_attempts INTEGER NOT NULL DEFAULT 1000"),
+            "tasks schema default is 1000"
+        );
+        assert!(
+            src.contains("crate::validate::TASK_DEFAULT_MAX_ATTEMPTS as i64"),
+            "enqueue insert fallback uses the shared task default"
+        );
+        // The stale-default needle is built with format! so this
+        // test file does not itself contain the literal it bans.
+        let stale = format!("max_attempts INTEGER NOT NULL DEFAULT {}", 4);
+        assert!(!src.contains(&stale), "no stale tasks schema default");
+        // #10799: the stale fallback needle, same construction.
+        let stale_fallback = format!("unwrap_or({})", 4);
+        assert!(
+            !src.contains(&stale_fallback),
+            "no stale max_attempts fallback copies"
+        );
+        // The shared constant backs every site: the enqueue insert
+        // fallback plus the four unified #10799 sites.
+        assert!(
+            src.matches("crate::validate::TASK_DEFAULT_MAX_ATTEMPTS as i64")
+                .count()
+                >= 5,
+            "every max_attempts fallback reads the shared task default"
+        );
+    }
+
+    #[test]
+    fn enqueue_dry_run_defaults_max_attempts_1000_per_8973() {
+        // #8973 acceptance, enqueue path: a valid packet that omits
+        // max_attempts in BOTH copies enqueues with the default
+        // applied. Dry-run returns the exact row shape the insert
+        // consumes, so this is a readback of the creation default
+        // without a live store; the insert fallback and the schema
+        // default are covered by the source-oracle test above.
+        let backend = TursoBackend::new(
+            "http://127.0.0.1:0".to_string(),
+            "test".to_string(),
+            ureq::agent(),
+        );
+        let packet = json!({
+            "title": "probe", "priority": 30,
+            "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:8973",
+            "payload": {
+                "schema": "repo-task/v1",
+                "kind": "small_fix",
+                "repo": "developing-today/code",
+                "problem": "p",
+                "priority_reason": "r",
+                "evidence": ["e"],
+                "acceptance": ["a"],
+                "tests": ["t"],
+                "context_refs": [],
+                "scope": {"include": ["x"], "exclude": ["y"] },
+                "risk": {"level": "low", "flags": [] },
+                "timebox_minutes": 45,
+                "issue": {"number": 8973 },
+                "dedupe": {"checked_at": "2026-11-14T00:00:00Z", "basis": "test" }
+            }
+        });
+        let req = json!({
+            "queue": "repo-health-code-pilot",
+            "packet": packet,
+            "dry_run": true
+        });
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(out["task"]["max_attempts"], 1000, "{out}");
+    }
 
     #[test]
     fn model_stamp_detail_9046_carries_session_and_trigger() {
@@ -7777,6 +8712,28 @@ mod tests {
     }
 
     #[test]
+    fn events_list_cross_task_window() {
+        // Claim-link rollup (#10357): /events-list also serves
+        // the cross-task window read — task_id optional, a since
+        // floor, and task_id among the selected columns — while
+        // the per-task #9046 read keeps its shape.
+        let src = include_str!("turso_queue.rs");
+        let seg = seg8217(src, "fn verb_events_list(", "\n/// prune_events, shared by");
+        assert!(
+            !seg.contains("task_id is required"),
+            "cross-task listing must not hard-require task_id"
+        );
+        assert!(
+            seg.contains("created_at >= ?"),
+            "the since floor filters on created_at"
+        );
+        assert!(
+            seg.contains("id, task_id, worker_id, kind, detail, created_at"),
+            "listed rows carry their task_id for the rollup join"
+        );
+    }
+
+    #[test]
     fn list_exact_readback_filters_9420() {
         // #9420 oracle: exact-task readback works on the Turso
         // verb_list — the task filter, a dedupe_key filter, and a
@@ -7785,7 +8742,10 @@ mod tests {
         // PostgREST /list handler carries the same contract.
         let src = include_str!("turso_queue.rs");
         let seg = seg8217(src, "fn verb_list(", "\nfn verb_health");
-        assert!(seg.contains("req_i64(req, \"task\")"), "task filter present");
+        assert!(
+            seg.contains("req_i64(req, \"task\")"),
+            "task filter present"
+        );
         assert!(seg.contains("AND id = ?"), "task filter narrows by id");
         assert!(
             seg.contains("req_str(req, \"dedupe_key\")") && seg.contains("AND dedupe_key = ?"),
@@ -7911,167 +8871,145 @@ mod tests {
     }
 
     #[test]
-    fn canonical_lanes_are_exactly_the_post_rename_universe_8097() {
-        // #8097 oracle: after the 2026-11-11 lane rename + trims,
-        // the canonical seed set is exactly the 36-lane registry
-        // (the 35 rename lanes plus not-code-g — the nix worker's
-        // own lane, added later the same day; #8097 record, #6853)
-        // universe with the end-state enabled flags — no more, no
-        // fewer. The pre-rename set named ids that no longer exist
-        // (code-k..z, nix-a/b, opencode-a/b, openchamber-a/b), and
-        // ensure_schema kept resurrecting hand-deleted rows from
-        // it: openchamber-a/b were deleted on 2026-11-10 and came
-        // back enabled at the next seed run. Seeding an empty
-        // lanes table executes lane_seed_sql() — a pure function
-        // of this set — so pinning the set and its per-lane tuples
-        // (next test) pins the seeded database exactly.
+    fn canonical_lanes_are_the_full_family_universe() {
+        // Drew, 2026-11-16 (#6853): the canonical seed set is the
+        // full variation space -- six families x a..=z = 156
+        // lanes, every one enabled. This supersedes the #8097 pin
+        // (36 lanes, 17 enabled): the trims left live lanes
+        // unseeded (opencode-a) or seeded disabled (not-code-c),
+        // and claims met "unknown lane_id" / "lane is disabled"
+        // for days. Seeding an empty lanes table executes
+        // lane_seed_sql() -- a pure function of this set -- so
+        // pinning the set and its per-lane tuples (next test)
+        // pins the seeded database exactly.
         let lanes = canonical_lanes();
-        assert_eq!(lanes.len(), 36);
-        let mut ids: Vec<&str> = lanes.iter().map(|(id, _, _)| *id).collect();
+        assert_eq!(lanes.len(), 156);
+        let mut ids: Vec<&str> = lanes.iter().map(|(id, _, _)| id.as_str()).collect();
         ids.sort();
         ids.dedup();
-        assert_eq!(ids.len(), 36, "duplicate lane ids in the canonical set");
-        let expected_ids: Vec<&str> = vec![
-            "any-a",
-            "any-b",
-            "any-c",
-            "any-d",
-            "any-e",
-            "any-f",
-            "any-g",
-            "any-h",
-            "any-i",
-            "any-j",
-            "any-k",
-            "any-l",
-            "any-m",
-            "any-n",
-            "any-o",
-            "any-p",
-            "any-q",
-            "any-r",
-            "any-s",
-            "code-a",
-            "code-b",
-            "code-c",
-            "code-d",
-            "code-e",
-            "code-f",
-            "code-g",
-            "code-h",
-            "code-i",
-            "code-j",
-            "not-code-a",
-            "not-code-b",
-            "not-code-c",
-            "not-code-d",
-            "not-code-e",
-            "not-code-f",
-            "not-code-g",
-        ];
-        assert_eq!(
-            ids, expected_ids,
-            "the canonical set is not the post-rename universe"
-        );
-        // No legacy id may ever be seeded again: the deleted
-        // openchamber pair, the pre-rename stream lanes, the
-        // code-k..z overhang, and the rename's tmp ids.
-        for legacy in [
-            "openchamber-a",
-            "openchamber-b",
-            "nix-a",
-            "nix-b",
-            "opencode-a",
-            "opencode-b",
-        ] {
-            assert!(
-                !ids.contains(&legacy),
-                "legacy lane {legacy} must not be seeded"
-            );
+        assert_eq!(ids.len(), 156, "duplicate lane ids in the canonical set");
+        let mut expected_ids: Vec<String> = Vec::new();
+        for family in ["code", "any", "not-code", "opencode", "openchamber", "nix"] {
+            for c in 'a'..='z' {
+                expected_ids.push(format!("{family}-{c}"));
+            }
         }
-        for c in 'k'..='z' {
-            let legacy = format!("code-{c}");
-            assert!(
-                !ids.iter().any(|id| *id == legacy),
-                "legacy lane {legacy} must not be seeded"
-            );
+        expected_ids.sort();
+        assert_eq!(
+            ids,
+            expected_ids.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            "the canonical set is not the full family universe"
+        );
+        // The lanes whose absence or disabled state broke live
+        // claims: all present now.
+        for id in [
+            "opencode-a",
+            "openchamber-a",
+            "nix-a",
+            "code-z",
+            "any-z",
+            "not-code-z",
+            "not-code-c",
+        ] {
+            assert!(ids.contains(&id), "canonical set misses {id}");
         }
         assert!(
             ids.iter().all(|id| !id.starts_with("tmp-")),
             "tmp rename ids must not be seeded"
         );
-        // The enabled set is exactly the 17 working lanes.
-        let mut enabled: Vec<&str> = lanes
-            .iter()
-            .filter(|(_, _, e)| *e)
-            .map(|(id, _, _)| *id)
-            .collect();
-        enabled.sort();
-        assert_eq!(
-            enabled,
-            [
-                "any-a",
-                "any-b",
-                "any-c",
-                "any-d",
-                "any-n",
-                "any-o",
-                "code-a",
-                "code-b",
-                "code-c",
-                "code-d",
-                "code-f",
-                "code-g",
-                "code-h",
-                "code-i",
-                "code-j",
-                "not-code-d",
-                "not-code-g",
-            ]
+        // Every canonical lane is enabled (Drew, 2026-11-16).
+        assert!(
+            lanes.iter().all(|(_, _, e)| *e),
+            "every canonical lane is enabled"
         );
-        // Worker ownership: the renamed lanes keep the worker of
-        // the registry row they came from.
-        let owner = |id: &str| lanes.iter().find(|(l, _, _)| *l == id).map(|(_, w, _)| *w);
+        // Worker ownership follows the family.
+        let owner = |id: &str| {
+            lanes
+                .iter()
+                .find(|(l, _, _)| l.as_str() == id)
+                .map(|(_, w, _)| *w)
+        };
         assert_eq!(owner("code-a"), Some("repo-worker-code"));
-        assert_eq!(owner("code-j"), Some("repo-worker-code"));
+        assert_eq!(owner("code-z"), Some("repo-worker-code"));
+        assert_eq!(owner("any-z"), Some("repo-worker-code"));
+        assert_eq!(owner("not-code-z"), Some("repo-worker-code"));
+        assert_eq!(owner("not-code-c"), Some("repo-worker-code"));
+        assert_eq!(owner("not-code-f"), Some("repo-worker-code"));
+        // The not-code lanes other workers own keep their owners.
         assert_eq!(owner("not-code-a"), Some("repo-worker-nix"));
-        assert_eq!(owner("not-code-b"), Some("repo-worker-opencode"));
-        assert_eq!(owner("not-code-d"), Some("repo-worker-openchamber"));
-        assert_eq!(owner("not-code-e"), Some("repo-worker-opencode"));
         assert_eq!(owner("not-code-g"), Some("repo-worker-nix"));
-        assert_eq!(owner("any-s"), Some("repo-worker-code"));
+        assert_eq!(owner("not-code-b"), Some("repo-worker-opencode"));
+        assert_eq!(owner("not-code-e"), Some("repo-worker-opencode"));
+        assert_eq!(owner("not-code-d"), Some("repo-worker-openchamber"));
+        assert_eq!(owner("opencode-a"), Some("repo-worker-opencode"));
+        assert_eq!(owner("openchamber-a"), Some("repo-worker-openchamber"));
+        assert_eq!(owner("nix-a"), Some("repo-worker-nix"));
+    }
+
+    #[test]
+    fn lane_family_of_accepts_known_families_and_rejects_garbage() {
+        // The claim-time wildcard (Drew, 2026-11-16): known
+        // family + nonempty lowercase alphabetic suffix.
+        for (id, family) in [
+            ("code-a", "code"),
+            ("code-z", "code"),
+            ("code-abc", "code"),
+            ("any-a", "any"),
+            ("any-z", "any"),
+            ("not-code-c", "not-code"),
+            ("not-code-z", "not-code"),
+            ("opencode-a", "opencode"),
+            ("openchamber-b", "openchamber"),
+            ("nix-a", "nix"),
+            ("darwin-nix-a", "darwin-nix"),
+        ] {
+            assert_eq!(lane_family_of(id), Some(family), "{id}");
+        }
+        for id in [
+            "banana-1", // unknown family, non-alpha suffix
+            "code-",    // empty suffix
+            "code",     // no suffix at all
+            "",         // empty id
+            "-a",       // empty family
+            "code-A",   // uppercase suffix
+            "code-a1",  // non-alpha suffix
+            "unknown-x",
+            "not-code", // a family prefix alone is not a lane id
+            "code-a-b", // the family would be "code-a": unknown
+            "tmp-a",    // rename scratch ids are not lanes
+            "CODE-a",   // uppercase family
+        ] {
+            assert_eq!(lane_family_of(id), None, "{id}");
+        }
     }
 
     #[test]
     fn lane_seed_sql_is_insert_or_ignore_over_the_canonical_set() {
-        // #6853 oracle, extended under #8097: the seed can only
-        // fill missing rows — an existing registration (in
-        // particular a lane disabled via enabled = 0) is never
-        // overwritten, so seeding at every broker start cannot
-        // undo a disable — and every seeded row carries its
-        // canonical fields, so a restored disabled lane comes
-        // back disabled, and a restored enabled lane comes back
-        // with its owning worker and the one-queue binding.
+        // #6853 oracle: the seed can only fill missing rows -- an
+        // existing registration (in particular a lane disabled via
+        // enabled = 0) is never overwritten, so seeding at every
+        // broker start cannot undo a disable -- and every seeded
+        // row carries its canonical fields, so a restored lane
+        // comes back with its owning worker, the one-queue
+        // binding, and enabled = 1 (the whole canonical set is
+        // enabled since 2026-11-16).
         let sql = lane_seed_sql();
         assert!(sql.starts_with("INSERT OR IGNORE INTO lanes"), "{sql}");
         for (id, worker, enabled) in canonical_lanes() {
             let tuple = format!("('{id}', '{worker}', '*', {})", i32::from(enabled));
             assert!(sql.contains(&tuple), "seed misses {tuple}");
         }
-        // Nothing outside the canonical set is seeded: a deleted
-        // legacy lane stays deleted across broker restarts.
-        for legacy in [
-            "openchamber-a",
-            "openchamber-b",
-            "nix-a",
-            "opencode-a",
-            "code-z",
-        ] {
+        // Nothing outside the canonical set is seeded: the
+        // wildcard-only darwin-nix family and the rename scratch
+        // ids stay unseeded (a darwin-nix lane row appears only
+        // when a claim provisions it).
+        for outside in ["darwin-nix-a", "darwin-nix-z"] {
             assert!(
-                !sql.contains(&format!("('{legacy}'")),
-                "seed must not name {legacy}"
+                !sql.contains(&format!("('{outside}'")),
+                "seed must not name {outside}"
             );
         }
+        assert!(!sql.contains("('tmp-"), "seed must not name tmp ids");
     }
 
     #[test]
@@ -8179,6 +9117,54 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn claim_race_same_worker_two_lanes_live_claim_refusal_is_recorded() {
+        // #6985 recurrence fixture (task 17490, 2026-11-16, lanes
+        // code-j / code-g, both worker repo-worker-code): the second
+        // lane's claim attempt against a live-claimed row must be
+        // refused by every claim surface AND leave a record. Before
+        // this fix the by-id refusal was a silent Ok(None): no
+        // event, indistinguishable from the first claim in every
+        // readback the fleet has.
+        let now = "2026-11-16T13:47:00Z";
+        let task = json!({
+            "status": "claimed", "attempts": 1, "max_attempts": 1000,
+            "not_before": null, "platform": null, "lane_id": "code-j",
+            "worker_id": "repo-worker-code",
+            "lease_until": "2026-11-16T14:25:22Z",
+        });
+        // No claim surface may take the row while the lease stands.
+        assert!(!by_id_claimable(&task, now));
+        // The refusal names the holder from the row's lease fields.
+        let (worker, lane, lease_until) =
+            live_claim_holder(&task, now).expect("a live claim has a holder");
+        assert_eq!(worker, "repo-worker-code");
+        assert_eq!(lane.as_deref(), Some("code-j"));
+        assert_eq!(lease_until, "2026-11-16T14:25:22Z");
+        // Once the lease lapses the row is no longer live-held (the
+        // expire path, not a second claim, is what releases it).
+        assert!(live_claim_holder(&task, "2026-11-16T14:25:23Z").is_none());
+        // A queued row has no holder.
+        let queued = json!({"status": "queued", "lease_until": null});
+        assert!(live_claim_holder(&queued, now).is_none());
+        // Source oracle: the by-id refusal path records the
+        // claim_refused event (the event half of this fix).
+        let src = include_str!("turso_queue.rs");
+        let seg = src
+            .split("fn claim_by_id(")
+            .nth(1)
+            .and_then(|s| s.split("\nfn ").next())
+            .unwrap_or("");
+        assert!(
+            seg.contains("\"claim_refused\""),
+            "claim_by_id records a claim_refused event for a live-claimed row"
+        );
+        assert!(
+            seg.contains("live_claim_holder(&row, &now)"),
+            "the refusal is keyed on the row's live lease, not the claimer"
+        );
+    }
+
     fn claim_paths_never_reread_a_workers_newest_claimed_row() {
         // #7068 source oracle: the pre-#7617 claim shape claimed
         // via a subquery and re-read the result as the newest
@@ -8337,12 +9323,15 @@ mod tests {
         // row cannot be 'parked' — and the sink branch keys on the
         // status, never on a reconstructed stage (#8192). The
         // queued branch keeps its attempts cap, and the sink branch
-        // adds no placeholder: the predicate still carries exactly
-        // the two `now` arguments the pick SELECT and claim UPDATE
-        // bind.
+        // adds no placeholder: the predicate carries the two `now`
+        // arguments the pick SELECT and claim UPDATE bind — plus,
+        // since #3418, the claimer's declared remaining budget
+        // twice (capacity bypass gate + outer budget gate).
         let pred = default_pick_predicate();
         assert!(pred.contains("status = 'queued' AND attempts < max_attempts"));
-        assert!(pred.contains("status = 'parked' AND not_before IS NOT NULL AND not_before <= ?"));
+        assert!(
+            pred.contains("status = 'parked' AND ((not_before IS NOT NULL AND not_before <= ?)")
+        );
         assert!(
             !pred.contains("NOT ("),
             "no sink exclusion since #8234: {pred}"
@@ -8357,7 +9346,11 @@ mod tests {
         let sink_branch = format!("OR ({HANDOFF_SQL})");
         assert!(pred.contains(&sink_branch), "sink branch present: {pred}");
         assert_eq!(pred.matches("not_before <= ?").count(), 2);
-        assert_eq!(pred.matches('?').count(), 2, "no new placeholders: {pred}");
+        assert_eq!(
+            pred.matches('?').count(),
+            4,
+            "two `now`s + the two #3418 budget bindings: {pred}"
+        );
         // And the claim UPDATE re-check carries the same sink branch,
         // and collecting a sink row costs no attempt (#8234).
         let upd = claim_update_sql(&pred);
@@ -8410,6 +9403,65 @@ mod tests {
         // Direct rows are already direct; nothing to flip.
         assert!(!lane_reassignment_flip("direct", None, Some("x")));
         assert!(!lane_reassignment_flip("direct", None, None));
+    }
+
+    #[test]
+    fn bound_session_treats_broker_cleared_as_unbound_8368() {
+        // #8368: a ledger session_id the broker itself cleared
+        // (progress.session_cleared names it) is not a live binding.
+        assert_eq!(bound_session(None, None), None);
+        assert_eq!(bound_session(Some(""), Some("ses_x")), None);
+        assert_eq!(bound_session(Some("ses_dead"), Some("ses_dead")), None);
+        assert_eq!(
+            bound_session(Some("ses_live"), Some("ses_dead")),
+            Some("ses_live")
+        );
+        assert_eq!(bound_session(Some("ses_live"), None), Some("ses_live"));
+        // Composed with the flip predicates, as verb_lane calls them:
+        // the cleared row flips; the live-bound row never does.
+        assert!(lane_reassignment_flip(
+            "opencode",
+            bound_session(Some("ses_dead"), Some("ses_dead")),
+            Some("lane takes it direct")
+        ));
+        assert!(!lane_reassignment_flip(
+            "opencode",
+            bound_session(Some("ses_live"), Some("ses_dead")),
+            Some("lane takes it direct")
+        ));
+        assert!(lane_flip_to_opencode(
+            "direct",
+            bound_session(Some("ses_dead"), Some("ses_dead")),
+            Some("send to opencode")
+        ));
+    }
+
+    #[test]
+    fn lane_and_park_honor_cleared_session_and_explicit_delay_8368() {
+        // Source-shape companions to the predicate test above, in
+        // this file's seg8217 style: verb_lane must consult the
+        // task's session_cleared stamp and refuse live-bound flips
+        // explicitly; verb_park's sink landing must be able to
+        // carry an explicit caller delay as not_before.
+        let src = include_str!("turso_queue.rs");
+        let lane_seg = seg8217(src, "fn verb_lane(", "\nfn verb_bind(");
+        assert!(
+            lane_seg.contains("cleared_session_id(&task)"),
+            "verb_lane consults progress.session_cleared (#8368)"
+        );
+        assert!(
+            lane_seg.contains("is bound to session"),
+            "a live-bound flip refusal is an explicit error naming the session (#8368)"
+        );
+        let park_seg = seg8217(src, "fn verb_park(", "\nfn verb_release(");
+        assert!(
+            park_seg.contains("explicit_delay"),
+            "the park verb tracks an explicit caller delay (#8368)"
+        );
+        assert!(
+            park_seg.contains("not_before = ?, park_kind = NULL"),
+            "the sink landing carries the explicit not_before (#8368)"
+        );
     }
 
     #[test]
@@ -9094,6 +10146,339 @@ mod tests {
         assert!(broker_src.contains("GhDepProbe"));
         assert!(broker_src.contains("set_gh_probe"));
         assert!(broker_src.contains("github.developing-today-code-automation"));
+    }
+
+    #[test]
+    fn quarantine_atomic_sql_10671() {
+        // Oracle: synthetic interleavings execute the exact production SQL
+        // against SQLite, not a mocked affected-row count or live broker.
+        let output = std::process::Command::new("python3")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/quarantine_atomic_sql.py"
+            ))
+            .output()
+            .expect("quarantine SQL tests require Python 3 with stdlib sqlite3");
+        assert!(
+            output.status.success(),
+            "quarantine SQL regression failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn claim_quarantine_budget_is_separate_from_race_budget_9609() {
+        // #9609 oracle: quarantines in the claim pick loop carry
+        // their own budget (MAX_CLAIM_QUARANTINES_PER_CALL), sized
+        // to chew through a defective intake wave in one call; the
+        // 32-cap bounds race losses only. Under the shared cap,
+        // the 2026-11-16 wave (~460 defective packets at one
+        // queue's head) made every claim call return "no claimable
+        // task" behind the wave for a whole shift.
+        let src = include_str!("turso_queue.rs");
+        assert!(
+            src.contains("pub const MAX_CLAIM_QUARANTINES_PER_CALL: usize = 512;"),
+            "quarantine budget constant"
+        );
+        let pick = seg8217(src, "fn claim_pick_once(", "\nfn parse_batch_count(");
+        assert!(
+            pick.contains("quarantined += 1;"),
+            "quarantine branch counts quarantines"
+        );
+        assert!(
+            pick.contains("quarantined >= MAX_CLAIM_QUARANTINES_PER_CALL"),
+            "quarantine branch bounded by the quarantine budget"
+        );
+        assert_eq!(
+            pick.matches("skipped += 1;").count(),
+            1,
+            "only the race-loss branch consumes the race budget"
+        );
+        assert!(pick.contains("skipped >= 32"), "race budget unchanged");
+    }
+
+    #[test]
+    fn quarantine_recheck_rotates_its_window_9609() {
+        // #9609 oracle: rows the rechecker evaluates and leaves
+        // blocked without another write get the rotation touch, so
+        // the sweep's ORDER BY updated_at ASC window advances
+        // through the whole quarantined population instead of
+        // rechecking the same front rows every pass (the live
+        // 2026-11-16 fossilization: 197 rows rechecked minutely,
+        // ~1,490 never reached).
+        let src = include_str!("turso_queue.rs");
+        let one = seg8217(
+            src,
+            "fn quarantine_recheck_one(",
+            "\npub fn run_quarantine_rechecks(",
+        );
+        assert_eq!(
+            one.matches("touch_recheck_cursor(t, id)?;").count(),
+            4,
+            "every no-write outcome rotates, a raced guarded write included (#10671)"
+        );
+        assert_eq!(
+            one.matches("return Ok(\"release_raced\");").count(),
+            2,
+            "both guarded writes report a race"
+        );
+        for raced in one.split("return Ok(\"release_raced\");").take(2) {
+            assert!(
+                raced.trim_end().ends_with("touch_recheck_cursor(t, id)?;"),
+                "a raced guarded write rotates before it returns (#10671)"
+            );
+        }
+        let touch = seg8217(
+            src,
+            "fn touch_recheck_cursor(",
+            "\nfn quarantine_recheck_one(",
+        );
+        assert!(
+            touch.contains("SET updated_at = ?"),
+            "touch bumps updated_at only"
+        );
+        assert!(!touch.contains("event("), "touch writes no event");
+        let run = seg8217(
+            src,
+            "pub fn run_quarantine_rechecks(",
+            "\nfn verb_quarantine_recheck(",
+        );
+        assert!(
+            run.contains("ORDER BY updated_at ASC"),
+            "window order is the rotation cursor"
+        );
+    }
+
+    #[test]
+    fn enqueue_rejects_packet_missing_payload_dedupe_9609() {
+        // #9609 oracle: the enqueue boundary rejects the exact
+        // shape the 2026-11-16 bulk intake wrote directly to the
+        // DB — a repo-task/v1 packet with no payload.dedupe
+        // object. Validation runs before any store access, so the
+        // dummy backend is never touched on this path.
+        let backend = TursoBackend::new(
+            "http://127.0.0.1:0".to_string(),
+            "test".to_string(),
+            ureq::agent(),
+        );
+        let packet = json!({
+            "title": "probe", "priority": 30,
+            "dedupe_key": "repo-health:v1:triage:developing-today/code:issue:9609",
+            "payload": {
+                "schema": "repo-task/v1",
+                "kind": "triage",
+                "repo": "developing-today/code",
+                "problem": "p",
+                "priority_reason": "r",
+                "evidence": ["e"],
+                "acceptance": ["a"],
+                "tests": ["t"],
+                "context_refs": [],
+                "scope": {"include": ["x"], "exclude": ["y"] },
+                "risk": {"level": "low", "flags": [] },
+                "timebox_minutes": 20,
+                "issue": {"number": 9609 }
+            }
+        });
+        let req = json!({
+            "queue": "repo-health-code-pilot",
+            "packet": packet,
+            "dry_run": true
+        });
+        let out = verb_enqueue(&backend, &req);
+        assert_eq!(out["ok"], false, "{out}");
+        assert_eq!(out["exit"], 2, "{out}");
+        assert!(
+            out["errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e.as_str().unwrap_or("").contains("payload.dedupe")),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn quarantine_recheck_verdicts_10648() {
+        // Oracle: the 2026-11-16 blocked-pile audit. A blocked row
+        // whose recorded claim-path quarantine no longer reproduces
+        // must RELEASE; a row still failing the guard stays, with
+        // the current reason; rows that are not quarantine fossils
+        // are never this pass's business.
+        let recorded = "quarantined by claim path: packet failed validation \
+                        (#5444): packet.max_attempts: must match payload.max_attempts";
+        // The incident fossil itself: row copy 1000, payload copy
+        // 3, recorded error the split-copy mismatch. Under the old
+        // agreement rule the guard still fired; under the
+        // single-source-of-truth rule (#10648) the packet is valid
+        // and the fossil must release.
+        let mut fossil = claimable_row(valid_payload());
+        fossil["payload"]["max_attempts"] = json!(3);
+        fossil["max_attempts"] = json!(1000);
+        fossil["status"] = json!("blocked");
+        fossil["last_error"] = json!(recorded);
+        assert_eq!(
+            quarantine_recheck_verdict(&fossil),
+            QuarantineRecheck::Release
+        );
+        // Still invalid (schema broken): stays quarantined, and the
+        // verdict carries today's reason, not the recorded one.
+        let mut still_bad = fossil.clone();
+        still_bad["payload"]["schema"] = json!("repo-task/v0");
+        match quarantine_recheck_verdict(&still_bad) {
+            QuarantineRecheck::StillQuarantined(reason) => {
+                assert!(reason.contains("packet failed validation"), "{reason}");
+            }
+            other => panic!("expected StillQuarantined, got {other:?}"),
+        }
+        // Payload-less fossil: the missing-payload quarantine also
+        // still reproduces.
+        let mut no_payload = fossil.clone();
+        no_payload["payload"] = json!({});
+        no_payload["last_error"] =
+            json!("quarantined by claim path: payload missing/empty (#5444)");
+        match quarantine_recheck_verdict(&no_payload) {
+            QuarantineRecheck::StillQuarantined(reason) => {
+                assert!(reason.contains("payload missing/empty"), "{reason}");
+            }
+            other => panic!("expected StillQuarantined, got {other:?}"),
+        }
+        // Not this pass's business: a dep-blocked row (the dep
+        // rechecker owns it, even under a stale quarantine error),
+        // a classically blocked row, and a non-blocked row.
+        let mut dep_row = fossil.clone();
+        dep_row["blocked_deps"] =
+            json!([{"kind": "issue", "repo": "developing-today/code", "number": 5444}]);
+        assert_eq!(
+            quarantine_recheck_verdict(&dep_row),
+            QuarantineRecheck::NotApplicable
+        );
+        let mut classic = fossil.clone();
+        classic["last_error"] = json!("Drew decision pending on the linked issue");
+        assert_eq!(
+            quarantine_recheck_verdict(&classic),
+            QuarantineRecheck::NotApplicable
+        );
+        let mut queued = fossil.clone();
+        queued["status"] = json!("queued");
+        assert_eq!(
+            quarantine_recheck_verdict(&queued),
+            QuarantineRecheck::NotApplicable
+        );
+        // #10714: a row a LANE blocked afterwards is never released by
+        // this pass, even when its last_error is the fossil quarantine
+        // error. verb_block records blocker/reason_class (and, since
+        // this fix, blocked_via=lane) in progress and result.
+        let mut lane_block = fossil.clone();
+        lane_block["result"] = json!({
+            "blocker": "escalated to Drew", "reason_class": "escalated-to-user",
+            "blocked_via": "lane",
+        });
+        assert_eq!(
+            quarantine_recheck_verdict(&lane_block),
+            QuarantineRecheck::NotApplicable
+        );
+        // Legacy lane blocks predate the marker; blocker/reason_class
+        // alone must still protect them.
+        let mut legacy_lane_block = fossil.clone();
+        legacy_lane_block["progress"] = json!({
+            "blocker": "CI red on PR 1", "reason_class": "blocked",
+        });
+        assert_eq!(
+            quarantine_recheck_verdict(&legacy_lane_block),
+            QuarantineRecheck::NotApplicable
+        );
+    }
+
+    #[test]
+    fn verb_block_clears_stale_quarantine_error_10714() {
+        // Oracle: the SQL verb_block runs. A lane block must clear the
+        // fossil quarantine last_error (so the rechecker's prefix
+        // selection cannot see the row) and stamp the lane marker.
+        let src = include_str!("turso_queue.rs");
+        let impl_src = src.split("#[cfg(test)]").next().unwrap_or("");
+        let body = impl_src
+            .split("fn verb_block(")
+            .nth(1)
+            .and_then(|s| s.split("\nfn ").next())
+            .unwrap_or("");
+        assert!(!body.is_empty(), "verb_block body found");
+        assert!(
+            body.contains("last_error = NULL"),
+            "verb_block must clear the stale quarantine last_error"
+        );
+        assert!(
+            body.contains("\"blocked_via\": \"lane\""),
+            "verb_block must stamp the lane block marker"
+        );
+    }
+
+    #[test]
+    fn quarantine_wiring_oracles_10648() {
+        // Routes, sweep ride, client surface — the same wiring
+        // shape the dep rechecker established in #8276.
+        let src = include_str!("turso_queue.rs");
+        let impl_src = src.split("#[cfg(test)]").next().unwrap_or("");
+        assert!(impl_src.contains("\"/quarantine-recheck\" => verb_quarantine_recheck"));
+        let impl_flat = impl_src.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            impl_flat.contains("run_quarantine_rechecks( t, req_i64(req, \"quarantine_limit\")")
+        );
+        assert!(impl_src.contains("run_quarantine_rechecks(t, req_i64(req, \"limit\")"));
+        assert!(impl_src.contains("\"via\": \"quarantine_recheck\""));
+        let client_src = include_str!("client.rs");
+        assert!(client_src.contains("\"quarantine-recheck\" => cmd_quarantine_recheck"));
+        assert!(client_src.contains("call(\"/quarantine-recheck\""));
+    }
+
+    #[test]
+    #[test]
+    fn stored_not_before_rule_9179() {
+        // #9179 (closing the #6426 bypass): the values the audit
+        // found stored verbatim — delay-seconds in the absolute
+        // field — fail the storage-layer rule, as do the other
+        // garbage shapes; valid timestamps pass; a timestamp past
+        // the 366-day horizon fails like everywhere else the rule
+        // is applied.
+        for bad in ["3600", "7200", "banana", "", "0", "9999-01-01T00:00:00Z"] {
+            let err = validate_stored_not_before(bad)
+                .err()
+                .expect("malformed not_before must be rejected");
+            assert!(err.contains("not_before"), "error names the field: {err}");
+        }
+        for ok in ["2020-01-01T00:00:00Z", "2026-11-06T05:30:00+05:30"] {
+            assert!(validate_stored_not_before(ok).is_ok(), "{ok} must pass");
+        }
+        // Both verbs that store a caller-supplied not_before apply
+        // the rule before mutating (source oracle over each verb's
+        // own segment).
+        let src = include_str!("turso_queue.rs");
+        for (verb, next) in [
+            ("fn verb_park(", "\nfn verb_release("),
+            ("fn verb_revive(", "\nfn verb_"),
+        ] {
+            let seg = src
+                .split(verb)
+                .nth(1)
+                .and_then(|s| s.split(next).next())
+                .unwrap_or("");
+            assert!(
+                seg.contains("validate_stored_not_before(nb)"),
+                "{verb} validates an explicit not_before at the storage layer"
+            );
+        }
+        // The hygiene fold counts only failing rows, per queue.
+        let mut by_queue: Map<String, Value> = Map::new();
+        by_queue.insert("q1".to_string(), health_entry("q1"));
+        let rows = vec![
+            json!({"queue": "q1", "not_before": "3600"}),
+            json!({"queue": "q1", "not_before": "2020-01-01T00:00:00Z"}),
+            json!({"queue": "q1", "not_before": "7200"}),
+        ];
+        apply_malformed_parked(&mut by_queue, &rows);
+        assert_eq!(by_queue["q1"]["malformed_parked"], 2);
+        assert_eq!(health_entry("q2")["malformed_parked"], 0);
     }
 
     #[test]
@@ -9885,13 +11270,14 @@ mod tests {
         }
         // Both pick statements carry the clause after the
         // eligibility predicate, with the claim's family bound
-        // twice: 7 fixed placeholders + 2 predicate + 2 clause.
+        // twice: 7 fixed placeholders + 4 predicate (the two
+        // `now`s + the two #3418 budget bindings) + 2 clause.
         let upd = claim_update_sql(&default_pick_predicate());
         assert!(
             upd.contains("AND NOT EXISTS (SELECT 1 FROM repo_task_lane_ledger"),
             "{upd}"
         );
-        assert_eq!(upd.matches('?').count(), 11, "claim UPDATE bindings: {upd}");
+        assert_eq!(upd.matches('?').count(), 13, "claim UPDATE bindings: {upd}");
         let src = include_str!("turso_queue.rs");
         let pick = seg8217(src, "fn claim_pick_once(", "\nfn parse_batch_count(");
         assert_eq!(
@@ -9926,6 +11312,70 @@ mod tests {
     }
 
     #[test]
+    fn claim_by_id_platform_limit_block_is_reachable_8456() {
+        // #8456 (G7) oracle: the by-id platform-limit enforcement
+        // must EXECUTE — before this fix it sat inside the
+        // claim-guard block, after that block's `return Ok(None)`,
+        // as unreachable code (rustc warned; the source-shape test
+        // above still passed, because the code was present, just
+        // dead). Reachability half: in claim_by_id's own segment,
+        // the guard block contains no platform_limit_refusal call,
+        // and the enforcement call appears after the guard block's
+        // closing brace.
+        let src = include_str!("turso_queue.rs");
+        let seg = src
+            .split("fn claim_by_id(")
+            .nth(1)
+            .unwrap_or("")
+            .split("\n}\n")
+            .next()
+            .unwrap_or("");
+        let guard_open = seg
+            .find("if let Some(reason) = claim_guard_reason(&row)")
+            .expect("claim_by_id opens with the claim guard");
+        let guard_close = seg[guard_open..]
+            .find("\n    }\n")
+            .map(|i| guard_open + i)
+            .expect("the claim-guard block closes");
+        let guard_block = &seg[guard_open..guard_close];
+        assert!(
+            !guard_block.contains("platform_limit_refusal("),
+            "the enforcement must not sit inside the claim-guard block (dead after its return)"
+        );
+        let enforce_at = seg
+            .find("platform_limit_refusal(")
+            .expect("claim_by_id enforces the recorded platform limitation");
+        assert!(
+            enforce_at > guard_close,
+            "the enforcement runs after the guard block, on the live by-id path"
+        );
+        // Behavior half — the decisions the now-reachable block
+        // makes, pinned on the pure predicates it runs (the
+        // claim_race idiom: no live store needed). A valid
+        // limitation refuses every other family, and a claim
+        // declaring no family at all:
+        assert!(
+            platform_limit_refusal(
+                Some("muse"),
+                Some("needs the muse surface"),
+                Some("openchamber"),
+            )
+            .is_some()
+        );
+        assert!(
+            platform_limit_refusal(Some("muse"), Some("needs the muse surface"), None,).is_some()
+        );
+        // The limited family itself is not refused:
+        assert!(
+            platform_limit_refusal(Some("muse"), Some("needs the muse surface"), Some("muse"),)
+                .is_none()
+        );
+        // A reason-less stored limitation is invalid: the block
+        // clears it, never enforces it.
+        assert!(platform_limit_invalid(Some("muse"), None));
+        assert!(platform_limit_refusal(Some("muse"), None, Some("openchamber")).is_none());
+    }
+
     fn claim_by_id_targets_exactly_the_named_task_7735() {
         // #7735 oracle: a targeted claim is a claim of one row or
         // no claim — it can never fall through to the queue's

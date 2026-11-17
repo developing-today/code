@@ -76,7 +76,17 @@ let
       # Cargo plugins
       cargo-watch
       cargo-nextest
-      cargo-llvm-cov
+      # cargo-llvm-cov 0.9.0: its upstream integration tests (tests/test.rs)
+      # fail with the pinned toolchain - instrumented fixture binaries emit
+      # profraw format v11 while llvm-profdata (llvm 22.1.8) expects v10
+      # ("raw profile version mismatch", "no profile can be merged"), and
+      # the instrumented binaries SIGSEGV in the sandbox. The tool is used
+      # here only for local coverage reports; its upstream test suite is
+      # not this repo's test surface, and it must not gate every id check
+      # that inherits nativeBuildInputs (#9595).
+      (cargo-llvm-cov.overrideAttrs (_: {
+        doCheck = false;
+      }))
       cargo-audit
       cargo-outdated
       cargo-machete
@@ -115,7 +125,22 @@ in
     ;
 
   # Build inputs (libraries for Rust compilation)
-  buildInputs = with pkgs; [ openssl ];
+  buildInputs = with pkgs; [
+    openssl
+
+    # id-native-shell GUI system libraries (design #788 step 2): the
+    # Bevy window/render features link wayland-client (pkg-config),
+    # the X11 libraries winit loads, and libxkbcommon. These are only
+    # linked by the non-default id-native-shell crate; the default
+    # `id` build does not acquire them as Rust dependencies.
+    wayland
+    libxkbcommon
+    xorg.libX11
+    xorg.libXcursor
+    xorg.libXrandr
+    xorg.libXi
+    vulkan-loader
+  ];
 
   # Anchor bare treefmt to current directory (for ad-hoc devshell use)
   # Without this, treefmt walks up to .git root which is wrong for pkgs/id
@@ -136,6 +161,20 @@ in
   # Shared shell hook for both nix-shell and nix develop
   shellHook = ''
     export RUST_BACKTRACE=1
+
+    # id-native-shell runtime libraries (design #788 step 2): winit /
+    # wgpu dlopen wayland, xkbcommon, X11 and Vulkan at runtime.
+    export LD_LIBRARY_PATH="${
+      pkgs.lib.makeLibraryPath [
+        pkgs.wayland
+        pkgs.libxkbcommon
+        pkgs.xorg.libX11
+        pkgs.xorg.libXcursor
+        pkgs.xorg.libXrandr
+        pkgs.xorg.libXi
+        pkgs.vulkan-loader
+      ]
+    }''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
     # Playwright E2E testing: use Nix-provided browsers
     export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1

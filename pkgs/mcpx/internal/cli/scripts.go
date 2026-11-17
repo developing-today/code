@@ -61,12 +61,6 @@ func scriptResolver() scriptresolve.Resolver {
 	}
 }
 
-// scriptPath resolves the configured search path, splicing the built-in list
-// wherever the user left a null.
-func scriptPath() searchpath.Resolved {
-	return scriptResolver().Path()
-}
-
 // scriptSearchDirs is the flat list, kept for the environment variable the
 // runner passes to scripts.
 func scriptSearchDirs() []string {

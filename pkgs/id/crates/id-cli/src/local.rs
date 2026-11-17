@@ -134,6 +134,9 @@ impl LocalNode {
             // Nothing is in flight for an in-process node: a missing blob is missing.
             if let Some(inner) = Arc::get_mut(&mut m) {
                 inner.blob_wait = std::time::Duration::ZERO;
+                // The in-process handler answers with this node's own
+                // endpoint, so an offline `send` behaves like an online one.
+                inner.endpoint = Some(endpoint.clone());
             }
             m
         };
@@ -194,6 +197,12 @@ impl LocalNode {
         self.node_id
     }
 
+    /// This node's QUIC endpoint (bound on loopback; its identity is the
+    /// node's key). Used by the transfer module to dial peers as this node.
+    pub fn endpoint(&self) -> &Endpoint {
+        &self.endpoint
+    }
+
     /// Dialable address of this node on loopback (for in-process tests and
     /// same-machine clients; no discovery is involved).
     pub fn addr(&self) -> EndpointAddr {
@@ -212,7 +221,7 @@ impl LocalNode {
     /// Used by tests and by programs embedding an `id` node. Shut the returned
     /// router down before [`LocalNode::shutdown`].
     pub fn serve(&self, access: AccessPolicy) -> Router {
-        let meta = MetaProtocol::new(
+        let mut meta = MetaProtocol::new(
             &self.blobs,
             None,
             Arc::clone(&self.tags),
@@ -220,6 +229,9 @@ impl LocalNode {
             self.node_id,
             None,
         );
+        if let Some(inner) = Arc::get_mut(&mut meta) {
+            inner.endpoint = Some(self.endpoint.clone());
+        }
         // With a gate, blob fetches and observes are membership-checked (#173) and
         // pushes keep this policy; without one, pushes alone are gated, as before.
         let blobs = match &self.blob_gate {

@@ -109,11 +109,11 @@ The #5894 protocol, unchanged, plus the technique labelling:
 
 ## 3. How results are interpreted — DECIDED
 
-- **Per-cell reading.** A technique is said to *win* a cell only when
+- **Per-cell reading.** A technique is said to _win_ a cell only when
   its throughput ratio is > 1 **and** its p95 latency ratio is ≤ 1:
   capacity bought by queueing is not capacity. A cell where
   throughput rises and p95 rises with it is recorded as a
-  *trade-off cell*, named as such in the summary — never averaged
+  _trade-off cell_, named as such in the summary — never averaged
   away across the matrix.
 - **No matrix-wide single number.** Results are reported as the full
   matrix of cells with wins / trade-offs / losses marked. Collapsing
@@ -135,7 +135,7 @@ on #5685, not this record) only when **all** of these hold:
    reported as one, not as a scaling result.
 
 An arm that fails the thresholds is not a failed experiment: the
-recorded result *is* the deliverable, and it closes the question
+recorded result _is_ the deliverable, and it closes the question
 until a re-baseline event (#5894 §4) or a stated change in the
 workload suite reopens it. Thresholds are not revised after results
 are seen; revising them requires a new record that says it is doing

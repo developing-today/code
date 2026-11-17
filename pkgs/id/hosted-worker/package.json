@@ -6,11 +6,11 @@
   "scripts": {
     "dev": "wrangler dev",
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/routing.test.ts test/currency.test.ts",
+    "test": "node --test test/routing.test.ts test/blobs.test.ts test/usage.test.ts test/currency.test.ts",
     "smoke": "node smoke/smoke.mjs"
   },
   "devDependencies": {
     "typescript": "^5.6.0",
-    "wrangler": "^3.90.0"
+    "wrangler": "^4.0.0"
   }
 }

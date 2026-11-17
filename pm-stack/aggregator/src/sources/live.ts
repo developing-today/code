@@ -37,12 +37,25 @@ import {
   type KaneoCardSnapshot,
 } from "../activity.ts";
 import { isRecord } from "../validate.ts";
+import { fetchIssueBodySnapshot, type Phase12Snapshot } from "../phase12.ts";
+import { loadPhaseMapping, type PhaseMappingSnapshot } from "../phase-mapping.ts";
+import { loadProjectDoc, type ProjectDocSnapshot, type ProjectDocTarget } from "../project-doc.ts";
+import { fetchBuildHealthSnapshot, type BuildHealthSnapshot } from "../build-health.ts";
+import {
+  fetchQueueSnapshot,
+  readBrokerToken,
+  unavailableQueueSnapshot,
+  QUEUE_STALE_MS,
+  type QueueSnapshot,
+} from "../queue.ts";
+import { F12_DESIGN_ISSUE_NUMBER, parseF12Items, parseTimelinePrRefs, type F12PrRef } from "../f12-readiness.ts";
 import { buildAttentionFlags, buildQuotaActions, quotaActionFlags } from "../derive.ts";
 import { validateRoadmapHorizon } from "../roadmap-horizon.ts";
 import { describeRepoRoadmapSection, mergeRoadmapRows, readRepoRoadmaps } from "./repo-roadmap.ts";
 import { summarizeDns } from "../dns.ts";
 import {
   applyCloudflareExport,
+  applyPaygSettlements,
   applySupabaseExport,
   extractCharges,
   extractPaygLines,
@@ -56,8 +69,8 @@ import { poolItemToGhItem } from "../projects.ts";
 import { createNeedsDrewSweeper, type NeedsDrewCensus } from "../needs-drew.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
 import { assembleWorkItems } from "../work-items.ts";
-import { overlayQuotaCurrent, overlayTursoUsage, parseQuotaCurrent } from "../quota-current.ts";
-import { SnapshotStore } from "../snapshots.ts";
+import { overlayQuotaCurrent, overlayTursoUsage, readQuotaCurrentFile } from "../quota-current.ts";
+import { SnapshotStore, type SnapshotsRemote } from "../snapshots.ts";
 import { gristDocUrl, kaneoTaskUrl } from "../service-links.ts";
 import { fixtureSource } from "./fixtures.ts";
 
@@ -836,12 +849,16 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
  * leaves the base services untouched.
  */
 async function tursoOverlay(cfg: Config, services: SaasService[]): Promise<SaasService[]> {
-  try {
-    const raw = await readFile(cfg.quotaCurrentFile, "utf8");
-    const file = parseQuotaCurrent(JSON.parse(raw));
-    if (file) return overlayTursoUsage(services, file);
-  } catch {
-    /* no gatherer file (or unreadable): base services stand */
+  const res = await readQuotaCurrentFile(cfg.quotaCurrentFile);
+  if (res.verdict === "ok" && res.file) return overlayTursoUsage(services, res.file);
+  if (res.verdict === "transport") {
+    console.error(
+      `[quota] WARNING: quota-current read transport failure (${res.error ?? "unknown"}) — base services stand (#10816)`,
+    );
+  } else if (res.verdict === "unparseable") {
+    console.error(
+      `[quota] WARNING: quota-current file unparseable (${res.error ?? "unknown"}) — base services stand (#10816)`,
+    );
   }
   return services;
 }
@@ -893,6 +910,10 @@ export function liveSource(
     // ingestion store has already persisted, so a restart cannot
     // reissue an undated delivery id that dedupe would discard.
     seenActivityIds?: (source: string) => Promise<readonly string[]> | readonly string[];
+    /** #6815: usage-snapshot backend. Set only when
+     *  PM_AGG_STORE_BACKEND=supabase; otherwise the local snapshot
+     *  directory is the store (the dev/test and rollback path). */
+    snapshotRemote?: SnapshotsRemote;
   },
 ): Source {
   const fix = fixtureSource();
@@ -1139,6 +1160,23 @@ export function liveSource(
   // are read from its state file at request time (the port changes
   // across restarts). Mapped sessions are cached for 45 s (#890).
   let laptopCache: { value: MappedSessions; at: number } | null = null;
+  // #5082 (2026-11-14): a failed map is remembered briefly, and one
+  // in-flight map is shared between concurrent callers.
+  // mapServerSessions walks up to ~120 sequential fetches with 10 s
+  // aborts, so when a server stalls, one attempt costs 6-10.5 s
+  // (measured live) — and with success-only caching, EVERY caller
+  // paid that stall again: registry() runs on the request path of
+  // /program, /api/program.json and /board (via commentFormOpts),
+  // and pool-quota-steward run 381 watched three sequential
+  // assemblies each pay ~10.5 s, two of them crossing the dashboard
+  // deadline into 503s. The 15 s negative window matches the
+  // failure's timescale (a stalled server recovers in seconds to
+  // minutes); a null map already reads as "unreachable on the last
+  // read" to the coverage facet, so holding it briefly changes no
+  // one's story, only how often the stall is re-paid.
+  let laptopFailureAt = 0;
+  let laptopInFlight: Promise<MappedSessions | null> | null = null;
+  const LAPTOP_FAILURE_CACHE_MS = 15_000;
   // #1226: the Needs-Drew label census hits the GitHub search API
   // (8 queries per sweep). The sweeper caches for 5 minutes and shares
   // one in-flight sweep between concurrent callers, so the three
@@ -1153,6 +1191,171 @@ export function liveSource(
     };
     return getJson(url, headers);
   });
+  // #9922: the Path to Phase 12 body feed — one GraphQL read of
+  // #1235's body, cached for 5 minutes and shared in-flight (same
+  // discipline as the Needs-Drew sweeper above), fail-soft to the
+  // last good snapshot or null so a GitHub outage renders the panel
+  // unavailable instead of breaking /program/<id>.
+  let phase12Cache: { value: Phase12Snapshot; at: number } | null = null;
+  let phase12InFlight: Promise<Phase12Snapshot | null> | null = null;
+  async function phase12Snapshot(): Promise<Phase12Snapshot | null> {
+    if (phase12Cache && Date.now() - phase12Cache.at < 5 * 60_000) return phase12Cache.value;
+    if (!phase12InFlight) {
+      phase12InFlight = (async () => {
+        const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
+        if (!token) return phase12Cache?.value ?? null;
+        try {
+          const snap = await fetchIssueBodySnapshot(token);
+          phase12Cache = { value: snap, at: Date.now() };
+          return snap;
+        } catch {
+          return phase12Cache?.value ?? null;
+        }
+      })().finally(() => {
+        phase12InFlight = null;
+      });
+    }
+    return phase12InFlight;
+  }
+  // #9923 step 3: the F-item mapping feed — planning/roadmaps/id.md
+  // in the code checkout, parsed and cached for 5 minutes, shared
+  // in-flight and fail-soft to the last good snapshot or null (same
+  // discipline as the phase12 feed above).
+  let phaseMappingCache: { value: PhaseMappingSnapshot; at: number } | null = null;
+  let phaseMappingInFlight: Promise<PhaseMappingSnapshot | null> | null = null;
+  async function phaseMappingSnapshot(): Promise<PhaseMappingSnapshot | null> {
+    if (phaseMappingCache && Date.now() - phaseMappingCache.at < 5 * 60_000) return phaseMappingCache.value;
+    if (!phaseMappingInFlight) {
+      phaseMappingInFlight = (async () => {
+        try {
+          const snap = await loadPhaseMapping(cfg.codeCheckout);
+          if (snap) phaseMappingCache = { value: snap, at: Date.now() };
+          return snap ?? phaseMappingCache?.value ?? null;
+        } catch {
+          return phaseMappingCache?.value ?? null;
+        }
+      })().finally(() => {
+        phaseMappingInFlight = null;
+      });
+    }
+    return phaseMappingInFlight;
+  }
+  // #1108 remainder: per-project derived docs (roadmap description
+  // + newest doc/ status record) from the code checkout, cached per
+  // slug for 5 minutes and shared in-flight, fail-soft to the last
+  // good snapshot or null (same discipline as the phaseMapping feed
+  // above).
+  const projectDocCache = new Map<string, { value: ProjectDocSnapshot; at: number }>();
+  const projectDocInFlight = new Map<string, Promise<ProjectDocSnapshot | null>>();
+  async function projectDocSnapshot(target: ProjectDocTarget): Promise<ProjectDocSnapshot | null> {
+    const cached = projectDocCache.get(target.slug);
+    if (cached && Date.now() - cached.at < 5 * 60_000) return cached.value;
+    let inFlight = projectDocInFlight.get(target.slug);
+    if (!inFlight) {
+      inFlight = (async () => {
+        try {
+          const snap = await loadProjectDoc(cfg.codeCheckout, target);
+          if (snap) projectDocCache.set(target.slug, { value: snap, at: Date.now() });
+          return snap ?? projectDocCache.get(target.slug)?.value ?? null;
+        } catch {
+          return projectDocCache.get(target.slug)?.value ?? null;
+        }
+      })().finally(() => {
+        projectDocInFlight.delete(target.slug);
+      });
+      projectDocInFlight.set(target.slug, inFlight);
+    }
+    return inFlight;
+  }
+  // #9924: the Build health snapshot — Actions API reads for the
+  // id-gating lanes + the e2e nightly, cached for 5 minutes and
+  // shared in-flight (same discipline as the phase12 feed above),
+  // fail-soft to the last good snapshot or null.
+  let buildHealthCache: { value: BuildHealthSnapshot; at: number } | null = null;
+  let buildHealthInFlight: Promise<BuildHealthSnapshot | null> | null = null;
+  async function buildHealthSnapshot(): Promise<BuildHealthSnapshot | null> {
+    if (buildHealthCache && Date.now() - buildHealthCache.at < 5 * 60_000) return buildHealthCache.value;
+    if (!buildHealthInFlight) {
+      buildHealthInFlight = (async () => {
+        try {
+          const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN ?? null;
+          const snap = await fetchBuildHealthSnapshot(token);
+          buildHealthCache = { value: snap, at: Date.now() };
+          return snap;
+        } catch {
+          return buildHealthCache?.value ?? null;
+        }
+      })().finally(() => {
+        buildHealthInFlight = null;
+      });
+    }
+    return buildHealthInFlight;
+  }
+  // #9926: the readiness panel's two extra reads — #534's body
+  // (design checklist) through the phase12 body feed, and PR
+  // cross-references from each F-item issue's timeline. Both cached
+  // for 5 minutes and shared in-flight, fail-soft like the feeds
+  // above: a failed timeline read drops that issue's PRs, never
+  // the panel.
+  let phase12DesignCache: { value: Phase12Snapshot; at: number } | null = null;
+  let phase12DesignInFlight: Promise<Phase12Snapshot | null> | null = null;
+  async function phase12DesignSnapshot(): Promise<Phase12Snapshot | null> {
+    if (phase12DesignCache && Date.now() - phase12DesignCache.at < 5 * 60_000) return phase12DesignCache.value;
+    if (!phase12DesignInFlight) {
+      phase12DesignInFlight = (async () => {
+        const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
+        if (!token) return phase12DesignCache?.value ?? null;
+        try {
+          const snap = await fetchIssueBodySnapshot(token, fetch, () => new Date(), F12_DESIGN_ISSUE_NUMBER);
+          phase12DesignCache = { value: snap, at: Date.now() };
+          return snap;
+        } catch {
+          return phase12DesignCache?.value ?? null;
+        }
+      })().finally(() => {
+        phase12DesignInFlight = null;
+      });
+    }
+    return phase12DesignInFlight;
+  }
+  let f12PrRefsCache: { value: Map<number, F12PrRef[]>; at: number } | null = null;
+  let f12PrRefsInFlight: Promise<Map<number, F12PrRef[]> | null> | null = null;
+  async function f12PrRefsSnapshot(): Promise<Map<number, F12PrRef[]> | null> {
+    if (f12PrRefsCache && Date.now() - f12PrRefsCache.at < 5 * 60_000) return f12PrRefsCache.value;
+    if (!f12PrRefsInFlight) {
+      f12PrRefsInFlight = (async () => {
+        const snap = await phase12Snapshot();
+        if (!snap) return f12PrRefsCache?.value ?? null;
+        const token = process.env.PM_AGG_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN;
+        const headers: Record<string, string> = {
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "pm-aggregator-f12-readiness",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        };
+        const out = new Map<number, F12PrRef[]>();
+        await Promise.all(
+          parseF12Items(snap.body).map(async (item) => {
+            try {
+              const res = await fetch(
+                `https://api.github.com/repos/developing-today/code/issues/${item.issueNumber}/timeline?per_page=100`,
+                { headers, signal: AbortSignal.timeout(20_000) },
+              );
+              if (!res.ok) return;
+              out.set(item.issueNumber, parseTimelinePrRefs(await res.json()));
+            } catch {
+              // One issue's timeline failing drops only its PR column.
+            }
+          }),
+        );
+        f12PrRefsCache = { value: out, at: Date.now() };
+        return out;
+      })().finally(() => {
+        f12PrRefsInFlight = null;
+      });
+    }
+    return f12PrRefsInFlight;
+  }
   // #1116: a laptop leg's health, tracked per state file so the
   // attention provenance can say which legs are dead instead of the
   // failure staying silent. Before this, the OpenChamber-managed
@@ -1164,6 +1367,24 @@ export function liveSource(
   };
   async function laptopMapped(): Promise<MappedSessions | null> {
     if (laptopCache && Date.now() - laptopCache.at < 45_000) return laptopCache.value;
+    if (!laptopInFlight) {
+      if (Date.now() - laptopFailureAt < LAPTOP_FAILURE_CACHE_MS) return null;
+      laptopInFlight = (async () => {
+        const mapped = await mapLaptopServers();
+        if (mapped) {
+          laptopCache = { value: mapped, at: Date.now() };
+        } else {
+          laptopFailureAt = Date.now();
+        }
+        return mapped;
+      })().finally(() => {
+        laptopInFlight = null;
+      });
+    }
+    return laptopInFlight;
+  }
+
+  async function mapLaptopServers(): Promise<MappedSessions | null> {
     // Leg 1: the standing OpenCode server (opencode.service) — its own
     // state file carries the current url + password and is rewritten
     // on every restart, so this leg survives the restart churn that
@@ -1178,10 +1399,7 @@ export function liveSource(
           source: "opencode-laptop",
         });
         laptopLegs.standing = mapped !== null;
-        if (mapped) {
-          laptopCache = { value: mapped, at: Date.now() };
-          return mapped;
-        }
+        if (mapped) return mapped;
       } else {
         laptopLegs.standing = false;
       }
@@ -1206,7 +1424,6 @@ export function liveSource(
       );
       laptopLegs.openchamber = mapped !== null;
       if (!mapped) return null;
-      laptopCache = { value: mapped, at: Date.now() };
       return mapped;
     } catch {
       laptopLegs.openchamber = false;
@@ -1296,16 +1513,54 @@ export function liveSource(
   // PR #4695): a pool the gatherer now reports healthy must clear its
   // walled/high-usage actions on the usage strip too.
   async function overlayCurrent(base: QuotaView): Promise<QuotaView> {
-    try {
-      const raw = await readFile(cfg.quotaCurrentFile, "utf8");
-      const file = parseQuotaCurrent(JSON.parse(raw));
-      if (file) return overlayQuotaCurrent(base, file);
-    } catch {
-      /* no gatherer file (or unreadable): base view stands */
+    const res = await readQuotaCurrentFile(cfg.quotaCurrentFile);
+    if (res.verdict === "ok" && res.file) return overlayQuotaCurrent(base, res.file);
+    if (res.verdict === "transport") {
+      console.error(
+        `[quota] WARNING: quota-current read transport failure (${res.error ?? "unknown"}) — base view stands (#10816)`,
+      );
+    } else if (res.verdict === "unparseable") {
+      console.error(
+        `[quota] WARNING: quota-current file unparseable (${res.error ?? "unknown"}) — base view stands (#10816)`,
+      );
     }
     return base;
   }
 
+  // #9920: the read-only fleet-queue collector — POST /health +
+  // /list (rich) against the laptop queue-broker with the agent
+  // token from its file, cached 60s and shared in-flight. Fail-soft:
+  // a failed read re-serves the last good snapshot forced stale
+  // (available=false, error named), or the unavailable snapshot
+  // when nothing good exists yet — never a throw into a page.
+  let queueCache: { value: QueueSnapshot; at: number } | null = null;
+  let queueInFlight: Promise<QueueSnapshot> | null = null;
+  async function queueSnapshot(): Promise<QueueSnapshot> {
+    if (queueCache && Date.now() - queueCache.at < 60_000) {
+      const v = queueCache.value;
+      return { ...v, stale: v.stale || Date.now() - v.fetchedAt > QUEUE_STALE_MS };
+    }
+    if (!queueInFlight) {
+      queueInFlight = (async () => {
+        try {
+          const token = await readBrokerToken(cfg.queueBrokerTokenFile);
+          if (!token) throw new Error(`queue broker token file unreadable: ${cfg.queueBrokerTokenFile}`);
+          const snap = await fetchQueueSnapshot(cfg.queueBrokerUrl, token);
+          queueCache = { value: snap, at: Date.now() };
+          return snap;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (queueCache) {
+            return { ...queueCache.value, available: false, stale: true, errors: [msg] };
+          }
+          return unavailableQueueSnapshot(Date.now(), msg);
+        }
+      })().finally(() => {
+        queueInFlight = null;
+      });
+    }
+    return queueInFlight;
+  }
   return {
     async board() {
       try {
@@ -1547,6 +1802,27 @@ export function liveSource(
     async needsDrew(): Promise<NeedsDrewCensus | null> {
       return needsDrewSweep();
     },
+    async phase12(): Promise<Phase12Snapshot | null> {
+      return phase12Snapshot();
+    },
+    async phaseMapping(): Promise<PhaseMappingSnapshot | null> {
+      return phaseMappingSnapshot();
+    },
+    async projectDoc(target: ProjectDocTarget): Promise<ProjectDocSnapshot | null> {
+      return projectDocSnapshot(target);
+    },
+    async buildHealth(): Promise<BuildHealthSnapshot | null> {
+      return buildHealthSnapshot();
+    },
+    async phase12Design(): Promise<Phase12Snapshot | null> {
+      return phase12DesignSnapshot();
+    },
+    async f12PrRefs(): Promise<Map<number, F12PrRef[]> | null> {
+      return f12PrRefsSnapshot();
+    },
+    async queue(): Promise<QueueSnapshot | null> {
+      return queueSnapshot();
+    },
     async coverageCensus(): Promise<RepoCensus[] | null> {
       const feed = await getFeed();
       return coverageFromFeed(feed);
@@ -1608,15 +1884,26 @@ export function liveSource(
         view = await fix.quota();
       }
       try {
-        const raw = await readFile(cfg.quotaCurrentFile, "utf8");
-        const file = parseQuotaCurrent(JSON.parse(raw));
-        if (file) {
+        const res = await readQuotaCurrentFile(cfg.quotaCurrentFile);
+        if (res.verdict === "ok" && res.file) {
+          const file = res.file;
           provenance.quota += ` · gatherer ${file.generatedAt}`;
           const sanitized = file.sanitized;
           if (sanitized && sanitized.droppedProviders + sanitized.droppedWindows > 0) {
             provenance.quota += ` · sanitized quota-current: dropped ${sanitized.droppedProviders} provider(s), ${sanitized.droppedWindows} window(s)`;
           }
           return overlayQuotaCurrent(view, file);
+        }
+        if (res.verdict === "transport") {
+          provenance.quota += " · gatherer read transport failure (retry exhausted)";
+          console.error(
+            `[quota] WARNING: quota-current read transport failure (${res.error ?? "unknown"}) — base view stands (#10816)`,
+          );
+        } else if (res.verdict === "unparseable") {
+          provenance.quota += " · gatherer file unparseable";
+          console.error(
+            `[quota] WARNING: quota-current file unparseable (${res.error ?? "unknown"}) — base view stands (#10816)`,
+          );
         }
       } catch {
         /* no gatherer file (or unreadable): base view stands */
@@ -1629,7 +1916,7 @@ export function liveSource(
       // usage(): GETs must remain safe with a read-only snapshot store.
       const feed = await getFeed();
       if (!feed?.snapshots?.length) return 0;
-      return new SnapshotStore(cfg.snapshotsDir).append(feed.snapshots).catch(() => 0);
+      return new SnapshotStore(cfg.snapshotsDir, opts?.snapshotRemote).append(feed.snapshots).catch(() => 0);
     },
     async usage(): Promise<UsageView> {
       // Usage & billing hub (design §3): feed sections first (the
@@ -1646,7 +1933,7 @@ export function liveSource(
         (await readFile(cfg.freeServicesTrackerFile, "utf8")
           .then(extractUninstrumentedServices)
           .catch(() => []));
-      const store = new SnapshotStore(cfg.snapshotsDir);
+      const store = new SnapshotStore(cfg.snapshotsDir, opts?.snapshotRemote);
       const history = await store.byService().catch(() => ({}));
       const domains =
         feed?.dns && isDnsSection(feed.dns)
@@ -1707,7 +1994,11 @@ export function liveSource(
         const partial = {
           services: applySupabaseExport(applyCloudflareExport(feed.saas, cfExport), supabaseExport),
           uninstrumentedServices,
-          payg: feed.payg ?? [],
+          // #1056: feed lines are built by the collector without
+          // settlements — reconcile them against local history here,
+          // before attention flags are built from them (CodeRabbit,
+          // PR #10433: this branch previously returned unreconciled).
+          payg: applyPaygSettlements(feed.payg ?? [], Object.values(history).flat()),
           charges: feedCharges,
           subscriptions: feed.subscriptions ?? [],
         };
@@ -1745,7 +2036,7 @@ export function liveSource(
         const partial = {
           services: applySupabaseExport(applyCloudflareExport(extractSaasServices(doc), cfExport), supabaseExport),
           uninstrumentedServices,
-          payg: extractPaygLines(doc, registryText),
+          payg: extractPaygLines(doc, registryText, { settlements: Object.values(history).flat() }),
           charges: mergeChargeRows(feedCharges, extractCharges(doc, registryText)),
           subscriptions: extractSubscriptions(doc),
         };
@@ -1835,7 +2126,9 @@ export function liveSource(
     },
     async orchestration(): Promise<OrchestrationSection | null> {
       // #899: the orchestration section rides the fleet feed, embedded
-      // by the collector from the orchestrator's own output file. The
+      // by the collector from the latest orch_runs.document since the
+      // #10504 reader flip (orchestration.json export as its fallback).
+      // The
       // section carries its own provenance; absent = not measured yet.
       // #1140: three states, told apart — live (accepted, served in
       // the normalized contract shape, #1110), invalid (a section is
@@ -2159,6 +2452,13 @@ export function liveSource(
           state = "absent";
         else if (text.startsWith("store only")) state = "live";
         else state = "fixtures";
+        // #1500: a mixed items pass — pool-served refs plus a fixture
+        // fallback for refs outside the pool — is its own facet state,
+        // not plain "live": the fallback is exactly what a reader of
+        // the item pages needs the facet to say.
+        if (key === "items" && state === "live" && /\+ fixtures for \d+ ref\(s\) outside the pool/.test(text)) {
+          state = "partial-fixtures";
+        }
         const feedBacked = text.includes("fleet feed");
         if (state === "live" && feedBacked && feedAgeMs !== undefined && feedAgeMs >= FEED_STALE_MS) {
           state = "stale";

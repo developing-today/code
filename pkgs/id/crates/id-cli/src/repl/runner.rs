@@ -222,6 +222,7 @@ pub enum ReplAction {
 /// - `delete`, `rm <NAME>`: Delete a file
 /// - `rename <FROM> <TO>`: Rename a file
 /// - `copy`, `cp <FROM> <TO>`: Copy a file
+/// - `send [--replace] <NAME> <DEST_NODE> [DEST_NAME]`: Copy a file to another server
 ///
 /// ## Discovery Commands
 /// - `peers`: List discovered peers
@@ -333,6 +334,22 @@ async fn execute_repl_command(
         }
         (None, ["rename", from, to]) => {
             ctx.rename(from, to).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["send", name, dest]) => {
+            ctx.send(name, dest, None, false).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["send", name, dest, dest_name]) => {
+            ctx.send(name, dest, Some(dest_name), false).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["send", "--replace", name, dest]) => {
+            ctx.send(name, dest, None, true).await?;
+            Ok(ReplAction::Continue)
+        }
+        (None, ["send", "--replace", name, dest, dest_name]) => {
+            ctx.send(name, dest, Some(dest_name), true).await?;
             Ok(ReplAction::Continue)
         }
         (None, ["copy" | "cp", from, to]) => {
@@ -519,6 +536,7 @@ fn print_help() {
     println!("  gethash <HASH> <OUTPUT> - Retrieve by hash (- for stdout)");
     println!("  delete <NAME>          - Delete a file (alias: rm)");
     println!("  rename <FROM> <TO>     - Rename a file");
+    println!("  send [--replace] <NAME> <DEST_NODE> [DEST_NAME] - Copy a file to another server");
     println!("  copy <FROM> <TO>       - Copy a file (alias: cp)");
     println!("  peers                  - List discovered peers");
     println!("  find <QUERY>...        - Find & output matches");

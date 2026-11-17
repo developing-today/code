@@ -2,7 +2,7 @@
 
 Date: 2026-11-13. Status: implemented on the #173 branch (PR #7181).
 Companion to the gate's own module record in `src/blob_gate.rs`; this record
-covers the *wiring* — where the gate's inputs come from, when they refresh,
+covers the _wiring_ — where the gate's inputs come from, when they refresh,
 and what happens when they are absent — which is the part that changes
 production blob authorization.
 

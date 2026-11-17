@@ -25,11 +25,10 @@ on:
   # (.github/ci-policy.md): no pull_request triggers anywhere in
   # this repo. The suites verify main on every package-touching
   # merge; workflow_dispatch covers manual runs.
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/lab-ops-hub/**"
-      - ".github/workflows/lab-ops-hub.yml"
+  schedule:
+    # Nightly instead of on every push to main (Drew, 2026-11-16; see
+    # .github/ci-policy.md "Nightly main CI").
+    - cron: "17 7 * * *"
 
 permissions:
   contents: read
