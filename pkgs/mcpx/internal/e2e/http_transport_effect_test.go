@@ -133,7 +133,7 @@ func lineChan(body io.Reader) chan string {
 		defer close(lines)
 		rd := bufio.NewReader(body)
 		for {
-			line, err := rd.ReadString(10)
+			line, err := rd.ReadString('\n')
 			if line != "" {
 				lines <- strings.TrimRight(line, "\n")
 			}
