@@ -3280,7 +3280,9 @@ func TestConcurrentRunsOfOneScriptKeepTheirOwnLauncher(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func(i int) {
 			mark := fmt.Sprintf("LAUNCHER-%d", i)
-			o, err := e.try("run", "--launcher",
+			// The launcher is deliberately headerless, so it does not
+			// type check; run checks by default (#1868 point 4).
+			o, err := e.try("run", "--script-check", "off", "--launcher",
 				fmt.Sprintf("console.log(%q); @entry", mark), script)
 			out <- res{mark, o, err}
 		}(i)
