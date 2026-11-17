@@ -1,10 +1,16 @@
-"""Contract tests for program-tending (issue #1352, slices 1+2 of 3).
+"""Contract tests for program-tending (issue #1352, slices 1+2+3 of 3).
 
 Slice 1 contracts: the scaffold sections report verified no-actions,
 the runner never fails on a per-repo fetch error, and the run log
 always covers all five sections with the hard-stop labels named.
 Slice 2 contracts: epics/roadmaps compute real actions in dry-run
 without writing anything, and live mode posts through _gh_write only.
+Slice 3 contracts: projects report unreadable board state instead of
+fabricating it and correct contradictions through GraphQL only;
+stalled PRs get one marker-suppressed check-in (user/owned at 7 days,
+never a packet; fleet-owned also emits a pr_shepherd packet); loose
+ends notify parents once, count duplicate cross-links, and surface
+the aging user/review list as a planned/live tracking-issue action.
 """
 
 import io
@@ -579,6 +585,271 @@ class DriftPrGitIdentityTest(unittest.TestCase):
         commit = next(a for a in calls if "commit" in a)
         self.assertIn("user.name=github-actions[bot]", commit)
         self.assertTrue(any(x.startswith("user.email=") for x in commit), commit)
+
+
+
+class Slice3ProjectsTest(unittest.TestCase):
+    """Slice 3 projects: board-vs-reality, reported never fabricated."""
+
+    def setUp(self):
+        import datetime as dt
+
+        self.now = dt.datetime(2026, 11, 17, tzinfo=dt.timezone.utc)
+
+    def data(self, board_status, content):
+        return {
+            "repository": {
+                "projectsV2": {
+                    "nodes": [
+                        {
+                            "id": "PVT_1",
+                            "title": "Board",
+                            "fields": {
+                                "nodes": [
+                                    {
+                                        "id": "F1",
+                                        "name": "Status",
+                                        "options": [
+                                            {"id": "O_DONE", "name": "Done"},
+                                            {"id": "O_PROG", "name": "In Progress"},
+                                            {"id": "O_TODO", "name": "Todo"},
+                                        ],
+                                    }
+                                ]
+                            },
+                            "items": {
+                                "nodes": [
+                                    {
+                                        "id": "I1",
+                                        "fieldValueByName": {"name": board_status},
+                                        "content": content,
+                                    }
+                                ]
+                            },
+                        }
+                    ]
+                }
+            }
+        }
+
+    def test_no_token_reports_unverified(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            section = pt.section_projects(["developing-today/code"], False, self.now, 12)
+        self.assertEqual(section["status"], "no-action")
+        self.assertIn("unverified", section["checked"][0]["board_state"])
+
+    def test_done_board_open_content_is_contradiction(self):
+        data = self.data("Done", {"number": 7, "state": "open", "title": "X"})
+        with mock.patch.dict(os.environ, {"GH_TOKEN": "t"}, clear=True):
+            with mock.patch.object(pt, "_gh_graphql", return_value=data):
+                section = pt.section_projects(["developing-today/code"], False, self.now, 12)
+        self.assertEqual(len(section["actions"]), 1)
+        self.assertEqual(section["actions"][0]["kind"], "project-board-correction")
+        self.assertFalse(section["actions"][0]["live"])
+        self.assertEqual(len(section["checked"][0]["contradictions"]), 1)
+
+    def test_todo_board_closed_content_is_contradiction(self):
+        data = self.data("Todo", {"number": 8, "state": "closed", "title": "Y"})
+        with mock.patch.dict(os.environ, {"GH_TOKEN": "t"}, clear=True):
+            with mock.patch.object(pt, "_gh_graphql", return_value=data):
+                section = pt.section_projects(["developing-today/code"], False, self.now, 12)
+        self.assertEqual(len(section["actions"]), 1)
+
+    def test_consistent_board_no_action(self):
+        data = self.data("In Progress", {"number": 7, "state": "open", "title": "X"})
+        with mock.patch.dict(os.environ, {"GH_TOKEN": "t"}, clear=True):
+            with mock.patch.object(pt, "_gh_graphql", return_value=data):
+                section = pt.section_projects(["developing-today/code"], False, self.now, 12)
+        self.assertEqual(section["actions"], [])
+
+    def test_graphql_failure_reports_unverified_never_fails(self):
+        with mock.patch.dict(os.environ, {"GH_TOKEN": "t"}, clear=True):
+            with mock.patch.object(pt, "_gh_graphql", side_effect=RuntimeError("down")):
+                section = pt.section_projects(["developing-today/code"], False, self.now, 12)
+        self.assertEqual(section["checked"][0]["board_state"], "unverified")
+        self.assertIn("error", section["checked"][0])
+
+    def test_live_correction_uses_status_option(self):
+        data = self.data("Todo", {"number": 8, "state": "closed", "title": "Y"})
+        calls = []
+
+        def fake_graphql(query, variables=None):
+            calls.append((query, variables))
+            return data if len(calls) == 1 else {}
+
+        with mock.patch.dict(os.environ, {"GH_TOKEN": "t"}, clear=True):
+            with mock.patch.object(pt, "_gh_graphql", side_effect=fake_graphql):
+                section = pt.section_projects(["developing-today/code"], True, self.now, 12)
+        action = section["actions"][0]
+        self.assertTrue(action["live"])
+        self.assertEqual(action["corrected_to"], "Done")
+        self.assertEqual(calls[1][1]["option"], "O_DONE")
+
+
+class Slice3StalledPrsTest(unittest.TestCase):
+    """Slice 3 stalled PRs: 48h check-ins, holds, user/owned, packets."""
+
+    def setUp(self):
+        import datetime as dt
+
+        self.now = dt.datetime(2026, 11, 17, tzinfo=dt.timezone.utc)
+
+    def pr(self, number, updated, labels=(), author="someone", draft=False):
+        return {
+            "number": number,
+            "title": "PR",
+            "updated_at": updated,
+            "labels": [{"name": name} for name in labels],
+            "draft": draft,
+            "user": {"login": author},
+        }
+
+    def api(self, prs, comments=None):
+        comments = comments or {}
+
+        def fake(path):
+            if "/pulls?" in path:
+                return prs
+            for number, items in comments.items():
+                if f"/issues/{number}/comments" in path:
+                    return items
+            return []
+
+        return fake
+
+    def test_stalled_pr_planned_checkin(self):
+        prs = [self.pr(10, "2026-11-14T00:00:00Z")]
+        with mock.patch.object(pt, "_gh_api", self.api(prs)):
+            section = pt.section_stalled_prs(["developing-today/code"], False, self.now, 12)
+        self.assertEqual(len(section["actions"]), 1)
+        action = section["actions"][0]
+        self.assertEqual(action["kind"], "stalled-pr-checkin")
+        self.assertEqual(action["silent_days"], 3)
+        self.assertNotIn("packet", action)
+
+    def test_fleet_owned_pr_gets_shepherd_packet(self):
+        prs = [self.pr(11, "2026-11-14T00:00:00Z", author="dezren39")]
+        with mock.patch.object(pt, "_gh_api", self.api(prs)):
+            section = pt.section_stalled_prs(["developing-today/code"], False, self.now, 12)
+        packet = section["actions"][0]["packet"]
+        self.assertEqual(packet["kind"], "pr_shepherd")
+        self.assertIn("pr:11", packet["dedupe_key"])
+
+    def test_recent_pr_no_action(self):
+        prs = [self.pr(12, "2026-11-16T12:00:00Z")]
+        with mock.patch.object(pt, "_gh_api", self.api(prs)):
+            section = pt.section_stalled_prs(["developing-today/code"], False, self.now, 12)
+        self.assertEqual(section["actions"], [])
+
+    def test_held_pr_skipped(self):
+        prs = [self.pr(13, "2026-11-01T00:00:00Z", labels=("held",))]
+        with mock.patch.object(pt, "_gh_api", self.api(prs)):
+            section = pt.section_stalled_prs(["developing-today/code"], False, self.now, 12)
+        self.assertEqual(section["actions"], [])
+        self.assertEqual(section["checked"][0]["skipped_hard_stop"], 1)
+
+    def test_user_owned_waits_seven_days_and_never_packets(self):
+        young = [self.pr(14, "2026-11-14T00:00:00Z", labels=("user/owned",), author="dezren39")]
+        with mock.patch.object(pt, "_gh_api", self.api(young)):
+            section = pt.section_stalled_prs(["developing-today/code"], False, self.now, 12)
+        self.assertEqual(section["actions"], [])
+        old = [self.pr(14, "2026-11-09T00:00:00Z", labels=("user/owned",), author="dezren39")]
+        with mock.patch.object(pt, "_gh_api", self.api(old)):
+            section = pt.section_stalled_prs(["developing-today/code"], False, self.now, 12)
+        self.assertEqual(section["actions"][0]["kind"], "stalled-pr-user-owned-checkin")
+        self.assertNotIn("packet", section["actions"][0])
+
+    def test_already_tended_pr_skipped(self):
+        prs = [self.pr(15, "2026-11-10T00:00:00Z")]
+        comments = {15: [{"body": "check-in <!-- program-tending:stalled-prs -->"}]}
+        with mock.patch.object(pt, "_gh_api", self.api(prs, comments)):
+            section = pt.section_stalled_prs(["developing-today/code"], False, self.now, 12)
+        self.assertEqual(section["actions"], [])
+        self.assertEqual(section["checked"][0]["already_tended"], [15])
+
+    def test_live_checkin_posts_comment(self):
+        prs = [self.pr(16, "2026-11-14T00:00:00Z")]
+        with mock.patch.object(pt, "_gh_api", self.api(prs)):
+            with mock.patch.object(pt, "_gh_write", return_value={"id": 42}) as write:
+                section = pt.section_stalled_prs(["developing-today/code"], True, self.now, 12)
+        self.assertTrue(section["actions"][0]["live"])
+        self.assertEqual(section["actions"][0]["comment_id"], 42)
+        self.assertIn("/issues/16/comments", write.call_args[0][0])
+
+    def test_zero_budget_defers(self):
+        prs = [self.pr(17, "2026-11-14T00:00:00Z")]
+        with mock.patch.object(pt, "_gh_api", self.api(prs)):
+            section = pt.section_stalled_prs(["developing-today/code"], False, self.now, 0)
+        self.assertEqual(section["actions"], [])
+        self.assertEqual(section["checked"][0]["deferred"], 1)
+
+
+class Slice3LooseEndsTest(unittest.TestCase):
+    """Slice 3 loose ends: parent notify, duplicate links, user/review."""
+
+    def setUp(self):
+        import datetime as dt
+
+        self.now = dt.datetime(2026, 11, 17, tzinfo=dt.timezone.utc)
+
+    def api(self, closed=(), opened=(), review=(), parent=None, parent_comments=()):
+        def fake(path):
+            if "labels=user/review" in path:
+                return list(review)
+            if "state=closed" in path:
+                return list(closed)
+            if "/comments" in path:
+                return list(parent_comments)
+            if parent is not None and path.endswith(f"/issues/{parent['number']}"):
+                return [parent]
+            if "state=open" in path:
+                return list(opened)
+            return []
+
+        return fake
+
+    def test_parent_notified_when_child_closes(self):
+        child = {"number": 60, "title": "Kid", "body": "Child of #50"}
+        parent = {"number": 50, "state": "open", "title": "Parent", "labels": []}
+        with mock.patch.object(pt, "_gh_api", self.api(closed=[child], parent=parent)):
+            section = pt.section_loose_ends(["developing-today/code"], False, self.now, 12)
+        kinds = [a["kind"] for a in section["actions"]]
+        self.assertIn("loose-end-parent-notification", kinds)
+        action = section["actions"][0]
+        self.assertEqual((action["issue"], action["child"]), (50, 60))
+
+    def test_parent_notification_suppressed_when_already_posted(self):
+        child = {"number": 60, "title": "Kid", "body": "Child of #50"}
+        parent = {"number": 50, "state": "open", "title": "Parent", "labels": []}
+        comments = [{"body": "child #60 closed <!-- program-tending:loose-ends -->"}]
+        with mock.patch.object(
+            pt, "_gh_api", self.api(closed=[child], parent=parent, parent_comments=comments)
+        ):
+            section = pt.section_loose_ends(["developing-today/code"], False, self.now, 12)
+        self.assertEqual(section["actions"], [])
+
+    def test_duplicate_cross_links_counted(self):
+        opened = [{"number": 70, "body": "see #7 and #7 and #8", "labels": []}]
+        with mock.patch.object(pt, "_gh_api", self.api(opened=opened)):
+            section = pt.section_loose_ends(["developing-today/code"], False, self.now, 12)
+        self.assertEqual(
+            section["checked"][0]["duplicate_cross_links"],
+            [{"issue": 70, "duplicate_refs": {"developing-today/code#7": 2}}],
+        )
+
+    def test_user_review_surface_planned(self):
+        review = [{"number": 80, "updated_at": "2026-10-01T00:00:00Z", "labels": []}]
+        with mock.patch.object(pt, "_gh_api", self.api(review=review)):
+            section = pt.section_loose_ends(["developing-today/code"], False, self.now, 12)
+        surface = [a for a in section["actions"] if a["kind"] == "loose-end-user-review-surface"]
+        self.assertEqual(len(surface), 1)
+        self.assertEqual(surface[0]["items"], 1)
+        self.assertEqual(section["checked"][0]["user_review_aging"][0]["age_days"], 47)
+
+    def test_run_reports_slice_3(self):
+        with mock.patch.object(pt, "_gh_api", return_value=[]):
+            log = pt.run(["developing-today/code"])
+        self.assertEqual(log["slice"], 3)
 
 
 if __name__ == "__main__":
