@@ -195,14 +195,17 @@ func TestScriptTypecheckOnRefusesATypeError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Off by default: the annotation is stripped and the script runs.
+	saved := e.envVars
+	defer func() { e.envVars = saved }()
+
+	// Off: the annotation is stripped and the script runs. run checks by
+	// default (#1868 point 4), so off has to be asked for.
+	e.envVars = append(append([]string{}, saved...), "MCPX_SCRIPT_TYPECHECK=off")
 	if out := e.run("run", script); !strings.Contains(out, "not a number") {
 		t.Fatalf("with typecheck off the script should run:\n%s", out)
 	}
 
-	saved := e.envVars
 	e.envVars = append(append([]string{}, saved...), "MCPX_SCRIPT_TYPECHECK=on")
-	defer func() { e.envVars = saved }()
 
 	out, err := e.try("run", script)
 	if err == nil {
