@@ -721,7 +721,7 @@ skipped launcher phases).
 | `daemon.autostart` | bool | `true` | client | no | `--daemon-autostart` | `MCPX_DAEMON_AUTOSTART` | start the daemon on demand when it is not running |
 | `daemon.endpoint` | string | *(empty)* | client | no | `--daemon-endpoint` | `MCPX_DAEMON_ENDPOINT` | a daemon somewhere else, instead of the local socket |
 | `daemon.idleExit` | duration | `0s` | daemon | no | `--daemon-idle-exit`, `--idle-exit` | `MCPX_DAEMON_IDLE_EXIT` | stop the daemon after this long with nothing to do |
-| `daemon.inline` | bool | `false` | client | no | `--daemon-inline` | `MCPX_DAEMON_INLINE` | as a last resort, run servers inside this process |
+| `daemon.inline` | enum | `off` | client | no | `--daemon-inline` | `MCPX_DAEMON_INLINE` | as a last resort, run servers inside this process; one of off (also false), fallback (also true), always |
 | `daemon.inlineStartPoll` | duration | `20ms` | client | no | `--daemon-inline-start-poll` | `MCPX_DAEMON_INLINE_START_POLL` | *(plumbing)* how often a starting in-process daemon is probed |
 | `daemon.inlineStartTimeout` | duration | `5s` | client | no | `--daemon-inline-start-timeout` | `MCPX_DAEMON_INLINE_START_TIMEOUT` | *(plumbing)* how long an in-process daemon has to become reachable |
 | `daemon.leaseTTL` | duration | `30m0s` | daemon | yes | `--daemon-lease-ttl` | `MCPX_DAEMON_LEASE_TTL` | *(plumbing)* how long a silent caller's instances are remembered |
