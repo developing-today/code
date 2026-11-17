@@ -116,8 +116,39 @@ def mirror_path(root, repo):
     return os.path.join(root, repo + ".git")
 
 
-def run(cmd, **kw):
-    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+# Ceiling for every helper subprocess (#10940). The helpers are quick
+# local git/du calls and one paged `gh api graphql`; none should take
+# minutes, but a wedged network call or a stuck filesystem used to hang
+# the whole reconcile/manifest run with no end. Long transfers (clone,
+# fetch) call subprocess themselves with their own, longer limits.
+RUN_TIMEOUT_SECONDS = 600
+
+# Exit status reported for a helper that hit its limit, matching
+# coreutils `timeout`. It is never 0, so every caller reads it as a
+# failed command: valid_mirror() and is_skeleton_mirror() answer False
+# (a timed-out mirror is never treated as a removable skeleton),
+# disk_kb() answers -1, and inventory_owner() records an owner error.
+RUN_TIMEOUT_RETURNCODE = 124
+
+
+def run(cmd, timeout=None, **kw):
+    """subprocess.run with captured text output and a time limit.
+
+    A command that outlives `timeout` seconds (default
+    RUN_TIMEOUT_SECONDS) is killed and reported as a failed
+    CompletedProcess with RUN_TIMEOUT_RETURNCODE, rather than raising,
+    so callers keep their ordinary failure handling.
+    """
+    limit = RUN_TIMEOUT_SECONDS if timeout is None else timeout
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=limit, **kw)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            cmd,
+            RUN_TIMEOUT_RETURNCODE,
+            stdout="",
+            stderr=f"timed out after {limit} seconds: {' '.join(map(str, cmd))[:200]}",
+        )
 
 
 def valid_mirror(path):
