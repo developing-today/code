@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -239,6 +240,9 @@ func TestScanSupervisorSocketsAdoptAndReap(t *testing.T) {
 func TestSupervisorProtocolRefusalIsClassified(t *testing.T) {
 	dir := t.TempDir()
 	sock := mcpclient.SupervisorSocketPath(dir, "future")
+	if err := os.MkdirAll(filepath.Dir(sock), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)
