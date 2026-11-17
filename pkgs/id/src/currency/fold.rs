@@ -26,7 +26,19 @@
 //! - **Pending.** An event whose causal ancestry (backlink or `after`) is
 //!   absent from the input, or whose body was not supplied, is
 //!   [`FoldOutcome::Pending`] and moves no value. Dependents of a pending
-//!   event are pending too.
+//!   event are pending too: they are never evaluated against a state that
+//!   lacks their ancestor, so a spend funded by a body-less transfer waits
+//!   rather than being voided. Folding again once the body arrives decides
+//!   the whole pending subtree.
+//! - **Body binding.** Bodies travel separately from the signed headers, so
+//!   a supplied body is used only if its BLAKE3 hash equals the header's
+//!   signed `payload_hash`. A body that does not match is not this event's
+//!   body: it is ignored and the event is [`FoldOutcome::Pending`], exactly
+//!   as if no body had been supplied. It is not voided, because a forged
+//!   body must not be able to void an honestly signed event; the genuine
+//!   body can still arrive and decide it. A currency event whose header
+//!   commits to no body at all can never be decided and is
+//!   [`InvalidReason::InvalidBody`].
 //!
 //! What the fold deliberately does not do:
 //!
@@ -54,7 +66,8 @@ use crate::currency::graph::{
 /// Why a currency event was voided by the fold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InvalidReason {
-    /// Body bytes failed the contract's strict decode/validation.
+    /// Body bytes failed the contract's strict decode/validation, or the
+    /// signed header commits to no body.
     InvalidBody,
     /// A second definition for an already-registered semantic currency.
     DuplicateDefinition,
@@ -79,7 +92,9 @@ pub enum FoldOutcome {
     Applied,
     /// The event is void: present, causally placed, and refused.
     Invalid(InvalidReason),
-    /// Ancestry or body is missing; the event is not yet decidable.
+    /// Ancestry or body is missing (a body whose hash does not match the
+    /// header's signed `payload_hash` counts as missing), or an ancestor is
+    /// itself pending; the event is not yet decidable.
     Pending,
     /// Not a currency event; it only participates in causality.
     Ignored,
@@ -137,11 +152,13 @@ impl CurrencyFold {
 
 /// Fold `events` into currency state.
 ///
-/// `bodies` maps event IDs to their signed body bytes (event headers commit
-/// to body hashes; bodies travel separately). Currency events without a
-/// supplied body are [`FoldOutcome::Pending`]. Duplicate event IDs are
-/// folded once. The result depends only on the event set, never on the
-/// order of `events`.
+/// `bodies` maps event IDs to their body bytes (event headers commit to body
+/// hashes; bodies travel separately). A body is used only when its hash
+/// equals the header's signed `payload_hash`; currency events without a
+/// matching body are [`FoldOutcome::Pending`], and so is every event that
+/// causally depends on a pending event. Duplicate event IDs are folded once.
+/// The result depends only on the event set and the matching bodies, never
+/// on the order of `events`.
 #[must_use]
 pub fn fold_events(events: &[Event], bodies: &BTreeMap<Hash, Vec<u8>>) -> CurrencyFold {
     let mut by_id: BTreeMap<Hash, &Event> = BTreeMap::new();
@@ -150,7 +167,10 @@ pub fn fold_events(events: &[Event], bodies: &BTreeMap<Hash, Vec<u8>>) -> Curren
     }
 
     let mut fold = CurrencyFold::default();
+    // Events with a final verdict (Applied, Invalid, Ignored). Pending events
+    // are never decided, so nothing that depends on them is evaluated.
     let mut decided: BTreeSet<Hash> = BTreeSet::new();
+    let mut pending: BTreeSet<Hash> = BTreeSet::new();
 
     // Fixpoint over causal readiness: an event is decidable once every
     // event it causally depends on (backlink + `after` frontier) is decided.
@@ -159,6 +179,7 @@ pub fn fold_events(events: &[Event], bodies: &BTreeMap<Hash, Vec<u8>>) -> Curren
             .iter()
             .filter(|(id, event)| {
                 !decided.contains(id)
+                    && !pending.contains(id)
                     && dependencies(event).iter().all(|dep| decided.contains(dep))
             })
             .map(|(id, _)| *id)
@@ -180,11 +201,16 @@ pub fn fold_events(events: &[Event], bodies: &BTreeMap<Hash, Vec<u8>>) -> Curren
         for event in ordered {
             let outcome = apply(&mut fold, event, bodies.get(&event.id));
             fold.outcomes.insert(event.id, outcome);
-            decided.insert(event.id);
+            if outcome == FoldOutcome::Pending {
+                pending.insert(event.id);
+            } else {
+                decided.insert(event.id);
+            }
         }
     }
 
-    // Anything undecided is waiting on ancestry outside the input set.
+    // Anything undecided is waiting on ancestry outside the input set, or on
+    // a pending ancestor (missing or mismatched body).
     for id in by_id.keys() {
         fold.outcomes.entry(*id).or_insert(FoldOutcome::Pending);
     }
@@ -207,7 +233,15 @@ fn signer(event: &Event) -> IssuerId {
 }
 
 fn apply(fold: &mut CurrencyFold, event: &Event, body: Option<&Vec<u8>>) -> FoldOutcome {
-    match event.header.extensions.kind.as_str() {
+    let kind = event.header.extensions.kind.as_str();
+    if !matches!(kind, DEFINE_KIND | ISSUE_KIND | TRANSFER_KIND | BURN_KIND) {
+        return FoldOutcome::Ignored;
+    }
+    let body = match verified_body(event, body) {
+        Ok(body) => body,
+        Err(outcome) => return outcome,
+    };
+    match kind {
         DEFINE_KIND => apply_define(fold, event, body),
         ISSUE_KIND => apply_issue(fold, event, body),
         TRANSFER_KIND => apply_transfer(fold, event, body),
@@ -216,10 +250,22 @@ fn apply(fold: &mut CurrencyFold, event: &Event, body: Option<&Vec<u8>>) -> Fold
     }
 }
 
-fn apply_define(fold: &mut CurrencyFold, event: &Event, body: Option<&Vec<u8>>) -> FoldOutcome {
-    let Some(body) = body else {
-        return FoldOutcome::Pending;
+/// The supplied body, but only if it is the one the signed header commits
+/// to. A header that commits to no body can never be satisfied, so the event
+/// is void; a missing body, or one whose hash differs from the signed
+/// `payload_hash` (forged or corrupted in transit), leaves the event pending
+/// until the genuine body is supplied.
+fn verified_body<'a>(event: &Event, body: Option<&'a Vec<u8>>) -> Result<&'a [u8], FoldOutcome> {
+    let Some(committed) = event.header.payload_hash else {
+        return Err(FoldOutcome::Invalid(InvalidReason::InvalidBody));
     };
+    match body {
+        Some(body) if Hash::digest(body) == committed => Ok(body),
+        _ => Err(FoldOutcome::Pending),
+    }
+}
+
+fn apply_define(fold: &mut CurrencyFold, event: &Event, body: &[u8]) -> FoldOutcome {
     let Ok(definition) = CurrencyDefinition::from_body(body) else {
         return FoldOutcome::Invalid(InvalidReason::InvalidBody);
     };
@@ -250,10 +296,7 @@ fn value_target(
     Ok((*id, definition.clone()))
 }
 
-fn apply_issue(fold: &mut CurrencyFold, event: &Event, body: Option<&Vec<u8>>) -> FoldOutcome {
-    let Some(body) = body else {
-        return FoldOutcome::Pending;
-    };
+fn apply_issue(fold: &mut CurrencyFold, event: &Event, body: &[u8]) -> FoldOutcome {
     let Ok(issue) = TokenIssue::from_body(body) else {
         return FoldOutcome::Invalid(InvalidReason::InvalidBody);
     };
@@ -267,7 +310,10 @@ fn apply_issue(fold: &mut CurrencyFold, event: &Event, body: Option<&Vec<u8>>) -
     let supply = fold.supply(&issue.currency);
     match supply.checked_add(issue.amount) {
         Some(next) if next <= definition.supply.capped => {
-            if fold.credit(&issue.currency, &issue.to, issue.amount).is_err() {
+            if fold
+                .credit(&issue.currency, &issue.to, issue.amount)
+                .is_err()
+            {
                 return FoldOutcome::Invalid(InvalidReason::Overflow);
             }
             fold.supply.insert(issue.currency, next);
@@ -277,10 +323,7 @@ fn apply_issue(fold: &mut CurrencyFold, event: &Event, body: Option<&Vec<u8>>) -
     }
 }
 
-fn apply_transfer(fold: &mut CurrencyFold, event: &Event, body: Option<&Vec<u8>>) -> FoldOutcome {
-    let Some(body) = body else {
-        return FoldOutcome::Pending;
-    };
+fn apply_transfer(fold: &mut CurrencyFold, event: &Event, body: &[u8]) -> FoldOutcome {
     let Ok(transfer) = TokenTransfer::from_body(body) else {
         return FoldOutcome::Invalid(InvalidReason::InvalidBody);
     };
@@ -291,19 +334,22 @@ fn apply_transfer(fold: &mut CurrencyFold, event: &Event, body: Option<&Vec<u8>>
     if fold.balance(&transfer.currency, &from) < transfer.amount {
         return FoldOutcome::Invalid(InvalidReason::InsufficientFunds);
     }
-    if fold.debit(&transfer.currency, &from, transfer.amount).is_err() {
+    if fold
+        .debit(&transfer.currency, &from, transfer.amount)
+        .is_err()
+    {
         return FoldOutcome::Invalid(InvalidReason::InsufficientFunds);
     }
-    if fold.credit(&transfer.currency, &transfer.to, transfer.amount).is_err() {
+    if fold
+        .credit(&transfer.currency, &transfer.to, transfer.amount)
+        .is_err()
+    {
         return FoldOutcome::Invalid(InvalidReason::Overflow);
     }
     FoldOutcome::Applied
 }
 
-fn apply_burn(fold: &mut CurrencyFold, event: &Event, body: Option<&Vec<u8>>) -> FoldOutcome {
-    let Some(body) = body else {
-        return FoldOutcome::Pending;
-    };
+fn apply_burn(fold: &mut CurrencyFold, event: &Event, body: &[u8]) -> FoldOutcome {
     let Ok(burn) = TokenBurn::from_body(body) else {
         return FoldOutcome::Invalid(InvalidReason::InvalidBody);
     };
@@ -318,10 +364,8 @@ fn apply_burn(fold: &mut CurrencyFold, event: &Event, body: Option<&Vec<u8>>) ->
         return FoldOutcome::Invalid(InvalidReason::InsufficientFunds);
     }
     let supply = fold.supply(&burn.currency);
-    fold.supply.insert(
-        burn.currency,
-        supply.checked_sub(burn.amount).unwrap_or(0),
-    );
+    fold.supply
+        .insert(burn.currency, supply.saturating_sub(burn.amount));
     FoldOutcome::Applied
 }
 
@@ -431,7 +475,10 @@ mod tests {
         let mut bodies = world.bodies.clone();
         bodies.insert(t1.id, t1_body.body().unwrap());
         // Reversed input order must not matter.
-        let fold = fold_events(&[t1.clone(), world.issue.clone(), world.define.clone()], &bodies);
+        let fold = fold_events(
+            &[t1.clone(), world.issue.clone(), world.define.clone()],
+            &bodies,
+        );
         let compact = world.currency.compact_hash();
         assert_eq!(fold.outcome(&t1.id), Some(FoldOutcome::Applied));
         assert_eq!(
@@ -466,7 +513,10 @@ mod tests {
         .unwrap();
         let mut bodies = world.bodies.clone();
         bodies.insert(extra.id, extra_body.body().unwrap());
-        let fold = fold_events(&[world.define.clone(), world.issue.clone(), extra.clone()], &bodies);
+        let fold = fold_events(
+            &[world.define.clone(), world.issue.clone(), extra.clone()],
+            &bodies,
+        );
         assert_eq!(
             fold.outcome(&extra.id),
             Some(FoldOutcome::Invalid(InvalidReason::OverCap))
@@ -481,7 +531,15 @@ mod tests {
         // Two spends of the full balance on a fork: neither causally follows
         // the other, so the deterministic tie-break decides. Both sign over
         // the same funding; exactly one may apply.
-        let (s1, s1_body) = transfer(&world, &alice, 0, None, vec![world.issue.id], &bob_key(), 50);
+        let (s1, s1_body) = transfer(
+            &world,
+            &alice,
+            0,
+            None,
+            vec![world.issue.id],
+            &bob_key(),
+            50,
+        );
         let (s2, s2_body) = transfer(
             &world,
             &alice,
@@ -498,7 +556,12 @@ mod tests {
         bodies.insert(s1.id, s1_body.body().unwrap());
         bodies.insert(s2.id, s2_body.body().unwrap());
         let fold = fold_events(
-            &[world.define.clone(), world.issue.clone(), s1.clone(), s2.clone()],
+            &[
+                world.define.clone(),
+                world.issue.clone(),
+                s1.clone(),
+                s2.clone(),
+            ],
             &bodies,
         );
         let applied = [s1.id, s2.id]
@@ -557,7 +620,10 @@ mod tests {
         let burn = sign_burn(&alice, 0, None, &burn_body, vec![world.issue.id]).unwrap();
         let mut bodies = world.bodies.clone();
         bodies.insert(burn.id, burn_body.body().unwrap());
-        let fold = fold_events(&[world.define.clone(), world.issue.clone(), burn.clone()], &bodies);
+        let fold = fold_events(
+            &[world.define.clone(), world.issue.clone(), burn.clone()],
+            &bodies,
+        );
         let compact = world.currency.compact_hash();
         assert_eq!(fold.outcome(&burn.id), Some(FoldOutcome::Applied));
         assert_eq!(
@@ -577,26 +643,179 @@ mod tests {
             to: crate::currency::issuer_id(&alice),
             memo: None,
         };
-        let unknown = sign_transfer(&alice, 0, None, &TokenTransfer {
-            currency: unknown_body.currency,
-            amount: 5,
-            to: unknown_body.to,
-            seq_ref: 0,
-            memo: None,
-        }, vec![])
+        let unknown = sign_transfer(
+            &alice,
+            0,
+            None,
+            &TokenTransfer {
+                currency: unknown_body.currency,
+                amount: 5,
+                to: unknown_body.to,
+                seq_ref: 0,
+                memo: None,
+            },
+            vec![],
+        )
         .unwrap();
         let mut bodies = world.bodies.clone();
-        bodies.insert(unknown.id, TokenTransfer {
-            currency: unknown_body.currency,
-            amount: 5,
-            to: unknown_body.to,
-            seq_ref: 0,
-            memo: None,
-        }.body().unwrap());
-        let fold = fold_events(&[world.define.clone(), world.issue.clone(), unknown.clone()], &bodies);
+        bodies.insert(
+            unknown.id,
+            TokenTransfer {
+                currency: unknown_body.currency,
+                amount: 5,
+                to: unknown_body.to,
+                seq_ref: 0,
+                memo: None,
+            }
+            .body()
+            .unwrap(),
+        );
+        let fold = fold_events(
+            &[world.define.clone(), world.issue, unknown.clone()],
+            &bodies,
+        );
         assert_eq!(
             fold.outcome(&unknown.id),
             Some(FoldOutcome::Invalid(InvalidReason::UnknownCurrency))
+        );
+    }
+
+    /// Alice (funded with 100) pays Bob 40 in `t1`; Bob, funded only by
+    /// `t1`, pays the issuer 30 in `t2`.
+    fn funded_chain(world: &World) -> (Event, TokenTransfer, Event, TokenTransfer) {
+        let (t1, t1_body) = transfer(
+            world,
+            &alice_key(),
+            0,
+            None,
+            vec![world.issue.id],
+            &bob_key(),
+            40,
+        );
+        let (t2, t2_body) = transfer(world, &bob_key(), 0, None, vec![t1.id], &issuer_key(), 30);
+        (t1, t1_body, t2, t2_body)
+    }
+
+    #[test]
+    fn missing_body_keeps_dependents_pending_until_the_body_arrives() {
+        let world = world(1_000, 100);
+        let (t1, t1_body, t2, t2_body) = funded_chain(&world);
+        let events = [
+            world.define.clone(),
+            world.issue.clone(),
+            t1.clone(),
+            t2.clone(),
+        ];
+        let compact = world.currency.compact_hash();
+        let alice = crate::currency::issuer_id(&alice_key());
+        let bob = crate::currency::issuer_id(&bob_key());
+        let issuer = crate::currency::issuer_id(&issuer_key());
+
+        // t1's body has not arrived: t1 is pending, and t2 — funded only by
+        // t1 — must wait too rather than be voided for insufficient funds.
+        let mut bodies = world.bodies;
+        bodies.insert(t2.id, t2_body.body().unwrap());
+        let fold = fold_events(&events, &bodies);
+        assert_eq!(fold.outcome(&t1.id), Some(FoldOutcome::Pending));
+        assert_eq!(fold.outcome(&t2.id), Some(FoldOutcome::Pending));
+        assert_eq!(fold.balance(&compact, &alice), 100);
+        assert_eq!(fold.balance(&compact, &bob), 0);
+        assert_eq!(fold.balance(&compact, &issuer), 0);
+
+        // Once the body arrives, the whole pending subtree is decided.
+        bodies.insert(t1.id, t1_body.body().unwrap());
+        let fold = fold_events(&events, &bodies);
+        assert_eq!(fold.outcome(&t1.id), Some(FoldOutcome::Applied));
+        assert_eq!(fold.outcome(&t2.id), Some(FoldOutcome::Applied));
+        assert_eq!(fold.balance(&compact, &alice), 60);
+        assert_eq!(fold.balance(&compact, &bob), 10);
+        assert_eq!(fold.balance(&compact, &issuer), 30);
+        assert_eq!(fold.supply(&compact), 100);
+    }
+
+    #[test]
+    fn body_not_matching_the_signed_hash_is_ignored_and_pending() {
+        let world = world(1_000, 100);
+        let (t1, t1_body, t2, t2_body) = funded_chain(&world);
+        let events = [
+            world.define.clone(),
+            world.issue.clone(),
+            t1.clone(),
+            t2.clone(),
+        ];
+        let compact = world.currency.compact_hash();
+        let alice = crate::currency::issuer_id(&alice_key());
+        let bob = crate::currency::issuer_id(&bob_key());
+        let mallory = crate::currency::issuer_id(&SigningKey::from_bytes(&[13; 32]));
+
+        // A well-formed body that redirects and inflates t1. It decodes
+        // fine, but it is not the body t1's signed header commits to.
+        let forged = TokenTransfer {
+            to: mallory,
+            amount: 100,
+            ..t1_body.clone()
+        };
+        let mut bodies = world.bodies.clone();
+        bodies.insert(t1.id, forged.body().unwrap());
+        bodies.insert(t2.id, t2_body.body().unwrap());
+        let fold = fold_events(&events, &bodies);
+        assert_eq!(fold.outcome(&t1.id), Some(FoldOutcome::Pending));
+        assert_eq!(fold.outcome(&t2.id), Some(FoldOutcome::Pending));
+        assert_eq!(fold.balance(&compact, &alice), 100);
+        assert_eq!(fold.balance(&compact, &mallory), 0);
+        assert_eq!(fold.balance(&compact, &bob), 0);
+
+        // A forged issuance body cannot mint to someone else either.
+        let mut forged_issue = world.bodies.clone();
+        forged_issue.insert(
+            world.issue.id,
+            TokenIssue {
+                currency: compact,
+                amount: 100,
+                to: mallory,
+                memo: None,
+            }
+            .body()
+            .unwrap(),
+        );
+        let fold = fold_events(&[world.define.clone(), world.issue.clone()], &forged_issue);
+        assert_eq!(fold.outcome(&world.issue.id), Some(FoldOutcome::Pending));
+        assert_eq!(fold.balance(&compact, &mallory), 0);
+        assert_eq!(fold.supply(&compact), 0);
+
+        // The genuine body still decides the event the forgery could not.
+        bodies.insert(t1.id, t1_body.body().unwrap());
+        let fold = fold_events(&events, &bodies);
+        assert_eq!(fold.outcome(&t1.id), Some(FoldOutcome::Applied));
+        assert_eq!(fold.outcome(&t2.id), Some(FoldOutcome::Applied));
+        assert_eq!(fold.balance(&compact, &mallory), 0);
+        assert_eq!(fold.balance(&compact, &bob), 10);
+    }
+
+    #[test]
+    fn currency_event_committing_to_no_body_is_invalid() {
+        let world = world(1_000, 100);
+        let (t1, t1_body, _, _) = funded_chain(&world);
+        // Same signer and extension as t1, but the header commits to no body.
+        let bodiless =
+            crate::chain::sign(&alice_key(), 0, None, None, t1.header.extensions).unwrap();
+        assert_eq!(bodiless.header.payload_hash, None);
+        let mut bodies = world.bodies.clone();
+        bodies.insert(bodiless.id, t1_body.body().unwrap());
+        let fold = fold_events(
+            &[world.define.clone(), world.issue.clone(), bodiless.clone()],
+            &bodies,
+        );
+        assert_eq!(
+            fold.outcome(&bodiless.id),
+            Some(FoldOutcome::Invalid(InvalidReason::InvalidBody))
+        );
+        assert_eq!(
+            fold.balance(
+                &world.currency.compact_hash(),
+                &crate::currency::issuer_id(&bob_key())
+            ),
+            0
         );
     }
 }
