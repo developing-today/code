@@ -372,7 +372,10 @@ func scriptSettings() []Setting {
 			Name:        "Script check",
 			Short:       "check the generated program before running it",
 			Long: "types resolves imports and checks types; strict also checks " +
-				"declaration files. Checking is off by default. Type checking is " +
+				"declaration files. Checking is off by default for exec; run " +
+				"defaults it on (types) when no value is given, and a " +
+				"default-on run does not print the Deno-only notice on a " +
+				"runtime that cannot check. Type checking is " +
 				"currently supported by Deno. The old " +
 				"script.typecheck path, MCPX_SCRIPT_TYPECHECK variable, --script-typecheck " +
 				"flag and --typecheck flag remain accepted; the old value on means types.",

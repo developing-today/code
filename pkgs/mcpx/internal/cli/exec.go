@@ -723,6 +723,7 @@ func (a *App) execOnDaemon(ctx context.Context, c *Client, fs *flag.FlagSet, inl
 		DryRun:                 rf.dryRun,
 		Env:                    withInputReport(sh.env, a.stdoutOverride == nil),
 		TypeCheck:              sh.typecheck,
+		TypeCheckDefaulted:     sh.checkDefaulted,
 		TypeCheckOnError:       sh.checkOnError,
 		TypeCheckOnUnsupported: sh.checkOnUnsupported,
 		Imports:                sh.imports,

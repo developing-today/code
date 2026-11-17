@@ -851,6 +851,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		prefix: prefix, suffix: suffix, before: before, onSuccess: onSuccess,
 		onError: onError, launcher: *launcherFlag, noLauncher: *noLauncher,
 		typecheck: *typecheck, allowRepeat: allowRepeat, noConsole: *noConsole,
+		command: name,
 	})
 	if serr != nil {
 		return serr
@@ -1100,6 +1101,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		opts.Env["MCPX_TRANSPORT_BEARER_TOKEN"] = tok
 	}
 	opts.TypeCheck = shape.typecheck
+	opts.TypeCheckDefaulted = shape.checkDefaulted
 	opts.TypeCheckOnError = shape.checkOnError
 	opts.TypeCheckOnUnsupported = shape.checkOnUnsupported
 	opts.Imports = shape.imports
@@ -2396,6 +2398,9 @@ type scriptFlags struct {
 	prefix, suffix, before, onSuccess, onError, allowRepeat *repeatable
 	launcher, typecheck                                     string
 	noLauncher, noConsole                                   bool
+	// command is the invoking command ("run" or "exec"): script.check's
+	// per-command default keys on it (#1868 point 4).
+	command string
 }
 
 // scriptShape is everything about a run that decides what program is built.
@@ -2407,15 +2412,18 @@ type scriptShape struct {
 	hooks                                       *hookGate
 	env                                         map[string]string
 	typecheck, checkOnError, checkOnUnsupported string
-	imports, importsOnDynamic                   string
-	importsOnMissing                            string
-	importsCrossProject                         string
-	importsNetwork                              string
-	launcher, launcherName                      string
-	allowRepeat                                 []string
-	captureConsole                              bool
-	prefix, suffix                              []string
-	before, onSuccess, onError                  []string
+	// checkDefaulted says the check is on only because run's
+	// per-command default switched it on (#1868 point 4).
+	checkDefaulted             bool
+	imports, importsOnDynamic  string
+	importsOnMissing           string
+	importsCrossProject        string
+	importsNetwork             string
+	launcher, launcherName     string
+	allowRepeat                []string
+	captureConsole             bool
+	prefix, suffix             []string
+	before, onSuccess, onError []string
 }
 
 // inlineSource splices prefix and suffix lines around a snippet. A snippet is
@@ -2455,6 +2463,17 @@ func (sh scriptShape) inlineSource(args []string) string {
 func (sh scriptShape) phases() runner.Phases {
 	return runner.Phases{Before: sh.before, Prefix: sh.prefix, OnSuccess: sh.onSuccess,
 		OnError: sh.onError, Suffix: sh.suffix}
+}
+
+// scriptCheckFor applies script.check's per-command default (#1868
+// point 4): the registry default is off, but run defaults the check on
+// (types) while exec stays off. A value given in any spelling — file,
+// variable, flag — is explicit and always wins, for both commands.
+func scriptCheckFor(command, resolved string, explicit bool) string {
+	if command == "run" && !explicit {
+		return "types"
+	}
+	return resolved
 }
 
 func (a *App) resolveScriptShape(cfg *config.Config, f scriptFlags) (scriptShape, error) {
@@ -2518,7 +2537,9 @@ func (a *App) resolveScriptShape(cfg *config.Config, f scriptFlags) (scriptShape
 
 	// Read the canonical setting after resolution so legacy path, variable,
 	// and flag spellings all pass through the same value normalization.
-	sh.typecheck = a.Settings().String("script.check")
+	checkExplicit := a.Settings().Given("script.check") || f.typecheck != ""
+	sh.checkDefaulted = f.command == "run" && !checkExplicit
+	sh.typecheck = scriptCheckFor(f.command, a.Settings().String("script.check"), checkExplicit)
 	sh.checkOnError = a.Settings().String("script.checkOnError")
 	sh.checkOnUnsupported = a.Settings().String("script.checkOnUnsupported")
 
