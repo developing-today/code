@@ -9,7 +9,6 @@ The roadmap of record is this file and its siblings in `planning/roadmaps/`. The
 | Title                                                                 | Status      | Intent                                                                                                                                                                                                                          | Links |
 | --------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
 | PM stack coherence: single URL, fresh data, triage-able, hierarchical | in-progress | The coherence epic for the whole stack: one place to look, data that is current, issues a worker can pick up without archaeology.                                                                                               | #1184 |
-| Minimum viable label adoption for opencode, openchamber, nix          | in-progress | A shared minimum label set so cross-repo views built on labels are not blind outside this repo. Measured 2026-11-13: unlabeled open issues at 1/70 (opencode), 0/82 (openchamber), 3/51 (nix); the residual labeling is queued. | #1223 |
 
 ## Next
 
