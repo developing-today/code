@@ -132,60 +132,34 @@ enum Decision {
 impl EventStore {
     /// Rebuilds device-operation rows from retained bodies when opening an older store.
     /// Bodies that were never retained cannot be recovered; the caller reports that limit.
+    ///
+    /// Memory stays bounded however long the stored history is (#11299): `EVENTS` is
+    /// scanned one row at a time and each recovered row is written as it is found, inside
+    /// the same startup transaction, so nothing proportional to the history is held. Only
+    /// the waiting rows are collected first, and the waiting pool is capped by
+    /// [`WaitingLimits`](id_core::waiting::WaitingLimits).
     pub(super) fn recover_device_ops(txn: &WriteTransaction) -> Result<(usize, bool), StoreError> {
         let mut meta = txn.open_table(super::META)?;
         if meta.get(super::DEVICE_OPS_RECOVERED_KEY)?.is_some() {
             return Ok((0, false));
         }
-        let (events, waiting) = {
-            let bodies = txn.open_table(super::BODIES)?;
-            let stored = txn
-                .open_table(EVENTS)?
-                .iter()?
-                .map(|row| {
-                    let (_position, bytes) = row.map_err(StoreError::from)?;
-                    decode_stored(bytes.value())
-                })
-                .collect::<Result<Vec<_>, StoreError>>()?;
-            let waiting = super::waiting_rows::all(txn)?
-                .into_iter()
-                .map(|row| chain::decode(&row.bytes).map_err(|err| corrupt(err.to_string())))
-                .collect::<Result<Vec<_>, StoreError>>()?;
-            (stored, (bodies, waiting))
-        };
-        let mut recovered = Vec::new();
-        let (bodies, waiting) = waiting;
+        let bodies = txn.open_table(super::BODIES)?;
+        let mut recovered = 0usize;
         let mut incomplete = false;
-        for event in events.into_iter().chain(waiting) {
-            let has_device_op = {
-                txn.open_table(DEVICE_OPS)?
-                    .get(event.id.as_bytes().as_slice())?
-                    .is_some()
-            };
-            if has_device_op {
-                continue;
-            }
-            let body = bodies.get(event.id.as_bytes().as_slice())?;
-            let Some(body) = body else {
-                incomplete |= event.header.payload_hash.is_some()
-                    && event.header.extensions.kind == "group.event";
-                continue;
-            };
-            let body = body.value();
-            if committed(&event, body).is_err() {
-                continue;
-            }
-            if let Some(device) = body_device_op(&event, Some(body))
-                .map_err(|refusal| corrupt(format!("{refusal:?}")))?
-            {
-                recovered.push((event.id, device));
+        {
+            let stored = txn.open_table(EVENTS)?;
+            for row in stored.iter()? {
+                let (_position, bytes) = row.map_err(StoreError::from)?;
+                let event = decode_stored(bytes.value())?;
+                recover_one(txn, &bodies, &event, &mut recovered, &mut incomplete)?;
             }
         }
-        for (id, (op, group)) in &recovered {
-            store_device_op(txn, id, op, group.as_ref())?;
+        for row in super::waiting_rows::all(txn)? {
+            let event = chain::decode(&row.bytes).map_err(|err| corrupt(err.to_string()))?;
+            recover_one(txn, &bodies, &event, &mut recovered, &mut incomplete)?;
         }
         meta.insert(super::DEVICE_OPS_RECOVERED_KEY, b"1".as_slice())?;
-        Ok((recovered.len(), incomplete))
+        Ok((recovered, incomplete))
     }
 
     /// Verifies one received event and applies what it allows.
@@ -839,6 +813,40 @@ fn settle(
         }
     };
     Ok(settled)
+}
+
+/// Recovers one event's device-operation row from its retained, verified body, if it has
+/// none yet. A group event whose body was never retained marks the recovery incomplete.
+fn recover_one(
+    txn: &WriteTransaction,
+    bodies: &redb::Table<'_, &'static [u8], &'static [u8]>,
+    event: &Event,
+    recovered: &mut usize,
+    incomplete: &mut bool,
+) -> Result<(), StoreError> {
+    let has_device_op = txn
+        .open_table(DEVICE_OPS)?
+        .get(event.id.as_bytes().as_slice())?
+        .is_some();
+    if has_device_op {
+        return Ok(());
+    }
+    let Some(body) = bodies.get(event.id.as_bytes().as_slice())? else {
+        *incomplete |=
+            event.header.payload_hash.is_some() && event.header.extensions.kind == "group.event";
+        return Ok(());
+    };
+    let body = body.value();
+    if committed(event, body).is_err() {
+        return Ok(());
+    }
+    if let Some((op, group)) =
+        body_device_op(event, Some(body)).map_err(|refusal| corrupt(format!("{refusal:?}")))?
+    {
+        store_device_op(txn, &event.id, &op, group.as_ref())?;
+        *recovered += 1;
+    }
+    Ok(())
 }
 
 /// Writes a verified device operation in the same transaction as its ingest decision.
@@ -1659,6 +1667,109 @@ mod tests {
                 .is_some(),
             "held grant's retained body is recovered on upgrade"
         );
+    }
+
+    /// A device grant in its own group, so many signers can each hold one.
+    fn device_grant_in_own_group(signer: &SigningKey) -> (Event, Vec<u8>) {
+        let group = Hash::digest(signer.verifying_key().as_bytes());
+        let body = encode_group_event(&GroupEvent {
+            id: Hash::digest(group.as_bytes()),
+            author: *signer.verifying_key().as_bytes(),
+            after: vec![],
+            group: Some(group),
+            body: GroupBody::Device(DeviceOp::Add {
+                device: *key(91).verifying_key().as_bytes(),
+                scope: GroupRole::Admin,
+            }),
+        })
+        .unwrap();
+        let ext = ChainExt {
+            kind: "group.event".to_owned(),
+            group: Some(group),
+            after: vec![],
+            tag: None,
+            document: None,
+            removes: None,
+            note: None,
+            link: None,
+            checkpoint: None,
+            rotation: None,
+            chat: None,
+            anchor: None,
+        };
+        (sign(signer, 0, None, Some(&body), ext).unwrap(), body)
+    }
+
+    fn device_op_count(store: &EventStore) -> u64 {
+        store
+            .db
+            .begin_read()
+            .unwrap()
+            .open_table(DEVICE_OPS)
+            .unwrap()
+            .len()
+            .unwrap()
+    }
+
+    /// #11299: recovery streams a long history instead of collecting it, recovers every
+    /// eligible row, reports the missing bodies, and does not duplicate rows on a rerun.
+    #[test]
+    fn test_open_recovers_device_operations_across_a_long_history() {
+        let (dir, mut store) = open();
+        let mut grants = Vec::new();
+        for n in 1..=200u8 {
+            let (event, body) = device_grant_in_own_group(&key(n));
+            assert!(
+                matches!(
+                    store
+                        .ingest_with_body(&event.bytes, Some(&body), 0)
+                        .unwrap(),
+                    Ingest::Accepted { .. }
+                ),
+                "grant {n} is accepted"
+            );
+            grants.push(event);
+        }
+        assert_eq!(device_op_count(&store), 200);
+        // Drop every device-op row, as an older store would lack them, and drop ten bodies
+        // so those rows cannot be recovered.
+        let missing: Vec<Hash> = grants.iter().take(10).map(|event| event.id).collect();
+        store
+            .write(|txn| {
+                let mut ops = txn.open_table(DEVICE_OPS)?;
+                for event in &grants {
+                    ops.remove(event.id.as_bytes().as_slice())?;
+                }
+                let mut bodies = txn.open_table(super::super::BODIES)?;
+                for id in &missing {
+                    bodies.remove(id.as_bytes().as_slice())?;
+                }
+                txn.open_table(super::super::META)?
+                    .remove(super::super::DEVICE_OPS_RECOVERED_KEY)?;
+                Ok(())
+            })
+            .unwrap();
+        drop(store);
+
+        let store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
+        assert_eq!(
+            device_op_count(&store),
+            190,
+            "every grant with a retained body is recovered"
+        );
+        let (recovered, incomplete) = store
+            .write(|txn| {
+                txn.open_table(super::super::META)?
+                    .remove(super::super::DEVICE_OPS_RECOVERED_KEY)?;
+                EventStore::recover_device_ops(txn)
+            })
+            .unwrap();
+        assert_eq!(
+            recovered, 0,
+            "a rerun finds every recoverable row already present"
+        );
+        assert!(incomplete, "the ten missing bodies are still reported");
+        assert_eq!(device_op_count(&store), 190);
     }
 
     fn ingest_all(store: &mut EventStore, events: &[Event]) {
