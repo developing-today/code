@@ -135,9 +135,7 @@ export function horizonHours(expiresAt: string | null, now: Date): number | null
 export const SESSION_READ_TRANSPORT_ERROR = "transport-error" as const;
 export type SessionReadResult = { expiresAt: string | null } | null | typeof SESSION_READ_TRANSPORT_ERROR;
 
-const defaultFetchSession = async (
-  credential: OpenDesignCredentialLike,
-): Promise<SessionReadResult> => {
+const defaultFetchSession = async (credential: OpenDesignCredentialLike): Promise<SessionReadResult> => {
   const headers: Record<string, string> = {
     Accept: "application/json",
     "x-vela-workspace-id": credential.workspaceId,

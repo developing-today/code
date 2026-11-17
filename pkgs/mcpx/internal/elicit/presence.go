@@ -3,6 +3,8 @@ package elicit
 import (
 	"os"
 	"time"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // Answerer presence: the broker's truthful no-audience signal (#2438,
@@ -25,10 +27,11 @@ import (
 // answer.
 
 // DefaultAudienceWindow is how recent an answerer heartbeat must be
-// for the audience to count as present. Answerer surfaces poll on a
-// one-second cadence (mcpx elicit watch) or per user refresh, so two
+// for the audience to count as present. The value lives in
+// defaults.json (elicit.audienceWindow, 2m): answerer surfaces poll on
+// a one-second cadence (mcpx elicit watch) or per user refresh, so two
 // minutes is generous without letting a long-gone answerer count.
-const DefaultAudienceWindow = 2 * time.Minute
+var DefaultAudienceWindow = defaults.ElicitAudienceWindow
 
 // NoteAnswerer records that an answerer able to serve aud was seen
 // now. An empty audience means an unfiltered answerer -- one polling

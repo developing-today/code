@@ -1611,7 +1611,10 @@ export interface QuotaGatherHeartbeat {
   tickAt: string;
   ok: boolean;
   durationMs: number;
-  perProvider: Record<string, { state: "ok" | "error" | "lapsed"; ms: number; rows: number; error?: string; errorKind?: string }>;
+  perProvider: Record<
+    string,
+    { state: "ok" | "error" | "lapsed"; ms: number; rows: number; error?: string; errorKind?: string }
+  >;
   /** Set when the tick itself failed before any provider ran (import / credential store). */
   error?: string;
 }

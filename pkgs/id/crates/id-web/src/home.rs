@@ -80,8 +80,7 @@ fn tag_labels<'a>(
         .map(|identity| {
             let plain = plain_tag_label(identity);
             let label = if plain_counts.get(&plain).copied().unwrap_or(0) > 1 {
-                serde_json::to_string(&serde_json::json!([identity.0, identity.1]))
-                    .unwrap_or(plain)
+                serde_json::to_string(&serde_json::json!([identity.0, identity.1])).unwrap_or(plain)
             } else {
                 plain
             };
@@ -190,12 +189,7 @@ pub(super) async fn feed_handler(State(state): State<AppState>) -> axum::respons
     }
     let tag_occurrences: std::collections::BTreeMap<String, (usize, u64)> = tag_occurrences
         .into_iter()
-        .map(|(identity, counts)| {
-            (
-                labels.get(&identity).cloned().unwrap_or_default(),
-                counts,
-            )
-        })
+        .map(|(identity, counts)| (labels.get(&identity).cloned().unwrap_or_default(), counts))
         .collect();
 
     let mut recent = documents.clone();
@@ -601,7 +595,11 @@ mod tests {
         // two.md and three.md carry only (a, b:c): its occurrence
         // count is the number of documents carrying that exact tag.
         for name in ["two.md", "three.md"] {
-            let blob = store.blobs().add_bytes(name.as_bytes().to_vec()).await.unwrap();
+            let blob = store
+                .blobs()
+                .add_bytes(name.as_bytes().to_vec())
+                .await
+                .unwrap();
             store.tags().set(name, blob.hash).await.unwrap();
             tags.set_tag(&tags.global, name.as_bytes(), b"a", Some(b"b:c"), b"")
                 .await
@@ -627,8 +625,16 @@ mod tests {
             .find(|doc| doc.name == "one.md")
             .expect("one.md in feed");
         assert_eq!(one.tag_count, 2);
-        assert!(one.tags.contains(&"[\"a:b\",\"c\"]".to_string()), "{:?}", one.tags);
-        assert!(one.tags.contains(&"[\"a\",\"b:c\"]".to_string()), "{:?}", one.tags);
+        assert!(
+            one.tags.contains(&"[\"a:b\",\"c\"]".to_string()),
+            "{:?}",
+            one.tags
+        );
+        assert!(
+            one.tags.contains(&"[\"a\",\"b:c\"]".to_string()),
+            "{:?}",
+            one.tags
+        );
         // Across documents: exact-tag occurrence counts drive the
         // ranking — (a, b:c) on 3 documents outranks (a:b, c) on 1.
         assert_eq!(feed.popular_tags[0].label, "[\"a\",\"b:c\"]");

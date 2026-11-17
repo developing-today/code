@@ -562,7 +562,10 @@ test("an uninstalled lib checkout dependency is installed and the OpenDesign kee
     );
     await writeFile(join(checkoutRoot, ".gitignore"), "node_modules/\n", "utf8");
     const git = (...args: string[]) => {
-      const r = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: checkoutRoot, encoding: "utf8" });
+      const r = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], {
+        cwd: checkoutRoot,
+        encoding: "utf8",
+      });
       if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}`);
     };
     git("init", "-q", "-b", "main");
@@ -840,7 +843,12 @@ test("a persistent Claude 429 retains the last good row marked rate_limited, nev
           version: 1,
           generatedAt: measuredAt,
           source: "opencode-quota",
-          heartbeat: { tickAt: measuredAt, ok: true, durationMs: 1, perProvider: { _claude: { state: "ok", ms: 1, rows: 1 } } },
+          heartbeat: {
+            tickAt: measuredAt,
+            ok: true,
+            durationMs: 1,
+            perProvider: { _claude: { state: "ok", ms: 1, rows: 1 } },
+          },
           providers: [lastGood],
         },
         null,

@@ -1236,6 +1236,7 @@ let
         "atlas-backup"
         "laptop-autocommit-in-progress"
         "laptop-autocommit-merge-abort"
+        "laptop-autocommit-oversized"
         "laptop-backups-watchdog"
         "laptop-state-backup"
         "laptop-repo-keeper"

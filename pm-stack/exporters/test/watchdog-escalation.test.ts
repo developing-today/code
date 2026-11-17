@@ -190,12 +190,7 @@ describe("queue task wrapper — the repo-task/v1 contract (task 20118)", () => 
   });
 
   test("a resume packet carries the recorded issue number, so the retry needs no new issue", () => {
-    const recorded = recordEscalation(
-      escalatingHealth(),
-      CTX,
-      { queueTaskId: null, issueNumber: 777 },
-      T0,
-    );
+    const recorded = recordEscalation(escalatingHealth(), CTX, { queueTaskId: null, issueNumber: 777 }, T0);
     const plan = planEscalation(recorded, CTX);
     expect(plan.actions.map((a) => a.type)).toEqual(["enqueue_task"]);
     const action = plan.actions[0] as Extract<(typeof plan.actions)[number], { type: "enqueue_task" }>;
