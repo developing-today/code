@@ -16,6 +16,16 @@
 # offsite legs. That date is pruned by a later run, once it is no
 # longer the run date.
 #
+# Monthly tier (#10299, Drew's 2026-11-03 ruling on #1258 Q3/Q6 —
+# daily 30 days PLUS monthly generations kept 12 months off-machine):
+# each offsite leg pins the month's first uploaded archive under
+# <prefix>/monthly/<YYYY-MM>/ and prunes monthly generations older
+# than 12 months (never the run's own month, the #982 rule at month
+# granularity). The daily 30-day prune never touches monthly/: its
+# listing only matches dated day dirs. The #1218 Project #4 export
+# rides inside this archive's aggregator state, so the monthly tier
+# is also its off-machine 1-year home.
+#
 # Every run also writes a durable JSON run record at
 # ~/backups/dashboard/.last-run.json (#1026), read by the
 # laptop-backups watchdog (modules/laptop-backups-watchdog.sh).
@@ -764,6 +774,39 @@ verify_remote() { # $1 rclone path, $2 label
   [ "$got" = "$ARC_SHA" ] || fail "$2 copy sha256 mismatch (got $got)"
   log "$2 OK sha256 verified ($1)"
 }
+# --- monthly tier (#10299) ---------------------------------------------------
+MONTH="${DATE:0:7}"
+MONTH_CUTOFF="$(date -d "$DATE -12 months" +%Y-%m)"
+pin_monthly() { # $1 rclone dir holding the daily <date> subdirs, $2 label
+  local dest="$1/monthly/$MONTH/dashboard-$DATE.tar.zst" existing
+  # First-of-month pin: a month that already has a generation keeps it.
+  # A listing failure here degrades to a pin attempt, not silence: the
+  # copyto + sha256 verify below fail the run loudly if the remote is
+  # actually broken, so no monthly generation is ever silently lost.
+  existing="$(rclone lsf "$1/monthly/$MONTH/" 2>/dev/null || true)"
+  if [ -n "$existing" ]; then
+    log "monthly $2 $MONTH already pinned, keeping first generation"
+    return 0
+  fi
+  rclone copyto "$ARCHIVE" "$dest" || fail "monthly pin failed on $2 ($MONTH)"
+  verify_remote "$dest" "$2 monthly"
+  log "monthly $2 $MONTH pinned from $DATE"
+}
+prune_monthly() { # $1 rclone dir holding the daily <date> subdirs, $2 label
+  local subs mon
+  # Same #1021 discipline as prune_remote: a failed listing fails the
+  # run. This runs after pin_monthly, so the monthly/ prefix exists.
+  subs="$(rclone lsf --dirs-only "$1/monthly/")" ||
+    fail "monthly prune listing failed on $2 ($1/monthly/)"
+  for mon in $subs; do
+    mon="${mon%/}"
+    if [[ $mon =~ ^20[0-9]{2}-[0-9]{2}$ ]] && [[ $mon != "$MONTH" && $mon < "$MONTH_CUTOFF" ]]; then
+      rclone purge "$1/monthly/$mon" >/dev/null 2>&1 || fail "monthly prune failed on $2 ($mon)"
+      log "pruned monthly $2 $mon"
+    fi
+  done
+}
+
 prune_remote() { # $1 rclone dir holding <date> subdirs, $2 label
   local subs day
   # A failed listing fails the run, like a failed purge below (#1021):
@@ -791,6 +834,8 @@ R2_DEST="r2bak:$R2_BUCKET/$R2_PREFIX/$DATE/dashboard-$DATE.tar.zst"
 rclone copyto "$ARCHIVE" "$R2_DEST" || fail "R2 upload failed"
 verify_remote "$R2_DEST" "R2"
 prune_remote "r2bak:$R2_BUCKET/$R2_PREFIX" "R2"
+pin_monthly "r2bak:$R2_BUCKET/$R2_PREFIX" "R2"
+prune_monthly "r2bak:$R2_BUCKET/$R2_PREFIX" "R2"
 DEST_R2="ok"
 ledger_set r2-upload ok
 
@@ -800,6 +845,8 @@ DRIVE_DEST="drive:$DRIVE_DIR/$DATE/dashboard-$DATE.tar.zst"
 rclone copyto "$ARCHIVE" "$DRIVE_DEST" || fail "Drive upload failed"
 verify_remote "$DRIVE_DEST" "Drive"
 prune_remote "drive:$DRIVE_DIR" "Drive"
+pin_monthly "drive:$DRIVE_DIR" "Drive"
+prune_monthly "drive:$DRIVE_DIR" "Drive"
 DEST_DRIVE="ok"
 ledger_set drive-upload ok
 STEP="complete"
