@@ -170,6 +170,20 @@ test("kv overwrite headroom counts the prior value", async () => {
   assert.equal((await getUsage(doA)).storage_bytes, 10);
 });
 
+test("kv shrink is allowed even when usage is already over the ceiling", async () => {
+  const state = {
+    id: { name: A },
+    storage: { sql: fakeSql() },
+    blockConcurrencyWhile: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  };
+  const uncapped = new UserDO(state as never, { BLOBS: fakeBucket() } as never);
+  assert.equal((await uncapped.fetch(routed("/v1/kv/k1", { method: "PUT", body: "1234567890" }))).status, 200);
+  assert.equal((await uncapped.fetch(routed("/v1/kv/k2", { method: "PUT", body: "1234567890" }))).status, 200);
+  const capped = new UserDO(state as never, { BLOBS: fakeBucket(), USER_CEILING_BYTES: "5" } as never);
+  assert.equal((await capped.fetch(routed("/v1/kv/k1", { method: "PUT", body: "123" }))).status, 200, "shrink allowed");
+  assert.equal((await capped.fetch(routed("/v1/kv/k1", { method: "PUT", body: "12345678" }))).status, 413, "growth refused");
+});
+
 test("a deduped re-PUT of the same blob does not double-charge", async () => {
   const { doA } = makeDO({ USER_CEILING_BYTES: "10" });
   const blob = new TextEncoder().encode("0123456789");
