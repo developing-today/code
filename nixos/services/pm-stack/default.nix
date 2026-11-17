@@ -78,6 +78,29 @@ let
   projState = "${home}/.local/state/pm-projector";
   stackDir = "${home}/pm-stack";
 
+  # #8171: the units run from the mutable checkout, so app deps live in
+  # the checkout too, and the deploy path did not guarantee them:
+  # pm-git-sync installs only when a manifest changed in the pulled
+  # range, so a restart with node_modules absent crash-looped
+  # pm-projector on a missing @libsql/client (and pm-aggregator the
+  # same way on web-push in 2026-11). Each unit now ensures its own
+  # deps before every start. Existence only: manifest-change freshness
+  # stays pm-git-sync's job, and node_modules is gitignored, so the
+  # sync clean-tree check is unaffected.
+  projectorEnsureDeps = pkgs.writeShellScript "pm-projector-ensure-deps" ''
+    if [ ! -d "${repo}/pm-stack/projector/node_modules/@libsql/client" ]; then
+      cd "${repo}/pm-stack/projector" || exit 1
+      exec bash scripts/setup-deps.sh
+    fi
+  '';
+
+  aggregatorEnsureDeps = pkgs.writeShellScript "pm-aggregator-ensure-deps" ''
+    if [ ! -d "${repo}/pm-stack/aggregator/node_modules" ]; then
+      cd "${repo}/pm-stack/aggregator" || exit 1
+      exec ${bun} install --frozen-lockfile
+    fi
+  '';
+
   projectorReconcile = pkgs.writeShellScript "pm-projector-reconcile" ''
     # PM_PROJECTOR_API_TOKEN arrives via the unit's EnvironmentFile.
     exec ${pkgs.curl}/bin/curl -fsS -X POST \
@@ -113,6 +136,7 @@ in
           Service = {
             Type = "simple";
             WorkingDirectory = "${repo}/pm-stack/projector";
+            ExecStartPre = "${projectorEnsureDeps}";
             ExecStart = "${bun} run src/index.ts";
             EnvironmentFile = "${projState}/.env";
             Environment = [ "PM_AGG_FRESHNESS_URL=http://127.0.0.1:4871/publish" ];
@@ -131,6 +155,7 @@ in
           Service = {
             Type = "simple";
             WorkingDirectory = "${repo}/pm-stack/aggregator";
+            ExecStartPre = "${aggregatorEnsureDeps}";
             ExecStart = "${bun} run src/server.ts";
             EnvironmentFile = "${aggState}/.env";
             # The projector is a deployed service of this stack — never
