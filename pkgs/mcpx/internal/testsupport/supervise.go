@@ -3,6 +3,8 @@ package testsupport
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 )
@@ -26,6 +28,48 @@ func SuperviseReExec() {
 		return
 	}
 	os.Exit(runSupervise(os.Args[2:]))
+}
+
+// StopSupervisors terminates every supervised stdio child recorded in the
+// test's state directory. Production supervisors intentionally outlive a
+// daemon so a replacement daemon can adopt them; an isolated test environment
+// has no successor, so its cleanup must explicitly reap them after stopping
+// the daemon.
+func StopSupervisors(stateDir string) error {
+	sockets, err := filepath.Glob(filepath.Join(stateDir, "sup-*.sock"))
+	if err != nil {
+		return err
+	}
+	for _, socket := range sockets {
+		deadline := time.Now().Add(15 * time.Second)
+		for {
+			if _, err := os.Stat(socket); os.IsNotExist(err) {
+				break
+			} else if err != nil {
+				return fmt.Errorf("stat supervisor socket %s: %w", socket, err)
+			}
+
+			outcomes := mcpclient.ScanSupervisorSockets(stateDir, nil, nil)
+			var outcome *mcpclient.SupervisorScanOutcome
+			for i := range outcomes {
+				if outcomes[i].Socket == socket {
+					outcome = &outcomes[i]
+					break
+				}
+			}
+			if outcome == nil || outcome.Action == "terminate-failed" {
+				if outcome == nil {
+					return fmt.Errorf("supervisor socket %s disappeared from scan while still present", socket)
+				}
+				return fmt.Errorf("terminate supervisor %s: %s", socket, outcome.Detail)
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("supervisor %s did not stop within 15s (last scan: %s %s)", socket, outcome.Action, outcome.Detail)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	return nil
 }
 
 func runSupervise(args []string) int {
