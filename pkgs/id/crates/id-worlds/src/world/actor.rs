@@ -133,6 +133,11 @@ impl WorldCommand {
     }
 }
 
+/// The most unsigned inputs one group-commit batch may stage (#8239):
+/// bounding the drain bounds how long the actor loop spends staging
+/// before it persists, and how much one sync must cover.
+const MAX_INPUT_BATCH: usize = 64;
+
 pub(crate) enum WorldCommand {
     Issue {
         name: String,
@@ -742,11 +747,17 @@ impl WorldActor {
             self.invalidate_restored_form_presentations().await;
         }
         self.after_change().await;
+        // A command the batch drain stopped at (the first non-Input) is
+        // held here and handled next iteration, in order (#8239).
+        let mut pending: Option<WorldCommand> = None;
         loop {
             // Ticks and schedules sleep until their earliest deadline; with
             // neither armed this branch never wakes.
             let deadline = self.next_deadline();
-            let command = tokio::select! {
+            let command = if let Some(command) = pending.take() {
+                command
+            } else {
+                tokio::select! {
                 command = receiver.recv() => match command {
                     Some(command) => command,
                     None => break,
@@ -762,6 +773,7 @@ impl WorldActor {
                     self.after_change().await;
                     continue;
                 }
+                }
             };
             if matches!(command, WorldCommand::Shutdown { .. }) {
                 if let WorldCommand::Shutdown { reply } = command {
@@ -770,13 +782,62 @@ impl WorldActor {
                 break;
             }
             self.metrics.record_queue_depth(receiver.len() as u64);
-            let started = std::time::Instant::now();
-            let name = command.name();
-            async {
-                self.handle(command).await;
+            // Group commit (#8239): an unsigned Input at the head of the
+            // queue drains the unsigned Inputs already behind it into one
+            // batch, persisted with a single journal sync. The drain stops
+            // at the first other command, held in `pending` for the next
+            // iteration - command order is never changed.
+            let mut command = Some(command);
+            let mut input_batch: Vec<WorldCommand> = Vec::new();
+            if matches!(
+                command.as_ref(),
+                Some(WorldCommand::Input {
+                    signed_move: None,
+                    ..
+                })
+            ) {
+                input_batch.push(command.take().expect("command held"));
+                while input_batch.len() < MAX_INPUT_BATCH {
+                    match receiver.try_recv() {
+                        Ok(next)
+                            if matches!(
+                                next,
+                                WorldCommand::Input {
+                                    signed_move: None,
+                                    ..
+                                }
+                            ) =>
+                        {
+                            input_batch.push(next);
+                        }
+                        Ok(next) => {
+                            pending = Some(next);
+                            break;
+                        }
+                        Err(_) => break,
+                    }
+                }
             }
-            .instrument(tracing::info_span!("command", name))
-            .await;
+            let started = std::time::Instant::now();
+            if input_batch.len() > 1 {
+                async {
+                    self.handle_input_batch(input_batch).await;
+                }
+                .instrument(tracing::info_span!("command", name = "InputBatch"))
+                .await;
+            } else {
+                let command = if let Some(command) = input_batch.pop() {
+                    command
+                } else {
+                    command.take().expect("command held")
+                };
+                let name = command.name();
+                async {
+                    self.handle(command).await;
+                }
+                .instrument(tracing::info_span!("command", name))
+                .await;
+            }
             self.metrics.record_command(started.elapsed());
             self.after_change().await;
             self.drain_provider_completions().await;
@@ -1002,6 +1063,212 @@ impl WorldActor {
             }
         }
         Ok(())
+    }
+
+    /// Durably record a batch of entries with one journal sync (group
+    /// commit, #8239), or turn the world read-only. Replication feed
+    /// semantics mirror `persist`: a header version change resets the
+    /// feed from a snapshot; otherwise each entry is appended to the
+    /// feed in order.
+    fn persist_batch(&mut self, entries: &[JournalEntry]) -> Result<()> {
+        ensure!(
+            !self.read_only,
+            "world is read-only (replica); local mutations are refused"
+        );
+        ensure!(
+            !self.storage_failed,
+            "world storage failed; the world is read-only"
+        );
+        let world_id = self.core.world_id().to_owned();
+        let replication_sender = self.replication_sender.clone();
+        if let Some(journal) = self.journal.as_mut() {
+            let started = std::time::Instant::now();
+            let version_before = journal.replication_header_version();
+            if let Err(error) = journal.append_batch(entries) {
+                self.storage_failed = true;
+                tracing::error!("world journal batch append failed: {error:#}");
+                if version_before != journal.replication_header_version() {
+                    let _ = replication_sender.send(ReplicationUpdate::ResetFailed);
+                }
+                return Err(error.context("world storage failed; the world is read-only"));
+            }
+            self.metrics.record_journal_append(started.elapsed());
+            if let Some(header_version) = journal.replication_header_version() {
+                if version_before != Some(header_version) {
+                    let update = journal
+                        .replication_snapshot()
+                        .map(ReplicationUpdate::Reset)
+                        .unwrap_or_else(|error| {
+                            tracing::error!(
+                                "world {world_id}: replication reset snapshot failed: {error:#}"
+                            );
+                            ReplicationUpdate::ResetFailed
+                        });
+                    let _ = replication_sender.send(update);
+                } else {
+                    for entry in entries {
+                        let _ = replication_sender.send(ReplicationUpdate::Append {
+                            header_version,
+                            entry: journal_entry_line(entry),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle a drained batch of unsigned Inputs as one group commit
+    /// (#8239). Staging runs in queue order - prepare at an explicit
+    /// sequence with staged-spend accounting, then the program's update,
+    /// exactly as the single-Input path orders them - and stops at the
+    /// first failure: the staged prefix is persisted with one sync and
+    /// committed in order, the failing input is answered with the error
+    /// the single path would have produced for it, and every input after
+    /// it goes through the ordinary single-command path untouched, so
+    /// later inputs see exactly today's semantics (a program the batch
+    /// marked unhealthy refuses them as unavailable, and so on).
+    pub(crate) async fn handle_input_batch(&mut self, batch: Vec<WorldCommand>) {
+        type InputParts = (
+            JoinCapability,
+            Vec<u8>,
+            Option<SessionId>,
+            oneshot::Sender<Result<WorldEvent>>,
+        );
+        let mut items: std::collections::VecDeque<InputParts> = batch
+            .into_iter()
+            .filter_map(|command| match command {
+                WorldCommand::Input {
+                    token,
+                    input,
+                    session_id,
+                    signed_move: None,
+                    reply,
+                } => Some((token, input, session_id, reply)),
+                // The run loop only drains unsigned Inputs into a batch.
+                _ => None,
+            })
+            .collect();
+        if let Err(error) = self.check_writable() {
+            let message = format!("{error:#}");
+            for (_, _, _, reply) in items {
+                let _ = reply.send(Err(anyhow::anyhow!(message.clone())));
+            }
+            return;
+        }
+        struct Staged {
+            candidate: WorldEvent,
+            records: Option<Records>,
+            reply: oneshot::Sender<Result<WorldEvent>>,
+        }
+        let mut staged: Vec<Staged> = Vec::new();
+        let mut staged_spends: HashMap<u64, u32> = HashMap::new();
+        let mut failed: Option<(oneshot::Sender<Result<WorldEvent>>, anyhow::Error)> = None;
+        while let Some((token, input, session_id, reply)) = items.pop_front() {
+            let sequence = self.core.sequence + staged.len() as u64 + 1;
+            let candidate =
+                match self
+                    .core
+                    .prepare_input_staged(&token, &input, sequence, &staged_spends)
+                {
+                    Ok(candidate) => candidate,
+                    Err(error) => {
+                        failed = Some((reply, error));
+                        break;
+                    }
+                };
+            if self.storage_failed {
+                failed = Some((
+                    reply,
+                    anyhow::anyhow!("world storage failed; the world is read-only"),
+                ));
+                break;
+            }
+            if !self.program_healthy {
+                failed = Some((
+                    reply,
+                    anyhow::anyhow!("world program is unavailable after a previous failure"),
+                ));
+                break;
+            }
+            self.acting = Some(candidate.participant_id);
+            self.acting_session = session_id;
+            match self
+                .program
+                .update(&candidate)
+                .and_then(|()| program_records(self.program.as_mut()))
+            {
+                Ok(records) => {
+                    self.core
+                        .note_staged_spend(candidate.participant_id, &mut staged_spends);
+                    staged.push(Staged {
+                        candidate,
+                        records,
+                        reply,
+                    });
+                }
+                Err(error) => {
+                    self.program_healthy = false;
+                    failed = Some((reply, error.context("world program rejected input")));
+                    break;
+                }
+            }
+        }
+        if !staged.is_empty() {
+            let entries: Vec<JournalEntry> = staged
+                .iter()
+                .map(|staged| JournalEntry::Committed {
+                    event: staged.candidate.clone(),
+                })
+                .collect();
+            match self.persist_batch(&entries) {
+                Ok(()) => {
+                    for staged in staged {
+                        match self.core.commit_prepared(staged.candidate) {
+                            Ok(event) => {
+                                let records = staged.records.unwrap_or_default();
+                                self.republished(records, event.sequence);
+                                let _ = self.event_sender.send(event.clone());
+                                let _ = staged.reply.send(Ok(event));
+                            }
+                            Err(error) => {
+                                let _ = staged.reply.send(Err(error));
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    // persist_batch has marked storage failed; no staged
+                    // input may be acknowledged. The first reply carries
+                    // the append error itself, the rest the storage state
+                    // every later command will also see.
+                    let mut replies = staged.into_iter();
+                    if let Some(first) = replies.next() {
+                        let _ = first.reply.send(Err(error));
+                    }
+                    for staged in replies {
+                        let _ = staged.reply.send(Err(anyhow::anyhow!(
+                            "world storage failed; the world is read-only"
+                        )));
+                    }
+                }
+            }
+        }
+        if let Some((reply, error)) = failed {
+            let _ = reply.send(Err(error));
+        }
+        // Whatever the batch did not stage goes through the single-command
+        // path, in order, with its semantics untouched.
+        for (token, input, session_id, reply) in items {
+            self.handle(WorldCommand::Input {
+                token,
+                input,
+                session_id,
+                signed_move: None,
+                reply,
+            })
+            .await;
+        }
     }
 
     /// Durably record related entries as one transaction, or turn the world
