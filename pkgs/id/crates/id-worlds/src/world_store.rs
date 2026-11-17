@@ -2912,17 +2912,35 @@ mod tests {
     #[tokio::test]
     async fn a_journal_for_another_world_is_refused() {
         let dir = TempDir::new().unwrap();
+        // Capture the first world's handle so it can be shut down
+        // explicitly: dropping the service alone leaves its actor -
+        // and the actor's journal ownership (#8459) - alive, so the
+        // second open would be refused as a concurrent open instead
+        // of reaching the belongs-to check below.
+        let first_handle = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let captured = first_handle.clone();
         drop(
             open_world(
                 dir.path(),
                 "one",
                 WorldLimits::default(),
                 RuntimeLimits::default(),
-                service(None),
+                move |handle| {
+                    *captured.lock().unwrap() = Some(handle.clone());
+                    service(None)(handle)
+                },
             )
             .await
             .unwrap(),
         );
+        first_handle
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap()
+            .shutdown()
+            .await
+            .unwrap();
         let err = open_world(
             dir.path(),
             "two",
