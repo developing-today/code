@@ -462,6 +462,16 @@ var (
 	// JSON has no business being larger, and an unbounded read lets a
 	// bad endpoint make the daemon allocate arbitrarily much (#4354).
 	ProviderResponseBodyLimit = mustBytes(builtin.Upstream.ResponseBodyLimit, "upstream.responseBodyLimit")
+	// OpenAPISpecBodyLimit bounds the buffered peer reads in
+	// internal/openapi: a fetched OpenAPI document (Load) and a tool
+	// call's response body (API.Call). Per contract decision 2
+	// (#4375), both are refused past this cap — read cap+1 and fail
+	// when the extra byte exists — never silently truncated: a
+	// truncated spec parses as a shorter document or fails
+	// downstream with a misleading error (#8271). A plain constant,
+	// not a builtin config key: the bound is a property of the
+	// contract, not an operator tuning knob.
+	OpenAPISpecBodyLimit = int64(32 << 20)
 	// UpstreamSSEReconnectDelay is the resume wait when a server sent no
 	// retry field.
 	UpstreamSSEReconnectDelay = mustDur(builtin.Upstream.SSEReconnectDelay, "upstream.sseReconnectDelay")
