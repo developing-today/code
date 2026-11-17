@@ -32,7 +32,7 @@
 //! wire shape beyond the flag.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use iroh_base::EndpointId;
@@ -116,6 +116,9 @@ impl HolderAnnouncement {
     }
 }
 
+/// world (Option) -> hash -> endpoint -> entry.
+type WorldTable = HashMap<Option<String>, HashMap<Hash, HashMap<EndpointId, HolderEntry>>>;
+
 /// Thread-safe in-memory provider table: hash -> (endpoint -> holder entry).
 ///
 /// Cheaply cloneable (backed by `Arc`), safe to share across async tasks.
@@ -125,7 +128,7 @@ impl HolderAnnouncement {
 pub struct ProviderTable {
     /// world (Option) -> hash -> endpoint -> entry. `None` world is the
     /// global bucket.
-    entries: Arc<RwLock<HashMap<Option<String>, HashMap<Hash, HashMap<EndpointId, HolderEntry>>>>>,
+    entries: Arc<RwLock<WorldTable>>,
 }
 
 impl ProviderTable {
@@ -134,6 +137,18 @@ impl ProviderTable {
         Self {
             entries: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Read access to the table. The table is a plain cache with no
+    /// cross-entry invariant, so a writer that panicked mid-update cannot
+    /// leave it inconsistent: recover the guard instead of panicking.
+    fn read_entries(&self) -> RwLockReadGuard<'_, WorldTable> {
+        self.entries.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Write access to the table; poison is recovered as in [`Self::read_entries`].
+    fn write_entries(&self) -> RwLockWriteGuard<'_, WorldTable> {
+        self.entries.write().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Record (or refresh) a holder for `(world, hash)`.
@@ -145,7 +160,7 @@ impl ProviderTable {
         ranges: HeldRanges,
         now: Instant,
     ) {
-        let mut guard = self.entries.write().expect("provider table lock poisoned");
+        let mut guard = self.write_entries();
         let world_map = guard.entry(world.clone()).or_default();
         let hash_map = world_map.entry(hash).or_default();
         hash_map.insert(
@@ -168,7 +183,7 @@ impl ProviderTable {
 
     /// Snapshot of holders for `(world, hash)`, freshest first.
     pub fn holders(&self, world: Option<&str>, hash: &Hash) -> Vec<HolderEntry> {
-        let guard = self.entries.read().expect("provider table lock poisoned");
+        let guard = self.read_entries();
         let world_key = world.map(|s| s.to_string());
         guard
             .get(&world_key)
@@ -183,14 +198,14 @@ impl ProviderTable {
 
     /// Number of distinct hashes tracked for a world.
     pub fn hash_count(&self, world: Option<&str>) -> usize {
-        let guard = self.entries.read().expect("provider table lock poisoned");
+        let guard = self.read_entries();
         let world_key = world.map(|s| s.to_string());
         guard.get(&world_key).map(|m| m.len()).unwrap_or(0)
     }
 
     /// Remove entries older than `max_age`. Returns the number removed.
     pub fn remove_stale(&self, max_age: Duration) -> usize {
-        let mut guard = self.entries.write().expect("provider table lock poisoned");
+        let mut guard = self.write_entries();
         let mut removed = 0usize;
         for world_map in guard.values_mut() {
             for hash_map in world_map.values_mut() {
@@ -207,7 +222,7 @@ impl ProviderTable {
 
     /// Total number of (world, hash, holder) rows.
     pub fn len(&self) -> usize {
-        let guard = self.entries.read().expect("provider table lock poisoned");
+        let guard = self.read_entries();
         guard
             .values()
             .map(|wm| wm.values().map(|hm| hm.len()).sum::<usize>())
