@@ -301,8 +301,10 @@ impl NoteCheckpoints {
                 access: NoteAccess::Public,
             },
         );
-        self.record(event_id)
-            .map(|record| record.expect("a just-created note folds"))
+        // A just-created note always folds; should it not, report the
+        // note as unknown rather than panic.
+        self.record(event_id)?
+            .ok_or(CheckpointError::UnknownNote(event_id))
     }
 
     /// Publishes one checkpoint of `note`: a signed revision naming the
@@ -552,8 +554,9 @@ impl NoteCheckpoints {
             author,
             op,
         })?;
-        self.record(note)
-            .map(|record| record.expect("a checkpointed note folds"))
+        // The note existed before the append, so it still folds; should
+        // it not, report it as unknown rather than panic.
+        self.record(note)?.ok_or(CheckpointError::UnknownNote(note))
     }
 
     /// Publishes a checkpoint on the note's current head — the ordinary
@@ -618,6 +621,7 @@ impl NoteCheckpoints {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
