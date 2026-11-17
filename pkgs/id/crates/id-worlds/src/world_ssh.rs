@@ -705,6 +705,14 @@ fn command_frame(command: &WorldCommand, capability: &str) -> Option<String> {
         WorldCommand::Stats => json!({ "type": "info", "capability": capability }),
         WorldCommand::Caps => json!({ "type": "caps", "capability": capability }),
         WorldCommand::Logs { .. }
+        | WorldCommand::Anchor { .. }
+        | WorldCommand::AnchorConfirm { .. }
+        | WorldCommand::AnchorList
+        | WorldCommand::Talk { .. }
+        | WorldCommand::Anchors { .. }
+        | WorldCommand::Resolve { .. }
+        | WorldCommand::Queue
+        | WorldCommand::Flush
         | WorldCommand::Help
         | WorldCommand::Message(_)
         | WorldCommand::Quit => return None,
@@ -1200,7 +1208,7 @@ impl SessionIo for SshIo {
                     // Everything else is answered by the shell itself.
                     match command {
                         WorldCommand::Help => {
-                            let help = "World chat: type a line to chat. Commands: /input <hex>, /records [prefix], /stats, /logs, /caps, /documents [prefix], /document <name>, /help, /quit\r\nworld> ";
+                            let help = "World chat: type a line to chat. Commands: /input <hex>, /records [prefix], /stats, /logs, /caps, /documents [prefix], /document <name>, /anchor <target> [type], /anchor confirm <n>, /anchor list, /talk <target>, /anchors <target>, /resolve <thread> [into <target>], /queue, /flush, /help, /quit\r\nworld> ";
                             if self.handle.data(self.channel, help).await.is_err() {
                                 return Inbound::Closed;
                             }
@@ -1227,6 +1235,25 @@ impl SessionIo for SshIo {
                         }
                         WorldCommand::Message(message) => {
                             let text = format!("{message}\r\nworld> ");
+                            if self.handle.data(self.channel, text).await.is_err() {
+                                return Inbound::Closed;
+                            }
+                        }
+                        WorldCommand::Anchor { .. }
+                        | WorldCommand::AnchorConfirm { .. }
+                        | WorldCommand::AnchorList
+                        | WorldCommand::Talk { .. }
+                        | WorldCommand::Anchors { .. }
+                        | WorldCommand::Resolve { .. }
+                        | WorldCommand::Queue
+                        | WorldCommand::Flush => {
+                            // The flow verbs parse identically on every
+                            // surface (#5873 section 3), but their
+                            // operations (chat.anchor.v1, talk bindings,
+                            // the outbox) are not wired into the SSH
+                            // session yet; say so rather than forwarding
+                            // a frame the world program cannot mean.
+                            let text = "that command is recognised, but its operation is not available in this session yet\r\nworld> ";
                             if self.handle.data(self.channel, text).await.is_err() {
                                 return Inbound::Closed;
                             }
@@ -1832,6 +1859,26 @@ enum WorldCommand {
         seconds: Option<u64>,
     },
     Caps,
+    Anchor {
+        target: String,
+        relation: Option<String>,
+    },
+    AnchorConfirm {
+        proposal: u64,
+    },
+    AnchorList,
+    Talk {
+        target: String,
+    },
+    Anchors {
+        target: String,
+    },
+    Resolve {
+        thread: String,
+        into: Option<String>,
+    },
+    Queue,
+    Flush,
     Help,
     Message(String),
     Quit,
@@ -1848,6 +1895,14 @@ fn world_command(line: &str) -> Option<WorldCommand> {
         WorldLine::Stats => WorldCommand::Stats,
         WorldLine::Logs { seconds } => WorldCommand::Logs { seconds },
         WorldLine::Caps => WorldCommand::Caps,
+        WorldLine::Anchor { target, relation } => WorldCommand::Anchor { target, relation },
+        WorldLine::AnchorConfirm { proposal } => WorldCommand::AnchorConfirm { proposal },
+        WorldLine::AnchorList => WorldCommand::AnchorList,
+        WorldLine::Talk { target } => WorldCommand::Talk { target },
+        WorldLine::Anchors { target } => WorldCommand::Anchors { target },
+        WorldLine::Resolve { thread, into } => WorldCommand::Resolve { thread, into },
+        WorldLine::Queue => WorldCommand::Queue,
+        WorldLine::Flush => WorldCommand::Flush,
         WorldLine::Help => WorldCommand::Help,
         WorldLine::Quit => WorldCommand::Quit,
         WorldLine::Message(message) => WorldCommand::Message(message),
