@@ -7,7 +7,9 @@ change set (via `git ls-files --others`) but contribute no text to
 
 * T1b importer selection (exported idents come from the diff text),
 * T2 registry-name selection (names come from the diff text),
-* the internal/e2e `newEnv` harness rule (matched against the e2e diff).
+* the internal/e2e `newEnv` harness rule (matched against the e2e diff),
+* T2 changed-test prioritization (`changed_test_names` reads a per-file
+  zero-context diff, which is empty for untracked files) -- issue #10874.
 
 Each parity test builds a scratch git repo with a pkgs/mcpx layout,
 applies identical content once staged (`git add`) and once untracked,
@@ -104,6 +106,11 @@ class SelectorFixture(unittest.TestCase):
         self.assertIsNotNone(m, msg="no T2 e2e selection in output:\n" + output)
         return set(m.group(1).split("|"))
 
+    def t2_run_list(self, output):
+        m = re.search(r"\./internal/e2e -run '\^\((.+?)\)\$'", output)
+        self.assertIsNotNone(m, msg="no T2 e2e selection in output:\n" + output)
+        return m.group(1).split("|")
+
     @unittest.skipUnless(GO, "go is required for the T1b go-list lookup")
     def test_t1b_untracked_parity_with_staged(self):
         self.write("internal/aaa/aaa.go", "package aaa\n\nfunc Existing() {}\n")
@@ -172,6 +179,38 @@ class SelectorFixture(unittest.TestCase):
         for sample in HARNESS_SAMPLE:
             self.assertIn(sample, untracked_set)
         self.assertEqual(staged_set, untracked_set)
+
+    def test_changed_tests_untracked_parity_over_t2_budget(self):
+        self.write(
+            "internal/e2e/base_test.go",
+            'package e2e\n\nimport "testing"\n\nfunc TestBaseSanity(t *testing.T) {}\n',
+        )
+        base = self.commit()
+        # 18 tests in one new e2e file, defined in reverse name order:
+        # changed-test prioritization follows file order while the
+        # alphabetical fill does not, so over the 15-test T2 budget the
+        # two orders truncate to different sets. Parity here proves the
+        # untracked file's tests really enter the prioritized segment
+        # (issue #10874: changed_test_names was diff-only, and a git
+        # diff has no hunks for an untracked file).
+        body = "".join(
+            "func TestZulu%02d(t *testing.T) {}\n\n" % n for n in range(18, 0, -1)
+        )
+        self.write(
+            "internal/e2e/zz_new_test.go",
+            'package e2e\n\nimport "testing"\n\n' + body,
+        )
+        self.stage("internal/e2e/zz_new_test.go")
+        staged_out = self.run_selector(base)
+        staged_list = self.t2_run_list(staged_out)
+        self.assertEqual(len(staged_list), 15)
+        self.assertEqual(staged_list[0], "TestZulu18")
+        self.assertEqual(staged_list[-1], "TestZulu04")
+        self.unstage("internal/e2e/zz_new_test.go")
+        untracked_out = self.run_selector(base)
+        untracked_list = self.t2_run_list(untracked_out)
+        self.assertEqual(staged_list, untracked_list)
+        self.assertEqual(staged_out, untracked_out)
 
     def test_deleted_tracked_file_behavior_preserved(self):
         self.write("internal/ddd/old.go", "package ddd\n\nfunc Old() {}\n")

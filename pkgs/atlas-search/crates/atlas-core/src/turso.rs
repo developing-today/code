@@ -21,6 +21,7 @@ use crate::filters::{
     Filters, TURSO_SHAPE, branch_queries, fts_stmt, survivor_dist_stmt, turso_allowed_sens_stmt,
     turso_allowed_session_stmt, vector_top_k_stmt,
 };
+use crate::manifest::{LoadedManifest, Manifest, builtin_manifest, parse_manifest_rows};
 use crate::types::{
     BranchHit, BranchPools, BranchQuery, ChunkDetail, MessageRow, NeighborRow, Row, Stmt, Value,
     detail_from_row,
@@ -411,26 +412,147 @@ pub struct TursoBackend<T: PipelineTransport = HttpTransport> {
     transport: T,
     vec_table: String,
     pub token_source: String,
+    /// The effective classification-manifest surface (design §7):
+    /// the loaded manifest (or the built-in fallback) and its
+    /// provenance, in the same pattern as `LocalBackend`.
+    pub manifest: Manifest,
+    pub manifest_source: String,
+    notes: Vec<String>,
 }
 
 impl TursoBackend<HttpTransport> {
     /// Connect with a token from the standard resolution chain.
+    /// Manifest problems never fail construction (§7): the loader
+    /// falls back to the built-in surface, loudly.
     pub fn new(vec_table: &str) -> Result<TursoBackend<HttpTransport>> {
         let (token, source) = resolve_turso_token()?;
+        let transport = HttpTransport::new(TURSO_HOST, token);
+        let loaded = load_manifest_via(&transport);
+        let notes = manifest_notes(&loaded);
         Ok(TursoBackend {
-            transport: HttpTransport::new(TURSO_HOST, token),
+            transport,
             vec_table: vec_table.to_string(),
             token_source: source,
+            manifest_source: loaded.describe(),
+            manifest: loaded.manifest,
+            notes,
         })
     }
 
     /// Connect with an explicit token (tests, service config).
+    /// Manifest problems never fail construction (§7).
     pub fn with_token(host: &str, token: String, vec_table: &str) -> TursoBackend<HttpTransport> {
+        let transport = HttpTransport::new(host, token);
+        let loaded = load_manifest_via(&transport);
+        let notes = manifest_notes(&loaded);
         TursoBackend {
-            transport: HttpTransport::new(host, token),
+            transport,
             vec_table: vec_table.to_string(),
             token_source: "explicit".to_string(),
+            manifest_source: loaded.describe(),
+            manifest: loaded.manifest,
+            notes,
         }
+    }
+}
+
+/// The load-time notes a manifest outcome produces: §7's loud
+/// fallback warning, when the surface fell back to the built-in
+/// manifest.
+fn manifest_notes(loaded: &LoadedManifest) -> Vec<String> {
+    loaded
+        .warning
+        .as_ref()
+        .map(|w| {
+            vec![format!(
+                "WARNING: classification manifest rejected ({w}) — built-in filter surface applies"
+            )]
+        })
+        .unwrap_or_default()
+}
+
+/// Load the classification manifest over the pipeline (design
+/// §§3/7): a presence check against `sqlite_master`, then the
+/// stored-shape row SELECT, parsed by the transport-free
+/// `parse_manifest_rows`. This never fails: a transport or
+/// presence failure means the built-in absent surface; an
+/// unreadable or invalid table means the built-in surface with a
+/// loud warning (§7: fall back, loudly, never widen).
+fn load_manifest_via<T: PipelineTransport>(transport: &T) -> LoadedManifest {
+    let absent = || LoadedManifest {
+        manifest: builtin_manifest(),
+        source: crate::manifest::ManifestSource::BuiltinAbsent,
+        warning: None,
+    };
+    let fallback = |warning: String| LoadedManifest {
+        manifest: builtin_manifest(),
+        source: crate::manifest::ManifestSource::BuiltinFallback,
+        warning: Some(warning),
+    };
+    let presence = Stmt::new(
+        "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' \
+         AND name='classification_manifest'",
+        vec![],
+    );
+    let results = match transport.pipeline(std::slice::from_ref(&presence)) {
+        Ok(r) => r,
+        Err(_) => return absent(),
+    };
+    let present = results
+        .into_iter()
+        .next()
+        .and_then(|rows| rows.into_iter().next())
+        .and_then(|row| {
+            row.get_i64("n").or_else(|| match row.first_value() {
+                Some(Value::Integer(i)) => Some(*i),
+                Some(Value::Float(f)) => Some(*f as i64),
+                _ => None,
+            })
+        })
+        .unwrap_or(0)
+        > 0;
+    if !present {
+        return absent();
+    }
+    let rows_stmt = Stmt::new(
+        "SELECT manifest_version, content_hash, name, shape, semantics, label_column \
+         FROM classification_manifest ORDER BY rowid",
+        vec![],
+    );
+    let rows = match transport.pipeline(std::slice::from_ref(&rows_stmt)) {
+        Ok(r) => r.into_iter().next().unwrap_or_default(),
+        Err(e) => return fallback(format!("unreadable: {e}")),
+    };
+    let mut raw: Vec<crate::manifest::ManifestRow> = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let Some(version) = row.get_i64("manifest_version") else {
+            return fallback(
+                "unreadable: missing manifest_version in classification_manifest row".to_string(),
+            );
+        };
+        let Some(hash) = row.get_text("content_hash") else {
+            return fallback(
+                "unreadable: missing content_hash in classification_manifest row".to_string(),
+            );
+        };
+        raw.push((
+            version,
+            hash.to_string(),
+            row.get_text("name").map(str::to_string),
+            row.get_text("shape").map(str::to_string),
+            row.get_text("semantics").map(str::to_string),
+            row.get_text("label_column").map(str::to_string),
+        ));
+    }
+    match parse_manifest_rows(raw) {
+        Ok(manifest) => LoadedManifest {
+            manifest,
+            source: crate::manifest::ManifestSource::Table {
+                schema: "turso".to_string(),
+            },
+            warning: None,
+        },
+        Err(e) => fallback(e.to_string()),
     }
 }
 
@@ -442,10 +564,15 @@ impl<T: PipelineTransport> TursoBackend<T> {
     }
 
     pub fn with_transport(transport: T, vec_table: &str) -> TursoBackend<T> {
+        let loaded = load_manifest_via(&transport);
+        let notes = manifest_notes(&loaded);
         TursoBackend {
             transport,
             vec_table: vec_table.to_string(),
             token_source: "injected transport".to_string(),
+            manifest_source: loaded.describe(),
+            manifest: loaded.manifest,
+            notes,
         }
     }
 
@@ -546,7 +673,7 @@ impl<T: PipelineTransport> SearchBackend for TursoBackend<T> {
     }
 
     fn notes(&self) -> Vec<String> {
-        Vec::new()
+        self.notes.clone()
     }
 
     fn branch_pools(&self, q: &BranchQuery, filters: &Filters) -> Result<BranchPools> {
@@ -698,5 +825,170 @@ mod tests {
             Value::text("x")
         );
         assert_eq!(hrana_val(&Json::Null), Value::Null);
+    }
+
+    /// Stub pipeline serving a canned manifest surface: presence
+    /// count plus manifest rows (or a row-fetch error). Anything
+    /// else is a test bug.
+    struct ManifestStub {
+        present: bool,
+        rows: Vec<Row>,
+        fail_rows: bool,
+    }
+
+    impl PipelineTransport for ManifestStub {
+        fn pipeline(&self, stmts: &[Stmt]) -> Result<Vec<Vec<Row>>> {
+            let mut out = Vec::new();
+            for s in stmts {
+                if s.sql.contains("sqlite_master") {
+                    out.push(vec![Row::new(vec![(
+                        "n".to_string(),
+                        Value::Integer(i64::from(self.present)),
+                    )])]);
+                } else if s.sql.contains("classification_manifest") {
+                    if self.fail_rows {
+                        return Err(Error::backend("stub: manifest rows unreadable"));
+                    }
+                    out.push(self.rows.clone());
+                } else {
+                    panic!("unexpected SQL in manifest stub: {}", s.sql);
+                }
+            }
+            Ok(out)
+        }
+    }
+
+    fn manifest_rows(m: &crate::manifest::Manifest) -> Vec<Row> {
+        let mut rows = vec![Row::new(vec![
+            ("manifest_version".to_string(), Value::Integer(m.version)),
+            (
+                "content_hash".to_string(),
+                Value::text(m.content_hash.clone()),
+            ),
+            ("name".to_string(), Value::Null),
+            ("shape".to_string(), Value::Null),
+            ("semantics".to_string(), Value::Null),
+            ("label_column".to_string(), Value::Null),
+        ])];
+        for d in &m.dimensions {
+            rows.push(Row::new(vec![
+                ("manifest_version".to_string(), Value::Integer(m.version)),
+                (
+                    "content_hash".to_string(),
+                    Value::text(m.content_hash.clone()),
+                ),
+                ("name".to_string(), Value::text(d.name.clone())),
+                ("shape".to_string(), Value::text(d.shape.name().to_string())),
+                (
+                    "semantics".to_string(),
+                    Value::text(d.semantics.name().to_string()),
+                ),
+                (
+                    "label_column".to_string(),
+                    d.label_column
+                        .clone()
+                        .map(Value::text)
+                        .unwrap_or(Value::Null),
+                ),
+            ]));
+        }
+        rows
+    }
+
+    #[test]
+    fn turso_manifest_absent_is_builtin_without_warning() {
+        use crate::backend::SearchBackend;
+        let be = TursoBackend::with_transport(
+            ManifestStub {
+                present: false,
+                rows: Vec::new(),
+                fail_rows: false,
+            },
+            "vec_snowflake_m_v2_768_f32",
+        );
+        assert_eq!(be.manifest, builtin_manifest());
+        assert!(
+            be.manifest_source.contains("no classification_manifest"),
+            "source: {}",
+            be.manifest_source
+        );
+        assert!(be.notes().is_empty());
+    }
+
+    #[test]
+    fn turso_manifest_valid_table_loads() {
+        use crate::backend::SearchBackend;
+        let stored = builtin_manifest();
+        let rows = manifest_rows(&stored);
+        let be = TursoBackend::with_transport(
+            ManifestStub {
+                present: true,
+                rows,
+                fail_rows: false,
+            },
+            "vec_snowflake_m_v2_768_f32",
+        );
+        assert_eq!(be.manifest, stored);
+        assert!(
+            be.manifest_source
+                .contains("classification_manifest (turso)"),
+            "source: {}",
+            be.manifest_source
+        );
+        assert!(be.notes().is_empty());
+    }
+
+    #[test]
+    fn turso_manifest_rejected_falls_back_loudly() {
+        use crate::backend::SearchBackend;
+        // Present but invalid: unknown shape fails §6 validation.
+        let rows = vec![
+            Row::new(vec![
+                ("manifest_version".to_string(), Value::Integer(1)),
+                ("content_hash".to_string(), Value::text("x")),
+                ("name".to_string(), Value::Null),
+                ("shape".to_string(), Value::Null),
+                ("semantics".to_string(), Value::Null),
+                ("label_column".to_string(), Value::Null),
+            ]),
+            Row::new(vec![
+                ("manifest_version".to_string(), Value::Integer(1)),
+                ("content_hash".to_string(), Value::text("x")),
+                ("name".to_string(), Value::text("kind")),
+                ("shape".to_string(), Value::text("raw_sql")),
+                ("semantics".to_string(), Value::text("exact")),
+                ("label_column".to_string(), Value::text("kind")),
+            ]),
+        ];
+        let be = TursoBackend::with_transport(
+            ManifestStub {
+                present: true,
+                rows,
+                fail_rows: false,
+            },
+            "vec_snowflake_m_v2_768_f32",
+        );
+        assert_eq!(be.manifest, builtin_manifest());
+        assert!(
+            be.manifest_source.contains("rejected"),
+            "source: {}",
+            be.manifest_source
+        );
+        let notes = be.notes();
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("WARNING: classification manifest rejected"));
+
+        // Present but unreadable: the row fetch fails.
+        let be = TursoBackend::with_transport(
+            ManifestStub {
+                present: true,
+                rows: Vec::new(),
+                fail_rows: true,
+            },
+            "vec_snowflake_m_v2_768_f32",
+        );
+        assert_eq!(be.manifest, builtin_manifest());
+        assert!(be.manifest_source.contains("rejected"));
+        assert_eq!(be.notes().len(), 1);
     }
 }

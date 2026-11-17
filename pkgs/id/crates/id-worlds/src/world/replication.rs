@@ -1088,6 +1088,7 @@ impl ReplicationTracker {
 mod tests {
     use super::*;
     use crate::world::{JournalEntry, WorldCore, WorldEvent, WorldEventKind, WorldLimits};
+    use proptest::prelude::*;
 
     const WORLD: &str = "world-replication-test";
     const NONCE: [u8; SESSION_NONCE_BYTES] = [7; SESSION_NONCE_BYTES];
@@ -1895,6 +1896,87 @@ mod tests {
         assert_eq!(accepted.kind, ReplicationKind::Tail);
         assert_eq!(receiver.header_version(), 2);
         assert_eq!(accepted.cursor_after.ordinal, 5);
+    }
+
+    // #10715 (from the #7357 shepherd review): the snapshot
+    // header-version downgrade guard has unit coverage
+    // (`snapshot_refuses_a_header_version_downgrade`), but the
+    // monotonic-acceptance invariant it protects is a state-machine
+    // property — it holds over every version sequence, not just the
+    // hand-written v1/v2 pair. Drive generated snapshot-version
+    // sequences over the supported range: accepted versions never move
+    // the tracker's header version backwards, and a refused downgrade
+    // preserves the header version, the cursor, and the frame chain
+    // (proven by a same-version control snapshot chaining from the
+    // last accepted digest).
+    //
+    // The control snapshot after a refusal matters: `accept` updates
+    // `last_frame_digest` only on success, so a control chained from
+    // the last accepted digest verifies if and only if the refused
+    // frame left the chain head untouched.
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn snapshot_versions_never_decrease_and_refusals_preserve_state(
+            versions in proptest::collection::vec(
+                JOURNAL_VERSION..=MAX_JOURNAL_VERSION,
+                1..8,
+            ),
+        ) {
+            let key = signing_key(1);
+            let mut receiver = tracker(&key);
+            // Frame-chain head the next snapshot must name: the digest
+            // of the last accepted frame ([0; 32] before the first).
+            let mut prev = [0u8; 32];
+            for version in versions {
+                let frame = signed_snapshot(
+                    &key,
+                    version,
+                    prev,
+                    entry_payload_with_version(version),
+                );
+                let before_version = receiver.header_version();
+                let before_cursor = receiver.cursor();
+                match receiver.accept(&frame) {
+                    Ok(_) => {
+                        prop_assert!(
+                            version >= before_version,
+                            "accepted snapshot v{version} moved header version backwards from v{before_version}"
+                        );
+                        prop_assert_eq!(receiver.header_version(), version);
+                        prev = frame_digest(&frame);
+                    }
+                    Err(ReplicationError::HeaderVersionChanged) => {
+                        prop_assert!(
+                            version < before_version,
+                            "snapshot v{version} refused at header version v{before_version} with HeaderVersionChanged"
+                        );
+                        prop_assert_eq!(receiver.header_version(), before_version);
+                        prop_assert_eq!(receiver.cursor(), before_cursor);
+                        // Control: a snapshot on the current version,
+                        // chained from the last accepted digest, still
+                        // verifies — the refused frame advanced neither
+                        // the cursor nor the frame chain.
+                        let control = signed_snapshot(
+                            &key,
+                            before_version,
+                            prev,
+                            entry_payload_with_version(before_version),
+                        );
+                        receiver.accept(&control).expect(
+                            "same-version control snapshot chained from the last accepted digest must verify after a refused downgrade",
+                        );
+                        prev = frame_digest(&control);
+                    }
+                    Err(other) => {
+                        panic!(
+                            "snapshot v{version} at header version v{before_version} failed with {other:?}, expected accept or HeaderVersionChanged"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

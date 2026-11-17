@@ -20,17 +20,60 @@
 //!   sibling rules of #5849 §4.5, and the names-not-expressions rule for
 //!   binding slots (#5849 §8) are build errors with source locations.
 //!
+//! * **Stage 3 — compose** ([`compose`]): the #5854 cascade over
+//!   data-supplied composition tables (theme layering, assertion and
+//!   override resolution, the web-only raw-CSS layer), producing the
+//!   resolved IR and composition report for one target. Conditional
+//!   blocks await a #5849 vocabulary representation; see the module
+//!   documentation for the stated boundary.
+//!
+//! * **Stages 4–5 — lower + emit, web target** ([`lower`]): the
+//!   resolved IR is lowered through the #5851 mapping table
+//!   ([`web_table`], consumed as data) to the web artefact — DOM
+//!   tags per #5851 §2, utilities per §3 — and emitted with the
+//!   machine-readable coverage report: assertions mapped,
+//!   assertions defaulted (never silent, #5855 §3.3), element
+//!   defaults, and reported raw-CSS overrides.
+//!
+//! * **Stages 4–5 — lower + emit, native targets**
+//!   ([`lower_native`]): the resolved IR is lowered through the
+//!   #5852 mapping tables ([`native_table`], consumed as data) to
+//!   the native artefact for one platform (mac/windows/gnome) —
+//!   the OS-standard control per element kind (#5852 §2), the
+//!   control-kind sequence and accessibility tree of #5855 §3.2 —
+//!   and emitted with the machine-readable coverage report:
+//!   assertions mapped, assertions platform-defaulted (never
+//!   silent, #5852 §3.1), element defaults, and presentation
+//!   overrides excluded per #5853.
+//!
+//! * **Stages 4–5 — lower + emit, custom-GUI target**
+//!   ([`lower_gui`]): the resolved IR is lowered through the
+//!   #5853 presentation-override contract — override definitions
+//!   consumed as target-side data ([`lower_gui::GuiData`]) — to
+//!   the GUI artefact: the presentation choice per node (standard,
+//!   asset, drawn, or the exercised standard fallback of §2.4)
+//!   plus the accessibility tree, which is identical in every
+//!   mode (#5853 §3 invariant 1). State completeness (§2.3) and
+//!   renderer registration (§2.2) are build-time errors, never
+//!   runtime gaps.
+//!
 //! The assertion half of stage 2 is deliberately not implemented yet:
 //! the `assert` attribute's grammar and role vocabulary are #5850's,
 //! and #5850 is not settled. The slot is parsed and carried opaquely,
 //! exactly as #5855 assumption A2 prescribes (the pipeline is defined
 //! over element kinds and assertion roles generically and consumes
-//! both vocabularies as versioned data). Stages 3–5 land with the
-//! mapping tables as follow-on work on #7918.
+//! both vocabularies as versioned data).
 
+pub mod compose;
+pub mod gui_table;
+pub mod lower;
+pub mod lower_gui;
+pub mod lower_native;
+pub mod native_table;
 mod parse;
 mod validate;
 pub mod vocabulary;
+pub mod web_table;
 
 use std::fmt;
 
@@ -177,6 +220,72 @@ pub fn parse(source: &str) -> Result<Document, BuildError> {
 /// signature: `Err` carries the full list.
 pub fn validate(doc: &Document) -> Result<(), Vec<BuildError>> {
     validate::validate(doc)
+}
+
+/// Stage 3: compose a validated document for one target.
+/// See [`compose::compose`] for the cascade and its data inputs.
+///
+/// # Errors
+///
+/// Returns every same-specificity tie found (each located).
+pub fn compose_document(
+    doc: &Document,
+    target: &compose::TargetSpec,
+    data: &compose::ComposeData,
+) -> Result<compose::ComposedDocument, Vec<BuildError>> {
+    compose::compose(doc, target, data)
+}
+
+/// Stages 4 + 5 (web target): lower a composed document through
+/// the #5851 mapping table and emit the artefact plus coverage
+/// report. See [`lower::lower_web`] for the stated boundaries
+/// (attributes are read from the validated document, matched by
+/// document path).
+///
+/// # Errors
+///
+/// Returns a build error for a non-web composed document or a
+/// path mismatch between the two inputs.
+pub fn lower_document(
+    doc: &Document,
+    composed: &compose::ComposedDocument,
+) -> Result<(lower::WebArtefact, lower::LowerReport), Vec<BuildError>> {
+    lower::lower_web(doc, composed)
+}
+
+/// Stages 4 + 5 (native targets): lower a composed document
+/// through the #5852 mapping tables for the platform the
+/// composed document names (mac/windows/gnome) and emit the
+/// artefact plus coverage report. See
+/// [`lower_native::lower_native`] for the stated boundaries.
+///
+/// # Errors
+///
+/// Returns a build error for a non-native composed document or a
+/// path mismatch between the two inputs.
+pub fn lower_document_native(
+    doc: &Document,
+    composed: &compose::ComposedDocument,
+) -> Result<(lower_native::NativeArtefact, lower_native::NativeReport), Vec<BuildError>> {
+    lower_native::lower_native(doc, composed)
+}
+
+/// Stages 4 + 5 (custom-GUI target): lower a composed document
+/// through the #5853 presentation-override contract, consuming
+/// the override pack as data, and emit the artefact plus report.
+/// See [`lower_gui::lower_gui`] for the stated boundaries.
+///
+/// # Errors
+///
+/// Returns every build error found: a non-GUI composed document,
+/// an undefined or unregistered override, or incomplete state
+/// coverage.
+pub fn lower_document_gui(
+    doc: &Document,
+    composed: &compose::ComposedDocument,
+    data: &lower_gui::GuiData,
+) -> Result<(lower_gui::GuiArtefact, lower_gui::GuiReport), Vec<BuildError>> {
+    lower_gui::lower_gui(doc, composed, data)
 }
 
 /// Stages 1 + 2: parse a source document and validate it against the

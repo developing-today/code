@@ -977,6 +977,19 @@
     // 2026-11-16) -- re-issue at docs.exaone.ai My Profile >
     // API Key when auth failures start. Wire-proven direct
     // 2026-11-16 (HTTP 200 chat completion on k-exaone_v2.5).
+    // KEY EXPIRY: this key dies 2026-12-16 (30 days after its
+    // 2026-11-16 issuance); auth failures from that date are the
+    // known expiry, not a new breakage -- re-issue and rotate the
+    // Bitwarden item + credential-store row.
+    // 2026-11-16 (R33 fix): the model's limit MUST name output
+    // alongside context -- the fork's v1 config schema requires
+    // limit.output, and a context-only limit fails the whole
+    // provider's decode: normalization silently skips the provider
+    // ("$.provider.exaone kind=invalid"), the route resolves to
+    // no models, and the door draws zero attempts with no error
+    // anywhere but the server log. Output 524288 is the vendor's
+    // published max output (docs.exaone.ai Models: 512K max
+    // output; endpoint caps input + max_tokens at 524,288).
     "exaone": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "EXAONE (K-EXAONE 2.5 Free API)",
@@ -987,7 +1000,76 @@
         "k-exaone_v2.5": {
           "name": "K-EXAONE 2.5 (EXAONE API Platform Free)",
           "limit": {
-            "context": 524288
+            "context": 524288,
+            "output": 524288
+          }
+        }
+      }
+    },
+    // Cohere (2026-11-16, Drew): trial-key door, DEFINED BUT
+    // SEATED NOWHERE -- direct use only; no route or pool
+    // references it and it is not in disabled_providers (same
+    // posture as google-payg). The trial key is evaluation-only
+    // under Cohere's terms: 1,000 API calls/month across all
+    // endpoints, no production use, no payment method on file.
+    // Key in Bitwarden as `cohere.api-key`, bound via a
+    // credential-store row (integrationID cohere). Speaks
+    // Cohere's OpenAI-compatible endpoint; wire-proven
+    // 2026-11-16 on the trial key (native /v2/chat, /v2/embed,
+    // /v2/rerank, and compatibility-endpoint chat all HTTP
+    // 200). Embed and Rerank have no OpenCode seat concept --
+    // they are for scripts, not routes. Explicit model list:
+    // the current Command chat shelf only (the C4AI Aya models
+    // and the translate/arabic specialists are excluded).
+    // Context limits are Cohere's own published context_length
+    // values, read from GET /v1/models 2026-11-16.
+    "cohere": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Cohere (Trial Key, Evaluation Only)",
+      "options": {
+        "baseURL": "https://api.cohere.ai/compatibility/v1"
+      },
+      "models": {
+        "command-a-plus-05-2026": {
+          "name": "Command A+ (Cohere Trial)",
+          "limit": {
+            "context": 436000
+          }
+        },
+        "command-a-03-2025": {
+          "name": "Command A (Cohere Trial)",
+          "limit": {
+            "context": 288000
+          }
+        },
+        "command-a-reasoning-08-2025": {
+          "name": "Command A Reasoning (Cohere Trial)",
+          "limit": {
+            "context": 288768
+          }
+        },
+        "command-a-vision-07-2025": {
+          "name": "Command A Vision (Cohere Trial)",
+          "limit": {
+            "context": 128000
+          }
+        },
+        "command-r-plus-08-2024": {
+          "name": "Command R+ (Cohere Trial)",
+          "limit": {
+            "context": 128000
+          }
+        },
+        "command-r-08-2024": {
+          "name": "Command R (Cohere Trial)",
+          "limit": {
+            "context": 128000
+          }
+        },
+        "command-r7b-12-2024": {
+          "name": "Command R7B (Cohere Trial)",
+          "limit": {
+            "context": 132000
           }
         }
       }
@@ -1579,6 +1661,16 @@
           // are skipped while its snapshot reads walled and revive at
           // the stated reset — the seat no longer needs removal to stop
           // a burn.
+          // 2026-11-16 (Drew, direct order — pool-composition run 42,
+          // R34): UNSEATED — every seat is removed from the plan pools
+          // again (deepseek-flash-plan, deepseek-pro-plan, spark-plan,
+          // sol-plan, beam-plan; the mimo-flash-plan leg was already
+          // paste-ready only). The restored seats drew ~653 attempts
+          // at 0% — dead auth/entitlement, which the gathered quota
+          // wall does not skip (evidence on code#10128). The definition
+          // stays for the catalog, ready to re-seat per pool on a live
+          // completion proving auth restored. NOT added to
+          // disabled_providers.
           "npm": "@opencode/ai/providers/commandcode",
           "name": "Command Code (native wire emulation)",
           "models": {
@@ -2398,7 +2490,8 @@
   },
   "instructions": [
     ".opencode/instructions/mcpx.md",
-    ".opencode/instructions/subagents.md"
+    ".opencode/instructions/subagents.md",
+    ".opencode/instructions/routing-policy.md"
   ],
   "compaction": {
     "reserved": 8192
@@ -2567,6 +2660,12 @@
         // "insufficient credits"; last success on the provider 2026-11-10).
         // Re-seat only after credits are verified back with a live completion.
         // 2026-11-15 (Drew, direct order): the _commandcode door is RESTORED below, exactly as seated before the 2026-11-13 removal — the fork's gathered provider-wide quota wall (opencode#2479, merged today) now skips a walled provider's legs before any attempt, so a spent door idles instead of burning.
+        // 2026-11-16 (Drew, direct order — pool-composition run 42, R34):
+        // the _commandcode door is UNSEATED from this pool — the seats
+        // restored 2026-11-15 drew ~653 attempts at 0% across the five
+        // pools, dead auth/entitlement rather than the quota wall
+        // (evidence on code#10128). Re-seat only on a live completion
+        // proving auth restored.
         // 2026-11-14 (performance cut, code#9950 follow-up): the mistral-plan
         // leg is REMOVED from this pool — the mistral Flash-1017 cell recorded
         // 0 successes in 699 attempts in the 2026-11-14 per-model cut, the
@@ -2695,8 +2794,7 @@
           {
             "model": "opendesign/deepseek-v4.1-flash",
             "variants": { "xhigh": "high", "max": "high" }
-          },
-          "_commandcode/deepseek/deepseek-v4.1-flash"
+          }
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -2706,8 +2804,7 @@
         "weights": {
           "opencode-go-plans/deepseek-v4.1-flash": 2,
           "cline-pass/deepseek-v4.1-flash": 1,
-          "opendesign/deepseek-v4.1-flash": 1,
-          "_commandcode/deepseek/deepseek-v4.1-flash": 1
+          "opendesign/deepseek-v4.1-flash": 1
         },
         // #7927 (task 14574): the 10s default first-output deadline mass-killed
         // scheduled lane waves (81 sessions in 8h) when doors queued past 10s.
@@ -2746,6 +2843,12 @@
         // "insufficient credits"; last success on the provider 2026-11-10).
         // Re-seat only after credits are verified back with a live completion.
         // 2026-11-15 (Drew, direct order): the _commandcode door is RESTORED below, exactly as seated before the 2026-11-13 removal — the fork's gathered provider-wide quota wall (opencode#2479, merged today) now skips a walled provider's legs before any attempt, so a spent door idles instead of burning.
+        // 2026-11-16 (Drew, direct order — pool-composition run 42, R34):
+        // the _commandcode door is UNSEATED from this pool — the seats
+        // restored 2026-11-15 drew ~653 attempts at 0% across the five
+        // pools, dead auth/entitlement rather than the quota wall
+        // (evidence on code#10128). Re-seat only on a live completion
+        // proving auth restored.
         
         // 2026-10-27 pool redesign: Go x3 + Command Code (minor) join, per
         // the same all-workspaces rule as deepseek-flash-plan. This pool
@@ -2764,8 +2867,7 @@
           {
             "model": "opendesign/deepseek-v4-pro",
             "variants": { "xhigh": "high", "max": "high" }
-          },
-          "_commandcode/deepseek/deepseek-v4-pro"
+          }
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -2774,7 +2876,6 @@
         // leg's tier placement is undefined. Weighted as minor legs.
         "weights": {
           "opencode-go-plans/deepseek-v4-pro": 3,
-          "_commandcode/deepseek/deepseek-v4-pro": 0.5,
           "cline-pass/deepseek-v4-pro": 1,
           "opendesign/deepseek-v4-pro": 1
         }
@@ -2992,6 +3093,11 @@
         // serves claude-sonnet-5-5 and bridges tool calls; the pool
         // is single-live-door on the direct door, plus claude-code's
         // return.
+        // 2026-11-16 (Drew, direct order): UNSEATED -- every live seat
+        // that consumed this plan moved to haiku-plan#high (Anthropic-door
+        // Sonnet replaced by Haiku; Fable carries the quality head on
+        // this door). The definition and both members stay, ready to
+        // re-seat.
         "targets": [
           "_claude/claude-sonnet-5-5",
           {
@@ -3034,6 +3140,12 @@
         // "insufficient credits"; last success on the provider 2026-11-10).
         // Re-seat only after credits are verified back with a live completion.
         // 2026-11-15 (Drew, direct order): the _commandcode door is RESTORED below, exactly as seated before the 2026-11-13 removal — the fork's gathered provider-wide quota wall (opencode#2479, merged today) now skips a walled provider's legs before any attempt, so a spent door idles instead of burning.
+        // 2026-11-16 (Drew, direct order — pool-composition run 42, R34):
+        // the _commandcode door is UNSEATED from this pool — the seats
+        // restored 2026-11-15 drew ~653 attempts at 0% across the five
+        // pools, dead auth/entitlement rather than the quota wall
+        // (evidence on code#10128). Re-seat only on a live completion
+        // proving auth restored.
         
         // 2026-10-30: the reserve leaf reached the Meta plan through
         // muse-proxy (provider "muse") — the direct meta door is dead
@@ -3066,7 +3178,6 @@
         // leaf in this pool.
         "targets": [
           "opencode-go-plans/muse-spark-1.3-contributor",
-          "_commandcode/meta/muse-spark-1.3-contributor",
           "cline-pass/muse-spark-1.3-contributor",
           "_muse/muse-spark-1.3-contributor"
         ],
@@ -3084,6 +3195,12 @@
         // resets. Re-seat the door only if plan coverage returns, proven
         // by a live completion.
         // 2026-11-15 (Drew, direct order): the _commandcode door is RESTORED below, exactly as seated before the 2026-11-13 removal — the fork's gathered provider-wide quota wall (opencode#2479, merged today) now skips a walled provider's legs before any attempt, so a spent door idles instead of burning.
+        // 2026-11-16 (Drew, direct order — pool-composition run 42, R34):
+        // the _commandcode door is UNSEATED from this pool — the seats
+        // restored 2026-11-15 drew ~653 attempts at 0% across the five
+        // pools, dead auth/entitlement rather than the quota wall
+        // (evidence on code#10128). Re-seat only on a live completion
+        // proving auth restored.
         // 2026-10-27 pool-coverage audit: the two opencode-go leaves are
         // REMOVED. They pointed at gpt-5.6-sol, which OpenCode Go does not
         // list — verified in the #1249 recheck (models.dev's opencode-go
@@ -3111,8 +3228,7 @@
           {
             "model": "opendesign/gpt-6.1-sol",
             "variants": { "xhigh": "high", "max": "high" }
-          },
-          "_commandcode/gpt-6.1-sol"
+          }
         ],
         "selection": "round-robin",
         "autonomy": "rules",
@@ -3125,8 +3241,7 @@
         // is its standing minor-leg weight in the sibling pools.
         "weights": {
           "openai-plan/gpt-6.1-sol": 3,
-          "opendesign/gpt-6.1-sol": 1,
-          "_commandcode/gpt-6.1-sol": 0.5
+          "opendesign/gpt-6.1-sol": 1
         }
       },
       "terra-plan": {
@@ -3226,6 +3341,12 @@
         // quota-walled until the Sun 2026-11-15 Go reset, and its own
         // status gets verified from route_attempt after that reset.
         // 2026-11-15 (Drew, direct order): the _commandcode door is RESTORED below, exactly as seated before the 2026-11-13 removal — the fork's gathered provider-wide quota wall (opencode#2479, merged today) now skips a walled provider's legs before any attempt, so a spent door idles instead of burning.
+        // 2026-11-16 (Drew, direct order — pool-composition run 42, R34):
+        // the _commandcode door is UNSEATED from this pool — the seats
+        // restored 2026-11-15 drew ~653 attempts at 0% across the five
+        // pools, dead auth/entitlement rather than the quota wall
+        // (evidence on code#10128). Re-seat only on a live completion
+        // proving auth restored.
         // NEW 2026-10-27 (pool redesign): Beam 1.0 gets its own plan pool
         // (was a raw Command Code leaf inside scout). AA v5: II 18,
         // TTFT 0.59s, ~385 t/s decode — the fleet's fastest starter.
@@ -3245,7 +3366,6 @@
         // Free, MiMo Flash Free, GLM Flash Free, Big Pickle) stay
         // last-resort in their own pools.
         "targets": [
-          "_commandcode/reflection/beam:free",
           "opencode-go-plans/beam-free",
           "zen-plans/beam-free"
         ],
@@ -3259,8 +3379,7 @@
         // per Drew's restore order.
         "weights": {
           "opencode-go-plans/beam-free": 3,
-          "zen-plans/beam-free": 3,
-          "_commandcode/reflection/beam:free": 1
+          "zen-plans/beam-free": 3
         }
       },
       "longcat-plan": {
@@ -3314,6 +3433,35 @@
         "weights": {
           "opencode-go-plans/iceman-contributor-free": 3,
           "zen-plans/iceman-free": 3
+        }
+      },
+      "hy4-flash-plan": {
+        "name": "Hy4 Flash Free - plan providers",
+        // NEW 2026-11-16 (provider/model watch): Tencent's Hy4 Flash,
+        // served FREE on both OpenCode Go and OpenCode Zen (the
+        // providers' own /models endpoints, verified 2026-11-16:
+        // release-dated 2026-11-16, 1,048,576 context, $0/$0, image
+        // input, reasoning efforts none/high). No Artificial
+        // Analysis benchmark exists yet; the only capability
+        // evidence is Tencent's own blind test claiming
+        // Haiku 5.5-class everyday work -- a vendor claim,
+        // unverified. The free listing may also be a launch
+        // promotion (Tencent's own page still said "scheduled for
+        // release soon" on launch morning), so its durability is
+        // unverified too. Placement per the watch's toss-up rule:
+        // background free cluster only, until route_attempt history
+        // or an AA score establishes equivalence; if the model
+        // vanishes from either roster, the watch removes its seats
+        // in the run that notices.
+        "targets": [
+          "opencode-go-plans/hy4-flash-free",
+          "zen-plans/hy4-flash-free"
+        ],
+        "selection": "round-robin",
+        "autonomy": "rules",
+        "weights": {
+          "opencode-go-plans/hy4-flash-free": 3,
+          "zen-plans/hy4-flash-free": 3
         }
       },
       "flash-free-plan": {
@@ -3499,28 +3647,32 @@
         // Zen. AA v5 II 29 at ~137 tok/s. Caution from the fleet's AA
         // pull: it rarely abstains — careless for facts — so it serves
         // patient bulk work (background), not fact-facing tiers.
-        "targets": [
-          "zen-plans/minimax-m3.1-flash-free"
-        ],
+        // 2026-11-16 (Drew, direct order — pool-composition run 42, R35,
+        // code#10872): the Zen leaf (zen-plans/minimax-m3.1-flash-free)
+        // is REMOVED — 0 successes in 360 attempts across two
+        // consecutive windows, all QuotaExceeded, while the same model
+        // served 54.1% via the nvidia door (n=98, in nvidia-free-plan,
+        // untouched). The plan definition stays, emptied, ready to
+        // re-seat on a live completion through the Zen leaf.
+        "targets": [],
         "selection": "round-robin",
-        "autonomy": "rules",
-        "weights": {
-          "zen-plans/minimax-m3.1-flash-free": 3
-        }
+        "autonomy": "rules"
       },
       "flint-plan": {
         "name": "Flint 40B Free (Zen) - plan providers",
         // NEW 2026-11-14 (Drew, Zen pass): Recursive's Flint 40B coding
         // model, free on Zen. No AA listing (vendor-claimed SWE-bench
         // only). Seated in background as a coding-leaning free leg.
-        "targets": [
-          "zen-plans/flint-40b-free"
-        ],
+        // 2026-11-16 (Drew, direct order — pool-composition run 42,
+        // R35): the plan's only leaf (zen-plans/flint-40b-free) is
+        // REMOVED — 0 successes in 57 attempts this window across all
+        // three Zen workspaces (dt0 0/34, drewrypope 0/12, popesdrew
+        // 0/11), and the dt0 leg is 0/80 cumulative across windows.
+        // The plan definition stays, emptied, ready to re-seat on a
+        // live completion through the Zen leaf.
+        "targets": [],
         "selection": "round-robin",
-        "autonomy": "rules",
-        "weights": {
-          "zen-plans/flint-40b-free": 3
-        }
+        "autonomy": "rules"
       },
       "big-pickle-plan": {
         "name": "Big Pickle Free (Zen) - plan providers",
@@ -3831,6 +3983,12 @@
         // free door (exaone-free-plan: K-EXAONE 2.5, 524k context,
         // $0 on our own key) joins this cluster behind the Gemini
         // legs and ahead of the ~200k legs per the placement law.
+        // 2026-11-16 (provider/model watch): the Hy4 Flash free
+        // door (hy4-flash-plan: Tencent Hy4 Flash, 1M context, $0
+        // on Go + Zen) joins this cluster behind the EXAONE legs --
+        // an unbenchmarked vendor-claim model, so it takes a
+        // toss-up background seat ahead of the ~200k legs, not a
+        // scout front seat, until its history proves equivalence.
         // Drew (2026-11-14, later): the whole Zen shelf sits in this
         // last-resort position deliberately — limited context on the
         // Zen free models means they are never a first-choice leg.
@@ -3855,6 +4013,7 @@
           "opencode-route/flash-free-plan",
           "opencode-route/gemini-free-plan",
           "opencode-route/exaone-free-plan",
+          "opencode-route/hy4-flash-plan",
           "opencode-route/minimax-flash-plan",
           "opencode-route/glm-5-3-flash-zen-plan",
           "opencode-route/glm-flash-free-plan",
@@ -3915,8 +4074,9 @@
         "selection": "weighted",
         "autonomy": "rules"
       },
+      // Composition (2026-11-16): the deepseek-effort-rr trial route (DeepSeek Flash, high/low weighted 3:1).
       "workhorse-ordered": {
-        "name": "Workhorse ordered - DeepSeek Flash plan first, strictly ordered",
+        "name": "Workhorse ordered - first stage: strictly ordered failover, best-value seat first",
         // 2026-11-03 (Drew): a dedicated ordered pool in FRONT of
         // workhorse-primary inside the workhorse chain, seating ONLY
         // deepseek-flash-plan#high. Workhorse traffic tries this pool
@@ -4084,8 +4244,11 @@
         // while still bounding a truly dead leg to one minute.
         "health": { "firstTokenTimeoutMs": 60000 }
       },
+      // 2026-11-16 (Drew): tier-pool names describe performance/speed characteristics, not models;
+      // compositions live in comments like this one.
+      // Composition (2026-11-16): beam-plan, workhorse-ordered, workhorse-primary (emptied), workhorse-weighted, workhorse-last-resort, scout, specialist.
       "workhorse": {
-        "name": "Workhorse - standard work: Flash primary, weighted relief pool behind it, Fable #low last resort if all else is down",
+        "name": "Workhorse - standard work: ordered stages with a weighted relief pool, last-resort stage if all else is down",
         // Class fallback (Drew 2026-11-13): on exhaustion this class
         // escalates to the route(s) appended at the END of its targets.
         // Per-call visited-set semantics: the route expander prunes
@@ -4156,8 +4319,9 @@
         // while still bounding a truly dead leg to one minute.
         "health": { "firstTokenTimeoutMs": 60000 }
       },
+      // Composition (2026-11-16): luna-effort-rr, Spark contributor #medium, Hydrogen #low (Antigravity), haiku-plan#high - all weight 10. (Drew 2026-11-07; Sonnet seat 2026-11-09, replaced by Haiku 2026-11-16.)
       "workhorse-weighted": {
-        "name": "Workhorse weighted - Luna medium/high round-robin (luna-effort-rr), Spark contributor #high, Gemini 4 Hydrogen #low, Claude Sonnet 5.5 #medium, all w10: last-tier fallbacks behind the Flash primary (Drew 2026-11-07; Sonnet seat 2026-11-09)",
+        "name": "Workhorse weighted - relief pool: weighted selection, all members equal weight, absorbs failover and overflow behind the primary",
         // The weighted half of workhorse's incremental structure: sessions
         // that fail over (or are demoted off) the Flash primary draw here
         // by weight. Not addressed by any agent directly.
@@ -4301,14 +4465,33 @@
           // 2026-11-15 (Drew, direct order): Spark #high -> #medium (all Spark seats).
           "_muse/muse-spark-1.3-contributor#medium",
           "_antigravity/gemini-4-hydrogen#low",
-          "_antigravity/claude-sonnet-5-5#medium"
+          // 2026-11-16 (Drew, direct order): Antigravity Sonnet
+          // effort lowered one rung, #medium -> #low; the seat
+          // and its weight 10 are otherwise unchanged. PR #10711
+          // replaced this seat the same minute the correction
+          // arrived (only lower antigrav effort, otherwise leave
+          // as is); that replacement is reverted by the
+          // reconciliation PR, so the net change from pre-#10711
+          // main is this effort drop alone.
+          // 2026-11-16 (Drew, direct order; AA v5.0.1 score/price review): the Antigravity Sonnet #low seat that sat here MOVED to workhorse-last-resort (a different door as the middle resort leg); this seat is now haiku-plan#high at the same weight 10 - Haiku #high (II 29.9, $0.16/AA task) dominates Sonnet #low (II 25.6, $0.51).
+          "opencode-route/haiku-plan#high"
         ],
         "selection": "weighted",
+        // Weights keys are BARE provider/model ids on purpose
+        // (code#10725, verified against the fork 2026-11-16): the
+        // router looks a leaf target weight up by its bare
+        // provider/model id - the target #effort pin is not part
+        // of the lookup key (fork packages/core/src/config/plugin/
+        // model-routes.ts: attach() receives the leaf key as
+        // providerID + "/" + model id, no variant suffix). Do NOT
+        // suffix these keys with #effort to match the targets -
+        // a suffixed key misses the lookup and the leg silently
+        // falls back to weight 1.
         "weights": {
           "opencode-route/luna-effort-rr": 10,
           "_muse/muse-spark-1.3-contributor": 10,
           "_antigravity/gemini-4-hydrogen": 10,
-          "_antigravity/claude-sonnet-5-5": 10
+          "opencode-route/haiku-plan": 10
         },
         "autonomy": "rules",
         // #7927 (task 14574): the 10s default first-output deadline mass-killed
@@ -4317,8 +4500,9 @@
         // while still bounding a truly dead leg to one minute.
         "health": { "firstTokenTimeoutMs": 60000 }
       },
+      // Composition (2026-11-16): Haiku #high (Claude door) first, then Sonnet #low (Antigravity); Fable #low tail commented out in the targets below.
       "workhorse-last-resort": {
-        "name": "Workhorse last resort - Haiku #high from Claude first, then Fable #low, only if all else is down",
+        "name": "Workhorse last resort - final stage: two legs on different provider doors, only if all else is down",
         // NEW 2026-11-10 (Drew, direct order): the fourth and final
         // stage of the workhorse chain, reached only when
         // workhorse-ordered, workhorse-primary, and
@@ -4353,7 +4537,9 @@
         // primary-checkout reconcile (Drew's order) landed it.
         "targets": [
           "_claude/claude-haiku-5-5#high",
-          "opencode-route/fable-plan#low"
+          "_antigravity/claude-sonnet-5-5#low"
+          // 2026-11-16 (Drew, direct order): Fable tail commented out for now:
+          // "opencode-route/fable-plan#low"
         ],
         "selection": "ordered",
         "autonomy": "rules",
@@ -4362,8 +4548,9 @@
         // a truly dead leg to one minute.
         "health": { "firstTokenTimeoutMs": 60000 }
       },
+      // Composition (2026-11-16): fable-plan#low head, then haiku-plan#high, argon-plan#high, spark-plan#medium, sol-plan#medium.
       "specialist": {
-        "name": "Specialist - hard work: quality first, Fable #low head, then Claude Sonnet, Argon, Meta Spark, OpenAI",
+        "name": "Specialist - hard work: quality first, strongest head seat, ordered fallbacks across providers",
         // Class fallback (Drew 2026-11-13): specialist is the
         // SINK - no class fallback out of specialist. If every
         // specialist leg is down, the call errors; there is no
@@ -4398,7 +4585,10 @@
         // tail REMOVED: its <=36 ceiling is below this tier's band.
         "targets": [
           "opencode-route/fable-plan#low",
-          "opencode-route/sonnet-plan#high",
+          // 2026-11-16 (Drew, direct order): Anthropic-door Sonnet seat
+          // replaced by Haiku #high; Fable carries the quality head on
+          // this door.
+          "opencode-route/haiku-plan#high",
           "opencode-route/argon-plan#high",
         // 2026-11-01 (Drew): Spark seat drops max -> xhigh. AA v5: max scores 36 vs xhigh 34 — two points for roughly double the reasoning time (max measured 540s/task). Spark in specialist is the Meta-diversity seat behind Sonnet/Argon; xhigh keeps the failover responsive. This was the last #max target in the tier routes.
           // 2026-11-15: spark at #high — the rung our own history
@@ -4412,8 +4602,9 @@
         "selection": "ordered",
         "autonomy": "rules"
       },
+      // Composition (2026-11-16): opus-plan#medium head, then argon-plan#high, Hydrogen #high (Antigravity), Wonder #medium, sol-plan#high, specialist last; Fable #low head commented out in the targets below.
       "summit": {
-        "name": "Summit - very complex design only, deliberate use: Fable #low head, then Opus, Argon, Hydrogen, Wonder, Sol",
+        "name": "Summit - very complex design only, deliberate use: highest-capability ordered chain, specialist as the final fallback",
         // Class fallback (Drew 2026-11-13): on exhaustion this class
         // escalates to the route(s) appended at the END of its targets.
         // Per-call visited-set semantics: the route expander prunes
@@ -4455,8 +4646,12 @@
         // $9.95 and ~30 min: the fast execution seat in the design
         // chain, drawing the Antigravity Gemini pool.
         "targets": [
-          "opencode-route/fable-plan#medium",
-          "opencode-route/opus-plan#high",
+          // 2026-11-16 (Drew, direct order): Fable #medium -> #low --
+          // Fable is low in every seat; this reverses the 2026-11-11
+          // summit raise (also Drew's order).
+          // 2026-11-16 (Drew, direct order): Fable head commented out for now.
+          // "opencode-route/fable-plan#low",
+          "opencode-route/opus-plan#medium",
           "opencode-route/argon-plan#high",
           "_antigravity/gemini-4-hydrogen#high",
           // 2026-11-15 (Drew, direct order): Wonder #xhigh -> #high.
@@ -4470,8 +4665,9 @@
         "selection": "ordered",
         "autonomy": "rules"
       },
+      // Composition (2026-11-16): deepseek-flash-plan#high, gemini-hydrogen-plan#high, haiku-plan#high, then workhorse/summit/specialist fallbacks; the quality floor is the haiku-plan#high seat.
       "speed": {
-        "name": "Speed - fastest seats at or above the Haiku bar, for latency-bound work",
+        "name": "Speed - fastest seats above the quality floor, for latency-bound work",
         // Class fallback (Drew 2026-11-13): on exhaustion this class
         // escalates to the route(s) appended at the END of its targets.
         // Per-call visited-set semantics: the route expander prunes
@@ -4599,7 +4795,7 @@
             "window": "deepseek-peak-early",
             "limit": { "context": 1000000 }
           },
-          { "model": "opencode-route/haiku-plan#medium", "limit": { "context": 388000 } }
+          { "model": "opencode-route/haiku-plan#low", "limit": { "context": 388000 } }
         ],
         "selection": "ordered",
         "autonomy": "rules"

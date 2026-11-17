@@ -102,12 +102,20 @@ in
     ".openclaw/acpx/bin/codex-acp.mjs".source =
       "${acpxPlugin}/node_modules/@agentclientprotocol/codex-acp/dist/index.js";
     ".openclaw/acpx/managed-codex-acp-wrapper.mjs".source = ./acpx/codex-acp-wrapper.mjs;
+    ".openclaw/acpx/managed-muse-agent-acp-wrapper.mjs".source =
+      ./acpx/muse-agent-acp-wrapper.mjs;
   };
   home.file.".acpx/config.json".text = builtins.toJSON {
     agents = {
       opencode.command = "/home/user/code/bin/opencode-acp-adapter.mjs --server http://127.0.0.1:13420";
       codex.command = "/home/user/.openclaw/acpx/managed-codex-acp-wrapper.mjs";
       agy.command = "/run/current-system/sw/bin/agy_acp_server";
+      # muse (#2012, Drew GO 2026-10-28): the ACP<->MSP adapter in this
+      # repo (home/openclaw/acpx/muse-agent-acp-wrapper.mjs) driving the
+      # laptop Muse CLI's `muse serve`. Not a model route: the agent
+      # loop is the muse program itself, auth is its own OAuth login,
+      # and the adapter deletes META_API_KEY from the child env.
+      muse.command = "/home/user/.openclaw/acpx/managed-muse-agent-acp-wrapper.mjs";
     };
   };
 
@@ -163,6 +171,18 @@ in
       # start-limit-hit — down for a day, silently. A transient
       # pre-start failure must never be able to do that again: wide
       # window, generous burst, slower restart spacing.
+      # #2875: the gateway's tokens come from /run/secrets/openclaw/*,
+      # which sops-nix materializes only on hosts that declare
+      # nixos/hosts/amd-openclaw-secrets.nix (the amd host block). This
+      # home module is imported for every host that includes
+      # nixos/users/user, so on a host without those secrets (the Intel
+      # `nixos` host) the unit could only ever fail. Skip it explicitly
+      # there instead of letting it crash-loop against a missing
+      # credential file: a condition-skipped unit is inactive and quiet,
+      # and it starts by itself the moment the host declares the
+      # secrets. Delete this when every host carrying the user env also
+      # carries its own openclaw secrets.
+      ConditionPathExists = "/run/secrets/openclaw/gateway-token";
       StartLimitIntervalSec = "600";
       StartLimitBurst = 30;
     };
@@ -608,6 +628,7 @@ in
           "opencode"
           "codex"
           "agy"
+          "muse"
         ];
         dispatch.enabled = true;
       };
@@ -647,6 +668,9 @@ in
               };
               agents.codex = {
                 command = "/home/user/.openclaw/acpx/managed-codex-acp-wrapper.mjs";
+              };
+              agents.muse = {
+                command = "/home/user/.openclaw/acpx/managed-muse-agent-acp-wrapper.mjs";
               };
               agents.agy = {
                 command = "/run/current-system/sw/bin/agy_acp_server";

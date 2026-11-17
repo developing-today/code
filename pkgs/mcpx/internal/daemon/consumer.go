@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -431,6 +432,12 @@ func describeInstance(in pool.InstanceStatus) string {
 type ErrNotConfirmed struct {
 	Tool   string
 	Reason string
+	// Code is the structured refusal reason (#1927 item 6), defined
+	// once in internal/elicit and surfaced by callErrorBody, so a
+	// caller can branch on why the gate refused -- unanswered,
+	// declined, unavailable -- without parsing Reason's prose. Empty
+	// only for a refusal constructed outside the gate paths.
+	Code elicit.RefusalCode
 }
 
 func (e ErrNotConfirmed) Error() string {
@@ -501,7 +508,8 @@ func (r *Registry) confirmDestructiveFor(ctx context.Context, p *pool.Pool, serv
 			fresh, _, err := p.RefreshSchemasFor(ctx, r.resolvedFor(p, cc))
 			if err != nil {
 				return ErrNotConfirmed{Tool: p.Namespace() + "." + tool,
-					Reason: "its annotations could not be read: " + err.Error()}
+					Reason: "its annotations could not be read: " + err.Error(),
+					Code:   elicit.RefusalAnnotationsUnreadable}
 			}
 			all = fresh
 			// This refresh is a genuine catalog observation: discharge
@@ -538,11 +546,18 @@ func (r *Registry) confirmDestructiveFor(ctx context.Context, p *pool.Pool, serv
 	defer cancel()
 	ans, aerr := r.broker.Await(actx, opened.ID)
 	if aerr != nil {
-		return ErrNotConfirmed{Tool: path,
-			Reason: "nobody answered within " + r.consumer.AskTimeout.String()}
+		if errors.Is(aerr, context.DeadlineExceeded) {
+			return ErrNotConfirmed{Tool: path,
+				Reason: "nobody answered within " + r.consumer.AskTimeout.String(),
+				Code:   elicit.RefusalUnanswered}
+		}
+		// A broker failure is not a refusal: surface it as itself so
+		// callers can tell a broken broker from an unanswered question.
+		return fmt.Errorf("awaiting confirmation for %s: %w", path, aerr)
 	}
 	if v, _ := elicit.Resolve(ans, elicit.FieldConfirm, "false"); v != "true" {
-		return ErrNotConfirmed{Tool: path, Reason: "the answer was " + string(ans.Action)}
+		return ErrNotConfirmed{Tool: path, Reason: "the answer was " + string(ans.Action),
+			Code: elicit.RefusalCodeForAnswer(ans)}
 	}
 	return nil
 }
@@ -725,7 +740,8 @@ func (r *Registry) applyWritePolicyFor(ctx context.Context, p *pool.Pool, server
 			fresh, _, err := p.RefreshSchemasFor(ctx, r.resolvedFor(p, cc))
 			if err != nil {
 				return false, ErrNotConfirmed{Tool: p.Namespace() + "." + tool,
-					Reason: "write policy: its annotations could not be read: " + err.Error()}
+					Reason: "write policy: its annotations could not be read: " + err.Error(),
+					Code:   elicit.RefusalAnnotationsUnreadable}
 			}
 			all = fresh
 			// This refresh is a genuine catalog observation: discharge
@@ -770,7 +786,8 @@ func (r *Registry) applyWritePolicyFor(ctx context.Context, p *pool.Pool, server
 		if r.broker == nil {
 			return false, ErrNotConfirmed{Tool: path,
 				Reason: "write policy is ask but there is no question broker to answer it; " +
-					"set policy.write to allow or deny, or run a caller that can answer questions"}
+					"set policy.write to allow or deny, or run a caller that can answer questions",
+				Code: elicit.RefusalUnavailable}
 		}
 		req := elicit.Confirmation(elicit.Ask{
 			Server:  p.Name(),
@@ -791,11 +808,19 @@ func (r *Registry) applyWritePolicyFor(ctx context.Context, p *pool.Pool, server
 		defer cancel()
 		ans, aerr := r.broker.Await(actx, opened.ID)
 		if aerr != nil {
-			return false, ErrNotConfirmed{Tool: path,
-				Reason: "nobody answered within " + r.consumer.AskTimeout.String()}
+			if errors.Is(aerr, context.DeadlineExceeded) {
+				return false, ErrNotConfirmed{Tool: path,
+					Reason: "nobody answered within " + r.consumer.AskTimeout.String(),
+					Code:   elicit.RefusalUnanswered}
+			}
+			// A broker failure is not a refusal: surface it as itself
+			// so callers can tell a broken broker from an unanswered
+			// question.
+			return false, fmt.Errorf("awaiting confirmation for %s: %w", path, aerr)
 		}
 		if v, _ := elicit.Resolve(ans, elicit.FieldConfirm, "false"); v != "true" {
-			return false, ErrNotConfirmed{Tool: path, Reason: "the answer was " + string(ans.Action)}
+			return false, ErrNotConfirmed{Tool: path, Reason: "the answer was " + string(ans.Action),
+				Code: elicit.RefusalCodeForAnswer(ans)}
 		}
 		return true, nil
 	default:

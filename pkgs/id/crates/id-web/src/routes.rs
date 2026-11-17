@@ -29,7 +29,7 @@ use id_store::tags::TagStore;
 use id_sync::fileops::{FileOpError, FileOps, claim_archive_name, snapshot_provenance_tags};
 use iroh_base::EndpointId;
 
-mod file_handlers;
+pub(crate) mod file_handlers;
 use file_handlers::*;
 
 /// Default number of files per page.

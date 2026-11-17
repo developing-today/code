@@ -165,7 +165,25 @@ const heartbeatPath = process.env.QUOTA_HEARTBEAT_PATH ?? join(PKG, "quota-gathe
 const statePath = process.env.QUOTA_GATHERER_STATE_PATH ?? join(PKG, "quota-gatherer-state.json");
 const snapshotsDir = process.env.QUOTA_SNAPSHOTS_DIR ?? join(PKG, "snapshots");
 const outboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? null;
-const subcommandTimeoutMs = Number(process.env.QUOTA_SUBCOMMAND_TIMEOUT_MS ?? 240_000);
+/** Strict millisecond parse for boot-time env (#2835 env-number contract):
+ * digits only, 1..2^31-1, else fail naming the variable and the value
+ * instead of coercing NaN/negative/huge values into a fetch deadline. */
+function strictEnvMillis(name: string, raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw === "") return fallback;
+  if (/^[0-9]+$/.test(raw)) {
+    const value = Number(raw);
+    if (value >= 1 && value <= 2147483647) return value;
+  }
+  throw new Error(
+    `${name}="${raw}" is not a valid millisecond count (expected an integer 1-2147483647)`
+  );
+}
+
+const subcommandTimeoutMs = strictEnvMillis(
+  "QUOTA_SUBCOMMAND_TIMEOUT_MS",
+  process.env.QUOTA_SUBCOMMAND_TIMEOUT_MS,
+  240_000
+);
 const OBSERVED_BY = "quota-gatherer";
 
 /** Providers always asked explicitly, by name, every tick: their

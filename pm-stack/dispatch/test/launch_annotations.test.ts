@@ -10,12 +10,15 @@ import { annotateLaunch } from "../src/launch_annotations.ts";
 // warning, and the remaining steps still run. The launch itself is
 // never rejected — these stubs pin that contract.
 
-function stubs(opts: { failComment?: boolean; failLabels?: boolean; failPatch?: boolean } = {}) {
+function stubs(
+  opts: { failComment?: boolean; failLabels?: boolean; failPatch?: boolean; failGet?: boolean; preExisting?: string | null } = {},
+) {
   const calls: {
     comments: [string, number, string][];
     labels: [string, number, string[]][];
     patches: [number, Record<string, unknown>][];
-  } = { comments: [], labels: [], patches: [] };
+    gets: number[];
+  } = { comments: [], labels: [], patches: [], gets: [] };
   const github = {
     async comment(repo: string, issueNumber: number, body: string): Promise<void> {
       calls.comments.push([repo, issueNumber, body]);
@@ -30,6 +33,11 @@ function stubs(opts: { failComment?: boolean; failLabels?: boolean; failPatch?: 
     async patchTask(id: number, fields: Record<string, unknown>): Promise<void> {
       calls.patches.push([id, fields]);
       if (opts.failPatch) throw new Error("queue unreachable");
+    },
+    async getTask(id: number): Promise<{ last_error?: unknown } | null> {
+      calls.gets.push(id);
+      if (opts.failGet) throw new Error("queue read unreachable");
+      return { last_error: opts.preExisting ?? null };
     },
   };
   return { calls, github, queue };
@@ -96,5 +104,53 @@ describe("annotateLaunch", () => {
     const warnings = await run(github, queue);
     expect(warnings).toHaveLength(1);
     expect(calls.labels).toHaveLength(1);
+  });
+
+  test("the happy path issues no task read", async () => {
+    const { calls, github, queue } = stubs();
+    const warnings = await run(github, queue);
+    expect(warnings).toEqual([]);
+    expect(calls.patches).toHaveLength(0);
+    expect(calls.gets).toHaveLength(0);
+  });
+
+  // #10087 (PR #4231 residual): a lane-ledger failure note already on
+  // the task must survive an annotation failure — the note is
+  // prepended, not overwritten.
+  test("a pre-existing last_error survives a failing annotation (#10087)", async () => {
+    const { calls, github, queue } = stubs({
+      failComment: true,
+      preExisting: "lane assignment failed (launch unaffected): lane rpc 500",
+    });
+    const warnings = await run(github, queue);
+    expect(warnings).toHaveLength(1);
+    expect(calls.gets).toEqual([5414]);
+    expect(calls.patches).toHaveLength(1);
+    const note = String(calls.patches[0][1].last_error);
+    expect(note).toContain("lane assignment failed");
+    expect(note).toContain("github comment 500");
+  });
+
+  test("a pre-existing last_error plus both annotations failing names all three (#10087)", async () => {
+    const { calls, github, queue } = stubs({
+      failComment: true,
+      failLabels: true,
+      preExisting: "lane assignment failed (launch unaffected): lane rpc 500",
+    });
+    const warnings = await run(github, queue);
+    expect(warnings).toHaveLength(2);
+    expect(calls.patches).toHaveLength(2);
+    const finalNote = String(calls.patches[1][1].last_error);
+    expect(finalNote).toContain("lane assignment failed");
+    expect(finalNote).toContain("github comment 500");
+    expect(finalNote).toContain("github labels 500");
+  });
+
+  test("a failed task read still notes the annotation failure alone (#10087)", async () => {
+    const { calls, github, queue } = stubs({ failComment: true, failGet: true });
+    const warnings = await run(github, queue);
+    expect(warnings).toHaveLength(1);
+    expect(calls.patches).toHaveLength(1);
+    expect(String(calls.patches[0][1].last_error)).toContain("github comment 500");
   });
 });

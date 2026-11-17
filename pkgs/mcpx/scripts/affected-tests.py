@@ -263,37 +263,48 @@ def e2e_tests_mentioning(mcpx, names):
     return [name for name, _ in selected]
 
 
-def changed_test_names(mcpx, e2e_rel_paths, root, base):
+def changed_test_names(mcpx, e2e_rel_paths, root, base, untracked=()):
     """Test functions a diff actually changes, per edited e2e file:
     parse each test's line span in the current file (brace counting
     over noise-stripped source, as in e2e_tests_mentioning) and keep
     the tests whose span intersects a changed line range from a
     zero-context diff. Hunk-header function context is NOT enough:
     git names the function PRECEDING the hunk, so an edit at the top
-    of a test is attributed to the previous test."""
+    of a test is attributed to the previous test. An untracked file
+    has no diff at all: the whole file is the change, so it is
+    rendered as one whole-file added range and every test in it
+    counts as changed -- the same result a staged new file with
+    identical content produces."""
     names = []
     for p in sorted(e2e_rel_paths):
         full = os.path.join(mcpx, p)
         if not os.path.exists(full):
             continue
-        diff = run(
-            ["git", "diff", "--unified=0", base, "--", f"pkgs/mcpx/{p}"],
-            root,
-            check=False,
-        )
-        ranges = []
-        for line in diff.splitlines():
-            m = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line)
-            if m:
-                s = int(m.group(1))
-                c = int(m.group(2)) if m.group(2) is not None else 1
-                # A zero-count range is a pure deletion: the change
-                # sits between new-file lines s and s+1; attribute it
-                # to the test spanning line s.
-                ranges.append((s, s + c - 1) if c else (s, s))
+        text = open(full, encoding="utf-8", errors="replace").read()
+        if f"pkgs/mcpx/{p}" in untracked:
+            # `git diff <base>` is silent about untracked files: the
+            # whole file is newly added, so every test in it is a
+            # changed test -- exactly what the staged-new-file diff
+            # yields for identical content.
+            ranges = [(1, max(1, len(text.splitlines())))]
+        else:
+            diff = run(
+                ["git", "diff", "--unified=0", base, "--", f"pkgs/mcpx/{p}"],
+                root,
+                check=False,
+            )
+            ranges = []
+            for line in diff.splitlines():
+                m = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line)
+                if m:
+                    s = int(m.group(1))
+                    c = int(m.group(2)) if m.group(2) is not None else 1
+                    # A zero-count range is a pure deletion: the change
+                    # sits between new-file lines s and s+1; attribute it
+                    # to the test spanning line s.
+                    ranges.append((s, s + c - 1) if c else (s, s))
         if not ranges:
             continue
-        text = open(full, encoding="utf-8", errors="replace").read()
         syntax = strip_go_noise(text)
         for m in re.finditer(r"^func (Test\w+)\(t \*testing\.T\) \{", syntax, re.M):
             start_line = syntax.count("\n", 0, m.start()) + 1
@@ -547,7 +558,7 @@ def main():
         e2e_diff += untracked_added_text(mcpx, sorted(edited_e2e_all), untracked)
         if "newEnv" in e2e_diff:
             harness = True
-        changed_e2e_tests = changed_test_names(mcpx, edited_e2e_all, root, args.base)
+        changed_e2e_tests = changed_test_names(mcpx, edited_e2e_all, root, args.base, untracked)
     sample = []
     if harness:
         # The rule-4 sample is reserved its slots before the budget is

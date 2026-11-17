@@ -3,6 +3,7 @@ import {
   overlayQuotaCurrent,
   overlayTursoUsage,
   parseQuotaCurrent,
+  readQuotaCurrentFile,
   QUOTA_CURRENT_FRESH_MS,
   QUOTA_CURRENT_FUTURE_SKEW_MS,
 } from "../src/quota-current.ts";
@@ -1414,5 +1415,241 @@ describe("non-pool registration (#10575)", () => {
     // The groq read is still reported in the gatherer summary; only
     // pool synthesis is exempted.
     expect(out.gatherer?.providers.map((provider) => provider.serviceId)).toContain("groq");
+  });
+});
+
+describe("intentionally uninstrumented pools keep their window state (#10684)", () => {
+  // Oracle: a pool whose extraction is intentional/uninstrumented
+  // (no dated-read extractor by design — opendesign, deepseek,
+  // mistral, openrouter) carries its quota.json pool state, derived
+  // from its windows, instead of the gatherer's error/stale label;
+  // the gatherer failure still rides honestly on freshness. The
+  // control proves the exemption is scoped: an instrumented pool
+  // whose reading fails still surfaces "error".
+  const uninstrumented = { status: "intentional", matched: null, reason: "uninstrumented", count: 0 } as const;
+
+  function walledUninstrumentedView(): QuotaView {
+    const view = baseView();
+    view.pools.push({
+      id: "opendesign",
+      provider: "Open Design",
+      plan: "Go",
+      state: "walled",
+      windows: [{ name: "7d", unit: "other", limit: 100, used: 100, percent: 100, resetsAt: "2026-11-17T11:44:41.000Z" }],
+      extractionHealth: { ...uninstrumented },
+    });
+    return view;
+  }
+
+  test("an error entry leaves a walled uninstrumented pool walled, freshness keeping the error", () => {
+    const out = overlayQuotaCurrent(
+      walledUninstrumentedView(),
+      file([entry({ serviceId: "opendesign", state: "error", measuredAt: iso(2 * 60_000), error: "HTTP 503" })]),
+      NOW,
+    );
+    const od = out.pools.find((p) => p.id === "opendesign")!;
+    expect(od.state).toBe("walled");
+    expect(od.freshness).toEqual({
+      measuredAt: iso(2 * 60_000),
+      source: "openchamber-quota",
+      state: "error",
+      error: "HTTP 503",
+    });
+    expect(od.windows[0].percent).toBe(100);
+  });
+
+  test("a retained entry with a leg error keeps the adopted window state instead of converting to error", () => {
+    // Same shape as the #6942 shell-pool conversion, except the
+    // pool is marked intentionally uninstrumented: the read's dated
+    // fallback windows (7d at 100%) stand and the pool recomputes
+    // to walled instead of flipping to error.
+    const at = iso(45 * 60_000);
+    const view = baseView();
+    view.pools.push({
+      id: "opendesign",
+      provider: "Open Design",
+      plan: "Go",
+      state: "healthy",
+      windows: [],
+      extractionHealth: { ...uninstrumented },
+    });
+    const f = file([
+      entry({
+        serviceId: "opendesign",
+        source: "opencode-quota",
+        measuredAt: at,
+        retainedFromFailedTick: iso(4 * 60_000),
+        windows: [win("5h", 12, at), win("7d", 100, at)],
+      }),
+    ]);
+    f.heartbeat = {
+      tickAt: iso(4 * 60_000),
+      ok: true,
+      durationMs: 900,
+      perProvider: { opendesign: { state: "error", ms: 12, rows: 1, error: "Open Design usage API returned HTTP 503" } },
+    };
+    const out = overlayQuotaCurrent(view, f, NOW);
+    const od = out.pools.find((p) => p.id === "opendesign")!;
+    expect(od.state).toBe("walled");
+    expect(od.freshness?.state).toBe("stale");
+    expect(od.windows.map((w) => [w.name, w.percent])).toEqual([
+      ["5-hour", 12],
+      ["7d", 100],
+    ]);
+  });
+
+  test("an aged (stale) entry leaves a walled uninstrumented pool walled", () => {
+    const at = iso(QUOTA_CURRENT_FRESH_MS + 10 * 60_000);
+    const out = overlayQuotaCurrent(
+      walledUninstrumentedView(),
+      file([entry({ serviceId: "opendesign", source: "opencode-quota", measuredAt: at, windows: [win("7d", 12, at)] })]),
+      NOW,
+    );
+    const od = out.pools.find((p) => p.id === "opendesign")!;
+    expect(od.state).toBe("walled");
+    expect(od.freshness).toEqual({ measuredAt: at, source: "opencode-quota", state: "stale" });
+    expect(od.windows[0].percent).toBe(100);
+  });
+
+  test("control: an instrumented pool with a failed reading still surfaces error", () => {
+    const view = baseView();
+    const claude = view.pools.find((p) => p.id === "anthropic:claude-pro")!;
+    claude.extractionHealth = { status: "matched", matched: true, count: 1 };
+    const out = overlayQuotaCurrent(
+      view,
+      file([entry({ serviceId: "anthropic:claude-pro", state: "error", measuredAt: iso(2 * 60_000), error: "boom" })]),
+      NOW,
+    );
+    const poolOut = out.pools.find((p) => p.id === "anthropic:claude-pro")!;
+    expect(poolOut.state).toBe("error");
+    expect(poolOut.freshness?.state).toBe("error");
+  });
+});
+
+describe("readQuotaCurrentFile retry + verdicts (#10816)", () => {
+  const doc = JSON.stringify({
+    version: 1,
+    generatedAt: iso(4 * 60_000),
+    source: "openchamber-quota",
+    heartbeat: { tickAt: iso(4 * 60_000), ok: true, durationMs: 900, perProvider: {} },
+    providers: [
+      {
+        providerId: "openai",
+        providerName: "openai",
+        serviceId: "openai",
+        state: "ok",
+        measuredAt: iso(5 * 60_000),
+        source: "openchamber-quota",
+        windows: [],
+      },
+    ],
+  });
+  const noSleep = () => Promise.resolve();
+  const enoent = () => {
+    const e = new Error("no such file") as Error & { code: string };
+    e.code = "ENOENT";
+    return e;
+  };
+  const econn = () => {
+    const e = new Error("connection reset") as Error & { code: string };
+    e.code = "ECONNRESET";
+    return e;
+  };
+
+  test("ok on first read: no retry, file attached", async () => {
+    let calls = 0;
+    const res = await readQuotaCurrentFile("/x", {
+      readFile: async () => {
+        calls++;
+        return doc;
+      },
+      sleep: noSleep,
+    });
+    expect(res.verdict).toBe("ok");
+    expect(res.file?.providers).toHaveLength(1);
+    expect(calls).toBe(1);
+  });
+
+  test("transient transport failure recovers on retry", async () => {
+    let calls = 0;
+    let sleeps = 0;
+    const res = await readQuotaCurrentFile("/x", {
+      readFile: async () => {
+        calls++;
+        if (calls === 1) throw econn();
+        return doc;
+      },
+      sleep: async () => {
+        sleeps++;
+      },
+    });
+    expect(res.verdict).toBe("ok");
+    expect(calls).toBe(2);
+    expect(sleeps).toBe(1);
+  });
+
+  test("ENOENT on both attempts is missing", async () => {
+    const res = await readQuotaCurrentFile("/x", {
+      readFile: async () => {
+        throw enoent();
+      },
+      sleep: noSleep,
+    });
+    expect(res.verdict).toBe("missing");
+    expect(res.file).toBeNull();
+  });
+
+  test("transport failure on both attempts is transport, not missing", async () => {
+    const res = await readQuotaCurrentFile("/x", {
+      readFile: async () => {
+        throw econn();
+      },
+      sleep: noSleep,
+    });
+    expect(res.verdict).toBe("transport");
+    expect(res.error).toContain("connection reset");
+  });
+
+  test("mixed ENOENT then transport is transport (missing needs ENOENT twice)", async () => {
+    let calls = 0;
+    const res = await readQuotaCurrentFile("/x", {
+      readFile: async () => {
+        calls++;
+        throw calls === 1 ? enoent() : econn();
+      },
+      sleep: noSleep,
+    });
+    expect(res.verdict).toBe("transport");
+  });
+
+  test("first success followed by nothing: unparseable on bad JSON", async () => {
+    const res = await readQuotaCurrentFile("/x", {
+      readFile: async () => "{not json",
+      sleep: noSleep,
+    });
+    expect(res.verdict).toBe("unparseable");
+  });
+
+  test("structurally rejected document is unparseable", async () => {
+    const res = await readQuotaCurrentFile("/x", {
+      readFile: async () => JSON.stringify({ version: 1 }),
+      sleep: noSleep,
+    });
+    expect(res.verdict).toBe("unparseable");
+  });
+
+  test("transport then success still parses", async () => {
+    const res = await readQuotaCurrentFile("/x", {
+      readFile: (() => {
+        let n = 0;
+        return async () => {
+          n++;
+          if (n === 1) throw econn();
+          return doc;
+        };
+      })(),
+      sleep: noSleep,
+    });
+    expect(res.verdict).toBe("ok");
   });
 });
