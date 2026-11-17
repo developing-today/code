@@ -93,6 +93,54 @@ pub(super) async fn save_handler(
     // archive, tag set and metadata writes are one claim.
     let _save_name_guard = state.upload_name_lock.lock().await;
 
+    // #8524: stale-save conflict policy. A save is based on the
+    // version the client opened (`req.doc_id`); if the filename's
+    // current binding names a different version, another save landed
+    // first. Refuse with a conflict naming the current hash and
+    // preserve the current version — never silently supersede it
+    // (the pre-#8524 handler overwrote the tag whether or not the
+    // original was archived). The check here and the tag set below
+    // sit inside the same `upload_name_lock` critical section
+    // (#8407), so no other name claim can interleave between them.
+    // A name with no current binding is a create and proceeds
+    // whatever `doc_id` carries.
+    let current_binding = match upload_name_owner(&state.store, &req.name).await {
+        Ok(current) => current,
+        Err(err) => {
+            tracing::error!(
+                "[routes] Failed to look up current binding for '{}': {}",
+                req.name,
+                err
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to look up current version",
+            )
+                .into_response();
+        }
+    };
+    if let Some(current) = current_binding {
+        let current_hash = current.to_string();
+        if current_hash != req.doc_id {
+            tracing::info!(
+                "[routes] Stale save refused for '{}': based on {}, current is {}",
+                req.name,
+                req.doc_id,
+                current_hash
+            );
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "error": format!("Save conflict: '{}' changed since it was opened. Reload the current version before saving.", req.name),
+                    "reason": "stale_save",
+                    "current_hash": current_hash,
+                    "based_on": req.doc_id,
+                })),
+            )
+                .into_response();
+        }
+    }
+
     // Convert ProseMirror doc to the appropriate format based on file name
     let bytes = match convert_doc_to_bytes(&req.name, &req.doc) {
         Ok(b) => b,
@@ -135,9 +183,27 @@ pub(super) async fn save_handler(
     };
     let document_id = published.id.to_hex();
 
-    // Archive the original blob under a timestamped tag
-    let archive_name =
-        archive_original_tag(&state.store, &state.tag_store, &req.name, &req.doc_id).await;
+    // Archive the original blob under a timestamped tag. #8524: a
+    // matching save archives the version it supersedes, and an
+    // archive failure fails the save instead of reporting an
+    // unqualified success — the pre-#8524 `Option` conflated
+    // archived / stale / failed / nothing-to-archive into one
+    // silent path. (The stale case never reaches here: it was
+    // refused before publishing.)
+    let archive_name = if current_binding.is_some() {
+        match archive_original_tag(&state.store, &state.tag_store, &req.name, &req.doc_id).await {
+            ArchiveOutcome::Archived(name) => Some(name),
+            ArchiveOutcome::Failed => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to archive current version",
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        None
+    };
 
     // Set the tag to point to the new blob
     let tag = iroh_blobs::api::Tag::from(req.name.clone());
@@ -1579,6 +1645,16 @@ pub(super) fn extract_raw_text(doc: &serde_json::Value) -> String {
     blocks.join("\n")
 }
 
+/// Outcome of [`archive_original_tag`] (#8524): the superseded
+/// version was archived under the returned tag name, or archiving
+/// failed. The pre-#8524 `Option<String>` conflated failure with
+/// "nothing to archive", letting failed archives report as
+/// successful saves.
+pub(super) enum ArchiveOutcome {
+    Archived(String),
+    Failed,
+}
+
 /// Archive the original tag by creating a timestamped copy.
 ///
 /// If a tag with the given name exists and points to the expected hash,
@@ -1588,13 +1664,19 @@ pub(super) async fn archive_original_tag(
     tag_store: &TagStore,
     name: &str,
     expected_hash: &str,
-) -> Option<String> {
+) -> ArchiveOutcome {
     use futures_lite::StreamExt;
 
-    let expected: iroh_blobs::Hash = expected_hash.parse().ok()?;
+    let expected: iroh_blobs::Hash = match expected_hash.parse() {
+        Ok(hash) => hash,
+        Err(_) => return ArchiveOutcome::Failed,
+    };
 
     // Find the current tag
-    let mut tags = store.tags().list().await.ok()?;
+    let mut tags = match store.tags().list().await {
+        Ok(tags) => tags,
+        Err(_) => return ArchiveOutcome::Failed,
+    };
     let mut found = false;
     while let Some(Ok(tag_info)) = tags.next().await {
         let tag_name = String::from_utf8_lossy(tag_info.name.as_ref()).to_string();
@@ -1605,7 +1687,7 @@ pub(super) async fn archive_original_tag(
     }
 
     if !found {
-        return None;
+        return ArchiveOutcome::Failed;
     }
 
     // Create archive tag with timestamp
@@ -1633,11 +1715,11 @@ pub(super) async fn archive_original_tag(
                 archive_name,
                 expected_hash
             );
-            Some(archive_name)
+            ArchiveOutcome::Archived(archive_name)
         }
         Err(err) => {
             tracing::error!("[routes] Failed to create archive tag: {}", err);
-            None
+            ArchiveOutcome::Failed
         }
     }
 }

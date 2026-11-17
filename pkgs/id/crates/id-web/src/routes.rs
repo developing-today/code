@@ -2250,10 +2250,20 @@ mod save_publication_tests {
     }
 
     async fn save(state: AppState, name: &str, text: &str) -> Response {
+        save_based_on(
+            state,
+            name,
+            text,
+            &iroh_blobs::Hash::from_bytes([42; 32]).to_string(),
+        )
+        .await
+    }
+
+    async fn save_based_on(state: AppState, name: &str, text: &str, doc_id: &str) -> Response {
         save_handler(
             State(state),
             Json(SaveRequest {
-                doc_id: iroh_blobs::Hash::from_bytes([42; 32]).to_string(),
+                doc_id: doc_id.to_owned(),
                 name: name.to_owned(),
                 doc: json!({"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":text}]}]}),
             }),
@@ -2306,7 +2316,16 @@ mod save_publication_tests {
         )));
 
         // Repeated successful checkpoints get distinct durable revision events.
-        let second = save(state.clone(), "revision.md", "second revision").await;
+        // #8524: the second save names the version it is based on
+        // (the first save's hash) — a save based on anything else is
+        // a stale save and conflicts.
+        let second = save_based_on(
+            state.clone(),
+            "revision.md",
+            "second revision",
+            body["hash"].as_str().unwrap(),
+        )
+        .await;
         assert_eq!(second.status(), StatusCode::OK);
         let second_body = response_json(second).await;
         assert_ne!(body["document_id"], second_body["document_id"]);
@@ -2317,6 +2336,54 @@ mod save_publication_tests {
             .unwrap();
         assert!(state.local_events.lock().await.history(event_id).is_ok());
         assert!(state.local_events.lock().await.history(second_id).is_ok());
+    }
+
+    // #8524: two clients open the same version; the first save wins
+    // and archives it, the second — still based on the opened
+    // version — is refused 409 naming the current hash, and the
+    // current version stays bound.
+    #[tokio::test]
+    async fn stale_save_conflicts_and_preserves_current_version() {
+        let (mut state, _endpoint, _docs) = state().await;
+        state.save_limiter = SaveRateLimiter::new(Duration::ZERO);
+
+        // Both clients open the file at the version the first save
+        // creates.
+        let opened = save(state.clone(), "shared.md", "opened version").await;
+        assert_eq!(opened.status(), StatusCode::OK);
+        let opened_body = response_json(opened).await;
+        let h0 = opened_body["hash"].as_str().unwrap().to_owned();
+
+        // Client A saves first, based on the opened version: the
+        // save succeeds and archives the version it supersedes.
+        let a = save_based_on(state.clone(), "shared.md", "A revision", &h0).await;
+        assert_eq!(a.status(), StatusCode::OK);
+        let a_body = response_json(a).await;
+        let h1 = a_body["hash"].as_str().unwrap().to_owned();
+        assert_ne!(h0, h1);
+        assert!(
+            a_body["archive_name"]
+                .as_str()
+                .unwrap()
+                .starts_with("shared.md.archive."),
+            "{a_body}"
+        );
+
+        // Client B saves, still based on the opened version: a
+        // conflict naming the current hash, not a silent supersede.
+        let b = save_based_on(state.clone(), "shared.md", "B revision", &h0).await;
+        assert_eq!(b.status(), StatusCode::CONFLICT);
+        let b_body = response_json(b).await;
+        assert_eq!(b_body["reason"], "stale_save");
+        assert_eq!(b_body["current_hash"].as_str().unwrap(), h1);
+        assert_eq!(b_body["based_on"].as_str().unwrap(), h0);
+
+        // The binding still names A's version.
+        let owner = upload_name_owner(&state.store, "shared.md")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(owner.to_string(), h1);
     }
 
     #[tokio::test]
@@ -2350,9 +2417,12 @@ mod save_publication_tests {
         }
 
         let archive =
-            archive_original_tag(&state.store, &state.tag_store, "doc.md", &hash.to_string())
+            match archive_original_tag(&state.store, &state.tag_store, "doc.md", &hash.to_string())
                 .await
-                .unwrap();
+            {
+                ArchiveOutcome::Archived(name) => name,
+                ArchiveOutcome::Failed => panic!("archiving a bound original must succeed"),
+            };
         assert!(archive.starts_with("doc.md.archive."), "{archive}");
 
         // #5383: the archive alias carries the source's recorded
