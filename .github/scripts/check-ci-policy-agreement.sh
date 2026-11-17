@@ -521,6 +521,12 @@ push_targets_main() {
         if (rest ~ /^\{/) {
           anchor_body[anchor_here] = rest
           if (!has_unquoted_brace(rest)) anchor_collect = 1
+        } else if (rest ~ /^\[/) {
+          # A sequence anchor declared on a non-push event
+          # (`workflow_dispatch: &m [main]`) is referenced later as
+          # `branches: *m` or `{branches: *m}` (#9090 construct 3/4):
+          # record its tokens so the alias resolves before matching.
+          sequence_anchor[anchor_here] = add_tokens(rest)
         }
       }
       cur_anchor = anchor_here
@@ -689,6 +695,17 @@ push_targets_main() {
       val = substr(line, ind + 1)
       sub(/^[^:]*:[[:space:]]*/, "", val)
       if (subkey == "branches" || subkey == "branches-ignore" || subkey == "tags" || subkey == "tags-ignore") val = strip_comment(val)
+      # A filter key may itself declare the anchor (#9090 construct 3):
+      # `branches: &m [main]` followed by `branches-ignore: *m`. Record
+      # the anchored sequence so the later alias resolves to its tokens
+      # instead of being glob-parsed as a literal `&m [main]` pattern.
+      if (val ~ /^&[A-Za-z0-9_-]+([[:space:]]|$)/) {
+        seq_anchor_name = val
+        sub(/^&/, "", seq_anchor_name)
+        sub(/[[:space:]].*/, "", seq_anchor_name)
+        sub(/^&[A-Za-z0-9_-]+[[:space:]]*/, "", val)
+        if (val ~ /^\[/) sequence_anchor[seq_anchor_name] = add_tokens(val)
+      }
       if ((subkey == "branches" || subkey == "branches-ignore") && flow_unclosed(val)) flow_key = subkey
       if (subkey == "branches" || subkey == "branches-ignore") val = resolve_sequence_value(val)
       if (subkey == "branches") {
