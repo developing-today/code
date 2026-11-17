@@ -472,7 +472,29 @@ def gate_step() -> Optional[bool]:
             if c.get("lane") == "opencode" and not c.get("session_id")
         ]
 
-        return len(unbound_opencode) > 0
+        if unbound_opencode:
+            return True
+
+        # No verified candidates. Before concluding the queue is
+        # empty, check poll's per-queue read state (#8042): a queue
+        # whose broker read failed is UNKNOWN, not empty — the fire
+        # must log gate_unknown, never the false "no candidates"
+        # (the 2026-11-09 12:17Z fire logged no_candidates while the
+        # queue held four handed_off candidates it could not read).
+        failed_queues = [
+            q
+            for q, qdata in (poll_data.get("queues") or {}).items()
+            if isinstance(qdata, dict) and qdata.get("read_ok") is False
+        ]
+        if failed_queues:
+            print(
+                "Gate check: queue read failed for "
+                + ", ".join(sorted(failed_queues))
+                + "; candidate discovery unknown."
+            )
+            return None
+
+        return False
     except Exception as e:
         print(f"Gate check failed: {e}")
         return None
@@ -889,9 +911,30 @@ def launch_step(mode: str, cap_room: int) -> List[Dict]:
                 )
 
                 if bind_result.returncode != 0:
-                    # Bind failed - delete session and skip
-                    _delete_session(session_id)
-                    skips.append({"task_id": task_id, "reason": "bind_failed"})
+                    # Bind failed - delete session and skip. Record
+                    # WHY (#8042): bind's stderr names the exact
+                    # failed precondition (lease lapsed / ledger row
+                    # missing / already bound / task gone), and a
+                    # repeat bind loop is undiagnosable without it.
+                    # First non-empty line only, truncated — the bind
+                    # verb's precondition texts carry no credentials.
+                    bind_error = ""
+                    for _line in (bind_result.stderr or "").splitlines():
+                        if _line.strip():
+                            bind_error = _line.strip()[:200]
+                            break
+                    if not bind_error:
+                        for _line in (bind_result.stdout or "").splitlines():
+                            if _line.strip():
+                                bind_error = _line.strip()[:200]
+                                break
+                    skips.append(
+                        {
+                            "task_id": task_id,
+                            "reason": "bind_failed",
+                            "error": bind_error,
+                        }
+                    )
                     continue
 
                 # Step 4d: Send the execution prompt to the bound

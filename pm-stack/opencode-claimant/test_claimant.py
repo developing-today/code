@@ -694,5 +694,105 @@ class TestGateExitFireLog(unittest.TestCase):
         self.assertEqual(entries[0]["skips"], [{"reason": "no_candidates"}])
 
 
+class TestGateQueueReadFailed(unittest.TestCase):
+    """#8042: when poll could not read a queue, the gate is UNKNOWN
+    (None -> gate_unknown in the fire log), never a false
+    no_candidates verdict on an unread queue."""
+
+    def test_failed_read_with_no_candidates_is_unknown(self):
+        poll_data = {
+            "candidates": [],
+            "queues": {
+                "repo-health-code-pilot": {
+                    "read_ok": False,
+                    "read_errors": {"claimed": "broker down: HTTP 503"},
+                }
+            },
+        }
+        with patch.object(claimant, "run_poll", return_value=poll_data):
+            self.assertIsNone(claimant.gate_step())
+
+    def test_verified_empty_queue_is_still_no_candidates(self):
+        poll_data = {
+            "candidates": [],
+            "queues": {"repo-health-code-pilot": {"read_ok": True, "read_errors": {}}},
+        }
+        with patch.object(claimant, "run_poll", return_value=poll_data):
+            self.assertFalse(claimant.gate_step())
+
+    def test_verified_candidate_wins_despite_another_queues_failed_read(self):
+        poll_data = {
+            "candidates": [dict(CANDIDATE)],
+            "queues": {
+                "repo-health-code-pilot": {
+                    "read_ok": False,
+                    "read_errors": {"claimed": "broker down: HTTP 503"},
+                }
+            },
+        }
+        with patch.object(claimant, "run_poll", return_value=poll_data):
+            self.assertTrue(claimant.gate_step())
+
+    def test_main_logs_gate_unknown_on_failed_read(self):
+        poll_data = {
+            "candidates": [],
+            "queues": {
+                "repo-health-code-pilot": {
+                    "read_ok": False,
+                    "read_errors": {"claimed": "broker down: HTTP 503"},
+                }
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            fires = state_dir / "fires.jsonl"
+            with (
+                patch.object(claimant, "read_mode", return_value="live"),
+                patch.object(claimant, "run_poll", return_value=poll_data),
+                stub_claimed_rows([]),
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", fires),
+            ):
+                self.assertEqual(claimant.main(), 1)
+            entries = [
+                json.loads(line) for line in fires.read_text().splitlines() if line
+            ]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["skips"], [{"reason": "gate_unknown"}])
+
+
+class TestBindFailedRecordsError(unittest.TestCase):
+    """#8042: a bind_failed skip must carry the bind error text, so a
+    repeat bind loop says which precondition failed."""
+
+    def test_bind_failure_skip_includes_first_stderr_line(self):
+        binds = []
+        base_fake = make_fake_run(binds)
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and "bind" in argv:
+                binds.append(cmd)
+                return Result(
+                    1,
+                    "",
+                    "bind failed: task not claimed with a live lease\nsecond line ignored",
+                )
+            return base_fake(cmd, **kwargs)
+
+        with (
+            patch.object(claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            launched, skips = claimant.launch_step("live", 1)
+        self.assertEqual(launched, [])
+        self.assertEqual(len(skips), 1)
+        self.assertEqual(skips[0]["task_id"], 777)
+        self.assertEqual(skips[0]["reason"], "bind_failed")
+        self.assertEqual(
+            skips[0]["error"], "bind failed: task not claimed with a live lease"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
