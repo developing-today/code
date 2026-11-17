@@ -339,11 +339,19 @@ impl SharedFileWriter {
     }
 
     /// Reopen the configured path if external rotation replaced its file.
+    /// A path that no longer exists (rotation without `create`, or the
+    /// file was deleted) is recreated, so file logging resumes instead of
+    /// failing every later write.
     fn reopen_if_rotated(state: &mut SharedFileState) -> io::Result<()> {
-        let path_metadata = std::fs::metadata(&state.path)?;
-        let file_metadata = state.file.metadata()?;
-        if same_file(&path_metadata, &file_metadata) {
-            return Ok(());
+        match std::fs::metadata(&state.path) {
+            Ok(path_metadata) => {
+                let file_metadata = state.file.metadata()?;
+                if same_file(&path_metadata, &file_metadata) {
+                    return Ok(());
+                }
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
         }
 
         state.file = OpenOptions::new()
@@ -366,6 +374,16 @@ fn same_file(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
 #[cfg(not(unix))]
 fn same_file(_left: &std::fs::Metadata, _right: &std::fs::Metadata) -> bool {
     false
+}
+
+impl Drop for SharedFileWriter {
+    /// Write any tail that never got its newline, so the last partial
+    /// event is not lost when a per-event writer is dropped.
+    fn drop(&mut self) {
+        if !self.pending.is_empty() {
+            let _ = io::Write::flush(self);
+        }
+    }
 }
 
 impl io::Write for SharedFileWriter {
@@ -574,6 +592,33 @@ mod tests {
         drop(second);
         let contents = std::fs::read_to_string(&path).expect("read log file");
         assert_eq!(contents, "one\ntwo\n");
+        std::fs::remove_dir_all(&dir).expect("clean up temp dir");
+    }
+
+    #[test]
+    fn structured_logging_shared_file_writer_recreates_a_deleted_path_and_keeps_partial_tail() {
+        let dir = std::env::temp_dir().join(format!(
+            "id-structured-logging-deleted-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        let path = dir.join("id.log");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        let mut writer = SharedFileWriter::open(&path).expect("open log file");
+        writer.write_all(b"before delete\n").expect("write before delete");
+        std::fs::remove_file(&path).expect("delete log");
+        writer.write_all(b"after delete\n").expect("write after delete");
+        writer.write_all(b"no newline").expect("write partial tail");
+        drop(writer);
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read recreated log"),
+            "after delete\nno newline"
+        );
         std::fs::remove_dir_all(&dir).expect("clean up temp dir");
     }
 
