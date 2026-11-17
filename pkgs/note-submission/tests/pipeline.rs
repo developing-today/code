@@ -1,7 +1,8 @@
 use note_submission::{
-    CorpusControl, DestinationWriter, HumanApproval, MemoryStore, NoteOutStatus, PlacementDecision,
-    Provenance, ProvenanceSpan, SensitivityCeiling, SensitivityTier, SubmissionState,
-    SubmissionStore, UploadAttemptStatus, content_sha256, promote, stage, submit,
+    AtlasTier, CorpusControl, DestinationWriter, HumanApproval, MemoryStore, NoteClass,
+    NoteOutStatus, PlacementDecision, PlacementDeclaration, PlacementHome, Provenance,
+    ProvenanceSpan, SensitivityCeiling, SensitivityTier, SubmissionState, SubmissionStore,
+    UploadAttemptStatus, content_sha256, promote, stage, submit, submit_with_declaration,
 };
 
 #[derive(Default)]
@@ -242,4 +243,156 @@ fn source_sensitivity_ceiling_is_not_a_physical_tier_alias() {
         SubmissionState::Submitted
     );
     assert!(store.staged("sub-4").is_none());
+}
+
+#[test]
+fn declared_finding_defaults_to_zettel_tier_1_and_staging_shows_it() {
+    // Oracle (#8204, design §2 + §7 item 1): a submission declaring
+    // the durable-finding class with no intended tier gets the
+    // decision table's defaults — home zettel, Atlas Tier 1 — and
+    // the staged record a promoter reviews carries that effective
+    // declaration next to the routing decision.
+    let mut store = MemoryStore::default();
+    let content = "verified finding".to_owned();
+    submit_with_declaration(
+        &mut store,
+        "sub-decl-1",
+        content.clone(),
+        provenance(&content),
+        SensitivityCeiling::Internal,
+        PlacementDeclaration {
+            note_class: NoteClass::DurableFinding,
+            atlas_tier: None,
+        },
+        "2026-11-16T23:01:00Z",
+    )
+    .unwrap();
+    let effective = store
+        .submission("sub-decl-1")
+        .unwrap()
+        .effective_declaration()
+        .expect("declared submission has an effective declaration");
+    assert_eq!(effective.note_class, NoteClass::DurableFinding);
+    assert_eq!(effective.home, PlacementHome::Zettel);
+    assert_eq!(effective.atlas_tier, AtlasTier::Tier1);
+    assert!(effective.tier_was_defaulted);
+
+    stage(
+        &mut store,
+        "sub-decl-1",
+        placement(),
+        "2026-11-16T23:02:00Z",
+    )
+    .unwrap();
+    assert_eq!(
+        store.staged("sub-decl-1").unwrap().declaration,
+        Some(effective)
+    );
+}
+
+#[test]
+fn declared_tier_overrides_table_default_and_undeclared_keeps_prior_behaviour() {
+    // Oracle (#8204): an intended tier replaces the class default in
+    // the effective declaration; a submission with no declaration
+    // has none at submission or staging — exactly the prior
+    // behaviour — and nothing about the gate changes.
+    let mut store = MemoryStore::default();
+    let content = "design record".to_owned();
+    submit_with_declaration(
+        &mut store,
+        "sub-decl-2",
+        content.clone(),
+        provenance(&content),
+        SensitivityCeiling::Internal,
+        PlacementDeclaration {
+            note_class: NoteClass::DesignRecord,
+            atlas_tier: Some(AtlasTier::Tier1),
+        },
+        "t0",
+    )
+    .unwrap();
+    let effective = store
+        .submission("sub-decl-2")
+        .unwrap()
+        .effective_declaration()
+        .unwrap();
+    assert_eq!(effective.home, PlacementHome::RepoDoc);
+    assert_eq!(effective.atlas_tier, AtlasTier::Tier1);
+    assert!(!effective.tier_was_defaulted);
+
+    submit(
+        &mut store,
+        "sub-decl-3",
+        content.clone(),
+        provenance(&content),
+        SensitivityCeiling::Internal,
+        "t0",
+    )
+    .unwrap();
+    let undeclared = store.submission("sub-decl-3").unwrap();
+    assert_eq!(undeclared.declared_placement, None);
+    assert_eq!(undeclared.effective_declaration(), None);
+    stage(&mut store, "sub-decl-3", placement(), "t1").unwrap();
+    assert_eq!(store.staged("sub-decl-3").unwrap().declaration, None);
+}
+
+#[test]
+fn decision_table_defaults_cover_every_class() {
+    // Oracle: the design §2 decision table, one row per class —
+    // home and Atlas tier exactly as the table states them.
+    for (class, home, tier) in [
+        (
+            NoteClass::EphemeralWorkingNote,
+            PlacementHome::WorkspaceScratch,
+            AtlasTier::NotIngested,
+        ),
+        (
+            NoteClass::SessionDailyLog,
+            PlacementHome::MemoryDailyLog,
+            AtlasTier::Tier3,
+        ),
+        (
+            NoteClass::DurableFinding,
+            PlacementHome::Zettel,
+            AtlasTier::Tier1,
+        ),
+        (
+            NoteClass::ResearchSynthesis,
+            PlacementHome::Zettel,
+            AtlasTier::Tier1,
+        ),
+        (
+            NoteClass::DesignRecord,
+            PlacementHome::RepoDoc,
+            AtlasTier::Tier2,
+        ),
+        (
+            NoteClass::Runbook,
+            PlacementHome::OwningRepo,
+            AtlasTier::Tier2,
+        ),
+        (
+            NoteClass::UserFacingDocument,
+            PlacementHome::RequestingSurface,
+            AtlasTier::NotIngested,
+        ),
+        (
+            NoteClass::MemoryTopic,
+            PlacementHome::AgentMemory,
+            AtlasTier::Tier3,
+        ),
+        (
+            NoteClass::MachineStateSnapshot,
+            PlacementHome::OwningSystemStore,
+            AtlasTier::NotIngested,
+        ),
+        (
+            NoteClass::IdNativeNote,
+            PlacementHome::IdGraph,
+            AtlasTier::Tier0,
+        ),
+    ] {
+        assert_eq!(class.default_home(), home, "{class:?} home");
+        assert_eq!(class.default_tier(), tier, "{class:?} tier");
+    }
 }
