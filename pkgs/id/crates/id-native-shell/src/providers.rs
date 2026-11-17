@@ -31,13 +31,17 @@
 //!   it never carries argument values or result bytes.
 //!
 //! The adapter seam is [`ClientProviderExecutor`]: step 5 registers
-//! the first real executor (`client.file.read`); step 4 registers
-//! none in the shipped shell, so a granted-but-unimplemented provider
-//! refuses `provider_unavailable` and an ungranted one refuses
-//! `provider_not_granted` — no provider is enabled by default, and a
-//! malicious or mistaken host request still meets the local check.
+//! the first real executor ([`FileReadExecutor`], `client.file.read`)
+//! through [`ProviderAdapter::grant_file_read`]; a provider with no
+//! registered executor refuses `provider_unavailable` and an ungranted
+//! one refuses `provider_not_granted` — no provider is enabled by
+//! default, and a malicious or mistaken host request still meets the
+//! local check.
 
 use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::io::Read as _;
+use std::path::{Component, Path, PathBuf};
 
 use serde_json::{Value, json};
 
@@ -61,6 +65,26 @@ pub const REFUSAL_EXPIRED: &str = "provider_timeout";
 pub const REFUSAL_TOO_LARGE: &str = "result_too_large";
 /// Refusal: the request frame lacks a usable nonce or provider name.
 pub const REFUSAL_MALFORMED: &str = "provider_malformed_request";
+/// Refusal: a `client.file.read` execution was attempted without the
+/// local user's disclosure acknowledgment — the opt-in that states
+/// returned bytes become journaled world data (design invariant 10
+/// and the §4 durability disclosure; Drew's §9 Q2 ruling A,
+/// 2026-11-16: journaled results with opt-in disclosure).
+pub const REFUSAL_DISCLOSURE_NOT_ACKNOWLEDGED: &str = "content_disclosure_not_acknowledged";
+/// Refusal: the requested path is absolute, traverses above the
+/// user-selected root, escapes it through a symlink, or is not a
+/// usable relative path.
+pub const REFUSAL_INVALID_PATH: &str = "file_read_invalid_path";
+/// Refusal: no file exists at the resolved path under the root.
+pub const REFUSAL_NOT_FOUND: &str = "file_read_not_found";
+/// Refusal: the resolved path exists but is not a regular file.
+pub const REFUSAL_NOT_A_FILE: &str = "file_read_not_a_file";
+/// Refusal: the local filesystem refused the read itself.
+pub const REFUSAL_IO: &str = "file_read_io";
+
+/// The first client-side provider's registry name (F13.7 step 5;
+/// the manifest is `id_caps::world_caps::CLIENT_FILE_READ_MANIFEST`).
+pub const CLIENT_FILE_READ_PROVIDER: &str = "client.file.read";
 
 /// Rate-limit window for `per_minute` bounds, in milliseconds.
 const RATE_WINDOW_MS: u64 = 60_000;
@@ -117,6 +141,113 @@ pub trait ClientProviderExecutor: Send {
     ///
     /// Returns a stable refusal code when the resource refuses.
     fn execute(&mut self, args: &Value, max_bytes: u32) -> Result<Vec<u8>, String>;
+}
+
+/// The first real client provider (F13.7 step 5): bounded read-only
+/// file access under one user-selected root, per the design's
+/// first-provider safety rules — only paths beneath the root,
+/// absolute paths and parent traversal refused, symlink escape
+/// refused (the canonical target must stay beneath the canonical
+/// root), at most the effective byte bound returned, and an
+/// over-bound file refused whole ([`REFUSAL_TOO_LARGE`]), never
+/// silently truncated.
+///
+/// Disclosure is part of the executor, not just the grant path:
+/// constructed with `disclosure_acknowledged: false`, every
+/// execution refuses [`REFUSAL_DISCLOSURE_NOT_ACKNOWLEDGED`], so no
+/// registration route can serve reads whose journal disclosure the
+/// local user has not opted into.
+pub struct FileReadExecutor {
+    root: PathBuf,
+    disclosure_acknowledged: bool,
+}
+
+impl FileReadExecutor {
+    /// Create an executor for `root`. The root is canonicalized
+    /// once here and must be an existing directory; every request
+    /// path is resolved against this canonical root.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`REFUSAL_IO`] when the root cannot be canonicalized
+    /// or is not a directory.
+    pub fn new(root: impl Into<PathBuf>, disclosure_acknowledged: bool) -> Result<Self, String> {
+        let root = root
+            .into()
+            .canonicalize()
+            .map_err(|_| REFUSAL_IO.to_owned())?;
+        if !root.is_dir() {
+            return Err(REFUSAL_IO.to_owned());
+        }
+        Ok(Self {
+            root,
+            disclosure_acknowledged,
+        })
+    }
+
+    /// The canonical user-selected root this executor serves.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Resolve a request path against the root, enforcing the
+    /// design's path rules. The request path must be relative, must
+    /// contain no parent or root components, and its canonical form
+    /// must stay beneath the canonical root (which is what refuses
+    /// symlink escapes).
+    fn resolve(&self, requested: &str) -> Result<PathBuf, String> {
+        if requested.is_empty() {
+            return Err(REFUSAL_INVALID_PATH.to_owned());
+        }
+        let relative = Path::new(requested);
+        if relative.is_absolute() {
+            return Err(REFUSAL_INVALID_PATH.to_owned());
+        }
+        for component in relative.components() {
+            match component {
+                Component::Normal(_) | Component::CurDir => {}
+                Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                    return Err(REFUSAL_INVALID_PATH.to_owned());
+                }
+            }
+        }
+        let candidate = self.root.join(relative);
+        let canonical = candidate
+            .canonicalize()
+            .map_err(|_| REFUSAL_NOT_FOUND.to_owned())?;
+        if !canonical.starts_with(&self.root) {
+            return Err(REFUSAL_INVALID_PATH.to_owned());
+        }
+        Ok(canonical)
+    }
+}
+
+impl ClientProviderExecutor for FileReadExecutor {
+    fn execute(&mut self, args: &Value, max_bytes: u32) -> Result<Vec<u8>, String> {
+        if !self.disclosure_acknowledged {
+            return Err(REFUSAL_DISCLOSURE_NOT_ACKNOWLEDGED.to_owned());
+        }
+        let Some(requested) = args["path"].as_str() else {
+            return Err(REFUSAL_INVALID_PATH.to_owned());
+        };
+        let path = self.resolve(requested)?;
+        let metadata = std::fs::metadata(&path).map_err(|_| REFUSAL_IO.to_owned())?;
+        if !metadata.is_file() {
+            return Err(REFUSAL_NOT_A_FILE.to_owned());
+        }
+        // Read at most one byte past the bound: an over-bound file
+        // is refused whole, never silently truncated.
+        let file = File::open(&path).map_err(|_| REFUSAL_IO.to_owned())?;
+        let mut bytes = Vec::new();
+        file.take(u64::from(max_bytes) + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| REFUSAL_IO.to_owned())?;
+        if bytes.len() > max_bytes as usize {
+            return Err(REFUSAL_TOO_LARGE.to_owned());
+        }
+        Ok(bytes)
+    }
 }
 
 /// One user-readable local audit entry: the record that the local
@@ -199,6 +330,41 @@ impl ProviderAdapter {
                 in_flight: 0,
             },
         );
+    }
+
+    /// The step-5 opt-in for `client.file.read`: register the
+    /// [`FileReadExecutor`] rooted at `root` and grant it for
+    /// `world`, in one step, so the shipped shell's opt-in surface
+    /// cannot grant the provider without its executor or vice versa.
+    ///
+    /// `disclosure_acknowledged` is the local user's explicit
+    /// acknowledgment of the design's durability disclosure: bytes
+    /// this provider returns enter the world program and its durable
+    /// journal, where the host/operator and anyone with journal
+    /// access can later see them (Drew's §9 Q2 ruling A: journaled
+    /// results with opt-in disclosure). Without it the grant is
+    /// refused with [`REFUSAL_DISCLOSURE_NOT_ACKNOWLEDGED`] and
+    /// nothing is registered or granted.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable refusal code when the disclosure is not
+    /// acknowledged or the root cannot be canonicalized as a
+    /// directory.
+    pub fn grant_file_read(
+        &mut self,
+        world: &str,
+        root: impl Into<PathBuf>,
+        bounds: LocalBounds,
+        disclosure_acknowledged: bool,
+    ) -> Result<(), String> {
+        if !disclosure_acknowledged {
+            return Err(REFUSAL_DISCLOSURE_NOT_ACKNOWLEDGED.to_owned());
+        }
+        let executor = FileReadExecutor::new(root, true)?;
+        self.register_executor(CLIENT_FILE_READ_PROVIDER, Box::new(executor));
+        self.grant(world, CLIENT_FILE_READ_PROVIDER, bounds);
+        Ok(())
     }
 
     /// Revoke a grant, effective immediately: the provider leaves
@@ -545,5 +711,160 @@ mod tests {
                 in_flight: 1,
             }
         );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod file_read_tests {
+    use super::*;
+
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
+
+    /// A unique temporary tree: `root/` is the user-selected root,
+    /// and the returned base also holds an `outside.txt` sibling the
+    /// root must never serve.
+    fn temp_tree() -> (PathBuf, PathBuf) {
+        let unique = format!(
+            "id-file-read-test-{}-{}",
+            std::process::id(),
+            NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+        );
+        let base = std::env::temp_dir().join(unique);
+        let root = base.join("root");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("notes.txt"), b"hello world").unwrap();
+        std::fs::write(root.join("sub").join("deep.txt"), b"deep").unwrap();
+        std::fs::write(base.join("outside.txt"), b"outside").unwrap();
+        (base, root)
+    }
+
+    fn executor(root: &Path) -> FileReadExecutor {
+        FileReadExecutor::new(root.to_path_buf(), true).unwrap()
+    }
+
+    #[test]
+    fn reads_files_beneath_the_root() {
+        let (base, root) = temp_tree();
+        let mut exec = executor(&root);
+        assert_eq!(
+            exec.execute(&json!({"path": "notes.txt"}), 32_768).unwrap(),
+            b"hello world"
+        );
+        assert_eq!(
+            exec.execute(&json!({"path": "sub/deep.txt"}), 32_768)
+                .unwrap(),
+            b"deep"
+        );
+        assert_eq!(
+            exec.execute(&json!({"path": "./notes.txt"}), 32_768)
+                .unwrap(),
+            b"hello world"
+        );
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn refuses_absolute_traversal_and_missing_paths() {
+        let (base, root) = temp_tree();
+        let mut exec = executor(&root);
+        for bad in ["/etc/passwd", "../outside.txt", "sub/../../outside.txt", ""] {
+            assert_eq!(
+                exec.execute(&json!({"path": bad}), 32_768),
+                Err(REFUSAL_INVALID_PATH.to_owned()),
+                "path {bad:?}"
+            );
+        }
+        assert_eq!(
+            exec.execute(&json!({"path": "missing.txt"}), 32_768),
+            Err(REFUSAL_NOT_FOUND.to_owned())
+        );
+        assert_eq!(
+            exec.execute(&json!({"path": "sub"}), 32_768),
+            Err(REFUSAL_NOT_A_FILE.to_owned())
+        );
+        assert_eq!(
+            exec.execute(&json!({}), 32_768),
+            Err(REFUSAL_INVALID_PATH.to_owned())
+        );
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_symlink_escape_but_serves_in_root_symlinks() {
+        let (base, root) = temp_tree();
+        std::os::unix::fs::symlink(base.join("outside.txt"), root.join("escape.txt")).unwrap();
+        std::os::unix::fs::symlink(root.join("notes.txt"), root.join("alias.txt")).unwrap();
+        let mut exec = executor(&root);
+        assert_eq!(
+            exec.execute(&json!({"path": "escape.txt"}), 32_768),
+            Err(REFUSAL_INVALID_PATH.to_owned())
+        );
+        assert_eq!(
+            exec.execute(&json!({"path": "alias.txt"}), 32_768).unwrap(),
+            b"hello world"
+        );
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn refuses_over_bound_files_whole_never_truncated() {
+        let (base, root) = temp_tree();
+        std::fs::write(root.join("big.bin"), vec![7_u8; 4096]).unwrap();
+        let mut exec = executor(&root);
+        assert_eq!(
+            exec.execute(&json!({"path": "big.bin"}), 1024),
+            Err(REFUSAL_TOO_LARGE.to_owned())
+        );
+        assert_eq!(
+            exec.execute(&json!({"path": "big.bin"}), 4096)
+                .unwrap()
+                .len(),
+            4096
+        );
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[test]
+    fn disclosure_is_required_to_grant_and_to_execute() {
+        let (base, root) = temp_tree();
+        // An executor built without the acknowledgment refuses
+        // every read, even of an in-root file.
+        let mut unacknowledged = FileReadExecutor::new(root.clone(), false).unwrap();
+        assert_eq!(
+            unacknowledged.execute(&json!({"path": "notes.txt"}), 32_768),
+            Err(REFUSAL_DISCLOSURE_NOT_ACKNOWLEDGED.to_owned())
+        );
+        // The adapter-level opt-in refuses to grant at all without
+        // it, and offers nothing.
+        let mut adapter = ProviderAdapter::new();
+        assert_eq!(
+            adapter.grant_file_read("world-a", root.clone(), LocalBounds::DESIGN_DEFAULT, false),
+            Err(REFUSAL_DISCLOSURE_NOT_ACKNOWLEDGED.to_owned())
+        );
+        assert_eq!(adapter.offer_frame("world-a"), None);
+        // With it, the grant registers and a request executes
+        // end-to-end through the adapter's local check.
+        adapter
+            .grant_file_read("world-a", root, LocalBounds::DESIGN_DEFAULT, true)
+            .unwrap();
+        assert!(adapter.is_granted("world-a", CLIENT_FILE_READ_PROVIDER));
+        let reply = adapter.handle_request(
+            "world-a",
+            &json!({
+                "type": "provider_request",
+                "nonce": "n1",
+                "provider": CLIENT_FILE_READ_PROVIDER,
+                "args": {"path": "notes.txt"},
+                "deadline_ms": 5000,
+            }),
+            1_000,
+        );
+        assert_eq!(reply["ok"], true);
+        assert_eq!(reply["result_hex"], json!(hex_encode(b"hello world")));
+        std::fs::remove_dir_all(base).ok();
     }
 }
