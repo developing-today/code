@@ -123,6 +123,7 @@ let
     ++ (lib.optional cfg.repoArchive.enable "repo-archive")
     ++ (lib.optional cfg.state.enable "state")
     ++ (lib.optional cfg.opencodeDb.enable "opencode-db")
+    ++ (lib.optional cfg.coldStoreNightly.enable "cold-store")
   );
   watchdogWanted = cfg.watchdog.enable && watchdogJobs != "";
   servicePath = lib.makeBinPath [

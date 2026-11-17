@@ -313,17 +313,7 @@ impl LocalEvents {
                 }
             }
         }
-        let id = self.record(
-            IDENTITY_KIND,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            &[],
-        )?;
+        let id = self.record(IDENTITY_KIND, None, None, None, None, None, None, None, &[])?;
         Ok(Some(id))
     }
 
