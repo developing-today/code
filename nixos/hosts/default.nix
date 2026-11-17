@@ -46,6 +46,7 @@ in
       "user"
       "backup"
       "muse"
+      "dot-ssh"
       "root"
     ];
     wireless = [
