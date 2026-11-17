@@ -4147,7 +4147,9 @@ mod tests {
                 }
                 crate::world_line::WorldLine::AnchorList => WorldCommand::AnchorList,
                 crate::world_line::WorldLine::Talk { target } => WorldCommand::Talk { target },
-                crate::world_line::WorldLine::Anchors { target } => WorldCommand::Anchors { target },
+                crate::world_line::WorldLine::Anchors { target } => {
+                    WorldCommand::Anchors { target }
+                }
                 crate::world_line::WorldLine::Resolve { thread, into } => {
                     WorldCommand::Resolve { thread, into }
                 }

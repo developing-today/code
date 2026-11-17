@@ -1386,7 +1386,9 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             Ok(Some(id)) => info!("serve: published identity event {id}"),
             Ok(None) => info!("serve: identity event already in the log"),
             Err(err) => {
-                warn!("serve: identity event not published ({err:#}); user subject falls back to the earliest event");
+                warn!(
+                    "serve: identity event not published ({err:#}); user subject falls back to the earliest event"
+                );
             }
         }
         Some(Arc::new(tokio::sync::Mutex::new(events)))
