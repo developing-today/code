@@ -68,12 +68,33 @@ function ceilingExceeded(headroom: number): FailClosed {
   );
 }
 
-/** Reads a request body as text, giving up as soon as it exceeds
- * `limit` bytes so an oversized body is never buffered whole. */
-async function readTextUpTo(req: Request, limit: number): Promise<string | null> {
-  if (!req.body) return "";
+/** Hard per-request body bound for every mutating route (#11337),
+ * matching the platform's default request size. It only bounds
+ * memory; the storage ceiling stays the authority on what fits. */
+export const MAX_BODY_BYTES = 100 * 1024 * 1024;
+
+/** The most body bytes any mutating route will read for this
+ * deployment: the storage ceiling when one is configured (no single
+ * write can exceed the whole ceiling), capped at MAX_BODY_BYTES.
+ * Shared by the front door and the DO so the two cannot drift. A
+ * malformed ceiling falls back to MAX_BODY_BYTES here; the DO's own
+ * ceiling check still fails those writes closed. */
+export function requestBodyLimit(rawCeiling: string | undefined): number {
+  if (rawCeiling === undefined || rawCeiling === "") return MAX_BODY_BYTES;
+  const n = Number(rawCeiling);
+  if (!Number.isInteger(n) || n < 0) return MAX_BODY_BYTES;
+  return Math.min(n, MAX_BODY_BYTES);
+}
+
+export function bodyTooLarge(limit: number): FailClosed {
+  return new FailClosed(413, "body_too_large", `request body is larger than the ${limit}-byte limit`);
+}
+
+/** Reads a request body, giving up as soon as it exceeds `limit`
+ * bytes so an oversized body is never buffered whole. */
+async function readBytesUpTo(req: Request, limit: number): Promise<Uint8Array<ArrayBuffer> | null> {
+  if (!req.body) return new Uint8Array(0);
   const reader = req.body.getReader();
-  const decoder = new TextDecoder();
   const chunks: Uint8Array[] = [];
   let total = 0;
   for (;;) {
@@ -92,7 +113,12 @@ async function readTextUpTo(req: Request, limit: number): Promise<string | null>
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return decoder.decode(bytes);
+  return bytes;
+}
+
+async function readTextUpTo(req: Request, limit: number): Promise<string | null> {
+  const bytes = await readBytesUpTo(req, limit);
+  return bytes === null ? null : new TextDecoder().decode(bytes);
 }
 
 export class UserDO {
@@ -282,7 +308,14 @@ export class UserDO {
       }
       const blobHashMatch = url.pathname.match(/^\/v1\/blobs\/([0-9a-f]{64})$/);
       if (url.pathname === "/v1/blobs" && req.method === "PUT") {
-        const bytes = new Uint8Array(await req.arrayBuffer());
+        // Bounded read (#11337): a blob larger than the whole
+        // ceiling can never fit, so the ceiling bounds the read too.
+        const limit = requestBodyLimit(this.env.USER_CEILING_BYTES);
+        const tooLarge = () => (this.ceilingBytes() === null ? bodyTooLarge(limit) : ceilingExceeded(limit));
+        const declared = req.headers.get("content-length");
+        if (declared !== null && Number(declared) > limit) throw tooLarge();
+        const bytes = await readBytesUpTo(req, limit);
+        if (bytes === null) throw tooLarge();
         const digest = await crypto.subtle.digest("SHA-256", bytes);
         const hash = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
         const bucket = blobsBindingFor(this.env, jurisdiction as Jurisdiction);
@@ -341,7 +374,11 @@ export class UserDO {
         const headroom = this.kvHeadroom(priorBytes);
         let value: string | null;
         if (headroom === null) {
-          value = await req.text();
+          const limit = requestBodyLimit(this.env.USER_CEILING_BYTES);
+          const declared = req.headers.get("content-length");
+          if (declared !== null && Number(declared) > limit) throw bodyTooLarge(limit);
+          value = await readTextUpTo(req, limit);
+          if (value === null) throw bodyTooLarge(limit);
         } else {
           const declared = req.headers.get("content-length");
           if (declared !== null && Number(declared) > headroom) throw ceilingExceeded(headroom);
