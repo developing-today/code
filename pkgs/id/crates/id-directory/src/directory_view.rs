@@ -1057,8 +1057,10 @@ pub fn action_from_fields(fields: &BTreeMap<String, String>) -> Result<Directory
         },
         "publish_document" => DirectoryAction::PublishDocument {
             media_type: field(fields, "media_type")?.to_owned(),
-            content: serde_json::from_str(field(fields, "content")?)
-                .context("content is not valid JSON")?,
+            content: id_core::json_unique::parse_json_without_duplicate_keys(field(
+                fields, "content",
+            )?)
+            .context("content is not valid JSON")?,
             after: after_of(fields),
         },
         "publish_tag" => DirectoryAction::PublishTag {
@@ -1068,8 +1070,10 @@ pub fn action_from_fields(fields: &BTreeMap<String, String>) -> Result<Directory
             after: after_of(fields),
         },
         "receive" => DirectoryAction::Receive {
-            envelope: serde_json::from_str(field(fields, "envelope")?)
-                .context("envelope is not valid JSON")?,
+            envelope: id_core::json_unique::parse_json_without_duplicate_keys(field(
+                fields, "envelope",
+            )?)
+            .context("envelope is not valid JSON")?,
         },
         "verify" => DirectoryAction::Verify {
             account: field(fields, "account")?.to_owned(),
@@ -1758,6 +1762,25 @@ mod tests {
 
     fn node() -> String {
         iroh::SecretKey::from_bytes(&[7; 32]).public().to_string()
+    }
+
+    /// Oracle: publish_document content and receive envelope are stored and
+    /// forwarded, so a duplicated key must be refused at the action parse —
+    /// the stored value is the one supplied.
+    #[test]
+    fn publish_document_and_receive_refuse_a_duplicated_key() {
+        let mut fields = BTreeMap::new();
+        fields.insert("action".to_string(), "publish_document".to_string());
+        fields.insert("media_type".to_string(), "application/json".to_string());
+        fields.insert("content".to_string(), r#"{"a":1,"a":2}"#.to_string());
+        let error = action_from_fields(&fields).unwrap_err().to_string();
+        assert!(error.contains("a"), "{error}");
+
+        let mut fields = BTreeMap::new();
+        fields.insert("action".to_string(), "receive".to_string());
+        fields.insert("envelope".to_string(), r#"{"id":"x","id":"y"}"#.to_string());
+        let error = action_from_fields(&fields).unwrap_err().to_string();
+        assert!(error.contains("id"), "{error}");
     }
 
     fn sign(directory: &mut Directory, name: &str) -> (String, String) {

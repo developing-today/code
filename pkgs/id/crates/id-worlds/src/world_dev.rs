@@ -1737,6 +1737,8 @@ pub fn parse_fuzz_decl(text: &str) -> Result<FuzzDecl> {
         text.len() <= MAX_FUZZ_DECL_BYTES,
         "fuzz declaration exceeds {MAX_FUZZ_DECL_BYTES} bytes"
     );
+    id_core::json_unique::parse_json_without_duplicate_keys(text)
+        .context("parse the fuzz declaration as version-1 JSON")?;
     let decl: FuzzDecl =
         serde_json::from_str(text).context("parse the fuzz declaration as version-1 JSON")?;
     ensure!(
@@ -2259,6 +2261,15 @@ mod fuzz_tests {
         assert_eq!(decl.invariants.len(), 5);
         assert_eq!(decl.invariants[2].kind(), "keys_present");
         assert_eq!(decl.invariants[3].kind(), "numeric_bounds");
+    }
+
+    #[test]
+    fn parse_fuzz_decl_refuses_a_duplicated_key() {
+        // Oracle: the version/bounds checks below the parse must never see a
+        // collapsed document, so a repeated key is refused at the parse.
+        let err = parse_fuzz_decl(r#"{"version": 1, "version": 1, "inputs": ["inc"]}"#)
+            .unwrap_err();
+        assert!(err.to_string().contains("version"), "{err}");
     }
 
     #[test]

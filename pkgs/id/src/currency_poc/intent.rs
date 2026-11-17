@@ -262,6 +262,13 @@ impl FileIntentStore {
                     continue;
                 }
             };
+            if let Err(error) = id_core::json_unique::parse_slice_without_duplicate_keys(&bytes) {
+                unreadable.push(UnreadableIntent {
+                    path,
+                    reason: format!("parse: {error}"),
+                });
+                continue;
+            }
             match serde_json::from_slice::<IntentRecord>(&bytes) {
                 Ok(record) => scanned.push(ScannedIntent { path, record }),
                 Err(error) => unreadable.push(UnreadableIntent {

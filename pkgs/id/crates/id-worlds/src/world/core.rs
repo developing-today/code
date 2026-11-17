@@ -295,7 +295,7 @@ fn validate_import_envelope(event: &WorldEvent, payload_digest: &str) -> Result<
             ));
         }
     };
-    let envelope: serde_json::Value = serde_json::from_str(text)
+    let envelope: serde_json::Value = id_core::json_unique::parse_json_without_duplicate_keys(text)
         .map_err(|_| anyhow::anyhow!("journal import event is not a transfer envelope"))?;
     ensure!(
         envelope["protocol"] == "world.entity-transfer.v1" && envelope["direction"] == "import",

@@ -509,6 +509,21 @@ fn a_transcript_follows_the_session_phases() {
 }
 
 #[test]
+fn contract_and_transcript_refuse_a_duplicated_key() {
+    // Oracle: check_transcript compares frames against the contract, so a
+    // collapsed duplicate would let the checked frame differ from the one
+    // supplied. Both the contract document and each transcript line refuse it.
+    let err = check_transcript(contract, r#"{"from": "peer", "from": "client", "frame": {}}"#)
+        .unwrap_err();
+    assert!(err.to_string().contains("from"), "{err}");
+
+    // The real contract document with one key repeated in the raw text.
+    let text = SHELL_CONTRACT_JSON.replacen('{', r#"{"contract":"again","#, 1);
+    let err = ShellContract::parse(&text).unwrap_err();
+    assert!(err.contains("contract"), "{err}");
+}
+
+#[test]
 fn provider_frames_conform_only_where_the_contract_allows_them() {
     let contract = contract();
 

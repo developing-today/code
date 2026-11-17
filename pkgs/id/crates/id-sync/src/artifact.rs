@@ -1282,6 +1282,8 @@ impl<H: SessionHost> ProtocolHandler for ArtifactPullProtocol<H> {
         let Some(frame) = frame else {
             return Ok(());
         };
+        id_core::json_unique::parse_slice_without_duplicate_keys(&frame)
+            .map_err(|error| refused(error.into()))?;
         let request: PullRequest =
             serde_json::from_slice(&frame).map_err(|error| refused(error.into()))?;
         let page = self.page(&request).await.map_err(refused)?;
@@ -1330,6 +1332,11 @@ pub async fn push(endpoint: &Endpoint, target: EndpointAddr, artifact: &SignedAr
 }
 
 async fn receive_pushed<H: SessionHost>(hub: &H, body: &[u8]) -> Reply {
+    if let Err(error) = id_core::json_unique::parse_slice_without_duplicate_keys(body) {
+        return Reply::Refused {
+            message: format!("not an artifact: {error}"),
+        };
+    }
     let artifact: SignedArtifact = match serde_json::from_slice(body) {
         Ok(artifact) => artifact,
         Err(error) => {
@@ -1403,6 +1410,8 @@ pub async fn fetch_page_within(
         let frame = read_frame(&mut recv)
             .await?
             .context("home server closed without a page")?;
+        id_core::json_unique::parse_slice_without_duplicate_keys(&frame)
+            .context("artifact page is malformed")?;
         let page: Page = serde_json::from_slice(&frame).context("artifact page is malformed")?;
         ensure!(
             within_budget(&page.artifacts),
@@ -2643,5 +2652,54 @@ mod tests {
         fn artifact_head_seq(&self, account: &str) -> u64 {
             self.0.head_seq(account)
         }
+    }
+
+    /// A host that records whether it was reached at all.
+    #[derive(Clone, Debug, Default)]
+    struct NeverReceived(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl SessionHost for NeverReceived {
+        fn receive_envelope(
+            &self,
+            _envelope: crate::envelope::Envelope,
+        ) -> impl std::future::Future<
+            Output = Result<Availability<Option<crate::host::EnvelopeReceived>>, anyhow::Error>,
+        > + Send {
+            self.0
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::future::ready(Ok(Availability::Available(None)))
+        }
+
+        fn receive_artifact(
+            &self,
+            _artifact: SignedArtifact,
+        ) -> impl std::future::Future<Output = Result<Availability<Option<Stored>>, anyhow::Error>>
+               + Send {
+            self.0
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::future::ready(Ok(Availability::Available(None)))
+        }
+
+        fn read_artifacts(
+            &self,
+            _account: String,
+            _after: u64,
+        ) -> impl std::future::Future<Output = Result<Availability<Vec<SignedArtifact>>, anyhow::Error>>
+               + Send {
+            std::future::ready(Ok(Availability::Available(Vec::new())))
+        }
+    }
+
+    /// Oracle: the receipt gate refuses a duplicated key BEFORE the host is
+    /// reached, so a collapsed body can never be stored or applied.
+    #[tokio::test]
+    async fn receive_pushed_refuses_a_duplicated_key_before_the_host() {
+        let host = NeverReceived::default();
+        let body = br#"{"author":"a","author":"b"}"#;
+        match receive_pushed(&host, body).await {
+            Reply::Refused { message } => assert!(message.contains("author"), "{message}"),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert_eq!(host.0.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 }

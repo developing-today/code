@@ -581,7 +581,8 @@ impl IdentityStore {
             .verify_strict(payload_bytes, &signature)
             .ok()?;
 
-        // Deserialize payload
+        // Deserialize payload: refuse a repeated key before the typed decode.
+        id_core::json_unique::parse_slice_without_duplicate_keys(payload_bytes).ok()?;
         let payload: TokenPayload = serde_json::from_slice(payload_bytes).ok()?;
 
         // Reject tokens dated implausibly far in the future, then apply the age cap.
@@ -1577,6 +1578,17 @@ mod tests {
         })
         .unwrap();
         let token = token_of(&payload, &identity_forgery());
+        assert!(store.decode_token(&token).is_none());
+    }
+
+    #[test]
+    fn a_token_payload_that_repeats_a_key_is_refused() {
+        // Oracle: the payload is signature-verified over the raw bytes, so a
+        // duplicate must be refused rather than collapsed after verification.
+        let store = IdentityStore::new_ephemeral();
+        let duplicated = br#"{"client_id":"abc","client_id":"def","created_at":1700000000}"#;
+        let signature = store.signing_key.sign(duplicated).to_bytes();
+        let token = token_of(duplicated, &signature);
         assert!(store.decode_token(&token).is_none());
     }
 

@@ -53,6 +53,23 @@ mod util;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod duplicate_key_regression {
+    use super::presence_change;
+
+    #[test]
+    fn presence_change_refuses_a_duplicated_key() {
+        // The presence document travels embedded as a string inside a received
+        // replica journal entry, so this refusal cannot come from the outer
+        // journal parse.
+        let duplicated = r#"{"cap":"players","event":"joined","participant":{"id":1,"id":2}}"#;
+        assert_eq!(presence_change(duplicated), None);
+        let unique = r#"{"cap":"players","event":"joined","participant":{"id":1}}"#;
+        assert_eq!(presence_change(unique), Some((1, true)));
+    }
+}
+
 pub(crate) use actor::{
     AUDIT_TRACE_TARGET, AuditRecord, WorldActor, WorldCommand, emit_audit_record,
     next_audit_correlation_id,
@@ -1136,7 +1153,10 @@ pub(crate) fn presence_event(participant: u64, name: &str, joined: bool) -> Stri
 }
 
 pub(crate) fn presence_change(text: &str) -> Option<(u64, bool)> {
-    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    // The presence document is embedded as a string inside a received journal
+    // entry, so routing the outer parsers does not cover it: refuse duplicates
+    // here, at the embedded document itself.
+    let value: serde_json::Value = id_core::json_unique::parse_json_without_duplicate_keys(text).ok()?;
     if value.get("cap")?.as_str()? != "players" {
         return None;
     }

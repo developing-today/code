@@ -663,6 +663,8 @@ fn validate_committed_journal(
     let mut header_version = None;
     let mut cursor = None;
     for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+        id_core::json_unique::parse_slice_without_duplicate_keys(line)
+            .map_err(|_| corrupt("a journal line does not decode as a journal entry"))?;
         let entry: JournalEntry = serde_json::from_slice(line)
             .map_err(|_| corrupt("a journal line does not decode as a journal entry"))?;
         match (header_version, &entry) {

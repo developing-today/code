@@ -1316,6 +1316,8 @@ fn classify_response(
 }
 
 fn parse_pipeline_rows(body: &str, query: &GrantedQuery) -> Result<Vec<Row>, AdapterError> {
+    id_core::json_unique::parse_json_without_duplicate_keys(body)
+        .map_err(|_| AdapterError::MalformedResponse)?;
     let parsed: Json = serde_json::from_str(body).map_err(|_| AdapterError::MalformedResponse)?;
     let results = parsed
         .get("results")
@@ -1695,6 +1697,22 @@ mod tests {
             big.encode(10),
             Err(AdapterError::SizeRefused { size: 11, max: 10 })
         ));
+    }
+
+    /// Oracle: a remote body that repeats a key is refused at the parse —
+    /// the rows returned to callers come from the document as written.
+    #[test]
+    fn test_pipeline_rows_refuse_a_duplicated_key() {
+        let query = sample_query();
+        for body in [
+            r#"{"results":[],"results":[]}"#,
+            r#"{"results":[{"type":"ok","type":"ok"}]}"#,
+        ] {
+            assert!(matches!(
+                parse_pipeline_rows(body, &query),
+                Err(AdapterError::MalformedResponse)
+            ));
+        }
     }
 
     /// Oracle: record items 2 + 8 — write shapes are refused, and a

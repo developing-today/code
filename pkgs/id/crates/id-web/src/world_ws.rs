@@ -458,6 +458,9 @@ async fn directory_write_handler(
     uri: Uri,
     body: Bytes,
 ) -> Response {
+    if let Err(error) = id_core::json_unique::parse_slice_without_duplicate_keys(&body) {
+        return bad_request(&error.to_string());
+    }
     let request: DirectoryRequest = match serde_json::from_slice(&body) {
         Ok(request) => request,
         Err(error) => return bad_request(&error.to_string()),

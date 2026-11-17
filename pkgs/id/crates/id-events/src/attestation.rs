@@ -106,8 +106,12 @@ impl GenesisAgreement {
     ///
     /// # Errors
     ///
-    /// Returns a JSON error if the bytes are not an agreement object.
+    /// Returns a JSON error if the bytes are not an agreement object, or if
+    /// the object repeats a key at any depth.
     pub fn from_body(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        // Validate uniqueness (discarding the Value: a signed body may carry
+        // integers a Value cannot hold), then typed-decode the original bytes.
+        id_core::json_unique::parse_slice_without_duplicate_keys(bytes)?;
         serde_json::from_slice(bytes)
     }
 }
@@ -141,8 +145,10 @@ impl ResultClaim {
     ///
     /// # Errors
     ///
-    /// Returns a JSON error if the bytes are not a claim object.
+    /// Returns a JSON error if the bytes are not a claim object, or if the
+    /// object repeats a key at any depth.
     pub fn from_body(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        id_core::json_unique::parse_slice_without_duplicate_keys(bytes)?;
         serde_json::from_slice(bytes)
     }
 }
@@ -434,3 +440,50 @@ impl std::error::Error for SignError {}
 
 /// Versioned match-attestation objects and reducer policy.
 pub mod v1;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod duplicate_key_regression {
+    use super::{GenesisAgreement, PlayerId, ResultClaim};
+    use p2panda_core::Hash;
+
+    fn player(seed: u8) -> PlayerId {
+        [seed; 32]
+    }
+
+    fn agreement() -> GenesisAgreement {
+        GenesisAgreement {
+            game_id: "tic-tac-toe".to_owned(),
+            logic_hash: Hash::digest(b"logic"),
+            players: [player(1), player(2)],
+            witness: None,
+            objection_window_secs: 60,
+        }
+    }
+
+    fn claim() -> ResultClaim {
+        ResultClaim {
+            agreement: Hash::digest(b"agreement"),
+            outcome: "draw".to_owned(),
+            final_state_hash: Hash::digest(b"state"),
+            frontiers: vec![Hash::digest(b"frontier")],
+        }
+    }
+
+    /// Oracle: a signed body is admitted only if it parses as written, so a
+    /// repeated key is refused instead of collapsed before validation.
+    #[test]
+    fn signed_bodies_refuse_a_duplicated_key() {
+        let body = agreement().body().unwrap();
+        assert_eq!(GenesisAgreement::from_body(&body).unwrap(), agreement());
+        let text = String::from_utf8(body).unwrap().replacen('{', r#"{"game_id":"other","#, 1);
+        let error = GenesisAgreement::from_body(text.as_bytes()).unwrap_err();
+        assert!(error.to_string().contains("game_id"), "{error}");
+
+        let body = claim().body().unwrap();
+        assert_eq!(ResultClaim::from_body(&body).unwrap(), claim());
+        let text = String::from_utf8(body).unwrap().replacen('{', r#"{"outcome":"x","#, 1);
+        let error = ResultClaim::from_body(text.as_bytes()).unwrap_err();
+        assert!(error.to_string().contains("outcome"), "{error}");
+    }
+}

@@ -306,6 +306,8 @@ impl ShellContract {
     ///
     /// Fails if the document is not a valid contract.
     pub fn parse(text: &str) -> Result<Self, String> {
+        id_core::json_unique::parse_json_without_duplicate_keys(text)
+            .map_err(|error| error.to_string())?;
         let raw: RawContract = serde_json::from_str(text).map_err(|error| error.to_string())?;
         Ok(Self {
             name: raw.contract,
@@ -675,6 +677,8 @@ pub fn check_transcript(contract: &ShellContract, text: &str) -> anyhow::Result<
         if line.trim().is_empty() {
             continue;
         }
+        id_core::json_unique::parse_json_without_duplicate_keys(line)
+            .map_err(|error| anyhow::anyhow!("transcript line {}: {error}", number + 1))?;
         let entry: TranscriptLine = serde_json::from_str(line)
             .map_err(|error| anyhow::anyhow!("transcript line {}: {error}", number + 1))?;
         match entry.from {

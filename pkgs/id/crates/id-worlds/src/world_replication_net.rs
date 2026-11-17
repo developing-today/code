@@ -124,6 +124,8 @@ async fn serve_stream(
             .await
             .context("timed out waiting for replication request")??
             .context("replication stream closed before request")?;
+    id_core::json_unique::parse_slice_without_duplicate_keys(&request_bytes)
+        .context("decode replication request")?;
     let request: ReplicationRequest =
         serde_json::from_slice(&request_bytes).context("decode replication request")?;
     let _ = recv.stop(0_u32.into());

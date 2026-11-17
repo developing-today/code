@@ -147,8 +147,9 @@ fn content_to_document(
 
     let doc = match mode {
         ContentMode::Rich => {
-            // Already ProseMirror JSON - parse it directly
-            serde_json::from_str(&text).unwrap_or_else(|_| {
+            // Already ProseMirror JSON - refuse a repeated key, so the document
+            // forwarded as CollabMessage::Init is the one that was supplied.
+            id_core::json_unique::parse_json_without_duplicate_keys(&text).unwrap_or_else(|_| {
                 serde_json::json!({
                     "type": "doc",
                     "content": [{"type": "paragraph"}]

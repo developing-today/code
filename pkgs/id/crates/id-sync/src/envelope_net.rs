@@ -100,6 +100,8 @@ async fn exchange(
         write_frame(&mut send, json).await?;
         send.finish().context("finishing the request")?;
         let frame = read_frame(&mut recv).await?.context("no reply")?;
+        id_core::json_unique::parse_slice_without_duplicate_keys(&frame)
+            .context("malformed reply")?;
         serde_json::from_slice::<Reply>(&frame).context("malformed reply")
     }
     .await;
@@ -182,6 +184,11 @@ where
 }
 
 async fn receive<H: SessionHost>(hub: &H, body: &[u8]) -> Reply {
+    if let Err(error) = id_core::json_unique::parse_slice_without_duplicate_keys(body) {
+        return Reply::Refused {
+            message: format!("not an envelope: {error}"),
+        };
+    }
     let envelope: Envelope = match serde_json::from_slice(body) {
         Ok(envelope) => envelope,
         Err(error) => {
@@ -539,5 +546,54 @@ mod tests {
             NOW,
         )
         .unwrap()
+    }
+
+    /// A host that records whether it was reached at all.
+    #[derive(Clone, Debug, Default)]
+    struct NeverReceived(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl SessionHost for NeverReceived {
+        fn receive_envelope(
+            &self,
+            _envelope: Envelope,
+        ) -> impl std::future::Future<
+            Output = Result<Availability<Option<EnvelopeReceived>>, anyhow::Error>,
+        > + Send {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::future::ready(Ok(Availability::Available(None)))
+        }
+
+        fn receive_artifact(
+            &self,
+            _artifact: crate::artifact::SignedArtifact,
+        ) -> impl std::future::Future<
+            Output = Result<Availability<Option<crate::artifact::Stored>>, anyhow::Error>,
+        > + Send {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::future::ready(Ok(Availability::Available(None)))
+        }
+
+        fn read_artifacts(
+            &self,
+            _account: String,
+            _after: u64,
+        ) -> impl std::future::Future<
+            Output = Result<Availability<Vec<crate::artifact::SignedArtifact>>, anyhow::Error>,
+        > + Send {
+            std::future::ready(Ok(Availability::Available(Vec::new())))
+        }
+    }
+
+    /// Oracle: the envelope receipt gate refuses a duplicated key BEFORE the
+    /// host is reached, so a collapsed envelope is never stored.
+    #[tokio::test]
+    async fn receive_refuses_a_duplicated_key_before_the_host() {
+        let host = NeverReceived::default();
+        let body = br#"{"alpn":"x","alpn":"y"}"#;
+        match receive(&host, body).await {
+            Reply::Refused { message } => assert!(message.contains("alpn"), "{message}"),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert_eq!(host.0.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 }

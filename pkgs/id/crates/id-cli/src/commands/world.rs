@@ -509,6 +509,8 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
                 Some(path) => {
                     let text = std::fs::read_to_string(&path)
                         .with_context(|| format!("read execution profile {}", path.display()))?;
+                    id_core::json_unique::parse_json_without_duplicate_keys(&text)
+                        .with_context(|| format!("parse execution profile {}", path.display()))?;
                     Some(
                         serde_json::from_str::<id_caps::world_limits::WorldExecutionProfile>(&text)
                             .with_context(|| {

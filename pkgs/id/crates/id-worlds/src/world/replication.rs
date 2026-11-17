@@ -528,6 +528,8 @@ pub fn chain_payload(
         // A line that does not decode as a journal entry is not an entry,
         // however the chain arithmetic treats its bytes: refuse it here so
         // a verified cursor never covers data the restore path cannot read.
+        id_core::json_unique::parse_slice_without_duplicate_keys(entry)
+            .map_err(|_| ReplicationError::MalformedPayload)?;
         serde_json::from_slice::<JournalEntry>(entry)
             .map_err(|_| ReplicationError::MalformedPayload)?;
         cursor = advance_cursor(cursor, entry);
@@ -578,6 +580,8 @@ fn validate_payload_journal_header(envelope: &ReplicationEnvelope) -> Result<(),
     }
     let mut entries = Vec::new();
     for line in envelope.payload.split_inclusive(|byte| *byte == b'\n') {
+        id_core::json_unique::parse_slice_without_duplicate_keys(line)
+            .map_err(|_| ReplicationError::MalformedPayload)?;
         entries.push(
             serde_json::from_slice::<JournalEntry>(line)
                 .map_err(|_| ReplicationError::MalformedPayload)?,
@@ -1669,6 +1673,12 @@ mod tests {
         );
         assert_eq!(
             chain_payload(base, b"no newline at the end"),
+            Err(ReplicationError::MalformedPayload)
+        );
+        // A journal line that repeats a key is refused: a verified cursor
+        // must never cover a document two readers could disagree about.
+        assert_eq!(
+            chain_payload(base, b"{\"cursor_after\":{\"ordinal\":1},\"cursor_after\":{\"ordinal\":2}}\n"),
             Err(ReplicationError::MalformedPayload)
         );
         // Splitting respects the bound and entry boundaries, and the

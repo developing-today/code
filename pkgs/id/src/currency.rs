@@ -140,6 +140,7 @@ impl RateAuthorisation {
     ///
     /// Returns a JSON error if the bytes are not an authorisation object.
     pub fn from_body(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        id_core::json_unique::parse_slice_without_duplicate_keys(bytes)?;
         serde_json::from_slice(bytes)
     }
 
@@ -236,6 +237,7 @@ impl RateAuthorisationRevoke {
     ///
     /// As [`RateAuthorisation::from_body`].
     pub fn from_body(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        id_core::json_unique::parse_slice_without_duplicate_keys(bytes)?;
         serde_json::from_slice(bytes)
     }
 }
@@ -565,6 +567,27 @@ mod tests {
             reversal_window_secs: Some(3600),
             fee_bps: Some(25),
         }
+    }
+
+    /// Oracle: a signed body that repeats a key is refused at receipt, and
+    /// the u128 fields still decode losslessly through the converted site
+    /// (the helper's Value is validated and discarded, never decoded).
+    #[test]
+    fn from_body_refuses_a_duplicated_key_and_keeps_u128_lossless() {
+        let auth = forward();
+        let body = auth.body().unwrap();
+        assert_eq!(RateAuthorisation::from_body(&body).unwrap(), auth);
+
+        let mut text = String::from_utf8(body).unwrap();
+        text = text.replacen('{', r#"{"version":1,"#, 1);
+        let error = RateAuthorisation::from_body(text.as_bytes()).unwrap_err();
+        assert!(error.to_string().contains("version"), "{error}");
+
+        let mut wide = forward();
+        wide.authorisation_id = u128::MAX;
+        wide.rate_num = 340_282_366_920_938_463_463_374_607_431_768_211_455;
+        let body = wide.body().unwrap();
+        assert_eq!(RateAuthorisation::from_body(&body).unwrap(), wide);
     }
 
     #[test]
