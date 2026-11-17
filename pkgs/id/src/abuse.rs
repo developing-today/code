@@ -15,9 +15,12 @@
 //!   connection cap per peer.
 //! - [`Refusal`] — the one structured refusal contract: a reason and
 //!   a bounded `retry_after_ms` (1 s floor / 60 s cap for temporary
-//!   refusals; absent for permanent blocks). Local `Refusal` enums in
-//!   `event_store` / `directory` are ingest- and directory-specific
-//!   and are not this contract.
+//!   refusals; absent for permanent refusals). Permanent means no
+//!   retry can ever succeed: an operator block, or a request whose
+//!   cost exceeds the bucket/budget capacity it was checked against
+//!   ([`RefusalReason::RequestTooLarge`], #3927). Local `Refusal`
+//!   enums in `event_store` / `directory` are ingest- and
+//!   directory-specific and are not this contract.
 //! - [`BudgetPolicy`] — the #2247 rolling-window budgets:
 //!   app-wide per direction, per endpoint, per directly observed
 //!   IP, and per-counterparty overrides that replace the per-endpoint
@@ -68,8 +71,20 @@ pub enum RefusalReason {
     BudgetExhausted,
     /// An operator block: permanent, no retry is offered.
     BlockedByOperator,
+    /// The request's cost exceeds what the bucket or budget it was
+    /// checked against can ever hold, so it can never be admitted:
+    /// permanent, no retry is offered (#3927).
+    RequestTooLarge,
     /// The subject is not (or not yet) authorized for this surface.
     Unauthorized,
+}
+
+impl RefusalReason {
+    /// Whether retrying can never change this refusal.
+    #[must_use]
+    pub fn is_permanent(self) -> bool {
+        matches!(self, Self::BlockedByOperator | Self::RequestTooLarge)
+    }
 }
 
 /// The one structured refusal: a reason plus, for temporary
@@ -80,7 +95,8 @@ pub struct Refusal {
     pub reason: RefusalReason,
     /// When to retry, in milliseconds. Temporary refusals are
     /// clamped to [`RETRY_FLOOR_MS`]..=[`RETRY_CAP_MS`]; permanent
-    /// blocks ([`RefusalReason::BlockedByOperator`]) carry `None`.
+    /// refusals — an operator block or an oversize request — carry
+    /// `None` because no retry can succeed.
     pub retry_after_ms: Option<u64>,
 }
 
@@ -92,11 +108,11 @@ pub const RETRY_CAP_MS: u64 = 60_000;
 
 impl Refusal {
     /// A temporary refusal with `retry_after_ms` clamped to the
-    /// bounded range. Permanent-block reasons ignore the delay and
-    /// carry `None`.
+    /// bounded range. Permanent reasons ignore the delay and carry
+    /// `None`: retrying cannot help.
     #[must_use]
     pub fn new(reason: RefusalReason, retry_after_ms: u64) -> Self {
-        if reason == RefusalReason::BlockedByOperator {
+        if reason.is_permanent() {
             return Self {
                 reason,
                 retry_after_ms: None,
@@ -120,6 +136,16 @@ impl Refusal {
     pub fn blocked_by_operator() -> Self {
         Self {
             reason: RefusalReason::BlockedByOperator,
+            retry_after_ms: None,
+        }
+    }
+
+    /// A request whose cost exceeds the capacity of the limit it was
+    /// checked against: permanent, no retry is offered (#3927).
+    #[must_use]
+    pub fn request_too_large() -> Self {
+        Self {
+            reason: RefusalReason::RequestTooLarge,
             retry_after_ms: None,
         }
     }
@@ -218,6 +244,18 @@ impl TokenBucket {
         let deficit = cost_milli - self.tokens_milli;
         // Each millisecond refills rate_per_sec milli-tokens.
         deficit.div_ceil(self.rate_per_sec)
+    }
+
+    /// Whether `cost` can never be admitted by this bucket at any
+    /// future time: it exceeds the bucket's capacity, or the bucket
+    /// has no refill rate and currently holds too little. Such a
+    /// request must be refused permanently rather than with a retry
+    /// delay that can never come due (#3927).
+    fn is_permanently_inadmissible(&mut self, cost: u64, now_ms: u64) -> bool {
+        self.refill(now_ms);
+        let cost_milli = cost.saturating_mul(1_000);
+        cost_milli > self.capacity_milli
+            || (self.rate_per_sec == 0 && self.tokens_milli < cost_milli)
     }
 }
 
@@ -885,7 +923,7 @@ impl AbuseEvaluator {
         direct_ip: Option<IpAddr>,
         now_ms: u64,
     ) -> Result<(), Refusal> {
-        let (frame_retry, byte_retry) = {
+        let (frame_retry, byte_retry, permanent) = {
             let state = self.state(endpoint, now_ms);
             let (frames, byte_bucket) = if authorized {
                 (&mut state.authorized_frames, &mut state.authorized_bytes)
@@ -896,8 +934,13 @@ impl AbuseEvaluator {
                 (!frames.can_take(1, now_ms)).then(|| frames.retry_after_ms(1, now_ms));
             let byte_retry = (!byte_bucket.can_take(bytes, now_ms))
                 .then(|| byte_bucket.retry_after_ms(bytes, now_ms));
-            (frame_retry, byte_retry)
+            let permanent = frames.is_permanently_inadmissible(1, now_ms)
+                || byte_bucket.is_permanently_inadmissible(bytes, now_ms);
+            (frame_retry, byte_retry, permanent)
         };
+        if permanent {
+            return Err(Refusal::request_too_large());
+        }
         if let Some(retry) = frame_retry {
             return Err(Refusal::new(RefusalReason::RateLimited, retry));
         }
@@ -1076,7 +1119,9 @@ impl AbuseEvaluator {
     ///
     /// Returns a [`RefusalReason::RateLimited`] refusal, with the
     /// bounded retry delay the bucket implies, when the bucket is
-    /// empty.
+    /// empty. Returns a permanent [`RefusalReason::RequestTooLarge`]
+    /// refusal when even a full bucket could never admit one frame
+    /// (a zero-burst frame policy), since no retry could help.
     pub fn check_frame(
         &mut self,
         endpoint: EndpointId,
@@ -1093,6 +1138,8 @@ impl AbuseEvaluator {
             self.registry
                 .record(self.local_node, endpoint, 1, 0, now_ms);
             Ok(())
+        } else if bucket.is_permanently_inadmissible(1, now_ms) {
+            Err(Refusal::request_too_large())
         } else {
             let retry = bucket.retry_after_ms(1, now_ms);
             Err(Refusal::new(RefusalReason::RateLimited, retry))
@@ -1107,7 +1154,10 @@ impl AbuseEvaluator {
     ///
     /// Returns a [`RefusalReason::BudgetExhausted`] refusal, with
     /// the bounded retry delay the bucket implies, when the bucket
-    /// cannot cover `bytes`.
+    /// cannot cover `bytes`. Returns a permanent
+    /// [`RefusalReason::RequestTooLarge`] refusal when `bytes`
+    /// exceeds the bucket's burst capacity, since no wait can make
+    /// that request admissible.
     pub fn check_bytes(
         &mut self,
         endpoint: EndpointId,
@@ -1125,6 +1175,8 @@ impl AbuseEvaluator {
             self.registry
                 .record(self.local_node, endpoint, 0, bytes, now_ms);
             Ok(())
+        } else if bucket.is_permanently_inadmissible(bytes, now_ms) {
+            Err(Refusal::request_too_large())
         } else {
             let retry = bucket.retry_after_ms(bytes, now_ms);
             Err(Refusal::new(RefusalReason::BudgetExhausted, retry))
@@ -1146,7 +1198,7 @@ impl AbuseEvaluator {
         bytes: u64,
         now_ms: u64,
     ) -> Result<(), Refusal> {
-        let (frame_retry, byte_retry) = {
+        let (frame_retry, byte_retry, permanent) = {
             let state = self.state(endpoint, now_ms);
             let (frames, byte_bucket) = if authorized {
                 (&mut state.authorized_frames, &mut state.authorized_bytes)
@@ -1157,9 +1209,16 @@ impl AbuseEvaluator {
                 (!frames.can_take(1, now_ms)).then(|| frames.retry_after_ms(1, now_ms));
             let byte_retry = (!byte_bucket.can_take(bytes, now_ms))
                 .then(|| byte_bucket.retry_after_ms(bytes, now_ms));
-            (frame_retry, byte_retry)
+            // A cost the bucket can never hold is a permanent refusal
+            // regardless of which other budget is also exhausted.
+            let permanent = frames.is_permanently_inadmissible(1, now_ms)
+                || byte_bucket.is_permanently_inadmissible(bytes, now_ms);
+            (frame_retry, byte_retry, permanent)
         };
 
+        if permanent {
+            return Err(Refusal::request_too_large());
+        }
         if let Some(retry) = frame_retry {
             return Err(Refusal::new(RefusalReason::RateLimited, retry));
         }
