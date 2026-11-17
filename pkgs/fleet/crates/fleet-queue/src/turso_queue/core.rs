@@ -110,10 +110,10 @@ pub(crate) fn arg_json(v: &Value) -> Arg {
 }
 
 pub(crate) struct StmtResult {
-    cols: Vec<String>,
-    rows: Vec<Vec<Value>>,
-    affected: u64,
-    last_insert_rowid: Option<i64>,
+    pub(crate) cols: Vec<String>,
+    pub(crate) rows: Vec<Vec<Value>>,
+    pub(crate) affected: u64,
+    pub(crate) last_insert_rowid: Option<i64>,
 }
 
 pub(crate) fn cell_to_json(cell: &Value) -> Value {
@@ -392,14 +392,14 @@ pub fn parse_block_deps(
 }
 
 pub struct TursoBackend {
-    url: String,
-    token: String,
-    agent: ureq::Agent,
+    pub(crate) url: String,
+    pub(crate) token: String,
+    pub(crate) agent: ureq::Agent,
     /// #8276: the GitHub dep probe, installed by the broker shell
     /// at startup (queue_broker.rs owns the secrets Resolver).
     /// None in tests and embedders: GitHub dep checks then report
     /// Failed, and only a block's max TTL can release it.
-    gh_probe: Option<std::sync::Arc<dyn DepProbe>>,
+    pub(crate) gh_probe: Option<std::sync::Arc<dyn DepProbe>>,
 }
 
 pub(crate) type TErr = String;
@@ -524,7 +524,7 @@ impl TursoBackend {
         self.gh_probe = Some(probe);
     }
 
-    fn gh_probe(&self) -> Option<&dyn DepProbe> {
+    pub(crate) fn gh_probe(&self) -> Option<&dyn DepProbe> {
         self.gh_probe.as_deref()
     }
 
@@ -650,7 +650,7 @@ impl TursoBackend {
         Ok(out)
     }
 
-    fn exec(&self, sql: &str, args: &[Arg]) -> Result<StmtResult, TErr> {
+    pub(crate) fn exec(&self, sql: &str, args: &[Arg]) -> Result<StmtResult, TErr> {
         Ok(self
             .pipeline(&[(sql, args.to_vec())])?
             .into_iter()
@@ -660,7 +660,7 @@ impl TursoBackend {
 
     /// Rows of one SELECT as JSON objects, with the given TEXT
     /// columns parsed back into JSON values.
-    fn query_objs(&self, sql: &str, args: &[Arg], json_cols: &[&str]) -> Result<Vec<Value>, TErr> {
+    pub(crate) fn query_objs(&self, sql: &str, args: &[Arg], json_cols: &[&str]) -> Result<Vec<Value>, TErr> {
         let r = self.exec(sql, args)?;
         Ok(r.rows
             .iter()
@@ -1850,7 +1850,7 @@ pub(crate) fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
 /// ledger recorded the surface name as executed_lane next to a
 /// claim stamped with a lane id, which read as attribution
 /// inversion; now the round trip records both, unambiguously.
-fn execution_lane_fields(ex: &Value) -> (Option<String>, Option<String>) {
+pub(crate) fn execution_lane_fields(ex: &Value) -> (Option<String>, Option<String>) {
     let lane = ex.get("lane").and_then(|v| v.as_str());
     let lane_id = ex.get("lane_id").and_then(|v| v.as_str());
     match lane {

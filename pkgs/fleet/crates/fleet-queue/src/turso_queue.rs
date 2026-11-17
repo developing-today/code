@@ -1963,7 +1963,7 @@ mod tests {
         let touch = seg8217(
             src,
             "fn touch_recheck_cursor(",
-            "\nfn quarantine_recheck_one(",
+            "\npub(crate) fn quarantine_recheck_one(",
         );
         assert!(
             touch.contains("SET updated_at = ?"),
@@ -1973,7 +1973,7 @@ mod tests {
         let run = seg8217(
             src,
             "pub fn run_quarantine_rechecks(",
-            "\nfn verb_quarantine_recheck(",
+            "\npub(crate) fn verb_quarantine_recheck(",
         );
         assert!(
             run.contains("ORDER BY updated_at ASC"),

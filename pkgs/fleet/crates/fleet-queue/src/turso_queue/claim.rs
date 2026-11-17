@@ -419,9 +419,9 @@ pub(crate) fn parse_platform(raw: Option<&str>) -> Result<Option<String>, String
 /// marker "muse-lane" with no model, never a fabricated leaf.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ClaimModel {
-    provider: String,
-    model: Option<String>,
-    variant: Option<String>,
+    pub(crate) provider: String,
+    pub(crate) model: Option<String>,
+    pub(crate) variant: Option<String>,
 }
 
 /// Parse the optional claim-model fields of a claim request
@@ -1402,8 +1402,8 @@ pub(crate) fn filter_tokens(src: &str) -> Result<Vec<FilterTok>, String> {
 }
 
 pub(crate) struct FilterParser<'a> {
-    toks: &'a [FilterTok],
-    pos: usize,
+    pub(crate) toks: &'a [FilterTok],
+    pub(crate) pos: usize,
 }
 
 impl<'a> FilterParser<'a> {
@@ -1746,11 +1746,11 @@ pub(crate) const TASK_REQUIREMENTS_CLAUSE: &str = "(json_extract(payload, '$.req
 /// against (requirement_args).
 #[derive(Debug, Clone, Default)]
 pub struct ClaimerCtx {
-    family: Option<String>,
-    lane: Option<String>,
-    worker: String,
-    pool: Option<String>,
-    model: Option<ClaimModel>,
+    pub(crate) family: Option<String>,
+    pub(crate) lane: Option<String>,
+    pub(crate) worker: String,
+    pub(crate) pool: Option<String>,
+    pub(crate) model: Option<ClaimModel>,
 }
 
 impl ClaimerCtx {
@@ -1795,8 +1795,8 @@ pub(crate) fn lane_queue_binds(registered: &str) -> bool {
 /// extended to the union match.
 #[derive(Clone)]
 pub struct ClaimScope {
-    sql: String,
-    args: Vec<Arg>,
+    pub(crate) sql: String,
+    pub(crate) args: Vec<Arg>,
 }
 
 pub fn claim_scope(
