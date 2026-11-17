@@ -64,7 +64,7 @@ use crate::world_session::{
 use crate::world_session::{
     Inbound, SessionConfig, SessionIo, encode_hex, run_session, run_session_with,
 };
-use crate::world_terminal::{PROBE_QUERIES, PROBE_TIMEOUT, ProbeDemux};
+use crate::world_terminal::{PROBE_QUERIES, PROBE_TIMEOUT, ProbeDemux, TierPresenter};
 
 /// File, beside the other server keys, that holds the SSH host key.
 pub const SSH_HOST_KEY_FILE: &str = ".ssh-host-key";
@@ -572,6 +572,7 @@ impl Handler for SshClient {
             previous_screen: None,
             probe_tty,
             probe: None,
+            presenter: None,
             active_form: None,
             form_line: Vec::new(),
             form_backlog: VecDeque::new(),
@@ -807,6 +808,10 @@ struct SshIo {
     probe_tty: bool,
     /// Bounded startup probe state while the reply window is open.
     probe: Option<SshProbe>,
+    /// Tier presenter selected when the startup probe closed (F13.4).
+    /// Absent until then, and for callers that never probed: those keep
+    /// the pre-F13.4 rendering path exactly.
+    presenter: Option<TierPresenter>,
     /// Form view the terminal is currently collecting a response for.
     active_form: Option<crate::world_presentation::FormSurface>,
     /// Bounded line being entered for the active form.
@@ -1047,13 +1052,22 @@ impl SshIo {
     /// Leave the alternate screen and re-send the last error after the leave
     /// sequence, so a refused join stays readable in the restored scrollback.
     async fn leave_alt_screen(&mut self) {
+        // Restore presenter modes (synchronized output) on every exit
+        // path, before the alternate screen itself is left (F13.4).
+        let restore = self
+            .presenter
+            .as_mut()
+            .map_or_else(String::new, TierPresenter::finish);
         if !self.alt_screen_entered {
+            if !restore.is_empty() {
+                let _ = self.handle.data(self.channel, restore).await;
+            }
             return;
         }
         self.alt_screen_entered = false;
         let text = match self.last_error.take() {
-            Some(error) => format!("{ALT_SCREEN_LEAVE}\r\n{error}\r\n"),
-            None => ALT_SCREEN_LEAVE.to_owned(),
+            Some(error) => format!("{restore}{ALT_SCREEN_LEAVE}\r\n{error}\r\n"),
+            None => format!("{restore}{ALT_SCREEN_LEAVE}"),
         };
         let _ = self.handle.data(self.channel, text).await;
     }
@@ -1078,17 +1092,21 @@ impl SshIo {
 
     /// Close the probe window, returning any held bytes for replay.
     ///
-    /// The selected tier is logged only: this slice enables the Tier 3 safe
-    /// fallback and leaves every richer presenter unreachable.
+    /// The outcome selects this session's tier presenter (F13.4 phases
+    /// 3-4): Tier 1 and Tier 2 render the cell grid (Tier 1 bracketed in
+    /// synchronized output), Tier 3 renders text deltas. A conflicted or
+    /// empty outcome is the conservative Tier 3, per the classifier.
     fn close_terminal_probe(&mut self) -> Vec<u8> {
         let Some(mut probe) = self.probe.take() else {
             return Vec::new();
         };
-        let tier = probe.demux.tier();
+        let outcome = probe.demux.outcome();
+        let tier = outcome.tier();
         tracing::debug!(
             ?tier,
-            "terminal capability probe closed; Tier 3 fallback stays active"
+            "terminal capability probe closed; tier presenter selected"
         );
+        self.presenter = Some(TierPresenter::from_outcome(&outcome));
         probe.demux.expire()
     }
 }
@@ -1386,10 +1404,14 @@ impl SessionIo for SshIo {
                     {
                         let raw_mode = matches!(self.mode, ShellMode::Raw);
                         let rendered = if raw_mode {
-                            self.previous_screen
-                                .as_ref()
-                                .and_then(|previous| screen.render_ansi_diff(previous))
-                                .or_else(|| screen.render_ansi())
+                            if let Some(presenter) = self.presenter.as_mut() {
+                                Some(presenter.render_screen(&screen))
+                            } else {
+                                self.previous_screen
+                                    .as_ref()
+                                    .and_then(|previous| screen.render_ansi_diff(previous))
+                                    .or_else(|| screen.render_ansi())
+                            }
                         } else {
                             screen.render_ansi()
                         };
