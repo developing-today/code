@@ -718,7 +718,12 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
       const delayMs = claudeRetryDelayMs(attempt, failureOf(run), Math.random, claudeRetryBaseMs());
       console.log(
         "quota-gatherer: _claude rate-limited - retry " +
-          (attempt + 1) + "/" + CLAUDE_RETRY_MAX_ATTEMPTS + " in " + delayMs + "ms (#8725)",
+          (attempt + 1) +
+          "/" +
+          CLAUDE_RETRY_MAX_ATTEMPTS +
+          " in " +
+          delayMs +
+          "ms (#8725)",
       );
       await new Promise((resolve) => setTimeout(resolve, delayMs));
       const retryT0 = Date.now();
@@ -728,12 +733,18 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
           (r) => r.providerId === "_claude",
         );
         if (retryResults.length) {
-          run = finalizeRun("_claude", retryResults.map((r) => entryFromResult(r, tickAt)), retryT0);
+          run = finalizeRun(
+            "_claude",
+            retryResults.map((r) => entryFromResult(r, tickAt)),
+            retryT0,
+          );
           runs[claudeIdx] = run;
         }
       } catch (err) {
         console.log(
-          "quota-gatherer: _claude retry " + (attempt + 1) + " exec failed: " +
+          "quota-gatherer: _claude retry " +
+            (attempt + 1) +
+            " exec failed: " +
             (err instanceof Error ? err.message : String(err)),
         );
       }
@@ -741,8 +752,11 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
     }
     if (attempt > 0) {
       console.log(
-        "quota-gatherer: _claude within-tick retries used=" + attempt +
-          " recovered=" + run.entries.some((e) => e.state === "ok" && entryHasMeasuredWindow(e)) + " (#8725)",
+        "quota-gatherer: _claude within-tick retries used=" +
+          attempt +
+          " recovered=" +
+          run.entries.some((e) => e.state === "ok" && entryHasMeasuredWindow(e)) +
+          " (#8725)",
       );
     }
   }

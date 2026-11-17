@@ -530,6 +530,77 @@ pub(crate) fn container_signature(prefix: &str) -> String {
     sig
 }
 
+/// The columns of the list item a line opens, if it carries a
+/// list marker at its surface (after any blockquote prefixes):
+/// the column the marker starts at and the column the item's
+/// content starts at, both tab-aware (a tab advances to the next
+/// multiple of 4, as the definition scanner's indent computation).
+/// The content column follows strip_marker_padding's rule: one to
+/// four padding columns after the marker are the content indent;
+/// five or more mean the content is indented code starting after a
+/// single padding column. Lets a scanner evaluate a later line's
+/// indentation relative to the enclosing item's content column
+/// instead of the raw line start (#8360).
+pub(crate) fn list_item_columns(line: &str) -> Option<(usize, usize)> {
+    let mut col = 0usize;
+    let mut rest = line;
+    loop {
+        // Skip this level's leading indentation.
+        for c in rest.chars() {
+            match c {
+                ' ' => col += 1,
+                '\t' => col += 4 - (col % 4),
+                _ => break,
+            }
+        }
+        rest = rest.trim_start_matches([' ', '\t']);
+        if let Some(r) = rest.strip_prefix('>') {
+            col += 1;
+            rest = r;
+            if let Some(r2) = rest.strip_prefix(' ') {
+                col += 1;
+                rest = r2;
+            }
+            continue;
+        }
+        let bytes = rest.as_bytes();
+        let marker_len = if bytes.len() >= 2
+            && matches!(bytes[0], b'-' | b'*' | b'+')
+            && (bytes[1] == b' ' || bytes[1] == b'\t')
+        {
+            Some(1)
+        } else {
+            let digits = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+            if digits >= 1
+                && digits <= 9
+                && matches!(rest.as_bytes().get(digits), Some(b'.') | Some(b')'))
+                && matches!(rest.as_bytes().get(digits + 1), Some(b' ') | Some(b'\t'))
+            {
+                Some(digits + 1)
+            } else {
+                None
+            }
+        };
+        let marker_len = marker_len?;
+        let marker_col = col;
+        col += marker_len;
+        // Padding after the marker, in columns from the marker's
+        // end: up to four are the content indent; more means the
+        // content is indented code after a single padding column
+        // (strip_marker_padding's rule).
+        let mut pad = 0usize;
+        for c in rest[marker_len..].chars() {
+            match c {
+                ' ' => pad += 1,
+                '\t' => pad += 4 - ((col + pad) % 4),
+                _ => break,
+            }
+        }
+        let content_col = if pad > 4 { col + 1 } else { col + pad };
+        return Some((marker_col, content_col));
+    }
+}
+
 /// Strip at most `levels` container levels (blockquote `>`,
 /// list markers) from a line, mirroring
 /// strip_container_prefixes' per-level shapes.

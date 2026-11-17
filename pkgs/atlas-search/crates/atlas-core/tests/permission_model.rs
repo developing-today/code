@@ -132,7 +132,9 @@ struct Pipeline {
 
 impl Pipeline {
     fn new() -> Self {
-        Pipeline { cache: HashMap::new() }
+        Pipeline {
+            cache: HashMap::new(),
+        }
     }
 
     fn search(&mut self, world: &World, caller: &str, query: &str) -> Projection {
@@ -184,7 +186,9 @@ struct StaleCachePipeline {
 
 impl StaleCachePipeline {
     fn new() -> Self {
-        StaleCachePipeline { cache: HashMap::new() }
+        StaleCachePipeline {
+            cache: HashMap::new(),
+        }
     }
     fn search(&mut self, world: &World, caller: &str, query: &str) -> Projection {
         let p = Model::search(world, caller, query);
@@ -292,25 +296,57 @@ fn obj(id: u32, path: &str, content: &str, allowed: &[&str]) -> Obj {
 /// byte-identical twin of permitted object 1 with different rights.
 fn paired_worlds() -> (World, World) {
     let permitted = vec![
-        obj(1, "docs/alpha.md", "alpha beta release notes", &["low", "mid"]),
+        obj(
+            1,
+            "docs/alpha.md",
+            "alpha beta release notes",
+            &["low", "mid"],
+        ),
         obj(2, "docs/beta.md", "beta gamma handbook", &["low"]),
-        obj(3, "docs/gamma.md", "gamma delta alpha guide", &["low", "high"]),
+        obj(
+            3,
+            "docs/gamma.md",
+            "gamma delta alpha guide",
+            &["low", "high"],
+        ),
         obj(4, "docs/delta.md", "delta epsilon memo", &["low"]),
     ];
-    let mut a = World { objects: BTreeMap::new(), epoch: 0 };
-    let mut b = World { objects: BTreeMap::new(), epoch: 0 };
+    let mut a = World {
+        objects: BTreeMap::new(),
+        epoch: 0,
+    };
+    let mut b = World {
+        objects: BTreeMap::new(),
+        epoch: 0,
+    };
     for o in permitted {
         a.objects.insert(o.id, o.clone());
         b.objects.insert(o.id, o);
     }
     // World A forbidden set.
-    a.objects.insert(10, obj(10, "secret/plans.md", "alpha beta alpha beta secret", &["high"]));
-    a.objects.insert(11, obj(11, "secret/twin.md", "alpha beta release notes", &["mid"]));
+    a.objects.insert(
+        10,
+        obj(
+            10,
+            "secret/plans.md",
+            "alpha beta alpha beta secret",
+            &["high"],
+        ),
+    );
+    a.objects.insert(
+        11,
+        obj(11, "secret/twin.md", "alpha beta release notes", &["mid"]),
+    );
     // World B forbidden set: different ids, paths, contents, count —
     // including a byte-identical twin of object 1's content.
-    b.objects.insert(20, obj(20, "vault/x.md", "gamma delta vault", &["high"]));
-    b.objects.insert(21, obj(21, "vault/twin.md", "alpha beta release notes", &["high"]));
-    b.objects.insert(22, obj(22, "vault/y.md", "epsilon zeta vault", &[]));
+    b.objects
+        .insert(20, obj(20, "vault/x.md", "gamma delta vault", &["high"]));
+    b.objects.insert(
+        21,
+        obj(21, "vault/twin.md", "alpha beta release notes", &["high"]),
+    );
+    b.objects
+        .insert(22, obj(22, "vault/y.md", "epsilon zeta vault", &[]));
     (a, b)
 }
 
@@ -329,16 +365,25 @@ fn paired_worlds_low_privilege_projections_are_identical() {
             let op = gen_op(&mut rng, &ids);
             match &op {
                 Op::Search(q) => {
-                    assert_eq!(pa.search(&wa, "low", q), pb.search(&wb, "low", q),
-                        "search diverged: seed {seed}, op {op:?}");
+                    assert_eq!(
+                        pa.search(&wa, "low", q),
+                        pb.search(&wb, "low", q),
+                        "search diverged: seed {seed}, op {op:?}"
+                    );
                 }
                 Op::Replay(q) => {
-                    assert_eq!(pa.replay(&wa, "low", q), pb.replay(&wb, "low", q),
-                        "replay diverged: seed {seed}, op {op:?}");
+                    assert_eq!(
+                        pa.replay(&wa, "low", q),
+                        pb.replay(&wb, "low", q),
+                        "replay diverged: seed {seed}, op {op:?}"
+                    );
                 }
                 Op::Hydrate(id) => {
-                    assert_eq!(pa.hydrate(&wa, "low", *id), pb.hydrate(&wb, "low", *id),
-                        "hydrate diverged: seed {seed}, op {op:?}");
+                    assert_eq!(
+                        pa.hydrate(&wa, "low", *id),
+                        pb.hydrate(&wb, "low", *id),
+                        "hydrate diverged: seed {seed}, op {op:?}"
+                    );
                 }
                 _ => {
                     // Transitions apply only to the shared permitted
@@ -366,13 +411,28 @@ fn pipeline_matches_reference_model_over_generated_sequences() {
     // replay result is checked against the independent model.
     let ids = [1, 2, 3, 4, 5, 6];
     for seed in 0..200u64 {
-        let mut world = World { objects: BTreeMap::new(), epoch: 0 };
-        world.objects.insert(1, obj(1, "a.md", "alpha beta", &["low", "mid"]));
-        world.objects.insert(2, obj(2, "b.md", "beta gamma", &["mid"]));
-        world.objects.insert(3, obj(3, "c.md", "alpha beta", &["high"])); // byte-identical twin of 1, different rights
-        world.objects.insert(4, obj(4, "d.md", "gamma delta alpha", &["low"]));
-        world.objects.insert(5, obj(5, "e.md", "delta epsilon", &[]));
-        world.objects.insert(6, obj(6, "f.md", "alpha gamma", &["low", "mid", "high"]));
+        let mut world = World {
+            objects: BTreeMap::new(),
+            epoch: 0,
+        };
+        world
+            .objects
+            .insert(1, obj(1, "a.md", "alpha beta", &["low", "mid"]));
+        world
+            .objects
+            .insert(2, obj(2, "b.md", "beta gamma", &["mid"]));
+        world
+            .objects
+            .insert(3, obj(3, "c.md", "alpha beta", &["high"])); // byte-identical twin of 1, different rights
+        world
+            .objects
+            .insert(4, obj(4, "d.md", "gamma delta alpha", &["low"]));
+        world
+            .objects
+            .insert(5, obj(5, "e.md", "delta epsilon", &[]));
+        world
+            .objects
+            .insert(6, obj(6, "f.md", "alpha gamma", &["low", "mid", "high"]));
         let mut pipe = Pipeline::new();
         let mut rng = Rng(seed.wrapping_mul(0xD1B54A32D192ED03) | 1);
         for step in 0..50 {
@@ -380,13 +440,22 @@ fn pipeline_matches_reference_model_over_generated_sequences() {
             apply(&mut world, &op);
             let caller = CALLERS[(seed + step) as usize % 3];
             let query = QUERIES[(step as usize) % QUERIES.len()];
-            assert_eq!(pipe.search(&world, caller, query), Model::search(&world, caller, query),
-                "search != model: seed {seed}, step {step}, op {op:?}");
-            assert_eq!(pipe.replay(&world, caller, query), Model::replay(&world, caller, query),
-                "replay != model: seed {seed}, step {step}, op {op:?}");
+            assert_eq!(
+                pipe.search(&world, caller, query),
+                Model::search(&world, caller, query),
+                "search != model: seed {seed}, step {step}, op {op:?}"
+            );
+            assert_eq!(
+                pipe.replay(&world, caller, query),
+                Model::replay(&world, caller, query),
+                "replay != model: seed {seed}, step {step}, op {op:?}"
+            );
             let hid = ids[(step as usize) % ids.len()];
-            assert_eq!(pipe.hydrate(&world, caller, hid), Model::hydrate(&world, caller, hid),
-                "hydrate != model: seed {seed}, step {step}, op {op:?}");
+            assert_eq!(
+                pipe.hydrate(&world, caller, hid),
+                Model::hydrate(&world, caller, hid),
+                "hydrate != model: seed {seed}, step {step}, op {op:?}"
+            );
         }
     }
 }
@@ -399,13 +468,20 @@ fn mutant_selection_after_ranking_is_rejected() {
     let (wa, wb) = paired_worlds();
     let correct_a = Model::search(&wa, "low", "alpha beta");
     let correct_b = Model::search(&wb, "low", "alpha beta");
-    assert_eq!(correct_a, correct_b, "reference model must be noninterfering");
+    assert_eq!(
+        correct_a, correct_b,
+        "reference model must be noninterfering"
+    );
     let mutant_a = mutant_selection_after_ranking(&wa, "low", "alpha beta");
     let mutant_b = mutant_selection_after_ranking(&wb, "low", "alpha beta");
-    assert_ne!(mutant_a, mutant_b,
-        "mutant projections must differ across paired worlds (the leak the assertion catches)");
-    assert_ne!(mutant_a.total_count, correct_a.total_count,
-        "mutant count leaks forbidden membership");
+    assert_ne!(
+        mutant_a, mutant_b,
+        "mutant projections must differ across paired worlds (the leak the assertion catches)"
+    );
+    assert_ne!(
+        mutant_a.total_count, correct_a.total_count,
+        "mutant count leaks forbidden membership"
+    );
 }
 
 #[test]
@@ -413,9 +489,16 @@ fn mutant_stale_cache_is_rejected() {
     // Oracle: F02 step 3 — after a revocation, a stale-cache replay
     // serves formerly allowed content; the check must reject it,
     // while the epoch-validating pipeline still matches the model.
-    let mut world = World { objects: BTreeMap::new(), epoch: 0 };
-    world.objects.insert(1, obj(1, "a.md", "alpha beta", &["low"]));
-    world.objects.insert(2, obj(2, "b.md", "alpha gamma", &["low"]));
+    let mut world = World {
+        objects: BTreeMap::new(),
+        epoch: 0,
+    };
+    world
+        .objects
+        .insert(1, obj(1, "a.md", "alpha beta", &["low"]));
+    world
+        .objects
+        .insert(2, obj(2, "b.md", "alpha gamma", &["low"]));
     let mut stale = StaleCachePipeline::new();
     let mut pipe = Pipeline::new();
     let seeded = stale.search(&world, "low", "alpha");
@@ -424,13 +507,20 @@ fn mutant_stale_cache_is_rejected() {
     apply(&mut world, &Op::Revoke(1, "low".to_string()));
     let expected = Model::replay(&world, "low", "alpha");
     assert!(!expected.ids_in_rank_order.contains(&1));
-    assert_eq!(pipe.replay(&world, "low", "alpha"), expected,
-        "validating pipeline must match the model after revocation");
+    assert_eq!(
+        pipe.replay(&world, "low", "alpha"),
+        expected,
+        "validating pipeline must match the model after revocation"
+    );
     let stale_replay = stale.replay(&world, "low", "alpha");
-    assert!(stale_replay.ids_in_rank_order.contains(&1),
-        "stale mutant must actually serve the revoked object for this control to mean anything");
-    assert_ne!(stale_replay, expected,
-        "the model check must reject the stale-cache mutant");
+    assert!(
+        stale_replay.ids_in_rank_order.contains(&1),
+        "stale mutant must actually serve the revoked object for this control to mean anything"
+    );
+    assert_ne!(
+        stale_replay, expected,
+        "the model check must reject the stale-cache mutant"
+    );
 }
 
 #[test]
@@ -439,7 +529,10 @@ fn hydrate_forbidden_is_indistinguishable_from_missing() {
     // and a nonexistent object produce the same error.
     let (wa, _) = paired_worlds();
     assert_eq!(Model::hydrate(&wa, "low", 10), Err(HydrateError::NotFound));
-    assert_eq!(Model::hydrate(&wa, "low", 10), Model::hydrate(&wa, "low", 999_999));
+    assert_eq!(
+        Model::hydrate(&wa, "low", 10),
+        Model::hydrate(&wa, "low", 999_999)
+    );
 }
 
 #[test]
@@ -449,8 +542,14 @@ fn byte_identical_twins_do_not_leak_across_rights() {
     // the permitted twin, with a count that ignores the forbidden one.
     let (wa, _) = paired_worlds();
     let p = Model::search(&wa, "low", "alpha beta release notes");
-    assert_eq!(p.ids_in_rank_order, vec![1, 2, 3],
-        "permitted twin ranks first; only permitted objects surface");
-    assert!(!p.ids_in_rank_order.contains(&11), "forbidden twin must not surface");
+    assert_eq!(
+        p.ids_in_rank_order,
+        vec![1, 2, 3],
+        "permitted twin ranks first; only permitted objects surface"
+    );
+    assert!(
+        !p.ids_in_rank_order.contains(&11),
+        "forbidden twin must not surface"
+    );
     assert_eq!(p.total_count, 3, "count must reflect permitted inputs only");
 }
