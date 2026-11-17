@@ -117,7 +117,14 @@ start_daemon() { # era port dir [mcp-spec]
   [ "$era" = legacy ] && protocol=force-initialize
   [ -n "${FIXTURE_PID:-}" ] || start_fixture
   mkdir -p "$WORK/$dir"
-  printf '{"mcpServers":{"demo":{"url":"http://127.0.0.1:%s/mcp","protocol":"%s","mcpx":{"sharing":"shared","scope":"global"}},"tasks":{"command":"%s","mcpx":{"sharing":"shared","scope":"global"}}}}\n' \
+  # writePolicy allow on both servers: the daemon's write-policy gate (policy.write=ask)
+  # asks a human to confirm every write-classified call, and a conformance run has no
+  # human -- in server legs the suite client cannot answer a broker question at all, so
+  # every tools/call waited out the ask and died as a scenario timeout, and in client
+  # legs the adapter's empty answers read as refusals (#8922). The gate is product
+  # behaviour for interactive use and is covered by the daemon's unit tests; this
+  # harness measures protocol conformance, so its daemons do not ask.
+  printf '{"mcpServers":{"demo":{"url":"http://127.0.0.1:%s/mcp","protocol":"%s","mcpx":{"sharing":"shared","scope":"global","writePolicy":"allow"}},"tasks":{"command":"%s","mcpx":{"sharing":"shared","scope":"global","writePolicy":"allow"}}}}\n' \
     "$FIXTURE_PORT" "$protocol" "$WORK/taskmcp" >"$WORK/$dir/.mcpx.json"
   MCPX_CONFIG=$WORK/$dir/.mcpx.json MCPX_STATE_DIR=$WORK/$dir/state MCPX_CACHE_DIR=$WORK/$dir/cache \
     MCPX_REGISTRY_URL=http://127.0.0.1:1/ \
