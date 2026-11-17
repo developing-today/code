@@ -20,13 +20,23 @@ or `blocked` — in its own pilot queue.** A `done` task is not coverage
 (done means triage or a landed slice, not a resolved issue), and neither
 is a task in the `*-shadow` queue.
 
+The report separates the two failure classes:
+
+- **uncovered (no task at all)** — the file-and-enqueue gap. This is
+  what `--import` enqueues, dedupe-keyed.
+- **done-task-only** — tasks exist but none is live (triage completed
+  without closing the issue). Reported for visibility, **not imported**:
+  re-queueing that class is the separate permanent audit Drew ordered,
+  and an hourly re-import would mint a fresh triage packet every hour
+  until the issue closes (the #1071 loop).
+
 ## How it works
 
 Two halves, deliberately split:
 
 | Half | Where | Why |
 |---|---|---|
-| The diff | `POST /coverage` on the queue broker | The broker owns the Turso connection; the diff is one query over live tasks, matched on the issue dedupe key. Read-only. |
+| The diff | `POST /coverage` on the queue broker | The broker owns the Turso connection; the diff is one query over the queue's tasks, matched on the issue dedupe key and split into covered / done-task-only / uncovered. Read-only. |
 | The import | `check_coverage.py` via `fleet queue enqueue` | Packets go through the sanctioned, validating, dedupe-keyed path like every other task. |
 
 The dedupe key `repo-health:v1:triage:<repo>:issue:<n>` makes a re-run

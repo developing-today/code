@@ -12,7 +12,13 @@ import that day was a one-off, and this script is the standing version.
 The check, per Drew's doctrine (2026-11-07): **every open issue must
 hold a LIVE task (queued/claimed/parked/blocked) in its own pilot
 queue.** A done task is not coverage (done means triage or a slice, not
-a resolved issue), and neither is a task in the shadow queue.
+a resolved issue), and neither is a task in the shadow queue. An issue
+whose *only* tasks are done is reported separately as **done-task-only**
+— visibility, not an import: re-queueing that class is the separate
+permanent audit Drew ordered, and re-importing it hourly would mint a
+fresh triage packet every hour until the issue closes (the #1071 loop).
+An issue with **no task at all** is the file-and-enqueue gap this check
+closes, and that is what `--import` enqueues.
 
 Two halves, deliberately split:
 
@@ -280,21 +286,25 @@ def render_report(
         f"# Queue coverage reconciliation — {checked_at}",
         "",
         f"Mode: **{mode}**. Doctrine: every open issue must hold a LIVE task "
-        "(queued/claimed/parked/blocked) in its own pilot queue; a done task is not coverage.",
+        "(queued/claimed/parked/blocked) in its own pilot queue; a done task is not "
+        "coverage, so an issue with only done tasks is listed as done-task-only "
+        "(visibility, not imported).",
         "",
-        "| repo | queue | open issues | covered | uncovered | imported |",
-        "|---|---|---|---|---|---|",
+        "| repo | queue | open issues | covered | done-only | uncovered | imported |",
+        "|---|---|---|---|---|---|---|",
     ]
     for r in results:
         lines.append(
             f"| {r['repo']} | {r['queue']} | {r['open_issues']} | {r['covered']} "
-            f"| {r['uncovered']} | {r['imported']} |"
+            f"| {r['done_only']} | {r['uncovered']} | {r['imported']} |"
         )
     total_uncovered = sum(r["uncovered"] for r in results)
+    total_done_only = sum(r["done_only"] for r in results)
     total_imported = sum(r["imported"] for r in results)
     lines += [
         "",
-        f"**Total uncovered: {total_uncovered}** · imported this run: {total_imported}",
+        f"**Total uncovered (no task): {total_uncovered}** · done-task-only: "
+        f"{total_done_only} · imported this run: {total_imported}",
         "",
     ]
     if errors:
@@ -303,8 +313,16 @@ def render_report(
         (r, i) for r in results for i in r.get("uncovered_issues", [])
     ]
     if uncovered_any:
-        lines += ["## Uncovered issues", ""]
+        lines += ["## Uncovered issues (no task — imported)", ""]
         for r, i in uncovered_any:
+            lines.append(f"- {r['repo']}#{i['number']} — {i.get('title', '')}")
+        lines.append("")
+    done_any = [
+        (r, i) for r in results for i in r.get("done_only_issues", [])
+    ]
+    if done_any:
+        lines += ["## Done-task-only (visibility; re-queue is the separate audit)", ""]
+        for r, i in done_any:
             lines.append(f"- {r['repo']}#{i['number']} — {i.get('title', '')}")
         lines.append("")
     return "\n".join(lines)
@@ -386,9 +404,11 @@ def main(argv: list[str] | None = None) -> int:
                 "queue": queue,
                 "open_issues": cov.get("open_issues", len(issues)),
                 "covered": cov.get("covered", 0),
+                "done_only": cov.get("done_only", 0),
                 "uncovered": len(uncovered),
                 "imported": imported,
                 "uncovered_issues": uncovered,
+                "done_only_issues": cov.get("done_only_issues", []),
             }
         )
 

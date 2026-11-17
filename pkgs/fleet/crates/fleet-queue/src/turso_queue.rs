@@ -913,7 +913,13 @@ fn verb_sweep(t: &TursoBackend, req: &Value) -> Value {
 /// each one, whether its repo-health dedupe key is covered by a LIVE task
 /// in the named queue. A done/cancelled/failed task is NOT coverage
 /// (Drew's doctrine, 2026-11-07: a done task means triage or a slice, not
-/// a resolved issue), and neither is a task in another queue.
+/// a resolved issue), and neither is a task in another queue — but an
+/// issue whose only tasks are done is reported separately as
+/// `done_only_issues` (visibility) rather than `uncovered_issues`
+/// (import). That split is what keeps the hourly import from minting a
+/// fresh triage packet every hour for every issue triage left open; the
+/// re-queue of that class is the separate permanent audit Drew ordered
+/// (#7016, the #1071 loop).
 ///
 /// Read-only by construction: it never writes tasks or events, so it is
 /// safe to run on a schedule and safe to run in observe mode. The caller
@@ -932,17 +938,22 @@ fn verb_coverage(t: &TursoBackend, req: &Value) -> Value {
         None => return fail(2, "coverage: issues must be an array".to_string()),
     };
     let work = (|| -> Result<Value, TErr> {
-        // One query for every live task in the queue that carries an
-        // issue dedupe key; the match is done in Rust so both the
-        // `triage` and `fix` classes count as coverage for the issue.
+        // One query for every task in the queue that carries an issue
+        // dedupe key. Live tasks are coverage; done-only tasks are the
+        // separate re-queue lag (visibility, not re-imported hourly);
+        // no task at all is the file-and-enqueue gap this check closes.
+        // The match is done in Rust so both the `triage` and `fix`
+        // classes count for the issue.
         let rows = t.query_objs(
             "SELECT id, status, dedupe_key FROM tasks \
-             WHERE queue = ? AND dedupe_key IS NOT NULL \
-               AND status IN ('queued','claimed','parked','blocked')",
+             WHERE queue = ? AND dedupe_key IS NOT NULL",
             &[Arg::Text(queue.clone())],
             &[],
         )?;
+        let is_live = |status: &str| matches!(status, "queued" | "claimed" | "parked" | "blocked");
         let mut live: std::collections::HashMap<i64, (i64, String)> =
+            std::collections::HashMap::new();
+        let mut any: std::collections::HashMap<i64, (i64, String)> =
             std::collections::HashMap::new();
         for r in &rows {
             let id = r.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -955,27 +966,44 @@ fn verb_coverage(t: &TursoBackend, req: &Value) -> Value {
                 continue;
             };
             if let Some(n) = issue_number_for_repo(key, &repo) {
-                live.entry(n).or_insert((id, status));
+                any.entry(n).or_insert((id, status.clone()));
+                if is_live(&status) {
+                    live.entry(n).or_insert((id, status));
+                }
             }
         }
         let mut uncovered: Vec<Value> = Vec::new();
+        let mut done_only: Vec<Value> = Vec::new();
         let mut covered: Vec<Value> = Vec::new();
         for iss in &issues {
             let Some(n) = iss.get("number").and_then(|v| v.as_i64()) else {
                 continue;
             };
+            let title = iss.get("title").cloned().unwrap_or(Value::Null);
             match live.get(&n) {
                 Some((id, status)) => covered.push(json!({
                     "number": n,
                     "task": id,
                     "status": status,
-                    "title": iss.get("title").cloned().unwrap_or(Value::Null),
+                    "title": title,
                 })),
-                None => uncovered.push(json!({
-                    "number": n,
-                    "title": iss.get("title").cloned().unwrap_or(Value::Null),
-                    "url": format!("https://github.com/{repo}/issues/{n}"),
-                })),
+                None => match any.get(&n) {
+                    // Tasks exist, but none is live: the triage/fix
+                    // completed without closing the issue. Reported
+                    // for visibility; re-queueing it is the separate
+                    // permanent audit, not an hourly import.
+                    Some((id, status)) => done_only.push(json!({
+                        "number": n,
+                        "task": id,
+                        "status": status,
+                        "title": title,
+                    })),
+                    None => uncovered.push(json!({
+                        "number": n,
+                        "title": title,
+                        "url": format!("https://github.com/{repo}/issues/{n}"),
+                    })),
+                },
             }
         }
         Ok(json!({
@@ -984,7 +1012,9 @@ fn verb_coverage(t: &TursoBackend, req: &Value) -> Value {
             "open_issues": issues.len(),
             "covered": covered.len(),
             "uncovered": uncovered.len(),
+            "done_only": done_only.len(),
             "uncovered_issues": uncovered,
+            "done_only_issues": done_only,
             "covered_issues": covered,
         }))
     })();

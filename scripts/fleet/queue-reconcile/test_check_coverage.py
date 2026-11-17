@@ -37,8 +37,9 @@ REPO = "developing-today/code"
 QUEUE = "repo-health-code-pilot"
 
 
-def fixture(covered: list[int], uncovered: list[int]) -> dict:
-    issues = [{"number": n, "title": f"issue {n}"} for n in covered + uncovered]
+def fixture(covered: list[int], uncovered: list[int], done_only: list[int] | None = None) -> dict:
+    done_only = done_only or []
+    issues = [{"number": n, "title": f"issue {n}"} for n in covered + uncovered + done_only]
     return {
         "issues": {REPO: issues},
         "coverage": {
@@ -48,10 +49,15 @@ def fixture(covered: list[int], uncovered: list[int]) -> dict:
                 "open_issues": len(issues),
                 "covered": len(covered),
                 "uncovered": len(uncovered),
+                "done_only": len(done_only),
                 "covered_issues": [{"number": n} for n in covered],
                 "uncovered_issues": [
                     {"number": n, "title": f"issue {n}", "url": f"https://github.com/{REPO}/issues/{n}"}
                     for n in uncovered
+                ],
+                "done_only_issues": [
+                    {"number": n, "title": f"issue {n}", "task": 100 + n, "status": "done"}
+                    for n in done_only
                 ],
             }
         },
@@ -119,7 +125,7 @@ class CoverageReconcileTest(unittest.TestCase):
         code, out = self.run_cli(fixture([1, 2], [3, 4]))
         self.assertEqual(code, 0)
         self.assertEqual(self.fleet.calls(), [])
-        self.assertIn("Total uncovered: 2", out)
+        self.assertIn("Total uncovered (no task): 2", out)
         self.assertIn(f"{REPO}#3", out)
 
     def test_import_mode_enqueues_exactly_the_uncovered(self):
@@ -139,7 +145,7 @@ class CoverageReconcileTest(unittest.TestCase):
         code, out = self.run_cli(fixture([1, 2, 3], []), "--import")
         self.assertEqual(code, 0)
         self.assertEqual(self.fleet.calls(), [])
-        self.assertIn("Total uncovered: 0", out)
+        self.assertIn("Total uncovered (no task): 0", out)
 
     def test_fetch_failure_is_an_error_not_zero_coverage(self):
         fx = fixture([], [])
@@ -162,6 +168,17 @@ class CoverageReconcileTest(unittest.TestCase):
         self.assertTrue((self.state / "latest.md").exists())
         reports = list(self.state.glob("report-*.md"))
         self.assertEqual(len(reports), 1)
+
+    def test_done_task_only_is_reported_but_not_imported(self):
+        code, out = self.run_cli(fixture([1], [], [2, 3]), "--import")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.fleet.calls(), [])
+        self.assertIn("Total uncovered (no task): 0", out)
+        self.assertIn("done-task-only: 2", out)
+        self.assertIn(f"{REPO}#2", out)
+        report = (self.state / "latest.md").read_text()
+        self.assertIn("Done-task-only", report)
+        self.assertNotIn("Uncovered issues (no task", report)
 
     def test_import_child_gets_the_selected_broker_and_token(self):
         token = self.tmp / "token"

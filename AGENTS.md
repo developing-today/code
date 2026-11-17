@@ -75,9 +75,14 @@ The standing backstop is the coverage reconciliation
 (`scripts/fleet/queue-reconcile/`, `doc` in its README): every open issue
 must hold a **live** task — `queued`, `claimed`, `parked` or `blocked` —
 in its own pilot queue. A `done` task is not coverage, and neither is a
-task in a `*-shadow` queue. When the reconciliation reports uncovered
-issues, the rule above was missed somewhere; fix the filing path, not
-just the import.
+task in a `*-shadow` queue. The report splits the gaps: an issue with
+**no task at all** is imported as a triage packet; an issue whose only
+tasks are **done** is listed as done-task-only for visibility and is not
+re-imported (re-queueing that class is the separate permanent audit, not
+an hourly import — otherwise every triage that leaves an issue open
+would mint a new triage packet every hour). When the reconciliation
+reports no-task issues, the rule above was missed somewhere; fix the
+filing path, not just the import.
 
 ## Research, design and delivery workflow
 
