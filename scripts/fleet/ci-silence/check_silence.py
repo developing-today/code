@@ -83,7 +83,9 @@ def newest_completed_run(runs: list[dict]) -> dict | None:
     return max(runs, key=lambda r: (parse_ts(r["updatedAt"]), r.get("databaseId", 0)))
 
 
-def evaluate(repo: str, runs: list[dict], now: datetime, threshold_hours: float) -> dict:
+def evaluate(
+    repo: str, runs: list[dict], now: datetime, threshold_hours: float
+) -> dict:
     """One repo's silence verdict from its completed-run history only."""
     last = newest_completed_run(runs)
     if last is None:
@@ -116,14 +118,18 @@ def tracking_title(repo: str) -> str:
     return f"{TRACKING_TITLE_PREFIX}{repo} — no completed Actions run within threshold"
 
 
-def plan_actions(evaluations: list[dict], tracking: dict[str, int | None]) -> list[dict]:
+def plan_actions(
+    evaluations: list[dict], tracking: dict[str, int | None]
+) -> list[dict]:
     """File-or-update plan: exactly one tracking issue per silent repo."""
     actions = []
     for ev in evaluations:
         if ev["status"] != "silent":
             actions.append({"action": "none", "repo": ev["repo"], "issue": None})
         elif tracking.get(ev["repo"]):
-            actions.append({"action": "update", "repo": ev["repo"], "issue": tracking[ev["repo"]]})
+            actions.append(
+                {"action": "update", "repo": ev["repo"], "issue": tracking[ev["repo"]]}
+            )
         else:
             actions.append({"action": "file", "repo": ev["repo"], "issue": None})
     return actions
@@ -157,6 +163,7 @@ def tracking_body(ev: dict) -> str:
 
 # --- GitHub access (gh CLI only; run history is the only read) ---
 
+
 def gh_json(args: list[str]) -> list | dict:
     out = subprocess.run(
         ["gh"] + args, capture_output=True, text=True, check=True
@@ -167,8 +174,15 @@ def gh_json(args: list[str]) -> list | dict:
 def fetch_runs(repo: str) -> list[dict]:
     return gh_json(
         [
-            "run", "list", "--repo", repo, "--status", "completed",
-            "--limit", "30", "--json",
+            "run",
+            "list",
+            "--repo",
+            repo,
+            "--status",
+            "completed",
+            "--limit",
+            "30",
+            "--json",
             "databaseId,name,conclusion,createdAt,updatedAt,url",
         ]
     )  # type: ignore[return-value]
@@ -177,9 +191,16 @@ def fetch_runs(repo: str) -> list[dict]:
 def find_tracking_issue(repo: str) -> int | None:
     issues = gh_json(
         [
-            "issue", "list", "--repo", repo, "--state", "open",
-            "--search", f'"{TRACKING_TITLE_PREFIX}{repo}" in:title',
-            "--json", "number,title",
+            "issue",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--search",
+            f'"{TRACKING_TITLE_PREFIX}{repo}" in:title',
+            "--json",
+            "number,title",
         ]
     )
     for issue in issues:  # type: ignore[union-attr]
@@ -192,9 +213,14 @@ def apply_action(action: dict, ev: dict) -> None:
     repo = action["repo"]
     if action["action"] == "file":
         args = [
-            "issue", "create", "--repo", repo,
-            "--title", tracking_title(repo),
-            "--body", tracking_body(ev),
+            "issue",
+            "create",
+            "--repo",
+            repo,
+            "--title",
+            tracking_title(repo),
+            "--body",
+            tracking_body(ev),
         ]
         for label in TRACKING_LABELS:
             args += ["--label", label]
@@ -202,22 +228,40 @@ def apply_action(action: dict, ev: dict) -> None:
     elif action["action"] == "update":
         subprocess.run(
             [
-                "gh", "issue", "comment", str(action["issue"]),
-                "--repo", repo, "--body",
+                "gh",
+                "issue",
+                "comment",
+                str(action["issue"]),
+                "--repo",
+                repo,
+                "--body",
                 f"Still silent at this pass: {tracking_body(ev)}",
             ],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--apply", action="store_true",
-                        help="file/update tracking issues (default: observe only)")
-    parser.add_argument("--threshold-hours", type=float, default=None,
-                        help="override every repo's silence threshold")
-    parser.add_argument("--repo", action="append", dest="repos",
-                        help="check only this repo (repeatable)")
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="file/update tracking issues (default: observe only)",
+    )
+    parser.add_argument(
+        "--threshold-hours",
+        type=float,
+        default=None,
+        help="override every repo's silence threshold",
+    )
+    parser.add_argument(
+        "--repo",
+        action="append",
+        dest="repos",
+        help="check only this repo (repeatable)",
+    )
     parser.add_argument("--now", help="ISO8601 'now' (tests/dry-runs)")
     parser.add_argument("--fixture", help="offline fixture JSON (see module docstring)")
     args = parser.parse_args(argv)
@@ -252,12 +296,17 @@ def main(argv: list[str] | None = None) -> int:
             if action["action"] != "none":
                 apply_action(action, by_repo[action["repo"]])
 
-    print(json.dumps({
-        "now": now.isoformat(),
-        "applied": bool(args.apply and fixture is None),
-        "evaluations": evaluations,
-        "actions": actions,
-    }, indent=2))
+    print(
+        json.dumps(
+            {
+                "now": now.isoformat(),
+                "applied": bool(args.apply and fixture is None),
+                "evaluations": evaluations,
+                "actions": actions,
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
