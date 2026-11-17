@@ -150,6 +150,12 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+// Serializing a string slice with serde_json cannot fail: a string has
+// no custom Serialize impl and the output is an in-memory String, so the
+// expect in this helper is provably unreachable. The serializer is kept
+// rather than a hand-rolled escaper because these bytes are canonical
+// signing input and must stay byte-identical to serde_json escaping.
+#[allow(clippy::expect_used)]
 fn json_string(s: &str) -> String {
     serde_json::to_string(s).expect("serializing a string cannot fail")
 }

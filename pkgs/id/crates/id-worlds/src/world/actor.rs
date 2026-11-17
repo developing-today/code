@@ -796,7 +796,9 @@ impl WorldActor {
                     ..
                 })
             ) {
-                input_batch.push(command.take().expect("command held"));
+                if let Some(held) = command.take() {
+                    input_batch.push(held);
+                }
                 while input_batch.len() < MAX_INPUT_BATCH {
                     match receiver.try_recv() {
                         Ok(next)
@@ -826,10 +828,11 @@ impl WorldActor {
                 .instrument(tracing::info_span!("command", name = "InputBatch"))
                 .await;
             } else {
-                let command = if let Some(command) = input_batch.pop() {
-                    command
-                } else {
-                    command.take().expect("command held")
+                // An empty batch means the drain above never took the
+                // held command; a non-empty batch pops its element. One
+                // of the two always yields the command.
+                let Some(command) = input_batch.pop().or_else(|| command.take()) else {
+                    continue;
                 };
                 let name = command.name();
                 async {
