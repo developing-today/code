@@ -1,10 +1,9 @@
 name: note-submission
 
+# Main-only CI policy (.github/ci-policy.md): push to main plus manual
+# dispatch; no PR-derived trigger.
 on:
-  pull_request:
-    paths:
-      - "pkgs/note-submission/**"
-      - ".github/workflows/note-submission-pr.yml"
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
