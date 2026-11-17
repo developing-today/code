@@ -28,7 +28,6 @@ cli	completion	no integration-test exercise yet; burn-down #8460 (cli configurat
 cli	init	no integration-test exercise yet; burn-down #8460 (cli configuration group)
 cli	man	no integration-test exercise yet; burn-down #8460 (cli configuration group)
 cli	plugin	no integration-test exercise yet; burn-down #8460 (cli configuration group)
-cli	cache	no integration-test exercise yet; burn-down #8461 (cli daemon group)
 cli	daemon	no integration-test exercise yet; burn-down #8461 (cli daemon group)
 cli	reload	no integration-test exercise yet; burn-down #8461 (cli daemon group)
 cli	stdio-proxy	no integration-test exercise yet; burn-down #8461 (cli daemon group)
