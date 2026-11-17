@@ -1818,6 +1818,25 @@ impl WorldActor {
                 // program re-issues the id afterwards if it still wants the
                 // effect, and that new intent executes normally.
                 if self.stale_wants_at_open.remove(&request.id) {
+                    // F13.7 step 6: a restarted refusal of a
+                    // client-provider request is a host provider
+                    // decision like any other, so the broker records
+                    // it in the F12.6 audit log (denied / restarted)
+                    // — the audit trail has no gap at reopen. Host
+                    // capabilities keep their existing accounting.
+                    if let Some(manifest) = crate::world_caps::PROVIDER_REGISTRY
+                        .get(&request.cap)
+                        .filter(|manifest| manifest.side == crate::world_caps::ProviderSide::Client)
+                    {
+                        let actor = self
+                            .acting
+                            .map_or_else(|| "program".to_owned(), |id| format!("participant:{id}"));
+                        self.provider_broker.note_restarted_refusal(
+                            manifest,
+                            &actor,
+                            &request.args,
+                        );
+                    }
                     let refusal = crate::world_caps::result_event(
                         &request.id,
                         Err(CapError::actor_denied_with("restarted")),
