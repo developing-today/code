@@ -2208,7 +2208,7 @@ enum PumpLine {
     Quit,
 }
 
-const PUMP_HELP: &str = "Commands: a line is chat; /input <hex>, /records [prefix], /stats, /caps, /logs, /help, /quit. Server frames print to stdout as JSON lines.";
+const PUMP_HELP: &str = "Commands: a line is chat; /input <hex>, /records [prefix], /stats, /caps, /logs, /anchor <target> [type], /anchor confirm <n>, /anchor list, /talk <target>, /anchors <target>, /resolve <thread> [into <target>], /queue, /flush, /help, /quit. Server frames print to stdout as JSON lines.";
 
 /// Stable JSONL record for a response that the join client handles locally.
 fn local_transcript_record(level: &str, message: &str) -> serde_json::Value {
@@ -2242,6 +2242,23 @@ fn pump_command(line: &str, capability: &str) -> PumpLine {
             return PumpLine::Say {
                 level: "info",
                 message: "events already print live here as JSON lines; use `id world logs` for a bounded tail".to_owned(),
+            };
+        }
+        WorldLine::Anchor { .. }
+        | WorldLine::AnchorConfirm { .. }
+        | WorldLine::AnchorList
+        | WorldLine::Talk { .. }
+        | WorldLine::Anchors { .. }
+        | WorldLine::Resolve { .. }
+        | WorldLine::Queue
+        | WorldLine::Flush => {
+            // The flow verbs parse identically on every surface (#5873
+            // section 3), but their operations (chat.anchor.v1, talk
+            // bindings, the outbox) are not wired into the join pump yet;
+            // say so rather than sending a frame the host cannot mean.
+            return PumpLine::Say {
+                level: "error",
+                message: "that command is recognised, but its operation is not available in `id world join` yet".to_owned(),
             };
         }
         WorldLine::Help => {
@@ -2489,6 +2506,29 @@ mod tests {
                 "{line}"
             );
         }
+        // #7616 / #5873 section 3: the flow verbs are recognised on the pump
+        // too, and they answer locally rather than sending a frame the host
+        // cannot mean — identical grammar, surface-appropriate answer.
+        for line in [
+            "/anchor id://abc",
+            "/anchor id://abc about",
+            "/anchor confirm 1",
+            "/anchor list",
+            "/talk id://abc",
+            "/anchors the design doc",
+            "/resolve thread-9",
+            "/resolve thread-9 into id://abc",
+            "/queue",
+            "/flush",
+        ] {
+            assert!(
+                matches!(
+                    pump_command(line, "cap"),
+                    PumpLine::Say { level: "error", .. }
+                ),
+                "{line}"
+            );
+        }
         assert_eq!(pump_command("/quit", "cap"), PumpLine::Quit);
     }
 
@@ -2552,7 +2592,7 @@ mod tests {
         .join("\n");
         assert_eq!(
             check_contract(&good).unwrap(),
-            "3 frames conform to shell contract v1.9"
+            "3 frames conform to shell contract v1.10"
         );
         let bad = [
             r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#,

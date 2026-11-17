@@ -32,6 +32,7 @@ in
       "services/opencode-go-seating-guard"
       "services/opencode-watchdog"
       "services/keyring-auto-unlock"
+      "services/signal-audit"
       # "microvm"
       # "server"
       "networking/dhcp-nat"

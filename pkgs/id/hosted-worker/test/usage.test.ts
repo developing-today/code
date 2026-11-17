@@ -141,6 +141,35 @@ test("at cap: writes fail closed, reads and export succeed, delete recovers head
   assert.equal(put3.status, 200, "headroom recovered after delete");
 });
 
+test("kv PUT over headroom is refused early on declared length, and by a capped read when chunked", async () => {
+  const { doA } = makeDO({ USER_CEILING_BYTES: "10" });
+  const declared = await doA.fetch(routed("/v1/kv/big", { method: "PUT", body: "12345678901" }));
+  assert.equal(declared.status, 413);
+  assert.equal(((await declared.json()) as { error: string }).error, "ceiling_exceeded");
+
+  const chunkedBody = new ReadableStream({
+    start(c) {
+      c.enqueue(new TextEncoder().encode("12345"));
+      c.enqueue(new TextEncoder().encode("678901"));
+      c.close();
+    },
+  });
+  const chunked = await doA.fetch(
+    routed("/v1/kv/big", { method: "PUT", body: chunkedBody, duplex: "half" } as RequestInit),
+  );
+  assert.equal(chunked.status, 413);
+  assert.equal(((await chunked.json()) as { error: string }).error, "ceiling_exceeded");
+  assert.equal((await getUsage(doA)).storage_bytes, 0, "no refused write is stored");
+});
+
+test("kv overwrite headroom counts the prior value", async () => {
+  const { doA } = makeDO({ USER_CEILING_BYTES: "10" });
+  assert.equal((await doA.fetch(routed("/v1/kv/k1", { method: "PUT", body: "123456" }))).status, 200);
+  assert.equal((await doA.fetch(routed("/v1/kv/k1", { method: "PUT", body: "1234567890" }))).status, 200);
+  assert.equal((await doA.fetch(routed("/v1/kv/k1", { method: "PUT", body: "12345678901" }))).status, 413);
+  assert.equal((await getUsage(doA)).storage_bytes, 10);
+});
+
 test("a deduped re-PUT of the same blob does not double-charge", async () => {
   const { doA } = makeDO({ USER_CEILING_BYTES: "10" });
   const blob = new TextEncoder().encode("0123456789");

@@ -10,7 +10,7 @@
 /** A point in a session's lifecycle. */
 export type Phase = "opening" | "query" | "install" | "joined" | "closed";
 
-type FieldType = "string" | "hex" | "bool" | "u16" | "u32" | "u64" | "string[]" | "array" | "object";
+type FieldType = "string" | "hex" | "bool" | "u16" | "u32" | "u64" | "i64" | "string[]" | "array" | "object";
 
 type RawField =
   | string
@@ -57,7 +57,7 @@ type Field = {
 /** The result of checking one frame. */
 export type Check = { ok: true; type: string } | { ok: false; error: string };
 
-const FIELD_TYPES = new Set<string>(["string", "hex", "bool", "u16", "u32", "u64", "string[]", "array", "object"]);
+const FIELD_TYPES = new Set<string>(["string", "hex", "bool", "u16", "u32", "u64", "i64", "string[]", "array", "object"]);
 const PHASES = new Set<string>(["opening", "query", "install", "joined", "closed"]);
 const FRAME_CLASSES = new Set<string>([
   "event",
@@ -229,6 +229,15 @@ function lookup(
 }
 
 function checkValue(field: Field, value: unknown): string | null {
+  if (field.kind === "i64") {
+    // Mirrors the Rust checker (value.as_i64()): signed scroll deltas on
+    // pointer/hover use it. i64::MAX arrives rounded to 2^63 in a JS number,
+    // so 2^63 is accepted the way u64 accepts 2^64; above it, or below
+    // i64::MIN (exactly -2^63), is provably out of range.
+    if (!isInteger(value)) return "must be an integer";
+    if (value > 2 ** 63 || value < -(2 ** 63)) return `must be in i64 range, got ${value}`;
+    return null;
+  }
   if (field.kind === "u64") {
     if (!isInteger(value) || value < 0) return "must be a non-negative integer";
     // u64::MAX itself (2^64 - 1) rounds to 2^64 in a JS number, so 2^64 is

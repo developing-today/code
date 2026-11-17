@@ -510,3 +510,31 @@ test('an empty desired variants set never strips existing variants (#1799)', () 
   const existing = { limit: desiredLimits, variants: desiredVariants };
   assert.deepEqual(planModelReconciliation(existing, desiredLimits, {}), []);
 });
+
+// #7983 item 1: the language-server catalog response is a parse boundary.
+// Shape drift is a named hard error; absence is never an empty model set.
+const { parseLiveCatalogBody } = new Function(
+  `class LiveCatalogShapeError extends Error {}\n` +
+  `${extractFunction('parseLiveCatalogBody')}\n` +
+  'return { parseLiveCatalogBody };',
+)();
+
+test('a well-formed language-server catalog yields its models (#7983)', () => {
+  const models = { 'gemini-x': { displayName: 'Gemini X' } };
+  assert.deepEqual(parseLiveCatalogBody({ response: { models } }), models);
+});
+
+for (const [label, body, message] of [
+  ['null', null, /expected a JSON object, got null/],
+  ['array', [], /expected a JSON object, got array/],
+  ['scalar', 'ok', /expected a JSON object, got string/],
+  ['empty object', {}, /response must be an object, got undefined/],
+  ['response array', { response: [] }, /response must be an object, got array/],
+  ['models null', { response: { models: null } }, /response\.models must be an object, got null/],
+  ['models array', { response: { models: [] } }, /response\.models must be an object, got array/],
+  ['models scalar', { response: { models: 3 } }, /response\.models must be an object, got number/],
+]) {
+  test(`language-server catalog shape drift is a hard error: ${label} (#7983)`, () => {
+    assert.throws(() => parseLiveCatalogBody(body), message);
+  });
+}

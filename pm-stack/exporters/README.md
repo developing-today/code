@@ -30,7 +30,13 @@ of exactly this kind of state machine.
 deduped queue-task + incident-issue effects behind injected effectors,
 records the refs on the incident, plans recovery (comment + close +
 complete), and renders the NEEDS DREW surfacing line (immediate when
-human-blocked, after 24 h unresolved otherwise).
+human-blocked, after 24 h unresolved otherwise). The hand-off creates
+the incident issue **first**: fleet queue validation only accepts a
+`small_fix` packet whose fix-family dedupe key names an existing issue
+(`repo-health:v1:fix:<repo>:issue:<n>`, payload.issue.number matching),
+so `buildQueueTaskWrapper` translates the escalation packet into the
+validated repo-task/v1 envelope — full escalation context riding inside
+the payload — once the issue number is confirmed.
 
 `src/adapters.ts` + `adapters/` — the **adapter loader**. An adapter is a
 per-provider JSON file (origins allowlist, CDP port, producer document

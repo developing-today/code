@@ -451,6 +451,8 @@ pub(crate) async fn run_world_session<I: SessionIo>(
         | ClientFrame::Resize { .. }
         | ClientFrame::Revoke { .. }
         | ClientFrame::Paste { .. }
+        | ClientFrame::Pointer { .. }
+        | ClientFrame::Hover { .. }
         | ClientFrame::ProviderOffer { .. }
         | ClientFrame::ProviderReply { .. }
         | ClientFrame::ScreenSubscribe { .. }

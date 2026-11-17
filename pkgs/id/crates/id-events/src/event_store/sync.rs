@@ -869,6 +869,9 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::event_store::DEVICE_OPS;
+    use crate::groups::event::encode as encode_group_event;
+    use crate::groups::{Body as GroupBody, DeviceOp, Event as GroupEvent, Role as GroupRole};
     use crate::pull_policy::{PullPolicy, PullRefused, testing};
     use id_core::waiting::WaitingLimits;
     use id_store::chain::ChainExt;
@@ -1207,6 +1210,73 @@ mod tests {
         for event in &events {
             assert_eq!(b.event_body(&event.id).unwrap(), body.as_slice());
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_range_sync_ingests_device_operation_body_on_receiver() {
+        let (_da, mut a) = open();
+        let (_db, mut b) = open();
+        let key = signer(71);
+        let group = Hash::digest(b"range-sync device operation group");
+        let body = encode_group_event(&GroupEvent {
+            id: Hash::digest(b"range-sync device grant body"),
+            author: *key.verifying_key().as_bytes(),
+            after: vec![],
+            group: Some(group),
+            body: GroupBody::Device(DeviceOp::Add {
+                device: *signer(72).verifying_key().as_bytes(),
+                scope: GroupRole::Admin,
+            }),
+        })
+        .unwrap();
+        let event = chain::sign(
+            &key,
+            0,
+            None,
+            Some(&body),
+            ChainExt {
+                kind: "group.event".to_owned(),
+                group: Some(group),
+                after: vec![],
+                tag: None,
+                document: None,
+                removes: None,
+                note: None,
+                link: None,
+                checkpoint: None,
+                rotation: None,
+                chat: None,
+                anchor: None,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            a.ingest_with_body(&event.bytes, Some(&body), NOW).unwrap(),
+            Ingest::Accepted { .. }
+        ));
+
+        let (dialer, acceptor) = loopback(
+            &mut a,
+            &mut b,
+            Params::default(),
+            Params::default(),
+            Cut::Never,
+        )
+        .await
+        .unwrap();
+        dialer.unwrap();
+        acceptor.unwrap();
+
+        assert_eq!(b.event_body(&event.id).unwrap(), body.as_slice());
+        let txn = b.db.begin_read().unwrap();
+        assert!(
+            txn.open_table(DEVICE_OPS)
+                .unwrap()
+                .get(event.id.as_bytes().as_slice())
+                .unwrap()
+                .is_some(),
+            "receiver must extract the operation through batch ingest"
+        );
     }
 
     #[test]

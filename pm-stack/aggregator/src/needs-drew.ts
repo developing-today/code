@@ -437,6 +437,16 @@ export async function getNeedsDrew(file: string, ledgerId: string): Promise<Need
   return items.find((i) => i.ledgerId === ledgerId) ?? null;
 }
 
+/**
+ * The alert-incident key a needs-drew question's incident is posted under:
+ * the raiser (fleet-queue's needs_drew poster) posts the incident with key
+ * `needs-drew:<ledgerId>`, and the answer path closes the incident by this
+ * key (#8605). Pinned here so the convention has exactly one spelling.
+ */
+export function needsDrewIncidentKey(ledgerId: string): string {
+  return `needs-drew:${ledgerId}`;
+}
+
 /** Record an answer. First answer wins; repeats return current state. */
 export async function recordAnswer(
   file: string,

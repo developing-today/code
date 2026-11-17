@@ -19,7 +19,9 @@
 use p2panda_core::{Hash, SeqNum};
 use redb::{ReadableMultimapTable, ReadableTable, WriteTransaction};
 
-use super::{StoreError, WAITING, WAITING_BY_DEP, be_u64, corrupt, hash_of, row_event, seq_num};
+use super::{
+    DEVICE_OPS, StoreError, WAITING, WAITING_BY_DEP, be_u64, corrupt, hash_of, row_event, seq_num,
+};
 use id_core::waiting::{AuthorKey, WaitRefusal, WaitingPool};
 use id_store::chain::Event;
 
@@ -133,6 +135,17 @@ pub(super) fn put(txn: &WriteTransaction, row: &Row) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// Drops the row of an event the store no longer holds, with the device operation written for
+/// it: a held device operation is only kept while the event is held, so its row and its
+/// operation go together (#8160). Every drop of a held-but-not-stored event uses this, so no
+/// caller can leave the operation behind.
+pub(super) fn drop_held(txn: &WriteTransaction, id: &Hash) -> Result<(), StoreError> {
+    delete(txn, id)?;
+    txn.open_table(DEVICE_OPS)?
+        .remove(id.as_bytes().as_slice())?;
+    Ok(())
+}
+
 /// Removes the row for `id`, if there is one.
 pub(super) fn delete(txn: &WriteTransaction, id: &Hash) -> Result<(), StoreError> {
     let Some(old) = get(txn, id)? else {
@@ -203,7 +216,7 @@ impl Mirror<'_> {
     fn flush_expired(&mut self, now: u64) -> Result<usize, StoreError> {
         let expired = self.pool.expire(now);
         for (_author, event) in &expired {
-            delete(self.txn, &event.id)?;
+            drop_held(self.txn, &event.id)?;
         }
         Ok(expired.len())
     }
@@ -345,6 +358,6 @@ impl Mirror<'_> {
     /// one mark for the life of the pool.
     pub fn drop_row(&mut self, id: &Hash) -> Result<(), StoreError> {
         self.pool.forget(id);
-        delete(self.txn, id)
+        drop_held(self.txn, id)
     }
 }

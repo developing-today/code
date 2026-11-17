@@ -698,13 +698,22 @@ name = "dht"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "dht-rotation",
  "distributed-topic-tracker",
  "ed25519-dalek",
+ "futures-lite",
  "iroh",
  "iroh-gossip",
  "rand 0.9.3",
  "tokio",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "dht-rotation"
+version = "0.1.0"
+dependencies = [
+ "sha2 0.10.9",
 ]
 
 [[package]]
