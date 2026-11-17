@@ -9327,7 +9327,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn claim_race_same_worker_two_lanes_live_claim_refusal_is_recorded() {
         // #6985 recurrence fixture (task 17490, 2026-11-16, lanes
         // code-j / code-g, both worker repo-worker-code): the second
@@ -9375,6 +9374,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn claim_paths_never_reread_a_workers_newest_claimed_row() {
         // #7068 source oracle: the pre-#7617 claim shape claimed
         // via a subquery and re-read the result as the newest
@@ -9471,6 +9471,7 @@ mod tests {
         assert!(impl_src.contains("stamp_claim_model"));
     }
 
+    #[test]
     fn iso_epoch_and_known_instants() {
         assert_eq!(iso(0), "1970-01-01T00:00:00Z");
         // 2026-11-07T03:00:00Z == 1794020400 (the night this landed).
@@ -9493,7 +9494,6 @@ mod tests {
         assert_eq!(by_str, vec![iso(100), iso(200), iso(300)]);
     }
 
-    #[test]
     #[test]
     fn wait_floors_match_broker_policy_8184() {
         // #8184: triage waits are held 6h, ci/capacity 1h; waits
@@ -9987,7 +9987,6 @@ mod tests {
         assert!(err.contains("already claimable"), "{err}");
     }
 
-    #[test]
     #[test]
     fn expiry_disposition_fails_only_at_cap() {
         // Below cap: the task returns to queued for another attempt.
@@ -10642,7 +10641,6 @@ mod tests {
         assert!(client_src.contains("call(\"/quarantine-recheck\""));
     }
 
-    #[test]
     #[test]
     fn stored_not_before_rule_9179() {
         // #9179 (closing the #6426 bypass): the values the audit
@@ -11586,6 +11584,7 @@ mod tests {
         assert!(platform_limit_refusal(Some("muse"), None, Some("openchamber")).is_none());
     }
 
+    #[test]
     fn claim_by_id_targets_exactly_the_named_task_7735() {
         // #7735 oracle: a targeted claim is a claim of one row or
         // no claim — it can never fall through to the queue's
