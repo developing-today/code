@@ -1422,6 +1422,29 @@ pub(crate) fn names_uses(value: &serde_json::Value) -> bool {
 }
 
 /// Handle one frame from a joined participant. Returns `false` to end the session.
+/// The wire name of a pointer event, as `InputRefused.event` carries it
+/// (the serde snake_case form of `PointerEvent`).
+fn pointer_event_wire(event: PointerEvent) -> &'static str {
+    match event {
+        PointerEvent::Press => "press",
+        PointerEvent::Release => "release",
+        PointerEvent::Cancel => "cancel",
+        PointerEvent::DragMove => "drag_move",
+        PointerEvent::Scroll => "scroll",
+        PointerEvent::LongPress => "long_press",
+        PointerEvent::SecondaryPress => "secondary_press",
+    }
+}
+
+/// The wire name of a hover event, as `InputRefused.event` carries it.
+fn hover_event_wire(event: HoverEvent) -> &'static str {
+    match event {
+        HoverEvent::HoverEnter => "hover_enter",
+        HoverEvent::HoverLeave => "hover_leave",
+        HoverEvent::HoverMove => "hover_move",
+    }
+}
+
 async fn handle_client_frame<I: SessionIo>(
     service: &WorldService,
     io: &mut I,
@@ -1637,6 +1660,42 @@ async fn handle_client_frame<I: SessionIo>(
                     .await;
             }
         },
+        ClientFrame::Pointer {
+            event, environment, ..
+        } => {
+            // No app can declare pointer input yet (the world advertises
+            // `pointer: false` in its input declaration), so a pointer
+            // event is refused with the design's named reason -- never
+            // silently dropped (#1831 S2). Journaling like `Input`
+            // starts when the world consumes pointer events.
+            return send_json(
+                service.frame_meter(),
+                io,
+                &ServerFrame::InputRefused {
+                    event: pointer_event_wire(event),
+                    environment: Some(environment),
+                    reason: InputRefusalReason::NotDeclaredByApp,
+                },
+            )
+            .await;
+        }
+        ClientFrame::Hover {
+            event, environment, ..
+        } => {
+            // Hover is connection-local presentation context this host
+            // does not support: refused explicitly, as the design's
+            // refusal table requires (#1831 S2).
+            return send_json(
+                service.frame_meter(),
+                io,
+                &ServerFrame::InputRefused {
+                    event: hover_event_wire(event),
+                    environment: Some(environment),
+                    reason: InputRefusalReason::HoverUnsupported,
+                },
+            )
+            .await;
+        }
         ClientFrame::Records { prefix, after, .. } => {
             // Authorized by the session's own capability.
             if let Err(message) = records_session(
