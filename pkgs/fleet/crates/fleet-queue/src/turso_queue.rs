@@ -5233,6 +5233,20 @@ fn verb_bind(t: &TursoBackend, req: &Value) -> Value {
     let launched_by = req_str(req, "launched_by")
         .unwrap_or("opencode-claimant")
         .to_string();
+    // #8287: a malformed session id refuses here, as a usage
+    // error, before any state is touched — binding a ghost id
+    // strands the task until stuck-bound supervision recovers
+    // it. The predicate is the one the client/claim paths keep
+    // (client::valid_session_id); do not fork a second one.
+    if !crate::client::valid_session_id(&session_id) {
+        return fail(
+            2,
+            format!(
+                "bind_repo_task_lane_session: invalid session_id {session_id:?} \
+                 (expected ses_ + alphanumeric/underscore)"
+            ),
+        );
+    }
     // #9046: a bind may carry the bound session's own model (the
     // claimant derives it from the session record, #8176); when
     // it does, the bind stamps it via stamp_claim_model below.
@@ -8652,6 +8666,48 @@ mod tests {
         let out = verb_enqueue(&backend, &req);
         assert_eq!(out["ok"], true, "{out}");
         assert_eq!(out["task"]["max_attempts"], 1000, "{out}");
+    }
+
+    #[test]
+    fn bind_rejects_malformed_session_id_8287() {
+        // #8287 oracle: verb_bind refuses a malformed session id
+        // as a usage error (exit 2) before any store access, so
+        // the task is left unbound — the dummy backend proves the
+        // refusal happens pre-store (any store touch would fail
+        // differently). A well-formed id must NOT produce the
+        // invalid-session refusal (it proceeds to the store path
+        // and fails there against this backend, or on the task).
+        let backend = TursoBackend::new(
+            "http://127.0.0.1:0".to_string(),
+            "test".to_string(),
+            ureq::agent(),
+        );
+        for bad in ["not-a-session", "", "ses_", "ses_a'; DROP TABLE tasks; --"] {
+            let out = verb_bind(
+                &backend,
+                &json!({"task_id": 1, "worker": "w", "session_id": bad}),
+            );
+            assert_eq!(out["ok"], false, "{bad}: {out}");
+            assert_eq!(out["exit"], 2, "{bad}: {out}");
+            assert!(
+                out["error"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("invalid session_id"),
+                "{bad}: {out}"
+            );
+        }
+        let out = verb_bind(
+            &backend,
+            &json!({"task_id": 1, "worker": "w", "session_id": "ses_e5e37addeb0ffeumu1UPO2bI8G"}),
+        );
+        assert!(
+            !out["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("invalid session_id"),
+            "well-formed id refused as invalid: {out}"
+        );
     }
 
     #[test]
