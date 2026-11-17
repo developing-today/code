@@ -231,8 +231,6 @@ pub mod rejection;
 pub mod repl;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
-#[cfg(feature = "sandbox")]
-pub mod world_dev;
 pub mod search;
 #[cfg(feature = "world")]
 pub mod seitan;
@@ -244,6 +242,8 @@ pub mod shell_contract;
 pub mod store;
 pub mod store_traits;
 pub mod structured_logging;
+#[cfg(feature = "sandbox")]
+pub mod world_dev;
 pub use id_core::sync_method;
 pub mod tag_claims;
 pub mod tag_index;

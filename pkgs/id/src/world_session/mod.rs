@@ -1490,22 +1490,26 @@ async fn install_module_session_joined<I: SessionIo>(
             )
             .await;
         match installed {
-            Ok((module_hash, sequence)) => send_json(
-                service.frame_meter(),
-                io,
-                &ServerFrame::ModuleInstalled {
-                    module_hash: &module_hash,
-                    sequence,
-                },
-            )
-            .await,
-            Err(InstallError::ActorDenied) => send_error_with_code(
-                service.frame_meter(),
-                io,
-                Some(ACTOR_DENIED),
-                "module install denied",
-            )
-            .await,
+            Ok((module_hash, sequence)) => {
+                send_json(
+                    service.frame_meter(),
+                    io,
+                    &ServerFrame::ModuleInstalled {
+                        module_hash: &module_hash,
+                        sequence,
+                    },
+                )
+                .await
+            }
+            Err(InstallError::ActorDenied) => {
+                send_error_with_code(
+                    service.frame_meter(),
+                    io,
+                    Some(ACTOR_DENIED),
+                    "module install denied",
+                )
+                .await
+            }
             Err(error) => {
                 let message = match error {
                     InstallError::Disabled => "module installation is not enabled on this host",

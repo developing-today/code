@@ -3805,10 +3805,7 @@ mod tests {
     #[cfg(feature = "world")]
     #[test]
     fn serve_freshness_window_defaults_without_a_config() {
-        assert_eq!(
-            serve_freshness_window(None),
-            crate::seitan::DEFAULT_WINDOW
-        );
+        assert_eq!(serve_freshness_window(None), crate::seitan::DEFAULT_WINDOW);
     }
 
     /// #8487: the live admission path takes its window from the
