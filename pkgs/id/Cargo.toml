@@ -164,7 +164,7 @@ unicode-width = "0.2"
 
 # Web feature dependencies (optional)
 argon2 = "0.6"
-chacha20poly1305 = "0.10"
+chacha20poly1305 = "0.11"
 zeroize = "1"
 rpassword = "7"
 base64 = "0.22"

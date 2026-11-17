@@ -20,7 +20,7 @@ test-provider = []
 [dependencies]
 anyhow = "1"
 argon2 = "0.6"
-chacha20poly1305 = "0.10"
+chacha20poly1305 = "0.11"
 # Signed transport advertisements (transport_advertisement.rs, #8214).
 ed25519-dalek = { version = "3", features = ["rand_core"] }
 rand = "0.10"
