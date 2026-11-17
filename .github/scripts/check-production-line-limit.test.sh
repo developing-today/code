@@ -38,15 +38,16 @@ grep -q "GRANDFATHERED pkgs/id/src/boards.rs: 3000 production lines (limit 2500)
 echo "pass: grandfathered file passes with a warning naming its split issue"
 
 # A grandfathered file that MOVED keeps its exemption only when the
-# key names its current path (#8894): directory.rs moved again from
-# id-worlds to pkgs/id/crates/id-directory/src/; with a stale key
-# this fixture would report OVER LIMIT instead of GRANDFATHERED.
-mkdir -p "$TMP/moved/pkgs/id/crates/id-directory/src"
-gen "$TMP/moved/pkgs/id/crates/id-directory/src/directory.rs" 3000
+# key names its current path (#8894). The fixture uses a nested,
+# still-grandfathered key (fleet-queue's turso_queue.rs, #8589) so it
+# survives splits elsewhere: directory.rs (#8591) left the list when it
+# was split, and a fixture pinned to it turned this test red.
+mkdir -p "$TMP/moved/pkgs/fleet/crates/fleet-queue/src"
+gen "$TMP/moved/pkgs/fleet/crates/fleet-queue/src/turso_queue.rs" 3000
 bash "$SCRIPT" "$TMP/moved" >"$TMP/moved.out"
 grep -q "production-line-guard: OK" "$TMP/moved.out"
-grep -q "GRANDFATHERED pkgs/id/crates/id-directory/src/directory.rs: 3000 production lines (limit 2500) - split tracked by #8591" "$TMP/moved.out"
-echo "pass: grandfather entry matches the file at its moved (crates/id-directory) path"
+grep -q "GRANDFATHERED pkgs/fleet/crates/fleet-queue/src/turso_queue.rs: 3000 production lines (limit 2500) - split tracked by #8589" "$TMP/moved.out"
+echo "pass: grandfather entry matches the file at its nested crate path"
 
 # Violating tree: one synthetic over-limit production file.
 mkdir -p "$TMP/bad/pkgs/id/src"
