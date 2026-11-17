@@ -1043,6 +1043,7 @@
         "nixos/home/pm-dashboard-backup*.test.sh",
         "nixos/home/laptop-autocommit-in-progress.test.sh",
         "nixos/home/laptop-autocommit-merge-abort.test.sh",
+        "nixos/home/laptop-autocommit-oversized.test.sh",
         "nixos/home/laptop-repo-keeper.test.sh",
         "nixos/home/laptop-untracked-review.test.sh",
         "nixos/home/openclaw-backup.test.sh"
