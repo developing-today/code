@@ -9,7 +9,7 @@
 //! store is the model under test. Digest is recomputed from the
 //! fixture's exact bytes (SHA-256 of the put payload).
 
-use id_benchmarks::{content_id, support_level, ReferenceStore, ENGINES};
+use id_benchmarks::{ENGINES, ReferenceStore, content_id, support_level};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;

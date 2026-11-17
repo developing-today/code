@@ -27,7 +27,7 @@
 use id_benchmarks::{content_id, physical_key};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -146,16 +146,16 @@ impl RedbStore {
                 )
                 .expect("row exists");
                 let generation = row.current;
-                let gen = &row.generations[&generation];
+                let r#gen = &row.generations[&generation];
                 let physical = txn.open_table(PHYSICAL).expect("open physical table");
                 let bytes = physical
-                    .get(gen.key.as_str())
+                    .get(r#gen.key.as_str())
                     .expect("read physical")
                     .expect("physical bytes present");
                 json!({
                     "bytes_hex": hex::encode(bytes.value()),
                     "generation": generation,
-                    "lifecycle": gen.lifecycle,
+                    "lifecycle": r#gen.lifecycle,
                 })
             }
             "metadata_lookup" => {
@@ -178,8 +178,8 @@ impl RedbStore {
                 for entry in rows.iter().expect("scan rows table") {
                     let (key, value) = entry.expect("scan row");
                     let row: Row = serde_json::from_str(value.value()).expect("row record");
-                    let gen = &row.generations[&row.current];
-                    if gen.lifecycle == "Live"
+                    let r#gen = &row.generations[&row.current];
+                    if r#gen.lifecycle == "Live"
                         && key.value().starts_with(prefix)
                         && fixture["tenant"] == "tenant-a"
                     {
@@ -211,10 +211,11 @@ impl RedbStore {
             let generation = args["generation"].as_u64().expect("generation");
             match op_id {
                 "ref_commit_if_live" => match row.generations.get_mut(&generation) {
-                    Some(gen) if gen.lifecycle == "Live" => {
-                        gen.refs
+                    Some(r#gen) if r#gen.lifecycle == "Live" => {
+                        r#gen
+                            .refs
                             .insert(args["reference"].as_str().expect("reference").to_string());
-                        let count = gen.refs.len();
+                        let count = r#gen.refs.len();
                         result = json!({
                             "accepted": true,
                             "generation": generation,
@@ -226,43 +227,43 @@ impl RedbStore {
                     }
                 },
                 "ref_remove" => {
-                    let gen = row
+                    let r#gen = row
                         .generations
                         .get_mut(&generation)
                         .expect("generation exists");
-                    let removed = gen
+                    let removed = r#gen
                         .refs
                         .remove(args["reference"].as_str().expect("reference"));
-                    result = json!({"removed": removed, "reference_count": gen.refs.len()});
+                    result = json!({"removed": removed, "reference_count": r#gen.refs.len()});
                 }
                 "object_tombstone_delete" => {
-                    let gen = row
+                    let r#gen = row
                         .generations
                         .get_mut(&generation)
                         .expect("generation exists");
-                    if !gen.refs.is_empty() {
+                    if !r#gen.refs.is_empty() {
                         result = json!({
                             "tombstoned": false,
                             "reason": "references-present",
-                            "lifecycle": gen.lifecycle,
+                            "lifecycle": r#gen.lifecycle,
                         });
                     } else {
-                        gen.lifecycle = "Tombstoned".to_string();
+                        r#gen.lifecycle = "Tombstoned".to_string();
                         result = json!({
                             "tombstoned": true,
                             "generation": generation,
-                            "physical_key": gen.key,
+                            "physical_key": r#gen.key,
                             "lifecycle": "Tombstoned",
                         });
                     }
                 }
                 "object_delete_captured_key" => {
-                    let gen = row.generations[&generation].clone();
+                    let r#gen = row.generations[&generation].clone();
                     assert_eq!(
-                        gen.lifecycle, "Tombstoned",
+                        r#gen.lifecycle, "Tombstoned",
                         "delete before authoritative fence"
                     );
-                    let key = gen.key.clone();
+                    let key = r#gen.key.clone();
                     let mut physical = txn.open_table(PHYSICAL).expect("open physical table");
                     let ever_used = txn.open_table(EVER_USED).expect("open ever_used table");
                     assert!(
@@ -272,10 +273,11 @@ impl RedbStore {
                             .is_some(),
                         "captured key was never used"
                     );
-                    assert!(row
-                        .generations
-                        .iter()
-                        .all(|(n, other)| *n == generation || other.key != key));
+                    assert!(
+                        row.generations
+                            .iter()
+                            .all(|(n, other)| *n == generation || other.key != key)
+                    );
                     let deleted = physical.remove(key.as_str()).expect("delete key").is_some();
                     let current = row.current;
                     let current_gen = &row.generations[&current];
@@ -367,11 +369,11 @@ impl RedbStore {
                 } else {
                     assert_eq!(prior.bytes_hex, hex::encode(&raw));
                     assert_eq!(prior.metadata, args["metadata"]);
-                    let gen = &prior.generations[&current];
+                    let r#gen = &prior.generations[&current];
                     result = json!({
                         "accepted": true, "created": false, "generation": current,
-                        "lifecycle": "Live", "reference_count": gen.refs.len(),
-                        "row_revision": gen.row_revision,
+                        "lifecycle": "Live", "reference_count": r#gen.refs.len(),
+                        "row_revision": r#gen.row_revision,
                     });
                 }
             } else {

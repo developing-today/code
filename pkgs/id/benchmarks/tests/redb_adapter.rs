@@ -14,7 +14,7 @@
 #[path = "../src/adapters/redb.rs"]
 mod redb_adapter;
 
-use id_benchmarks::{content_id, support_level, ReferenceStore};
+use id_benchmarks::{ReferenceStore, content_id, support_level};
 use redb_adapter::RedbStore;
 use serde_json::Value;
 use std::collections::BTreeMap;

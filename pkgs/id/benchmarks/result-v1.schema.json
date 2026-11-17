@@ -63,7 +63,11 @@
     "correctness": {
       "type": "object",
       "description": "The workload-oracle summary for the fixture the run used; a result whose correctness block is absent or failing is not evidence.",
-      "required": ["fixture_digest_verified", "reference_transitions_executed_and_matched", "engine_operation_capability_mappings_checked"],
+      "required": [
+        "fixture_digest_verified",
+        "reference_transitions_executed_and_matched",
+        "engine_operation_capability_mappings_checked"
+      ],
       "additionalProperties": false,
       "properties": {
         "fixture_digest_verified": { "type": "boolean" },
