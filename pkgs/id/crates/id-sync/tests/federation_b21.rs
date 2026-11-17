@@ -68,9 +68,17 @@ fn reference_set_digest(entries: &[Vec<u8>]) -> [u8; 32] {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum RefState {
-    InFlight { reservation: ReservationId, attachments: u32 },
-    Done { reservation: ReservationId, results: Vec<(ResultId, [u8; 32], Vec<PeerKey>)> },
-    Evicted { reservation: ReservationId },
+    InFlight {
+        reservation: ReservationId,
+        attachments: u32,
+    },
+    Done {
+        reservation: ReservationId,
+        results: Vec<(ResultId, [u8; 32], Vec<PeerKey>)>,
+    },
+    Evicted {
+        reservation: ReservationId,
+    },
 }
 
 /// Reference model: mirrors the design bullets directly (attach,
@@ -104,13 +112,14 @@ impl RefModel {
                 return RefVerdict::Expired;
             }
             return match state {
-                RefState::InFlight { reservation, attachments } => {
+                RefState::InFlight {
+                    reservation,
+                    attachments,
+                } => {
                     *attachments += 1;
                     RefVerdict::Attached(*reservation, *attachments)
                 }
-                RefState::Done { results, .. } => {
-                    RefVerdict::Cached(results.clone())
-                }
+                RefState::Done { results, .. } => RefVerdict::Cached(results.clone()),
                 RefState::Evicted { reservation } => RefVerdict::Evicted(*reservation),
             };
         }
@@ -128,7 +137,13 @@ impl RefModel {
         }
         self.items.insert(
             req,
-            (RefState::InFlight { reservation: res, attachments: 0 }, expires_at),
+            (
+                RefState::InFlight {
+                    reservation: res,
+                    attachments: 0,
+                },
+                expires_at,
+            ),
         );
         RefVerdict::New
     }
@@ -152,7 +167,10 @@ impl RefModel {
         }
         match state {
             RefState::InFlight { .. } => {
-                *state = RefState::Done { reservation: res, results };
+                *state = RefState::Done {
+                    reservation: res,
+                    results,
+                };
                 Ok(())
             }
             RefState::Done { results: old, .. } if *old == results => Ok(()),
@@ -178,7 +196,13 @@ impl RefModel {
 fn to_ref(results: &ResultSet) -> Vec<(ResultId, [u8; 32], Vec<PeerKey>)> {
     results
         .entries()
-        .map(|e| (e.result_id, e.body_digest, e.provenance.keys().copied().collect()))
+        .map(|e| {
+            (
+                e.result_id,
+                e.body_digest,
+                e.provenance.keys().copied().collect(),
+            )
+        })
         .collect()
 }
 
@@ -200,7 +224,10 @@ fn oracle_sentence_from_the_issue() {
     for n in 1..=3 {
         assert_eq!(
             c.observe(req, key(9), 100, 0),
-            ShortCircuit::Attached { reservation: res, attachments: n }
+            ShortCircuit::Attached {
+                reservation: res,
+                attachments: n
+            }
         );
     }
 
@@ -209,8 +236,14 @@ fn oracle_sentence_from_the_issue() {
     let mut set = ResultSet::new();
     let id = key(42);
     let body = key(7);
-    assert_eq!(set.register(id, body, key(10), b"proof-a".to_vec()), Registration::New);
-    assert_eq!(set.register(id, body, key(11), b"proof-b".to_vec()), Registration::Merged);
+    assert_eq!(
+        set.register(id, body, key(10), b"proof-a".to_vec()),
+        Registration::New
+    );
+    assert_eq!(
+        set.register(id, body, key(11), b"proof-b".to_vec()),
+        Registration::Merged
+    );
     assert_eq!(set.len(), 1);
     assert_eq!(set.get(&id).unwrap().provenance.len(), 2);
     assert_eq!(set.get(&id).unwrap().provenance[&key(10)], b"proof-a");
@@ -246,7 +279,11 @@ fn canonical_bytes_and_digest_match_reference_construction() {
     let mut ref_entries = Vec::new();
     for (rid, body, prov) in [
         (id1, key(10), vec![(key(30), vec![1u8, 2, 3])]),
-        (id2, key(20), vec![(key(30), vec![0xAA, 0xBB]), (key(31), vec![0xCC])]),
+        (
+            id2,
+            key(20),
+            vec![(key(30), vec![0xAA, 0xBB]), (key(31), vec![0xCC])],
+        ),
     ] {
         let m: BTreeMap<PeerKey, Vec<u8>> = prov.into_iter().collect();
         ref_entries.push(reference_entry_bytes(&rid, &body, &m));
@@ -319,11 +356,15 @@ fn ledger_is_bounded_and_never_evicts_live_items() {
     let mut c = RequestCoordinator::new(2);
     assert_eq!(
         c.observe(key(1), key(1), 100, 0),
-        ShortCircuit::NewWork { reservation: key(1) }
+        ShortCircuit::NewWork {
+            reservation: key(1)
+        }
     );
     assert_eq!(
         c.observe(key(2), key(2), 100, 0),
-        ShortCircuit::NewWork { reservation: key(2) }
+        ShortCircuit::NewWork {
+            reservation: key(2)
+        }
     );
     // Full of live items: refuse rather than evict live state.
     assert_eq!(c.observe(key(3), key(3), 100, 0), ShortCircuit::LedgerFull);
@@ -332,7 +373,9 @@ fn ledger_is_bounded_and_never_evicts_live_items() {
     assert!(c.is_empty());
     assert_eq!(
         c.observe(key(3), key(3), 200, 100),
-        ShortCircuit::NewWork { reservation: key(3) }
+        ShortCircuit::NewWork {
+            reservation: key(3)
+        }
     );
 }
 
@@ -368,7 +411,10 @@ struct Lcg(u64);
 
 impl Lcg {
     fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         self.0 >> 33
     }
     fn below(&mut self, n: u64) -> u64 {
@@ -399,7 +445,10 @@ fn generated_sequences_match_reference_state_machine() {
                         (RefVerdict::New, ShortCircuit::NewWork { .. }) => {}
                         (
                             RefVerdict::Attached(er, ea),
-                            ShortCircuit::Attached { reservation, attachments },
+                            ShortCircuit::Attached {
+                                reservation,
+                                attachments,
+                            },
                         ) => {
                             assert_eq!((er, ea), (reservation, attachments), "seed {seed}");
                         }
@@ -420,8 +469,7 @@ fn generated_sequences_match_reference_state_machine() {
                     let body = key((rng.below(2) + 40) as u8);
                     let responder = key((rng.below(2) + 50) as u8);
                     set.register(rid, body, responder, vec![1, 2]);
-                    let ref_results: Vec<_> =
-                        vec![(rid, body, vec![responder])];
+                    let ref_results: Vec<_> = vec![(rid, body, vec![responder])];
                     let expected = model.complete(req, res, ref_results);
                     let actual = impl_.complete(req, res, set);
                     assert_eq!(expected, actual, "seed {seed}");

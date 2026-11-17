@@ -171,12 +171,14 @@ impl ResultSet {
             None => {
                 let mut provenance = BTreeMap::new();
                 provenance.insert(responder, proof);
-                self.entries
-                    .insert(result_id, ResultEntry {
+                self.entries.insert(
+                    result_id,
+                    ResultEntry {
                         result_id,
                         body_digest,
                         provenance,
-                    });
+                    },
+                );
                 Registration::New
             }
         }
@@ -235,8 +237,12 @@ pub enum ShortCircuit {
 
 #[derive(Debug, Clone)]
 enum WorkState {
-    InFlight { attachments: u32 },
-    Completed { results: ResultSet },
+    InFlight {
+        attachments: u32,
+    },
+    Completed {
+        results: ResultSet,
+    },
     /// Completed, then the result cache was evicted; the ledger
     /// entry survives through origin expiry so eviction is reported
     /// rather than papered over with a rerun.
