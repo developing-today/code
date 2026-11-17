@@ -32,6 +32,13 @@ func main() {
 	policyPath := flag.String("policy", "", "path to placement-policy.yaml (required)")
 	answersPath := flag.String("answers", "", "path to the answers JSON file (required)")
 	flag.Parse()
+	// Argument contract (#3352): every argument is accounted for before
+	// any work; a stray positional is a usage error, not ignored.
+	if flag.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "placement-record: unexpected argument %q\n", flag.Arg(0))
+		fmt.Fprintln(os.Stderr, "usage: placement-record --policy <placement-policy.yaml> --answers <answers.json>")
+		os.Exit(2)
+	}
 	if *policyPath == "" || *answersPath == "" {
 		fmt.Fprintln(os.Stderr, "usage: placement-record --policy <placement-policy.yaml> --answers <answers.json>")
 		os.Exit(2)
