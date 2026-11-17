@@ -179,6 +179,30 @@ fn sha256_hex(text: &str) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Claim a shard-unique content hash for one piece. The first piece
+/// with a given text keeps the plain SHA-256 of that text; a later
+/// piece with the same text gets a hash of the text hash, its item id
+/// and its chunk index (plus a counter in the unlikely case that is
+/// taken too), so the shard insert never trips the UNIQUE constraint.
+fn unique_piece_hash(
+    used: &mut std::collections::HashSet<String>,
+    text_hash: String,
+    item_id: i64,
+    chunk_idx: i64,
+) -> String {
+    if used.insert(text_hash.clone()) {
+        return text_hash;
+    }
+    let mut attempt = 0u64;
+    loop {
+        let candidate = sha256_hex(&format!("{text_hash}\0{item_id}\0{chunk_idx}\0{attempt}"));
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+        attempt += 1;
+    }
+}
+
 /// Split `text` into pieces the embedder accepts: each piece
 /// tokenizes to at most `embedder.max_input_tokens()`. Pieces break
 /// at line boundaries (lines keep their terminators, so the pieces
@@ -196,7 +220,9 @@ fn split_for_embed(text: &str, embedder: &dyn DocEmbedder) -> Result<Vec<String>
     }
     let count = |s: &str| -> Result<usize> {
         embedder.token_count(s).ok_or_else(|| {
-            Error::fatal("aggregator: embedder stopped returning token counts mid-split".to_string())
+            Error::fatal(
+                "aggregator: embedder stopped returning token counts mid-split".to_string(),
+            )
         })
     };
     let mut pieces: Vec<String> = Vec::new();
@@ -232,7 +258,8 @@ fn split_for_embed(text: &str, embedder: &dyn DocEmbedder) -> Result<Vec<String>
                 }
                 if lo == 0 {
                     return Err(Error::fatal(
-                        "aggregator: a single character exceeds the embedder token budget".to_string(),
+                        "aggregator: a single character exceeds the embedder token budget"
+                            .to_string(),
                     ));
                 }
                 let split_at = rest
@@ -317,20 +344,28 @@ pub fn embed_unit_into_shard(
     let mut pieces: Vec<ShardChunk> = Vec::new();
     let mut item_piece_ordinals: std::collections::HashMap<i64, i64> =
         std::collections::HashMap::new();
+    // The shard's `content_hash` column is UNIQUE, but two pieces can
+    // carry the same text: a file that repeats a block splits into
+    // identical pieces, and two items can stage identical whole files.
+    // Every piece is kept (the pieces must still partition each item's
+    // text), so a repeat gets a hash derived from its position (#10836).
+    let mut used_hashes: std::collections::HashSet<String> = std::collections::HashSet::new();
     for c in &chunks {
         for piece in split_for_embed(&c.text, embedder)? {
             let ordinal = item_piece_ordinals.entry(c.item_id).or_insert(0);
             let chunk_idx = *ordinal;
             *ordinal += 1;
+            let text_hash = if piece == c.text {
+                c.content_hash.clone()
+            } else {
+                sha256_hex(&piece)
+            };
+            let content_hash = unique_piece_hash(&mut used_hashes, text_hash, c.item_id, chunk_idx);
             pieces.push(ShardChunk {
                 item_source: c.item_source.clone(),
                 item_sensitivity: c.item_sensitivity.clone(),
                 chunk_idx,
-                content_hash: if piece == c.text {
-                    c.content_hash.clone()
-                } else {
-                    sha256_hex(&piece)
-                },
+                content_hash,
                 text: piece,
             });
         }
