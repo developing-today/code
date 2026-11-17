@@ -154,14 +154,14 @@ fn acquire_journal_lock(path: &Path) -> Result<File> {
         .with_context(|| format!("open world journal lock {}", lock_path.display()))?;
     match lock.try_lock() {
         Ok(()) => Ok(lock),
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+        Err(std::fs::TryLockError::WouldBlock) => {
             bail!(
                 "world journal {} is already open by another handle (lock {})",
                 path.display(),
                 lock_path.display()
             )
         }
-        Err(error) => Err(error).with_context(|| {
+        Err(std::fs::TryLockError::Error(error)) => Err(error).with_context(|| {
             format!(
                 "lock world journal {} via {}",
                 path.display(),
