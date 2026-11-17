@@ -18,6 +18,7 @@ owner.
 | [0004](0004-scope-resolved-roots.md)              | Scope-resolved roots: spawn cwd, `${mcpx.root}` substitution, initialize workspace | accepted | 2026-10-26 | dezren39/nix#817 #818 #819 · touches #308 #309 #864 |
 | [0005](0005-release-pipeline.md)                   | Release pipeline, version single-sourcing, and the module path | proposed | 2026-10-29 | #1881 |
 | [0006](0006-ttl-touch-on-read.md)                   | TTLs renew by touch-on-read, bounded by a maxAge ceiling                                  | accepted | 2026-10-29 | #1884 · touches #309 #1887 #1893                      |
+| [0007](0007-elicitation-identity.md) | Elicitation state binds no user identity (refuse-identity) | accepted | 2026-11-17 | #7843 · touches #1957 #257 #255 |
 
 ## Status
 
