@@ -67,6 +67,11 @@ API = "https://api.github.com"
 DEFAULT_SOPS = "~/secrets/pm-stack.sops.yaml"
 DEFAULT_LEDGER = "~/.local/state/fleet-paperwork/ledger.tsv"
 APP_SLUG_HINT = "developing.today (App ID read from the sops file at runtime)"
+# Pagination contract (#6622 rule 2): every GitHub page loop carries a
+# page bound whose breach is an error naming the listing. 100 pages of
+# 100 is far past any installation or repository count this App has,
+# so crossing it means the listing is not terminating.
+GITHUB_LIST_MAX_PAGES = 100
 
 
 def die(msg: str) -> "SystemExit":
@@ -260,8 +265,7 @@ class AppClient:
             # empty page, mirroring assert_repo_in_scope below; the
             # endpoint returns a top-level array with no total_count.
             collected: list[dict] = []
-            page = 1
-            while True:
+            for page in range(1, GITHUB_LIST_MAX_PAGES + 1):
                 _, data = http(
                     "GET",
                     f"/app/installations?per_page=100&page={page}",
@@ -277,7 +281,11 @@ class AppClient:
                 collected.extend(data)
                 if len(data) < 100:
                     break
-                page += 1
+            else:
+                die(
+                    "/app/installations listing exceeded the page bound "
+                    f"({GITHUB_LIST_MAX_PAGES} pages of 100) without a short page (#9150)"
+                )
             self._installations = collected
         return self._installations
 
@@ -309,8 +317,8 @@ class AppClient:
     def assert_repo_in_scope(self, repo: str) -> None:
         owner = repo.split("/")[0]
         token = self.token_for(owner)
-        page, seen = 1, []
-        while True:
+        seen: list[str] = []
+        for page in range(1, GITHUB_LIST_MAX_PAGES + 1):
             _, data = http(
                 "GET", f"/installation/repositories?per_page=100&page={page}", token
             )
@@ -335,7 +343,12 @@ class AppClient:
                 )
             if len(seen) >= total or not repos:
                 break
-            page += 1
+        else:
+            die(
+                f"/installation/repositories listing for {owner} exceeded the page "
+                f"bound ({GITHUB_LIST_MAX_PAGES} pages of 100) before reaching its "
+                "total_count (#9150)"
+            )
         if repo not in seen:
             die(
                 f"repo {repo} is not in the app installation scope for {owner} "
