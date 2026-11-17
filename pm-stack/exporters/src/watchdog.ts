@@ -48,6 +48,7 @@ import {
 } from "./watchdog-state.ts";
 import {
   applyEscalationActions,
+  buildQueueTaskWrapper,
   EscalationPartialError,
   planEscalation,
   planRecovery,
@@ -279,17 +280,11 @@ function productionEscalationEffectors(live: boolean): EscalationEffectors {
   return {
     async enqueueTask(packet) {
       guard();
-      const wrapper = {
-        title: `watchdog incident: ${packet.source} (${packet.failure.class ?? "unknown"})`,
-        body: packet.outcomeWanted,
-        dedupe_key: packet.dedupeKey,
-        priority: 30,
-        payload: {
-          schema: "repo-task/v1",
-          kind: packet.kind,
-          packet,
-        },
-      };
+      // The validated repo-task/v1 envelope (task 20118): the packet
+      // names the incident issue created earlier in this hand-off —
+      // buildQueueTaskWrapper throws when it does not, rather than
+      // enqueueing a packet the queue would reject.
+      const wrapper = buildQueueTaskWrapper(packet, new Date().toISOString());
       const file = join("/tmp", `watchdog-escalation-${packet.source}-${Date.now()}.json`);
       await writeFile(file, JSON.stringify(wrapper));
       const out = await run(["fleet", "queue", "enqueue", "--queue", "repo-health-code-pilot", file]);
@@ -322,13 +317,30 @@ function productionEscalationEffectors(live: boolean): EscalationEffectors {
     },
     async completeTask(action) {
       guard();
-      // The escalation task is completed by whoever claimed and fixed
-      // it in the normal case; the watchdog's recovery completion is
-      // best-effort (the task may already be claimed/done).
-      await run([
+      // Recovery resolution of the escalation task, best-effort at
+      // every step (task 20118 live demo): `complete` requires
+      // holding the claim, and the watchdog never claims — so for a
+      // task still sitting queued it always fails with "not claimed
+      // by repo-worker-code". That case is the common one (the
+      // source healed before any fixer picked the task up), and the
+      // honest terminal verb for it is `cancel` with the recovery
+      // reason — but cancel also cancels CLAIMED tasks, so it is
+      // only safe when the task is untouched: an unclaimed task has
+      // no timeline records. A task with records has an owner; leave
+      // it to them — the auto-closed incident issue is their signal,
+      // and their own completion closes the task out.
+      const completed = await run([
         "fleet", "queue", "complete", action.queueTaskId, "--worker", "repo-worker-code",
         "--result", JSON.stringify({ outcome: "already_done", note: "watchdog recovery: source healthy again (#6033)" }),
-      ]).catch(() => "");
+      ]).then(() => true).catch(() => false);
+      if (completed) return;
+      const timeline = await run(["fleet", "queue", "timeline", action.queueTaskId]).catch(() => "");
+      if (timeline.includes("no timeline records")) {
+        await run([
+          "fleet", "queue", "cancel", action.queueTaskId, "--worker", "repo-worker-code",
+          "--reason", "watchdog recovery: source healthy again; the repair this task commissioned is no longer needed (#6033)",
+        ]).catch(() => "");
+      }
     },
   };
 }
