@@ -1205,6 +1205,20 @@
       "notes": "Basic-tier PR gate for the deploy registry checks (#7322); before this workflow the two checks ran only in the full flake check on main / the nix-ci schedule."
     },
     {
+      "id": "cargo-target-broker.python",
+      "paths": ["infra/cargo-target-broker/tests/test_cargo_target_broker.py"],
+      "invocation": "python3 -m unittest discover -s infra/cargo-target-broker/tests -v",
+      "venue": {
+        "workflow": ".github/workflows/cargo-target-broker-tests.yml",
+        "job_step": "python-tests / Run the cargo-target-broker suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [11417],
+      "notes": "Eviction accounting for the cargo target broker: a failed LRU removal keeps its row and re-measured bytes (#11417). The broker had no tests before this suite."
+    },
+    {
       "id": "yard-reaper.python",
       "paths": ["infra/yard-reaper/tests/test_yard_reaper.py"],
       "invocation": "python3 -m unittest discover -s infra/yard-reaper/tests -v",
