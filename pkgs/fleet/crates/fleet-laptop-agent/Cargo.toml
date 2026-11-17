@@ -1,0 +1,17 @@
+[package]
+name = "fleet-laptop-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The fleet laptop-agent domain: the transport ladder (broker, Cloudflare, Tailscale, SSH) and the verbs over the laptop-agent daemon (epic developing-today/code#5412, issue #10796)."
+
+[dependencies]
+fleet-config = { workspace = true }
+# The Cloudflare leg needs fleet-proxy's `serve` feature (connect_cf_tunnel,
+# HttpConn::from_tls): the same TLS stack the broker's own leg uses.
+fleet-proxy = { workspace = true, features = ["serve"] }
+fleet-secrets = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }

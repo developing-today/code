@@ -846,6 +846,12 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
             if d.name == "secrets" {
                 return secrets::run(&surface.config, args);
             }
+            // developing-today/code#10796: the laptop-agent domain runs for
+            // real — the transport ladder and the verbs over the laptop daemon.
+            #[cfg(feature = "laptop-agent")]
+            if d.name == "laptop-agent" {
+                return fleet_laptop_agent::cli::run(&surface.config, args);
+            }
             // code#8887: the gh domain runs for real — the real
             // `gh` binary as a passthrough under the token
             // rotation (personal, then App installations).
