@@ -57,6 +57,7 @@ var implementedEffectProbes = map[string]string{
 	"paths.deps":                 "TestPathsDepsExtendsManifestDiscovery",
 	"proxy.timeout":              "TestProxyUpstreamTimeoutIsReachableFromTheEnvironment",
 	"tasks.maxAge":               "TestTasksMaxAgeIsReachableFromEnvironment",
+	"stats.top":                  "TestStatsTopLimitsTheRowsTheStatsAPIReports",
 	"proto.askPoll":              "TestAskPollCeilingIsReachableFromTheEnvironment",
 }
 
@@ -91,6 +92,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestDepsPackagesPinContradictingTheManifestFailsTheRun": TestDepsPackagesPinContradictingTheManifestFailsTheRun,
 	"TestPathsDepsExtendsManifestDiscovery":                  TestPathsDepsExtendsManifestDiscovery,
 	"TestTasksMaxAgeIsReachableFromEnvironment":              TestTasksMaxAgeIsReachableFromEnvironment,
+	"TestStatsTopLimitsTheRowsTheStatsAPIReports":            TestStatsTopLimitsTheRowsTheStatsAPIReports,
 	"TestAskPollCeilingIsReachableFromTheEnvironment":        TestAskPollCeilingIsReachableFromTheEnvironment,
 }
 
