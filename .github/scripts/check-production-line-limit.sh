@@ -36,8 +36,6 @@ declare -A GRANDFATHERED=(
   # restored, so it is grandfathered with a linked split issue,
   # per this guard's convention. The entry is deleted in the same
   # PR that lands the split.
-  ["pkgs/fleet/crates/fleet-queue/src/client.rs"]="#8588"
-  ["pkgs/fleet/crates/fleet-queue/src/turso_queue.rs"]="#8589"
   ["pkgs/id/src/boards.rs"]="#8891"
   # The id-worlds files below moved from pkgs/id/src/ to
   # pkgs/id/crates/id-worlds/src/ in the id crate restructure; a key

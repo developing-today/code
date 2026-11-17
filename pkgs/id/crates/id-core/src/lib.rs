@@ -43,6 +43,7 @@ pub mod rejection;
 pub mod residency;
 pub mod residency_inventory;
 pub mod sanctions;
+pub mod sanctions_store;
 pub mod seed_phrase;
 pub mod sync_method;
 pub mod text;

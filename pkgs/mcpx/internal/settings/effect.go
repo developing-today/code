@@ -71,6 +71,20 @@ var EffectProbes = map[string]string{
 	"proxy.timeout":              "TestProxyUpstreamTimeoutIsReachableFromTheEnvironment",
 	"proto.askPoll":              "TestAskPollCeilingIsReachableFromTheEnvironment",
 	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
+	"http.bodyLimit":             "TestHTTPBodyLimitsRejectOversizedBodies",
+	"http.callBodyLimit":         "TestHTTPBodyLimitsRejectOversizedBodies",
+	"http.controlBodyLimit":      "TestHTTPBodyLimitsRejectOversizedBodies",
+	"http.ssePing":               "TestHTTPEventStreamSettingsChangeTheStream",
+	"http.sseRetry":              "TestHTTPEventStreamSettingsChangeTheStream",
+	"http.readHeaderTimeout":     "TestHTTPReadHeaderTimeoutClosesSlowClients",
+	"http.shutdownGrace":         "TestHTTPShutdownGraceBoundsHowLongAStopWaits",
+	"http.requestTimeout":        "TestHTTPRequestTimeoutBoundsAClientCall",
+	"http.streamBufferMax":       "TestHTTPStreamBufferMaxEndsAnOversizedEventLine",
+	"transport.bearerToken":      "TestTransportBearerTokenGatesTheDaemon",
+	"transport.allowedOrigins":   "TestTransportAllowedOriginsAreServed",
+	"transport.sessionMetaKeys":  "TestTransportSessionMetaKeysNameTheSession",
+	"transport.sseKeepAlive":     "TestTransportSSEKeepAliveCommentsOnAQuietStream",
+	"transport.stdioDrain":       "TestTransportStdioDrainBoundsServeShutdown",
 }
 
 // EffectExemptions maps a setting path to the reason no effect probe
@@ -159,11 +173,6 @@ var EffectExemptions = map[string]string{
 	"proto.samplingSessionPerMinute":     "daemon proto rate limit: its effect appears only when one session exceeds the per-minute sampling bound, a flood the e2e harness's fake server does not drive deterministically; the limiter itself is covered by internal/mcpclient and internal/daemon ratelimit tests",
 	"proto.stateTTL":                     "protocol negotiation/wire behaviour between mcpx and a peer: era fixtures cover negotiation end-to-end, but no per-setting with/without probe exists yet",
 	"proto.sessionIdle":                  "protocol negotiation/wire behaviour between mcpx and a peer: era fixtures cover negotiation end-to-end, but no per-setting with/without probe exists yet",
-	"transport.bearerToken":              "auth gate (#1975): the with/without difference is proven at the daemon HTTP layer (internal/daemon bearer tests: unset passes, wrong token 401, correct token passes), but no e2e probe yet starts a token'd daemon and drives a caller against it; replace this exemption with that probe",
-	"transport.allowedOrigins":           "HTTP/SSE transport behaviour (origins, keep-alive, drain): needs a browser-origin or timing fixture the harness does not drive",
-	"transport.sessionMetaKeys":          "HTTP/SSE transport behaviour (origins, keep-alive, drain): needs a browser-origin or timing fixture the harness does not drive",
-	"transport.sseKeepAlive":             "HTTP/SSE transport behaviour (origins, keep-alive, drain): needs a browser-origin or timing fixture the harness does not drive",
-	"transport.stdioDrain":               "HTTP/SSE transport behaviour (origins, keep-alive, drain): needs a browser-origin or timing fixture the harness does not drive",
 	"plumbing.allowTsJsOverlap":          "plumbing switch: the branch it guards is read in its own package, but no e2e with/without probe exists yet - plumbing is the ratchet's expected bulk",
 	"plumbing.sourceDirRecursive":        "plumbing switch: the branch it guards is read in its own package, but no e2e with/without probe exists yet - plumbing is the ratchet's expected bulk",
 	"plumbing.sourceDirAllowed":          "plumbing switch: the branch it guards is read in its own package, but no e2e with/without probe exists yet - plumbing is the ratchet's expected bulk",
@@ -201,18 +210,9 @@ var EffectExemptions = map[string]string{
 	"sampling.answerLocally":             "model layer is covered by internal/model and daemon unit tests; no settings-driven e2e with/without probe exists yet",
 	"prompt.maxTokens":                   "prompt/sampling behaviour: its effect needs a sampling provider or several candidate actions; no fixture provides one",
 	"prompt.runTimeout":                  "prompt/sampling behaviour: its effect needs a sampling provider or several candidate actions; no fixture provides one",
-	"http.bodyLimit":                     "HTTP server bound (body limits, timeouts, buffers): its effect needs oversized bodies, idle connections, or time passage a single run does not produce",
-	"http.callBodyLimit":                 "HTTP server bound (body limits, timeouts, buffers): its effect needs oversized bodies, idle connections, or time passage a single run does not produce",
-	"http.controlBodyLimit":              "HTTP server bound (body limits, timeouts, buffers): its effect needs oversized bodies, idle connections, or time passage a single run does not produce",
-	"http.readHeaderTimeout":             "HTTP server bound (body limits, timeouts, buffers): its effect needs oversized bodies, idle connections, or time passage a single run does not produce",
-	"http.shutdownGrace":                 "HTTP server bound (body limits, timeouts, buffers): its effect needs oversized bodies, idle connections, or time passage a single run does not produce",
-	"http.ssePing":                       "HTTP server bound (body limits, timeouts, buffers): its effect needs oversized bodies, idle connections, or time passage a single run does not produce",
-	"http.sseRetry":                      "HTTP server bound (body limits, timeouts, buffers): its effect needs oversized bodies, idle connections, or time passage a single run does not produce",
 	"http.streamBufferInit":              "HTTP server bound (body limits, timeouts, buffers): its effect needs oversized bodies, idle connections, or time passage a single run does not produce",
-	"http.streamBufferMax":               "HTTP server bound (body limits, timeouts, buffers): its effect needs oversized bodies, idle connections, or time passage a single run does not produce",
 	"http.idleConns":                     "HTTP server bound (body limits, timeouts, buffers): its effect needs oversized bodies, idle connections, or time passage a single run does not produce",
 	"http.remoteIdleConns":               "HTTP server bound (body limits, timeouts, buffers): its effect needs oversized bodies, idle connections, or time passage a single run does not produce",
-	"http.requestTimeout":                "HTTP server bound (body limits, timeouts, buffers): its effect needs oversized bodies, idle connections, or time passage a single run does not produce",
 	"http.idleConnTimeout":               "HTTP server bound (body limits, timeouts, buffers): its effect needs oversized bodies, idle connections, or time passage a single run does not produce",
 	"autostart.bin":                      "client autostart mechanics: the harness itself depends on these to start daemons, so varying them per-test would fight the fixture",
 	"autostart.args":                     "client autostart mechanics: the harness itself depends on these to start daemons, so varying them per-test would fight the fixture",
@@ -290,7 +290,7 @@ var EffectExemptions = map[string]string{
 // EffectExemptionPin is the ratchet: the exemption count at the time
 // the guard landed. It may only ever be lowered, and only in the PR
 // that removes an exemption by adding the probe that replaces it.
-const EffectExemptionPin = 208 // Shrunk 2026-11-17: (#8467 settings core-paths burn-down) paths.plugins gained its probe. Earlier shrunk 2026-11-17: (#8470 burn-down) stats.top gained its probe. Earlier shrunk 2026-11-17 (#8467 settings core-paths burn-down): paths.cache gained its probe. Earlier shrunk 2026-11-17 (#8467 settings core-paths burn-down): paths.scripts gained its probe. Earlier shrunk 2026-11-17 (#8468 chain 1): daemon.address gained its probe. Earlier shrunk 2026-11-17 (#8473 chain 1): proto.askPoll gained its probe. Deliberate +1 (2026-11-14, #1917 remainder shepherd of PR #7818) for script.language: covered by deterministic internal/runner tests (TestEffectiveScriptLanguage, TestExplicitPythonLanguageRunsInlineSnippet); the e2e harness script fixtures are TypeScript-only. Earlier deliberate +3 (2026-11-09, #2716) for proto.elicitationPerMinute, proto.samplingPerMinute and proto.samplingSessionPerMinute: daemon rate limits whose effect needs an over-limit sampling/elicitation flood no e2e fixture drives deterministically; the limiter is covered by internal/mcpclient and internal/daemon ratelimit tests. Earlier deliberate raises: +1 for daemon.roots and +8 for model.*: model settings are covered by internal/model and daemon unit tests; settings-driven e2e probes are not yet present. Deliberate +1 (2026-11-03, #1925 slice 3) for sampling.answerLocally: same model-layer coverage, daemon unit tests in internal/daemon/sampling_local_test.go. Deliberate +1 (2026-11-03, #5242) for plugin.disabledTools: read by the opencode plugin host (JS side); the Go e2e harness does not drive the plugin host, the same basis as every other plugin.* exemption. Deliberate +5 (2026-11-04, #1915 stage 2): import graph, missing, dynamic, cross-project and network policies are covered by deterministic internal/preflight tests, but the e2e harness has no isolated Deno graph fixture yet. Deliberate +2 (2026-11-05, #1911): checker error and unsupported-runtime policies are covered by deterministic internal/preflight stub-runtime tests; the e2e harness has no isolated Deno checker fixture.
+const EffectExemptionPin = 194 // Shrunk 2026-11-17: (#8467 settings core-paths burn-down) paths.plugins gained its probe. Earlier shrunk 2026-11-17: (#8469) 14 http.* and transport.* settings gained their probes. Earlier shrunk 2026-11-17: (#8470 burn-down) stats.top gained its probe. Earlier shrunk 2026-11-17 (#8467 settings core-paths burn-down): paths.cache gained its probe. Earlier shrunk 2026-11-17 (#8467 settings core-paths burn-down): paths.scripts gained its probe. Earlier shrunk 2026-11-17 (#8468 chain 1): daemon.address gained its probe. Earlier shrunk 2026-11-17 (#8473 chain 1): proto.askPoll gained its probe. Deliberate +1 (2026-11-14, #1917 remainder shepherd of PR #7818) for script.language: covered by deterministic internal/runner tests (TestEffectiveScriptLanguage, TestExplicitPythonLanguageRunsInlineSnippet); the e2e harness script fixtures are TypeScript-only. Earlier deliberate +3 (2026-11-09, #2716) for proto.elicitationPerMinute, proto.samplingPerMinute and proto.samplingSessionPerMinute: daemon rate limits whose effect needs an over-limit sampling/elicitation flood no e2e fixture drives deterministically; the limiter is covered by internal/mcpclient and internal/daemon ratelimit tests. Earlier deliberate raises: +1 for daemon.roots and +8 for model.*: model settings are covered by internal/model and daemon unit tests; settings-driven e2e probes are not yet present. Deliberate +1 (2026-11-03, #1925 slice 3) for sampling.answerLocally: same model-layer coverage, daemon unit tests in internal/daemon/sampling_local_test.go. Deliberate +1 (2026-11-03, #5242) for plugin.disabledTools: read by the opencode plugin host (JS side); the Go e2e harness does not drive the plugin host, the same basis as every other plugin.* exemption. Deliberate +5 (2026-11-04, #1915 stage 2): import graph, missing, dynamic, cross-project and network policies are covered by deterministic internal/preflight tests, but the e2e harness has no isolated Deno graph fixture yet. Deliberate +2 (2026-11-05, #1911): checker error and unsupported-runtime policies are covered by deterministic internal/preflight stub-runtime tests; the e2e harness has no isolated Deno checker fixture.
 
 // CheckEffectCoverage returns one violation per way the probe and
 // exemption maps fail to cover reg exactly: a setting with neither,

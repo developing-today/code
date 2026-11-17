@@ -2734,6 +2734,127 @@ mod upload_router_tests {
     }
 
     #[tokio::test]
+    async fn publication_mount_session_round_trip_is_gated_by_the_world_admin_secret() {
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        state.world = Some(hub_with_world("arena", Some("s3cret")));
+        let app = create_router(state.clone(), WebSecurity::default());
+        state.publication_mounts.mount("arena", "/prog").unwrap();
+
+        let invite = |token: Option<&str>| {
+            let mut builder = Request::builder()
+                .method("POST")
+                .uri("/prog/api/world/invite")
+                .header("content-type", "application/json");
+            if let Some(token) = token {
+                builder = builder.header("x-world-admin-token", token);
+            }
+            builder
+                .body(Body::from("{\"display_name\":\"guest\"}"))
+                .unwrap()
+        };
+
+        // Unauthorized under the mount: no token, and a wrong token,
+        // are both refused by the mounted world's own gate — the
+        // mount adds no authority of its own and removes none.
+        for token in [None, Some("wrong")] {
+            let res = app.clone().oneshot(invite(token)).await.unwrap();
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "token {token:?}");
+        }
+
+        // Authorized under the mount: the world's admin secret mints
+        // the invite through the mount-scoped API URL — the session
+        // round-trip (refused anonymously, served with the secret)
+        // behaves exactly as it does on the program surface itself.
+        let res = app
+            .clone()
+            .oneshot(invite(Some("s3cret")))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        assert!(!body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn publication_mounts_isolate_sibling_worlds_at_the_router() {
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        let opener = id_worlds::world_hub::testing::MemoryOpener::new(false);
+        let dyn_opener: std::sync::Arc<dyn id_worlds::world_hub::WorldOpener> =
+            opener.clone();
+        let hub = id_worlds::world_hub::WorldHub::new(
+            dyn_opener,
+            Some("admin".to_owned()),
+            "arena",
+            id_worlds::world_hub::HubLimits::default(),
+        );
+        hub.create("arena").await.unwrap();
+        hub.create("vault").await.unwrap();
+        state.world = Some(hub);
+        let app = create_router(state.clone(), WebSecurity::default());
+        state.publication_mounts.mount("arena", "/prog").unwrap();
+        state.publication_mounts.mount("vault", "/vault").unwrap();
+
+        // Each mount serves its own world's program page, and only
+        // its own: the page names the mounted world.
+        for (path, world) in [("/prog", "arena"), ("/vault", "vault")] {
+            let res = app
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{path}");
+            let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+            let text = String::from_utf8_lossy(&body);
+            assert!(
+                text.contains(&format!("data-world-program=\"{world}\"")),
+                "{path}: {text}"
+            );
+        }
+
+        // A mount's scoped API refuses to name its sibling: the
+        // program bridge is pinned to the mounted world, so an
+        // invite naming the other world is refused through this
+        // mount — and served through the sibling's own mount.
+        let invite = |uri: &str, world: &str| {
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("x-world-admin-token", "admin")
+                .body(Body::from(format!(
+                    "{{\"display_name\":\"guest\",\"world\":\"{world}\"}}"
+                )))
+                .unwrap()
+        };
+        let res = app
+            .clone()
+            .oneshot(invite("/prog/api/world/invite", "vault"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND, "invite vault via /prog");
+        let res = app
+            .clone()
+            .oneshot(invite("/vault/api/world/invite", "vault"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "invite vault via /vault");
+
+        // A string-prefix sibling path is outside both mounts and
+        // reaches no program surface at all.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/prog2")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn program_router_serves_only_the_program_surface() {
         let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
         state.world = Some(hub_with_world("arena", Some("s3cret")));

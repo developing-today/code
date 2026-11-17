@@ -65,6 +65,20 @@ var implementedEffectProbes = map[string]string{
 	"stats.top":                  "TestStatsTopLimitsTheRowsTheStatsAPIReports",
 	"proto.askPoll":              "TestAskPollCeilingIsReachableFromTheEnvironment",
 	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
+	"http.bodyLimit":             "TestHTTPBodyLimitsRejectOversizedBodies",
+	"http.callBodyLimit":         "TestHTTPBodyLimitsRejectOversizedBodies",
+	"http.controlBodyLimit":      "TestHTTPBodyLimitsRejectOversizedBodies",
+	"http.ssePing":               "TestHTTPEventStreamSettingsChangeTheStream",
+	"http.sseRetry":              "TestHTTPEventStreamSettingsChangeTheStream",
+	"http.readHeaderTimeout":     "TestHTTPReadHeaderTimeoutClosesSlowClients",
+	"http.shutdownGrace":         "TestHTTPShutdownGraceBoundsHowLongAStopWaits",
+	"http.requestTimeout":        "TestHTTPRequestTimeoutBoundsAClientCall",
+	"http.streamBufferMax":       "TestHTTPStreamBufferMaxEndsAnOversizedEventLine",
+	"transport.bearerToken":      "TestTransportBearerTokenGatesTheDaemon",
+	"transport.allowedOrigins":   "TestTransportAllowedOriginsAreServed",
+	"transport.sessionMetaKeys":  "TestTransportSessionMetaKeysNameTheSession",
+	"transport.sseKeepAlive":     "TestTransportSSEKeepAliveCommentsOnAQuietStream",
+	"transport.stdioDrain":       "TestTransportStdioDrainBoundsServeShutdown",
 }
 
 // effectProbeFuncs anchors every declared probe name to the actual
@@ -104,6 +118,17 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestStatsTopLimitsTheRowsTheStatsAPIReports":            TestStatsTopLimitsTheRowsTheStatsAPIReports,
 	"TestAskPollCeilingIsReachableFromTheEnvironment":        TestAskPollCeilingIsReachableFromTheEnvironment,
 	"TestDaemonAddressIsReachableFromTheEnvironment":         TestDaemonAddressIsReachableFromTheEnvironment,
+	"TestHTTPBodyLimitsRejectOversizedBodies":                TestHTTPBodyLimitsRejectOversizedBodies,
+	"TestHTTPEventStreamSettingsChangeTheStream":             TestHTTPEventStreamSettingsChangeTheStream,
+	"TestHTTPReadHeaderTimeoutClosesSlowClients":             TestHTTPReadHeaderTimeoutClosesSlowClients,
+	"TestHTTPRequestTimeoutBoundsAClientCall":                TestHTTPRequestTimeoutBoundsAClientCall,
+	"TestHTTPShutdownGraceBoundsHowLongAStopWaits":           TestHTTPShutdownGraceBoundsHowLongAStopWaits,
+	"TestHTTPStreamBufferMaxEndsAnOversizedEventLine":        TestHTTPStreamBufferMaxEndsAnOversizedEventLine,
+	"TestTransportAllowedOriginsAreServed":                   TestTransportAllowedOriginsAreServed,
+	"TestTransportBearerTokenGatesTheDaemon":                 TestTransportBearerTokenGatesTheDaemon,
+	"TestTransportSSEKeepAliveCommentsOnAQuietStream":        TestTransportSSEKeepAliveCommentsOnAQuietStream,
+	"TestTransportSessionMetaKeysNameTheSession":             TestTransportSessionMetaKeysNameTheSession,
+	"TestTransportStdioDrainBoundsServeShutdown":             TestTransportStdioDrainBoundsServeShutdown,
 }
 
 func TestEffectProbeDeclarationsMatchTheProbesThatExist(t *testing.T) {
