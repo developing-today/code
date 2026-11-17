@@ -282,13 +282,18 @@ continue (v1 §8). They do not present a cut as a complete answer.
 
 The statement IDs are covered by these filed sub-issues of #9144:
 
-| Issue  | Scope                                                                                      | Statements         |
-| ------ | ------------------------------------------------------------------------------------------ | ------------------ |
-| #10229 | Prioritized remote selection (B15): inputs, ordering, negative answer                      | S1.47–S1.53        |
-| #10263 | Trusted-relay permission, max-hop propagation, breadth × depth bounds (B17 and B21 inputs) | S1.54–S1.57, S1.61 |
-| #10249 | Query, relay and response signature validation; responder provenance; request identity     | S1.58–S1.62        |
-| #10264 | Privacy surface of query-interest disclosure and mitigation decision                       | S1.63              |
-| #10250 | Shared signed receipt schema (V2)                                                          | S1.100–S1.104      |
+| Issue  | Slice | Scope                                                                 | Statements         |
+| ------ | ----- | --------------------------------------------------------------------- | ------------------ |
+| #10229 | B15   | Prioritized remote selection: inputs, ordering, negative answer       | S1.47–S1.53        |
+| #10263 | B16   | Trusted-relay permission, max-hop propagation, breadth × depth bounds | S1.54–S1.57, S1.61 |
+| #10249 | B17   | Query, relay and response signature validation; responder provenance  | S1.58–S1.62        |
+| #10264 | B18   | Privacy surface of query-interest disclosure and mitigation decision  | S1.63              |
+| #10250 | B19   | Shared signed receipt schema (V2)                                     | S1.100–S1.104      |
+
+The duplicate/loop statements outside S1.47–S1.63 (S1.64–S1.72, slices B20–B22)
+are owned by #9145, not by this design. This record only states the fan-out-side
+rule: a repeated `request_id` is a duplicate and a signed grant-chain path is a
+loop (section 5.2).
 
 Everything in sections 3–7 that is not in the table above is a gap. The gaps
 are listed as follow-on scopes in section 11.
