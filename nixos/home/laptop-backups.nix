@@ -32,7 +32,7 @@
 #   same Bitwarden-at-runtime credential pattern).
 # - opencode-db-backup (daily ~06:05): the OpenCode session database
 #   (~/.local/share/opencode/opencode.db, ~25G and the fleet's working
-#   memory; code#10297) snapshotted with sqlite3 .backup (consistent
+#   memory; code#10297) snapshotted with a consistent sqlite snapshot (VACUUM INTO; .backup restarts indefinitely on this write-hot DB)
 #   against the running server), integrity-checked, then restic-backed
 #   up to local + R2 + Drive (restic-opencode-db repositories),
 #   keep-last 7 / keep-daily 7 / keep-weekly 4 / keep-monthly 12.
@@ -236,7 +236,7 @@ in
       enable = lib.mkOption {
         type = lib.types.bool;
         default = true;
-        description = "Daily restic backup of the OpenCode session database (sqlite .backup snapshot, local + R2 + Drive) (code#10297).";
+        description = "Daily restic backup of the OpenCode session database (sqlite VACUUM INTO snapshot, local + R2 + Drive) (code#10297).";
       };
       onCalendar = lib.mkOption {
         type = lib.types.str;

@@ -7,9 +7,15 @@
 # covers ~/.local/state/opencode (a different, tiny directory).
 #
 # DESIGN: take a transaction-consistent snapshot of the live database
-# with the sqlite backup API (sqlite3 .backup — safe against the
-# running server, no lock stall beyond the copy), verify the snapshot
-# with PRAGMA integrity_check, then restic-backup the snapshot file
+# with VACUUM INTO (a single WAL snapshot: writers proceed against the
+# live DB while the copy reads one fixed snapshot), verify it with
+# PRAGMA integrity_check, then restic-backup the snapshot file.
+# VACUUM INTO rather than the sqlite backup API (.backup): on
+# 2026-11-17 the first run's .backup pass restarted indefinitely --
+# the destination stayed pinned at 12,415,795,200 bytes for 10+
+# minutes because .backup restarts its copy whenever the source
+# changes mid-pass, and this database is written continuously by
+# session traffic. A WAL snapshot read cannot be invalidated that way.
 # (content-defined chunking + dedup across days, the
 # laptop-state-backup.sh pattern) to one restic repository per backend:
 #   local  ~/backups/restic/opencode-db
@@ -95,8 +101,8 @@ mkdir -p "$STAGE"
 SNAPSHOTS=()
 for db in "${DBS[@]}"; do
   log "snapshot start: $db"
-  "$SQLITE" "$SRC_DIR/$db" ".backup $STAGE/$db" ||
-    fail "sqlite .backup failed for $db"
+  "$SQLITE" "$SRC_DIR/$db" "VACUUM INTO '$STAGE/$db';" ||
+    fail "sqlite VACUUM INTO snapshot failed for $db"
   verdict="$("$SQLITE" "$STAGE/$db" "PRAGMA integrity_check;" | head -1)"
   [ "$verdict" = "ok" ] || fail "integrity_check on staged $db returned: $verdict"
   SNAPSHOTS+=("$STAGE/$db")

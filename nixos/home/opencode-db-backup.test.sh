@@ -53,8 +53,8 @@ EOF
 #!/bin/sh
 db="$1"; sql="$2"
 case "$sql" in
-  ".backup "*)
-    dest="${sql#.backup }"
+  "VACUUM INTO "*)
+    dest="$(printf '%s' "$sql" | sed "s/^VACUUM INTO '//; s/';$//")"
     cp "$db" "$dest" ;;
   "PRAGMA integrity_check;") echo "ok" ;;
   *) echo "stub sqlite3: unexpected sql: $sql" >&2; exit 1 ;;
