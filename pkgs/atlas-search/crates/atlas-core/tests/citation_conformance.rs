@@ -798,7 +798,8 @@ proptest! {
             version: None,
             granted: granted.clone(),
         });
-        prop_assert!(matches!(ok, Response::Citation { .. }));
+        let is_citation = matches!(ok, Response::Citation { .. });
+        prop_assert!(is_citation);
         let mut after = before;
         after.rights = grants(&["team-y"]);
         let revoked = ReferenceResolver::new(vec![after]).resolve(&Request {
