@@ -2189,6 +2189,14 @@ fn verb_revive(t: &TursoBackend, req: &Value) -> Value {
         .unwrap_or("fleet-queue-cli")
         .to_string();
     let reason = req_str(req, "reason").unwrap_or("").to_string();
+    // #9179: same storage-layer rule as verb_park — a garbage
+    // not_before stored on a revived (queued) row hits the same
+    // TEXT comparison in the claim predicate and never lapses.
+    if let Some(nb) = req_str(req, "not_before") {
+        if let Err(e) = validate_stored_not_before(nb) {
+            return fail(2, format!("revive_task: {e}"));
+        }
+    }
     let not_before = req_str(req, "not_before")
         .map(str::to_string)
         .unwrap_or_else(now_iso);
@@ -5604,6 +5612,17 @@ fn verb_park(t: &TursoBackend, req: &Value) -> Value {
         Ok(r) => r,
         Err(v) => return v,
     };
+    // #9179: an explicit not_before is validated HERE, at the
+    // storage layer — the dispatch gate (#6426) only covers
+    // requests that pass through it, and the audit's malformed
+    // rows ("3600"/"7200" stored verbatim) prove a path around it
+    // existed. A value that fails the rule fails the park before
+    // any state changes.
+    if let Some(nb) = req_str(req, "not_before") {
+        if let Err(e) = validate_stored_not_before(nb) {
+            return fail(2, format!("park_task: {e}"));
+        }
+    }
     let (not_before, park_kind) = match req_str(req, "not_before") {
         Some(nb) => (nb.to_string(), "absolute"),
         None => (
@@ -7179,7 +7198,7 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
 fn health_entry(queue: &str) -> Value {
     json!({
         "queue": queue, "queued": 0, "at_cap_queued": 0, "claimed": 0,
-        "parked": 0, "handed_off": 0, "blocked": 0, "dep_blocked": 0, "done": 0, "cancelled": 0,
+        "parked": 0, "malformed_parked": 0, "handed_off": 0, "blocked": 0, "dep_blocked": 0, "done": 0, "cancelled": 0,
         "failed": 0, "total": 0, "oldest_queued_at": Value::Null,
         "terminal_events_24h": 0, "terminal_events_7d": 0,
     })
@@ -7213,6 +7232,40 @@ fn apply_dep_blocked(by_queue: &mut Map<String, Value>, rows: &[Value]) {
         let n = r.get("n").and_then(|v| v.as_i64()).unwrap_or(0);
         if let Some(obj) = by_queue.get_mut(q).and_then(|e| e.as_object_mut()) {
             obj.insert("dep_blocked".to_string(), json!(n));
+        }
+    }
+}
+
+/// The storage-layer not_before rule (#9179, closing the #6426
+/// bypass): every value a verb stores in a row's not_before must
+/// satisfy the same rule the client flag validator and the broker
+/// dispatch gate apply — a non-empty RFC 3339 timestamp no more
+/// than 366 days out. The dispatch gate covers requests that pass
+/// through it; the verbs are the last line, because a stored
+/// "3600" (delay-seconds semantics in the absolute field) sorts
+/// after every real timestamp in the claim predicate's TEXT
+/// comparison and the parked row can never lapse.
+fn validate_stored_not_before(raw: &str) -> Result<(), String> {
+    crate::validate::validate_not_before(&json!(raw), "not_before")
+}
+
+/// Fold per-queue malformed parked counts (#9179 hygiene) into
+/// health entries: parked rows whose stored not_before fails the
+/// rule above are invisible to the lapse path until woken by hand,
+/// so health names them instead of letting them hide inside the
+/// ordinary parked count. Rows arrive as {queue, not_before}.
+fn apply_malformed_parked(by_queue: &mut Map<String, Value>, rows: &[Value]) {
+    let mut counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for r in rows {
+        let nb = r.get("not_before").and_then(|v| v.as_str()).unwrap_or("");
+        if validate_stored_not_before(nb).is_err() {
+            let q = r.get("queue").and_then(|v| v.as_str()).unwrap_or("");
+            *counts.entry(q.to_string()).or_insert(0) += 1;
+        }
+    }
+    for (q, n) in counts {
+        if let Some(obj) = by_queue.get_mut(&q).and_then(|e| e.as_object_mut()) {
+            obj.insert("malformed_parked".to_string(), json!(n));
         }
     }
 }
@@ -7289,6 +7342,19 @@ fn verb_health(t: &TursoBackend, req: &Value) -> Value {
         dsql += " GROUP BY queue";
         let drows = t.query_objs(&dsql, &dargs, &[])?;
         apply_dep_blocked(&mut by_queue, &drows);
+        // Malformed parked rows (#9179 hygiene): fetched as raw
+        // values because the failure test is the shared validator,
+        // not a SQL predicate; parked counts are small.
+        let mut hsql = "SELECT queue, not_before FROM tasks \
+             WHERE status = 'parked' AND not_before IS NOT NULL"
+            .to_string();
+        let mut hargs: Vec<Arg> = Vec::new();
+        if let Some(q) = &queue_filter {
+            hsql += " AND queue = ?";
+            hargs.push(Arg::Text(q.clone()));
+        }
+        let hrows = t.query_objs(&hsql, &hargs, &[])?;
+        apply_malformed_parked(&mut by_queue, &hrows);
         // Terminal-event counters, the agent.repo_queue_health
         // view's terminal_events_24h/7d (#5690): events and tasks
         // share this database, so the JOIN the PG view did is a
@@ -10364,6 +10430,55 @@ mod tests {
         let client_src = include_str!("client.rs");
         assert!(client_src.contains("\"quarantine-recheck\" => cmd_quarantine_recheck"));
         assert!(client_src.contains("call(\"/quarantine-recheck\""));
+    }
+
+    #[test]
+    #[test]
+    fn stored_not_before_rule_9179() {
+        // #9179 (closing the #6426 bypass): the values the audit
+        // found stored verbatim — delay-seconds in the absolute
+        // field — fail the storage-layer rule, as do the other
+        // garbage shapes; valid timestamps pass; a timestamp past
+        // the 366-day horizon fails like everywhere else the rule
+        // is applied.
+        for bad in ["3600", "7200", "banana", "", "0", "9999-01-01T00:00:00Z"] {
+            let err = validate_stored_not_before(bad)
+                .err()
+                .expect("malformed not_before must be rejected");
+            assert!(err.contains("not_before"), "error names the field: {err}");
+        }
+        for ok in ["2020-01-01T00:00:00Z", "2026-11-06T05:30:00+05:30"] {
+            assert!(validate_stored_not_before(ok).is_ok(), "{ok} must pass");
+        }
+        // Both verbs that store a caller-supplied not_before apply
+        // the rule before mutating (source oracle over each verb's
+        // own segment).
+        let src = include_str!("turso_queue.rs");
+        for (verb, next) in [
+            ("fn verb_park(", "\nfn verb_release("),
+            ("fn verb_revive(", "\nfn verb_"),
+        ] {
+            let seg = src
+                .split(verb)
+                .nth(1)
+                .and_then(|s| s.split(next).next())
+                .unwrap_or("");
+            assert!(
+                seg.contains("validate_stored_not_before(nb)"),
+                "{verb} validates an explicit not_before at the storage layer"
+            );
+        }
+        // The hygiene fold counts only failing rows, per queue.
+        let mut by_queue: Map<String, Value> = Map::new();
+        by_queue.insert("q1".to_string(), health_entry("q1"));
+        let rows = vec![
+            json!({"queue": "q1", "not_before": "3600"}),
+            json!({"queue": "q1", "not_before": "2020-01-01T00:00:00Z"}),
+            json!({"queue": "q1", "not_before": "7200"}),
+        ];
+        apply_malformed_parked(&mut by_queue, &rows);
+        assert_eq!(by_queue["q1"]["malformed_parked"], 2);
+        assert_eq!(health_entry("q2")["malformed_parked"], 0);
     }
 
     #[test]
