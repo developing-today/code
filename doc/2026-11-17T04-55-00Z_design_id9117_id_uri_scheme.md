@@ -67,13 +67,13 @@ Per RFC 3986 §6, with the choices S4.17 requires made explicit:
 
 A namespace definition (S4.18) declares at least:
 
-| Field          | Meaning                                                                 |
-| -------------- | ----------------------------------------------------------------------- |
-| `name`         | The namespace segment (§2), unique within the server's registry.        |
-| `core_type`    | The addressing core the namespace path encodes (e.g. the array-address core of #9118, a plain hierarchical path core, a hash core). |
-| `handler`      | A handler identifier from the server's handler registry — the code that resolves and writes paths in this namespace. |
-| `encoding`     | How core addresses map to/from path segments: `text` or `b64`, or a registry extension (§6). |
-| `rules`        | Resolution/write rules: who may resolve, who may write, case sensitivity of paths. |
+| Field       | Meaning                                                                                                                             |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `name`      | The namespace segment (§2), unique within the server's registry.                                                                    |
+| `core_type` | The addressing core the namespace path encodes (e.g. the array-address core of #9118, a plain hierarchical path core, a hash core). |
+| `handler`   | A handler identifier from the server's handler registry — the code that resolves and writes paths in this namespace.                |
+| `encoding`  | How core addresses map to/from path segments: `text` or `b64`, or a registry extension (§6).                                        |
+| `rules`     | Resolution/write rules: who may resolve, who may write, case sensitivity of paths.                                                  |
 
 Encodings:
 

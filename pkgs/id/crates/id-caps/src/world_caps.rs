@@ -708,7 +708,12 @@ pub const CLIENT_FILE_READ_MANIFEST: ProviderManifest = ProviderManifest {
 /// catalog compatibility surface, and adding a client provider must
 /// not edit it (F13.7 acceptance: registry growth without a host
 /// catalog edit).
-const CLIENT_CATALOG_ENTRIES: &[ProviderManifest] = &[CLIENT_FILE_READ_MANIFEST];
+///
+/// This is the declared client segment, and the source of truth the
+/// registry exit proofs assert against: the assembled registry is
+/// exactly the legacy [`CATALOG`] entries, then these entries, then
+/// any feature-gated registry-only additions — nothing else.
+pub const CLIENT_CATALOG_ENTRIES: &[ProviderManifest] = &[CLIENT_FILE_READ_MANIFEST];
 
 /// Registry-only entries added on top of [`PRODUCTION_CATALOG_ENTRIES`].
 #[cfg(feature = "test-provider")]

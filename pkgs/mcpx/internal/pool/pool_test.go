@@ -7,8 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -303,6 +305,83 @@ func TestStartFailureEntersCooldown(t *testing.T) {
 	_, err := p.Call(ctx, config.ResolvedScope{Key: ""}, "echo", map[string]any{})
 	if err == nil || !strings.Contains(err.Error(), "cooldown") {
 		t.Fatalf("second call should be short-circuited by cooldown, got: %v", err)
+	}
+}
+
+// The stdio unexpected-termination SHOULD (2026-07-28), measured the
+// way the spec measures it: a server that was running dies, and the
+// next client call is served by a restarted server. The restart is
+// deferred to that acquire — and a restart cooldown earned by an
+// unrelated start failure must not refuse it (#7846): the cooldown
+// throttles start-failure storms, not crash recovery.
+func TestCrashRespawnNotRefusedByCooldown(t *testing.T) {
+	bin := testsupport.FakeMCPBinary(t)
+	dir := t.TempDir()
+	broken := filepath.Join(dir, "broken")
+	pidfile := filepath.Join(dir, "pid")
+	wrapper := filepath.Join(dir, "wrap.sh")
+	script := "#!/bin/sh\nif [ -e " + broken + " ]; then echo 'fatal: missing API_TOKEN' >&2; exit 3; fi\necho $$ > " + pidfile + "\nexec " + bin + " \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := pool.New(resolved(t, wrapper, &config.Extras{Sharing: config.SharingShared, Scope: config.ScopeSession, Max: 2}))
+	defer p.Close()
+	ctx := context.Background()
+
+	// A live server for session s1.
+	if _, err := p.Call(ctx, config.ResolvedScope{Key: "session:s1"}, "echo", map[string]any{"message": "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(pidfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// An unrelated start failure (session s2, broken server) earns the
+	// pool a restart cooldown.
+	if err := os.WriteFile(broken, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Call(ctx, config.ResolvedScope{Key: "session:s2"}, "echo", map[string]any{}); err == nil {
+		t.Fatal("s2 call should fail while the server is broken")
+	}
+
+	// The s1 server now dies unexpectedly, and the server would start
+	// again if asked.
+	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(broken); err != nil {
+		t.Fatal(err)
+	}
+
+	// The first post-crash acquire must attempt the restart and be
+	// served by the respawned server, not refused by the cooldown.
+	// The client notices the death asynchronously, so a call can
+	// still land on the not-yet-reaped instance and fail with a
+	// connection-closed error; that is the in-flight failure the
+	// spec allows. A cooldown refusal is the one outcome that must
+	// never appear, and a working call must follow promptly.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		_, err := p.Call(ctx, config.ResolvedScope{Key: "session:s1"}, "echo", map[string]any{"message": "back"})
+		if err == nil {
+			break
+		}
+		if strings.Contains(err.Error(), "cooldown") {
+			t.Fatalf("first post-crash acquire was refused by the restart cooldown: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("post-crash calls never reached a restarted server, last: %v", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if st := p.Status(); st.Live != 1 {
+		t.Fatalf("want the respawned instance live, got %d", st.Live)
 	}
 }
 

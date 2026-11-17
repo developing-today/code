@@ -881,15 +881,17 @@ in
     };
   };
 
-  # Fleet broker roles (epic #5412 step 2, #5430): the secrets and
-  # queue brokers as `fleet serve <role>` units — one unit per role,
-  # as they have run since code#5362. This is the home-module
-  # pattern ported from dezren39/nix PR #1459 (closed as superseded
-  # by ruling D1) into this tree, now consuming this flake's own
-  # pkgs/fleet instead of a vendored copy. The unit files these
-  # definitions replace were hand-installed; home-manager converges
-  # them on the next activation, and the step-2 flips re-point the
-  # live files at the same artifact in the meantime.
+  # Fleet broker roles (epic #5412 step 2, #5430): the secrets
+  # broker as a `fleet serve <role>` unit, as it has run since
+  # code#5362. This is the home-module pattern ported from
+  # dezren39/nix PR #1459 (closed as superseded by ruling D1) into
+  # this tree, now consuming this flake's own pkgs/fleet instead of
+  # a vendored copy. The queue-broker unit that used to sit beside
+  # it moved to the deploy registry on 2026-11-17 (#5769 M2:
+  # pkgs/deploy/services.nix owns queue-broker; the deploy tool
+  # activates it on the laptop). The secrets-broker definition
+  # stays here until its deploy activation can pass the deploy
+  # health probe (code#11170), then it follows queue-broker.
   systemd.user.services.secrets-broker = {
     Unit = {
       Description = "secrets-broker — resident Bitwarden secrets cache (code#5362)";
@@ -897,23 +899,6 @@ in
     };
     Service = {
       ExecStart = "${fleetPkgs.fleet}/bin/fleet serve secrets-broker";
-      Restart = "on-failure";
-      RestartSec = 5;
-    };
-    Install.WantedBy = [ "default.target" ];
-  };
-
-  systemd.user.services.queue-broker = {
-    Unit = {
-      Description = "queue-broker — repo-health queue service (code#5362)";
-      After = [
-        "network-online.target"
-        "secrets-broker.service"
-      ];
-      Wants = [ "secrets-broker.service" ];
-    };
-    Service = {
-      ExecStart = "${fleetPkgs.fleet}/bin/fleet serve queue-broker";
       Restart = "on-failure";
       RestartSec = 5;
     };

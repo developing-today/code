@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -485,6 +487,14 @@ func TestBuildCompletionFileImport(t *testing.T) {
 	if spec.Provenance == nil || spec.Provenance.Source != "completion" || spec.Provenance.SourceDetail != path {
 		t.Errorf("provenance: %+v", spec.Provenance)
 	}
+	// Oracle (#9172): the provenance fingerprint is the SHA-256 of the
+	// exact source text the declaration was generated from -- here the
+	// completion file's own bytes, hashed independently of the import
+	// path under test.
+	sum := sha256.Sum256([]byte(fishFixture))
+	if want := hex.EncodeToString(sum[:]); spec.Provenance.SourceSHA256 != want {
+		t.Errorf("source fingerprint: got %q, want sha256(fixture) %q", spec.Provenance.SourceSHA256, want)
+	}
 	if len(spec.Tools) != 2 {
 		t.Errorf("tools: %+v", spec.Tools)
 	}
@@ -546,5 +556,28 @@ func TestParseImportArgsGenerationFlags(t *testing.T) {
 	}
 	if _, err := parseImportArgs([]string{"--completion", "x.fish", "--shell", "tcsh"}); err == nil {
 		t.Error("a bogus --shell should be refused")
+	}
+}
+
+func TestVersionDriftReadsStderrVersion(t *testing.T) {
+	// Oracle: the binary's own --version, on whichever stream it
+	// writes -- the import probe reads combined output, so the
+	// drift check must too, or an unchanged binary whose version
+	// goes to stderr reads as versionless. (Salvaged from PR #9041,
+	// #9172; main's runCapture already merges the streams, so this
+	// pins the behavior.)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "faketool")
+	script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'faketool version 1.2.3' >&2; exit 0; fi\nexit 1\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := adapter.Spec{
+		Name: "faketool", Command: path,
+		Provenance: &adapter.Provenance{Source: "help", BinaryVersion: "1.2.3"},
+	}
+	declared, found, drift := versionDrift(spec)
+	if drift || found != "1.2.3" || declared != "1.2.3" {
+		t.Fatalf("a version printed to stderr compares like any other: declared=%q found=%q drift=%v", declared, found, drift)
 	}
 }

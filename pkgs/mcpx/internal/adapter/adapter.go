@@ -86,6 +86,10 @@ type Provenance struct {
 	// import time; `adapter check` compares it against the binary's
 	// current version and reports drift.
 	BinaryVersion string `json:"binaryVersion,omitempty"`
+	// SourceSHA256 fingerprints the exact source text the declaration
+	// was generated from, so re-importing the same source is
+	// recognisably the same generation.
+	SourceSHA256 string `json:"sourceSha256,omitempty"`
 	// GeneratedAt is the import time, RFC 3339 UTC.
 	GeneratedAt string `json:"generatedAt"`
 	// Generator names the producing command.

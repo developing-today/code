@@ -39,19 +39,19 @@ object (B31 `GateEvidence`):
    configured for.
 
 A trust class is a **directional policy label, never a cryptographic
-fact and never a gate bypass**. Class membership decides *whether an
-operation may be attempted*; the gate decides *whether an inbound
-object may be accepted*. Both must pass, in that order of evaluation:
+fact and never a gate bypass**. Class membership decides _whether an
+operation may be attempted_; the gate decides _whether an inbound
+object may be accepted_. Both must pass, in that order of evaluation:
 class/policy first (cheap), gate second (per object).
 
 ## 2. The three classes, plus the default
 
-| Class | Meaning |
-|---|---|
-| `fully_trusted` | Broad configured operations in both directions, subject to the peer's configured operation set and — inbound — the full gate. Never a validation bypass. |
-| `send_only` | We send to this peer; we never accept peer-originated data from it. Inbound acceptance is class-forbidden, even for perfectly signed objects. |
-| `accept_signed_from` | Inbound acceptance only, and only for objects passing the full gate. Grants no outbound sends by itself. |
-| `unknown` (default) | No configured trust. The restrictive default for any peer with no policy, an expired policy, or a policy not yet in force: deny everything. |
+| Class                | Meaning                                                                                                                                                  |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fully_trusted`      | Broad configured operations in both directions, subject to the peer's configured operation set and — inbound — the full gate. Never a validation bypass. |
+| `send_only`          | We send to this peer; we never accept peer-originated data from it. Inbound acceptance is class-forbidden, even for perfectly signed objects.            |
+| `accept_signed_from` | Inbound acceptance only, and only for objects passing the full gate. Grants no outbound sends by itself.                                                 |
+| `unknown` (default)  | No configured trust. The restrictive default for any peer with no policy, an expired policy, or a policy not yet in force: deny everything.              |
 
 Class changes are **versioned per peer** (`policy_version`, monotonic):
 a demotion or revocation is a new policy version, never an in-place
@@ -69,13 +69,13 @@ gate applies on the read path — the data passed the gate when it was
 accepted); a **relay** moves a third party's data or queries and is
 never implied by any class.
 
-| Operation (direction) | fully_trusted | send_only | accept_signed_from | unknown |
-|---|---|---|---|---|
-| Accept data — write in (inbound) | Allow iff configured **and** full gate passes | Deny (`ClassForbids`) | Allow iff configured **and** full gate passes | Deny (`UnknownPeer`) |
-| Send data — read out (outbound) | Allow iff configured | Allow iff configured | Deny (`ClassForbids`) | Deny (`UnknownPeer`) |
-| Query relay (outbound) | Deny unless a separate relay grant exists (`NotGrantedByClass`) | Deny unless a separate relay grant exists | Deny unless a separate relay grant exists | Deny |
-| Completeness authority (inbound claims) | Never granted by class | Never granted by class | Never granted by class | Deny |
-| Cross-tenant access | Never granted by class | Never granted by class | Never granted by class | Deny |
+| Operation (direction)                   | fully_trusted                                                   | send_only                                 | accept_signed_from                            | unknown              |
+| --------------------------------------- | --------------------------------------------------------------- | ----------------------------------------- | --------------------------------------------- | -------------------- |
+| Accept data — write in (inbound)        | Allow iff configured **and** full gate passes                   | Deny (`ClassForbids`)                     | Allow iff configured **and** full gate passes | Deny (`UnknownPeer`) |
+| Send data — read out (outbound)         | Allow iff configured                                            | Allow iff configured                      | Deny (`ClassForbids`)                         | Deny (`UnknownPeer`) |
+| Query relay (outbound)                  | Deny unless a separate relay grant exists (`NotGrantedByClass`) | Deny unless a separate relay grant exists | Deny unless a separate relay grant exists     | Deny                 |
+| Completeness authority (inbound claims) | Never granted by class                                          | Never granted by class                    | Never granted by class                        | Deny                 |
+| Cross-tenant access                     | Never granted by class                                          | Never granted by class                    | Never granted by class                        | Deny                 |
 
 Rules that fall out of the table, stated once:
 
@@ -119,7 +119,7 @@ silence is not a decision):
 1. **Does `fully_trusted` imply relay?** No. Default: relay is a
    separate grant for every class (§3).
 2. **A `send_only` peer's signed object arrives via a third-party
-   relay.** Default: acceptance is judged against the *originator's*
+   relay.** Default: acceptance is judged against the _originator's_
    class (the signer), not the carrier's; the carrier needs its own
    relay grant for carrying it. A `send_only` originator's object is
    therefore still not accepted.

@@ -30,7 +30,13 @@ function stubBroker(handler: (path: string, body: Record<string, unknown>) => un
   return calls;
 }
 
-const packet = { title: "t", body: "b", priority: 30, dedupe_key: "k", payload: { schema: "repo-task/v1" } } as unknown as Packet;
+const packet = {
+  title: "t",
+  body: "b",
+  priority: 30,
+  dedupe_key: "k",
+  payload: { schema: "repo-task/v1" },
+} as unknown as Packet;
 const row7 = { id: 7, queue: "repo-health-code-pilot", status: "queued", dedupe_key: "k" };
 
 describe("broker enqueue", () => {
@@ -95,7 +101,11 @@ describe("broker claimTask (claim-flow, #10737 + #9028)", () => {
   });
 
   test("a bind-step partial throws — the session binding is the point of the claim", async () => {
-    stubBroker(() => ({ ok: true, row: { ...row7, status: "claimed" }, claim_flow_partial: { step: "bind", error: "no lane ledger" } }));
+    stubBroker(() => ({
+      ok: true,
+      row: { ...row7, status: "claimed" },
+      claim_flow_partial: { step: "bind", error: "no lane ledger" },
+    }));
     const client = new QueueClient("http://broker.test", "tok-1");
     await expect(client.claimTask(row7 as never, "ses_1", "tester", 3600)).rejects.toThrow("bind failed");
   });
@@ -103,7 +113,11 @@ describe("broker claimTask (claim-flow, #10737 + #9028)", () => {
   test("a lane-step partial is noted on the task and the claim still returns", async () => {
     const calls = stubBroker((path) => {
       if (path === "/claim-flow") {
-        return { ok: true, row: { ...row7, status: "claimed" }, claim_flow_partial: { step: "lane", error: "lane rpc 500" } };
+        return {
+          ok: true,
+          row: { ...row7, status: "claimed" },
+          claim_flow_partial: { step: "lane", error: "lane rpc 500" },
+        };
       }
       return { ok: true, row: { ...row7, status: "claimed" } };
     });

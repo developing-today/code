@@ -6,6 +6,8 @@
 
 use std::time::Duration;
 
+use crate::world_presentation::ScreenSurface;
+
 /// Total startup window for the batched capability queries.
 pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_millis(250);
 
@@ -35,19 +37,19 @@ pub(crate) trait TerminalIo {
 
 /// Independently confirmed terminal features. Unknown is represented as false.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct TerminalProfile {
+pub struct TerminalProfile {
     /// A complete ANSI cursor-position report was received.
-    pub(crate) cursor_position_report: bool,
+    pub cursor_position_report: bool,
     /// XTGETTCAP's special `Co` capability reported at least 256 colors.
-    pub(crate) indexed_color: bool,
+    pub indexed_color: bool,
     /// The Kitty graphics query answered with a successful response.
-    pub(crate) kitty_graphics: bool,
+    pub kitty_graphics: bool,
     /// Primary device attributes advertised Sixel support (parameter 4).
-    pub(crate) sixel_graphics: bool,
+    pub sixel_graphics: bool,
     /// DEC private mode 2026 was recognized and can be toggled.
-    pub(crate) synchronized_output: bool,
+    pub synchronized_output: bool,
     /// The Kitty keyboard flags query returned a syntactically valid report.
-    pub(crate) kitty_keyboard: bool,
+    pub kitty_keyboard: bool,
 }
 
 impl TerminalProfile {
@@ -55,7 +57,7 @@ impl TerminalProfile {
     ///
     /// Kitty keyboard support is intentionally orthogonal: it is owned by the
     /// later keyboard-input phase and does not gate visual Tier 1 selection.
-    pub(crate) fn tier(self) -> PresentationTier {
+    pub fn tier(self) -> PresentationTier {
         if (self.kitty_graphics || self.sixel_graphics) && self.synchronized_output {
             PresentationTier::Tier1
         } else if self.cursor_position_report && self.indexed_color {
@@ -68,7 +70,7 @@ impl TerminalProfile {
 
 /// Presentation class selected from a local [`TerminalProfile`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PresentationTier {
+pub enum PresentationTier {
     /// Graphics and synchronized output were both positively confirmed.
     Tier1,
     /// Cursor addressing and indexed color were both positively confirmed.
@@ -81,7 +83,7 @@ pub(crate) enum PresentationTier {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProbeOutcome {
     /// Locally selected terminal profile.
-    pub(crate) profile: TerminalProfile,
+    pub profile: TerminalProfile,
     /// Unmatched or incomplete bytes, preserved byte-for-byte for key input.
     pub replay: Vec<u8>,
     /// At least one capability received contradictory complete reports.
@@ -90,7 +92,7 @@ pub struct ProbeOutcome {
 
 impl ProbeOutcome {
     /// Return the conservative Tier 3 profile when complete reports conflict.
-    pub(crate) fn tier(&self) -> PresentationTier {
+    pub fn tier(&self) -> PresentationTier {
         if self.conflicted {
             PresentationTier::Tier3
         } else {
@@ -169,7 +171,7 @@ impl ProbeDemux {
     }
 
     /// Tier selected from the replies seen so far.
-    pub(crate) fn tier(&self) -> PresentationTier {
+    pub fn tier(&self) -> PresentationTier {
         self.outcome().tier()
     }
 }
@@ -317,24 +319,405 @@ impl Drop for RawMode {
 
 /// Byte and frame counters used to compare presenters with a full-render baseline.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct PresenterCounters {
+pub struct PresenterCounters {
     /// Number of frames emitted by this presenter.
-    pub(crate) frames: u64,
+    pub frames: u64,
     /// Number of those frames emitted as complete renders.
-    pub(crate) full_render_frames: u64,
+    pub full_render_frames: u64,
     /// Total bytes written by this presenter.
-    pub(crate) presenter_bytes: u64,
+    pub presenter_bytes: u64,
 }
 
 impl PresenterCounters {
     /// Record one successful presenter write.
-    pub(crate) fn record(&mut self, bytes: usize, full_render: bool) {
+    pub fn record(&mut self, bytes: usize, full_render: bool) {
         self.frames = self.frames.saturating_add(1);
         self.presenter_bytes = self.presenter_bytes.saturating_add(bytes as u64);
         if full_render {
             self.full_render_frames = self.full_render_frames.saturating_add(1);
         }
     }
+}
+
+/// Synchronized-output begin sequence (DEC private mode 2026, set).
+pub const SYNC_OUTPUT_BEGIN: &str = "\x1b[?2026h";
+/// Synchronized-output end sequence (DEC private mode 2026, reset).
+pub const SYNC_OUTPUT_END: &str = "\x1b[?2026l";
+/// Largest image a presenter will encode, in pixels. Presenter-owned
+/// fixtures only: F13.4 adds no guest-authored image payload.
+pub const MAX_GRAPHICS_PIXELS: usize = 65_536;
+/// Largest Sixel palette a presenter will emit.
+pub const MAX_SIXEL_COLORS: usize = 256;
+/// Largest single Kitty graphics chunk, in base64 characters.
+const KITTY_CHUNK_CHARS: usize = 4096;
+
+/// A line-mode delta between two consecutive text views (F13.4 Tier 3).
+///
+/// The delta is the logical form of the Tier 3 presentation: applying it
+/// to the previous view's lines yields exactly the next view's lines, so
+/// parity against the full text is checkable without a terminal. The
+/// rendered form emits only the changed lines, in order; a line-mode
+/// terminal scrolls, so removals are carried by `line_count` in the
+/// logical form rather than by erase sequences in the byte stream.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TextDelta {
+    /// Line count of the next view (apply resizes to this first).
+    pub line_count: usize,
+    /// Replacement lines, by index, in ascending order.
+    pub changed: Vec<(usize, String)>,
+    /// True when the previous view was empty: this delta is a full render.
+    pub full: bool,
+}
+
+impl TextDelta {
+    /// The delta that turns `previous` into `next`.
+    #[must_use]
+    pub fn between(previous: &[String], next: &[String]) -> Self {
+        let changed = next
+            .iter()
+            .enumerate()
+            .filter(|(index, line)| previous.get(*index) != Some(line))
+            .map(|(index, line)| (index, line.clone()))
+            .collect();
+        Self {
+            line_count: next.len(),
+            changed,
+            full: previous.is_empty(),
+        }
+    }
+
+    /// Apply this delta to `previous`, yielding the next view's lines.
+    /// Oracle for Tier 3 parity: `delta.apply(prev) == next` whenever
+    /// `delta == TextDelta::between(prev, next)`.
+    #[must_use]
+    pub fn apply(&self, previous: &[String]) -> Vec<String> {
+        let mut lines = previous.to_vec();
+        lines.resize(self.line_count, String::new());
+        for (index, line) in &self.changed {
+            if let Some(slot) = lines.get_mut(*index) {
+                *slot = line.clone();
+            }
+        }
+        lines
+    }
+
+    /// True when nothing changed.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.changed.is_empty()
+    }
+
+    /// Rendered form: the changed lines only, each CRLF-terminated.
+    #[must_use]
+    pub fn render(&self) -> String {
+        let mut output = String::new();
+        for (_, line) in &self.changed {
+            output.push_str(line);
+            output.push_str("\r\n");
+        }
+        output
+    }
+}
+
+/// The tier presenter shared by the SSH PTY and interactive iroh TTY
+/// adapters (F13.4 phases 3–4). One presenter owns one terminal: it is
+/// built from the probe outcome, renders each coalesced view for its
+/// tier, and restores terminal modes on [`TierPresenter::finish`].
+///
+/// - Tier 1 renders the cell grid like Tier 2, bracketed in synchronized
+///   output, and may encode presenter-owned images — only behind the
+///   positive feature evidence that selected the tier.
+/// - Tier 2 renders the cell grid: a full render first, then row diffs
+///   against the previous screen (full repaint when a diff is impossible,
+///   e.g. after a resize or [`TierPresenter::invalidate`]).
+/// - Tier 3 renders text only: no full-screen escapes, and after the
+///   first view only the changed lines (a [`TextDelta`]).
+///
+/// Incremental state is committed only after a render is produced, so a
+/// caller that drops a frame can re-render the same view safely.
+#[derive(Debug)]
+pub struct TierPresenter {
+    profile: TerminalProfile,
+    tier: PresentationTier,
+    previous_screen: Option<ScreenSurface>,
+    previous_text: Vec<String>,
+    counters: PresenterCounters,
+    sync_used: bool,
+}
+
+impl TierPresenter {
+    /// A presenter for a directly supplied profile (tests, adapters that
+    /// probed through [`TerminalNegotiator`]).
+    #[must_use]
+    pub fn new(profile: TerminalProfile) -> Self {
+        Self {
+            tier: profile.tier(),
+            profile,
+            previous_screen: None,
+            previous_text: Vec::new(),
+            counters: PresenterCounters::default(),
+            sync_used: false,
+        }
+    }
+
+    /// A presenter for a completed probe. A conflicted outcome selects
+    /// the conservative Tier 3, exactly as [`ProbeOutcome::tier`] rules.
+    #[must_use]
+    pub fn from_outcome(outcome: &ProbeOutcome) -> Self {
+        Self {
+            tier: outcome.tier(),
+            profile: outcome.profile,
+            previous_screen: None,
+            previous_text: Vec::new(),
+            counters: PresenterCounters::default(),
+            sync_used: false,
+        }
+    }
+
+    /// The tier this presenter renders.
+    #[must_use]
+    pub fn tier(&self) -> PresentationTier {
+        self.tier
+    }
+
+    /// The profile this presenter was built from.
+    #[must_use]
+    pub fn profile(&self) -> TerminalProfile {
+        self.profile
+    }
+
+    /// Frames and bytes emitted so far, for baseline comparisons.
+    #[must_use]
+    pub fn counters(&self) -> PresenterCounters {
+        self.counters
+    }
+
+    /// Force the next frame to be a full render (attach, resize, or any
+    /// invalidation of the diff state).
+    pub fn invalidate(&mut self) {
+        self.previous_screen = None;
+        self.previous_text = Vec::new();
+    }
+
+    /// Render one screen view for this presenter's tier.
+    pub fn render_screen(&mut self, screen: &ScreenSurface) -> String {
+        if self.tier == PresentationTier::Tier3 {
+            let projection = screen.text_projection();
+            let lines: Vec<String> = if projection.is_empty() {
+                Vec::new()
+            } else {
+                projection.lines().map(str::to_owned).collect()
+            };
+            return self.render_lines(&lines);
+        }
+        let (body, full) = match self
+            .previous_screen
+            .as_ref()
+            .and_then(|previous| screen.render_ansi_diff(previous))
+        {
+            Some(diff) => (diff, false),
+            None => match screen.render_ansi() {
+                Some(full) => (full, true),
+                None => return String::new(),
+            },
+        };
+        self.previous_screen = Some(screen.clone());
+        if body.is_empty() {
+            return String::new();
+        }
+        let output = if self.tier == PresentationTier::Tier1 && self.profile.synchronized_output {
+            self.sync_used = true;
+            format!("{SYNC_OUTPUT_BEGIN}{body}{SYNC_OUTPUT_END}")
+        } else {
+            body
+        };
+        self.counters.record(output.len(), full);
+        output
+    }
+
+    /// Render one text view as a Tier 3 delta and return the rendered
+    /// bytes (empty when nothing changed).
+    pub fn render_lines(&mut self, lines: &[String]) -> String {
+        self.render_text_delta(lines).render()
+    }
+
+    /// The Tier 3 delta for one text view; the logical form behind
+    /// [`TierPresenter::render_lines`], exposed so adapters and tests
+    /// can verify apply-parity against the full text.
+    pub fn render_text_delta(&mut self, lines: &[String]) -> TextDelta {
+        let delta = TextDelta::between(&self.previous_text, lines);
+        self.previous_text = lines.to_vec();
+        if !delta.is_empty() {
+            self.counters.record(delta.render().len(), delta.full);
+        }
+        delta
+    }
+
+    /// Encode a presenter-owned image fixture for this terminal, or
+    /// `None` when the tier or the confirmed features do not allow
+    /// graphics. Kitty graphics is preferred when both were confirmed;
+    /// Sixel is the fallback. Never called with guest-supplied payloads:
+    /// F13.4 keeps the guest view format unchanged.
+    pub fn present_image(&mut self, rgb: &[u8], width: usize, height: usize) -> Option<String> {
+        if self.tier != PresentationTier::Tier1 {
+            return None;
+        }
+        let encoded = if self.profile.kitty_graphics {
+            encode_kitty_graphics(rgb, width, height)?
+        } else if self.profile.sixel_graphics {
+            encode_sixel(rgb, width, height)?
+        } else {
+            return None;
+        };
+        let output = if self.profile.synchronized_output {
+            self.sync_used = true;
+            format!("{SYNC_OUTPUT_BEGIN}{encoded}{SYNC_OUTPUT_END}")
+        } else {
+            encoded
+        };
+        self.counters.record(output.len(), false);
+        Some(output)
+    }
+
+    /// End the presentation: returns the mode-restore bytes the adapter
+    /// must write on every exit path (success, error, disconnect) and
+    /// resets the diff state. Synchronized output, once used, is always
+    /// left here even though frames are individually bracketed — a write
+    /// interrupted mid-frame must not strand the terminal in mode 2026.
+    pub fn finish(&mut self) -> String {
+        self.previous_screen = None;
+        if self.sync_used {
+            self.sync_used = false;
+            SYNC_OUTPUT_END.to_owned()
+        } else {
+            String::new()
+        }
+    }
+}
+
+/// Encode an RGB image (3 bytes per pixel, row-major) as a chunked
+/// Kitty graphics transmission (`a=T`, `f=24`, id 31 — the id the probe
+/// query used). `None` for empty, oversized, or mis-sized input.
+#[must_use]
+pub fn encode_kitty_graphics(rgb: &[u8], width: usize, height: usize) -> Option<String> {
+    let pixels = width.checked_mul(height)?;
+    if pixels == 0 || pixels > MAX_GRAPHICS_PIXELS || rgb.len() != pixels.checked_mul(3)? {
+        return None;
+    }
+    let payload = base64_encode(rgb);
+    let mut output = String::new();
+    let mut chunks = payload.as_bytes().chunks(KITTY_CHUNK_CHARS).peekable();
+    let mut first = true;
+    while let Some(chunk) = chunks.next() {
+        let more = u8::from(chunks.peek().is_some());
+        if first {
+            output.push_str(&format!(
+                "\x1b_Ga=T,f=24,s={width},v={height},i=31,m={more};"
+            ));
+            first = false;
+        } else {
+            output.push_str(&format!("\x1b_Gm={more};"));
+        }
+        output.push_str(std::str::from_utf8(chunk).ok()?);
+        output.push_str("\x1b\\");
+    }
+    Some(output)
+}
+
+/// Encode an RGB image as Sixel graphics. Each distinct color becomes
+/// one palette register (at most [`MAX_SIXEL_COLORS`]); each 6-row band
+/// emits one pass per color present in the band. `None` for empty,
+/// oversized, mis-sized, or over-palette input.
+#[must_use]
+pub fn encode_sixel(rgb: &[u8], width: usize, height: usize) -> Option<String> {
+    let pixels = width.checked_mul(height)?;
+    if pixels == 0 || pixels > MAX_GRAPHICS_PIXELS || rgb.len() != pixels.checked_mul(3)? {
+        return None;
+    }
+    let mut colors: Vec<(u8, u8, u8)> = Vec::new();
+    let mut index = vec![0_usize; pixels];
+    for (i, pixel) in rgb.chunks_exact(3).enumerate() {
+        let key = (pixel[0], pixel[1], pixel[2]);
+        index[i] = match colors.iter().position(|color| *color == key) {
+            Some(position) => position,
+            None => {
+                if colors.len() >= MAX_SIXEL_COLORS {
+                    return None;
+                }
+                colors.push(key);
+                colors.len() - 1
+            }
+        };
+    }
+    let percent = |value: u8| u32::from(value) * 100 / 255;
+    let mut output = String::from("\x1bPq");
+    output.push_str(&format!("\"1;1;{width};{height}"));
+    for (i, (r, g, b)) in colors.iter().enumerate() {
+        output.push_str(&format!(
+            "#{i};2;{};{};{}",
+            percent(*r),
+            percent(*g),
+            percent(*b)
+        ));
+    }
+    for (band, top) in (0..height).step_by(6).enumerate() {
+        if band > 0 {
+            output.push('-');
+        }
+        let rows = (height - top).min(6);
+        let mut band_colors: Vec<usize> = Vec::new();
+        for y in top..top + rows {
+            for x in 0..width {
+                let color = index[y * width + x];
+                if !band_colors.contains(&color) {
+                    band_colors.push(color);
+                }
+            }
+        }
+        band_colors.sort_unstable();
+        for (pass, color) in band_colors.iter().enumerate() {
+            if pass > 0 {
+                output.push('$');
+            }
+            output.push_str(&format!("#{color}"));
+            for x in 0..width {
+                let mut bits = 0_u8;
+                for dy in 0..rows {
+                    if index[(top + dy) * width + x] == *color {
+                        bits |= 1 << dy;
+                    }
+                }
+                output.push(char::from(0x3f + bits));
+            }
+        }
+    }
+    output.push_str("\x1b\\");
+    Some(output)
+}
+
+/// Standard base64 (RFC 4648, with padding), the Kitty payload encoding.
+fn base64_encode(data: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = u32::from(chunk[0]);
+        let b1 = u32::from(*chunk.get(1).unwrap_or(&0));
+        let b2 = u32::from(*chunk.get(2).unwrap_or(&0));
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        output.push(char::from(ALPHABET[(triple >> 18) as usize & 0x3f]));
+        output.push(char::from(ALPHABET[(triple >> 12) as usize & 0x3f]));
+        output.push(if chunk.len() > 1 {
+            char::from(ALPHABET[(triple >> 6) as usize & 0x3f])
+        } else {
+            '='
+        });
+        output.push(if chunk.len() > 2 {
+            char::from(ALPHABET[triple as usize & 0x3f])
+        } else {
+            '='
+        });
+    }
+    output
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -875,5 +1258,290 @@ mod tests {
         assert_eq!(input, b"zw".to_vec());
         assert!(demux.outcome().profile.synchronized_output);
         assert_eq!(demux.tier(), PresentationTier::Tier3);
+    }
+
+    fn screen(rows: &[&str]) -> ScreenSurface {
+        let height = rows.len();
+        let width = rows
+            .iter()
+            .map(|row| row.chars().count())
+            .max()
+            .unwrap_or(0);
+        let mut cells = Vec::new();
+        for row in rows {
+            let mut count = 0;
+            for ch in row.chars() {
+                cells.push(crate::world_presentation::ScreenCell {
+                    symbol: ch.to_string(),
+                    fg: 0,
+                    bg: 0,
+                    bold: false,
+                    columns: 1,
+                    token: None,
+                });
+                count += 1;
+            }
+            for _ in count..width {
+                cells.push(crate::world_presentation::ScreenCell {
+                    symbol: " ".to_string(),
+                    fg: 0,
+                    bg: 0,
+                    bold: false,
+                    columns: 1,
+                    token: None,
+                });
+            }
+        }
+        ScreenSurface::from_cells(width, height, cells).expect("valid screen fixture")
+    }
+
+    fn base64_decode(payload: &str) -> Vec<u8> {
+        let value = |byte: u8| -> u32 {
+            match byte {
+                b'A'..=b'Z' => u32::from(byte - b'A'),
+                b'a'..=b'z' => u32::from(byte - b'a') + 26,
+                b'0'..=b'9' => u32::from(byte - b'0') + 52,
+                b'+' => 62,
+                b'/' => 63,
+                _ => 0,
+            }
+        };
+        let mut output = Vec::new();
+        for chunk in payload.as_bytes().chunks(4) {
+            let pad = chunk.iter().filter(|byte| **byte == b'=').count();
+            let triple = chunk
+                .iter()
+                .fold(0_u32, |acc, byte| (acc << 6) | value(*byte));
+            output.push((triple >> 16) as u8);
+            if pad < 2 {
+                output.push((triple >> 8) as u8);
+            }
+            if pad < 1 {
+                output.push(triple as u8);
+            }
+        }
+        output
+    }
+
+    #[test]
+    fn tier_two_presenter_diffs_against_previous_and_matches_the_patch_oracle() {
+        let profile = TerminalProfile {
+            cursor_position_report: true,
+            indexed_color: true,
+            ..TerminalProfile::default()
+        };
+        let mut presenter = TierPresenter::new(profile);
+        assert_eq!(presenter.tier(), PresentationTier::Tier2);
+
+        let first = screen(&["abc", "def"]);
+        let second = screen(&["abc", "dXf"]);
+        let full = presenter.render_screen(&first);
+        assert_eq!(full, first.render_ansi().expect("full render"));
+        let diff = presenter.render_screen(&second);
+        assert_eq!(diff, second.render_ansi_diff(&first).expect("diff render"));
+        assert!(diff.len() < second.render_ansi().expect("full render").len());
+        // Oracle: the transport-neutral patch applied to frame 1 is frame 2.
+        let patch =
+            crate::world_presentation::ScreenPatch::diff(&first, &second).expect("patch exists");
+        assert_eq!(patch.apply(&first), Some(second.clone()));
+        // An unchanged view renders nothing and records no frame.
+        assert_eq!(presenter.render_screen(&second), "");
+        assert_eq!(presenter.counters().frames, 2);
+        assert_eq!(presenter.counters().full_render_frames, 1);
+        // Invalidation (resize/attach) forces a full repaint.
+        presenter.invalidate();
+        assert_eq!(
+            presenter.render_screen(&second),
+            second.render_ansi().expect("full render")
+        );
+    }
+
+    #[test]
+    fn tier_one_presenter_brackets_synchronized_output_and_restores_on_finish() {
+        let profile = TerminalProfile {
+            cursor_position_report: true,
+            indexed_color: true,
+            kitty_graphics: true,
+            synchronized_output: true,
+            ..TerminalProfile::default()
+        };
+        let mut presenter = TierPresenter::new(profile);
+        assert_eq!(presenter.tier(), PresentationTier::Tier1);
+
+        let frame = presenter.render_screen(&screen(&["hi"]));
+        assert!(frame.starts_with(SYNC_OUTPUT_BEGIN), "{frame:?}");
+        assert!(frame.ends_with(SYNC_OUTPUT_END), "{frame:?}");
+        // finish() leaves mode 2026 exactly once, on every exit path.
+        assert_eq!(presenter.finish(), SYNC_OUTPUT_END);
+        assert_eq!(presenter.finish(), "");
+    }
+
+    #[test]
+    fn tier_three_presenter_emits_only_changed_lines_with_apply_parity() {
+        let mut presenter = TierPresenter::new(TerminalProfile::default());
+        assert_eq!(presenter.tier(), PresentationTier::Tier3);
+
+        let v1 = vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()];
+        let d1 = presenter.render_text_delta(&v1);
+        assert!(d1.full);
+        assert_eq!(d1.apply(&[]), v1);
+
+        let v2 = vec!["alpha".to_string(), "BETA".to_string()];
+        let d2 = presenter.render_text_delta(&v2);
+        assert_eq!(d2.apply(&v1), v2);
+        assert_eq!(d2.changed, vec![(1, "BETA".to_string())]);
+        assert_eq!(d2.render(), "BETA\r\n");
+        assert_eq!(presenter.render_lines(&v2), "");
+
+        // The screen path is escape-free text, first frame in full.
+        let mut screen_presenter = TierPresenter::new(TerminalProfile::default());
+        let out = screen_presenter.render_screen(&screen(&["ab", "cd"]));
+        assert_eq!(out, "ab\r\ncd\r\n");
+        assert!(!out.contains('\x1b'));
+    }
+
+    #[test]
+    fn graphics_are_gated_on_positive_tier_one_evidence() {
+        // No evidence: nothing is emitted.
+        let mut plain = TierPresenter::new(TerminalProfile::default());
+        assert_eq!(plain.present_image(&[255, 0, 0], 1, 1), None);
+        // Kitty evidence alone is not Tier 1 (synchronized output missing).
+        let mut kitty_only = TierPresenter::new(TerminalProfile {
+            kitty_graphics: true,
+            ..TerminalProfile::default()
+        });
+        assert_eq!(kitty_only.tier(), PresentationTier::Tier3);
+        assert_eq!(kitty_only.present_image(&[255, 0, 0], 1, 1), None);
+
+        // Tier 1 via Kitty: one exact chunk inside sync brackets.
+        let mut rich = TierPresenter::new(TerminalProfile {
+            kitty_graphics: true,
+            synchronized_output: true,
+            ..TerminalProfile::default()
+        });
+        assert_eq!(rich.tier(), PresentationTier::Tier1);
+        assert_eq!(
+            rich.present_image(&[255, 0, 0], 1, 1).as_deref(),
+            Some("\x1b[?2026h\x1b_Ga=T,f=24,s=1,v=1,i=31,m=0;/wAA\x1b\\\x1b[?2026l")
+        );
+        // Tier 1 via Sixel: the sixel encoder is selected instead.
+        let mut sixel = TierPresenter::new(TerminalProfile {
+            sixel_graphics: true,
+            synchronized_output: true,
+            ..TerminalProfile::default()
+        });
+        let frame = sixel
+            .present_image(&[255, 0, 0], 1, 1)
+            .expect("sixel frame");
+        assert!(frame.contains("\x1bPq"), "{frame:?}");
+
+        // Exact sixel oracle: a 2x6 all-red image is one color, one band.
+        assert_eq!(
+            encode_sixel(&[255, 0, 0].repeat(12), 2, 6).as_deref(),
+            Some("\x1bPq\"1;1;2;6#0;2;100;0;0#0~~\x1b\\")
+        );
+        // Mis-sized and oversized inputs are refused.
+        assert_eq!(encode_kitty_graphics(&[0, 0], 1, 1), None);
+        assert_eq!(
+            encode_sixel(
+                &vec![0; 3 * (MAX_GRAPHICS_PIXELS + 1)],
+                MAX_GRAPHICS_PIXELS + 1,
+                1
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn kitty_graphics_chunks_round_trip_to_the_source_pixels() {
+        let rgb: Vec<u8> = (0..64 * 64 * 3).map(|i| (i % 251) as u8).collect();
+        let encoded = encode_kitty_graphics(&rgb, 64, 64).expect("encode");
+        let mut payload = Vec::new();
+        let mut rest = encoded.as_str();
+        let mut chunks = 0;
+        while let Some(start) = rest.find("\x1b_G") {
+            let end = rest[start..].find("\x1b\\").expect("chunk terminator") + start;
+            let chunk = &rest[start..end];
+            let (head, data) = chunk.split_once(';').expect("chunk header");
+            assert!(data.len() <= 4096, "chunk payload is bounded");
+            if chunks == 0 {
+                assert!(head.contains("a=T,f=24,s=64,v=64"), "{head}");
+                assert!(head.contains("m=1"), "{head}");
+            }
+            payload.extend(base64_decode(data));
+            chunks += 1;
+            rest = &rest[end + 2..];
+        }
+        assert!(chunks > 1, "a 64x64 image needs several chunks");
+        assert_eq!(payload, rgb);
+    }
+
+    /// The cross-transport acceptance harness: the same terminal
+    /// transcript, driven through the iroh seam (`parse_transcript`) and
+    /// the SSH seam (`ProbeDemux`), selects the same tier and the two
+    /// presenters emit byte-identical frames for the same views.
+    #[test]
+    fn cross_transport_presenters_agree_on_the_transcript_matrix() {
+        let cases: [(&str, Vec<u8>, PresentationTier); 6] = [
+            (
+                "tier one",
+                [
+                    COLOR_COUNT_REPLY,
+                    CURSOR_POSITION_REPLY,
+                    SYNC_OUTPUT_REPLY,
+                    KITTY_GRAPHICS_REPLY,
+                ]
+                .concat(),
+                PresentationTier::Tier1,
+            ),
+            (
+                "tier two",
+                [COLOR_COUNT_REPLY, CURSOR_POSITION_REPLY].concat(),
+                PresentationTier::Tier2,
+            ),
+            ("no reply", Vec::new(), PresentationTier::Tier3),
+            (
+                "malformed",
+                b"\x1b[?x u\x1b[?2026;9$y".to_vec(),
+                PresentationTier::Tier3,
+            ),
+            (
+                "conflicting",
+                [
+                    KITTY_GRAPHICS_REPLY,
+                    b"\x1b_Gi=31;ENOENT\x1b\\".as_slice(),
+                    SYNC_OUTPUT_REPLY,
+                ]
+                .concat(),
+                PresentationTier::Tier3,
+            ),
+            (
+                "interleaved keys",
+                b"j\x1b[12;40Rk".to_vec(),
+                PresentationTier::Tier3,
+            ),
+        ];
+        let frames = [screen(&["abc", "def"]), screen(&["abc", "dXf"])];
+        for (name, transcript, tier) in cases {
+            let iroh = parse_transcript(&transcript);
+            let mut demux = ProbeDemux::new();
+            demux.push(&transcript);
+            demux.expire();
+            let ssh = demux.outcome();
+            assert_eq!(iroh.tier(), tier, "{name}: iroh tier");
+            assert_eq!(ssh.tier(), tier, "{name}: ssh tier");
+
+            let mut a = TierPresenter::from_outcome(&iroh);
+            let mut b = TierPresenter::from_outcome(&ssh);
+            for frame in &frames {
+                assert_eq!(
+                    a.render_screen(frame),
+                    b.render_screen(frame),
+                    "{name}: presenter output differs across transports"
+                );
+            }
+            assert_eq!(a.counters(), b.counters(), "{name}: counters differ");
+            assert_eq!(a.finish(), b.finish(), "{name}: restore differs");
+        }
     }
 }

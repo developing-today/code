@@ -161,6 +161,15 @@ type Answer struct {
 	By      string          `json:"by,omitempty"`
 	At      time.Time       `json:"at"`
 	PID     int             `json:"pid,omitempty"`
+	// Relayed marks an answer the downstream MCP client itself gave to
+	// the upstream server's question, carried through mcpx unchanged
+	// (the daemon ask-answers route is the only source). A relayed
+	// answer is judged by the upstream, the way a direct connection
+	// behaves: mcpx cannot correct it, so the requestedSchema gate in
+	// Respond -- which exists for answers entered on mcpx's own
+	// surfaces, where the answerer can be shown the failing paths and
+	// try again -- does not apply to it (#8922).
+	Relayed bool `json:"relayed,omitempty"`
 }
 
 // Broker stores questions and hands back answers.
@@ -569,7 +578,17 @@ func (b *Broker) Respond(a Answer) error {
 	// that does not compile is the asker's defect, not the answerer's:
 	// the answer is recorded unvalidated rather than wedging on a
 	// schema the answerer never wrote (the mcpclient rule).
-	if a.Action == Accept && r.Mode == Form && len(r.Schema) > 0 {
+	//
+	// A relayed answer (Answer.Relayed) skips this gate: it is the
+	// downstream client's own answer to the upstream's question, and
+	// the upstream is its judge, as on a direct connection. Refusing
+	// it here could never produce a corrected answer -- the client
+	// already answered -- and left the question pending, so the
+	// relay loop re-pushed the same question until its rounds ran
+	// out and the call failed (#8922). The refusals above (null
+	// content, sampling shape) still apply to relayed answers: they
+	// protect the plumbing, not the content.
+	if a.Action == Accept && r.Mode == Form && len(r.Schema) > 0 && !a.Relayed {
 		if schema, err := schemaval.Compile(r.Schema); err == nil {
 			if err := schema.ValidateJSON(withSchemaDefaults(r.Schema, a.Content)); err != nil {
 				return fmt.Errorf("accepted content does not match the requested schema: %w", err)

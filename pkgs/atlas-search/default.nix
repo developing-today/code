@@ -32,6 +32,7 @@
   rustPlatform,
   callPackage,
   python3,
+  git,
   craneLib ? null,
 }:
 
@@ -129,6 +130,9 @@ if craneLib != null then
       # installCheck runs against the installed tree.
       doCheck = true;
 
+      # The atlas-core detection tests spawn git (code#10993).
+      nativeCheckInputs = [ git ];
+
       nativeInstallCheckInputs = [ python3 ];
       doInstallCheck = true;
       installCheckPhase = installCheck;
@@ -141,6 +145,9 @@ else
     src = ./.;
 
     cargoLock.lockFile = ./Cargo.lock;
+
+    # The atlas-core detection tests spawn git (code#10993).
+    nativeCheckInputs = [ git ];
 
     env = ortLibEnv;
 

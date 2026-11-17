@@ -56,6 +56,126 @@ pub enum SensitivityTier {
     Secret,
 }
 
+/// A note's placement class, from the §2 placement decision table in
+/// `doc/2026-11-10T20-00-00Z_design_agent_note_placement.md` (the agent-note
+/// placement design, #6022). A submission declares its class so the
+/// promoter — and later the #7717 classifier — can see what the
+/// submitter judged the note to be. Declaring a class does not route
+/// anything by itself: the routing destination still arrives as a
+/// [`PlacementDecision`] and still needs human approval (#8204).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoteClass {
+    /// Scratch / intermediate output; task lifetime only.
+    EphemeralWorkingNote,
+    /// What a shift did; memory daily log plus sweep/backlog records.
+    SessionDailyLog,
+    /// Verified fact that survives its repo.
+    DurableFinding,
+    /// Multi-source, cross-repo synthesis.
+    ResearchSynthesis,
+    /// Design / ADR / architecture record for a specific repo.
+    DesignRecord,
+    /// Operations procedure for a specific system.
+    Runbook,
+    /// A deliverable the user opens.
+    UserFacingDocument,
+    /// Standing fact about the user, their people, or their decisions.
+    MemoryTopic,
+    /// Machine-generated state snapshot owned by a system's store.
+    MachineStateSnapshot,
+    /// Published note destined for the ID graph (§5 of the design).
+    IdNativeNote,
+}
+
+/// The home the §2 decision table assigns to a class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlacementHome {
+    WorkspaceScratch,
+    MemoryDailyLog,
+    Zettel,
+    RepoDoc,
+    OwningRepo,
+    RequestingSurface,
+    AgentMemory,
+    OwningSystemStore,
+    IdGraph,
+}
+
+/// Atlas ingestion tier (design §2): 0 = ID-native (the graph object
+/// is the Atlas record), 1 = first-class corpus, 2 = repo corpus,
+/// 3 = provenance only. `NotIngested` is the table's "not ingested"
+/// outcome, not a tier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AtlasTier {
+    #[serde(rename = "tier_0")]
+    Tier0,
+    #[serde(rename = "tier_1")]
+    Tier1,
+    #[serde(rename = "tier_2")]
+    Tier2,
+    #[serde(rename = "tier_3")]
+    Tier3,
+    #[serde(rename = "not_ingested")]
+    NotIngested,
+}
+
+impl NoteClass {
+    /// The §2 decision table's home for this class.
+    #[must_use]
+    pub fn default_home(self) -> PlacementHome {
+        match self {
+            Self::EphemeralWorkingNote => PlacementHome::WorkspaceScratch,
+            Self::SessionDailyLog => PlacementHome::MemoryDailyLog,
+            Self::DurableFinding | Self::ResearchSynthesis => PlacementHome::Zettel,
+            Self::DesignRecord => PlacementHome::RepoDoc,
+            Self::Runbook => PlacementHome::OwningRepo,
+            Self::UserFacingDocument => PlacementHome::RequestingSurface,
+            Self::MemoryTopic => PlacementHome::AgentMemory,
+            Self::MachineStateSnapshot => PlacementHome::OwningSystemStore,
+            Self::IdNativeNote => PlacementHome::IdGraph,
+        }
+    }
+
+    /// The §2 decision table's Atlas tier for this class. A
+    /// user-facing document is Tier 2 only once canonicalized; the
+    /// table's default for the class itself is not ingested.
+    #[must_use]
+    pub fn default_tier(self) -> AtlasTier {
+        match self {
+            Self::DurableFinding | Self::ResearchSynthesis => AtlasTier::Tier1,
+            Self::DesignRecord | Self::Runbook => AtlasTier::Tier2,
+            Self::SessionDailyLog | Self::MemoryTopic => AtlasTier::Tier3,
+            Self::IdNativeNote => AtlasTier::Tier0,
+            Self::EphemeralWorkingNote | Self::UserFacingDocument | Self::MachineStateSnapshot => {
+                AtlasTier::NotIngested
+            }
+        }
+    }
+}
+
+/// What a submitter declares about a note's placement (#8204, design
+/// §7 item 1): its §2 class, plus the intended Atlas tier when the
+/// submitter means to override the class default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlacementDeclaration {
+    pub note_class: NoteClass,
+    pub atlas_tier: Option<AtlasTier>,
+}
+
+/// A declaration with the §2 decision table applied: the class's
+/// home, and the intended tier or the class's default tier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectiveDeclaration {
+    pub note_class: NoteClass,
+    pub home: PlacementHome,
+    pub atlas_tier: AtlasTier,
+    /// True when `atlas_tier` came from the decision table rather
+    /// than from the submitter's declaration.
+    pub tier_was_defaulted: bool,
+}
+
 /// Classification and canonical destination selected by routing.
 ///
 /// This is deliberately an opaque routing result: #7717 implements the
@@ -87,12 +207,35 @@ pub struct Submission {
     pub content_sha256: String,
     pub provenance: Provenance,
     pub sensitivity_ceiling: SensitivityCeiling,
+    /// The submitter's declared §2 placement (#8204), when declared.
+    /// Absent on envelopes written before the declaration existed.
+    #[serde(default)]
+    pub declared_placement: Option<PlacementDeclaration>,
     pub placement: Option<PlacementDecision>,
     pub state: SubmissionState,
     /// RFC 3339 timestamp.
     pub submitted_at: String,
     /// RFC 3339 timestamp of the most recent state transition.
     pub updated_at: String,
+}
+
+impl Submission {
+    /// The declared placement with the §2 decision table's defaults
+    /// applied, or `None` when the submission declared nothing (the
+    /// pre-#8204 behaviour: routing is entirely the caller's
+    /// [`PlacementDecision`], confirmed by a human at promotion).
+    #[must_use]
+    pub fn effective_declaration(&self) -> Option<EffectiveDeclaration> {
+        let declared = self.declared_placement?;
+        Some(EffectiveDeclaration {
+            note_class: declared.note_class,
+            home: declared.note_class.default_home(),
+            atlas_tier: declared
+                .atlas_tier
+                .unwrap_or_else(|| declared.note_class.default_tier()),
+            tier_was_defaulted: declared.atlas_tier.is_none(),
+        })
+    }
 }
 
 /// `notes_out` table row, including canonical identity and source pin.
@@ -194,6 +337,11 @@ pub trait SubmissionStore {
 pub struct StagedNote {
     pub submission_id: String,
     pub placement: PlacementDecision,
+    /// The submission's effective §2 declaration (#8204), snapshotted
+    /// at stage time so the promoter reviews the declared class and
+    /// tier alongside the routing decision. `None` for undeclared
+    /// submissions.
+    pub declaration: Option<EffectiveDeclaration>,
     /// RFC 3339 timestamp.
     pub staged_at: String,
 }
@@ -329,6 +477,50 @@ pub fn submit<S: SubmissionStore>(
     sensitivity_ceiling: SensitivityCeiling,
     submitted_at: impl Into<String>,
 ) -> Result<(), PipelineError> {
+    submit_inner(
+        store,
+        id,
+        content,
+        provenance,
+        sensitivity_ceiling,
+        None,
+        submitted_at,
+    )
+}
+
+/// Validate and store a new `submissions` row carrying the
+/// submitter's §2 placement declaration (#8204). The declaration is
+/// recorded on the envelope and surfaced to the promoter at staging;
+/// it changes nothing about routing or the human gate.
+pub fn submit_with_declaration<S: SubmissionStore>(
+    store: &mut S,
+    id: impl Into<String>,
+    content: String,
+    provenance: Provenance,
+    sensitivity_ceiling: SensitivityCeiling,
+    declaration: PlacementDeclaration,
+    submitted_at: impl Into<String>,
+) -> Result<(), PipelineError> {
+    submit_inner(
+        store,
+        id,
+        content,
+        provenance,
+        sensitivity_ceiling,
+        Some(declaration),
+        submitted_at,
+    )
+}
+
+fn submit_inner<S: SubmissionStore>(
+    store: &mut S,
+    id: impl Into<String>,
+    content: String,
+    provenance: Provenance,
+    sensitivity_ceiling: SensitivityCeiling,
+    declared_placement: Option<PlacementDeclaration>,
+    submitted_at: impl Into<String>,
+) -> Result<(), PipelineError> {
     let id = id.into();
     let submitted_at = submitted_at.into();
     validate_provenance(&provenance)?;
@@ -358,6 +550,7 @@ pub fn submit<S: SubmissionStore>(
         content_sha256: hash,
         provenance,
         sensitivity_ceiling,
+        declared_placement,
         placement: None,
         state: SubmissionState::Submitted,
         submitted_at: submitted_at.clone(),
@@ -380,11 +573,13 @@ pub fn stage<S: SubmissionStore>(
     if submission.state != SubmissionState::Submitted {
         return Err(PipelineError::InvalidState(submission_id.to_owned()));
     }
+    let declaration = submission.effective_declaration();
     validate_placement(&placement)?;
     validate_sensitivity_ceiling(submission.sensitivity_ceiling, &placement)?;
     store.stage(StagedNote {
         submission_id: submission_id.to_owned(),
         placement: placement.clone(),
+        declaration,
         staged_at: staged_at.clone(),
     })?;
     if let Some(submission) = store.submission_mut(submission_id) {
