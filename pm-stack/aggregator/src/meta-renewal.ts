@@ -30,6 +30,24 @@
  * never logged, never copied into this state file (which carries
  * only presence, capture time, and expiry horizon), and never
  * rendered by the alert projection (whitelisted fields only).
+ *
+ * Jar restore (#10839): the portal reads themselves — the fork quota
+ * provider and the exporter — ride the LIVE browser session, not the
+ * stored credential, so a Helium profile restart that drops the
+ * session-scoped cookie (llama_dev_sess) darkens the Meta leg while
+ * this keeper still sees a validating credential; on 2026-11-16 that
+ * stayed silent for hours because the keeper recorded the exporter's
+ * session-expired status and never acted on it. Now, when the read
+ * path reports session-expired across two consecutive keeper cycles
+ * (or a cadence capture proves the jar holds no live session) and
+ * the stored credential still validates, the keeper restores the jar
+ * from the stored credential — the reverse of capture,
+ * Storage.setCookies over the same CDP endpoint — under an
+ * exponential backoff, recording each attempt as a restore event in
+ * this state file and the gatherer log (cookie names only, never
+ * values). Restores that keep failing raise the attention alert
+ * after RESTORE_ALERT_AFTER_ATTEMPTS attempts: a restore that does
+ * not revive the session becomes a signal, not a silent loop.
  */
 
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -62,6 +80,13 @@ export interface MetaCredential {
    * when every captured cookie is a session cookie (unknown horizon). */
   expiresAt: string | null;
   cookieNames: string[];
+  /** The captured cookies themselves (name/value/domain/expiry), so
+   * the jar restore (#10839) can re-seed them verbatim. Absent on
+   * credentials stored before the field existed — the restore then
+   * falls back to parsing cookieHeader (see
+   * restoreCookiesFromCredential). Values live only in this file,
+   * under the same hygiene rules as cookieHeader. */
+  cookies?: MetaBrowserCookie[];
 }
 
 export type MetaCaptureResult =
@@ -70,6 +95,33 @@ export type MetaCaptureResult =
   | "cdp-unreachable"
   | "validation-failed"
   | "not-attempted";
+
+export type MetaRestoreResult = "restored" | "restore-failed" | "no-cookies" | "not-attempted";
+
+/** Browser-jar restore bookkeeping (#10839). Carried in the state
+ * file so the backoff survives keeper restarts; cookie values are
+ * never copied here — counts and timestamps only. */
+export interface MetaRestoreState {
+  /** A restore was attempted in the cycle that wrote this state. */
+  attempted: boolean;
+  /** This cycle's restore outcome ("not-attempted" when none ran). */
+  result: MetaRestoreResult | string | null;
+  /** Consecutive restore attempts in the current dead-session episode. */
+  attempts: number;
+  lastAttemptAt: string | null;
+  /** Backoff gate: no new attempt before this instant. */
+  nextAttemptAt: string | null;
+}
+
+/** After this many restores in one episode without the read path
+ * recovering, the keeper raises the attention alert (the restore is
+ * not reviving the session — a human needs the signal). */
+export const RESTORE_ALERT_AFTER_ATTEMPTS = 3;
+
+/** Exponential restore backoff: 30 min, 2 h, then 6 h flat — a few
+ * attempts a day at most, never a hot loop against CDP. */
+export const restoreBackoffMs = (attempts: number): number =>
+  attempts <= 1 ? 30 * 60 * 1000 : attempts === 2 ? 2 * 3_600_000 : 6 * 3_600_000;
 
 export interface MetaRenewalState {
   provider: "meta";
@@ -80,6 +132,7 @@ export interface MetaRenewalState {
   horizonHours: number | null;
   credential: { present: boolean; capturedAt: string | null };
   capture: { attempted: boolean; result: MetaCaptureResult | string | null };
+  restore: MetaRestoreState;
   notification: { attempted: boolean; result: string | null };
   exporterStatus: string | null;
   lastGoodAt: string | null;
@@ -113,6 +166,9 @@ export interface MetaRenewalDeps {
   validateCredential?: (credential: MetaCredential) => Promise<boolean>;
   /** Injectable for tests; default reads the Helium jar over CDP. */
   getBrowserCookies?: (cdpUrl: string) => Promise<MetaBrowserCookie[]>;
+  /** Injectable for tests; default writes cookies into the Helium
+   * jar over CDP (Storage.setCookies) — the jar restore (#10839). */
+  setBrowserCookies?: (cdpUrl: string, cookies: MetaBrowserCookie[]) => Promise<void>;
   /** Push dispatch on a NEW alert episode; wired by the gatherer to
    * the fleet Web Push channel. Returns an outcome summary string. */
   notifyPush?: (notice: { title: string; body: string }) => Promise<string>;
@@ -147,11 +203,22 @@ const defaultReadCredential = async (credentialPath: string): Promise<MetaCreden
   try {
     const parsed = JSON.parse(await readFile(credentialPath, "utf8")) as Partial<MetaCredential>;
     if (typeof parsed.cookieHeader !== "string" || parsed.cookieHeader.length === 0) return null;
+    const cookies: MetaBrowserCookie[] = Array.isArray(parsed.cookies)
+      ? parsed.cookies.filter(
+          (c): c is MetaBrowserCookie =>
+            typeof c === "object" &&
+            c !== null &&
+            typeof (c as MetaBrowserCookie).name === "string" &&
+            typeof (c as MetaBrowserCookie).value === "string" &&
+            typeof (c as MetaBrowserCookie).domain === "string",
+        )
+      : [];
     return {
       cookieHeader: parsed.cookieHeader,
       capturedAt: typeof parsed.capturedAt === "string" ? parsed.capturedAt : "",
       expiresAt: typeof parsed.expiresAt === "string" ? parsed.expiresAt : null,
       cookieNames: Array.isArray(parsed.cookieNames) ? parsed.cookieNames.filter((n) => typeof n === "string") : [],
+      ...(cookies.length > 0 ? { cookies } : {}),
     };
   } catch {
     return null;
@@ -263,6 +330,27 @@ const defaultGetBrowserCookies = async (cdpUrl: string): Promise<MetaBrowserCook
   }
 };
 
+/** The jar restore (#10839): write cookies back into the Helium jar
+ * over the same CDP session shape capture reads from. A protocol
+ * error answer is a failure, not a silent no-op. */
+const defaultSetBrowserCookies = async (cdpUrl: string, cookies: MetaBrowserCookie[]): Promise<void> => {
+  const { send, close } = await cdpSession(cdpUrl);
+  try {
+    const answer = await send("Storage.setCookies", {
+      cookies: cookies.map((c) => ({
+        name: c.name,
+        value: c.value,
+        domain: c.domain,
+        path: "/",
+        ...(typeof c.expires === "number" && c.expires > 0 ? { expires: c.expires } : {}),
+      })),
+    });
+    if ((answer as { error?: unknown }).error) throw new Error("CDP Storage.setCookies returned an error");
+  } finally {
+    close();
+  }
+};
+
 /** Cookies that authenticate a dev.meta.ai portal request. */
 export function pickMetaCookies(cookies: MetaBrowserCookie[]): MetaBrowserCookie[] {
   return cookies.filter((c) => {
@@ -284,8 +372,60 @@ export function credentialFromCookies(cookies: MetaBrowserCookie[], now: Date): 
     capturedAt: now.toISOString(),
     expiresAt: expiries.length > 0 ? new Date(Math.min(...expiries)).toISOString() : null,
     cookieNames: picked.map((c) => c.name),
+    cookies: picked,
   };
 }
+
+/**
+ * The cookie set a jar restore (#10839) writes back: the captured
+ * cookies verbatim when the credential carries them; for credentials
+ * stored before the cookies field existed, the cookieHeader pairs
+ * re-homed on .meta.ai (a domain cookie there reaches dev.meta.ai)
+ * with the credential's own expiry horizon as their persistence.
+ */
+export function restoreCookiesFromCredential(credential: MetaCredential): MetaBrowserCookie[] {
+  if (Array.isArray(credential.cookies) && credential.cookies.length > 0) {
+    return pickMetaCookies(credential.cookies);
+  }
+  const expiresMs = credential.expiresAt ? Date.parse(credential.expiresAt) : Number.NaN;
+  const expires = Number.isFinite(expiresMs) && expiresMs > 0 ? expiresMs / 1000 : undefined;
+  const out: MetaBrowserCookie[] = [];
+  for (const part of credential.cookieHeader.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq <= 0) continue;
+    const name = part.slice(0, eq).trim();
+    const value = part.slice(eq + 1).trim();
+    if (!name) continue;
+    out.push({ name, value, domain: ".meta.ai", ...(expires !== undefined ? { expires } : {}) });
+  }
+  return out;
+}
+
+const emptyRestore = (): MetaRestoreState => ({
+  attempted: false,
+  result: null,
+  attempts: 0,
+  lastAttemptAt: null,
+  nextAttemptAt: null,
+});
+
+/** Previous state files may predate the restore block (#10839) or
+ * carry a partial one; normalize defensively rather than trusting
+ * the cast. */
+const normalizeRestore = (v: unknown): MetaRestoreState => {
+  if (typeof v !== "object" || v === null) return emptyRestore();
+  const rec = v as Record<string, unknown>;
+  return {
+    attempted: rec.attempted === true,
+    result: typeof rec.result === "string" ? rec.result : null,
+    attempts:
+      typeof rec.attempts === "number" && Number.isFinite(rec.attempts) && rec.attempts > 0
+        ? Math.floor(rec.attempts)
+        : 0,
+    lastAttemptAt: typeof rec.lastAttemptAt === "string" ? rec.lastAttemptAt : null,
+    nextAttemptAt: typeof rec.nextAttemptAt === "string" ? rec.nextAttemptAt : null,
+  };
+};
 
 const horizonHours = (expiresAt: string | null, now: Date): number | null => {
   if (!expiresAt) return null;
@@ -326,15 +466,29 @@ export async function renewMetaSession(deps: MetaRenewalDeps): Promise<MetaRenew
   const writeCredential = deps.writeCredential ?? ((c: MetaCredential) => defaultWriteCredential(credentialPath, c));
   const validateCredential = deps.validateCredential ?? ((c: MetaCredential) => defaultValidateCredential(c, teamId));
   const getBrowserCookies = deps.getBrowserCookies ?? defaultGetBrowserCookies;
+  const setBrowserCookies = deps.setBrowserCookies ?? defaultSetBrowserCookies;
   const log = deps.log ?? (() => undefined);
   const previous = await readPreviousState(deps.statePath);
 
   const doc = await readLatest().catch(() => null);
-  const lastGoodAt =
-    doc?.status === "ok" && doc.measuredAt ? doc.measuredAt : (previous?.lastGoodAt ?? null);
+  const lastGoodAt = doc?.status === "ok" && doc.measuredAt ? doc.measuredAt : (previous?.lastGoodAt ?? null);
+
+  // Jar-restore episode state (#10839): carried across cycles via the
+  // state file. A healthy exporter read closes any open episode; the
+  // per-cycle fields (attempted/result) restart every cycle.
+  let restore: MetaRestoreState = normalizeRestore(previous?.restore);
+  if (doc?.status === "ok") {
+    restore = { attempted: false, result: "not-attempted", attempts: 0, lastAttemptAt: restore.lastAttemptAt, nextAttemptAt: null };
+  } else {
+    restore = { ...restore, attempted: false, result: "not-attempted" };
+  }
+  /** Set by the restore evaluation when this cycle saw positive
+   * evidence the browser session is dead (persistent exporter
+   * session-expired, or a capture that found no live session). */
+  let sessionDeadSignal = false;
 
   const finish = async (
-    partial: Omit<MetaRenewalState, "provider" | "checkedAt" | "alertSince" | "exporterStatus" | "lastGoodAt">,
+    partial: Omit<MetaRenewalState, "provider" | "checkedAt" | "alertSince" | "exporterStatus" | "lastGoodAt" | "restore">,
   ): Promise<MetaRenewalState> => {
     let notification: MetaRenewalState["notification"] = partial.notification;
     const isNewEpisode = Boolean(partial.alert) && !previous?.alert;
@@ -354,11 +508,12 @@ export async function renewMetaSession(deps: MetaRenewalDeps): Promise<MetaRenew
       exporterStatus: doc?.status ?? null,
       lastGoodAt,
       ...partial,
+      restore,
       notification,
     };
     await writeState(deps.statePath, state).catch(() => undefined);
     log(
-      `meta-renewal: status=${state.status} credential=${state.credential.present ? "present" : "absent"} horizonHours=${state.horizonHours ?? "unknown"} capture=${state.capture.result ?? "not-attempted"} push=${state.notification.result ?? "not-attempted"}${state.alert ? ` alert=${state.alert}` : ""}`,
+      `meta-renewal: status=${state.status} credential=${state.credential.present ? "present" : "absent"} horizonHours=${state.horizonHours ?? "unknown"} capture=${state.capture.result ?? "not-attempted"} restore=${state.restore.result ?? "not-attempted"}${state.restore.attempts > 0 ? ` restoreAttempts=${state.restore.attempts}` : ""} push=${state.notification.result ?? "not-attempted"}${state.alert ? ` alert=${state.alert}` : ""}`,
     );
     return state;
   };
@@ -383,10 +538,71 @@ export async function renewMetaSession(deps: MetaRenewalDeps): Promise<MetaRenew
   };
 
   const stored = await readCredential().catch(() => null);
+
+  /**
+   * Jar restore (#10839): when the read path's browser session is
+   * dead but the stored credential still validates, re-seed the jar
+   * from the stored credential — the reverse of capture. Only called
+   * from branches where `stored` validated: restoring a credential
+   * that does not itself validate would loop pointlessly, and that
+   * path raises the attention alert instead. Backoff-gated via the
+   * persisted restore state; every attempt is logged as a restore
+   * event (cookie names only, never values).
+   */
+  const attemptRestoreIfNeeded = async (jarProvenDead: boolean): Promise<void> => {
+    const persistentExpiry = doc?.status === "session-expired" && previous?.exporterStatus === "session-expired";
+    sessionDeadSignal = persistentExpiry || jarProvenDead;
+    if (!sessionDeadSignal || !stored) return;
+    if (restore.nextAttemptAt && now.getTime() < Date.parse(restore.nextAttemptAt)) return;
+    const cookies = restoreCookiesFromCredential(stored);
+    let result: MetaRestoreResult = "restored";
+    if (cookies.length === 0) {
+      result = "no-cookies";
+    } else {
+      try {
+        await setBrowserCookies(cdpUrl, cookies);
+      } catch {
+        result = "restore-failed";
+      }
+    }
+    const attempts = restore.attempts + 1;
+    restore = {
+      attempted: true,
+      result,
+      attempts,
+      lastAttemptAt: now.toISOString(),
+      nextAttemptAt: new Date(now.getTime() + restoreBackoffMs(attempts)).toISOString(),
+    };
+    log(
+      `meta-renewal: browser-jar restore event result=${result} attempt=${attempts} cookies=${cookies.map((c) => c.name).join(",") || "none"} nextAttemptAt=${restore.nextAttemptAt}`,
+    );
+  };
+
+  /** Restores are not reviving the session: escalate to the same
+   * attention surface a dead credential uses. */
+  const restoreStuck = (): boolean => sessionDeadSignal && restore.attempts >= RESTORE_ALERT_AFTER_ATTEMPTS;
+
+  const restoreAlertText = (): string =>
+    `Meta portal quota reads are down: the read path reports session-expired and the keeper has restored the laptop Helium cookie jar from the stored credential ${restore.attempts} times without the session recovering, though the stored credential itself still validates against the portal API. Last-resort fallback: re-login to dev.meta.ai in the laptop Helium profile (Meta emails a login code)${lastGoodAt ? `; last good exporter read ${lastGoodAt}` : ""}.`;
+
   if (stored) {
     const valid = await validateCredential(stored).catch(() => false);
     const horizon = horizonHours(stored.expiresAt, now);
     if (valid && (horizon === null || horizon > lowHorizon)) {
+      // The credential is healthy — but the read path rides the live
+      // browser session, which may be dead anyway (#10839).
+      await attemptRestoreIfNeeded(false);
+      if (restoreStuck()) {
+        return finish({
+          status: "attention",
+          sessionExpiresAt: stored.expiresAt,
+          horizonHours: horizon,
+          credential: { present: true, capturedAt: stored.capturedAt || null },
+          capture: { attempted: false, result: "not-attempted" },
+          notification: { attempted: false, result: null },
+          alert: restoreAlertText(),
+        });
+      }
       return finish({
         status: "valid",
         sessionExpiresAt: stored.expiresAt,
@@ -401,12 +617,40 @@ export async function renewMetaSession(deps: MetaRenewalDeps): Promise<MetaRenew
       // Cadence renewal: still valid, but inside the low horizon —
       // re-capture now instead of expiring between ticks.
       const attempt = await attemptCapture();
-      const active = attempt.credential ?? stored;
+      if (attempt.credential) {
+        return finish({
+          status: "renewed",
+          sessionExpiresAt: attempt.credential.expiresAt,
+          horizonHours: horizonHours(attempt.credential.expiresAt, now),
+          credential: { present: true, capturedAt: attempt.credential.capturedAt },
+          capture: { attempted: true, result: attempt.result },
+          notification: { attempted: false, result: null },
+          alert: null,
+        });
+      }
+      // Capture produced nothing while the stored credential still
+      // validates: a jar with no live session (or only non-session
+      // cookies) is the #10839 shape — restore it from the stored
+      // credential instead of silently riding the stored one.
+      if (attempt.result === "no-browser-session" || attempt.result === "validation-failed") {
+        await attemptRestoreIfNeeded(true);
+        if (restoreStuck()) {
+          return finish({
+            status: "attention",
+            sessionExpiresAt: stored.expiresAt,
+            horizonHours: horizon,
+            credential: { present: true, capturedAt: stored.capturedAt || null },
+            capture: { attempted: true, result: attempt.result },
+            notification: { attempted: false, result: null },
+            alert: restoreAlertText(),
+          });
+        }
+      }
       return finish({
-        status: attempt.credential ? "renewed" : "valid",
-        sessionExpiresAt: active.expiresAt,
-        horizonHours: horizonHours(active.expiresAt, now),
-        credential: { present: true, capturedAt: active.capturedAt || null },
+        status: "valid",
+        sessionExpiresAt: stored.expiresAt,
+        horizonHours: horizon,
+        credential: { present: true, capturedAt: stored.capturedAt || null },
         capture: { attempted: true, result: attempt.result },
         notification: { attempted: false, result: null },
         alert: null,
@@ -433,7 +677,7 @@ export async function renewMetaSession(deps: MetaRenewalDeps): Promise<MetaRenew
       credential: { present: true, capturedAt: stored.capturedAt || null },
       capture: { attempted: true, result: attempt.result },
       notification: { attempted: false, result: null },
-      alert: `Meta provider credential stopped validating and CDP re-capture from the laptop Helium profile did not restore it (capture=${attempt.result}). Last-resort fallback: re-login to dev.meta.ai in the laptop Helium profile (Meta emails a login code). Meta quota reads ride the stored credential and may lapse until then${lastGoodAt ? `; last good exporter read ${lastGoodAt}` : ""}.`,
+      alert: `Meta provider credential stopped validating and CDP re-capture from the laptop Helium profile did not restore it (capture=${attempt.result}). Last-resort fallback: re-login to dev.meta.ai in the laptop Helium profile (Meta emails a login code). Meta quota reads ride the live browser session and lapse until then${lastGoodAt ? `; last good exporter read ${lastGoodAt}` : ""}.`,
     });
   }
 

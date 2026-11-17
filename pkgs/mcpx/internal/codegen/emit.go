@@ -119,14 +119,6 @@ func toolDecl(t Tool, indent string) string {
 	return b.String()
 }
 
-// Module renders the importable client module for the TypeScript target
-// (the TypeScript entry in the Language table, language.go). Scripts do:
-//
-//	import { fff, chrome_devtools } from "./.mcpx/client.ts";
-//
-// or use the default `tools` object. The module is written to disk, so the
-// JavaScript runtime's own module cache applies and startup stays at tens of
-// milliseconds.
 // RecipeMeta is one saved script (a recipe), as search() surfaces it
 // beside tools (CODE-36): the script's name, its summary as the
 // description, and its placeholder names. The daemon renders the
@@ -138,6 +130,14 @@ type RecipeMeta struct {
 	Required    []string
 }
 
+// Module renders the importable client module for the TypeScript target
+// (the TypeScript entry in the Language table, language.go). Scripts do:
+//
+//	import { fff, chrome_devtools } from "./.mcpx/client.ts";
+//
+// or use the default `tools` object. The module is written to disk, so the
+// JavaScript runtime's own module cache applies and startup stays at tens of
+// milliseconds.
 // Module renders the client with no saved scripts in search().
 func Module(nss []Namespace, endpoint, session string) string {
 	return ModuleWithRecipes(nss, endpoint, session, nil)

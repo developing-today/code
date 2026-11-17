@@ -15,15 +15,24 @@
 //!   membership table, never the blob store.
 //! - **Fails closed.** A request from a connection with no known `EndpointId` is refused, and so
 //!   is one whose verdict cannot be delivered.
+//! - **Local reads are the operator's.** The node's own key and its data directory's client
+//!   key — the two keys `build_access_policy` already trusts automatically for writes — may
+//!   fetch and observe any blob in the node's own store (see [`decide_with_local`]). The
+//!   local CLI and REPL connect with the client key, and locally published content
+//!   (documents with no group, plain uploads) is referenced by no world; without this the
+//!   gate would lock the operator out of their own store. Local trust extends to no other
+//!   peer: a remote requester still needs world membership for every hash.
 //!
-//! The reference index and the membership query are behind [`WorldAccess`]. The facade's
-//! `blob_gate::FoldedWorlds` answers membership from the folded worlds. Its reference index
-//! has no producer yet, so
-//! [`blob_events`] is not wired into `id serve`.
+//! The reference index and the membership query are behind [`WorldAccess`]. [`FoldedWorlds`]
+//! answers membership from the folded worlds. The index has a producer now:
+//! [`build_reference_index`] over the event store's document references (see
+//! `EventStore::document_references`), with [`fold_group_events`] folding the group log for
+//! membership, and [`RefreshingWorlds`] swapping fresh folds in as they change. `id serve`
+//! wires [`blob_events`] with those pieces whenever it has the node's event store open.
 
 use std::{
     collections::{BTreeSet, HashMap},
-    sync::Arc,
+    sync::{Arc, RwLock},
 };
 
 use iroh_base::EndpointId;
@@ -142,6 +151,24 @@ pub fn decide_with_blocks(
     })
 }
 
+/// Whether `requester` may make `request` for `hash`, counting local trust.
+///
+/// A requester in `local_readers` — the node's own key and its data directory's client
+/// key, the keys the write policy trusts automatically — may fetch or observe any blob
+/// in its own store, referenced or not: that is how the local CLI and REPL keep working
+/// when the gate is on, including for locally published content no world references.
+/// Everyone else is decided by [`decide`], unchanged.
+pub fn decide_with_local(
+    access: &impl WorldAccess,
+    policy: &BlobPolicy,
+    local_readers: &BTreeSet<EndpointId>,
+    requester: &EndpointId,
+    hash: &Hash,
+    request: Request,
+) -> bool {
+    local_readers.contains(requester) || decide(access, policy, requester, hash, request)
+}
+
 /// The verdict for a request from `peer`: allowed only when the peer is known and `allow`
 /// says so. An unknown peer is refused.
 fn admit(
@@ -156,9 +183,10 @@ fn admit(
 
 /// Build the [`EventSender`] that a provider passes to `BlobsProtocol::new`.
 ///
-/// Fetch, `get_many` and observe are decided by [`decide`] over `access`. Pushes are decided by
-/// `writes`, as in [`id_core::access::blobs_events`]. Every request is intercepted, so no store
-/// read happens before the verdict.
+/// Fetch, `get_many` and observe are decided by [`decide_with_local`] over `access` and
+/// `local_readers`. Pushes are decided by `writes`, as in
+/// [`id_core::access::blobs_events`]. Every request is intercepted, so no store read
+/// happens before the verdict.
 ///
 /// A background task is spawned on the current Tokio runtime and ends when the sender is
 /// dropped.
@@ -166,8 +194,36 @@ pub fn blob_events<A: WorldAccess>(
     access: Arc<A>,
     policy: BlobPolicy,
     writes: AccessPolicy,
+    local_readers: BTreeSet<EndpointId>,
 ) -> EventSender {
-    blob_events_with_blocks(access, policy, writes, None)
+    blob_events_with_blocks(access, policy, writes, None, local_readers)
+}
+
+/// The serving verdict with every rule composed: an operator block
+/// (a definite `Blocked` lookup) refuses everyone, local readers
+/// included; a local reader not blocked is admitted for any hash;
+/// everyone else is decided by [`decide_with_blocks`].
+fn decide_gated<A: WorldAccess>(
+    access: &A,
+    policy: &BlobPolicy,
+    blocks: Option<&dyn BlockList>,
+    local_readers: &BTreeSet<EndpointId>,
+    requester: &EndpointId,
+    hash: &Hash,
+    request: Request,
+) -> bool {
+    if let Some(blocks) = blocks {
+        if matches!(
+            blocks.peer_lookup(requester.as_bytes()),
+            BlockLookup::Blocked
+        ) {
+            return false;
+        }
+    }
+    if local_readers.contains(requester) {
+        return true;
+    }
+    decide_with_blocks(access, policy, blocks, requester, hash, request)
 }
 
 /// [`blob_events`], with the operator block list composed into every
@@ -181,6 +237,7 @@ pub fn blob_events_with_blocks<A: WorldAccess>(
     policy: BlobPolicy,
     writes: AccessPolicy,
     blocks: Option<Arc<dyn BlockList>>,
+    local_readers: BTreeSet<EndpointId>,
 ) -> EventSender {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<ProviderMessage>(64);
     let mask = EventMask {
@@ -205,10 +262,11 @@ pub fn blob_events_with_blocks<A: WorldAccess>(
                 }
                 ProviderMessage::GetRequestReceived(m) => {
                     let verdict = admit(peers.get(&m.connection_id), |id| {
-                        decide_with_blocks(
+                        decide_gated(
                             &*access,
                             &policy,
                             blocks.as_deref(),
+                            &local_readers,
                             id,
                             &m.request.hash,
                             Request::Fetch,
@@ -219,10 +277,11 @@ pub fn blob_events_with_blocks<A: WorldAccess>(
                 ProviderMessage::GetManyRequestReceived(m) => {
                     let verdict = admit(peers.get(&m.connection_id), |id| {
                         m.request.hashes.iter().all(|hash| {
-                            decide_with_blocks(
+                            decide_gated(
                                 &*access,
                                 &policy,
                                 blocks.as_deref(),
+                                &local_readers,
                                 id,
                                 hash,
                                 Request::Fetch,
@@ -233,10 +292,11 @@ pub fn blob_events_with_blocks<A: WorldAccess>(
                 }
                 ProviderMessage::ObserveRequestReceived(m) => {
                     let verdict = admit(peers.get(&m.connection_id), |id| {
-                        decide_with_blocks(
+                        decide_gated(
                             &*access,
                             &policy,
                             blocks.as_deref(),
+                            &local_readers,
                             id,
                             &m.request.hash,
                             Request::Observe,
@@ -336,6 +396,43 @@ mod tests {
             members: vec![("docs".to_owned(), member)],
             refs: vec![(hash, "docs".to_owned())],
         }
+    }
+
+    #[test]
+    #[test]
+    fn a_local_reader_fetches_an_unreferenced_blob_but_a_stranger_cannot() {
+        // No world references blob(9) and nobody is a member of anything: the
+        // membership rule alone refuses everyone, which is the lockout the local
+        // trust exists to prevent for the operator's own keys.
+        let t = Table::default();
+        let p = BlobPolicy::default();
+        let local = BTreeSet::from([id(7)]);
+        assert!(decide_with_local(
+            &t,
+            &p,
+            &local,
+            &id(7),
+            &blob(9),
+            Request::Fetch
+        ));
+        assert!(!decide_with_local(
+            &t,
+            &p,
+            &local,
+            &id(8),
+            &blob(9),
+            Request::Fetch
+        ));
+        // Local trust also covers observe of the operator's own store, even
+        // when the server policy leaves observe off for worlds.
+        assert!(decide_with_local(
+            &t,
+            &p,
+            &local,
+            &id(7),
+            &blob(9),
+            Request::Observe
+        ));
     }
 
     #[test]
@@ -498,5 +595,26 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod producer_tests {
+    use std::collections::{BTreeMap, HashMap};
+
+    use iroh_base::SecretKey;
+    use p2panda_core::Hash as PandaHash;
+
+    use super::*;
+    use crate::groups::policy::Policy;
+    use crate::groups::{Body, Create, Event, MemberOp, Template};
+
+    fn id(n: u8) -> EndpointId {
+        SecretKey::from_bytes(&[n; 32]).public()
+    }
+
+    fn blob(n: u8) -> Hash {
+        Hash::from_bytes([n; 32])
     }
 }

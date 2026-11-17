@@ -12,17 +12,17 @@ additional `subagents_wait` loop was used. A local isolated Python inspection re
 the two design files and parsed their JSON manifests, checking the following
 shared contracts were explicitly present:
 
-| Cross-part contract | Bounded result |
-|---|---|
-| Immutable origin query and separately signed relay grant | Present in B |
-| Same admission gate for local producers and remote peers | Present in B |
-| Cached responses reauthorize; expired origin queries cannot rerun | Present in B, but old test wording also contradicted it; precise repair requested |
-| Payload/envelope identity and legacy signature bytes remain distinct | Present in B and C |
-| #9083 tenancy and #9084 lifecycle ownership preserved | Present in B and C |
-| GC uses physical generations and an atomic owner fence, or remains disabled | Present in C |
-| Cache source/policy watermarks and explicit bypass | Present in C |
-| Snowflake Arctic model, owner-undecided second embedder | Present in C |
-| Independently retained/transported derived pages require service signatures | Present in C |
+| Cross-part contract                                                         | Bounded result                                                                    |
+| --------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Immutable origin query and separately signed relay grant                    | Present in B                                                                      |
+| Same admission gate for local producers and remote peers                    | Present in B                                                                      |
+| Cached responses reauthorize; expired origin queries cannot rerun           | Present in B, but old test wording also contradicted it; precise repair requested |
+| Payload/envelope identity and legacy signature bytes remain distinct        | Present in B and C                                                                |
+| #9083 tenancy and #9084 lifecycle ownership preserved                       | Present in B and C                                                                |
+| GC uses physical generations and an atomic owner fence, or remains disabled | Present in C                                                                      |
+| Cache source/policy watermarks and explicit bypass                          | Present in C                                                                      |
+| Snowflake Arctic model, owner-undecided second embedder                     | Present in C                                                                      |
+| Independently retained/transported derived pages require service signatures | Present in C                                                                      |
 
 Manifest references were expanded as ranges, not compared as literal strings.
 The inspected C manifest covered all 36 S2/S6 statements. The inspected B

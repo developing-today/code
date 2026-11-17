@@ -1586,7 +1586,7 @@ Link both documents, the Queue Table Improvements design, relevant PRs, and supp
 **Modality:** requirement
 **Design targets:** components/9199-distributed-priority.md # Priority model, urgency, importance, effective pressure; components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, command grammar and event routing
 
-Set intrinsic urgency 450 (High) and Do Now as a *separate one-shot dispatch directive*
+Set intrinsic urgency 450 (High) and Do Now as a _separate one-shot dispatch directive_
 
 ## C-033 — 02_charter_v1_1.md:27
 
@@ -2418,7 +2418,7 @@ P(i) = weight_i / sum_j weight_j
 **Modality:** requirement
 **Design targets:** components/9199-distributed-priority.md # Priority model, urgency, importance, effective pressure
 
-r = 1.25  (relative preference per d urgency points)
+r = 1.25 (relative preference per d urgency points)
 
 ## C-137 — 02_charter_v1_1.md:98
 
@@ -2426,7 +2426,7 @@ r = 1.25  (relative preference per d urgency points)
 **Modality:** requirement
 **Design targets:** components/9198-requirement-crosswalk-current-state-census.md # Cross-cutting requirements, evidence and acceptance
 
-d = 200   (point distance)
+d = 200 (point distance)
 
 ## C-138 — 02_charter_v1_1.md:99
 
@@ -3661,7 +3661,7 @@ Discover
 **Design targets:** components/9199-distributed-priority.md # Priority model, urgency, importance, effective pressure
 
 ↓
-    Evaluate / Rank
+Evaluate / Rank
 
 ## P-039 — 03_full_orchestration_proposal.md:53
 
@@ -3670,7 +3670,7 @@ Discover
 **Design targets:** components/9204-queue-selection-bounded-exploration.md # Queue selection and bounded exploration
 
 ↓
-    Claim
+Claim
 
 ## P-040 — 03_full_orchestration_proposal.md:55
 
@@ -3679,7 +3679,7 @@ Discover
 **Design targets:** components/9207-context-hydration-incremental-activity.md # Hydration bundle and incremental activity
 
 ↓
-    Hydrate Context
+Hydrate Context
 
 ## P-041 — 03_full_orchestration_proposal.md:57
 
@@ -3688,7 +3688,7 @@ Discover
 **Design targets:** components/9198-requirement-crosswalk-current-state-census.md # Cross-cutting requirements, evidence and acceptance
 
 ↓
-    Investigate
+Investigate
 
 ## P-042 — 03_full_orchestration_proposal.md:59
 
@@ -3697,7 +3697,7 @@ Discover
 **Design targets:** components/9198-requirement-crosswalk-current-state-census.md # Cross-cutting requirements, evidence and acceptance
 
 ↓
-    Execute
+Execute
 
 ## P-043 — 03_full_orchestration_proposal.md:61
 
@@ -3706,7 +3706,7 @@ Discover
 **Design targets:** components/9198-requirement-crosswalk-current-state-census.md # Cross-cutting requirements, evidence and acceptance
 
 ↓
-    Record Progress
+Record Progress
 
 ## P-044 — 03_full_orchestration_proposal.md:63
 
@@ -3715,7 +3715,7 @@ Discover
 **Design targets:** components/9200-priority-distribution.md # Producers, consumers, precedence, provenance and reconciliation
 
 ↓
-    Reconcile Changes
+Reconcile Changes
 
 ## P-045 — 03_full_orchestration_proposal.md:65
 
@@ -3724,7 +3724,7 @@ Discover
 **Design targets:** components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and Fleet command surface
 
 ↓
-    Complete / Merge / Close
+Complete / Merge / Close
 
 ## P-046 — 03_full_orchestration_proposal.md:68
 
@@ -10557,7 +10557,7 @@ available
 **Design targets:** components/9198-requirement-crosswalk-current-state-census.md # Cross-cutting requirements, evidence and acceptance
 
 |
-       v
+v
 
 ## P-900 — 03_full_orchestration_proposal.md:1245
 
@@ -10574,7 +10574,7 @@ claimed
 **Design targets:** components/9198-requirement-crosswalk-current-state-census.md # Cross-cutting requirements, evidence and acceptance
 
 |
-       v
+v
 
 ## P-902 — 03_full_orchestration_proposal.md:1248
 
@@ -10598,7 +10598,7 @@ in_progress
 **Modality:** requirement
 **Design targets:** components/9206-work-item-lifecycle-fleet-subcommands.md # Lifecycle and Fleet command surface
 
-|  +------> parked
+| +------> parked
 
 ## P-905 — 03_full_orchestration_proposal.md:1251
 
@@ -10606,7 +10606,7 @@ in_progress
 **Modality:** requirement
 **Design targets:** components/9198-requirement-crosswalk-current-state-census.md # Cross-cutting requirements, evidence and acceptance
 
-|             |
+| |
 
 ## P-906 — 03_full_orchestration_proposal.md:1252
 
@@ -10614,7 +10614,7 @@ in_progress
 **Modality:** requirement
 **Design targets:** components/9198-requirement-crosswalk-current-state-census.md # Cross-cutting requirements, evidence and acceptance
 
-|             v
+| v
 
 ## P-907 — 03_full_orchestration_proposal.md:1253
 
@@ -10622,7 +10622,7 @@ in_progress
 **Modality:** requirement
 **Design targets:** components/9198-requirement-crosswalk-current-state-census.md # Cross-cutting requirements, evidence and acceptance
 
-|          available
+| available
 
 ## P-908 — 03_full_orchestration_proposal.md:1254
 
@@ -10631,7 +10631,7 @@ in_progress
 **Design targets:** components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes, journal and field authority
 
 |
-       +---------> blocked
++---------> blocked
 
 ## P-909 — 03_full_orchestration_proposal.md:1256
 
@@ -10639,7 +10639,7 @@ in_progress
 **Modality:** requirement
 **Design targets:** components/9198-requirement-crosswalk-current-state-census.md # Cross-cutting requirements, evidence and acceptance
 
-|             |
+| |
 
 ## P-910 — 03_full_orchestration_proposal.md:1257
 
@@ -10647,7 +10647,7 @@ in_progress
 **Modality:** requirement
 **Design targets:** components/9198-requirement-crosswalk-current-state-census.md # Cross-cutting requirements, evidence and acceptance
 
-|             v
+| v
 
 ## P-911 — 03_full_orchestration_proposal.md:1258
 
@@ -10655,7 +10655,7 @@ in_progress
 **Modality:** requirement
 **Design targets:** components/9198-requirement-crosswalk-current-state-census.md # Cross-cutting requirements, evidence and acceptance
 
-|          available / in_progress
+| available / in_progress
 
 ## P-912 — 03_full_orchestration_proposal.md:1259
 
@@ -10664,7 +10664,7 @@ in_progress
 **Design targets:** components/9198-requirement-crosswalk-current-state-census.md # Cross-cutting requirements, evidence and acceptance
 
 |
-       v
+v
 
 ## P-913 — 03_full_orchestration_proposal.md:1261
 
@@ -10681,7 +10681,7 @@ completing
 **Design targets:** components/9198-requirement-crosswalk-current-state-census.md # Cross-cutting requirements, evidence and acceptance
 
 |
-       v
+v
 
 ## P-915 — 03_full_orchestration_proposal.md:1264
 
@@ -14882,7 +14882,7 @@ Agent merges PR
 **Design targets:** components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, command grammar and event routing
 
 ↓
-    GitHub emits webhook
+GitHub emits webhook
 
 ## P-1440 — 03_full_orchestration_proposal.md:2001
 
@@ -14891,7 +14891,7 @@ Agent merges PR
 **Design targets:** components/9203-direct-dispatch-slash-commands-event-routing.md # Dispatch, command grammar and event routing
 
 ↓
-    Webhook worker processes event
+Webhook worker processes event
 
 ## P-1441 — 03_full_orchestration_proposal.md:2003
 
@@ -14900,7 +14900,7 @@ Agent merges PR
 **Design targets:** components/9204-queue-selection-bounded-exploration.md # Queue selection and bounded exploration
 
 ↓
-    Queue sweeper eventually updates work item
+Queue sweeper eventually updates work item
 
 ## P-1442 — 03_full_orchestration_proposal.md:2006
 
@@ -14941,7 +14941,7 @@ Agent requests Fleet completion
 **Design targets:** components/9198-requirement-crosswalk-current-state-census.md # Cross-cutting requirements, evidence and acceptance
 
 ↓
-    Fleet validates work
+Fleet validates work
 
 ## P-1447 — 03_full_orchestration_proposal.md:2015
 
@@ -14950,7 +14950,7 @@ Agent requests Fleet completion
 **Design targets:** components/9198-requirement-crosswalk-current-state-census.md # Cross-cutting requirements, evidence and acceptance
 
 ↓
-    Fleet merges PR
+Fleet merges PR
 
 ## P-1448 — 03_full_orchestration_proposal.md:2017
 
@@ -14959,7 +14959,7 @@ Agent requests Fleet completion
 **Design targets:** components/9198-requirement-crosswalk-current-state-census.md # Cross-cutting requirements, evidence and acceptance
 
 ↓
-    Fleet verifies merge
+Fleet verifies merge
 
 ## P-1449 — 03_full_orchestration_proposal.md:2019
 
@@ -14968,7 +14968,7 @@ Agent requests Fleet completion
 **Design targets:** components/9198-requirement-crosswalk-current-state-census.md # Cross-cutting requirements, evidence and acceptance
 
 ↓
-    Fleet closes linked issue
+Fleet closes linked issue
 
 ## P-1450 — 03_full_orchestration_proposal.md:2021
 
@@ -14977,7 +14977,7 @@ Agent requests Fleet completion
 **Design targets:** components/9198-requirement-crosswalk-current-state-census.md # Cross-cutting requirements, evidence and acceptance
 
 ↓
-    Fleet verifies closure
+Fleet verifies closure
 
 ## P-1451 — 03_full_orchestration_proposal.md:2023
 
@@ -14986,7 +14986,7 @@ Agent requests Fleet completion
 **Design targets:** components/9204-queue-selection-bounded-exploration.md # Queue selection and bounded exploration
 
 ↓
-    Fleet closes queue item directly
+Fleet closes queue item directly
 
 ## P-1452 — 03_full_orchestration_proposal.md:2025
 
@@ -14995,7 +14995,7 @@ Agent requests Fleet completion
 **Design targets:** components/9209-leases-fencing-outbox-direct-completion.md # Leases, outbox and direct verified completion
 
 ↓
-    Fleet records completion
+Fleet records completion
 
 ## P-1453 — 03_full_orchestration_proposal.md:2027
 
@@ -15004,7 +15004,7 @@ Agent requests Fleet completion
 **Design targets:** components/9198-requirement-crosswalk-current-state-census.md # Cross-cutting requirements, evidence and acceptance
 
 ↓
-    Agent receives confirmed result
+Agent receives confirmed result
 
 ## P-1454 — 03_full_orchestration_proposal.md:2030
 
@@ -27430,7 +27430,7 @@ Recommendation: No
 **Modality:** requirement
 **Design targets:** components/9204-queue-selection-bounded-exploration.md # Queue selection and bounded exploration; components/9208-typed-dependencies-notes-journal-field-authority.md # Dependencies, notes, journal and field authority
 
-It bypasses ordinary *selection delay*, not ownership, authorization, lease, deduplication, or dependency protections
+It bypasses ordinary _selection delay_, not ownership, authorization, lease, deduplication, or dependency protections
 
 ## O-1231 — 04_recovered_original_combined_design.md:13
 
@@ -28608,3 +28608,4 @@ and for the filters we only have priority right now but plan we'll 
 **Design targets:** components/9204-queue-selection-bounded-exploration.md # Queue selection and bounded exploration
 
 make all the numbers configurable and build tooling so as little as possible has to be manually done by agent, idk bake it into fleet queue here's beginning design for that:
+```

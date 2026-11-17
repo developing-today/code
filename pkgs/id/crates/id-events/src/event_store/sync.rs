@@ -944,6 +944,7 @@ mod tests {
                 checkpoint: None,
                 rotation: None,
                 chat: None,
+                anchor: None,
             };
             events.push(chain::sign(&key, seq, backlink, Some(body), ext).unwrap());
         }
@@ -1231,6 +1232,7 @@ mod tests {
                 checkpoint: None,
                 rotation: None,
                 chat: None,
+                anchor: None,
             },
         )
         .unwrap();
@@ -1278,6 +1280,7 @@ mod tests {
                 checkpoint: None,
                 rotation: None,
                 chat: None,
+                anchor: None,
             },
         )
         .unwrap();
@@ -1330,6 +1333,7 @@ mod tests {
                 checkpoint: None,
                 rotation: None,
                 chat: None,
+                anchor: None,
             },
         )
         .unwrap();
@@ -1395,6 +1399,7 @@ mod tests {
                 checkpoint: None,
                 rotation: None,
                 chat: None,
+                anchor: None,
             }
         }
         // The group create, by A, listing A, B and C as managers. The group is

@@ -46,6 +46,7 @@ func TestMain(m *testing.M) {
 			os.Exit(0)
 		}
 	}
+	mcpclient.EnableSupervisorOwnerWatch()
 	os.Exit(m.Run())
 }
 

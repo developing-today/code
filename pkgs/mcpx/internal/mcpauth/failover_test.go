@@ -188,7 +188,7 @@ func TestMintInstallationToken(t *testing.T) {
 		gotPath = req.URL.Path
 		gotJWT = strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer ")
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"token":"installation-token-xyz","expires_at":"2030-01-01T00:00:00Z"}`)
+		_, _ = fmt.Fprint(w, `{"token":"installation-token-xyz","expires_at":"2030-01-01T00:00:00Z"}`)
 	}))
 	defer srv.Close()
 
@@ -241,7 +241,7 @@ func TestAppIdentityMintsAndCaches(t *testing.T) {
 	mints := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		mints++
-		fmt.Fprint(w, `{"token":"minted-1","expires_at":"2999-01-01T00:00:00Z"}`)
+		_, _ = fmt.Fprint(w, `{"token":"minted-1","expires_at":"2999-01-01T00:00:00Z"}`)
 	}))
 	defer srv.Close()
 

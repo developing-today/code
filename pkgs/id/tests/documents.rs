@@ -111,6 +111,7 @@ fn document_ext(doc: &DocumentRef, after: Vec<Hash>) -> ChainExt {
         checkpoint: None,
         rotation: None,
         chat: None,
+        anchor: None,
     }
 }
 
@@ -131,6 +132,7 @@ fn tag_ext(op: TagOp, after: Vec<Hash>) -> ChainExt {
         checkpoint: None,
         rotation: None,
         chat: None,
+        anchor: None,
     }
 }
 
@@ -188,6 +190,7 @@ async fn provider(store: &Store, graph: Graph) -> (Router, EndpointAddr) {
         Arc::new(graph),
         BlobPolicy::default(),
         AccessPolicy::restricted([]),
+        std::collections::BTreeSet::new(),
     );
     let router = Router::builder(endpoint)
         .accept(iroh_blobs::ALPN, BlobsProtocol::new(store, Some(events)))
@@ -386,10 +389,12 @@ fn test_a_document_event_that_does_not_fit_its_kind_is_not_signed() {
         checkpoint: None,
         rotation: None,
         chat: None,
+        anchor: None,
     };
     assert!(sign(&key, 0, None, None, missing).is_err());
     let with_tag = ChainExt {
         tag: Some(set(Hash::digest(b"doc"), "kind", "memo")),
+        anchor: None,
         ..document_ext(&doc, vec![])
     };
     assert!(sign(&key, 0, None, None, with_tag).is_err());

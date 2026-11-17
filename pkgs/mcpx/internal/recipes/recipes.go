@@ -392,10 +392,6 @@ func scanCode(src string) []bool {
 	return code
 }
 
-// refs finds every `@name` in the body, ignoring declarations, comments and
-// anything inside a string.
-func refs(src string) []string { return refsFor(src, langJS) }
-
 // refsFor is refs with the code mask of the body's own language: a
 // Python or shell comment is not JavaScript, and an `@name` inside one
 // ('# Contact @alice') is text, not a placeholder -- while Parse used
@@ -587,14 +583,6 @@ func (r Recipe) Render(values map[string]any) (string, error) {
 	return strings.TrimRight(b.String(), "\n") + "\n", nil
 }
 
-// substitute replaces `@name` placeholders on one line. code is the
-// scanCode mask for exactly this line's bytes: an `@name` outside code
-// position (in a comment or a string) is copied through untouched, so a
-// filled value is never spliced into a literal.
-func substitute(line string, code []bool, lits map[string]string) string {
-	return substituteFor(line, code, lits, langJS)
-}
-
 // substituteFor is substitute in the body's language: a Python
 // decorator (an `@name` as the first thing on its line, at a statement
 // boundary) is language syntax, never a placeholder, so it is copied
@@ -629,10 +617,6 @@ func substituteFor(line string, code []bool, lits map[string]string, lang string
 	}
 	return b.String()
 }
-
-// literal renders one value as a JavaScript literal; literalFor is
-// the language-aware form Render uses.
-func literal(p Placeholder, v any) (string, error) { return literalFor(langJS, p, v) }
 
 func literalFor(lang string, p Placeholder, v any) (string, error) {
 	switch p.Type {

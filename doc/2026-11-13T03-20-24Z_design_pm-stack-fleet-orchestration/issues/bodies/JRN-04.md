@@ -35,7 +35,6 @@ Domain-starter parent references are never emitted as hard native blockers. Sour
 
 Source-local candidate aliases normalized for this packet: DEP-01 → CEN-04.
 
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -83,8 +82,6 @@ Negative coverage: reopen/alter #3424/#8579 research ownership, equate matching 
 **First failing oracle:** `pmo_history_replay_evidence_matrix_distinguishes_observation_from_authority` checks every record source is classified as authoritative mutation, observation, telemetry, projection or unknown, and every replay claim has primary-source support.
 **Done command:** `python3 -I -c 'from pathlib import Path; s=Path("doc/2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration/research/full-history-replay-retention.md").read_text(); assert all(x in s for x in ("retention", "replay", "telemetry", "unknown", "alternatives", "prior art"))'`.
 **Acceptance:** use Track A/B prior-art receipts and historical issue/doc sources; record source pointer, accessible surfaces, limits, retention/redaction and rollback implications, migration evidence requirements and alternatives including no full replay. Never infer immutable domain-journal semantics from an `events` table name. **Negative:** reopen/alter #3424/#8579 research ownership, equate matching schema shapes, invent unbounded retention, or claim deployment. **Rollback:** research only.
-
-
 
 ## Merged source-key/facade acceptance
 

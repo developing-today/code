@@ -64,6 +64,7 @@ use redb::{
 
 use id_store::chain::{self, Event};
 
+mod anchors;
 mod chat;
 mod claims;
 mod documents;
@@ -235,6 +236,14 @@ const APPLIED: TableDefinition<'static, &'static [u8], &'static [u8]> =
 /// event whose body never arrived, has no row.
 const BODIES: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("bodies");
+
+/// The persisted tag fold (#183): one row holding the folded claims of
+/// [`EventStore::tag_claims`] and the fingerprint of the fold's inputs they were
+/// folded from. Written by the claims path itself when it rebuilds the fold;
+/// a store created before the table existed gains it on the first rebuild, so
+/// no format change is needed.
+const TAG_FOLD: TableDefinition<'static, &'static [u8], &'static [u8]> =
+    TableDefinition::new("tag_fold");
 
 /// Bytes in a position key: the author, then the sequence number.
 const POSITION_LEN: usize = 40;
@@ -1235,6 +1244,7 @@ fn initialize(db: &Database) -> Result<(), StoreError> {
     txn.open_table(ACTIONS)?;
     txn.open_table(APPLIED)?;
     txn.open_table(BODIES)?;
+    txn.open_table(TAG_FOLD)?;
     txn.open_table(BLOCKS)?;
     let mut meta = txn.open_table(META)?;
     meta.insert(FORMAT_KEY, FORMAT)?;
@@ -1514,6 +1524,7 @@ mod tests {
             checkpoint: None,
             rotation: None,
             chat: None,
+            anchor: None,
         }
     }
 

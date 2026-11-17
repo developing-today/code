@@ -36,9 +36,6 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9198→CEN-04.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -81,9 +78,9 @@ Negative coverage: pointer before manifest durability, concurrent publishers.
 
 **Tier:** crucial. **Goal:** stage artifacts/manifest and atomically update current pointer only after validation. **Owns:** `src/work/context.rs` publisher and crash-cut tests; `src/turso_queue.rs` only if existing storage owner persists pointer. **Hard blockers:** HYD-01/02 and #9198 artifact-store/transaction proof. **First failing oracle:** `pmo_hyd_publish_crash_never_points_to_partial_generation` injects failure before/after manifest and pointer swap plus competing CAS. **Done command:** verify test is listed with `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker -- --list`, then run `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_hyd_publish_crash_never_points_to_partial_generation`. **Acceptance:** old generation stays current on failure; no partial current pointer; immutable generations; orphan behavior deterministic. **Negative:** pointer before manifest durability, concurrent publishers. **Migration/rollback:** legacy/none pointer default; rollback pointer only, retain objects until approved GC. Implementation/deployment/live-store evidence separate.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `DEP-03` — `shared-file:pkgs/fleet/crates/fleet-queue/src/turso_queue.rs`
 - blocked by `HYD-02` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/context.rs`

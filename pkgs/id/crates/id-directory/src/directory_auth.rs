@@ -21,9 +21,30 @@ use id_core::hex::hex_encode;
 
 /// How long a session lasts after it is opened.
 pub const SESSION_TTL_MS: u64 = 12 * 60 * 60 * 1000;
+/// Hard cap on live sessions across every principal (#10643). Sessions are
+/// minted for any resolved account or admin viewer and live for
+/// [`SESSION_TTL_MS`], so without a bound one caller could grow the map
+/// without limit (memory exhaustion, and a longer whole-map sweep on every
+/// open). Keeping the map under this cap makes the expired-entry sweep cost
+/// O(cap), a constant.
+const SESSION_LIMIT: usize = 4096;
+/// Hard cap on live sessions held by one principal (#10643): a sixteenth of
+/// [`SESSION_LIMIT`], so a single account can never starve the others out of
+/// the map — at least sixteen principals can hold their full allowance at
+/// the same time. A principal's allowance refills as its sessions expire.
+const SESSION_PER_PRINCIPAL: usize = SESSION_LIMIT / 16;
 const CODE_TTL_MS: u64 = 15 * 60 * 1000;
 const CODE_RESEND_MS: u64 = 60 * 1000;
 const CODE_ATTEMPTS: u32 = 5;
+/// Hard cap on pending email codes across every address (#5749). The map
+/// can never grow past this, so issuance cost — the expired-entry sweep
+/// plus the per-account count below — stays bounded no matter how many
+/// distinct addresses are asked about.
+const CODE_PENDING_LIMIT: usize = 4096;
+/// Hard cap on pending email codes held for one account (#5749), far
+/// below the global cap, so one account cannot consume the whole
+/// capacity and starve unrelated accounts of codes.
+const CODE_PENDING_PER_ACCOUNT: usize = 16;
 /// How far a signed request's timestamp may be from the server's clock.
 pub const SIGNED_WINDOW_MS: u64 = 5 * 60 * 1000;
 const SIGNED_NONCE_LIMIT: usize = 4096;
@@ -74,6 +95,13 @@ pub enum PurposeKind {
 }
 
 impl Purpose {
+    /// The account a code was issued for, whichever purpose it serves.
+    fn account(&self) -> &str {
+        match self {
+            Purpose::Confirm { account } | Purpose::SignIn { account } => account,
+        }
+    }
+
     fn kind(&self) -> PurposeKind {
         match self {
             Self::Confirm { .. } => PurposeKind::Confirm,
@@ -142,8 +170,39 @@ pub struct DirectoryAuth {
 
 impl DirectoryAuth {
     /// Open a session for a principal and return its token, shown once.
-    pub fn open_session(&mut self, principal: Principal, now: u64) -> String {
+    ///
+    /// Expired sessions are swept first, so expiry always frees capacity.
+    /// The map is hard-bounded (#10643): at most [`SESSION_LIMIT`] live
+    /// sessions in total and [`SESSION_PER_PRINCIPAL`] per principal, so
+    /// the sweep's whole-map scan costs O(cap) however many sessions have
+    /// been opened. A live session is never evicted to make room, so a
+    /// refusal is deterministic: the caller waits for expiry or closes a
+    /// session it no longer uses.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Refusal::RateLimited`] if the requesting principal or
+    /// the world as a whole is at its cap.
+    pub fn open_session(&mut self, principal: Principal, now: u64) -> Result<String> {
         self.sessions.retain(|_, record| record.expires_at > now);
+        let held = self
+            .sessions
+            .values()
+            .filter(|record| record.principal == principal)
+            .count();
+        if held >= SESSION_PER_PRINCIPAL {
+            return Err(Refusal::RateLimited(
+                "too many sessions are open for this account; sign out or try again later"
+                    .to_owned(),
+            )
+            .into());
+        }
+        if self.sessions.len() >= SESSION_LIMIT {
+            return Err(Refusal::RateLimited(
+                "too many sessions are open; try again shortly".to_owned(),
+            )
+            .into());
+        }
         let mut secret = [0_u8; 32];
         rand::rng().fill(&mut secret);
         let token = format!("sess.{}", hex_encode(&secret));
@@ -154,7 +213,7 @@ impl DirectoryAuth {
                 expires_at: now + SESSION_TTL_MS,
             },
         );
-        token
+        Ok(token)
     }
 
     /// Who a session token stands for, if it is current.
@@ -180,18 +239,29 @@ impl DirectoryAuth {
     /// Issuing first sweeps every expired pending code, for any address, so
     /// a code whose address never comes back does not sit in the map forever
     /// (#1732). The sweep is opportunistic: it runs only when a code is
-    /// issued, so nothing is reclaimed while the world is idle and the map
-    /// has no hard size bound. `HashMap::retain` scans the whole map, so an
-    /// issuance costs O(pending codes) on top of its own work — accepted
-    /// here because issuance is already rate-limited per address and the
-    /// scan is the same shape as the session sweep in `open_session`.
-    /// Unexpired codes are all kept, including ones that have run out of
-    /// attempts, so resend throttling and the attempt limit are unchanged.
+    /// issued, so nothing is reclaimed while the world is idle. The map
+    /// itself is hard-bounded (#5749): at most CODE_PENDING_LIMIT
+    /// pending codes in total and CODE_PENDING_PER_ACCOUNT per
+    /// account, so `HashMap::retain`'s whole-map scan — and the
+    /// per-account count taken beside it — costs O(cap), a constant,
+    /// however many distinct addresses have been asked about. Expired
+    /// entries are swept before the caps are checked, so expiry always
+    /// frees capacity. A new address that would pass a cap is refused
+    /// deterministically; no unrelated valid code is ever evicted to
+    /// make room. Replacing the code for an address and flow already
+    /// in the map (a resend past the cooldown) is not new state and is
+    /// always allowed. Unexpired codes are all kept, including ones
+    /// that have run out of attempts, so resend throttling and the
+    /// attempt limit are unchanged. Callers decide how a refusal
+    /// surfaces: `SignInEmail` ignores issuance failures, so its
+    /// response stays uniform whether or not a code was sent, while
+    /// `AddEmail` propagates the refusal to the signed-in caller on
+    /// purpose.
     ///
     /// # Errors
     ///
     /// Fails with [`Refusal::RateLimited`] if a code for this address and flow
-    /// was sent less than a minute ago.
+    /// was sent less than a minute ago, or if a cap would be exceeded.
     pub fn issue_code(&mut self, purpose: Purpose, address: &str, now: u64) -> Result<String> {
         self.codes.retain(|_, pending| pending.expires_at > now);
         let kind = purpose.kind();
@@ -203,6 +273,25 @@ impl DirectoryAuth {
                 "a code was sent a moment ago; wait a minute before asking again".to_owned(),
             )
             .into());
+        }
+        if !self.codes.contains_key(&key) {
+            if self.codes.len() >= CODE_PENDING_LIMIT {
+                return Err(Refusal::RateLimited(
+                    "too many codes are pending; try again shortly".to_owned(),
+                )
+                .into());
+            }
+            let held = self
+                .codes
+                .values()
+                .filter(|pending| pending.purpose.account() == purpose.account())
+                .count();
+            if held >= CODE_PENDING_PER_ACCOUNT {
+                return Err(Refusal::RateLimited(
+                    "too many codes are pending for this account; try again shortly".to_owned(),
+                )
+                .into());
+            }
         }
         let code = format!("{:06}", rand::rng().random_range(0..1_000_000_u32));
         self.codes.insert(
@@ -472,13 +561,82 @@ mod tests {
     #[test]
     fn a_session_lasts_its_ttl_and_closes_on_request() {
         let mut auth = DirectoryAuth::default();
-        let token = auth.open_session(Principal::Admin, now());
+        let token = auth.open_session(Principal::Admin, now()).unwrap();
         assert!(token.starts_with("sess."));
         assert_eq!(auth.principal(&token, now()), Some(Principal::Admin));
         assert_eq!(auth.principal(&token, now() + SESSION_TTL_MS), None);
-        let again = auth.open_session(Principal::Account("ab".repeat(32)), now());
+        let again = auth
+            .open_session(Principal::Account("ab".repeat(32)), now())
+            .unwrap();
         auth.close_session(&again);
         assert_eq!(auth.principal(&again, now()), None);
+    }
+
+    #[test]
+    fn sessions_are_capped_globally_and_refusal_is_deterministic() {
+        let mut auth = DirectoryAuth::default();
+        // Fill the global cap with distinct principals, so only the
+        // global bound can bind.
+        let first = auth
+            .open_session(Principal::Account("acct-0".to_owned()), now())
+            .unwrap();
+        for i in 1..SESSION_LIMIT {
+            auth.open_session(Principal::Account(format!("acct-{i}")), now())
+                .unwrap();
+        }
+        assert_eq!(auth.sessions.len(), SESSION_LIMIT);
+        // A new principal is refused, deterministically: the same
+        // refusal on retry, and nothing is evicted to make room.
+        for _ in 0..2 {
+            let error = auth
+                .open_session(Principal::Account("acct-new".to_owned()), now())
+                .unwrap_err();
+            assert!(matches!(
+                error.downcast_ref::<Refusal>(),
+                Some(Refusal::RateLimited(_))
+            ));
+        }
+        assert_eq!(auth.sessions.len(), SESSION_LIMIT);
+        // Expiry is what frees a bounded map: the next open sweeps the
+        // dead entries first, so a new principal takes the freed space.
+        auth.open_session(
+            Principal::Account("acct-new".to_owned()),
+            now() + SESSION_TTL_MS,
+        )
+        .unwrap();
+        assert!(auth.principal(&first, now() + SESSION_TTL_MS).is_none());
+    }
+
+    #[test]
+    fn one_principal_cannot_consume_the_whole_session_capacity() {
+        let mut auth = DirectoryAuth::default();
+        let account = "ab".repeat(32);
+        for _ in 0..SESSION_PER_PRINCIPAL {
+            auth.open_session(Principal::Account(account.clone()), now())
+                .unwrap();
+        }
+        // The principal's next session is refused at its own cap…
+        let error = auth
+            .open_session(Principal::Account(account.clone()), now())
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<Refusal>(),
+            Some(Refusal::RateLimited(_))
+        ));
+        assert_eq!(auth.sessions.len(), SESSION_PER_PRINCIPAL);
+        // …but the global capacity is untouched: another principal (and
+        // the admin) opens normally, so one account cannot starve the rest.
+        auth.open_session(Principal::Account("cd".repeat(32)), now())
+            .unwrap();
+        auth.open_session(Principal::Admin, now()).unwrap();
+        assert_eq!(auth.sessions.len(), SESSION_PER_PRINCIPAL + 2);
+        // Expiry frees the principal's whole allowance without a refusal.
+        let later = now() + SESSION_TTL_MS;
+        for _ in 0..SESSION_PER_PRINCIPAL {
+            auth.open_session(Principal::Account(account.clone()), later)
+                .unwrap();
+        }
+        assert_eq!(auth.sessions.len(), SESSION_PER_PRINCIPAL);
     }
 
     #[test]
@@ -733,6 +891,175 @@ mod tests {
             )
             .unwrap(),
             purpose
+        );
+    }
+
+    #[test]
+    fn pending_codes_are_capped_globally_and_refusal_is_deterministic() {
+        let mut auth = DirectoryAuth::default();
+        // Fill the global cap with distinct addresses and distinct
+        // accounts, so only the global cap can bind.
+        let mut first_code = None;
+        for i in 0..CODE_PENDING_LIMIT {
+            let code = auth
+                .issue_code(
+                    Purpose::SignIn {
+                        account: format!("acct-{i}"),
+                    },
+                    &format!("user{i}@x.co"),
+                    now(),
+                )
+                .unwrap();
+            if i == 0 {
+                first_code = Some(code);
+            }
+        }
+        assert_eq!(auth.codes.len(), CODE_PENDING_LIMIT);
+        // A new address from a new account is refused, deterministically:
+        // the same refusal on retry, and nothing is evicted to make room.
+        for _ in 0..2 {
+            let error = auth
+                .issue_code(
+                    Purpose::SignIn {
+                        account: "acct-new".to_owned(),
+                    },
+                    "new@x.co",
+                    now(),
+                )
+                .unwrap_err();
+            assert!(matches!(
+                error.downcast_ref::<Refusal>(),
+                Some(Refusal::RateLimited(_))
+            ));
+        }
+        assert_eq!(auth.codes.len(), CODE_PENDING_LIMIT);
+        // A resend for an address already in the map replaces its code
+        // and still works at capacity once the cooldown has passed.
+        let resent = auth
+            .issue_code(
+                Purpose::SignIn {
+                    account: "acct-0".to_owned(),
+                },
+                "user0@x.co",
+                now() + CODE_RESEND_MS,
+            )
+            .unwrap();
+        assert_eq!(auth.codes.len(), CODE_PENDING_LIMIT);
+        // The replaced code verifies exactly once; the superseded one
+        // no longer does.
+        assert!(
+            auth.check_code(
+                "user0@x.co",
+                PurposeKind::SignIn,
+                &first_code.unwrap(),
+                now() + CODE_RESEND_MS
+            )
+            .is_err()
+        );
+        assert!(
+            auth.check_code(
+                "user0@x.co",
+                PurposeKind::SignIn,
+                &resent,
+                now() + CODE_RESEND_MS
+            )
+            .is_ok()
+        );
+        assert!(
+            auth.check_code(
+                "user0@x.co",
+                PurposeKind::SignIn,
+                &resent,
+                now() + CODE_RESEND_MS
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn one_account_cannot_consume_the_whole_pending_capacity() {
+        let mut auth = DirectoryAuth::default();
+        let account = "ab".repeat(32);
+        for i in 0..CODE_PENDING_PER_ACCOUNT {
+            auth.issue_code(
+                Purpose::Confirm {
+                    account: account.clone(),
+                },
+                &format!("mine{i}@x.co"),
+                now(),
+            )
+            .unwrap();
+        }
+        // The account's next new address is refused at its own cap…
+        let error = auth
+            .issue_code(
+                Purpose::Confirm {
+                    account: account.clone(),
+                },
+                "mine-next@x.co",
+                now(),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<Refusal>(),
+            Some(Refusal::RateLimited(_))
+        ));
+        // …but the global capacity is untouched: another account issues
+        // normally, so one account cannot starve the rest.
+        let other = auth
+            .issue_code(
+                Purpose::SignIn {
+                    account: "cd".repeat(32),
+                },
+                "other@x.co",
+                now(),
+            )
+            .unwrap();
+        assert_eq!(auth.codes.len(), CODE_PENDING_PER_ACCOUNT + 1);
+        assert!(
+            auth.check_code("other@x.co", PurposeKind::SignIn, &other, now())
+                .is_ok()
+        );
+        // A resend for one of the account's own pending addresses still
+        // replaces at the per-account cap. (Checking the other account's
+        // code above consumed it, so the map is back to the account's own
+        // cap count; the resend replaces in place and changes nothing.)
+        auth.issue_code(
+            Purpose::Confirm { account },
+            "mine0@x.co",
+            now() + CODE_RESEND_MS,
+        )
+        .unwrap();
+        assert_eq!(auth.codes.len(), CODE_PENDING_PER_ACCOUNT);
+    }
+
+    #[test]
+    fn expired_codes_free_capacity_before_the_caps_are_checked() {
+        let mut auth = DirectoryAuth::default();
+        let account = "ab".repeat(32);
+        for i in 0..CODE_PENDING_PER_ACCOUNT {
+            auth.issue_code(
+                Purpose::Confirm {
+                    account: account.clone(),
+                },
+                &format!("old{i}@x.co"),
+                now(),
+            )
+            .unwrap();
+        }
+        // At the TTL boundary every pending code for the account has
+        // expired; the issuance sweep reclaims them first, so a new
+        // address is admitted instead of refused.
+        auth.issue_code(
+            Purpose::Confirm { account },
+            "fresh@x.co",
+            now() + CODE_TTL_MS,
+        )
+        .unwrap();
+        assert_eq!(auth.codes.len(), 1);
+        assert!(
+            auth.codes
+                .contains_key(&("fresh@x.co".to_owned(), PurposeKind::Confirm))
         );
     }
 

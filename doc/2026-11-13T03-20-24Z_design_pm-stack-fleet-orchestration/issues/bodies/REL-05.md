@@ -64,7 +64,8 @@ prevent stale relay overwriting newer status; serialize same target; define pre-
 - **P-R062 — design-only (candidate)**; occurrences `P-1486, P-1487, P-1488, P-1489`; full trace: census/requirements-crosswalk.jsonl
 - **P-R063 — design-only (candidate)**; occurrences `P-1490, P-1491, P-1492`; full trace: census/requirements-crosswalk.jsonl
 - **P-R068 — design-only (candidate)**; occurrences `P-1698, P-1699, P-1700, P-1701, P-1702, P-1703, P-1704`; full trace: census/requirements-crosswalk.jsonl
-Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+  Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+
 ## Owned files and boundaries
 
 - `pkgs/fleet/crates/fleet-queue/src/work/operations.rs`
@@ -79,7 +80,6 @@ Hard blockers named by the source slice, after granular-key normalization: REL-0
 File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9208→AUTH-02, #9208→AUTH-02.
-
 
 Ordering note: AUTH-03 is a recommended rework-if-early review for REL-05, not a hard edge; keeping it hard would cycle with AUTH-03→REL-05.
 
@@ -125,8 +125,8 @@ Negative coverage: old op sent then desired state reverses, rate-limit/transient
 
 **Tier:** crucial. **Goal:** prevent stale relay overwriting newer status; serialize same target; define pre-send supersede vs post-send unknown/reconcile. **Owns:** `src/work/operations.rs` relay model and current broker drain only after integration approval. **Hard blockers:** REL-04 durable operation contract and #9208 `AUTH-02` public-mirror authorization contract. #9208 AUTH-03/04 adapter policy consumes this relay contract; they are downstream/recommended integration edges, not hard blockers, avoiding a cycle. **First failing oracle:** `pmo_rel_stale_relay_ack_cannot_regress_operation` interleaves relay generation N ack after N+1 claim. **Done command:** verify test listed, then run `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_rel_stale_relay_ack_cannot_regress_operation`. **Negative:** old op sent then desired state reverses, rate-limit/transient handling, lease expires during HTTP. **Acceptance:** attach late effect to immutable op, reject stale local status update, verify remote before retry. **Migration:** staged read/rollback preserves all in-flight rows. Retry budget follows provider policy, no invented cap.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `REL-04` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/operations.rs`

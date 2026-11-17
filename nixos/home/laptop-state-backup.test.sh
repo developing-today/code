@@ -25,19 +25,19 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 make_home() { # $1 dir; fake opencode state + ssh + one sops secret
   local h="$1"
   mkdir -p "$h/.local/state/opencode" "$h/.ssh" "$h/secrets" "$h/.config/bws"
-  echo '{"x":1}' > "$h/.local/state/opencode/service-prod.json"
-  echo "fake-key" > "$h/.ssh/id_ed25519"
-  echo "ciphertext" > "$h/secrets/pm-stack.sops.yaml"
-  echo "fake-token" > "$h/.config/bws/access-token"
+  echo '{"x":1}' >"$h/.local/state/opencode/service-prod.json"
+  echo "fake-key" >"$h/.ssh/id_ed25519"
+  echo "ciphertext" >"$h/secrets/pm-stack.sops.yaml"
+  echo "fake-token" >"$h/.config/bws/access-token"
 }
 
 make_bin() { # $1 dir; stub bws + recording restic
   local b="$1" calls="$2"
-  cat > "$b/bws" <<'EOF'
+  cat >"$b/bws" <<'EOF'
 #!/bin/sh
 printf '[{"key":"restic.repo-archive-password","value":"pw"},{"key":"cloudflare.r2-backups-access-key-id","value":"id"},{"key":"cloudflare.r2-backups-secret-access-key","value":"secret"},{"key":"cloudflare.r2-endpoint","value":"https://example.r2.test"}]'
 EOF
-  cat > "$b/restic" <<EOF
+  cat >"$b/restic" <<EOF
 #!/bin/sh
 echo "\$*" >> "$calls"
 # repo comes from the -r flag value; only local paths get state files
@@ -54,7 +54,7 @@ case "\$repo" in
 esac
 exit 0
 EOF
-  cat > "$b/rclone" <<'EOF'
+  cat >"$b/rclone" <<'EOF'
 #!/bin/sh
 # never actually invoked (stub restic records the drive leg); present
 # so resolve_tool finds it on PATH without a nix-store fallback.
@@ -65,14 +65,22 @@ EOF
 
 FAILS=0
 check() { # $1 description, rest is test command
-  local desc="$1"; shift
-  if "$@"; then echo "ok: $desc"; else echo "FAIL: $desc"; FAILS=$((FAILS + 1)); fi
+  local desc="$1"
+  shift
+  if "$@"; then echo "ok: $desc"; else
+    echo "FAIL: $desc"
+    FAILS=$((FAILS + 1))
+  fi
 }
 
 # --- happy path ---
-H="$TMP_ROOT/home"; B="$TMP_ROOT/bin"; C="$TMP_ROOT/calls"
-mkdir -p "$H" "$B"; : > "$C"
-make_home "$H"; make_bin "$B" "$C"
+H="$TMP_ROOT/home"
+B="$TMP_ROOT/bin"
+C="$TMP_ROOT/calls"
+mkdir -p "$H" "$B"
+: >"$C"
+make_home "$H"
+make_bin "$B" "$C"
 OUT="$(HOME="$H" PATH="$B:$PATH" bash "$SCRIPT" 2>&1)"
 RC=$?
 check "happy path exits 0" [ "$RC" -eq 0 ]
@@ -94,7 +102,7 @@ check "forget+prune per backend" [ "$(grep -c ' forget.*--prune' "$C" 2>/dev/nul
   OUT2="$(HOME="$H" PATH="$B:$PATH" bash "$SCRIPT" 2>&1)"
   check "locked run prints SKIP" grep -q "SKIP" <<<"$OUT2"
 ) || check "lock holder acquired" false
-: > "$C"
+: >"$C"
 (
   exec 8>"$H/backups/restic/.laptop-state-backup.lock"
   flock -n 8
@@ -104,14 +112,20 @@ check "forget+prune per backend" [ "$(grep -c ' forget.*--prune' "$C" 2>/dev/nul
 check "locked run invokes no restic" [ ! -s "$C" ]
 
 # --- nothing present ---
-E="$TMP_ROOT/empty"; BE="$TMP_ROOT/ebin"; CE="$TMP_ROOT/ecalls"
-mkdir -p "$E/.config/bws" "$BE"; : > "$CE"
-echo "fake-token" > "$E/.config/bws/access-token"
+E="$TMP_ROOT/empty"
+BE="$TMP_ROOT/ebin"
+CE="$TMP_ROOT/ecalls"
+mkdir -p "$E/.config/bws" "$BE"
+: >"$CE"
+echo "fake-token" >"$E/.config/bws/access-token"
 make_bin "$BE" "$CE"
 OUT3="$(HOME="$E" PATH="$BE:$PATH" bash "$SCRIPT" 2>&1)"
 check "empty HOME exits non-zero" [ "$?" -ne 0 ]
 check "empty HOME names missing sources" grep -q "no source paths present" <<<"$OUT3"
 check "empty HOME invokes no restic" [ ! -s "$CE" ]
 
-if [ "$FAILS" -ne 0 ]; then echo "$FAILS failure(s)"; exit 1; fi
+if [ "$FAILS" -ne 0 ]; then
+  echo "$FAILS failure(s)"
+  exit 1
+fi
 echo "laptop-state-backup suite passed"

@@ -63,9 +63,6 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: #9178 (upstream claim/manual/takeover/resume semantics must be verified before mutation/cutover; offline compatibility models may proceed).
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: none.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -108,9 +105,9 @@ Negative coverage: clock skew, renew after takeover, stale release/park/checkpoi
 
 **Tier:** crucial. **Goal:** stale claimant cannot mutate local lifecycle after takeover. **Owns:** `src/work/lifecycle.rs` pure command fence checks plus existing `src/turso_queue.rs` claim/mutation transaction and its tests/migration only after approval. **Hard blockers:** REL-01; #9178; Queue Table Improvements schema decision. **First failing oracle:** `pmo_rel_stale_generation_cannot_write_after_reclaim` races gen N mutation with N+1 takeover. **Done command:** list exact test then run `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_rel_stale_generation_cannot_write_after_reclaim`. **Negative:** clock skew, renew after takeover, stale release/park/checkpoint, DB busy. **Acceptance:** strict generation increment, conditional versioned writes, DB clock authority. **Migration:** additive legacy generation unknown/0, canary/rollback retains lease history. No bearer-token design until auth owner decides.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `PRI-03` — `shared-file:pkgs/fleet/crates/fleet-queue/src/turso_queue.rs`
 - blocked by `CLI-05` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/lifecycle.rs`

@@ -208,7 +208,7 @@ impl EventStore {
 /// The event that made `reader` a member: a create listing them, or an add naming them.
 /// When several qualify, the one with the smallest causal past is the join; ties break by
 /// event ID, so the choice depends only on the stored events.
-fn join_event(
+pub(super) fn join_event(
     stored: &[resolve::Stored],
     applied: &std::collections::HashSet<Hash>,
     reader: &AuthorKey,
@@ -299,6 +299,7 @@ mod tests {
             link: None,
             checkpoint: None,
             rotation: None,
+            anchor: None,
         };
         let event = sign(key, seq, backlink, Some(&body), ext).unwrap();
         (event, body)
@@ -325,6 +326,7 @@ mod tests {
             link: None,
             checkpoint: None,
             rotation: None,
+            anchor: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -481,6 +483,7 @@ mod tests {
                 link: None,
                 checkpoint: None,
                 rotation: None,
+                anchor: None,
             },
         )
         .unwrap();

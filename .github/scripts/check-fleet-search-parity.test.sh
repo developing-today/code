@@ -11,19 +11,21 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-# Copy the six guarded files into a scratch tree shaped like the repo.
+# Copy the guarded files into a scratch tree shaped like the repo.
 make_tree() {
   local dest="$1"
-  mkdir -p "$dest/pkgs/atlas-search/crates/atlas-search/src" \
-    "$dest/pkgs/fleet/crates/fleet-search/src"
+  mkdir -p "$dest/pkgs/atlas-search/crates/atlas-search/src/server" \
+    "$dest/pkgs/fleet/crates/fleet-search/src/server"
   local pair
   for pair in \
     "pkgs/atlas-search/crates/atlas-search/src/pyjson.rs" \
     "pkgs/atlas-search/crates/atlas-search/src/render.rs" \
     "pkgs/atlas-search/crates/atlas-search/src/server.rs" \
+    "pkgs/atlas-search/crates/atlas-search/src/server/server_feedback.rs" \
     "pkgs/fleet/crates/fleet-search/src/pyjson.rs" \
     "pkgs/fleet/crates/fleet-search/src/render.rs" \
-    "pkgs/fleet/crates/fleet-search/src/server.rs"; do
+    "pkgs/fleet/crates/fleet-search/src/server.rs" \
+    "pkgs/fleet/crates/fleet-search/src/server/server_feedback.rs"; do
     cp "$REPO_ROOT/$pair" "$dest/$pair"
   done
 }

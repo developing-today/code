@@ -1022,6 +1022,31 @@ pub(crate) fn list_rows(resp: &Value) -> Result<Vec<Value>, String> {
         })
 }
 
+/// The total in a PostgREST `Content-Range` header (#10376):
+/// `0-49/237` -> 237, `*/0` -> 0. A `*` total (no count was
+/// requested) or an unparseable header yields None — unknown,
+/// never a fabricated zero.
+pub(crate) fn content_range_total(content_range: &str) -> Option<i64> {
+    content_range.rsplit('/').next()?.trim().parse::<i64>().ok()
+}
+
+/// The /list reply envelope (#10376; contract #6622 rule 3 —
+/// complete, bounded, or say so): alongside the rows, the total
+/// number of matching tasks when the backend knows it (null when
+/// it does not) and whether this window is a strict prefix of the
+/// matching set. Additive: existing consumers read only `rows`.
+pub(crate) fn list_envelope(rows: Value, total: Option<i64>, offset: i64) -> Value {
+    let returned = rows.as_array().map(|a| a.len() as i64).unwrap_or(0);
+    let truncated = total.map(|t| offset + returned < t).unwrap_or(false);
+    json!({"rows": rows, "total": total, "truncated": truncated})
+}
+
+/// The total a /list reply carries (#10376), when the broker
+/// reported one. Absent on replies from a pre-#10376 broker.
+pub(crate) fn list_total(resp: &Value) -> Option<i64> {
+    resp.get("total").and_then(|t| t.as_i64())
+}
+
 /// The accepted ranges for the queue duration flags (#6420; design
 /// #6448 Phase 3 pin, same as `list --limit`: out-of-range is
 /// REJECTED, never clamped, at both the client and the broker).
@@ -1340,31 +1365,29 @@ fn model_stamp_flags(
     }
 }
 
-/// #8176 (2026-11-12 fix): read the claim stamp off a session
-/// record (the OpenCode server's GET /api/session/<id> shape,
-/// enveloped in `data` or bare): the session's own model —
-/// providerID + id, variant only when the session carries a real
+/// The provider id that addresses configured routes, not serving
+/// leaves: routes appear in the catalog under this provider
+/// (opencode-route/<route-id>), so a model addressed under it is a
+/// route alias, never the leaf that served a claim (#9408).
+const ROUTE_PROVIDER: &str = "opencode-route";
+
+/// One stamp derivation, shared by the session-model path (id key
+/// "id") and the route_usage lastServing path (id key "modelID"):
+/// providerID + id, variant only when the record carries a real
 /// effort variant (the server reports "default" when none was
 /// chosen; that is the absence of a variant, not a variant).
-/// Pure: the oracle for the derivation below.
-fn session_model_stamp(session: &Value) -> Option<(String, String, Option<String>)> {
-    let inner = if session.get("model").is_some() {
-        session
-    } else {
-        session.get("data")?
-    };
-    let model = inner.get("model")?;
-    let provider = model
+fn stamp_from(record: &Value, id_key: &str) -> Option<(String, String, Option<String>)> {
+    let provider = record
         .get("providerID")
         .and_then(|x| x.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())?;
-    let id = model
-        .get("id")
+    let id = record
+        .get(id_key)
         .and_then(|x| x.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())?;
-    let variant = model
+    let variant = record
         .get("variant")
         .and_then(|x| x.as_str())
         .map(str::trim)
@@ -1374,6 +1397,51 @@ fn session_model_stamp(session: &Value) -> Option<(String, String, Option<String
         id.to_string(),
         variant.map(str::to_string),
     ))
+}
+
+/// #8176 (2026-11-12 fix): read the claim stamp off a session
+/// record (the OpenCode server's GET /api/session/<id> shape,
+/// enveloped in `data` or bare): the session's own model —
+/// providerID + id, variant only when the session carries a real
+/// effort variant (the server reports "default" when none was
+/// chosen; that is the absence of a variant, not a variant).
+/// Pure: the oracle for the derivation below.
+///
+/// #9408: the stamp must name the SERVING leaf, not the declared
+/// route. When the record carries the route_usage readout
+/// (opencode#1891: route_usage.lastServing, providerID + modelID +
+/// variant), it wins. Otherwise the session model is used only when
+/// it is not a route alias: a model under the opencode-route
+/// provider is the configured route (opencode-route/workhorse),
+/// which says nothing about which leaf served the claim, so the
+/// claim is left unstamped rather than permanently recording the
+/// alias. (The deployed server's session records today carry no
+/// route_usage field at all — verified 2026-11-14 — so routed
+/// claims go unstamped until the readout reaches the record.)
+fn session_model_stamp(session: &Value) -> Option<(String, String, Option<String>)> {
+    let inner = if session.get("model").is_some() {
+        session
+    } else {
+        session.get("data")?
+    };
+    // The serving-leaf readout, when the record carries one: under
+    // route_usage (the tool's output shape), or bare at the top of
+    // the record. A present readout that does not parse stamps
+    // nothing — falling back to the declared model would record
+    // exactly the alias this path exists to avoid.
+    let readout = inner
+        .get("route_usage")
+        .and_then(|ru| ru.get("lastServing"))
+        .or_else(|| inner.get("lastServing"));
+    if let Some(leaf) = readout {
+        return stamp_from(leaf, "modelID").filter(|s| s.0 != ROUTE_PROVIDER);
+    }
+    let model = inner.get("model")?;
+    let stamp = stamp_from(model, "id")?;
+    if stamp.0 == ROUTE_PROVIDER {
+        return None;
+    }
+    Some(stamp)
 }
 
 /// Minimal base64 (standard alphabet, padded) for the server's
@@ -1402,6 +1470,37 @@ fn b64_encode(bytes: &[u8]) -> String {
     out
 }
 
+/// OpenCode server base URL for the claim-stamp lookup (#9409),
+/// resolved consistently with the claimant tooling
+/// (pm-stack/opencode-claimant/claimant.py and poll.py): the
+/// `OPENCODE_URL` override wins, then the legacy
+/// `OPENCODE_SERVER_URL` this lookup originally read, then the
+/// loopback default both sides share. Pure, so the resolution
+/// order is unit-testable.
+fn resolve_opencode_base_url(env_url: Option<&str>, env_server_url: Option<&str>) -> String {
+    for candidate in [env_url, env_server_url] {
+        if let Some(u) = candidate
+            .map(|v| v.trim().trim_end_matches('/'))
+            .filter(|v| !v.is_empty())
+        {
+            return u.to_string();
+        }
+    }
+    "http://127.0.0.1:13420".to_string()
+}
+
+/// OpenCode credential file for the claim-stamp lookup (#9409),
+/// resolved consistently with the claimant tooling: the
+/// `OPENCODE_AUTH_FILE` override wins, then the production state
+/// file under the user's home. Pure, so the resolution is
+/// unit-testable.
+fn resolve_opencode_auth_file(env_file: Option<&str>, home: &str) -> String {
+    match env_file.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(f) => f.to_string(),
+        None => format!("{home}/.local/state/opencode/service-prod.json"),
+    }
+}
+
 /// #8176 (2026-11-12 fix): derive the claim stamp for a claim that
 /// names its claiming session (--session-id) but carries no
 /// explicit --model-* flags. The dispatch surfaces claim on behalf
@@ -1420,18 +1519,31 @@ fn b64_encode(bytes: &[u8]) -> String {
 /// has; a claim must never fail because its stamp could not be
 /// derived.
 fn derive_claim_model_stamp(session_id: &str) -> Option<(String, String, Option<String>)> {
+    let session = fetch_session_record(session_id)?;
+    session_model_stamp(&session)
+}
+
+/// Read one session record from the OpenCode server (its GET
+/// /api/session/<id> shape, enveloped in `data` or bare). The
+/// credential is the server's state file password, Basic auth with
+/// the `opencode` user — the same route claimant.py takes; the
+/// value is used for the header only, never logged. FAIL-SOFT: any
+/// miss returns None so callers that derive from the record (the
+/// claim stamp above, the completion telemetry below) degrade to
+/// their other sources instead of failing the verb.
+fn fetch_session_record(session_id: &str) -> Option<Value> {
     let session_id = session_id.trim();
     if session_id.is_empty() {
         return None;
     }
-    let base = std::env::var("OPENCODE_SERVER_URL")
-        .ok()
-        .map(|s| s.trim().trim_end_matches('/').to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "http://127.0.0.1:13420".to_string());
+    let base = resolve_opencode_base_url(
+        std::env::var("OPENCODE_URL").ok().as_deref(),
+        std::env::var("OPENCODE_SERVER_URL").ok().as_deref(),
+    );
     let home = crate::home::from_env().ok()?;
-    let state =
-        std::fs::read_to_string(format!("{home}/.local/state/opencode/service-prod.json")).ok()?;
+    let auth_file =
+        resolve_opencode_auth_file(std::env::var("OPENCODE_AUTH_FILE").ok().as_deref(), &home);
+    let state = std::fs::read_to_string(auth_file).ok()?;
     let state: Value = serde_json::from_str(&state).ok()?;
     let password = state.get("password")?.as_str()?;
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -1449,8 +1561,136 @@ fn derive_claim_model_stamp(session_id: &str) -> Option<(String, String, Option<
         .call()
         .ok()?;
     let text = resp.body_mut().read_to_string().ok()?;
-    let session: Value = serde_json::from_str(&text).ok()?;
-    session_model_stamp(&session)
+    serde_json::from_str(&text).ok()
+}
+
+/// A trimmed, non-empty string field of a JSON object, or None.
+/// Used by the completion-telemetry derivation for both the claim
+/// row and the session record.
+fn nonempty_str<'a>(obj: &'a Value, key: &str) -> Option<&'a str> {
+    obj.get(key)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+/// The configured route (pool) a session was dispatched through:
+/// its DECLARED model, and only when it is addressed under the
+/// route provider (`opencode-route/<route-id>`). A session whose
+/// declared model is a concrete provider/model was not dispatched
+/// through a route, so it names no pool. This is the route the
+/// session was configured with, never an effort inference from the
+/// route name (meta-reviewer guideline 2026-10-27).
+fn session_declared_pool(session: &Value) -> Option<String> {
+    let inner = if session.get("model").is_some() {
+        session
+    } else {
+        session.get("data")?
+    };
+    let model = inner.get("model")?;
+    if nonempty_str(model, "providerID")? != ROUTE_PROVIDER {
+        return None;
+    }
+    nonempty_str(model, "id").map(str::to_string)
+}
+
+/// #4919: the completion telemetry a task's own record supports,
+/// filled in by `complete` when the caller left a field out. Every
+/// source is a record the queue already holds — nothing is
+/// inferred from a route name and `cost_usd` is never invented
+/// (there is no cost readout to source it from, so it stays null).
+///
+/// - `model`: the claim stamp's serving leaf, else the session
+///   record's serving leaf.
+/// - `effort`: the claim stamp's variant (a real one — the server
+///   writes "default" when none was chosen), else the session
+///   record's variant.
+/// - `pool`: the session's declared route, per
+///   `session_declared_pool`.
+/// - `cost_usd`: always null.
+///
+/// The map ALWAYS carries all four keys, each null when no source
+/// could supply it: a present null says "this run had no source",
+/// which reports can distinguish from a field nobody filled in.
+fn derive_completion_telemetry(claim: &Value, session: Option<&Value>) -> Map<String, Value> {
+    let leaf: Option<(String, String, Option<String>)> = session.and_then(session_model_stamp);
+    let model = nonempty_str(claim, "claim_model")
+        .map(str::to_string)
+        .or_else(|| leaf.as_ref().map(|s| s.1.clone()));
+    let effort = nonempty_str(claim, "claim_variant")
+        .filter(|v| *v != "default")
+        .map(str::to_string)
+        .or_else(|| leaf.as_ref().and_then(|s| s.2.clone()));
+    let pool = session.and_then(session_declared_pool);
+    let mut out = Map::new();
+    out.insert("pool".to_string(), json!(pool));
+    out.insert("model".to_string(), json!(model));
+    out.insert("effort".to_string(), json!(effort));
+    out.insert("cost_usd".to_string(), Value::Null);
+    out
+}
+
+/// Merge derived telemetry into a completion result: a caller
+/// supplied value always wins, a missing one is filled.
+fn merge_completion_telemetry(result_obj: &mut Value, derived: Map<String, Value>) {
+    let Some(obj) = result_obj.as_object_mut() else {
+        return;
+    };
+    for (field, value) in derived {
+        obj.entry(field).or_insert(value);
+    }
+}
+
+/// The session a completion's telemetry is derived from: the
+/// completing session's id from the environment (set in the
+/// worker's own session), else the claim row's bound session
+/// (`progress.session_id`).
+fn completion_session_id(env_value: Option<&str>, claim: &Value) -> Option<String> {
+    env_value
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            claim
+                .get("progress")
+                .and_then(|p| p.get("session_id"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        })
+}
+
+/// The claim row a completion reads its telemetry sources from.
+/// `/list` with no queue name (the broker omits the predicate when
+/// unnamed — #9420) so a task id resolves regardless of queue, and
+/// fail-soft: an unreachable or unreadable broker leaves the
+/// caller with the environment-derived sources only.
+fn completion_claim_row(task_id: i64) -> Option<Value> {
+    if task_id <= 0 {
+        return None;
+    }
+    let resp = call_result("/list", &json!({"rich": true, "task": task_id, "limit": 1})).ok()?;
+    if resp.get("ok").and_then(|v| v.as_bool()) == Some(false) {
+        return None;
+    }
+    let row = list_rows(&resp).ok()?.into_iter().next()?;
+    (row.get("id").and_then(|v| v.as_i64()) == Some(task_id)).then_some(row)
+}
+
+/// #4919: fill absent completion telemetry at `complete` time. The
+/// helper is the queue's single writer, so defaulting the fields
+/// here is what makes them present regardless of whether a worker
+/// remembered `--telemetry`. Explicit caller values (top-level
+/// `--result` keys or `--telemetry`) always win; every field is
+/// inserted, null when unsourceable.
+fn fill_completion_telemetry(task_id: i64, result_obj: &mut Value) {
+    let claim = completion_claim_row(task_id).unwrap_or(Value::Null);
+    let session_id =
+        completion_session_id(std::env::var("OPENCODE_SESSION_ID").ok().as_deref(), &claim);
+    let session = session_id.as_deref().and_then(fetch_session_record);
+    let derived = derive_completion_telemetry(&claim, session.as_ref());
+    merge_completion_telemetry(result_obj, derived);
 }
 
 fn cmd_validate(rest: &[String]) -> i32 {
@@ -1673,6 +1913,7 @@ fn cmd_list(rest: &[String]) -> i32 {
     // verify a just-completed task's status from list output even
     // when the done list is thousands of rows long.
     let mut rows: Vec<Value> = Vec::new();
+    let mut total: Option<i64> = None;
     for (offset, page_limit) in list_pages(limit) {
         let resp = call(
             "/list",
@@ -1688,6 +1929,9 @@ fn cmd_list(rest: &[String]) -> i32 {
             }),
         );
         let resp = unwrap_ok(resp);
+        if let Some(t) = list_total(&resp) {
+            total = Some(t);
+        }
         let page = match list_rows(&resp) {
             Ok(page) => page,
             Err(e) => die(3, &e),
@@ -1708,6 +1952,19 @@ fn cmd_list(rest: &[String]) -> i32 {
         .collect();
     let str_rows: Vec<Vec<String>> = rows.iter().map(list_row_cells).collect();
     print_table(&cols, &str_rows);
+    // #10376: name the completeness of the listing — a limited
+    // window must never read as the whole matching set.
+    if let Some(t) = total {
+        if (rows.len() as i64) < t {
+            println!(
+                "(truncated: showing {} of {} matching tasks — raise --limit to see more)",
+                rows.len(),
+                t
+            );
+        } else {
+            println!("({} matching tasks)", t);
+        }
+    }
     0
 }
 
@@ -2227,6 +2484,314 @@ fn cmd_timeline(rest: &[String]) -> i32 {
     0
 }
 
+/// #10357 (claimant capture point) + #9046: the per-model
+/// rollup — the inversion of cmd_timeline. The link records
+/// (model_stamp / session_bound events) already land per task;
+/// this verb aggregates them across tasks over a window so
+/// per-model accounting — which models worked which tasks, with
+/// what outcome — is one query instead of hand-rolled SQL.
+/// Two sections: `stamped` (the claim/bind stamp timeline: the
+/// route or lane a task was claimed under) and `served` (the
+/// dominant serving leaf per binding window, from the same
+/// route_attempt join cmd_timeline prints — for routed stamps
+/// this is the model that actually did the work).
+#[derive(Debug, Clone, PartialEq)]
+struct RollupEvent {
+    task_id: i64,
+    ev: TimelineEvent,
+}
+
+fn rollup_event(row: &Value) -> Option<RollupEvent> {
+    let task_id = row.get("task_id").and_then(|v| v.as_i64())?;
+    let ev = timeline_event(row)?;
+    Some(RollupEvent { task_id, ev })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ModelKey {
+    provider: String,
+    model: String,
+    variant: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+struct ModelRollup {
+    tasks: std::collections::BTreeSet<i64>,
+    sessions: std::collections::BTreeSet<String>,
+    stamps: usize,
+    completed: usize,
+}
+
+/// The stamped section: one rollup per (provider, model,
+/// variant) over model_stamp records (already duplicate-
+/// collapsed per task by the caller). The completion count
+/// intersects the stamped task set with the window's completed
+/// set — a task counts once per model however many stamps it
+/// carries. (No per-model PR count: the store's pull_request
+/// events are a GitHub webhook mirror whose task_id is always
+/// NULL, and merge_intents link PRs to issues/sessions, not
+/// tasks — there is no task-linked PR signal to count yet.)
+fn rollup_models(
+    events: &[RollupEvent],
+    completed: &std::collections::BTreeSet<i64>,
+) -> Vec<(ModelKey, ModelRollup)> {
+    let mut map: std::collections::BTreeMap<ModelKey, ModelRollup> =
+        std::collections::BTreeMap::new();
+    for re in events {
+        if re.ev.kind != "model_stamp" {
+            continue;
+        }
+        let (Some(p), Some(m)) = (&re.ev.provider, &re.ev.model) else {
+            continue;
+        };
+        let key = ModelKey {
+            provider: p.clone(),
+            model: m.clone(),
+            variant: re.ev.variant.clone(),
+        };
+        let r = map.entry(key).or_default();
+        r.tasks.insert(re.task_id);
+        if let Some(sid) = &re.ev.session_id {
+            r.sessions.insert(sid.clone());
+        }
+        r.stamps += 1;
+    }
+    for r in map.values_mut() {
+        r.completed = r.tasks.iter().filter(|t| completed.contains(t)).count();
+    }
+    map.into_iter().collect()
+}
+
+#[derive(Debug, Default, Clone, PartialEq)]
+struct ServedRollup {
+    tasks: std::collections::BTreeSet<i64>,
+    windows: usize,
+    calls: i64,
+}
+
+/// The served section: one rollup per dominant serving leaf,
+/// over (task, leaf, route_attempt calls) rows the caller
+/// resolved per binding window.
+fn rollup_served(rows: &[(i64, ModelKey, i64)]) -> Vec<(ModelKey, ServedRollup)> {
+    let mut map: std::collections::BTreeMap<ModelKey, ServedRollup> =
+        std::collections::BTreeMap::new();
+    for (task_id, key, calls) in rows {
+        let r = map.entry(key.clone()).or_default();
+        r.tasks.insert(*task_id);
+        r.windows += 1;
+        r.calls += calls;
+    }
+    map.into_iter().collect()
+}
+
+/// Format a unix-seconds instant in the ISO-8601 UTC shape
+/// the events store writes (created_at compares
+/// lexicographically, so the since floor is a text compare).
+fn iso_utc(secs: i64) -> String {
+    let days = secs.div_euclid(86_400);
+    let tod = secs.rem_euclid(86_400);
+    // Civil-from-days (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        tod / 3600,
+        (tod / 60) % 60,
+        tod % 60
+    )
+}
+
+/// `repo-queue models [--days N] [--json]` — the claim-link
+/// rollup (#10357): the inversion of `timeline`. timeline
+/// answers "which models worked task X" per task; this answers
+/// "which tasks did model Y touch" across the fleet, over the
+/// link #9046 records (model_stamp / session_bound events in
+/// the queue store, joined to route_attempt by binding window).
+/// Two sections: stamped — per (provider, model, variant) the
+/// distinct tasks + sessions its stamps touch and how many of
+/// those tasks completed in the window; served — per dominant
+/// serving leaf (the route actually used inside each binding
+/// window) the tasks, windows and provider calls. Needs the
+/// broker build whose /events-list makes task_id optional;
+/// against an older broker it says so and exits 3. The window
+/// clamps to the store's 30-day event retention.
+fn cmd_models(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["days"], &["json"]);
+    reject_extra_pos("models", &args, 0);
+    let days = args.get_i64("days").unwrap_or(7).clamp(1, 30);
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let since = iso_utc(now_secs - days * 86_400);
+    // Fetch the window's link + outcome events across tasks.
+    let mut by_task: std::collections::BTreeMap<i64, Vec<TimelineEvent>> =
+        std::collections::BTreeMap::new();
+    let mut completed: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+    for kind in [
+        "model_stamp",
+        "session_bound",
+        "lane_session_bound",
+        "lane_session_unbound",
+        "session_unbound",
+        "session_binding_cleared",
+        "completed",
+    ] {
+        let resp = call(
+            "/events-list",
+            &json!({"kind": kind, "since": since, "limit": 50_000}),
+        );
+        // The broker answers /events-list with a flat
+        // {"events": [...]} (the shape cmd_timeline reads). Any
+        // other envelope — an old broker's error for the
+        // task-less call, say — means the widened read is not
+        // live yet; say so instead of printing an empty rollup.
+        let Some(rows) = resp.get("events").and_then(|r| r.as_array()).cloned() else {
+            eprint(
+                "repo-queue models: this broker does not serve cross-task \
+                 /events-list yet — the rollup activates with the broker \
+                 build that makes task_id optional (interim: repo-queue \
+                 timeline <task> answers per task).",
+            );
+            return 3;
+        };
+        if rows.len() >= 50_000 {
+            eprint(&format!(
+                "repo-queue models: warning: {kind} hit the 50000-row \
+                 window cap; its counts are truncated\n"
+            ));
+        }
+        for row in &rows {
+            let Some(task_id) = row.get("task_id").and_then(|v| v.as_i64()) else {
+                continue;
+            };
+            match kind {
+                "completed" => {
+                    completed.insert(task_id);
+                }
+                _ => {
+                    if let Some(re) = rollup_event(row) {
+                        by_task.entry(re.task_id).or_default().push(re.ev);
+                    }
+                }
+            }
+        }
+    }
+    // Collapse each task's timeline (the #9046 duplicate
+    // oracle) before aggregating, so a touch written by two
+    // surfaces counts once; resolve each binding window's
+    // dominant serving leaf on the way.
+    let mut flat: Vec<RollupEvent> = Vec::new();
+    let mut served_rows: Vec<(i64, ModelKey, i64)> = Vec::new();
+    let now_ms = now_secs * 1000;
+    for (task_id, mut evs) in by_task {
+        evs.sort_by_key(|e| e.id);
+        let evs = collapse_timeline(evs);
+        for (sid, start, end) in binding_windows(&evs) {
+            let start_ms = parse_ts_str(&start).map(|us| us / 1000).unwrap_or(0);
+            let end_ms = end
+                .as_ref()
+                .and_then(|e| parse_ts_str(e))
+                .map(|us| us / 1000)
+                .unwrap_or(now_ms);
+            if let Some(dom) = dominant_model_for_session(&sid, start_ms, end_ms) {
+                let key = ModelKey {
+                    provider: dom
+                        .get("provider")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?")
+                        .to_string(),
+                    model: dom
+                        .get("model")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?")
+                        .to_string(),
+                    variant: dom
+                        .get("variant")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                };
+                let calls = dom.get("calls").and_then(|v| v.as_i64()).unwrap_or(0);
+                served_rows.push((task_id, key, calls));
+            }
+        }
+        flat.extend(evs.into_iter().map(|ev| RollupEvent { task_id, ev }));
+    }
+    let stamped = rollup_models(&flat, &completed);
+    let served = rollup_served(&served_rows);
+    let disp = |k: &ModelKey| {
+        let variant = k
+            .variant
+            .as_ref()
+            .map(|v| format!("#{v}"))
+            .unwrap_or_default();
+        format!("{}/{}{}", k.provider, k.model, variant)
+    };
+    if args.has("json") {
+        let key_json =
+            |k: &ModelKey| json!({"provider": k.provider, "model": k.model, "variant": k.variant});
+        print_json(&json!({
+            "since": since,
+            "days": days,
+            "stamped": stamped.iter().map(|(k, r)| {
+                let mut o = key_json(k);
+                o["tasks"] = json!(r.tasks.len());
+                o["task_ids"] = json!(r.tasks.iter().collect::<Vec<_>>());
+                o["sessions"] = json!(r.sessions.len());
+                o["stamps"] = json!(r.stamps);
+                o["completed"] = json!(r.completed);
+                o
+            }).collect::<Vec<_>>(),
+            "served": served.iter().map(|(k, r)| {
+                let mut o = key_json(k);
+                o["tasks"] = json!(r.tasks.len());
+                o["task_ids"] = json!(r.tasks.iter().collect::<Vec<_>>());
+                o["windows"] = json!(r.windows);
+                o["calls"] = json!(r.calls);
+                o
+            }).collect::<Vec<_>>(),
+        }));
+        return 0;
+    }
+    println!("model rollup — last {days}d (since {since})");
+    println!("stamped (claim/bind stamps):");
+    if stamped.is_empty() {
+        println!("  (none)");
+    }
+    for (k, r) in &stamped {
+        println!(
+            "  {}  tasks={} sessions={} stamps={} completed={}",
+            disp(k),
+            r.tasks.len(),
+            r.sessions.len(),
+            r.stamps,
+            r.completed
+        );
+    }
+    println!("served (dominant leaf per binding window):");
+    if served.is_empty() {
+        println!("  (none)");
+    }
+    for (k, r) in &served {
+        println!(
+            "  {}  tasks={} windows={} calls={}",
+            disp(k),
+            r.tasks.len(),
+            r.windows,
+            r.calls
+        );
+    }
+    0
+}
+
 fn cmd_claim(rest: &[String]) -> i32 {
     let args = parse_args(
         rest,
@@ -2246,6 +2811,7 @@ fn cmd_claim(rest: &[String]) -> i32 {
             "filter",
             "pool",
             "launched-by",
+            "remaining-budget-minutes",
         ],
         &["handoff", "bind"],
     );
@@ -2280,6 +2846,13 @@ fn cmd_claim(rest: &[String]) -> i32 {
     // satisfy a task's own requires.pool.
     if let Some(p) = args.get("pool") {
         body["pool"] = json!(p);
+    }
+    // --remaining-budget-minutes <n>: the claimer's remaining
+    // shift budget (#3418). The broker only matches
+    // requirement-bearing tasks whose required budget fits it;
+    // omitting it leaves requirement-bearing tasks unclaimed.
+    if let Some(v) = args.get_i64("remaining-budget-minutes") {
+        body["remaining_budget_minutes"] = json!(v);
     }
     if let Some(lane) = args.get("lane") {
         body["lane"] = json!(lane);
@@ -2727,7 +3300,32 @@ const NO_CLAIM_EXIT: i32 = 5;
 fn claim_output(resp: &Value) -> (Value, i32) {
     let row = resp.get("row").cloned().unwrap_or(Value::Null);
     if row.is_null() {
-        return (json!({"task": Value::Null}), NO_CLAIM_EXIT);
+        // #3418 (#4712): carry the broker's budget-skip summary on
+        // the no-claim output so lanes see impossible-fit work
+        // instead of an empty claim.
+        let mut out = json!({"task": Value::Null});
+        if let Some(obj) = out.as_object_mut() {
+            for k in ["budget_skipped", "max_required_budget_minutes"] {
+                if let Some(v) = resp.get(k) {
+                    obj.insert(k.to_string(), v.clone());
+                }
+            }
+        }
+        if resp
+            .get("budget_skipped")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0)
+            > 0
+        {
+            eprint(&format!(
+                "repo-queue: claim skipped {} task(s) on budget (#3418); largest requirement: {} min",
+                resp.get("budget_skipped").cloned().unwrap_or(Value::Null),
+                resp.get("max_required_budget_minutes")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            ));
+        }
+        return (out, NO_CLAIM_EXIT);
     }
     // Defense in depth (#5444): the broker's claim path validates
     // packets before handing them out, but a row that still arrives
@@ -2923,6 +3521,7 @@ fn cmd_park(rest: &[String]) -> i32 {
             "progress-file",
             "ready-condition",
             "execution",
+            "required-budget-minutes",
         ],
         &[],
     );
@@ -2964,6 +3563,13 @@ fn cmd_park(rest: &[String]) -> i32 {
             die(2, "--ready-condition must be a JSON object");
         }
         body["ready_condition"] = rc;
+    }
+    // --required-budget-minutes <n>: the minimum remaining shift
+    // budget a future claimer must declare to take this park
+    // (#3418). For a capacity wait the broker defaults it from
+    // the packet's timebox when the flag is absent.
+    if let Some(v) = args.get_i64("required-budget-minutes") {
+        body["required_budget_minutes"] = json!(v);
     }
     if let Some(ex) = execution_arg(&args) {
         body["execution"] = ex;
@@ -3283,6 +3889,27 @@ fn cmd_dep_recheck(rest: &[String]) -> i32 {
     0
 }
 
+/// quarantine-recheck (#10648): run the broker's quarantine
+/// recheck pass now, or force one blocked task's recheck with
+/// --task. The pass re-validates blocked, dep-free rows whose
+/// recorded error is a claim-path quarantine and requeues the
+/// ones whose error no longer reproduces. Production cadence
+/// is the sweep's; this is the manual trigger.
+fn cmd_quarantine_recheck(rest: &[String]) -> i32 {
+    let args = parse_args(rest, &["task", "limit"], &[]);
+    reject_extra_pos("quarantine-recheck", &args, 0);
+    let mut body = json!({});
+    if let Some(t) = args.get_i64("task") {
+        body["task_id"] = json!(t);
+    }
+    if let Some(l) = args.get_i64("limit") {
+        body["limit"] = json!(l);
+    }
+    let resp = unwrap_ok(call("/quarantine-recheck", &body));
+    print_json(&require_row(&resp, "quarantine_recheck"));
+    0
+}
+
 fn cmd_cancel(rest: &[String]) -> i32 {
     let args = parse_args(rest, &["worker", "reason"], &[]);
     reject_extra_pos("cancel", &args, 1);
@@ -3474,6 +4101,11 @@ fn cmd_complete(rest: &[String]) -> i32 {
             result_obj["dominant_model"] = dom;
         }
     }
+    // #4919: completion telemetry (pool/model/effort/cost_usd) is
+    // defaulted here, from the claim record and the completing
+    // session, so it no longer depends on a worker remembering
+    // --telemetry. Explicit caller values always win.
+    fill_completion_telemetry(args.pos_i64(0, "task_id"), &mut result_obj);
     let mut body = json!({
         "task_id": args.pos_i64(0, "task_id"),
         "worker": opt_worker(&args),
@@ -3997,6 +4629,10 @@ impl GhCreator {
     /// `gh api search/issues -f q=...` form makes gh use POST,
     /// /search/issues has no POST route (404), and the failure read
     /// as proven absence, so every uncertain entry was re-created.
+    /// Search absence alone never proves absence for issue-kind
+    /// entries (#8331): the search index lags, so the REST issues
+    /// list is scanned as a second leg before `Absent` (see
+    /// `find_issue_in_recent_list`).
     fn find_by_marker(&mut self, entry: &Value) -> MarkerLookup {
         let repo = s(entry, "repo");
         let kind = s(entry, "kind");
@@ -4043,7 +4679,67 @@ impl GhCreator {
                 Err(class) => return MarkerLookup::CouldNotCheck(class),
             }
         }
+        // #8331: search is only eventually consistent -- an issue
+        // created seconds-to-minutes before a drainer restart (the
+        // crash window the outbox exists to protect) can be missing
+        // from the index while already existing, and concluding
+        // Absent from search alone re-creates it. For issue-kind
+        // entries, absence must also survive a scan of the strongly
+        // consistent REST issues list before it is proven.
+        if kind == "issue" {
+            match self.find_issue_in_recent_list(entry) {
+                Ok(Some(found)) => return MarkerLookup::Found(found.0, found.1),
+                Ok(None) => {}
+                Err(class) => return MarkerLookup::CouldNotCheck(class),
+            }
+        }
         MarkerLookup::Absent
+    }
+
+    /// Scan the repo's most recent issues through the REST issues
+    /// list -- a strongly consistent source, unlike the search
+    /// index -- for an issue-kind entry's marker (#8331). Returns
+    /// the (number, html_url) of the issue carrying the marker, or
+    /// None when the scan terminated (a non-full page) without
+    /// finding it. Any failed or misshaped page, and a listing
+    /// that still has not terminated at the page bound, is an
+    /// `Err` carrying the error class -- never a proven absence,
+    /// the same discipline as the comment-list bound in
+    /// `find_comment_on_issue`. The bound covers the 500 most
+    /// recently created issues: a create that landed in the crash
+    /// window this leg protects is necessarily among them.
+    fn find_issue_in_recent_list(
+        &mut self,
+        entry: &Value,
+    ) -> Result<Option<(i64, String)>, String> {
+        let repo = s(entry, "repo");
+        let id = s(entry, "id");
+        const PER_PAGE: usize = 100;
+        const MAX_PAGES: usize = 5;
+        for page in 1..=MAX_PAGES {
+            let issues = self.gh.json(&[
+                "api".into(),
+                format!(
+                    "repos/{repo}/issues?state=all&sort=created&direction=desc&per_page={PER_PAGE}&page={page}"
+                ),
+            ])?;
+            let Some(list) = issues.as_array() else {
+                return Err("unexpected_issues_list_shape".to_string());
+            };
+            let full_page = list.len() == PER_PAGE;
+            for issue in list {
+                if crate::creation_outbox::marker_id(&s(issue, "body")) == Some(id.clone()) {
+                    let Some(number) = issue.get("number").and_then(|n| n.as_i64()) else {
+                        continue;
+                    };
+                    return Ok(Some((number, s(issue, "html_url"))));
+                }
+            }
+            if !full_page {
+                return Ok(None);
+            }
+        }
+        Err("issues_list_unbounded".to_string())
     }
 
     /// Resolve a comment entry's marker on one candidate issue:
@@ -5301,7 +5997,7 @@ fn cmd_outbox(rest: &[String]) -> i32 {
 pub fn run(args: &[String]) -> i32 {
     if args.is_empty() {
         eprint(
-            "usage: repo-queue <validate|list|enqueue|claim|release|lane|bind|heartbeat|checkpoint|park|wake|block|unblock|dep-recheck|cancel|fail|complete|timeline|revive|health|signal|fallback|outbox|dispatch|session|surfaces|stack> ...",
+            "usage: repo-queue <validate|list|enqueue|claim|release|lane|bind|heartbeat|checkpoint|park|wake|block|unblock|dep-recheck|quarantine-recheck|cancel|fail|complete|timeline|revive|health|signal|fallback|outbox|dispatch|session|surfaces|stack> ...",
         );
         return 2;
     }
@@ -5325,11 +6021,13 @@ pub fn run(args: &[String]) -> i32 {
         "block" => cmd_block(rest),
         "unblock" => cmd_unblock(rest),
         "dep-recheck" => cmd_dep_recheck(rest),
+        "quarantine-recheck" => cmd_quarantine_recheck(rest),
         "cancel" => cmd_cancel(rest),
         "revive" => cmd_revive(rest),
         "fail" => cmd_fail(rest),
         "complete" => cmd_complete(rest),
         "timeline" => cmd_timeline(rest),
+        "models" => cmd_models(rest),
         "health" => cmd_health(rest),
         "signal" => cmd_signal(rest),
         "fallback" => crate::fallback::run(rest),
@@ -5375,6 +6073,84 @@ mod tests {
         ]);
         let ids: Vec<i64> = out.iter().map(|e| e.id).collect();
         assert_eq!(ids, vec![1, 3, 4]);
+    }
+
+    #[test]
+    fn rollup_event_reads_row_task_id() {
+        // Claim-link rollup: the row's own task_id column joins
+        // the stamp (fleet-cli stamp details carry no task_id).
+        let row = json!({
+            "id": 7, "task_id": 42, "kind": "model_stamp",
+            "detail": "{\"session_id\":\"ses_a1\",\"provider\":\"opencode-route\",\"model\":\"workhorse\",\"variant\":null,\"trigger\":\"bind\",\"via\":\"fleet-cli\"}",
+            "created_at": "2026-11-14T17:13:09Z",
+        });
+        let re = rollup_event(&row).expect("row parses");
+        assert_eq!(re.task_id, 42);
+        assert_eq!(re.ev.session_id.as_deref(), Some("ses_a1"));
+        let no_task = json!({"id": 8, "kind": "model_stamp", "detail": "{}", "created_at": "2026-11-14T17:13:09Z"});
+        assert!(rollup_event(&no_task).is_none());
+    }
+
+    #[test]
+    fn rollup_models_counts_tasks_once_per_model() {
+        let ev = |task: i64, sid: Option<&str>, p: &str, m: &str| RollupEvent {
+            task_id: task,
+            ev: TimelineEvent {
+                id: 0,
+                kind: "model_stamp".to_string(),
+                session_id: sid.map(|s| s.to_string()),
+                provider: Some(p.to_string()),
+                model: Some(m.to_string()),
+                variant: None,
+                trigger: Some("claim".to_string()),
+                created_at: "2026-11-14T00:00:00Z".to_string(),
+                created_us: 0,
+            },
+        };
+        let events = vec![
+            ev(1, Some("ses_a"), "opencode-route", "workhorse"),
+            ev(1, Some("ses_a"), "opencode-route", "workhorse"),
+            ev(2, None, "opencode-route", "workhorse"),
+            ev(3, None, "muse-lane", "muse-lane"),
+        ];
+        let completed: std::collections::BTreeSet<i64> = [1, 3].into_iter().collect();
+        let out = rollup_models(&events, &completed);
+        assert_eq!(out.len(), 2);
+        let wh = out.iter().find(|(k, _)| k.model == "workhorse").unwrap();
+        assert_eq!(wh.1.tasks.len(), 2, "task 1 counts once despite two stamps");
+        assert_eq!(wh.1.stamps, 3);
+        assert_eq!(wh.1.sessions.len(), 1);
+        assert_eq!(wh.1.completed, 1);
+        let ml = out.iter().find(|(k, _)| k.model == "muse-lane").unwrap();
+        assert_eq!(ml.1.completed, 1);
+        assert_eq!(ml.1.sessions.len(), 0);
+    }
+
+    #[test]
+    fn rollup_served_aggregates_windows_and_calls() {
+        let key = |p: &str, m: &str| ModelKey {
+            provider: p.to_string(),
+            model: m.to_string(),
+            variant: None,
+        };
+        let rows = vec![
+            (1, key("opencode-go.drewrypope", "beam-free"), 13),
+            (1, key("opencode-go.drewrypope", "beam-free"), 4),
+            (2, key("opencode-go.drewrypope", "beam-free"), 7),
+            (2, key("opencode-go.popesdrew", "beam-free"), 1),
+        ];
+        let out = rollup_served(&rows);
+        assert_eq!(out.len(), 2);
+        let top = &out[0].1;
+        assert_eq!(top.tasks.len(), 2);
+        assert_eq!(top.windows, 3);
+        assert_eq!(top.calls, 24);
+    }
+
+    #[test]
+    fn iso_utc_formats_the_store_shape() {
+        assert_eq!(iso_utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(iso_utc(1_794_676_389), "2026-11-14T17:13:09Z");
     }
 
     #[test]
@@ -5451,16 +6227,11 @@ mod tests {
 
     #[test]
     fn session_model_stamp_reads_the_session_record() {
-        // #8176 derivation oracle: the stamp is the session's own
-        // model — providerID + id from the server's session record
-        // (enveloped or bare); a "default" variant is no variant.
-        let enveloped = json!({
-            "data": {"id": "ses_x", "model": {"id": "workhorse", "providerID": "opencode-route", "variant": "default"}}
-        });
-        assert_eq!(
-            session_model_stamp(&enveloped),
-            Some(("opencode-route".to_string(), "workhorse".to_string(), None))
-        );
+        // #8176 derivation oracle, as corrected by #9408: the stamp
+        // is the SERVING leaf. A direct session's own model —
+        // providerID + id from the server's session record
+        // (enveloped or bare) — is its leaf; a "default" variant is
+        // no variant.
         let bare = json!({
             "id": "ses_y", "model": {"id": "gpt-6-luna", "providerID": "openai-plan", "variant": "high"}
         });
@@ -5472,6 +6243,39 @@ mod tests {
                 Some("high".to_string()),
             ))
         );
+        // #9408: a routed session's model is the configured route
+        // alias (opencode-route/workhorse), not a serving leaf —
+        // with no route_usage readout on the record the claim is
+        // left unstamped instead of recording the alias.
+        let enveloped = json!({
+            "data": {"id": "ses_x", "model": {"id": "workhorse", "providerID": "opencode-route", "variant": "default"}}
+        });
+        assert_eq!(session_model_stamp(&enveloped), None);
+        // #9408: when the record carries the route_usage readout
+        // (opencode#1891), its lastServing leaf is the stamp — even
+        // though the declared model is the route alias.
+        let routed = json!({
+            "data": {
+                "id": "ses_x",
+                "model": {"id": "workhorse", "providerID": "opencode-route", "variant": "default"},
+                "route_usage": {"lastServing": {"providerID": "openai.main", "modelID": "gpt-6-luna", "variant": "high"}}
+            }
+        });
+        assert_eq!(
+            session_model_stamp(&routed),
+            Some((
+                "openai.main".to_string(),
+                "gpt-6-luna".to_string(),
+                Some("high".to_string()),
+            ))
+        );
+        // A present-but-incomplete readout stamps nothing; it never
+        // falls back to the route alias.
+        let incomplete = json!({
+            "model": {"id": "workhorse", "providerID": "opencode-route"},
+            "route_usage": {"lastServing": {"providerID": "openai.main"}}
+        });
+        assert_eq!(session_model_stamp(&incomplete), None);
         // Half a model, or no model, stamps nothing.
         assert_eq!(session_model_stamp(&json!({"data": {"id": "ses_z"}})), None);
         assert_eq!(
@@ -5721,6 +6525,48 @@ mod tests {
     #[test]
     fn default_queue_empty_env_values_use_default() {
         assert_env_resolution(default_queue_from_env, DEFAULT_QUEUE);
+    }
+
+    #[test]
+    fn opencode_base_url_honors_claimant_overrides() {
+        // #9409: OPENCODE_URL (the claimant tooling's override) wins
+        // over the legacy OPENCODE_SERVER_URL; trailing slashes and
+        // blank values are normalized away; the shared loopback
+        // default applies when neither is set.
+        assert_eq!(
+            resolve_opencode_base_url(Some("http://example:9999/"), Some("http://legacy:1")),
+            "http://example:9999"
+        );
+        assert_eq!(
+            resolve_opencode_base_url(None, Some("http://legacy:1/")),
+            "http://legacy:1"
+        );
+        assert_eq!(
+            resolve_opencode_base_url(Some("  "), Some("")),
+            "http://127.0.0.1:13420"
+        );
+        assert_eq!(
+            resolve_opencode_base_url(None, None),
+            "http://127.0.0.1:13420"
+        );
+    }
+
+    #[test]
+    fn opencode_auth_file_honors_claimant_override() {
+        // #9409: OPENCODE_AUTH_FILE (the claimant tooling's override)
+        // wins; otherwise the production state file under home.
+        assert_eq!(
+            resolve_opencode_auth_file(Some("/tmp/alt-auth.json"), "/home/x"),
+            "/tmp/alt-auth.json"
+        );
+        assert_eq!(
+            resolve_opencode_auth_file(Some(" "), "/home/x"),
+            "/home/x/.local/state/opencode/service-prod.json"
+        );
+        assert_eq!(
+            resolve_opencode_auth_file(None, "/home/x"),
+            "/home/x/.local/state/opencode/service-prod.json"
+        );
     }
 
     #[test]
@@ -6105,6 +6951,32 @@ mod tests {
     }
 
     #[test]
+    fn list_envelope_reports_total_and_truncation() {
+        // #10376 oracle (contract #6622 rule 3): a listing whose
+        // limit is below the matching count says so; an exhaustive
+        // listing reports completeness; an unknown total is null,
+        // never a fabricated zero.
+        assert_eq!(content_range_total("0-49/237"), Some(237));
+        assert_eq!(content_range_total("*/0"), Some(0));
+        assert_eq!(content_range_total("0-49/*"), None);
+        assert_eq!(content_range_total("garbage"), None);
+        let rows = json!([{"id": 1}, {"id": 2}]);
+        let limited = list_envelope(rows.clone(), Some(5), 0);
+        assert_eq!(limited["total"], json!(5));
+        assert_eq!(limited["truncated"], json!(true));
+        assert_eq!(list_rows(&limited).map(|r| r.len()), Ok(2));
+        let exhaustive = list_envelope(rows.clone(), Some(2), 0);
+        assert_eq!(exhaustive["truncated"], json!(false));
+        let windowed = list_envelope(rows.clone(), Some(5), 3);
+        assert_eq!(windowed["truncated"], json!(false));
+        let unknown = list_envelope(rows, None, 0);
+        assert_eq!(unknown["total"], Value::Null);
+        assert_eq!(unknown["truncated"], json!(false));
+        assert_eq!(list_total(&limited), Some(5));
+        assert_eq!(list_total(&json!({"rows": []})), None);
+    }
+
+    #[test]
     fn duration_flags_range_is_validated() {
         // #6420: 0/negative durations corrupt claim state (a lease
         // born expired, a heartbeat that lapses its own claim, a park
@@ -6425,6 +7297,28 @@ mod tests {
                     "no-claim marker must not carry task field {field}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn claim_no_claim_carries_budget_skip_summary_when_present() {
+        // #3418 (#4712): a broker no-claim response carrying the
+        // budget-skip summary keeps the distinguishable shape and
+        // exit code, and surfaces the summary for impossible-fit
+        // escalation. A response without the keys stays byte-exact.
+        let (out, code) = claim_output(&json!({"ok": true, "row": Value::Null,
+            "budget_skipped": 3, "max_required_budget_minutes": 120}));
+        assert_eq!(code, NO_CLAIM_EXIT);
+        assert_eq!(
+            out,
+            json!({"task": Value::Null, "budget_skipped": 3,
+                "max_required_budget_minutes": 120})
+        );
+        for field in ["id", "queue", "status", "dedupe_key"] {
+            assert!(
+                out.get(field).is_none(),
+                "no-claim marker must not carry task field {field}"
+            );
         }
     }
 
@@ -6755,8 +7649,15 @@ esac
     #[test]
     fn marker_search_empty_result_is_checked_absent() {
         let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
-        let (bin, _log) =
-            stub_gh_8361("absent", "printf '%s' '{\"total_count\":0,\"items\":[]}'\n");
+        let (bin, _log) = stub_gh_8361(
+            "absent",
+            r#"case "$*" in
+  *search/issues*) printf '%s' '{"total_count":0,"items":[]}' ;;
+  *issues?state=all*) printf '%s' '[]' ;;
+  *) echo "unexpected argv: $*" >&2; exit 3 ;;
+esac
+"#,
+        );
         let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
         assert_eq!(
             creator.find_by_marker(&outbox_entry_8361()),
@@ -6795,5 +7696,177 @@ esac
             MarkerLookup::CouldNotCheck("http_404".to_string())
         );
         let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    // ---- #8331: REST issues-list scan before trusting search absence ----
+    // Oracle: search indexing lags, so a landed issue can be absent
+    // from search results while already present in the repo's issue
+    // list. Reconcile must consult the list before concluding
+    // Absent for issue-kind entries; a list failure is
+    // CouldNotCheck, never Absent.
+
+    #[test]
+    fn marker_in_list_but_not_search_reconciles_found() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
+        let (bin, log) = stub_gh_8361(
+            "listhit8331",
+            r#"case "$*" in
+  *search/issues*) printf '%s' '{"total_count":0,"items":[]}' ;;
+  *issues?state=all*) printf '%s' '[{"number":99,"html_url":"https://github.com/developing-today/code/issues/99","body":"landed <!-- fleet-outbox:OB-test-1 -->"},{"number":98,"html_url":"https://github.com/developing-today/code/issues/98","body":"unrelated"}]' ;;
+  *) echo "unexpected argv: $*" >&2; exit 3 ;;
+esac
+"#,
+        );
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8361()),
+            MarkerLookup::Found(
+                99,
+                "https://github.com/developing-today/code/issues/99".to_string()
+            )
+        );
+        let argv_log = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            argv_log.contains("issues?state=all"),
+            "reconcile must scan the REST issues list, argv was: {argv_log}"
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn marker_absent_from_search_and_list_is_checked_absent() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
+        let (bin, _log) = stub_gh_8361(
+            "bothabsent8331",
+            r#"case "$*" in
+  *search/issues*) printf '%s' '{"total_count":0,"items":[]}' ;;
+  *issues?state=all*) printf '%s' '[{"number":98,"html_url":"https://github.com/developing-today/code/issues/98","body":"unrelated"}]' ;;
+  *) echo "unexpected argv: $*" >&2; exit 3 ;;
+esac
+"#,
+        );
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8361()),
+            MarkerLookup::Absent
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn issues_list_failure_is_could_not_check_not_absent() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
+        let (bin, _log) = stub_gh_8361(
+            "listfail8331",
+            r#"case "$*" in
+  *search/issues*) printf '%s' '{"total_count":0,"items":[]}' ;;
+  *issues?state=all*) echo 'gh: Forbidden (HTTP 403)' >&2; exit 1 ;;
+  *) echo "unexpected argv: $*" >&2; exit 3 ;;
+esac
+"#,
+        );
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8361()),
+            MarkerLookup::CouldNotCheck("http_403".to_string())
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    #[test]
+    fn issues_list_unexpected_shape_is_could_not_check() {
+        let _gh_stub_guard = GH_STUB_LOCK.lock().unwrap();
+        let (bin, _log) = stub_gh_8361(
+            "listshape8331",
+            r#"case "$*" in
+  *search/issues*) printf '%s' '{"total_count":0,"items":[]}' ;;
+  *issues?state=all*) printf '%s' '{"total_count":0,"items":[]}' ;;
+  *) echo "unexpected argv: $*" >&2; exit 3 ;;
+esac
+"#,
+        );
+        let mut creator = GhCreator::with_runner(GhRunner::with_bin(bin.to_string_lossy()));
+        assert_eq!(
+            creator.find_by_marker(&outbox_entry_8361()),
+            MarkerLookup::CouldNotCheck("unexpected_issues_list_shape".to_string())
+        );
+        let _ = std::fs::remove_dir_all(bin.parent().unwrap());
+    }
+
+    // --- #4919 completion telemetry defaults -------------------------
+
+    #[test]
+    fn completion_telemetry_reads_model_and_effort_from_the_claim_stamp() {
+        let claim = json!({"claim_model": "claude-sonnet-4-5", "claim_variant": "high"});
+        let derived = derive_completion_telemetry(&claim, None);
+        assert_eq!(derived["model"], json!("claude-sonnet-4-5"));
+        assert_eq!(derived["effort"], json!("high"));
+        assert_eq!(derived["pool"], Value::Null);
+        assert_eq!(derived["cost_usd"], Value::Null);
+        assert_eq!(derived.len(), TELEMETRY_FIELDS.len());
+    }
+
+    #[test]
+    fn completion_telemetry_falls_back_to_the_session_serving_leaf_and_route() {
+        // A routed session: the declared model names the POOL; the
+        // serving-leaf readout names the model and effort.
+        let session = json!({"data": {
+            "model": {"providerID": "opencode-route", "id": "workhorse"},
+            "route_usage": {"lastServing": {
+                "providerID": "anthropic", "modelID": "claude-opus-4-1", "variant": "medium"
+            }},
+        }});
+        let derived = derive_completion_telemetry(&json!({}), Some(&session));
+        assert_eq!(derived["model"], json!("claude-opus-4-1"));
+        assert_eq!(derived["effort"], json!("medium"));
+        assert_eq!(derived["pool"], json!("workhorse"));
+        // A concrete declared model names no pool.
+        let concrete = json!({"model": {"providerID": "anthropic", "id": "claude-haiku-4-5"}});
+        assert_eq!(session_declared_pool(&concrete), None);
+    }
+
+    #[test]
+    fn completion_telemetry_claim_wins_and_default_variant_is_absence() {
+        let claim = json!({"claim_model": "claim-model", "claim_variant": "default"});
+        let session =
+            json!({"model": {"providerID": "anthropic", "id": "leaf-model", "variant": "low"}});
+        let derived = derive_completion_telemetry(&claim, Some(&session));
+        assert_eq!(derived["model"], json!("claim-model"));
+        // "default" is the server saying no variant was chosen, so
+        // the session's real variant supplies effort.
+        assert_eq!(derived["effort"], json!("low"));
+    }
+
+    #[test]
+    fn completion_telemetry_always_carries_all_four_keys() {
+        let derived = derive_completion_telemetry(&json!({}), None);
+        for field in TELEMETRY_FIELDS {
+            assert!(derived.contains_key(field), "{field} must be present");
+            assert_eq!(derived[field], Value::Null, "{field} has no source here");
+        }
+    }
+
+    #[test]
+    fn completion_telemetry_merge_never_overwrites_the_caller() {
+        let mut result = json!({"model": "caller-model", "outcome": "pr_opened"});
+        let derived = derive_completion_telemetry(&json!({"claim_model": "claim-model"}), None);
+        merge_completion_telemetry(&mut result, derived);
+        assert_eq!(result["model"], json!("caller-model"));
+        assert_eq!(result["effort"], Value::Null);
+        assert_eq!(result["outcome"], json!("pr_opened"));
+    }
+
+    #[test]
+    fn completion_session_id_prefers_env_then_the_claim_row() {
+        let claim = json!({"progress": {"session_id": "ses_row"}});
+        assert_eq!(
+            completion_session_id(Some("ses_env"), &claim).as_deref(),
+            Some("ses_env")
+        );
+        assert_eq!(
+            completion_session_id(Some("   "), &claim).as_deref(),
+            Some("ses_row")
+        );
+        assert_eq!(completion_session_id(None, &json!({})), None);
     }
 }

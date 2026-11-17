@@ -26,7 +26,7 @@ pub mod json;
 pub mod screen;
 pub mod text;
 
-use std::alloc::{alloc, dealloc, Layout};
+use std::alloc::{Layout, alloc, dealloc};
 use std::cell::UnsafeCell;
 
 /// A Plaza world program. `Model` is opaque to the host: the ABI hands
@@ -262,8 +262,8 @@ pub fn plaza_view_impl<W: World>(model: i32) -> i32 {
 pub fn plaza_layout_impl<W: World>(model: i32, width: i64, height: i64) -> i32 {
     unsafe {
         let model_ref = ref_model::<W::Model>(model);
-        let bytes = W::layout(model_ref, width as u64, height as u64)
-            .unwrap_or_else(|| W::view(model_ref));
+        let bytes =
+            W::layout(model_ref, width as u64, height as u64).unwrap_or_else(|| W::view(model_ref));
         set_output(bytes)
     }
 }

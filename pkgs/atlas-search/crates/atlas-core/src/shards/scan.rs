@@ -260,9 +260,9 @@ fn vector_pool(
     topics: Option<&[String]>,
     q: &BranchQuery,
     filters: &Filters,
-) -> Result<Vec<BranchHit>> {
+) -> Result<(Vec<BranchHit>, std::collections::HashMap<i64, String>)> {
     let Some(qvec) = q.query_vector.as_deref() else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), std::collections::HashMap::new()));
     };
     if q.vector_backend != VectorBackend::Scan {
         return Err(Error::fatal(
@@ -281,19 +281,40 @@ fn vector_pool(
             ceiling: TierCeiling::from_sensitivity(filters.max_sensitivity),
         },
     )?;
-    Ok(res
+    // M5 provenance (#7647): each hit's shard manifest
+    // `embedding_model`, keyed by chunk id for the query trace.
+    let model_by_shard: std::collections::HashMap<&str, &str> = set
+        .shards()
+        .iter()
+        .map(|s| (s.name.as_str(), s.embedding_model.as_str()))
+        .collect();
+    let mut candidate_models = std::collections::HashMap::new();
+    let hits = res
         .hits
         .into_iter()
-        .map(|h| BranchHit {
-            chunk_id: h.chunk_id,
-            dist: Some(h.dist),
+        .map(|h| {
+            if let Some(m) = model_by_shard.get(h.shard.as_str()) {
+                candidate_models.insert(h.chunk_id, m.to_string());
+            }
+            BranchHit {
+                chunk_id: h.chunk_id,
+                dist: Some(h.dist),
+            }
         })
-        .collect())
+        .collect();
+    Ok((hits, candidate_models))
 }
 
 impl<B: SearchBackend> SearchBackend for ShardedBackend<B> {
     fn name(&self) -> &'static str {
         self.inner.name()
+    }
+
+    fn snapshot_id(&self) -> Option<String> {
+        // The shard set IS the corpus state for this backend: its
+        // snapshot id moves on every re-shard / promotion, which
+        // is exactly the result-cache invalidation signal (#9943).
+        Some(self.set.snapshot_id())
     }
 
     fn vec_table(&self) -> &str {
@@ -377,9 +398,11 @@ impl<B: SearchBackend> SearchBackend for ShardedBackend<B> {
                 pools.fts = self.inner.branch_pools(&fts_query, filters)?.fts;
             }
             if let Some(h) = vec_handle {
-                pools.vector = h
+                let (hits, models) = h
                     .join()
                     .map_err(|_| Error::backend("shard vector branch panicked"))??;
+                pools.vector = hits;
+                pools.candidate_models = models;
             }
             Ok(pools)
         })

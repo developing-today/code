@@ -53,7 +53,6 @@ Domain-starter parent references are never emitted as hard native blockers. Sour
 
 Source-local candidate aliases normalized for this packet: CEN-03 → #9241.
 
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -100,8 +99,6 @@ Negative coverage: no second store/two writers; uncertain legacy data stays unkn
 - **First failing oracle:** `test_schema_fact_has_one_owner_and_legacy_mapping` checks queue work ID/state, urgency/profile, lease, blocked deps, journal/events, notes/checkpoints, cursors, operation intent and Project fields; every fact is either reuse, extend, absent, or conflict with evidence and rollback path.
 - **Done check:** all overlapping schema facts map to one authority; unresolved fields are listed as gated; no design invents tables or treats `events`, `blocked_deps`, `merge_intent`, or creator outbox as equivalent by name.
 - **Negative / rollback:** no second store/two writers; uncertain legacy data stays unknown/quarantined; migration plan preserves old reader/data/pending remote receipts and has a disable/rollback boundary. This slice is a design gate, not migration authorization.
-
-
 
 ## Merged source-key/facade acceptance
 

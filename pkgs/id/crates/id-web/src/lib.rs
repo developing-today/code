@@ -68,7 +68,7 @@ pub use markdown::{
 
 use axum::Router;
 use iroh_blobs::api::Store;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -78,7 +78,7 @@ use id_store::tags::TagStore;
 
 pub use app_interface::{WebInterface, WebInterfaceError, WebMode, web_interface_from_app_toml};
 pub use assets::static_handler;
-pub use collab::CollabState;
+pub use collab::{CollabState, note_session_key};
 pub use identity::IdentityStore;
 #[doc(hidden)]
 pub use identity::crash_gate;
@@ -237,6 +237,246 @@ impl Drop for SavePermit {
     }
 }
 
+/// Default number of successful registrations one source may complete
+/// inside [`DEFAULT_REGISTER_WINDOW`] before the register handler starts
+/// refusing with 429 (#1766).
+pub const DEFAULT_REGISTER_LIMIT: usize = 10;
+
+/// Default registration rate-limit window (#1766).
+pub const DEFAULT_REGISTER_WINDOW: Duration = Duration::from_secs(60);
+
+/// Per-source rate limiter for `POST /api/identity/register` (#1766).
+///
+/// The identity store's admission cap bounds how many identities can
+/// exist, but the register handler itself was unthrottled: a caller on
+/// a non-loopback bind could burn request-rate CPU/IO and squat cap
+/// slots with junk registrations. This limiter follows the
+/// [`SaveRateLimiter`] pattern — a per-key map whose entries are swept
+/// once they can no longer refuse, so the map holds only sources
+/// active inside the current window (#1713 discipline).
+///
+/// The key is the request's source (the peer IP, supplied by the
+/// listener's connect-info; see `identity_register_handler` in
+/// `routes.rs`). Forwarded headers are never consulted: on the
+/// directly exposed listener they are client-spoofable (the
+/// `security.rs` doctrine). Only *successful* registrations are
+/// counted — a refusal at the admission cap or a failed attempt does
+/// not consume budget. The check/record split means a concurrent
+/// burst can overshoot the limit by the number of requests in flight;
+/// that tolerance is immaterial against the sustained-rate
+/// cap-squatting this limiter exists to stop.
+#[derive(Debug, Clone)]
+pub struct RegisterRateLimiter {
+    /// Map of source key → timestamps of successful registrations
+    /// inside the current window, oldest first.
+    attempts: Arc<Mutex<HashMap<String, VecDeque<Instant>>>>,
+    /// Maximum successful registrations per source inside `window`.
+    pub limit: usize,
+    /// Sliding window length.
+    pub window: Duration,
+}
+
+impl RegisterRateLimiter {
+    /// Create a new registration rate limiter.
+    pub fn new(limit: usize, window: Duration) -> Self {
+        Self {
+            attempts: Arc::new(Mutex::new(HashMap::new())),
+            limit,
+            window,
+        }
+    }
+
+    /// Drop one source's aged-out timestamps; returns the number of
+    /// in-window registrations remaining for it.
+    fn prune(times: &mut VecDeque<Instant>, now: Instant, window: Duration) -> usize {
+        while times
+            .front()
+            .is_some_and(|t| now.duration_since(*t) >= window)
+        {
+            times.pop_front();
+        }
+        times.len()
+    }
+
+    /// Check whether a registration from `source` is allowed now.
+    ///
+    /// Returns `Ok(())` if the source is under its limit, or
+    /// `Err(remaining)` with the time until the oldest in-window
+    /// registration ages out and a new one is allowed.
+    pub async fn check(&self, source: &str) -> Result<(), Duration> {
+        if self.limit == 0 {
+            return Err(self.window);
+        }
+        let mut map = self.attempts.lock().await;
+        let now = Instant::now();
+        if let Some(times) = map.get_mut(source) {
+            if Self::prune(times, now, self.window) >= self.limit {
+                // The front is the oldest in-window registration
+                // (prune kept it because it is younger than the
+                // window), so the remaining wait is exact.
+                let oldest = *times.front().unwrap_or(&now);
+                return Err(self
+                    .window
+                    .checked_sub(now.duration_since(oldest))
+                    .unwrap_or(Duration::ZERO));
+            }
+            if times.is_empty() {
+                map.remove(source);
+            }
+        }
+        Ok(())
+    }
+
+    /// Record a successful registration from `source`.
+    pub async fn record(&self, source: &str) {
+        let mut map = self.attempts.lock().await;
+        let now = Instant::now();
+        // Sweep every source's aged-out entries: they can no longer
+        // refuse a registration, and keeping them would grow the map
+        // by one entry for every source ever seen (#1713).
+        map.retain(|_, times| Self::prune(times, now, self.window) > 0);
+        map.entry(source.to_owned()).or_default().push_back(now);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod register_rate_limiter_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn under_limit_is_allowed_and_over_limit_is_refused() {
+        let limiter = RegisterRateLimiter::new(2, Duration::from_secs(60));
+        limiter.check("203.0.113.7").await.unwrap();
+        limiter.record("203.0.113.7").await;
+        limiter.check("203.0.113.7").await.unwrap();
+        limiter.record("203.0.113.7").await;
+        let remaining = limiter.check("203.0.113.7").await.unwrap_err();
+        assert!(remaining > Duration::ZERO && remaining <= Duration::from_secs(60));
+    }
+
+    #[tokio::test]
+    async fn sources_are_independent() {
+        let limiter = RegisterRateLimiter::new(1, Duration::from_secs(60));
+        limiter.record("198.51.100.1").await;
+        assert!(limiter.check("198.51.100.1").await.is_err());
+        limiter.check("198.51.100.2").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn window_expiry_allows_registration_again() {
+        let limiter = RegisterRateLimiter::new(1, Duration::from_millis(60));
+        limiter.record("192.0.2.9").await;
+        assert!(limiter.check("192.0.2.9").await.is_err());
+        tokio::time::sleep(Duration::from_millis(90)).await;
+        limiter.check("192.0.2.9").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn zero_window_never_refuses() {
+        // The routes tests disable the save limiter with a ZERO
+        // cooldown; a ZERO window is the same off switch here.
+        let limiter = RegisterRateLimiter::new(1, Duration::ZERO);
+        for _ in 0..5 {
+            limiter.record("203.0.113.99").await;
+            limiter.check("203.0.113.99").await.unwrap();
+        }
+    }
+}
+
+/// Dynamic publication path mounts (#2147 slice 3): mount path ->
+/// world name, shared by every clone of an [`AppState`] (all web
+/// listeners of one serve process) and by the serve-owned publication
+/// manager's mount sink.
+///
+/// The Explorer router consults this table on every request, so a
+/// mount applies and reverts at runtime without rebuilding any
+/// router: publishing inserts a row, unpublishing removes it, and
+/// the Explorer route the mount shadowed answers again. The table
+/// is the live half only -- the persisted set is the publication
+/// registry in `id-cli`, which owns validation (canonical paths,
+/// shadow acknowledgement); rows here are already canonical.
+#[derive(Clone, Default)]
+pub struct PublicationMounts {
+    inner: Arc<std::sync::RwLock<std::collections::BTreeMap<String, String>>>,
+}
+
+impl std::fmt::Debug for PublicationMounts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PublicationMounts")
+            .field("mounts", &self.snapshot())
+            .finish()
+    }
+}
+
+impl PublicationMounts {
+    /// An empty mount table.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn read(&self) -> std::sync::RwLockReadGuard<'_, std::collections::BTreeMap<String, String>> {
+        self.inner
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn write(&self) -> std::sync::RwLockWriteGuard<'_, std::collections::BTreeMap<String, String>> {
+        self.inner
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Mount `world` at the canonical mount `path`, replacing any
+    /// mount already there (the registry refuses a second publish
+    /// at a taken placement before this is ever called).
+    pub fn mount(&self, world: &str, path: &str) {
+        self.write().insert(path.to_owned(), world.to_owned());
+    }
+
+    /// Remove the mount at `path`, restoring the Explorer route.
+    ///
+    /// # Errors
+    ///
+    /// Fails when nothing is mounted at `path` -- the publication
+    /// manager's `MountSink` contract relies on this: an error
+    /// means the route was NOT removed, so the manager restores
+    /// the persisted registry entry it had already saved away.
+    pub fn unmount(&self, path: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.write().remove(path).is_some(),
+            "no publication is mounted at {path}"
+        );
+        Ok(())
+    }
+
+    /// The mount governing `request_path`, if any: the longest
+    /// mount path that equals the request path or is a whole-segment
+    /// prefix of it. The root mount (`/`) governs every path.
+    /// Returns `(mount_path, world)`.
+    #[must_use]
+    pub fn lookup(&self, request_path: &str) -> Option<(String, String)> {
+        self.read()
+            .iter()
+            .filter(|(mount, _)| {
+                mount.as_str() == "/"
+                    || request_path == mount.as_str()
+                    || request_path
+                        .strip_prefix(mount.as_str())
+                        .is_some_and(|rest| rest.starts_with('/'))
+            })
+            .max_by_key(|(mount, _)| mount.len())
+            .map(|(mount, world)| (mount.clone(), world.clone()))
+    }
+
+    /// A snapshot of the live mounts (mount path -> world).
+    #[must_use]
+    pub fn snapshot(&self) -> std::collections::BTreeMap<String, String> {
+        self.read().clone()
+    }
+}
+
 /// Shared application state for web handlers.
 ///
 /// Contains references to the blob store, collaborative editing state,
@@ -245,6 +485,13 @@ impl Drop for SavePermit {
 pub struct AppState {
     /// The blob store for accessing files.
     pub store: Store,
+    /// This node's own iroh endpoint, when the serving process wired one
+    /// in (#5346): the server-to-server transfer behind the web send
+    /// route (`POST /api/files/send`) runs with this endpoint's identity,
+    /// exactly like the meta protocol's `Send` handler (#5345). `None`
+    /// for states built outside `id serve` (tests, embedded surfaces) —
+    /// the send route then answers 503 rather than inventing an identity.
+    pub transfer_endpoint: Option<iroh::endpoint::Endpoint>,
     /// State for collaborative editing sessions.
     pub collab: Arc<CollabState>,
     /// Asset URLs (with cache-busting hashes).
@@ -257,6 +504,8 @@ pub struct AppState {
     pub tag_store: Arc<TagStore>,
     /// Per-file save rate limiter.
     pub save_limiter: SaveRateLimiter,
+    /// Per-source registration rate limiter (#1766).
+    pub register_limiter: RegisterRateLimiter,
     /// Serializes filename-tag claims (upload name resolution, create
     /// existence check, save tag assignment) and the filename-keyed
     /// metadata writes across clones of this state (#2363, #8407).
@@ -282,6 +531,11 @@ pub struct AppState {
     /// phase 2), when this state's router is a program surface.
     /// `None` for Explorer routers. Set by `create_program_router`.
     pub program_world: Option<String>,
+    /// Dynamic publication path mounts (#2147 slice 3), shared with
+    /// the serve-owned publication manager: the live mount table
+    /// the Explorer router consults per request. Empty (inert) for
+    /// states that serve no publications.
+    pub publication_mounts: PublicationMounts,
     /// Mark the directory explorer's session cookies `Secure`.
     pub cookie_secure: bool,
     /// The resolved group-log path for the read-only `/groups` page
@@ -306,9 +560,11 @@ impl std::fmt::Debug for AppState {
             .field("node_id", &self.node_id)
             .field("tag_store", &"<TagStore>")
             .field("save_limiter", &self.save_limiter)
+            .field("register_limiter", &self.register_limiter)
             .field("identity", &self.identity)
             .field("local_events", &"<LocalEvents>")
             .field("world", &self.world)
+            .field("publication_mounts", &self.publication_mounts)
             .field("cookie_secure", &self.cookie_secure)
             .field("groups_log", &self.groups_log)
             .field("seitan", &self.seitan)
@@ -361,12 +617,17 @@ impl AppState {
     ) -> anyhow::Result<Self> {
         Ok(Self {
             store,
+            transfer_endpoint: None,
             collab: Arc::new(CollabState::new()),
             assets: load_asset_urls(),
             peers,
             node_id,
             tag_store,
             save_limiter: SaveRateLimiter::new(DEFAULT_SAVE_COOLDOWN),
+            register_limiter: RegisterRateLimiter::new(
+                DEFAULT_REGISTER_LIMIT,
+                DEFAULT_REGISTER_WINDOW,
+            ),
             upload_name_lock: Arc::new(Mutex::new(())),
             identity: IdentityStore::new_with_max_identities(
                 secret_key,
@@ -379,10 +640,19 @@ impl AppState {
             web_route: "/world".to_owned(),
             web_socket: Some("/ws/world".to_owned()),
             program_world: None,
+            publication_mounts: PublicationMounts::new(),
             cookie_secure: false,
             groups_log: None,
             seitan: SeitanState::default(),
         })
+    }
+
+    /// Wire the serving node's own endpoint in as the transfer identity
+    /// for the web send route (#5346). `id serve` passes its endpoint
+    /// through [`web_routers_with_surface`]; see
+    /// [`AppState::transfer_endpoint`].
+    pub fn set_transfer_endpoint(&mut self, endpoint: Option<iroh::endpoint::Endpoint>) {
+        self.transfer_endpoint = endpoint;
     }
 }
 
@@ -544,7 +814,102 @@ pub async fn web_routers(
     groups_log: Option<std::path::PathBuf>,
     seitan: SeitanState,
 ) -> anyhow::Result<Vec<Router>> {
-    let state = match local_events {
+    let (routers, _surface) = web_routers_with_surface(
+        store,
+        peers,
+        node_id,
+        tag_store,
+        secret_key,
+        identity_db_path,
+        securities,
+        world,
+        cookie_secure,
+        local_events,
+        surfaces,
+        groups_log,
+        seitan,
+        None,
+    )
+    .await?;
+    Ok(routers)
+}
+
+/// A factory for building further routers over the SAME shared
+/// [`AppState`] the configured listeners were built from (#2147
+/// slice 3). The identity store opens exclusively, so a dynamic
+/// publication listener cannot build a second state -- it builds
+/// its program router here, over a clone of the one shared state,
+/// with its own per-bind [`WebSecurity`]. The factory also carries
+/// the process's [`PublicationMounts`] table (the same instance
+/// every router clone consults), which is how the serve-owned
+/// publication manager applies path mounts to the Explorer
+/// listeners without rebuilding them.
+#[derive(Clone)]
+pub struct WebSurfaceFactory {
+    state: AppState,
+    world: Option<id_worlds::world_hub::WorldHub>,
+    cookie_secure: bool,
+    groups_log: Option<std::path::PathBuf>,
+    seitan: SeitanState,
+}
+
+impl std::fmt::Debug for WebSurfaceFactory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebSurfaceFactory")
+            .field("publication_mounts", &self.state.publication_mounts)
+            .field("world", &self.world.is_some())
+            .field("cookie_secure", &self.cookie_secure)
+            .field("groups_log", &self.groups_log)
+            .finish()
+    }
+}
+
+impl WebSurfaceFactory {
+    /// The shared dynamic-publication mount table.
+    #[must_use]
+    pub fn publication_mounts(&self) -> PublicationMounts {
+        self.state.publication_mounts.clone()
+    }
+
+    /// The program-only router for `world_name`, finished with
+    /// `security` -- exactly the router a configured program
+    /// listener for that world would serve (#2146 phase 2), built
+    /// on demand for a dynamic publication listener.
+    #[must_use]
+    pub fn program_router(&self, world_name: &str, security: WebSecurity) -> Router {
+        finish_router(
+            self.state.clone(),
+            security,
+            self.world.clone(),
+            self.cookie_secure,
+            Some(world_name.to_owned()),
+            self.groups_log.clone(),
+            self.seitan.clone(),
+        )
+    }
+}
+
+/// Like [`web_routers`], and also returns the [`WebSurfaceFactory`]
+/// over the shared state, for dynamic publication listeners and
+/// path mounts (#2147 slice 3).
+#[allow(clippy::too_many_arguments)]
+pub async fn web_routers_with_surface(
+    store: Store,
+    peers: Option<PeerDiscovery>,
+    node_id: String,
+    tag_store: Arc<TagStore>,
+    secret_key: [u8; 32],
+    identity_db_path: std::path::PathBuf,
+    securities: Vec<WebSecurity>,
+    world: Option<id_worlds::world_hub::WorldHub>,
+    cookie_secure: bool,
+    local_events: Option<Arc<Mutex<id_events::local_events::LocalEvents>>>,
+    surfaces: Vec<Option<String>>,
+    groups_log: Option<std::path::PathBuf>,
+    seitan: SeitanState,
+    transfer_endpoint: Option<iroh::endpoint::Endpoint>,
+) -> anyhow::Result<(Vec<Router>, WebSurfaceFactory)> {
+    let mut state = match local_events {
         Some(events) => {
             AppState::with_local_events(
                 store,
@@ -569,7 +934,15 @@ pub async fn web_routers(
             .await?
         }
     };
-    Ok(securities
+    state.set_transfer_endpoint(transfer_endpoint);
+    let surface = WebSurfaceFactory {
+        state: state.clone(),
+        world: world.clone(),
+        cookie_secure,
+        groups_log: groups_log.clone(),
+        seitan: seitan.clone(),
+    };
+    let routers = securities
         .into_iter()
         .zip(surfaces)
         .map(|(security, surface)| {
@@ -583,7 +956,8 @@ pub async fn web_routers(
                 seitan.clone(),
             )
         })
-        .collect())
+        .collect();
+    Ok((routers, surface))
 }
 
 /// Applies the world/cookie settings and delegates security to the public
@@ -616,7 +990,7 @@ fn finish_router(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -919,7 +1293,17 @@ mod tests {
 
     #[test]
     fn test_load_asset_urls_from_manifest() {
+        use assets::Assets;
+
         let urls = load_asset_urls();
+        if Assets::get("manifest.json").is_none() {
+            // Clean checkout: no built frontend, so the documented
+            // fallback is the unhashed defaults (see load_asset_urls
+            // and pkgs/id/build.rs). The test must not require a build.
+            assert_eq!(urls.main_js, "/assets/main.js");
+            assert_eq!(urls.styles_css, "/assets/styles.css");
+            return;
+        }
         // Should load hashed URLs from manifest (name.hash.ext format)
         // Check that main_js has at least two dots (name.hash.js)
         let js_dots = urls.main_js.matches('.').count();
@@ -1085,5 +1469,49 @@ mod tests {
 
         broadcast_chat(&mut explorer_client, &mut program_client, "from-explorer").await;
         broadcast_chat(&mut program_client, &mut explorer_client, "from-program").await;
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod publication_mounts_tests {
+    use super::PublicationMounts;
+
+    #[test]
+    fn lookup_matches_whole_segments_and_prefers_the_longest_mount() {
+        let mounts = PublicationMounts::new();
+        assert_eq!(mounts.lookup("/prog"), None);
+        mounts.mount("arena", "/prog");
+        mounts.mount("deep", "/prog/deep");
+        assert_eq!(
+            mounts.lookup("/prog"),
+            Some(("/prog".to_owned(), "arena".to_owned()))
+        );
+        assert_eq!(
+            mounts.lookup("/prog/"),
+            Some(("/prog".to_owned(), "arena".to_owned()))
+        );
+        assert_eq!(
+            mounts.lookup("/prog/deep/x"),
+            Some(("/prog/deep".to_owned(), "deep".to_owned()))
+        );
+        // A merely string-prefixed path is not under the mount.
+        assert_eq!(mounts.lookup("/program"), None);
+        assert_eq!(mounts.lookup("/other"), None);
+    }
+
+    #[test]
+    fn root_mount_governs_everything_and_unmount_reports_absence() {
+        let mounts = PublicationMounts::new();
+        mounts.mount("arena", "/");
+        assert_eq!(
+            mounts.lookup("/anything/at/all"),
+            Some(("/".to_owned(), "arena".to_owned()))
+        );
+        mounts.unmount("/").unwrap();
+        assert_eq!(mounts.lookup("/anything"), None);
+        // The MountSink contract: unmounting what is not mounted is
+        // an error (the route was not removed), never a silent Ok.
+        assert!(mounts.unmount("/").is_err());
     }
 }

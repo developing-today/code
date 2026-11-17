@@ -1198,7 +1198,7 @@ pub fn run(
                 Viewer::Account(id) => Principal::Account(id.clone()),
                 Viewer::Anonymous => return Err(unauthenticated("sign in first")),
             };
-            session = Some(auth.open_session(principal, now));
+            session = Some(auth.open_session(principal, now)?);
         }
         DirectoryAction::SignOut => {
             if let Some(token) = &caller.session {
@@ -1281,7 +1281,7 @@ pub fn run(
             let address = normalize_email(&address)?;
             match auth.check_code(&address, PurposeKind::SignIn, &code, now)? {
                 Purpose::SignIn { account } => {
-                    session = Some(auth.open_session(Principal::Account(account.clone()), now));
+                    session = Some(auth.open_session(Principal::Account(account.clone()), now)?);
                     viewer = Viewer::Account(account);
                 }
                 Purpose::Confirm { .. } => return Err(unauthenticated("no matching code")),

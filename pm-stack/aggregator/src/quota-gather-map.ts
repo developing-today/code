@@ -85,6 +85,16 @@ export function normalizeResetAt(v: unknown): string | null {
  * entriesWithPoolSplits below ALSO files attributable rows under
  * their split pool ids. Antigravity's per-model windows likewise keep
  * their flattened names here; the pool grouping is a split-row step.
+ * The OpenCode Zen door (provider ids `opencode.<workspace>`, the
+ * zen-plans door set in .opencode/route-fallbacks.md;
+ * the group was named opencode-zen-plans until the 2026-11-15 rename) reads
+ * the SAME plan meters as the Go door: on the 2026-11-15 ticks its
+ * per-workspace rows carried windows and reset instants identical to
+ * the matching `opencode-go.<workspace>` rows (#10443). Its rows
+ * therefore file under the Go pool ids below — aliasing, not three
+ * new pools, so the same meter is never double-counted. The provider
+ * id itself stays the Zen config id (canonicalProviderId is a
+ * separate contract; the router matches by exact provider id).
  */
 export function serviceIdFor(providerId: string): string {
   switch (providerId) {
@@ -106,6 +116,12 @@ export function serviceIdFor(providerId: string): string {
       return "meta";
     case "opendesign":
       return "opendesign";
+    case "opencode.drewrypope":
+      return "opencode-go.drewrypope";
+    case "opencode.popesdrew":
+      return "opencode-go.popesdrew";
+    case "opencode.developing-today-0":
+      return "opencode-go.developing-today-0";
     default:
       return providerId;
   }
@@ -231,7 +247,7 @@ export function goPoolServiceId(entry: QuotaCurrentEntry): string | null {
  * Claude+GPT pool. Quota grouping must use the same rule, or burn and
  * quota would disagree about which pool a model draws from.
  */
-function antigravityPoolForModel(model: string, legacy = false): string {
+export function antigravityPoolForModel(model: string, legacy = false): string {
   if (legacy)
     return model.startsWith("gemini") ? ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID : ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID;
   return model.startsWith("gemini") ? ANTIGRAVITY_GEMINI_SERVICE_ID : ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID;
@@ -1098,4 +1114,78 @@ export function markRetained(entries: readonly QuotaCurrentEntry[], failedTickIs
     providerId: canonicalProviderId(e.providerId),
     retainedFromFailedTick: failedTickIso,
   }));
+}
+/** #5928: cross-tick memory for the _claude read. The quota fetcher's
+ * 429 cooldown + last-good cache live inside the long-lived OpenChamber
+ * process; the gatherer is a fresh oneshot every ~15 min, so both reset
+ * every tick. The gatherer therefore persists its own copy —
+ * { lastGoodEntry, cooldownUntil } — as one JSON string value in
+ * quota-gatherer-state.json under this reserved key (the state file is
+ * a flat string map; the key round-trips through readState/writeState
+ * untouched by the snapshot-append bookkeeping). Claude only: every
+ * other provider's finalize/retention behavior is unchanged. */
+export const CLAUDE_CROSS_TICK_STATE_KEY = "claudeCrossTick:v1";
+
+export interface ClaudeCrossTickMemory {
+  lastGoodEntry: QuotaCurrentEntry | null;
+  /** Epoch ms; 0 = no cooldown in force. */
+  cooldownUntil: number;
+}
+
+export const CLAUDE_COOLDOWN_FALLBACK_MS = 5 * 60_000;
+export const CLAUDE_COOLDOWN_CAP_MS = 60 * 60_000;
+
+export function parseClaudeCrossTick(raw: string | undefined): ClaudeCrossTickMemory {
+  if (raw) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed === "object" && parsed !== null) {
+        const rec = parsed as Record<string, unknown>;
+        const entry = rec.lastGoodEntry;
+        const until = rec.cooldownUntil;
+        return {
+          lastGoodEntry:
+            typeof entry === "object" && entry !== null && typeof (entry as QuotaCurrentEntry).providerId === "string"
+              ? (entry as QuotaCurrentEntry)
+              : null,
+          cooldownUntil: typeof until === "number" && Number.isFinite(until) && until > 0 ? until : 0,
+        };
+      }
+    } catch {
+      // unreadable memory = no memory: the read behaves as a first tick
+    }
+  }
+  return { lastGoodEntry: null, cooldownUntil: 0 };
+}
+
+export function serializeClaudeCrossTick(memory: ClaudeCrossTickMemory): string {
+  return JSON.stringify({ lastGoodEntry: memory.lastGoodEntry, cooldownUntil: memory.cooldownUntil });
+}
+
+/** A claude failure is a rate-limit failure when the failure text says
+ * so (HTTP 429 / rate_limit_error / "Rate limited"). The 401 dead-token
+ * mapping ("Claude session expired") is never a rate limit and must
+ * not engage the cooldown — it is a credential fault, not pressure. */
+export function isClaudeRateLimitFailure(text: string): boolean {
+  if (/session expired/i.test(text)) return false;
+  return /\b429\b|rate.?limit/i.test(text);
+}
+
+/** Retry-After carried in a failure text, in ms. Accepts the header
+ * forms "Retry-After: 120" and "retry after 120s"; null when absent or
+ * unparseable (the caller then applies the fallback). */
+export function retryAfterMsFromFailure(text: string): number | null {
+  const m = /retry[- ]after[:\s]*([0-9]+(?:\.[0-9]+)?)\s*(?:s|sec|secs|second|seconds)?\b/i.exec(text);
+  if (!m) return null;
+  const seconds = Number(m[1]);
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  return Math.round(seconds * 1000);
+}
+
+/** Cooldown length for a fresh 429: Retry-After when the failure
+ * carries one, else the fetcher's 5-minute default; always capped at
+ * 60 minutes (the issue #5928 fix shape). */
+export function claudeCooldownMs(failureText: string): number {
+  const fromHeader = retryAfterMsFromFailure(failureText);
+  return Math.min(fromHeader ?? CLAUDE_COOLDOWN_FALLBACK_MS, CLAUDE_COOLDOWN_CAP_MS);
 }

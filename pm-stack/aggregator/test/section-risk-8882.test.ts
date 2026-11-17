@@ -70,7 +70,7 @@ describe("section-risk derivation (#8882)", () => {
     expect(candidates[0].title).toBe("Section failed: workhorse");
     expect(candidates[0].breakthrough).toBe(true);
     expect(candidates[0].url).toBe("/quota");
-    expect(candidates[0].body).toBe("walled: pool-b (resets Fri 14:28Z), pool-a (resets Sat 09:00Z)");
+    expect(candidates[0].body).toBe("walled: pool-b (resets Fri 8:28 AM CST), pool-a (resets Sat 3:00 AM CST)");
   });
 
   test("only non-walled pool >=85% -> one SEVERE RISK candidate; stale pools never count as serving", () => {
@@ -85,7 +85,9 @@ describe("section-risk derivation (#8882)", () => {
     expect(candidates).toHaveLength(1);
     expect(candidates[0].title).toBe("Section at risk: workhorse");
     expect(candidates[0].breakthrough).toBe(false);
-    expect(candidates[0].body).toBe("walled: pool-a (resets Fri 14:28Z) · pending: pool-b 97% (resets Mon 11:04Z)");
+    expect(candidates[0].body).toBe(
+      "walled: pool-a (resets Fri 8:28 AM CST) · pending: pool-b 97% (resets Mon 5:04 AM CST)",
+    );
   });
 
   test("one healthy pool under 85% -> NO section candidate even with other pools walled/near", () => {
@@ -135,9 +137,12 @@ describe("section pool join from config leaf sets (#8882)", () => {
 
   test("doors join to pools: service-id spellings, split pools, and plan doors", () => {
     const membership = sectionPoolIdsFromConfig(CONFIG, POOLS);
+    // The workhorse fixture's only Antigravity leaf is a Claude
+    // model (_antigravity/claude-x), so per-model attribution
+    // (#9170) serves only _antigravity.claude-gpt — NOT the Gemini
+    // pool the old door-level join added.
     expect(membership.workhorse).toEqual([
       "_antigravity.claude-gpt",
-      "_antigravity.gemini",
       "cline-pass",
       "opencode-go.drewrypope",
       "opencode-go.popesdrew",
@@ -155,6 +160,28 @@ describe("section pool join from config leaf sets (#8882)", () => {
     expect(poolServesDoor("opencode-go.popesdrew", "opencode-go-plans")).toBe(true);
     expect(poolServesDoor("deepseek", "opencode-go-plans")).toBe(false);
     expect(poolServesDoor("meta", "_claude")).toBe(false);
+  });
+
+  test("split Antigravity pools join by leaf model, not door (#9170)", () => {
+    // Mirrors the live config shape: speed reaches exactly one
+    // Antigravity leaf, a Gemini model, through a nested route.
+    const splitConfig = `{
+      "provider": {},
+      "experimental": { "model_routes": {
+        "speed": { "targets": ["opencode-route/gemini-hydrogen-plan"] },
+        "gemini-hydrogen-plan": { "targets": ["_antigravity/gemini-4-hydrogen#high"] },
+        "workhorse": { "targets": ["_antigravity/claude-sonnet-5-5"] },
+        "summit": { "targets": ["_antigravity/gemini-4-argon", "_antigravity/claude-opus-5-5"] }
+      } }
+    }`;
+    const membership = sectionPoolIdsFromConfig(splitConfig, POOLS);
+    // Regression (task 15348): a Gemini-only section must NOT gain
+    // _antigravity.claude-gpt, whose health would suppress its alert.
+    expect(membership.speed).toEqual(["_antigravity.gemini"]);
+    // Mirror image: a Claude-only section gains only claude-gpt.
+    expect(membership.workhorse).toEqual(["_antigravity.claude-gpt"]);
+    // Both leaf kinds present -> both pools serve the section.
+    expect(membership.summit).toEqual(["_antigravity.claude-gpt", "_antigravity.gemini"]);
   });
 
   test("unparseable config yields no membership", () => {

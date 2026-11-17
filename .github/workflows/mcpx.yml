@@ -156,7 +156,7 @@ jobs:
                 --argjson attempt "$GITHUB_RUN_ATTEMPT" --arg derivation "v1" --arg date "$date" \
                 '{seed:$seed, commit:$commit, ref:$ref, event:$event, run:$run, attempt:$attempt, derivation:$derivation, date:$date}' > seed.json
           cat seed.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: test-seed
           path: seed.json
@@ -445,6 +445,18 @@ jobs:
       - name: bun test
         working-directory: pkgs/mcpx
         run: bun test plugin/opencode/mcpx/ plugin/core/
+
+      # The opencode plugin v2 suite (#6092). Run by directory so new test
+      # files are covered automatically; the six files registered today are
+      # named and asserted to exist, so a rename cannot silently shrink
+      # the suite the registry row counts.
+      - name: bun test (opencode plugin v2)
+        working-directory: pkgs/mcpx
+        run: |
+          for f in permission.test.ts picker.test.ts sampling.test.ts tool-filter.test.ts tools.test.ts v2.test.ts; do
+            test -f "plugin/opencode/v2/$f" || { echo "registered v2 test file missing: plugin/opencode/v2/$f"; exit 1; }
+          done
+          bun test plugin/opencode/v2/
 
   vendorhash-repair:
     name: vendorHash repair (bot dependency bumps only)

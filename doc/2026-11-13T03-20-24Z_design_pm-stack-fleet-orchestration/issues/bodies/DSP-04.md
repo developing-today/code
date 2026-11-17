@@ -57,9 +57,6 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: #9178 (upstream claim/manual/takeover/resume semantics must be verified before mutation/cutover; offline compatibility models may proceed), #9179 (upstream park/resume safety semantics must be verified before mutation/cutover; offline fixtures may proceed).
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9200→PRI-01, #9206→CLI-02.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -107,8 +104,8 @@ Negative coverage: stale input, duplicate/replay, ambiguous resource, unauthoriz
 - **Done/oracle:** table-driven MBT oracle equals expected target/action/reason; no effect on ambiguous/ineligible rows and no priority mutation on `do-now`. Command: `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_dsp_04_ambiguous_work_reference_rejects_before_effect`.
 - **Dependencies:** DSP-01/02/03 and granular resource-read/relations contract keys, #9070, #9178/#9179, #9200. No blocker on the whole #9206 domain starter; queue/table identity reconciliation is hard only for reservation-level writes.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `DEP-04` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/relations.rs`

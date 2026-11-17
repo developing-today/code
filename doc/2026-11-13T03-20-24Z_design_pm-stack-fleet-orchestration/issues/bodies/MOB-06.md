@@ -44,9 +44,6 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: #9178 (upstream claim/manual/takeover/resume semantics must be verified before mutation/cutover; offline compatibility models may proceed), #9179 (upstream park/resume safety semantics must be verified before mutation/cutover; offline fixtures may proceed).
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9200→PRI-01.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -98,15 +95,14 @@ Consume the existing #7030 protected expedite membership/value and the dated `pm
 - **Done/oracle:** every verb yields exactly one policy result and expected source-of-truth change in fake orchestrator/Fleet owners; cross-surface golden corpus verifies no sync loop and priority always re-runs #9200; public side-effect test asserts no comment on private default. A schema-dependent durable note is a follow-on gate, not a reason to add parallel storage here.
 - **Edges:** hard MOB-05, #9200 classification/mapping, #9178/#9179; only nonpersistent preview/read UX proceeds before those contracts settle.
 
-
 ## Merged source-key/facade acceptance
 
 - `PRI-06` → `MOB-06`: Priority mobile actions are one integration slice owned by MOB-06; retain PRI-06 source acceptance there instead of duplicating the priority-actions frontend/backend. Exact command rows allocated here: no direct command rows.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `MOB-05` — `shared-file:pm-stack/aggregator/src/actions.ts`
 - blocked by `MOB-05` — `shared-file:pm-stack/aggregator/src/server.ts`
 - blocked by `MOB-05` — `shared-file:pm-stack/aggregator/src/work-action-contract.ts`

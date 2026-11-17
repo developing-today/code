@@ -1,12 +1,22 @@
 import { describe, expect, it } from "bun:test";
 import { BOUNDED_DASHBOARD_PATHS, createDashboardResponseDeadline } from "../src/assembly-deadline.ts";
 
-const routes = ["/board", "/api/board.json", "/api/overview.json", "/frag/overview", "/program"] as const;
+const routes = [
+  "/board",
+  "/api/board.json",
+  "/api/overview.json",
+  "/frag/overview",
+  "/program",
+  "/api/program.json",
+] as const;
 
 describe("dashboard assembly deadline (#5664)", () => {
-  it("covers only the five routes whose complete assembly can outlive Bun's request window", () => {
+  it("covers only the six routes whose complete assembly can outlive Bun's request window", () => {
     expect([...BOUNDED_DASHBOARD_PATHS].sort()).toEqual([...routes].sort());
-    expect(BOUNDED_DASHBOARD_PATHS.has("/api/program.json")).toBe(false);
+    // #9781: /api/program.json was deliberately excluded while it was
+    // fast; steward run 369 measured a 17.83 s unbounded first pass,
+    // so the twin is bounded now like its HTML sibling.
+    expect(BOUNDED_DASHBOARD_PATHS.has("/api/program.json")).toBe(true);
   });
 
   it.each(routes)("returns a visible, non-empty bounded response for a stalled %s", async (path) => {

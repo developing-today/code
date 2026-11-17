@@ -66,16 +66,13 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: none.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
 
 - **First failing test:** `test_census_evidence_requires_exact_symbol_and_bounded_claim`
 - **Oracle:** The source slice’s stated reference model, golden fixture, or invariant; compare expected and observed state explicitly. No mock-only claim of deployed/live behavior.
-- **Done command:** `table-driven evidence audit validates required source path/symbol/lines/test/timestamp for every `verified existing`/`partially implemented` row and explicit missing evidence for others. Includes projector `webhook.ts:7–57`, `server.ts:147–201`, `webhook-delivery-id.test.ts:90–154`, README hot-ledger semantics, `turso_queue.rs` claim/filter, `validate.ts` 15/25 snapping, PM PostgREST path/#9028, #8187/#6533 split. -`
+- **Done command:** `table-driven evidence audit validates required source path/symbol/lines/test/timestamp for every `verified existing`/`partially implemented`row and explicit missing evidence for others. Includes projector`webhook.ts:7–57`, `server.ts:147–201`, `webhook-delivery-id.test.ts:90–154`, README hot-ledger semantics, `turso_queue.rs`claim/filter,`validate.ts` 15/25 snapping, PM PostgREST path/#9028, #8187/#6533 split. -`
 - Tests must first be listed by exact name in the owning target (`-- --list`); assert the test exists before execution. A zero-test filter passing is not acceptance.
 
 ## Acceptance and negative cases
@@ -116,10 +113,9 @@ Negative coverage: no inferred deployment, no claim that projector ACK is Fleet 
 - **Done check:** table-driven evidence audit validates required source path/symbol/lines/test/timestamp for every `verified existing`/`partially implemented` row and explicit missing evidence for others. Includes projector `webhook.ts:7–57`, `server.ts:147–201`, `webhook-delivery-id.test.ts:90–154`, README hot-ledger semantics, `turso_queue.rs` claim/filter, `validate.ts` 15/25 snapping, PM PostgREST path/#9028, #8187/#6533 split.
 - **Negative / rollback:** no inferred deployment, no claim that projector ACK is Fleet command acceptance, no claim of #6533 proof from #8187, no issue-title-as-test evidence. Dated evidence corrections are additive citations; never rewrite pinned code claims as live current behavior.
 
-
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `CEN-01` — `shared-file:doc/2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration/census/requirements-crosswalk.jsonl`
 - blocked by `CEN-01` — `shared-file:doc/2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration/census/requirements-crosswalk.md`

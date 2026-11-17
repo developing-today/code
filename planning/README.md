@@ -21,7 +21,7 @@ The repo holds several projects that move on their own schedules, so each has it
 | The NixOS flake and the infra manifests        | [`roadmaps/nixos-and-infra.md`](roadmaps/nixos-and-infra.md)   | `nixos/`, `lib/`, `infra/` |
 | Repo-wide CI and automation                    | [`roadmaps/repo-and-ci.md`](roadmaps/repo-and-ci.md)           | `.github/`                 |
 | The basement home cluster (Talos, Cozystack)   | [`roadmaps/basement-cluster.md`](roadmaps/basement-cluster.md) | `infra/talos/`, `doc/`     |
-| The PM stack (project management) | [`roadmaps/pm-stack.md`](roadmaps/pm-stack.md) | `pm-stack/` |
+| The PM stack (project management)              | [`roadmaps/pm-stack.md`](roadmaps/pm-stack.md)                 | `pm-stack/`                |
 
 Each roadmap file groups its items by horizon.
 

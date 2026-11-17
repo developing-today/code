@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { groupBySet, isAuthorized, parseEventBatch, timingSafeEqual, validateDecisionEvent } from "../src/events.ts";
+import {
+  encodeEventsCursor,
+  groupBySet,
+  isAuthorized,
+  parseEventBatch,
+  parseEventsCursor,
+  timingSafeEqual,
+  validateDecisionEvent,
+} from "../src/events.ts";
 import worker, { DecisionSetEvents, type Env } from "../src/index.ts";
 
 const ev = (eventId: string, setId = "set-1") => ({
@@ -160,5 +168,31 @@ describe("DecisionSetEvents & POST /events fan-out retry", () => {
     };
     expect(secondBody.fanout["set-1"]?.fannedOut).toBe(1);
     expect(secondBody.fanout["set-1"]?.deduplicated).toBe(1);
+  });
+});
+
+describe("events cursor (#9614)", () => {
+  test("round-trips a composite (ts, event_id) cursor", () => {
+    const cursor = encodeEventsCursor({ ts: "2026-11-12T10:00:00.000Z", eventId: "e2" });
+    expect(cursor).toBe("2026-11-12T10:00:00.000Z|e2");
+    const parsed = parseEventsCursor(cursor);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.value).toEqual({ ts: "2026-11-12T10:00:00.000Z", eventId: "e2" });
+  });
+  test("eventIds containing the separator still parse (split at the first |)", () => {
+    const parsed = parseEventsCursor("2026-11-12T10:00:00.000Z|e|2");
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.value.eventId).toBe("e|2");
+  });
+  test("a bare timestamp is a legacy cursor with no eventId", () => {
+    const parsed = parseEventsCursor("2026-11-12T10:00:00.000Z");
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.value).toEqual({ ts: "2026-11-12T10:00:00.000Z", eventId: null });
+  });
+  test("rejects malformed cursors", () => {
+    expect(parseEventsCursor("not-a-date").ok).toBe(false);
+    expect(parseEventsCursor("2026-11-12T10:00:00.000Z|").ok).toBe(false);
+    expect(parseEventsCursor("not-a-date|e1").ok).toBe(false);
+    expect(parseEventsCursor("2026-11-12T10:00:00.000Z|has space").ok).toBe(false);
   });
 });

@@ -79,7 +79,6 @@ Domain-starter parent references are never emitted as hard native blockers. Sour
 
 Source-local candidate aliases normalized for this packet: DST-SNAPSHOT-01 → DST-05; PRI-PROFILE-01 → PRI-01; PRI-05 → PRI-05a, PRI-05b, PRI-05c, PRI-05d.
 
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -121,8 +120,8 @@ Negative coverage: stale input, duplicate/replay, ambiguous resource, unauthoriz
 | `PRI-02` / crucial | Intrinsic/nullable-importance/effective-pressure explanation types and profile boundary in `pkgs/fleet/crates/fleet-queue/src/work/priority.rs`. No duplicate DB. | `PRI-PROFILE-01`; `DST-SNAPSHOT-01`; #9073/#9074 only before persisted metadata/migration | Null importance stays null; explanation references pinned inputs; compatibility/read-old/write-new migration tests; read-only shadow output oracle. |
 **Future red-first test commands / oracles per issue:** Exact future Rust commands: PRI-01 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_priority_profile_preserves_ratified_values`; PRI-02 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_priority_dimensions_pin_explanation`; PRI-03 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_peer_rank_rebalances_local_range`; PRI-04 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_dependency_cycle_opposite_edge_pair`; PRI-05 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_triage_is_bounded_and_bidirectional`; PRI-07 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_priority_shadow_preserves_live_values`. Before running each, issue verification must run its exact command with `-- --list` and assert the test is present; zero-test success is not acceptance. PRI-01 TS regression: `cd pm-stack/dispatch && bun test test/validate.test.ts` (existing test path). PRI-06 first asserts `test -f pm-stack/aggregator/src/priority-actions.test.ts`, then runs `cd pm-stack/aggregator && bun test src/priority-actions.test.ts`; oracle is shared command result plus visible stale/conflict. These are proposed future tests in the listed existing modules/services, not current tests or a new crate.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `PRI-05d` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/priority.rs`

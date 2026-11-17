@@ -65,7 +65,7 @@ import type { NeedsDrewCensus } from "./needs-drew.ts";
 import type { Incident, IncidentEvent, PushSubscriptionRow } from "./alerts.ts";
 import type { NotificationRollup } from "./notifications.ts";
 import { NOTIFICATION_CLASS_DEFAULTS, NOTIFICATION_CLASSES } from "./notifications.ts";
-import { ageMsText, feedAgeText } from "./feed.ts";
+import { FEED_STALE_MS, ageMsText, feedAgeText } from "./feed.ts";
 import { providerDisplayNames } from "./provider-display.ts";
 import {
   reconciledInProgress,
@@ -93,6 +93,7 @@ import {
   type GhItem,
   type OrchestrationSection,
   type PaygLine,
+  type ProjectAudit,
   type ProjectPoolItem,
   type Provenance,
   type ProvenanceDetail,
@@ -122,6 +123,36 @@ import { KEY_HINT, KEYBOARD_SCRIPT, paletteHtml } from "./keyboard.ts";
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
 import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
+import {
+  PHASE12_ISSUE_URL,
+  joinPhase12Steps,
+  parsePhase12Steps,
+  phase12IsStale,
+  type Phase12Snapshot,
+  type Phase12StepState,
+} from "./phase12.ts";
+import {
+  PHASE_TRACKER_REPO,
+  PHASE_TRACKER_UMBRELLA,
+  derivePhase12Progress,
+  derivePhaseValidation,
+} from "./phase-tracker.ts";
+import { deriveMappedProgress, type PhaseMappingSnapshot } from "./phase-mapping.ts";
+import {
+  BUILD_HEALTH_REPO,
+  buildHealthIsStale,
+  projectLane,
+  projectNightlyTrend,
+  type BuildHealthSnapshot,
+} from "./build-health.ts";
+import type { QueueSnapshot } from "./queue.ts";
+import {
+  F12_DESIGN_ISSUE_URL,
+  parseF12Designs,
+  parseF12Items,
+  projectF12Readiness,
+  type F12PrRef,
+} from "./f12-readiness.ts";
 import {
   CANONICAL_STATUSES,
   STATUS_SOURCE_LABELS,
@@ -158,6 +189,27 @@ export function fmtDate(iso: string | null | undefined): string {
     .toISOString()
     .replace("T", " ")
     .replace(/\.\d+Z$/, "Z");
+}
+
+/** Central-time stamp for Drew-facing quota/reset surfaces (#9553):
+ * "Sat, Nov 14, 8:00 AM CST". fmtDate above renders raw UTC ISO; the
+ * /quota page (pool resets, wall lifts, freshness, burn windows) must
+ * never show UTC to Drew, so renderQuota uses this formatter. */
+const centralFmt = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/Chicago",
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  timeZoneName: "short",
+});
+
+export function fmtCentral(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return centralFmt.format(d);
 }
 
 /* The stylesheet lives in src/ui.css (Tailwind v4 + DaisyUI v5 plus the
@@ -335,6 +387,28 @@ document.addEventListener("submit", async (ev) => {
  * inputs carry the payload. A stop form must have its confirm box
  * ticked before the script will send it (two-step confirm).
  */
+/** Shell fragment watchdog (#1503): the shell pages stream their real
+ * content in as Datastar fragments; if a fragment request fails or stalls
+ * there is no error path in the markup, so the page would sit on its
+ * skeleton forever. Ten seconds after the shell renders, any [data-frag]
+ * container still holding its .skel skeleton gets the skeleton swapped for
+ * an inline notice linking the ?full=1 server render (the no-JS path).
+ * A fragment that lands in time removes the skeleton itself, so the
+ * watchdog no-ops; a fragment that lands late replaces the notice. */
+export const FRAG_WATCHDOG_MS = 10_000;
+export const FRAG_WATCHDOG_SCRIPT = `<script>
+setTimeout(function () {
+  document.querySelectorAll("[data-frag]").forEach(function (c) {
+    var skel = c.querySelector(".skel");
+    if (!skel) return;
+    var p = document.createElement("p");
+    p.className = "frag-failed";
+    p.innerHTML = "the live view did not arrive &mdash; <a href="" + location.pathname + "?full=1">load the full page</a>";
+    skel.replaceWith(p);
+  });
+}, ${FRAG_WATCHDOG_MS});
+</script>`;
+
 const ACTION_SCRIPT = `<script>${DASH_AFTER_JS}
 document.addEventListener("submit", async (ev) => {
   const form = ev.target;
@@ -1663,10 +1737,10 @@ export function renderBoardShell(provenance: Provenance, detail?: ProvenanceDeta
   const fragBoard = viewQuery ? `/frag/board?${viewQuery}` : "/frag/board";
   return layout(
     "Cross-repo WIP board",
-    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards.</p><noscript><meta http-equiv="refresh" content="0; url=/board"></noscript><div id="board-main" data-frag data-on-load="@get('${fragBoard}')" data-on:dashrefresh__window="@get('${fragBoard}')"><div class="skel">Loading the board…</div></div>`,
+    `<h1>Cross-repo WIP board</h1><p class="muted">What is being worked on now is the <strong>in-flight</strong> lane: synthetic entries from the orchestrator's lined-up tasks (the fleet feed's orchestration section), not Kaneo cards.</p><noscript><meta http-equiv="refresh" content="0; url=/board"></noscript><div id="board-main" data-frag data-init="@get('${fragBoard}')" data-on:dashrefresh__window="@get('${fragBoard}')"><div class="skel">Loading the board…</div></div>`,
     provenance,
     "/board",
-    ACTION_SCRIPT,
+    ACTION_SCRIPT + FRAG_WATCHDOG_SCRIPT,
     detail ? freshnessChips(detail, ["board", "items", "orchestration"]) : "",
   );
 }
@@ -1787,6 +1861,7 @@ function roadmapCard(
     .join(" ");
   const cmt = counts ? commentBadge(row.subject, counts) : "";
   const grist = row.gristUrl ? ` <a class="badge" href="${esc(row.gristUrl)}">Grist ↗</a>` : "";
+  const repoFile = row.fileUrl ? ` <a class="badge" href="${esc(row.fileUrl)}">Repo file ↗</a>` : "";
   const expansion = drill ? roadmapDrilldown(drill, row, forecasts, spend) : "";
   const notes = annotations?.get(row.subject) ?? [];
   const annotationHtml = notes.length
@@ -1813,7 +1888,7 @@ function roadmapCard(
       }
     }
   }
-  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${statusClash}${refBadges}${grist}${annotationHtml}${expansion}${briefPanels}</div>`;
+  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${statusClash}${refBadges}${grist}${repoFile}${annotationHtml}${expansion}${briefPanels}</div>`;
 }
 
 function roadmapAnnotationHtml(annotation: RoadmapAnnotation): string {
@@ -1993,6 +2068,23 @@ export function eventTableHtml(events: readonly AuditEvent[]): string {
   return `<div class="tblwrap"><table class="activity-events"><caption>Shared activity events</caption><thead><tr><th scope="col">When</th><th scope="col">Actor</th><th scope="col">Kind</th><th scope="col">Ref</th><th scope="col">Summary</th><th scope="col">Source</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">No matching events; this does not establish complete coverage.</td></tr>'}</tbody></table></div>`;
 }
 
+/** #1500: the honest empty-section wording, keyed off the provenance
+ * strings the renderers already receive — no new data plumbing. The
+ * comment stream is fixture-sourced while the projector is off (#1199),
+ * so a bare "no comments" would claim a fact about the work when it is
+ * really a fact about the dashboard's resolution path. */
+export const FIXTURE_COMMENTS_CAUSE = "the comment stream is fixture-sourced while the projector is off (#1199)";
+
+export function commentsFixtureSourced(provenance: Provenance): boolean {
+  return provenance.comments.startsWith("fixtures");
+}
+
+export function fixtureCommentsBannerHtml(provenance: Provenance): string {
+  return commentsFixtureSourced(provenance)
+    ? `<div class="banner">The comment stream is fixture-sourced while the projector is off (#1199) — GitHub comments may be missing or stale, and an empty stream does not mean the work has no discussion.</div>`
+    : "";
+}
+
 export function renderItem(
   title: string,
   subject: string,
@@ -2017,6 +2109,24 @@ export function renderItem(
         `<tr><td class="muted">${fmtDate(c.createdAt)}</td><td><span class="badge ${esc(c.kind)}">${esc(c.kind)}</span></td><td>${esc(c.author)}</td><td>${esc(c.body)}${c.path ? ` <span class="muted">(${esc(c.path)}${c.line ? `:${c.line}` : ""})</span>` : ""}</td></tr>`,
     )
     .join("");
+  // #1500: when some linked refs did not resolve, the Linked header
+  // carries the tally and the cause; when every ref resolves it stays
+  // plain. The fixture cause is keyed off the items provenance string
+  // only (the partial-fixtures shape from sources/live.ts, or a fully
+  // fixture-sourced items facet).
+  const linkedResolved = all.length;
+  const linkedHeader =
+    links.length > 0 && linkedResolved < links.length
+      ? `Linked issues / PRs — ${links.length} linked · ${linkedResolved} resolved — ${
+          /\+ fixtures for \d+ ref\(s\) outside the pool/.test(provenance.items) || provenance.items.startsWith("fixtures")
+            ? "resolution fell back to fixtures (projector off, #1199)"
+            : "some linked refs could not be resolved from the current sources"
+        }`
+      : "Linked issues / PRs";
+  const commentsBanner = fixtureCommentsBannerHtml(provenance);
+  const emptyCommentRow = commentsFixtureSourced(provenance)
+    ? `<tr><td colspan="4" class="muted">no comments loaded — ${FIXTURE_COMMENTS_CAUSE}</td></tr>`
+    : '<tr><td colspan="4" class="muted">no comments</td></tr>';
   const dashSection = extras
     ? `<h2>Dashboard comments</h2>${
         extras.dashComments.length
@@ -2062,8 +2172,8 @@ ${
       )
     : ""
 }
-<h2>Linked issues / PRs</h2><div class="tblwrap"><table class="table table-zebra"><caption>Linked issues and pull requests</caption><tr><th scope="col">Ref</th><th scope="col">Title</th><th scope="col">Labels</th><th scope="col">Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
- <h2>Activity stream comments</h2><div class="tblwrap"><table class="table table-zebra"><caption>Comments</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
+<h2>${linkedHeader}</h2><div class="tblwrap"><table class="table table-zebra"><caption>Linked issues and pull requests</caption><tr><th scope="col">Ref</th><th scope="col">Title</th><th scope="col">Labels</th><th scope="col">Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
+ <h2>Activity stream comments</h2>${commentsBanner}<div class="tblwrap"><table class="table table-zebra"><caption>Comments</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || emptyCommentRow}</table></div>
  ${activitySection}${sessionSection}${statusSection}${roadmapAnnotationSection}${dashSection}`,
     provenance,
     "/board",
@@ -2175,12 +2285,23 @@ function paygCardHtml(usage: UsageView): string {
   const lines = usage.payg
     .map((l: PaygLine) => {
       const figures =
-        l.accruedUsd != null
-          ? `$${l.accruedUsd.toFixed(2)} accrued${l.collectedUsd != null ? ` · $${l.collectedUsd.toFixed(2)} collected` : ""} · $${(l.unbilledUsd ?? 0).toFixed(2)} unbilled`
-          : l.estimate
-            ? `counted $${countedEstimate(l.estimate).toFixed(2)} as used (1.2 × high) · estimate $${l.estimate.low.toFixed(2)}–$${l.estimate.high.toFixed(2)} ${esc(l.estimate.period)}`
-            : "not estimable from local records";
-      return `<div><strong>${esc(l.label)}</strong>: ${figures}<br><span class="muted">${esc(l.note)}</span><br>${freshnessStamp(l.measuredAt, l.sourceClass, 7)}</div>`;
+        l.settledUsd != null
+          ? `$${l.settledUsd.toFixed(2)} ${l.settledSource === "invoice" ? "invoiced" : "settled"}${
+              l.estimate
+                ? ` · estimates $${l.estimate.low.toFixed(2)}–$${l.estimate.high.toFixed(2)}`
+                : l.accruedUsd != null
+                  ? ` · $${l.accruedUsd.toFixed(2)} accrued`
+                  : ""
+            }${l.settledVarianceUsd != null ? ` · variance ${l.settledVarianceUsd < 0 ? "-$" : "+$"}${Math.abs(l.settledVarianceUsd).toFixed(2)}` : ""} · $${(l.unbilledUsd ?? 0).toFixed(2)} unbilled`
+          : l.accruedUsd != null
+            ? `$${l.accruedUsd.toFixed(2)} accrued${l.collectedUsd != null ? ` · $${l.collectedUsd.toFixed(2)} collected` : ""} · $${(l.unbilledUsd ?? 0).toFixed(2)} unbilled`
+            : l.estimate
+              ? `counted $${countedEstimate(l.estimate).toFixed(2)} as used (1.2 × high) · estimate $${l.estimate.low.toFixed(2)}–$${l.estimate.high.toFixed(2)} ${esc(l.estimate.period)}`
+              : "not estimable from local records";
+      const stale = l.staleEstimate
+        ? ` <span class="badge near">stale estimate — unreconciled &gt;1 invoice cycle</span>`
+        : "";
+      return `<div><strong>${esc(l.label)}</strong>${stale}: ${figures}<br><span class="muted">${esc(l.note)}</span><br>${freshnessStamp(l.measuredAt, l.sourceClass, 7)}</div>`;
     })
     .join("");
   const total = usage.payg.reduce((sum, l) => sum + (l.unbilledUsd ?? 0), 0);
@@ -2358,7 +2479,7 @@ export function renderQuota(
   const credentialLifecycle = view.credentialLifecycle?.length
     ? `<h2>Credential lifecycle</h2><div class="card">${view.credentialLifecycle
         .map((credential) => {
-          const expiry = credential.expiresAt ? ` · expires ${fmtDate(credential.expiresAt)}` : " · expiry unknown";
+          const expiry = credential.expiresAt ? ` · expires ${fmtCentral(credential.expiresAt)}` : " · expiry unknown";
           const reason = credential.reason ? ` · ${esc(credential.reason)}` : "";
           const action = credential.userAction
             ? ` · <strong>user action:</strong> ${esc(credential.userAction.title)}`
@@ -2377,9 +2498,9 @@ export function renderQuota(
         .map((a) => {
           const detail =
             a.reporting === "attention"
-              ? `${esc(a.alert ?? a.status ?? "attention")}${a.alertSince ? ` · since ${fmtDate(a.alertSince)}` : ""}${a.sessionExpiresAt ? ` · session expires ${fmtDate(a.sessionExpiresAt)}` : ""}${a.lastGoodAt ? ` · last good ${fmtDate(a.lastGoodAt)}` : ""}`
+              ? `${esc(a.alert ?? a.status ?? "attention")}${a.alertSince ? ` · since ${fmtCentral(a.alertSince)}` : ""}${a.sessionExpiresAt ? ` · session expires ${fmtCentral(a.sessionExpiresAt)}` : ""}${a.lastGoodAt ? ` · last good ${fmtCentral(a.lastGoodAt)}` : ""}`
               : a.reporting === "stale"
-                ? `keeper not reporting · last check ${fmtDate(a.checkedAt)}`
+                ? `keeper not reporting · last check ${fmtCentral(a.checkedAt)}`
                 : a.reporting === "invalid"
                   ? "keeper not reporting · state file invalid"
                   : "keeper not reporting · no state file";
@@ -2394,7 +2515,7 @@ export function renderQuota(
           const pct = windowPercent(w);
           const used = w.unit === "usd" ? `$${w.used.toFixed(2)}` : w.used.toLocaleString();
           const limit = w.limit == null ? "∞" : w.unit === "usd" ? `$${w.limit.toFixed(2)}` : w.limit.toLocaleString();
-          return `<div>${esc(w.name)}: <meter min="0" max="100" value="${pct.toFixed(0)}"></meter> ${pct.toFixed(0)}% · ${used}/${limit} ${esc(w.unit)} · resets ${fmtDate(w.resetsAt)}</div>`;
+          return `<div>${esc(w.name)}: <meter min="0" max="100" value="${pct.toFixed(0)}"></meter> ${pct.toFixed(0)}% · ${used}/${limit} ${esc(w.unit)} · resets ${fmtCentral(w.resetsAt)}</div>`;
         })
         .join("");
       const sessions = (p.activeSessions ?? [])
@@ -2414,20 +2535,20 @@ export function renderQuota(
         })
         .join("");
       const fresh = p.freshness
-        ? `<div class="muted">gatherer · ${esc(p.freshness.state)} · measured ${fmtDate(p.freshness.measuredAt)} · ${esc(p.freshness.source)}${p.freshness.error ? ` · ${esc(p.freshness.error)}` : ""}</div>`
+        ? `<div class="muted">gatherer · ${esc(p.freshness.state)} · measured ${fmtCentral(p.freshness.measuredAt)} · ${esc(p.freshness.source)}${p.freshness.error ? ` · ${esc(p.freshness.error)}` : ""}</div>`
         : "";
       const extractionGap =
         p.extractionHealth?.status === "gap"
           ? ` <span class="badge blocked" title="${esc(p.extractionHealth.reason ?? "extractor miss")}">extraction gap</span>`
           : "";
 
-      return `<div class="card pool"><div><strong>${esc(display(p.provider))}</strong><br><span class="muted">${esc(p.plan)}</span><br><span class="badge ${esc(p.state)}">${esc(p.state)}${p.wallLiftsAt ? ` · lifts ${fmtDate(p.wallLiftsAt)}` : ""}</span>${extractionGap}${p.burnTokensPerMin ? ` <span class="muted">${p.burnTokensPerMin} tok/min</span>` : ""}</div><div>${windows}${credRows}${sessions}${fresh}${p.note ? `<div class="muted">${esc(p.note)}</div>` : ""}</div></div>`;
+      return `<div class="card pool"><div><strong>${esc(display(p.provider))}</strong><br><span class="muted">${esc(p.plan)}</span><br><span class="badge ${esc(p.state)}">${esc(p.state)}${p.wallLiftsAt ? ` · lifts ${fmtCentral(p.wallLiftsAt)}` : ""}</span>${extractionGap}${p.burnTokensPerMin ? ` <span class="muted">${p.burnTokensPerMin} tok/min</span>` : ""}</div><div>${windows}${credRows}${sessions}${fresh}${p.note ? `<div class="muted">${esc(p.note)}</div>` : ""}</div></div>`;
     })
     .join("");
   const burn = view.burn
     .map(
       (b) =>
-        `<tr><td>${esc(display(b.provider))}</td><td>${esc(display(b.pool))}</td><td>${fmtDate(b.from)}</td><td>${fmtDate(b.to)}</td><td>${b.tokens.toLocaleString()}</td></tr>`,
+        `<tr><td>${esc(display(b.provider))}</td><td>${esc(display(b.pool))}</td><td>${fmtCentral(b.from)}</td><td>${fmtCentral(b.to)}</td><td>${b.tokens.toLocaleString()}</td></tr>`,
     )
     .join("");
   const choices = (list: string[]) => (list.length ? list.map((id) => esc(display(id))).join(", ") : "—");
@@ -2439,7 +2560,7 @@ export function renderQuota(
   if (!usage) {
     return layout(
       "Quota + throughput",
-      `<h1>Quota + throughput</h1><p class="muted">All pooled quotas, resets, and burn rates. Machine-first: the same data is at <a href="/api/quota.json">/api/quota.json</a>.</p>
+      `<h1>Quota + throughput</h1><p class="muted">All pooled quotas, resets, and burn rates — all times Central (America/Chicago). Machine-first: the same data is at <a href="/api/quota.json">/api/quota.json</a>.</p>
 ${credentialLifecycle}
 ${providerAuthSection}
 ${quotaRefreshHtml(refresh, view.gatherer?.generatedAt ?? null)}
@@ -2483,7 +2604,7 @@ ${burnAndChoices}`,
     .join("");
   return layout(
     "Usage & billing",
-    `<h1>Usage &amp; billing</h1><p class="muted">Token quotas, PAYG dollars, and SaaS usage vs limits — from dated local records; every card carries its measured-at stamp, and stale cards dim. Machine-first: <a href="/api/quota.json">/api/quota.json</a>.</p>
+    `<h1>Usage &amp; billing</h1><p class="muted">Token quotas, PAYG dollars, and SaaS usage vs limits — from dated local records; every card carries its measured-at stamp, and stale cards dim — all times Central (America/Chicago). Machine-first: <a href="/api/quota.json">/api/quota.json</a>.</p>
 ${attentionStripHtml(usage)}
 ${credentialLifecycle}
 ${providerAuthSection}
@@ -3187,16 +3308,16 @@ export function questionsSectionHtml(
   if (summaries === null) {
     return `<section class="questions-section"><h2 id="questions">Questions</h2><p class="muted">Unavailable — the decision-set store could not be read, so open questions cannot be reported here.</p>${allSetsLink}${footer}</section>`;
   }
-  const open = summaries
-    .filter((s) => s.openQuestions > 0)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const open = summaries.filter((s) => s.openQuestions > 0).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   if (!open.length) {
     return `<section class="questions-section"><h2 id="questions">Questions</h2><p class="muted">No open questions right now — the stack is clear.</p>${allSetsLink}${footer}</section>`;
   }
   const totalOpen = open.reduce((n, s) => n + s.openQuestions, 0);
   const rows = open
     .map((s) => {
-      const stamp = Number.isFinite(Date.parse(s.createdAt)) ? QUESTIONS_STAMP.format(new Date(s.createdAt)) : s.createdAt;
+      const stamp = Number.isFinite(Date.parse(s.createdAt))
+        ? QUESTIONS_STAMP.format(new Date(s.createdAt))
+        : s.createdAt;
       return `<div class="card"><a href="${esc(pageUrlFor(s))}"><strong>${esc(s.title)}</strong></a><br><span class="muted">${s.openQuestions} open question${s.openQuestions === 1 ? "" : "s"} · ${s.items} item${s.items === 1 ? "" : "s"} · ${s.questions} question${s.questions === 1 ? "" : "s"} · Raised ${esc(stamp)}</span></div>`;
     })
     .join("");
@@ -3480,10 +3601,23 @@ ${view.expiredCount ? `<p class="muted">${view.expiredCount} finished or stale $
 
 /** Wrap one attention section as a Datastar fragment container: the
  *  shell's placeholder and the fragment payload share this shape, so
- *  a refresh re-patches the container with itself (attrs included). */
-export function attentionFragment(section: "header" | "queues" | "sessions", innerHtml: string, query = ""): string {
+ *  a refresh re-patches the container with itself (attrs included).
+ *
+ *  `initial` marks the shell placeholder (#10605): it carries
+ *  `data-init` so the first paint fetches the section with no
+ *  freshness event. The `/frag/*` payload that replaces it (outer
+ *  mode) must leave `initial` off — a re-initialising element would
+ *  fetch itself again on every patch, i.e. loop.
+ */
+export function attentionFragment(
+  section: "header" | "queues" | "sessions",
+  innerHtml: string,
+  query = "",
+  options: { initial?: boolean } = {},
+): string {
   const q = query ? `?${query}` : "";
-  return `<div id="attn-${section}" data-frag data-on-load="@get('/frag/attention/${section}${q}')" data-on:dashrefresh__window="@get('/frag/attention/${section}${q}')">${innerHtml}</div>`;
+  const init = options.initial ? ` data-init="@get('/frag/attention/${section}${q}')"` : "";
+  return `<div id="attn-${section}" data-frag${init} data-on:dashrefresh__window="@get('/frag/attention/${section}${q}')">${innerHtml}</div>`;
 }
 
 /**
@@ -3491,19 +3625,24 @@ export function attentionFragment(section: "header" | "queues" | "sessions", inn
  * immediately; the three heavy sections stream in as fragments.
  * Without JS, a meta refresh lands on the full server render.
  */
-export function renderAttentionShell(provenance: Provenance, detail?: ProvenanceDetail, refs?: string, questionsHtml = ""): string {
+export function renderAttentionShell(
+  provenance: Provenance,
+  detail?: ProvenanceDetail,
+  refs?: string,
+  questionsHtml = "",
+): string {
   const refsQuery = refs ? `refs=${encodeURIComponent(refs)}` : "";
   const skel = (label: string) => `<div class="skel">Loading ${label}…</div>`;
   const body = `<h1>Needs you</h1><p class="muted">Loading the Needs User and Needs Orchestrator queues…</p><noscript><meta http-equiv="refresh" content="0; url=/attention?full=1"></noscript>
-${attentionFragment("header", skel("queue status"), refsQuery)}
-${attentionFragment("queues", skel("the queues"), refsQuery)}
-${attentionFragment("sessions", skel("sessions"), refsQuery)}${questionsHtml}`;
+${attentionFragment("header", skel("queue status"), refsQuery, { initial: true })}
+${attentionFragment("queues", skel("the queues"), refsQuery, { initial: true })}
+${attentionFragment("sessions", skel("sessions"), refsQuery, { initial: true })}${questionsHtml}`;
   return layout(
     "Needs you",
     body,
     provenance,
     "/attention",
-    ACTION_SCRIPT + COMMENT_SCRIPT + BULK_SCRIPT,
+    ACTION_SCRIPT + COMMENT_SCRIPT + BULK_SCRIPT + FRAG_WATCHDOG_SCRIPT,
     detail ? freshnessChips(detail, ["orchestration", "attention", "registry"]) : "",
   );
 }
@@ -3738,10 +3877,10 @@ export function renderTodayShell(
 ): string {
   return layout(
     "Today",
-    `<h1>Today</h1><noscript><meta http-equiv="refresh" content="0; url=/today?full=1"></noscript><div id="today-main" data-frag data-on-load="@get('/frag/today')" data-on:dashrefresh__window="@get('/frag/today')">${todayHealthStrip(health, quota, quotaUnavailable)}<div class="skel">Loading today…</div></div>${questionsHtml}`,
+    `<h1>Today</h1><noscript><meta http-equiv="refresh" content="0; url=/today?full=1"></noscript><div id="today-main" data-frag data-init="@get('/frag/today')" data-on:dashrefresh__window="@get('/frag/today')">${todayHealthStrip(health, quota, quotaUnavailable)}<div class="skel">Loading today…</div></div>${questionsHtml}`,
     provenance,
     "/today",
-    "",
+    FRAG_WATCHDOG_SCRIPT,
     detail ? freshnessChips(detail, ["orchestration", "quota", "attention"]) : "",
   );
 }
@@ -3815,10 +3954,10 @@ export function renderQueue(view: QueueView, provenance: Provenance, detail?: Pr
 export function renderQueueShell(provenance: Provenance, detail?: ProvenanceDetail): string {
   return layout(
     "Queue",
-    `<h1>Queue visibility</h1><noscript><meta http-equiv="refresh" content="0; url=/queue?full=1"></noscript><div id="queue-main" data-frag data-on-load="@get('/frag/queue')" data-on:dashrefresh__window="@get('/frag/queue')"><div class="skel">Loading queue…</div></div>`,
+    `<h1>Queue visibility</h1><noscript><meta http-equiv="refresh" content="0; url=/queue?full=1"></noscript><div id="queue-main" data-frag data-init="@get('/frag/queue')" data-on:dashrefresh__window="@get('/frag/queue')"><div class="skel">Loading queue…</div></div>`,
     provenance,
     "/queue",
-    "",
+    FRAG_WATCHDOG_SCRIPT,
     detail ? freshnessChips(detail, ["board", "orchestration", "items"]) : "",
   );
 }
@@ -3960,6 +4099,15 @@ export function renderOverviewBody(summary: OverviewSummary): string {
         .join("")
     : `<p class="muted">No quota pools measured yet.</p>`;
   const healthStrip = `<div class="card"><span class="dot ${summary.health.down || summary.health.degraded ? "down" : "up"}"></span><strong>${summary.health.up} of ${summary.health.total} services up</strong>${summary.health.down ? ` · ${summary.health.down} down` : ""}${summary.health.degraded ? ` · <span class="badge stale">degraded</span>` : ""}${summary.health.feedAgeMs !== null ? ` · feed ${esc(ageMsText(summary.health.feedAgeMs))} old` : ""} — <a href="/health">health</a></div>`;
+  // #1116 item (5): when the feed itself has crossed the staleness
+  // threshold the dashboard must say so visibly — a "feed X old" suffix
+  // is not an actionable warning. The data-signal hook is what the
+  // age-feed drill greps for as its rendered-page evidence.
+  const feedAgeMs = summary.health.feedAgeMs;
+  const feedStaleBanner =
+    feedAgeMs !== null && feedAgeMs >= FEED_STALE_MS
+      ? `<div class="banner feed-stale" data-signal="feed-stale">Feed stale — last collection ${esc(ageMsText(feedAgeMs))} ago (threshold ${esc(ageMsText(FEED_STALE_MS))}); the collector may be down. <a href="/health">Check health</a></div>`
+      : "";
   const itemList = (items: { title: string; repo: string }[], empty: string) =>
     items.length
       ? `<ul>${items.map((i) => `<li>${esc(i.title)}${i.repo ? ` <span class="muted">${esc(i.repo)}</span>` : ""}</li>`).join("")}</ul>`
@@ -3984,7 +4132,7 @@ export function renderOverviewBody(summary: OverviewSummary): string {
 <h2>Needs you (${summary.needsYou.count ?? "unknown"})</h2>${needs}${topItems}
 <h2>Projects</h2>${projectCards}
 <h2>Quota</h2>${quotaStrip}
-<h2>Health</h2>${healthStrip}
+<h2>Health</h2>${feedStaleBanner}${healthStrip}
 <h2>In progress</h2>${inProgressItems}
 <h2>Recently done</h2>${itemList(summary.recentDone, "Nothing done on the board yet.")}
 <p class="muted">In progress reconciles Project Status, active sessions lined up, and open PRs; recently done is the board's lane — the full curated cross-repo board is a drill-down from here: <a href="/board">Board →</a></p>`;
@@ -4006,10 +4154,10 @@ export function renderOverview(data: OverviewData, provenance: Provenance, detai
 export function renderOverviewShell(provenance: Provenance, detail?: ProvenanceDetail): string {
   return layout(
     "Overview",
-    `<h1>Overview</h1><noscript><meta http-equiv="refresh" content="0; url=/?full=1"></noscript><div id="overview-main" data-frag data-on-load="@get('/frag/overview')" data-on:dashrefresh__window="@get('/frag/overview')"><div class="skel">Loading the overview…</div></div>`,
+    `<h1>Overview</h1><noscript><meta http-equiv="refresh" content="0; url=/?full=1"></noscript><div id="overview-main" data-frag data-init="@get('/frag/overview')" data-on:dashrefresh__window="@get('/frag/overview')"><div class="skel">Loading the overview…</div></div>`,
     provenance,
     "/",
-    "",
+    FRAG_WATCHDOG_SCRIPT,
     detail ? freshnessChips(detail, ["board", "quota", "attention"]) : "",
   );
 }
@@ -4117,7 +4265,7 @@ ${dnsTable(section.entries, renewingSoon, next)}`;
  * Written without template literals on purpose — it lives inside one.
  */
 const AA_EXPLORER_SCRIPT = `<script type="module">
-import { applyInequalityFilters, bandIndex, chartClickSuppressed, computeRecommendations, effectiveChartView, logEdges, normName, panChartView, paretoSet, parseChartViewBox, pctRank, projectTask, resetChartView, scoreEdges, zoomChartView } from "/assets/aa-explorer-computations.js";
+import { applyDominanceFilters, applyInequalityFilters, bandIndex, baselineRatios, chartClickSuppressed, computeRecommendations, effectiveChartView, logEdges, normName, panChartView, paretoSet, parseChartViewBox, pctRank, projectTask, resetChartView, scoreEdges, sortRows, unpricedScoredPoints, zoomChartView } from "/assets/aa-explorer-computations.js";
 (function () {
   var dataEl = document.getElementById("xpl-data");
   if (!dataEl) return;
@@ -4214,6 +4362,8 @@ import { applyInequalityFilters, bandIndex, chartClickSuppressed, computeRecomme
     bench: latestBench(AA_POINTS),
     efforts: {},
     effortAny: false,
+    providers: {},
+    providerAny: false,
     off: {},
     elig: false,
     pooledOnly: false,
@@ -4230,6 +4380,7 @@ import { applyInequalityFilters, bandIndex, chartClickSuppressed, computeRecomme
     rec: { allow: 5, speedPriority: 85, priceAllow: 500, slowAllow: 2, altWindow: 2, diversity: "lab", dominance: "lab", perBand: 3, maxCost: "", maxSec: "" },
     pj: { turns: 3, inputTokens: 20000, answerTokens: 2000, thinkingTokens: 4000, cacheReadPct: 50, writesPct: 0, overheadSec: 10, window: "peak" },
     ineq: { mode: "off", combine: "and", conds: [{ metric: "score", op: ">=", value: "" }, { metric: "cost", op: "<=", value: "" }, { metric: "time", op: "<=", value: "" }] },
+    sortKey: "", sortDir: "desc", dom: { dominated: false, slower: false, dumber: false, pricier: false },
   };
   var XP_NOTES = {
     plan: "Plan perspective — plan quotas are sunk cost, so dollars are ignored: ranked on intelligence per second (speed + intelligence). Cost columns hidden.",
@@ -4256,13 +4407,14 @@ import { applyInequalityFilters, bandIndex, chartClickSuppressed, computeRecomme
   // cost at or above this score; speed gap = score gap against time.
   function visPoints() {
     var base = basePoints();
-    return applyInequalityFilters(base, S.ineq.mode, S.ineq.combine, S.ineq.conds);
+    var filtered = applyInequalityFilters(base, S.ineq.mode, S.ineq.combine, S.ineq.conds);
+    return applyDominanceFilters(filtered, S.dom);
   }
   function visCatalog() {
     if (!CATALOG) return [];
     return CATALOG.filter(function (e) {
       if (S.q && (e.id + " " + e.name + " " + e.providerName + " " + (e.plan || "")).toLowerCase().indexOf(S.q) < 0) return false;
-      if (S.fam && e.provider !== S.fam) return false;
+      if (S.providerAny && !S.providers[e.provider]) return false;
       if (S.pooledOnly && !e.routes.length) return false;
       if (S.measuredOnly && e.aaScore == null) return false;
       if (S.hideDisabled && e.disabled) return false;
@@ -4839,6 +4991,33 @@ import { applyInequalityFilters, bandIndex, chartClickSuppressed, computeRecomme
     });
   }
   // --- hidden tray (reference design's hide-a-configuration flow) ---
+  function renderUnpriced() {
+    // #1400 remainder: visible scored configurations with no published
+    // cost cannot appear on the cost charts; list them under the charts
+    // as real buttons that open the existing detail card via
+    // selectPoint — the same flow as clicking a dot or a table row.
+    // visPoints() already applies every filter and the hidden set.
+    var box = document.getElementById("xpl-unpriced");
+    if (!box) return;
+    var rows = unpricedScoredPoints(visPoints());
+    box.innerHTML = "";
+    if (!rows.length) {
+      var none = document.createElement("p");
+      none.className = "muted";
+      none.textContent = "No visible scored configurations are missing a published cost.";
+      box.appendChild(none);
+      return;
+    }
+    rows.forEach(function (p) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "xpl-ctl-btn";
+      b.setAttribute("data-unpriced", p.key);
+      b.textContent = (p.family || p.key) + (p.effort ? " \u2014 " + p.effort : "") + " \u00b7 " + scoreWord() + " " + fmtN(p.score, 1) + " \u00b7 no published cost";
+      b.addEventListener("click", function () { selectPoint(p.key); });
+      box.appendChild(b);
+    });
+  }
   function renderTray() {
     var tray = document.getElementById("xpl-tray");
     if (!tray) return;
@@ -5326,17 +5505,31 @@ import { applyInequalityFilters, bandIndex, chartClickSuppressed, computeRecomme
   function renderAaTable() {
     var tb = document.getElementById("xpl-rows");
     if (!tb) return;
-    var rows = sortPoints(visPoints());
+    var SORT_GETTERS = { perDollar: function (p) { return p.pointsPerDollar != null ? p.pointsPerDollar : p.scorePerDollar; }, perSecond: function (p) { return p.pointsPerSecond != null ? p.pointsPerSecond : p.scorePerSecond; } };
+    var rows = S.sortKey ? sortRows(visPoints(), SORT_GETTERS[S.sortKey] || S.sortKey, S.sortDir) : sortPoints(visPoints());
+    var ratios = S.baseline ? baselineRatios(rows, [S.baseline]) : null;
+    function baseCells(p) {
+      if (!ratios) return "";
+      var r = ratios[p.key] && ratios[p.key].vs[S.baseline];
+      return '<td class="num xpl-costcol">' + fmtN(r ? r.scorePerCost : null, 2) + "x</td>" + '<td class="num">' + fmtN(r ? r.scorePerSpeed : null, 2) + "x</td>";
+    }
     var scoreHead = document.getElementById("xpl-scorehead");
     if (scoreHead) scoreHead.textContent = S.persp === "cai" ? "CAI score" : "Intelligence";
     document.getElementById("xpl-count").textContent =
       rows.length + " of " + POINTS.length + " ranked configurations · sorted by the " + S.xp + " perspective · dots are colored by model family; white-ringed dots sit on that chart's frontier, dimmed dots are beaten on its axes";
     tb.innerHTML = rows.map(function (p) {
-      return '<tr data-sel="' + esc(p.key) + '" data-key="' + esc(p.key) + '"><td><strong>' + esc(p.family) + '</strong><br><span class="muted">' + esc(p.creator) + (p.qualStatus ? " · " + esc(p.qualStatus) : "") + '</span></td><td>' + esc(p.effort || "—") + '</td><td class="num">' + fmtN(p.score, 1) + '</td><td class="num xpl-costcol">' + fmt$(p.cost) + '</td><td class="num">' + fmtT(p.time) + '</td><td class="num">' + fmtT(p.ttft) + '</td><td class="num">' + fmtN(p.tps, 0) + '</td><td class="num xpl-costcol">' + fmtN(p.pointsPerDollar != null ? p.pointsPerDollar : p.scorePerDollar, 1) + '</td><td class="num">' + fmtN(p.pointsPerSecond != null ? p.pointsPerSecond : p.scorePerSecond, 3) + "</td></tr>";
+      return '<tr data-sel="' + esc(p.key) + '" data-key="' + esc(p.key) + '"><td><strong>' + esc(p.family) + '</strong><br><span class="muted">' + esc(p.creator) + (p.qualStatus ? " · " + esc(p.qualStatus) : "") + '</span></td><td>' + esc(p.effort || "—") + '</td><td class="num">' + fmtN(p.score, 1) + '</td><td class="num xpl-costcol">' + fmt$(p.cost) + '</td><td class="num">' + fmtT(p.time) + '</td><td class="num">' + fmtT(p.ttft) + '</td><td class="num">' + fmtN(p.tps, 0) + '</td><td class="num xpl-costcol">' + fmtN(p.pointsPerDollar != null ? p.pointsPerDollar : p.scorePerDollar, 1) + '</td><td class="num">' + fmtN(p.pointsPerSecond != null ? p.pointsPerSecond : p.scorePerSecond, 3) + "</td>" + baseCells(p) + "</tr>";
     }).join("");
     tb.querySelectorAll("tr").forEach(function (tr) {
       tr.addEventListener("click", function () { selectPoint(tr.getAttribute("data-key")); });
     });
+    document.querySelectorAll("[data-sortkey]").forEach(function (th) {
+      var k = th.getAttribute("data-sortkey");
+      th.textContent = th.textContent.replace(/ [↑↓]$/, "") + (S.sortKey === k ? (S.sortDir === "asc" ? " ↑" : " ↓") : "");
+    });
+    var bc = document.getElementById("xpl-bcosthead"), bs = document.getElementById("xpl-bspeedhead");
+    if (bc) bc.style.display = S.baseline ? "" : "none";
+    if (bs) bs.style.display = S.baseline ? "" : "none";
     markSelectedRow();
   }
   // --- task-assumptions projection (Site 2, in the Model Explorer) -------
@@ -5407,21 +5600,46 @@ import { applyInequalityFilters, bandIndex, chartClickSuppressed, computeRecomme
       effWrap.appendChild(b);
     });
     buildFamOptions();
+    buildProviderOptions();
   }
   function buildFamOptions() {
     var sel = document.getElementById("xf-fam");
     var label = document.getElementById("xf-fam-label");
-    var opts = [];
-    if (S.tab === "models" && CATALOG) {
-      label.textContent = "Provider";
-      var seen = {};
-      CATALOG.forEach(function (e) { if (!seen[e.provider]) { seen[e.provider] = true; opts.push([e.provider, e.providerName]); } });
-      opts.sort(function (a, b) { return a[1] < b[1] ? -1 : 1; });
-      sel.innerHTML = '<option value="">All providers</option>' + opts.map(function (o) { return '<option value="' + esc(o[0]) + '"' + (S.fam === o[0] ? " selected" : "") + ">" + esc(o[1]) + "</option>"; }).join("");
-    } else {
-      label.textContent = "Family";
-      sel.innerHTML = '<option value="">All families</option>' + famList.slice().sort().map(function (f) { return '<option value="' + esc(f) + '"' + (S.fam === f ? " selected" : "") + ">" + esc(f) + "</option>"; }).join("");
+    var wrap = document.getElementById("xf-fam-wrap");
+    if (S.tab === "models") {
+      // Providers are the chip multi-select in the models filter row
+      // (buildProviderOptions); the family select has no models-tab
+      // role, so its wrap hides instead of doubling as a second,
+      // single-select provider filter.
+      if (wrap) wrap.hidden = true;
+      return;
     }
+    if (wrap) wrap.hidden = false;
+    label.textContent = "Family";
+    sel.innerHTML = '<option value="">All families</option>' + famList.slice().sort().map(function (f) { return '<option value="' + esc(f) + '"' + (S.fam === f ? " selected" : "") + ">" + esc(f) + "</option>"; }).join("");
+  }
+  function buildProviderOptions() {
+    var wrap = document.getElementById("xf-providers");
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    if (!CATALOG) return;
+    var seen = {};
+    var providers = [];
+    CATALOG.forEach(function (e) { if (!seen[e.provider]) { seen[e.provider] = true; providers.push([e.provider, e.providerName]); } });
+    providers.sort(function (a, b) { return a[1] < b[1] ? -1 : 1; });
+    providers.forEach(function (o) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "xchip" + (S.providerAny && !S.providers[o[0]] ? " off" : "");
+      b.textContent = o[1];
+      b.addEventListener("click", function () {
+        if (!S.providerAny) { S.providerAny = true; S.providers = {}; S.providers[o[0]] = true; }
+        else if (S.providers[o[0]]) { delete S.providers[o[0]]; if (!Object.keys(S.providers).length) S.providerAny = false; }
+        else S.providers[o[0]] = true;
+        render();
+      });
+      wrap.appendChild(b);
+    });
   }
   function applyTab() {
     document.querySelectorAll("[data-xtab]").forEach(function (b) {
@@ -5449,7 +5667,7 @@ import { applyInequalityFilters, bandIndex, chartClickSuppressed, computeRecomme
         : "Intelligence & decode perspective — the AA Intelligence Index rankings: score is the Intelligence Index, cost and time the import's per-task figures (time excludes TTFT).";
     }
     applyTab();
-    if (S.tab === "aa") { renderLegend(); renderTray(); drawCharts(); renderAaTable(); renderPareto(); renderRecs(); renderBandComparisons(); }
+    if (S.tab === "aa") { renderLegend(); renderTray(); drawCharts(); renderUnpriced(); renderAaTable(); renderPareto(); renderRecs(); renderBandComparisons(); }
     else renderModels();
     enhanceCharts();
   }
@@ -5468,7 +5686,7 @@ import { applyInequalityFilters, bandIndex, chartClickSuppressed, computeRecomme
     if (S.persp === persp) return;
     S.persp = persp;
     POINTS = persp === "cai" ? CAI_POINTS : AA_POINTS;
-    S.creator = ""; S.fam = ""; S.bench = ""; S.effortAny = false; S.efforts = {};
+    S.creator = ""; S.fam = ""; S.bench = ""; S.effortAny = false; S.efforts = {}; S.providerAny = false; S.providers = {};
     S.off = {}; S.hidden = []; S.sel = null; S.baseline = "";
     showDetail(null);
     buildFilterOptions();
@@ -5578,7 +5796,20 @@ import { applyInequalityFilters, bandIndex, chartClickSuppressed, computeRecomme
     b.addEventListener("click", function () { S.tasksMode = b.getAttribute("data-tmode"); drawCharts(); });
   });
   var baselineSel = document.getElementById("xf-baseline");
-  if (baselineSel) baselineSel.addEventListener("change", function (ev) { S.baseline = ev.target.value; drawCharts(); });
+  if (baselineSel) baselineSel.addEventListener("change", function (ev) { S.baseline = ev.target.value; drawCharts(); renderAaTable(); });
+  document.querySelectorAll("[data-sortkey]").forEach(function (th) {
+    th.style.cursor = "pointer";
+    th.title = "Sort by this column";
+    th.addEventListener("click", function () {
+      var k = th.getAttribute("data-sortkey");
+      if (S.sortKey === k) S.sortDir = S.sortDir === "asc" ? "desc" : "asc";
+      else { S.sortKey = k; S.sortDir = th.getAttribute("data-dir") || "desc"; }
+      renderAaTable();
+    });
+  });
+  document.querySelectorAll("[data-dom]").forEach(function (el) {
+    el.addEventListener("change", function () { S.dom[el.getAttribute("data-dom")] = el.checked; render(); });
+  });
   // --- inequality filter rows ---------------------------------------------
   var INEQ_METRICS = [["score", "Score"], ["cost", "Task cost"], ["time", "Selected speed (time / task)"], ["tps", "Output speed (tok/s)"], ["gapScore", "Pareto gap: score gap (vs cost frontier)"], ["gapCost", "Pareto gap: price premium (vs score)"], ["gapSpeed", "Pareto gap: speed gap (vs time frontier)"]];
   function renderIneqConds() {
@@ -5604,9 +5835,9 @@ import { applyInequalityFilters, bandIndex, chartClickSuppressed, computeRecomme
   function captureSetup() {
     return JSON.parse(JSON.stringify({
       tab: S.tab, persp: S.persp, xp: S.xp, q: S.q, creator: S.creator, fam: S.fam, bench: S.bench,
-      effortAny: S.effortAny, efforts: S.efforts, off: S.off, elig: S.elig, pooledOnly: S.pooledOnly,
+      effortAny: S.effortAny, efforts: S.efforts, providerAny: S.providerAny, providers: S.providers, off: S.off, elig: S.elig, pooledOnly: S.pooledOnly,
       measuredOnly: S.measuredOnly, hideDisabled: S.hideDisabled, hidden: S.hidden, sizeBy: S.sizeBy,
-      tasksMode: S.tasksMode, baseline: S.baseline, pfCut: S.pfCut, bandCount: S.bandCount,
+      tasksMode: S.tasksMode, baseline: S.baseline, sortKey: S.sortKey, sortDir: S.sortDir, dom: S.dom, pfCut: S.pfCut, bandCount: S.bandCount,
       bandScale: S.bandScale, rec: S.rec, pj: S.pj, ineq: S.ineq,
     }));
   }
@@ -5620,14 +5851,15 @@ import { applyInequalityFilters, bandIndex, chartClickSuppressed, computeRecomme
     var bd = document.getElementById("xf-bands"); if (bd) bd.value = String(S.bandCount);
     var bs = document.getElementById("xf-bandscale"); if (bs) bs.value = String(S.bandScale);
     if (ineqModeEl) ineqModeEl.value = S.ineq.mode;
+    document.querySelectorAll("[data-dom]").forEach(function (el) { el.checked = !!S.dom[el.getAttribute("data-dom")]; });
     if (ineqCombineEl) ineqCombineEl.value = S.ineq.combine;
     document.querySelectorAll("[data-tmode]").forEach(function (b) { b.classList.toggle("active", b.getAttribute("data-tmode") === S.tasksMode); });
     document.querySelectorAll("[data-sizeby]").forEach(function (cb) { cb.checked = !!S.sizeBy[cb.getAttribute("data-sizeby")]; });
   }
   function applySetup(st) {
     if (!st || typeof st !== "object") return;
-    ["tab", "persp", "xp", "q", "creator", "fam", "bench", "effortAny", "elig", "pooledOnly", "measuredOnly", "hideDisabled", "tasksMode", "baseline", "pfCut", "bandCount", "bandScale"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
-    ["efforts", "off", "hidden", "sizeBy", "rec", "pj", "ineq"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
+    ["tab", "persp", "xp", "q", "creator", "fam", "bench", "effortAny", "providerAny", "elig", "pooledOnly", "measuredOnly", "hideDisabled", "tasksMode", "baseline", "pfCut", "bandCount", "bandScale", "sortKey", "sortDir"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
+    ["efforts", "providers", "off", "hidden", "sizeBy", "rec", "pj", "ineq", "dom"].forEach(function (k) { if (st[k] !== undefined) S[k] = st[k]; });
     POINTS = S.persp === "cai" ? CAI_POINTS : AA_POINTS;
     S.sel = null;
     showDetail(null);
@@ -5704,6 +5936,7 @@ import { applyInequalityFilters, bandIndex, chartClickSuppressed, computeRecomme
       rec: { allow: 5, speedPriority: 85, priceAllow: 500, slowAllow: 2, altWindow: 2, diversity: "lab", dominance: "lab", perBand: 3, maxCost: "", maxSec: "" },
       pj: { turns: 3, inputTokens: 20000, answerTokens: 2000, thinkingTokens: 4000, cacheReadPct: 50, writesPct: 0, overheadSec: 10, window: "peak" },
       ineq: { mode: "off", combine: "and", conds: [{ metric: "score", op: ">=", value: "" }, { metric: "cost", op: "<=", value: "" }, { metric: "time", op: "<=", value: "" }] },
+      sortKey: "", sortDir: "desc", dom: { dominated: false, slower: false, dumber: false, pricier: false },
     });
   });
   function csvCell(v) { return '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"'; }
@@ -5904,19 +6137,20 @@ ${batchSelector}
 <div class="card xpl-filters" id="xpl-filters">
 <input type="search" id="xf-q" placeholder="Search models, families, providers…" aria-label="Search">
 <label data-tabaa>Creator <select id="xf-creator"></select></label>
-<label><span id="xf-fam-label">Family</span> <select id="xf-fam"></select></label>
+<label id="xf-fam-wrap"><span id="xf-fam-label">Family</span> <select id="xf-fam"></select></label>
 <label data-tabaa>Benchmark <select id="xf-bench"></select></label>
 <span class="xp-seg" role="group" aria-label="Efficiency perspective"><button type="button" data-xp="plan">Plan</button><button type="button" data-xp="api">API</button><button type="button" data-xp="pertask">Per-task</button></span>
 <span class="xp-seg" role="group" aria-label="Benchmark perspective" data-tabaa><button type="button" data-persp="aa">Intelligence &amp; decode</button><button type="button" data-persp="cai">Coding agents</button></span>
 <p class="muted" id="xpl-persp-note" data-tabaa style="flex-basis:100%;margin:2px 0 0"></p>
 <div data-tabaa style="flex-basis:100%"><span class="muted">Efforts:</span> <span id="xf-efforts"></span> <label style="margin-left:10px"><input type="checkbox" id="xf-elig"> Eligible only</label></div>
-<div data-tabmodels hidden style="flex-basis:100%"><label><input type="checkbox" id="xf-pooled"> Pooled only</label> <label><input type="checkbox" id="xf-measured"> AA-measured only</label> <label><input type="checkbox" id="xf-nodis"> Hide disabled providers</label></div>
+<div data-tabmodels hidden style="flex-basis:100%"><span class="muted">Providers:</span> <span id="xf-providers"></span> <label style="margin-left:10px"><input type="checkbox" id="xf-pooled"> Pooled only</label> <label><input type="checkbox" id="xf-measured"> AA-measured only</label> <label><input type="checkbox" id="xf-nodis"> Hide disabled providers</label></div>
 <div data-tabaa style="flex-basis:100%"><details><summary>Model selection and advanced filters — inequality conditions</summary>
 <label>Filter mode <select id="xf-ineq-mode"><option value="off" selected>Off</option><option value="keep">Keep matching models</option><option value="reject">Keep only rejected models</option></select></label>
 <label>Combine conditions <select id="xf-ineq-combine"><option value="and" selected>Match all (AND)</option><option value="or">Match any (OR)</option></select></label>
 <span class="muted">Pareto-gap metrics compare against the observed frontier of the current scope: score gap (score vs cost), price premium (cost vs score), speed gap (score vs time).</span>
 <div id="xf-ineq-conds"></div>
 <button type="button" class="xpl-ctl-btn" id="xf-ineq-add">+ Add condition</button>
+<div><span class="muted">Dominance hides (#9852):</span> <label><input type="checkbox" data-dom="dominated"> Hide dominated</label> <label><input type="checkbox" data-dom="slower"> Hide slower (beaten)</label> <label><input type="checkbox" data-dom="dumber"> Hide lower-score (beaten)</label> <label><input type="checkbox" data-dom="pricier"> Hide pricier (beaten)</label></div>
 </details></div>
 <div style="flex-basis:100%">
 <label>Settings name <input type="text" id="xf-setup-name" placeholder="Name this setup"></label>
@@ -5944,13 +6178,14 @@ ${aaTabAge}
 <div class="chart" data-chart="xpl-c5"><h3>Multiples of the baseline</h3><span class="xpl-ctl"><label>Baseline <select id="xf-baseline"></select></label><button type="button" data-dl="xpl-c5">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c5"><button type="button" data-zact="expand" data-zfor="xpl-c5">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c5" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c5" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c5" aria-label="Reset view">⟲</button></span><svg id="xpl-c5" viewBox="0 0 680 400" role="img" aria-label="Cost and duration multiples scatter chart"></svg><p class="muted" data-note></p></div>
 <div class="chart" data-chart="xpl-c6"><h3>Scores — every measured configuration</h3><span class="xpl-ctl"><button type="button" data-dl="xpl-c6">Download PNG</button></span><span class="chart-tools" data-tools="xpl-c6"><button type="button" data-zact="expand" data-zfor="xpl-c6">⤢ Expand</button><button type="button" data-zact="in" data-zfor="xpl-c6" aria-label="Zoom in">+</button><button type="button" data-zact="out" data-zfor="xpl-c6" aria-label="Zoom out">−</button><button type="button" data-zact="reset" data-zfor="xpl-c6" aria-label="Reset view">⟲</button></span><svg id="xpl-c6" viewBox="0 0 680 400" role="img" aria-label="Scores bar chart"></svg><p class="muted" data-note></p></div>
 </div>
+<div class="card" id="xpl-unpriced-wrap"><h3>Scored configurations without a published cost</h3><p class="muted">These visible configurations have a score but no published cost, so they cannot appear on the cost charts. Select one to open its detail card.</p><div id="xpl-unpriced" class="strip"></div></div>
 <p class="muted">Time is seconds to finish one task (log scale), not tokens/sec — a model can stream fast and still finish slowly if it burns many tokens, and per-task time here excludes time to first token (shown separately where timed). Thin lines join each model's effort rungs (DeepSeek ladders dotted); the white dashed line is that chart's Pareto frontier; white-ringed dots sit on it, dimmed dots are beaten on its axes. Bracket splits: cost $0.15 / $0.75 / $2.50, time 1m / 5m / 15m. Only measured configurations are plotted — nothing is estimated, so configurations AA never timed appear in the tables, not the time charts. DeepSeek prices split peak / off-peak: peak is 01:00–04:00 and 06:00–10:00 UTC Monday–Friday at double the off-peak token rates, so the same runs appear at two costs. Click a dot or a row for details.</p>
 <h2>Multiples table</h2>
 <p class="muted">Every visible configuration with all three measures, as multiples of the baseline chosen above, sorted by cost multiple.</p>
 <div class="tblwrap"><table class="xpl-table"><caption>Multiples table — every visible configuration as multiples of the baseline</caption><thead><tr><th scope="col">Model</th><th scope="col">Effort</th><th scope="col" class="num">Score</th><th scope="col" class="num">Score ×</th><th scope="col" class="num xpl-costcol">Cost/task</th><th scope="col" class="num xpl-costcol">Cost ×</th><th scope="col" class="num">Time/task</th><th scope="col" class="num">Time ×</th><th scope="col">Benchmark</th></tr></thead><tbody id="xpl-mtrows"></tbody></table></div>
 <h2>Configurations</h2>
 <p class="muted" id="xpl-count"></p>
-<div class="tblwrap"><table class="xpl-table"><caption>Configurations — intelligence, cost, and speed per model</caption><thead><tr><th scope="col">Model</th><th scope="col">Effort</th><th scope="col" class="num" id="xpl-scorehead">Intelligence</th><th scope="col" class="num xpl-costcol">$/task</th><th scope="col" class="num">Time/task</th><th scope="col" class="num">TTFT</th><th scope="col" class="num">Speed (t/s)</th><th scope="col" class="num xpl-costcol">Score / $</th><th scope="col" class="num">Score / s</th></tr></thead><tbody id="xpl-rows"></tbody></table></div>
+<div class="tblwrap"><table class="xpl-table"><caption>Configurations — intelligence, cost, and speed per model</caption><thead><tr><th scope="col" data-sortkey="family" data-dir="asc">Model</th><th scope="col" data-sortkey="effort" data-dir="asc">Effort</th><th scope="col" class="num" id="xpl-scorehead" data-sortkey="score" data-dir="desc">Intelligence</th><th scope="col" class="num xpl-costcol" data-sortkey="cost" data-dir="asc">$/task</th><th scope="col" class="num" data-sortkey="time" data-dir="asc">Time/task</th><th scope="col" class="num" data-sortkey="ttft" data-dir="asc">TTFT</th><th scope="col" class="num" data-sortkey="tps" data-dir="desc">Speed (t/s)</th><th scope="col" class="num xpl-costcol" data-sortkey="perDollar" data-dir="desc">Score / $</th><th scope="col" class="num" data-sortkey="perSecond" data-dir="desc">Score / s</th><th scope="col" class="num xpl-costcol" id="xpl-bcosthead" style="display:none">Score/$ x base</th><th scope="col" class="num" id="xpl-bspeedhead" style="display:none">Score/s x base</th></tr></thead><tbody id="xpl-rows"></tbody></table></div>
 <h2>Pareto frontiers</h2>
 <p class="muted">Each list keeps variants that are not dominated on its named dimensions: another variant cannot be at least as good on every dimension and strictly better on one. The first two lists are the same score–speed frontier in different priority orders. Percentile ranks use the current filtered models; 100% is best. Missing measures are excluded only from a frontier that needs them.</p>
 <label>Minimum score and speed percentile in the price shortlist <select id="xf-pfcut"><option value="50" selected>At least median · 50th percentile</option><option value="60">At least 60th percentile</option><option value="75">Top quarter · 75th percentile</option><option value="0">No cutoff · full Pareto frontier</option></select></label>
@@ -6348,7 +6583,14 @@ export function renderDiscuss(
       : objectRef.startsWith("session:")
         ? `<p class="muted"><a href="/sessions">← the session registry</a> · <a href="/attention">Needs you</a></p>`
         : `<p class="muted"><a href="/attention">← Needs you</a></p>`;
-  const body = `<h1>${esc(title)}</h1><p class="muted">object: <code>${esc(objectRef)}</code></p>${back}
+  // #1500: the same fixture banner + honest empty wording as the item
+  // page, keyed off the comments provenance this page already receives.
+  const discussFixtureBanner = fixtureCommentsBannerHtml(provenance);
+  const discussEmptyWording =
+    commentsFixtureSourced(provenance) && comments.length === 0
+      ? `<p class="muted">no comments loaded — ${FIXTURE_COMMENTS_CAUSE}</p>`
+      : "";
+  const body = `<h1>${esc(title)}</h1><p class="muted">object: <code>${esc(objectRef)}</code></p>${back}${discussFixtureBanner}${discussEmptyWording}
 <p class="muted">Two kinds, visibly distinct: a <strong>note</strong> is read when this is next picked up and triggers nothing; a <strong>message to Muse</strong> is triaged by the orchestrator on its next pass and may create work.${
     opts.githubRefs?.length
       ? ` This item is GitHub-backed, so a comment can also be posted as a <strong>GitHub comment</strong> on an explicit target.`
@@ -6467,6 +6709,11 @@ export function projectsBodyHtml(
   pool: ProjectPoolItem[],
   opts: {
     area?: string | null;
+    /** Pool facet filters (#1208): Project Status / Kind single-select values, or the "(no status)" / "(no kind)" unset buckets. */
+    status?: string | null;
+    kind?: string | null;
+    /** Project #4 audit snapshot (#1208): reconciles the rendered pool count against the board total (draft/unlinked caveat). */
+    audit?: ProjectAudit | null;
     orchestration?: OrchestrationSection | null;
     detail?: ProvenanceDetail;
     actionsByObject?: Map<string, DashAction[]>;
@@ -6494,21 +6741,48 @@ export function projectsBodyHtml(
   const unsetCount = pool.filter((p) => !p.area).length;
   const area =
     opts.area === UNSET_AREA && unsetCount > 0 ? UNSET_AREA : opts.area && areas.includes(opts.area) ? opts.area : null;
-  const shown = area === UNSET_AREA ? pool.filter((p) => !p.area) : area ? pool.filter((p) => p.area === area) : pool;
+  const shownByArea =
+    area === UNSET_AREA ? pool.filter((p) => !p.area) : area ? pool.filter((p) => p.area === area) : pool;
+  // #1208: Status and Kind are pool fields too — facet-filter them like
+  // Area (the saved-view dimensions in views.ts carry the same pair, so
+  // a view and the chips agree). "(no status)" / "(no kind)" are the
+  // explicit unset buckets, mirroring the Area "(unset)" bucket (#1143).
+  const UNSET_STATUS = "(no status)";
+  const UNSET_KIND = "(no kind)";
+  const statuses = [...new Set(pool.map((p) => p.status).filter((s): s is string => Boolean(s)))].sort();
+  const kinds = [...new Set(pool.map((p) => p.kind).filter((s): s is string => Boolean(s)))].sort();
+  const statusSel =
+    opts.status === UNSET_STATUS ? UNSET_STATUS : opts.status && statuses.includes(opts.status) ? opts.status : null;
+  const kindSel = opts.kind === UNSET_KIND ? UNSET_KIND : opts.kind && kinds.includes(opts.kind) ? opts.kind : null;
+  const shown = shownByArea
+    .filter((p) => (statusSel === UNSET_STATUS ? !p.status : statusSel ? p.status === statusSel : true))
+    .filter((p) => (kindSel === UNSET_KIND ? !p.kind : kindSel ? p.kind === kindSel : true));
+  /** Facet link builder: change one facet, keep the others. */
+  const facetHref = (patch: { area?: string | null; status?: string | null; kind?: string | null }): string => {
+    const q = new URLSearchParams();
+    const a = patch.area !== undefined ? patch.area : area;
+    const s = patch.status !== undefined ? patch.status : statusSel;
+    const k = patch.kind !== undefined ? patch.kind : kindSel;
+    if (a) q.set("area", a);
+    if (s) q.set("status", s);
+    if (k) q.set("kind", k);
+    const qs = q.toString();
+    return qs ? `${base}?${qs}` : base;
+  };
   const chips = [
-    `<a href="${base}"${!area ? ' class="active"' : ""}>all (${pool.length})</a>`,
+    `<a href="${facetHref({ area: null })}"${!area ? ' class="active"' : ""}>all (${pool.length})</a>`,
     ...areas.map(
       (a) =>
-        `<a href="${base}?area=${encodeURIComponent(a)}"${a === area ? ' class="active"' : ""}>${esc(a)} (${pool.filter((p) => p.area === a).length})</a>`,
+        `<a href="${facetHref({ area: a })}"${a === area ? ' class="active"' : ""}>${esc(a)} (${pool.filter((p) => p.area === a).length})</a>`,
     ),
     ...(unsetCount > 0
       ? [
-          `<a href="${base}?area=${encodeURIComponent(UNSET_AREA)}"${area === UNSET_AREA ? ' class="active"' : ""}>${UNSET_AREA} (${unsetCount})</a>`,
+          `<a href="${facetHref({ area: UNSET_AREA })}"${area === UNSET_AREA ? ' class="active"' : ""}>${UNSET_AREA} (${unsetCount})</a>`,
         ]
       : []),
   ].join("");
   if (!pool.length) {
-    return `<div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div>${coverageSectionHtml(opts.coverage)}<p class="muted">Live services: ${serviceHomeLinks()
+    return `<div class="banner">No Project pool in the current fleet feed — the collector embeds it from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a> when a Projects token is available on the sandbox. Items on the board/roadmap fall back to the projector/fixtures chain until the pool lands.</div>${coverageSectionHtml(opts.coverage)}${opts.spend?.unattributed ? unattributedSpendHtml(opts.spend.unattributed) : ""}<p class="muted">Live services: ${serviceHomeLinks()
       .map((s) => `<a href="${esc(s.url)}">${esc(s.label)} ↗</a>`)
       .join(" · ")}</p>`;
   }
@@ -6589,6 +6863,32 @@ export function projectsBodyHtml(
     .join("");
   const body = `<p class="muted">${pool.length} items from the org Project <a href="${PROJECT_URL}">Developing Today (#4)</a>, read live by the fleet-feed collector (GraphQL, read-only) and carried in the feed. This pool is the resolution source for board/roadmap GitHub items. Where the Project Status and the derived state disagree, the card shows ⚠ with both values. Machine-first: <a href="/api/projects.json">/api/projects.json</a>.</p>
 <div class="chips">${chips}</div>
+<div class="chips"><span class="muted">Status:</span> ${[
+    `<a href="${facetHref({ status: null })}"${!statusSel ? ' class="active"' : ""}>any</a>`,
+    ...statuses.map(
+      (s) =>
+        `<a href="${facetHref({ status: s })}"${s === statusSel ? ' class="active"' : ""}>${esc(s)} (${pool.filter((p) => p.status === s).length})</a>`,
+    ),
+    ...(pool.some((p) => !p.status)
+      ? [
+          `<a href="${facetHref({ status: UNSET_STATUS })}"${statusSel === UNSET_STATUS ? ' class="active"' : ""}>${UNSET_STATUS} (${pool.filter((p) => !p.status).length})</a>`,
+        ]
+      : []),
+  ].join("")}</div>
+<div class="chips"><span class="muted">Kind:</span> ${[
+    `<a href="${facetHref({ kind: null })}"${!kindSel ? ' class="active"' : ""}>any</a>`,
+    ...kinds.map(
+      (k) =>
+        `<a href="${facetHref({ kind: k })}"${k === kindSel ? ' class="active"' : ""}>${esc(k)} (${pool.filter((p) => p.kind === k).length})</a>`,
+    ),
+    ...(pool.some((p) => !p.kind)
+      ? [
+          `<a href="${facetHref({ kind: UNSET_KIND })}"${kindSel === UNSET_KIND ? ' class="active"' : ""}>${UNSET_KIND} (${pool.filter((p) => !p.kind).length})</a>`,
+        ]
+      : []),
+  ].join("")}</div>
+${opts.audit && opts.audit.totalItems > pool.length ? `<div class="banner">Board total ${opts.audit.totalItems} items; this pool renders ${pool.length} linked issue/PR items. ${opts.audit.totalItems - pool.length} board item${opts.audit.totalItems - pool.length === 1 ? " is" : "s are"} draft or unlinked (no issue/PR to link to) and not rendered as cards \u2014 counted in the audit in <a href="/api/projects.json">/api/projects.json</a>, never silently dropped.</div>` : ""}
+${shown.length !== pool.length ? `<p class="muted">Filters show ${shown.length} of ${pool.length} pool items.</p>` : ""}
 ${unsetCount > 0 ? `<div class="banner">${unsetCount} pool item${unsetCount === 1 ? "" : "s"} carry no Area — they belong to no project page until Area is set on the Project. Setting Area is the orchestrator's reconciliation job; this count keeps the gap visible. <a href="${base}?area=${encodeURIComponent(UNSET_AREA)}">View the (unset) bucket →</a></div>` : ""}
 ${coverageSectionHtml(opts.coverage)}
 ${statusTaxonomyHtml()}
@@ -6606,6 +6906,11 @@ export function renderProjects(
   provenance: Provenance,
   opts: {
     area?: string | null;
+    /** Pool facet filters (#1208): Project Status / Kind single-select values, or the "(no status)" / "(no kind)" unset buckets. */
+    status?: string | null;
+    kind?: string | null;
+    /** Project #4 audit snapshot (#1208): reconciles the rendered pool count against the board total (draft/unlinked caveat). */
+    audit?: ProjectAudit | null;
     orchestration?: OrchestrationSection | null;
     detail?: ProvenanceDetail;
     actionsByObject?: Map<string, DashAction[]>;
@@ -6708,6 +7013,9 @@ export function renderProgram(
   poolSection?: {
     pool: ProjectPoolItem[];
     area?: string | null;
+    status?: string | null;
+    kind?: string | null;
+    audit?: ProjectAudit | null;
     coverage?: CoverageSnapshotFile | null;
     orchestration?: OrchestrationSection | null;
     actionsByObject?: Map<string, DashAction[]>;
@@ -6724,7 +7032,7 @@ export function renderProgram(
   const poolSectionHtml = poolSection
     ? `<h2 id="projects-pool">Projects pool</h2>
 <p class="muted">The Projects page, merged into Program status by the #1497 curation — the raw org Project pool with its Project-vs-derived disagreements. <code>/projects</code> redirects to this section; the machine twin <a href="/api/projects.json">/api/projects.json</a> is unchanged.</p>
-${projectsBodyHtml(poolSection.pool, { area: poolSection.area, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program", briefs: poolSection.briefs, forecasts: poolSection.forecasts, spend: poolSection.spend })}`
+${projectsBodyHtml(poolSection.pool, { area: poolSection.area, status: poolSection.status, kind: poolSection.kind, audit: poolSection.audit, orchestration: poolSection.orchestration, actionsByObject: poolSection.actionsByObject, identities: poolSection.identities, coverage: poolSection.coverage, basePath: "/program", briefs: poolSection.briefs, forecasts: poolSection.forecasts, spend: poolSection.spend })}`
     : "";
   const { program, live } = data;
   const projects = data.projects ?? [];
@@ -6840,7 +7148,18 @@ function epicGraphAnchor(ref: RefKey): string {
   return `epic-graph-${ref.replace(/[^a-zA-Z0-9]+/g, "-")}`;
 }
 
-function epicGraphSectionHtml(items: ProjectPoolItem[], selectorItems: ProjectPoolItem[] = items): string {
+interface EpicGraphActionContext {
+  orchestration?: OrchestrationSection | null;
+  actionsByObject?: Map<string, DashAction[]>;
+  identities?: AuthorIdentity[];
+  orchestrationState?: string;
+}
+
+function epicGraphSectionHtml(
+  items: ProjectPoolItem[],
+  selectorItems: ProjectPoolItem[] = items,
+  actionContext?: EpicGraphActionContext,
+): string {
   // Selector entries and rendered sections are scoped to the project's
   // own pool (selectorItems = detail.poolItems): on a normal project
   // request the caller passes the entire org pool as `items` for
@@ -6865,11 +7184,62 @@ function epicGraphSectionHtml(items: ProjectPoolItem[], selectorItems: ProjectPo
         `<li><a href="#${epicGraphAnchor(e.ref)}">${esc(e.title)}</a> <span class="muted">${esc(e.ref)} · ${e.itemCount} item${e.itemCount === 1 ? "" : "s"} · ${e.blockedCount} blocked · ${e.doneCount} done</span></li>`,
     )
     .join("")}</ul></nav>`;
-  const sections = selector.map((entry) => epicGraphOneHtml(items, entry)).join("");
+  const sections = selector.map((entry) => epicGraphOneHtml(items, entry, actionContext)).join("");
   return `<h3>Per-epic dependency graph</h3>${selectorHtml}${sections}`;
 }
 
-function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epicSelector>[number]): string {
+function graphNodeActionsHtml(nodeRef: RefKey, context?: EpicGraphActionContext): string {
+  const section = context?.orchestration;
+  const drewItem = section?.tiers.needsDrew.find((item) => item.ref === nodeRef);
+  const orchestratorItem = section?.tiers.needsOrchestrator.find((item) => item.ref === nodeRef);
+  const item = drewItem ?? orchestratorItem;
+  if (!item) {
+    return `<p class="muted epic-graph-actions">No inline action: this item is not in the currently published Needs User or Needs Orchestrator tier.</p>`;
+  }
+
+  const tier = drewItem ? "needs-drew" : "needs-orchestrator";
+  const objectRef = tierItemObjectRef(item);
+  const actions = context?.actionsByObject?.get(objectRef);
+  const state = cardState(actions);
+  const disabledReason = item.source === "watchdog" || context?.orchestrationState === "live"
+    ? undefined
+    : `the tier source is ${context?.orchestrationState ?? "unavailable"}, so this item cannot be confirmed against the orchestrator's current published queues`;
+  const controls = context?.identities
+    ? triageActionsHtml(
+        objectRef,
+        tier,
+        { identities: context.identities, ...(disabledReason ? { disabledReason } : {}) },
+        tier === "needs-drew" ? needsUserFormsHtml(item, objectRef, Date.now(), state) : "",
+        state,
+      )
+    : `<p class="muted">Inline actions unavailable: no dashboard author identity is configured.</p>`;
+  const needsUserBody = tier === "needs-drew" ? needsUserBodyHtml(item, actions) : "";
+  const history = `${actionBadgesHtml(actions)}<details class="carddetail"><summary>Action history</summary>${actionHistoryHtml(actions)}</details>`;
+
+  let sessionControls = "";
+  if (item.sessionId) {
+    const sessionSource = item.source === "claude" ? "claude-code" : item.source;
+    const support = sessionVerbSupport(sessionSource);
+    if (!context?.identities) {
+      sessionControls = `<p class="muted">Session action unavailable: no dashboard author identity is configured.</p>`;
+    } else if (support.some((entry) => !entry.reason)) {
+      const sessionRef = sessionObjectRef(item.sessionId);
+      const sessionActions = context?.actionsByObject?.get(sessionRef);
+      sessionControls = `${actionBadgesHtml(sessionActions)}${sessionActionsHtml(item.sessionId, sessionSource, { identities: context.identities })}<details class="carddetail"><summary>Session action history</summary>${actionHistoryHtml(sessionActions)}</details>`;
+    } else {
+      const reason = support.find((entry) => entry.reason)?.reason ?? "this published item has no supported live session control channel";
+      sessionControls = `<p class="muted">Session action unavailable: ${esc(reason)}.</p>`;
+    }
+  }
+
+  return `<div class="epic-graph-actions"><span class="badge ${tier === "needs-drew" ? "drew" : "orch"}">${tier === "needs-drew" ? "Needs User" : "Needs Orchestrator"}</span>${needsUserBody}${history}${controls}${sessionControls}</div>`;
+}
+
+function epicGraphOneHtml(
+  items: ProjectPoolItem[],
+  entry: ReturnType<typeof epicSelector>[number],
+  actionContext?: EpicGraphActionContext,
+): string {
   const g = epicGraph(items, entry.ref);
   const heading = `<h4 id="${epicGraphAnchor(entry.ref)}">${esc(entry.title)} <span class="muted">(${esc(entry.ref)})</span></h4>`;
   if (g.status === "unavailable" || !g.epic) {
@@ -6881,6 +7251,32 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
     return held === undefined || held.state === "open";
   };
   const summary = `<p class="muted"><strong>${g.memberCount} item${g.memberCount === 1 ? "" : "s"} in this epic</strong> · ${g.blockedCount} blocked on an unresolved blocker · ${g.externalCount} one-hop reference${g.externalCount === 1 ? "" : "s"} outside this pool (unresolved — status unknown, never counted as resolved).</p>`;
+  const cycleGroupsHtml = g.cycleGroups.length
+    ? `<div class="epic-graph-cycle-groups">${g.cycleGroups
+        .map((group) => {
+          const members = group.members
+            .map((ref) => {
+              const member = poolByRef.get(ref);
+              return `<li>${poolRefLink(ref)}${member?.title ? ` — ${esc(member.title)}` : ""}</li>`;
+            })
+            .join("");
+          const explanation = group.kind === "dependency"
+            ? "The dependency data is contradictory. Resolving one member alone does not clear this cycle; correct the cycle edges."
+            : "The parent links are cyclic. These members are one hierarchy warning group, not independent roots; correct the parent edges.";
+          return `<section class="banner" role="alert"><strong>⚠ ${esc(group.name)}</strong><p>${explanation}</p><ul>${members}</ul></section>`;
+        })
+        .join("")}</div>`
+    : "";
+  const edgeDiagnosticsHtml = g.edgeDiagnostics.length
+    ? `<section class="banner" role="status"><strong>⚠ Relation edge data needs review</strong><ul>${g.edgeDiagnostics
+        .map((diagnostic) => {
+          const relation = diagnostic.relation === "parent" ? "parent" : diagnostic.relation === "blockedBy" ? "blocked-by" : "blocks";
+          const issue = diagnostic.target === null ? "endpoint unavailable" : `malformed endpoint <code>${esc(diagnostic.target)}</code>`;
+          const state = diagnostic.state === "unavailable" ? "Unavailable edge data" : "Malformed relation reference";
+          return `<li>${state}: ${poolRefLink(diagnostic.sourceRef)} ${relation} edge — ${issue}; it was not treated as an external issue.</li>`;
+        })
+        .join("")}</ul></section>`
+    : "";
   const truncatedHtml = g.truncated
     ? `<p class="muted">Truncated: this graph shows ${g.nodes.length} of ${g.totalNodes} nodes (cap ${EPIC_GRAPH_DEFAULT_CAP}). The counts above cover the full set; a capped graph is not complete.</p>`
     : "";
@@ -6901,7 +7297,9 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
           return `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.downstreamCount} distinct downstream open epic item${r.downstreamCount === 1 ? "" : "s"} via ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${blockerItems.join(", ")}${contributingItems}</li>`;
         })
         .join("")}</ul>`
-    : `<p class="muted">No open item in this epic is waiting on an unresolved blocker.</p>`;
+    : g.blockedCount > 0
+      ? `<p class="muted">${g.blockedCount} open item${g.blockedCount === 1 ? " is" : "s are"} waiting on an unresolved blocker, but none can be ranked here — members of a dependency cycle are excluded from the unblock ranking until the cycle is broken.</p>`
+      : `<p class="muted">No open item in this epic is waiting on an unresolved blocker.</p>`;
 
   const rankedBlockersHtml = g.rankedBlockers.length
     ? `<ol class="epic-graph-list">${g.rankedBlockers
@@ -6980,11 +7378,290 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
         : "blocks: none observed";
       const name = n.title ? `${esc(n.title)}` : "(outside this pool — no title in this feed)";
       const nodeRef = isValidRef(n.ref) ? `<a href="${esc(n.issueUrl)}">${esc(n.ref)}</a>` : esc(n.ref);
-      return `<li>${nodeRef} ${name} — ${stateText}; ${blockedBy}; ${blocks}</li>`;
+      const actions = isValidRef(n.ref) ? graphNodeActionsHtml(n.ref, actionContext) : "";
+      return `<li>${nodeRef} ${name} — ${stateText}; ${blockedBy}; ${blocks}${actions}</li>`;
     })
     .join("")}</ul>`;
 
-  return `<section>${heading}${summary}${truncatedHtml}<div class="epic-graph-flex">${svg}<div class="epic-graph-side"><h5>Primary ranking — blockers by downstream open work</h5><p class="muted">Each open epic item is counted once per blocker across its transitive blockedBy ancestry. This measures downstream reach, not a promise that every item is immediately unblocked. Current additional unresolved blockers are listed per item; unsized contributors count separately from known effort weight. The longest dependency chain remains a separate diagnostic.</p>${rankedBlockersHtml}<h5>Open items by their worst blocker's downstream reach</h5>${rankedHtml}<h5>All items — dependency list</h5>${listHtml}</div></div></section>`;
+  return `<section>${heading}${summary}${cycleGroupsHtml}${edgeDiagnosticsHtml}${truncatedHtml}<div class="epic-graph-flex">${svg}<div class="epic-graph-side"><h5>Primary ranking — blockers by downstream open work</h5><p class="muted">Each open epic item is counted once per blocker across its transitive blockedBy ancestry. This measures downstream reach, not a promise that every item is immediately unblocked. Current additional unresolved blockers are listed per item; unsized contributors count separately from known effort weight. The longest dependency chain remains a separate diagnostic.</p>${rankedBlockersHtml}<h5>Open items by their worst blocker's downstream reach</h5>${rankedHtml}<h5>All items — dependency list</h5>${listHtml}</div></div></section>`;
+}
+
+/** The Path to Phase 12 panel (#9922): #1235's ordered steps, parsed
+ * from its body snapshot and joined to live GitHub item state and to
+ * queue state from the fleet-queue collector (#9920). A stale or
+ * missing body snapshot renders the warning INSTEAD of the steps — a
+ * silently old step list is the defect #1239's rules name. A stale
+ * queue snapshot still renders, but behind its own warning: the step
+ * list is the panel's spine, the task states are the perishable part. */
+export function phase12PanelHtml(
+  snapshot: Phase12Snapshot | null,
+  items: Map<RefKey, GhItem>,
+  queue: QueueSnapshot | null = null,
+): string {
+  const head = `<h2>Path to Phase 12 — live from <a href="${PHASE12_ISSUE_URL}">#1235</a></h2>`;
+  if (!snapshot) {
+    return `${head}<div class="banner">The #1235 body feed is unavailable in the current source, so no step state is shown — a hand-maintained copy would drift, and this panel never renders one.</div>`;
+  }
+  const queueSegment =
+    queue === null
+      ? "queue state unavailable in the current source"
+      : !queue.available
+        ? "queue read failed — per-step task state withheld"
+        : `queue state from the fleet-queue collector, fetched ${esc(new Date(queue.fetchedAt).toISOString())}`;
+  const sourceLine = `<p class="muted">Source: <a href="${PHASE12_ISSUE_URL}">developing-today/code#1235</a> body, fetched ${esc(snapshot.fetchedAt)} · issue updated ${esc(snapshot.issueUpdatedAt)} · per-step state is live GitHub state; ${queueSegment}.</p>`;
+  if (phase12IsStale(snapshot)) {
+    return `${head}${sourceLine}<div class="banner">Stale source: this snapshot was fetched at ${esc(snapshot.fetchedAt)}, outside the freshness window — the step list is withheld rather than shown silently old. It refreshes on the next successful body read.</div>`;
+  }
+  const steps = joinPhase12Steps(parsePhase12Steps(snapshot.body), items, queue);
+  if (!steps.length) {
+    return `${head}${sourceLine}<div class="banner">No ordered steps could be parsed from the current #1235 body, so no step state is shown.</div>`;
+  }
+  const queueStale =
+    queue !== null && queue.available && queue.stale
+      ? `<div class="banner">Stale queue source: task states were fetched at ${esc(new Date(queue.fetchedAt).toISOString())}, outside the freshness window — they are shown behind this warning rather than silently old, and refresh on the next successful broker read.</div>`
+      : "";
+  const queueBadge = (s: Phase12StepState): string => {
+    if (queue === null || !queue.available) return "";
+    const [task, ...earlier] = s.queueTasks;
+    if (!task) return ` <span class="badge">no queue task</span>`;
+    const cls =
+      task.status === "claimed"
+        ? "implementing"
+        : task.status === "done" || task.status === "completed"
+          ? "merged"
+          : task.status === "blocked" || task.status === "dep_blocked"
+            ? "closed"
+            : "";
+    const bits = [`task ${task.id}`];
+    if (task.lane) bits.push(`lane ${task.lane}`);
+    if (task.progressStage) bits.push(task.progressStage);
+    const more = earlier.length
+      ? ` <span class="muted">(+${earlier.length} earlier task${earlier.length === 1 ? "" : "s"})</span>`
+      : "";
+    return ` <span class="badge ${cls}">queue: ${esc(task.status)}</span> <span class="muted">${esc(bits.join(" · "))}</span>${more}`;
+  };
+  const rows = steps
+    .map((s) => {
+      const stateBadge =
+        s.liveState === null
+          ? `<span class="badge">not resolved in the current source</span>`
+          : `<span class="badge ${s.liveState === "open" ? "open" : "closed"}">issue ${esc(s.liveState)}</span>`;
+      const box = s.checked ? "☑" : "☐";
+      const done = s.doneNote ? `<br><span class="muted">${esc(s.doneNote)}</span>` : "";
+      return `<div class="card"><strong>${box} ${esc(s.label)} — <a href="${esc(s.url)}">#${s.issueNumber}</a> ${esc(s.liveTitle ?? s.title)}</strong><br>${stateBadge}${queueBadge(s)}${done}</div>`;
+    })
+    .join("");
+  return `${head}${sourceLine}${queueStale}${rows}`;
+}
+
+/** The Phase tracker panel (#9923): per-phase validation state for
+ * Phases 0-13, derived live from the items source (the four #796
+ * validation audits, #1075-#1078, already in the id project's tracked
+ * refs). No hand-maintained values: a reopened audit or a new open
+ * follow-up changes the panel without an edit. Phase 12 also shows
+ * F-item progress counted from #1235's ordered step list, and Phases
+ * 11 and 13 count the F-item mapping table in planning/roadmaps/id.md
+ * (the source of record, #9923 step 3) when the source carries it;
+ * Phases 0-10 have no F-item numbering in their plans, so they state
+ * that gap instead of showing a fabricated percentage. */
+export function phaseTrackerPanelHtml(
+  items: Map<RefKey, GhItem>,
+  phase12: Phase12Snapshot | null = null,
+  phaseMapping: PhaseMappingSnapshot | null = null,
+): string {
+  const umbrellaUrl = `https://github.com/${PHASE_TRACKER_REPO}/issues/${PHASE_TRACKER_UMBRELLA}`;
+  const head = `<h2>Phase tracker — validation by phase, live from <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a></h2>`;
+  const progress = derivePhase12Progress(phase12, items);
+  const mappedProgress = phaseMapping ? deriveMappedProgress(phaseMapping.entries, items) : null;
+  const sourceLine = `<p class="muted">Source: the validation audits <a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1075">#1075</a>–<a href="https://github.com/${PHASE_TRACKER_REPO}/issues/1078">#1078</a> under umbrella <a href="${umbrellaUrl}">#${PHASE_TRACKER_UMBRELLA}</a>, resolved from the same live GitHub items as the tracked-issues table above (the page provenance stamp applies). Phase 12 progress counts the ordered steps in <a href="${PHASE12_ISSUE_URL}">#1235</a> against live issue state${phase12 ? ` (body fetched ${esc(phase12.fetchedAt)})` : ""}; ${phaseMapping ? `Phases 11 and 13 progress counts the F-item mapping table in <a href="https://github.com/${PHASE_TRACKER_REPO}/blob/main/planning/roadmaps/id.md">planning/roadmaps/id.md</a> (read ${esc(phaseMapping.fetchedAt)}) against live item state; ` : ""}Phases 0–10 have no F-item numbering in their plans, so no percentage is shown for them — the gap is stated rather than a number invented.</p>`;
+  const rows = derivePhaseValidation(items)
+    .map((r) => {
+      const badge =
+        r.state === "validated"
+          ? `<span class="badge closed">validated — audit closed</span>`
+          : r.state === "validation-open"
+            ? `<span class="badge open">validation open — audit open</span>`
+            : r.state === "unresolved"
+              ? `<span class="badge">audit not resolved in the current source</span>`
+              : `<span class="badge">no validation audit</span>`;
+      const audit =
+        r.auditIssue === null
+          ? `<span class="muted">—</span>`
+          : `<a href="${esc(r.auditUrl ?? "")}">#${r.auditIssue}</a>${r.auditTitle ? ` ${esc(r.auditTitle)}` : ""}`;
+      const followUps = r.openFollowUps.length
+        ? r.openFollowUps.map((f) => `<a href="${esc(f.url)}">#${f.issueNumber}</a>`).join(" ")
+        : `<span class="muted">—</span>`;
+      const mapped = mappedProgress?.get(r.phase);
+      const progressCell =
+        r.phase === 12
+          ? progress
+            ? `<strong>${progress.done}/${progress.total} steps done (${progress.percent}%)</strong><br><span class="muted">${progress.open} open${progress.unresolved ? ` · ${progress.unresolved} not resolved in the current source` : ""} — from <a href="${PHASE12_ISSUE_URL}">#1235</a></span>`
+            : `<span class="muted">withheld — #1235 feed unavailable or stale</span>`
+          : mapped
+            ? `<strong>${mapped.done}/${mapped.total} items done (${mapped.percent}%)</strong><br><span class="muted">${mapped.open} open${mapped.unresolved ? ` · ${mapped.unresolved} not resolved in the current source` : ""} — from the F-item mapping in planning/roadmaps/id.md</span>`
+            : r.phase <= 10
+              ? `<span class="muted">not derived — this phase's plan has no F-item numbering</span>`
+              : `<span class="muted">not derived — F-item mapping unavailable in the current source</span>`;
+      return `<tr><th scope="row">Phase ${r.phase}</th><td>${badge}</td><td>${audit}</td><td>${followUps}</td><td>${progressCell}</td></tr>`;
+    })
+    .join("");
+  return `${head}${sourceLine}<div class="tblwrap"><table class="table table-zebra"><caption>Validation state per id-program phase, derived from live audit issue state</caption><thead><tr><th scope="col">Phase</th><th scope="col">Validation</th><th scope="col">Audit</th><th scope="col">Open follow-ups</th><th scope="col">Progress</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+/** The Build health panel (#9924): current CI lane states + the id
+ * E2E nightly trend, projected from the Actions-API snapshot. A stale
+ * or missing snapshot renders the warning INSTEAD of lane states —
+ * silently old CI state is the defect #1239's rules name. A lane whose
+ * read failed renders unavailable; a failing nightly run keeps its
+ * link, which is the point of the trend. */
+export function buildHealthPanelHtml(snapshot: BuildHealthSnapshot | null): string {
+  const head = `<h2>Build health — live from the GitHub Actions API</h2>`;
+  if (!snapshot) {
+    return `${head}<div class="banner">The Actions API snapshot is unavailable in the current source, so no lane state is shown — this panel never renders hand-kept CI values.</div>`;
+  }
+  const sourceLine = `<p class="muted">Source: GitHub Actions API for ${esc(BUILD_HEALTH_REPO)}, fetched ${esc(snapshot.fetchedAt)}.</p>`;
+  if (buildHealthIsStale(snapshot)) {
+    return `${head}${sourceLine}<div class="banner">Stale source: this snapshot was fetched at ${esc(snapshot.fetchedAt)}, outside the freshness window — lane states are withheld rather than shown silently old. They refresh on the next successful Actions read.</div>`;
+  }
+  const runBadge = (status: string, conclusion: string | null): string => {
+    if (status !== "completed") return `<span class="badge implementing">${esc(status)}</span>`;
+    if (conclusion === "success") return `<span class="badge merged">success</span>`;
+    if (conclusion === "failure") return `<span class="badge closed">failure</span>`;
+    return `<span class="badge">${esc(conclusion ?? "completed")}</span>`;
+  };
+  const laneCards = snapshot.lanes
+    .map((laneRuns) => {
+      if (laneRuns.error) {
+        return `<div class="card"><strong>${esc(laneRuns.lane.label)}</strong><br><span class="badge">unavailable</span><br><span class="muted">Actions read failed: ${esc(laneRuns.error)}</span></div>`;
+      }
+      const proj = projectLane(laneRuns);
+      if (!proj.latest) {
+        return `<div class="card"><strong>${esc(laneRuns.lane.label)}</strong><br><span class="badge">no runs reported</span></div>`;
+      }
+      const history = proj.history
+        .map(
+          (r) =>
+            `<a href="${esc(r.url)}">${r.conclusion === "success" ? "✓" : r.conclusion === "failure" ? "✗" : "·"}</a>`,
+        )
+        .join(" ");
+      return `<div class="card"><strong>${esc(laneRuns.lane.label)}</strong><br>${runBadge(proj.latest.status, proj.latest.conclusion)} <span class="muted">latest: <a href="${esc(proj.latest.url)}">${esc(proj.latest.createdAt)}</a> (${esc(proj.latest.event)})</span>${history ? `<br><span class="muted">recent completed: ${history}</span>` : ""}</div>`;
+    })
+    .join("");
+  let nightlyHtml: string;
+  if (snapshot.nightly.error) {
+    nightlyHtml = `<div class="card"><strong>${esc(snapshot.nightly.lane.label)} — nightly trend</strong><br><span class="badge">unavailable</span><br><span class="muted">Actions read failed: ${esc(snapshot.nightly.error)}</span></div>`;
+  } else {
+    const trend = projectNightlyTrend(snapshot.nightly);
+    nightlyHtml = trend.length
+      ? `<div class="card"><strong>${esc(snapshot.nightly.lane.label)} — nightly trend (oldest → newest)</strong><br>${trend
+          .map(
+            (r) =>
+              `<a href="${esc(r.url)}">${r.conclusion === "success" ? "✓" : r.conclusion === "failure" ? "✗" : "·"} ${esc(r.createdAt.slice(0, 10))}</a>`,
+          )
+          .join(" · ")}</div>`
+      : `<div class="card"><strong>${esc(snapshot.nightly.lane.label)} — nightly trend</strong><br><span class="badge">no completed runs reported</span></div>`;
+  }
+  return `${head}${sourceLine}${laneCards}${nightlyHtml}`;
+}
+
+/** The Phase 12 readiness panel (#9926): F12.1–F12.18 with design
+ * state (from #534's checklist), live issue state, and PR state
+ * (timeline cross-references). The F-item list is parsed from
+ * #1235's body — never hand-typed here. A stale snapshot withholds
+ * the rows behind the warning; missing sub-feeds render their
+ * column as unavailable instead of inventing a state. */
+export function f12ReadinessPanelHtml(
+  phase12: Phase12Snapshot | null,
+  design: Phase12Snapshot | null,
+  prRefs: Map<number, F12PrRef[]> | null,
+  items: Map<RefKey, GhItem>,
+): string {
+  const head = `<h2>Phase 12 readiness — F12.1–F12.18, live</h2>`;
+  if (!phase12) {
+    return `${head}<div class="banner">The #1235 body feed is unavailable in the current source, so no F-item state is shown — the F-item list itself comes from that body, and this panel never renders a hand-typed copy.</div>`;
+  }
+  const sourceLine = `<p class="muted">Sources: F-item list + order from <a href="${PHASE12_ISSUE_URL}">developing-today/code#1235</a> (fetched ${esc(phase12.fetchedAt)}); design state from <a href="${F12_DESIGN_ISSUE_URL}">#534</a>${design ? ` (fetched ${esc(design.fetchedAt)})` : " (feed unavailable — design column withheld)"}; issue state is live GitHub state; PR state from issue-timeline cross-references${prRefs ? "" : " (timeline read unavailable — PR column withheld)"}.</p>`;
+  if (phase12IsStale(phase12) || (design !== null && phase12IsStale(design))) {
+    return `${head}${sourceLine}<div class="banner">Stale source: a body snapshot feeding this panel is outside the freshness window — the F-item rows are withheld rather than shown silently old. They refresh on the next successful body read.</div>`;
+  }
+  const fItems = parseF12Items(phase12.body);
+  if (!fItems.length) {
+    return `${head}${sourceLine}<div class="banner">No F-items could be parsed from the current #1235 body, so no readiness state is shown.</div>`;
+  }
+  const designs = design ? parseF12Designs(design.body) : new Map();
+  const rows = projectF12Readiness(fItems, designs, items, prRefs ?? new Map())
+    .map((r) => {
+      const issueBadge =
+        r.issueState === null
+          ? `<span class="badge">issue not resolved in the current source</span>`
+          : `<span class="badge ${r.issueState === "open" ? "open" : "closed"}">issue ${esc(r.issueState)}</span>`;
+      const designBadge = !design
+        ? `<span class="badge">design feed unavailable</span>`
+        : r.design === null
+          ? `<span class="badge">no design entry in #534</span>`
+          : r.design.done
+            ? `<span class="badge merged">design ${esc(r.design.designId)} done</span>`
+            : `<span class="badge implementing">design ${esc(r.design.designId)} pending</span>`;
+      const prBadge = !prRefs
+        ? `<span class="badge">PR read unavailable</span>`
+        : r.prs.length
+          ? r.prs
+              .map(
+                (p) =>
+                  `<span class="badge ${p.state === "merged" ? "merged" : p.state === "open" ? "open" : "closed"}"><a href="${esc(p.url)}">PR #${p.number} ${esc(p.state)}</a></span>`,
+              )
+              .join(" ")
+          : `<span class="badge">no cross-referenced PR</span>`;
+      return `<div class="card"><strong>${esc(r.f)} — <a href="${esc(r.url)}">#${r.issueNumber}</a> ${esc(r.title ?? "")}</strong><br>${designBadge} ${issueBadge} ${prBadge}</div>`;
+    })
+    .join("");
+  return `${head}${sourceLine}${rows}`;
+}
+
+export function queuePanelHtml(snapshot: QueueSnapshot | null): string {
+  const head = `<h2>Queue &amp; fleet \u2014 live from the fleet queue broker</h2>`;
+  if (!snapshot) {
+    return `${head}<div class="banner">The queue-broker snapshot is unavailable in the current source, so no queue state is shown \u2014 this panel never renders hand-kept queue values.</div>`;
+  }
+  const fetchedIso = new Date(snapshot.fetchedAt).toISOString();
+  const sourceLine = `<p class="muted">Source: queue-broker /health + /list (read-only), fetched ${esc(fetchedIso)}.</p>`;
+  if (!snapshot.available || snapshot.stale) {
+    const why = snapshot.errors.length ? ` Last read error: ${esc(snapshot.errors[0])}.` : "";
+    return `${head}${sourceLine}<div class="banner">Stale source: this queue snapshot was fetched at ${esc(fetchedIso)}, outside the freshness window \u2014 queue numbers are withheld rather than shown silently old.${why} They refresh on the next successful broker read.</div>`;
+  }
+  const age = (ms: number | null): string => {
+    if (ms === null) return "\u2014";
+    const mins = Math.floor(ms / 60_000);
+    if (mins < 60) return `${mins}m`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 48) return `${hours}h ${mins % 60}m`;
+    return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+  };
+  const streamRows = snapshot.queues
+    .map(
+      (q) =>
+        `<tr><td>${esc(q.queue)}</td><td>${q.queued}</td><td>${q.claimed}</td><td>${q.parked}</td><td>${q.blocked}</td><td>${q.done}</td><td>${esc(age(q.oldestQueuedAgeMs))}</td><td>${q.terminalEvents24h} / ${q.terminalEvents7d}</td></tr>`,
+    )
+    .join("");
+  const streams = `<table><caption>Queue streams</caption><thead><tr><th scope="col">Queue stream</th><th scope="col">Queued</th><th scope="col">Claimed</th><th scope="col">Parked</th><th scope="col">Blocked</th><th scope="col">Done</th><th scope="col">Oldest queued</th><th scope="col">Terminal 24h / 7d</th></tr></thead><tbody>${streamRows}</tbody></table>`;
+  const idItems = snapshot.tasks.filter(
+    (task) =>
+      task.repo === "developing-today/code" &&
+      task.issue !== null &&
+      (task.status === "claimed" || task.status === "parked"),
+  );
+  const itemRows = idItems
+    .slice(0, 50)
+    .map((task) => {
+      const who = [task.worker, task.lane].filter(Boolean).join(" / ") || "\u2014";
+      const stage = task.progressStage ? esc(task.progressStage) : "\u2014";
+      return `<tr><td>${task.id}</td><td><a href="https://github.com/developing-today/code/issues/${task.issue}">#${task.issue}</a> ${esc(task.title)}</td><td>${esc(task.status)}</td><td>${esc(who)}</td><td>${stage}</td></tr>`;
+    })
+    .join("");
+  const items = idItems.length
+    ? `<h3>Claimed &amp; parked id items (${idItems.length})</h3><table><caption>Claimed &amp; parked id items</caption><thead><tr><th scope="col">Task</th><th scope="col">Issue</th><th scope="col">Status</th><th scope="col">Worker / lane</th><th scope="col">Stage</th></tr></thead><tbody>${itemRows}</tbody></table>`
+    : `<h3>Claimed &amp; parked id items</h3><p class="muted">None in the current snapshot.</p>`;
+  return `${head}${sourceLine}${streams}${items}`;
 }
 
 export function renderProgramProject(
@@ -6993,6 +7670,12 @@ export function renderProgramProject(
   provenance: Provenance,
   provDetail?: ProvenanceDetail,
   epicPool: ProjectPoolItem[] = detail.poolItems,
+  phase12?: Phase12Snapshot | null,
+  buildHealth?: BuildHealthSnapshot | null,
+  f12?: { design: Phase12Snapshot | null; prRefs: Map<number, F12PrRef[]> | null } | null,
+  queueSnap?: QueueSnapshot | null,
+  phaseMapping?: PhaseMappingSnapshot | null,
+  graphActions?: EpicGraphActionContext,
 ): string {
   const { config } = detail;
   const linkBits: string[] = [];
@@ -7058,7 +7741,7 @@ export function renderProgramProject(
     const epicHtml = epics.length
       ? `<h3>Epics — weighted progress</h3><p class="muted"><strong>${esc(weightedLine(epicW))}</strong></p>${epicRows}`
       : "";
-    poolHtml = `<p class="muted"><strong>${esc(weightedLine(allW))}</strong><br>${esc(handsLine(allW))}<br><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${epicHtml}${poolGraphHtml(detail.poolItems, allW)}${epicGraphSectionHtml(epicPool, detail.poolItems)}${cards}${more}`;
+    poolHtml = `<p class="muted"><strong>${esc(weightedLine(allW))}</strong><br>${esc(handsLine(allW))}<br><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${epicHtml}${poolGraphHtml(detail.poolItems, allW)}${epicGraphSectionHtml(epicPool, detail.poolItems, graphActions)}${cards}${more}`;
   }
 
   let roadmapHtml: string;
@@ -7098,6 +7781,17 @@ export function renderProgramProject(
 <p class="muted">Built only from already-published fleet data — the orchestration section this aggregator serves and the fleet's tracked issues. No new data pipeline feeds this section.</p>${programEntries(config.sweepHealth, items)}`
     : "";
 
+  const phaseTrackerHtml =
+    config.id === "id" ? phaseTrackerPanelHtml(items, phase12 ?? null, phaseMapping ?? null) : "";
+  const phase12Html =
+    config.id === "id" && phase12 !== undefined ? phase12PanelHtml(phase12, items, queueSnap ?? null) : "";
+  const buildHealthHtml = config.id === "id" && buildHealth !== undefined ? buildHealthPanelHtml(buildHealth) : "";
+  const f12Html =
+    config.id === "id" && f12 !== undefined
+      ? f12ReadinessPanelHtml(phase12 ?? null, f12?.design ?? null, f12?.prRefs ?? null, items)
+      : "";
+  const queueHtml = config.id === "id" && queueSnap !== undefined ? queuePanelHtml(queueSnap) : "";
+
   const ed = config.editorial;
   const editorialHtml = ed
     ? `${ed.done.length ? `<h2>What's built</h2>${programEntries(ed.done, items)}` : ""}${ed.next.length ? `<h2>What's next</h2>${programEntries(ed.next, items)}` : ""}${ed.longTerm.length ? `<h2>Long-term roadmap</h2>${programEntries(ed.longTerm, items)}` : ""}${ed.gaps.length ? `<h2>Known gaps</h2>${programEntries(ed.gaps, items)}` : ""}`
@@ -7117,13 +7811,13 @@ ${poolHtml}
 ${roadmapHtml}
 ${repoCardsHtml}
 ${sweepHealthHtml}
-${editorialHtml}`;
+${phaseTrackerHtml}${phase12Html}${buildHealthHtml}${f12Html}${queueHtml}${editorialHtml}`;
   return layout(
     config.title,
     body,
     provenance,
     "/program",
-    "",
+    graphActions?.identities ? ACTION_SCRIPT : "",
     provDetail ? freshnessChips(provDetail, ["orchestration", "items", "roadmap"]) : "",
   );
 }

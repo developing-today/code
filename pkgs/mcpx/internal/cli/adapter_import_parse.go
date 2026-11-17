@@ -7,7 +7,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"time"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // The source parsers for adapter import (#1962). Each is a pure function
@@ -24,7 +25,9 @@ import (
 
 // fishTokens splits a fish line the way fish would for the simple shapes
 // completion files use: single and double quotes group, backslash
-// escapes inside double quotes and outside quotes.
+// escapes inside double quotes and outside quotes, and inside single
+// quotes backslash escapes only a quote or another backslash (fish
+// semantics) -- an escaped apostrophe must not close the quote early.
 func fishTokens(line string) []string {
 	var out []string
 	var cur strings.Builder
@@ -41,6 +44,9 @@ func fishTokens(line string) []string {
 			if c == quote {
 				quote = 0
 			} else if c == '\\' && quote == '"' && i+1 < len(line) {
+				i++
+				cur.WriteByte(line[i])
+			} else if c == '\\' && quote == '\'' && i+1 < len(line) && (line[i+1] == '\'' || line[i+1] == '\\') {
 				i++
 				cur.WriteByte(line[i])
 			} else {
@@ -436,7 +442,7 @@ func manShape(binary string) (*importShape, error) {
 
 // runCaptureEnv is runCapture with extra environment.
 func runCaptureEnv(env map[string]string, binary string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), defaults.PreflightProbeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Env = os.Environ()
@@ -562,7 +568,7 @@ func firstSentence(s string) string {
 }
 
 var helpRowRE = regexp.MustCompile(`^\s{1,6}(\S+)\s{2,}(\S.*)$`)
-var usageBracketRE = regexp.MustCompile("\\[([^\\[\\]]*)\\]")
+var usageBracketRE = regexp.MustCompile(`\[([^\[\]]*)\]`)
 
 // optionalPositionalNames extracts the positional names a help text's
 // usage block marks optional: the bracketed [name] form (argparse

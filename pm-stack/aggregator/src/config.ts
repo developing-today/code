@@ -4,6 +4,7 @@
 // explicit PM_AGG_DEV=1 switch (#1195).
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { parseStoreBackend, type StoreBackendKind } from "./store-backend.ts";
 
 const s = (v: string | undefined, d: string): string => (v && v.trim() !== "" ? v.trim() : d);
 
@@ -14,6 +15,19 @@ function parseAggregatorPort(value: string | undefined, name = "PM_AGG_PORT", de
     throw new Error(`Invalid ${name}=${JSON.stringify(value)}; expected a decimal integer in range 1-65535`);
   }
   return port;
+}
+
+function parseAggregatorCount(
+  value: string | undefined,
+  name: string,
+  defaultValue: string
+): number {
+  const normalized = s(value, defaultValue);
+  const count = Number(normalized);
+  if (!/^\d+$/.test(normalized) || !Number.isSafeInteger(count) || count < 1) {
+    throw new Error(`Invalid ${name}=${JSON.stringify(value)}; expected a decimal integer >= 1`);
+  }
+  return count;
 }
 
 function parseAggregatorHosts(value: string | undefined): string[] {
@@ -28,6 +42,10 @@ function parseAggregatorHosts(value: string | undefined): string[] {
 }
 
 export interface Config {
+  /** #6815: where the four Supabase-migrated stores live. "file" is the
+   *  dev/test path and rollback target; "supabase" is the deployed
+   *  canonical backend. Exactly one is active — never both. */
+  storeBackend: StoreBackendKind;
   /** Default Source: "live" when PM_AGG_SOURCE=live; "fixtures" when
    * explicitly requested, or when PM_AGG_DEV=1 allows the implicit
    * (unset/invalid PM_AGG_SOURCE) fixture default. Anything else
@@ -42,6 +60,12 @@ export interface Config {
   commentsFile: string;
   /** Append-only roadmap annotation store (#1284), separate from comments. */
   roadmapAnnotationsFile: string;
+  /** Checkout of developing-today/code on the aggregator host; the
+   * repo-file roadmap source (#1738) reads planning/roadmaps/*.md here. */
+  codeCheckout: string;
+  /** Checkout of dezren39/darwin-nix on the aggregator host; the
+   * repo-file roadmap source (#1738) reads ROADMAP.md here. */
+  nixCheckout: string;
   /** Dashboard actions store (#1152/#1154/#1156) — triage write path. */
   actionsFile: string;
   /** Saved-views store (#1276) — named per-person filter sets. */
@@ -52,6 +76,13 @@ export interface Config {
   freshnessFile: string;
   /** Loopback-only publisher listener; never included in PM_AGG_HOSTS. */
   freshnessPort: number;
+  /** Queue-broker base URL for the read-only fleet-queue collector
+   * (#9920). The broker is laptop-local (loopback + tailnet only). */
+  queueBrokerUrl: string;
+  /** File holding the queue-broker agent token the collector sends
+   * as X-Agent-Token on read verbs only (#9920). Never a write or
+   * dispatch credential. */
+  queueBrokerTokenFile: string;
   activityFile: string;
   /** Durable identity-registry store (#906 §3), merged on every read. */
   registryFile: string;
@@ -73,6 +104,10 @@ export interface Config {
   decisionsOutboxFile: string;
   /** Stack-health state written by the sentinel intake extension (#8568). */
   stackHealthFile: string;
+  /** Host-health snapshot written by pm-stack/host-health-collector.py
+   * (#10141): claimant mode + PM unit states the watchdog derives
+   * silent-failure tier items from. Read-only for the aggregator. */
+  hostHealthFile: string;
   /** Versioned item-history JSONL (#3981) the forecast contract
    * (#3984) derives from: one cutoff per line, read via
    * ItemHistoryStore. */
@@ -123,6 +158,8 @@ export interface Config {
   };
   projector: {
     baseUrl: string | null;
+    /** Shared projector bearer token used only to ack the GitHub hot-list cursor. */
+    apiToken: string | null;
   };
   /** Probe targets for the /health page (#1147): the stack services the
    * aggregator does not otherwise read. Kaneo/Grist/projector targets
@@ -163,17 +200,22 @@ function parseAggregatorSource(env: Record<string, string | undefined>): "fixtur
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
   return {
+    storeBackend: parseStoreBackend(env),
     source: parseAggregatorSource(env),
     port: parseAggregatorPort(env.PM_AGG_PORT),
     hosts: parseAggregatorHosts(env.PM_AGG_HOSTS),
     feedFile: s(env.PM_AGG_FEED_FILE, join(process.cwd(), "fleet-feed.json")),
     commentsFile: s(env.PM_AGG_COMMENTS_FILE, join(process.cwd(), "comments.json")),
     roadmapAnnotationsFile: s(env.PM_AGG_ROADMAP_ANNOTATIONS_FILE, join(process.cwd(), "roadmap-annotations.json")),
+    codeCheckout: s(env.PM_AGG_CODE_CHECKOUT, join(homedir(), "git", "code")),
+    nixCheckout: s(env.PM_AGG_NIX_CHECKOUT, join(homedir(), "code", "dezren39-nix")),
     actionsFile: s(env.PM_AGG_ACTIONS_FILE, join(process.cwd(), "actions.json")),
     viewsFile: s(env.PM_AGG_VIEWS_FILE, join(process.cwd(), "views.json")),
     eventsFile: s(env.PM_AGG_EVENTS_FILE, join(process.cwd(), "events.json")),
     freshnessFile: s(env.PM_AGG_FRESHNESS_FILE, join(homedir(), ".local", "state", "pm-aggregator", "freshness.json")),
     freshnessPort: parseAggregatorPort(env.PM_AGG_FRESHNESS_PORT, "PM_AGG_FRESHNESS_PORT", "4871"),
+    queueBrokerUrl: s(env.PM_AGG_QUEUE_BROKER_URL, "http://100.99.113.103:4801"),
+    queueBrokerTokenFile: s(env.PM_AGG_QUEUE_BROKER_TOKEN_FILE, join(homedir(), ".config", "queue-broker", "token")),
     // Default is the state dir, NOT cwd (#5389): aggregator runtime state
     // lives in ~/.local/state/pm-aggregator (2026-10-27 precedent), and the
     // cwd default let an env-less run write this store into whatever
@@ -207,6 +249,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     stackHealthFile: s(
       env.PM_AGG_STACK_HEALTH_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "stack-health.json"),
+    ),
+    hostHealthFile: s(
+      env.PM_AGG_HOST_HEALTH_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "host-health.json"),
     ),
     quotaViewFile: s(
       env.PM_AGG_QUOTA_VIEW,
@@ -266,6 +312,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         env.PM_PROJECTOR_URL === "off" || env.PM_PROJECTOR_URL === "none"
           ? null
           : s(env.PM_PROJECTOR_URL, "http://127.0.0.1:7801"),
+      apiToken: env.PM_PROJECTOR_API_TOKEN?.trim() || null,
     },
     pad: {
       baseUrl: s(env.PM_AGG_PAD_URL, "http://127.0.0.1:7777"),
@@ -275,7 +322,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     },
     publicOrigin: s(env.PM_AGG_PUBLIC_ORIGIN, "https://amd-6.raptor-pumpkinseed.ts.net").replace(/\/+$/, ""),
     alerts: {
-      ackWindowMin: Math.max(1, Math.floor(Number(s(env.ALERT_ACK_WINDOW_MIN, "15"))) || 15),
+      ackWindowMin: parseAggregatorCount(env.ALERT_ACK_WINDOW_MIN, "ALERT_ACK_WINDOW_MIN", "15"),
       tickMs: 60_000,
     },
   };

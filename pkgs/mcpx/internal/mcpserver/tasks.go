@@ -326,7 +326,11 @@ func (s *Server) maybeTask(ctx context.Context, c *Conn, req request, peer Peer)
 		if terr != nil {
 			return &response{JSONRPC: "2.0", ID: req.ID, Error: terr}
 		}
-		return &response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{"task": t}}
+		var taskVal any = t
+		if peer.Version == "2025-11-25" {
+			taskVal = coreTask(t)
+		}
+		return &response{JSONRPC: "2.0", ID: req.ID, Result: map[string]any{"task": taskVal}}
 	}
 	support := s.taskSupportOf(ctx, req.Params)
 	if !peer.DeclaredExtension(ExtTasks) {
@@ -525,6 +529,26 @@ func (s *Server) updateAsked(ctx context.Context, taskID string, at askedTask, r
 	return nil
 }
 
+// coreTask renders a task in the 2025-11-25 shape, omitting mcpx-internal
+// retention fields (expiresAt, lastTouched, ttlRemainingMs) that are not
+// defined by the 2025-11-25 schema.
+func coreTask(t Task) map[string]any {
+	out := map[string]any{
+		"taskId":        t.TaskID,
+		"status":        t.Status,
+		"createdAt":     t.CreatedAt,
+		"lastUpdatedAt": t.LastUpdatedAt,
+		"ttl":           t.TTL,
+	}
+	if t.StatusMessage != "" {
+		out["statusMessage"] = t.StatusMessage
+	}
+	if t.PollInterval != 0 {
+		out["pollInterval"] = t.PollInterval
+	}
+	return out
+}
+
 // modernTask renders a task in the extension's shape: ttlMs and
 // pollIntervalMs, where 2025-11-25 said ttl and pollInterval.
 func modernTask(t Task) map[string]any {
@@ -671,7 +695,15 @@ func (s *Server) handleTask(ctx context.Context, c *Conn, req request, peer Peer
 		if perr != nil {
 			return fail(codeInvalidParams, perr.Error())
 		}
-		out := map[string]any{"tasks": items}
+		var taskList any = items
+		if peer.Version == "2025-11-25" {
+			coreItems := make([]map[string]any, len(items))
+			for i, it := range items {
+				coreItems[i] = coreTask(it)
+			}
+			taskList = coreItems
+		}
+		out := map[string]any{"tasks": taskList}
 		if next != "" {
 			out["nextCursor"] = next
 		}
@@ -682,6 +714,9 @@ func (s *Server) handleTask(ctx context.Context, c *Conn, req request, peer Peer
 		snap, ok := st.Read(p.TaskID)
 		if !ok {
 			return missing()
+		}
+		if peer.Version == "2025-11-25" {
+			return reply(coreTask(snap))
 		}
 		return reply(snap)
 
@@ -725,6 +760,9 @@ func (s *Server) handleTask(ctx context.Context, c *Conn, req request, peer Peer
 		snap, ok := st.CancelImmediate(p.TaskID, "cancelled")
 		if !ok {
 			return missing()
+		}
+		if peer.Version == "2025-11-25" {
+			return reply(coreTask(snap))
 		}
 		return reply(snap)
 	}

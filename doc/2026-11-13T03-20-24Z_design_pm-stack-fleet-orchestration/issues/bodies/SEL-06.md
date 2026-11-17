@@ -34,9 +34,6 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: none.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -78,8 +75,8 @@ Negative coverage: stale input, duplicate/replay, ambiguous resource, unauthoriz
 | `SEL-06` / contingent | Lane fairness policy interface in `src/work/selection.rs`; consume #8097's existing filter contract. | #8097 eligibility/filter semantics; fairness measure is a V2 decision, not a whole-starter blocker | Model-based fairness bound while exact urgent order remains unchanged; no eligibility bypass or intrinsic-score change. |
 **Future red-first test commands / oracles per issue:** All Rust tests live in the existing `fleet-queue` crate; do not add a crate. Exact future commands: SEL-01 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_selection_requirements_and_filter_both_apply`; SEL-02 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_selection_stale_claim_revalidates`; SEL-03 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_selection_fixed_mass_probabilities`; SEL-04 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_selection_disposition_replay_no_claim`; SEL-05 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_selection_simulation_matches_reference`; SEL-06 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_selection_fairness_preserves_urgent_order`; SEL-07 `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_selection_rollback_keeps_live_values`. Each issue must first run its exact command with `-- --list` and assert the exact name is listed, then run the filter; zero-test success is not acceptance. SEL-01 oracle uses both-predicates counterexample above; SEL-03/05 use exact fixed-mass sequential probabilities. Hosted parity (#9079/#9081) and mobile display (#9201) are soft consumers, not blockers to the pure model suite.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `SEL-05` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/selection.rs`

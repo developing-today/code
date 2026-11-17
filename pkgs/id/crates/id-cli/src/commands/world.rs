@@ -17,10 +17,11 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 use id_core::frames::{read_frame_from, write_frame_to};
 use id_worlds::world_net::WorldClient;
+use id_worlds::world_store::ReplicaStatus;
 
 use crate::{
     CLIENT_KEY_FILE,
-    cli::{WorldCommand, WorldVia},
+    cli::{JournalCommand, WorldCommand, WorldVia},
     is_node_id, load_or_create_keypair,
 };
 
@@ -203,6 +204,33 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             endpoint.close().await;
             replica.shutdown().await;
             Ok(())
+        }
+        WorldCommand::Replica(args) => {
+            let crate::cli::WorldReplicaArgs {
+                node,
+                dir,
+                admin_token,
+                world,
+                source,
+                lease,
+                once,
+                follow,
+                addrs,
+                no_relay,
+            } = args;
+            cmd_replica(
+                &node,
+                &dir,
+                &admin_token,
+                &world,
+                source.as_deref(),
+                lease.as_deref(),
+                once,
+                follow,
+                &addrs,
+                no_relay,
+            )
+            .await
         }
         WorldCommand::Download(args) => {
             let crate::cli::WorldDownloadArgs {
@@ -960,7 +988,204 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             json,
         } => fork_world_on_disk(&source, &dir, name.as_deref(), template, json),
         WorldCommand::Provenance { dir, json } => print_world_provenance(&dir, json),
+        WorldCommand::Journal(args) => match args.action {
+            JournalCommand::Check { dir, json } => print_journal_check(&dir, json),
+            JournalCommand::Backup { dir, out } => journal_backup(&dir, &out),
+        },
     }
+}
+
+/// The outcome of checking a world directory's journal (F11.12): what
+/// the `Created` header declares, what the entries require, and every
+/// format problem found. The journal is valid only when `problems` is
+/// empty.
+#[derive(Debug)]
+struct JournalCheck {
+    world_id: Option<String>,
+    header_version: Option<u32>,
+    entries: usize,
+    required_version: u32,
+    problems: Vec<String>,
+}
+
+/// Audit a world directory's journal bytes: the header version against
+/// the newest this binary can read, every entry's parse, the version
+/// the entries require against the header that declares less, and the
+/// file ending at an entry boundary. Unlike [`read_world_journal`] —
+/// an inspection read that skips a torn tail — a torn tail is a problem
+/// here: `check` is the format audit, and a journal that does not end
+/// at an entry boundary is not a complete record.
+fn check_journal_bytes(bytes: &[u8]) -> JournalCheck {
+    use id_worlds::world::{JournalEntry, MAX_JOURNAL_VERSION, journal_version_required_by};
+
+    let mut problems = Vec::new();
+    if bytes.is_empty() {
+        problems.push("the journal is empty: it has no Created header".to_owned());
+        return JournalCheck {
+            world_id: None,
+            header_version: None,
+            entries: 0,
+            required_version: 0,
+            problems,
+        };
+    }
+    let torn = bytes.last() != Some(&b'\n');
+    let mut lines: Vec<&[u8]> = bytes.split(|byte| *byte == b'\n').collect();
+    if torn {
+        lines.pop();
+        problems.push(
+            "the final entry is unterminated (torn tail): the journal does not end at an              entry boundary"
+                .to_owned(),
+        );
+    }
+    let mut world_id = None;
+    let mut header_version = None;
+    let mut required_version = 0;
+    let mut entries = 0;
+    for (index, line) in lines.iter().enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        let entry: JournalEntry = match serde_json::from_slice(line) {
+            Ok(entry) => entry,
+            Err(err) => {
+                problems.push(format!("line {} does not parse: {err}", index + 1));
+                break;
+            }
+        };
+        if entries == 0 {
+            match &entry {
+                JournalEntry::Created {
+                    world_id: id,
+                    version,
+                } => {
+                    world_id = Some(id.clone());
+                    header_version = Some(*version);
+                }
+                _ => problems.push("the journal does not start with a Created header".to_owned()),
+            }
+        }
+        entries += 1;
+        required_version = required_version.max(journal_version_required_by(&entry));
+    }
+    if entries == 0 && problems.is_empty() {
+        problems.push("the journal has no entries".to_owned());
+    }
+    if let Some(version) = header_version {
+        if version == 0 || version > MAX_JOURNAL_VERSION {
+            // The refusal wording of the restore path's header check
+            // (`check_journal_version` in id-worlds), so the CLI and the
+            // writer refuse a newer format in the same words.
+            problems.push(format!("unsupported world journal version {version}"));
+        }
+        if required_version > version {
+            problems.push(format!(
+                "entries require journal version {required_version} but the header declares                  {version}"
+            ));
+        }
+    }
+    JournalCheck {
+        world_id,
+        header_version,
+        entries,
+        required_version,
+        problems,
+    }
+}
+
+/// Check the journal in `dir` (its `journal.jsonl`).
+fn check_world_journal(dir: &std::path::Path) -> Result<JournalCheck> {
+    let path = dir.join("journal.jsonl");
+    let bytes = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    Ok(check_journal_bytes(&bytes))
+}
+
+/// `id world journal check`: print the journal's format version and
+/// validity, and exit nonzero when it is not valid — a newer-format
+/// journal is flagged, never silently accepted.
+fn print_journal_check(dir: &std::path::Path, json: bool) -> Result<()> {
+    let check = check_world_journal(dir)?;
+    let valid = check.problems.is_empty();
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "world_id": check.world_id,
+                "journal_version": check.header_version,
+                "max_supported_version": id_worlds::world::MAX_JOURNAL_VERSION,
+                "required_version": check.required_version,
+                "entries": check.entries,
+                "valid": valid,
+                "problems": check.problems,
+            })
+        );
+    } else {
+        println!(
+            "world: {}",
+            check.world_id.as_deref().unwrap_or("(no Created header)")
+        );
+        println!(
+            "journal version: {} (this binary reads up to {})",
+            check
+                .header_version
+                .map_or_else(|| "unknown".to_owned(), |version| version.to_string()),
+            id_worlds::world::MAX_JOURNAL_VERSION
+        );
+        println!("entries: {}", check.entries);
+        println!("required version: {}", check.required_version);
+        if valid {
+            println!("status: valid");
+        } else {
+            println!("status: INVALID");
+            for problem in &check.problems {
+                println!("problem: {problem}");
+            }
+        }
+    }
+    if valid {
+        Ok(())
+    } else {
+        bail!("journal check failed: {}", check.problems.join("; "))
+    }
+}
+
+/// `id world journal backup`: copy the journal in `dir` to `out`, byte
+/// for byte, so the copy restores the world exactly (F11.12's exit:
+/// "backup restores byte for byte"). The journal must check valid
+/// first — a backup of a corrupt or newer-format journal would not
+/// restore here — and the output must not already exist, so a backup
+/// never overwrites an earlier one by accident. The written file is
+/// read back and compared before success is reported.
+fn journal_backup(dir: &std::path::Path, out: &std::path::Path) -> Result<()> {
+    let path = dir.join("journal.jsonl");
+    let bytes = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    let check = check_journal_bytes(&bytes);
+    if !check.problems.is_empty() {
+        bail!(
+            "refusing to back up an invalid journal: {}",
+            check.problems.join("; ")
+        );
+    }
+    if out.exists() {
+        bail!("backup output {} already exists", out.display());
+    }
+    std::fs::write(out, &bytes).with_context(|| format!("write {}", out.display()))?;
+    let written = std::fs::read(out).with_context(|| format!("read back {}", out.display()))?;
+    if written != bytes {
+        bail!(
+            "backup verification failed: {} does not match {} byte for byte",
+            out.display(),
+            path.display()
+        );
+    }
+    println!(
+        "backed up {} ({} bytes, journal version {}) to {}",
+        path.display(),
+        bytes.len(),
+        check.header_version.unwrap_or(0),
+        out.display()
+    );
+    Ok(())
 }
 
 /// Read a world directory's journal entries for inspection, without
@@ -2220,8 +2445,9 @@ fn pump_plain(line: &str) -> PumpLine {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
-        PumpLine, check_contract, local_transcript_record, pump_command, scaffold_world,
-        step_is_applied, world_list_plain_row,
+        PumpLine, check_contract, check_journal_bytes, journal_backup, local_transcript_record,
+        print_journal_check, pump_command, scaffold_world, step_is_applied, world_list_plain_row,
+        world_provenance,
     };
 
     /// #3089: a world name containing LF must not forge an extra row in
@@ -2484,7 +2710,7 @@ mod tests {
         .join("\n");
         assert_eq!(
             check_contract(&good).unwrap(),
-            "3 frames conform to shell contract v1.7"
+            "3 frames conform to shell contract v1.9"
         );
         let bad = [
             r#"{"from": "client", "frame": {"type": "chat", "text": "too early"}}"#,
@@ -2556,4 +2782,296 @@ mod tests {
         assert!(super::measure_module(wasm, 7, &["zz".to_owned()], None).is_err());
         assert!(super::measure_module(b"not wasm", 7, &[], None).is_err());
     }
+}
+
+/// Lowercase hex for status output (source keys, chain digests).
+fn hex_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Wall-clock now in unix milliseconds, for the admission gate's
+/// open-time status (`id_worlds::world::unix_ms` is crate-private).
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+/// The one-line JSON status a replica operator reads (acceptance
+/// item 1 of #806 phase 5): pinned source, world, the verified
+/// cursor it stands at, and its policy-B staleness — how much of the
+/// admission window remains, and whether a NEW spectator would be
+/// admitted right now.
+fn replica_status_json(
+    status: &ReplicaStatus,
+    chain: id_worlds::world::ReplicationCursor,
+) -> serde_json::Value {
+    serde_json::json!({
+        "world": status.world_id,
+        "source": hex_bytes(&status.source),
+        "cursor": {
+            "entries": status.cursor.entries,
+            "sequence": status.cursor.sequence,
+            "header_version": status.cursor.header_version,
+        },
+        "chain_cursor": {
+            "ordinal": chain.ordinal,
+            "digest": hex_bytes(&chain.digest),
+        },
+        "lease_expires_at_unix_ms": status.lease_expires_at_unix_ms,
+        "lease_remaining_ms": status.lease_remaining_ms,
+        "admits_new_spectators": status.admits_new_spectators,
+    })
+}
+
+/// `id world replica`: follow a pinned writer into a durable replica
+/// directory, open the replica under the policy-B admission gate,
+/// report its status, and serve it (F12.13 phase 5, item 1).
+///
+/// Modes: `--once` syncs and reports only; `--follow` keeps the
+/// journal current across reconnects without serving; the default
+/// syncs once, reports, then serves the replica's world sessions
+/// until interrupted. The replica never re-exports the journal feed:
+/// it cannot sign for the pinned source, so it serves sessions only.
+#[allow(clippy::too_many_arguments)]
+async fn cmd_replica(
+    node: &str,
+    dir: &std::path::Path,
+    admin_token: &str,
+    world: &str,
+    source_hex: Option<&str>,
+    lease_path: Option<&std::path::Path>,
+    once: bool,
+    follow: bool,
+    addrs: &[SocketAddr],
+    no_relay: bool,
+) -> Result<()> {
+    use id_worlds::world::{DurableReceiver, SignedAdmissionLease};
+    use iroh::protocol::Router;
+
+    if !is_node_id(node) {
+        bail!("`{node}` is not a node ID (expected 64 hex characters)");
+    }
+    let node_id: EndpointId = node.parse().context("parse node ID")?;
+    let source_hex = source_hex.unwrap_or(node);
+    if !is_node_id(source_hex) {
+        bail!("`{source_hex}` is not a source key (expected 64 hex characters)");
+    }
+    let source_id: EndpointId = source_hex.parse().context("parse source key")?;
+    let source = *source_id.as_bytes();
+
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("create replica directory {}", dir.display()))?;
+    let mut receiver = DurableReceiver::open(dir, world, source)
+        .map_err(|error| anyhow::anyhow!("open replica receiver: {error}"))?;
+
+    let endpoint = client_endpoint(addrs, no_relay).await?;
+    let addr = EndpointAddr::from_parts(node_id, addrs.iter().copied().map(TransportAddr::Ip));
+
+    if follow {
+        loop {
+            let outcome = id_worlds::world_replication_net::follow_replica_session(
+                &endpoint,
+                addr.clone(),
+                Some(world),
+                admin_token,
+                &mut receiver,
+                &mut |cursor| {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "replica_committed",
+                            "world": world,
+                            "ordinal": cursor.ordinal,
+                            "digest": hex_bytes(&cursor.digest),
+                        })
+                    );
+                },
+            )
+            .await;
+            match outcome {
+                Ok(commits) => {
+                    eprintln!(
+                        "replica follow: session ended after {commits} commit(s); reconnecting"
+                    );
+                }
+                Err(error) => {
+                    eprintln!("replica follow: session failed: {error:#}; reconnecting");
+                }
+            }
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => break,
+                () = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+            }
+        }
+        endpoint.close().await;
+        return Ok(());
+    }
+
+    let chain = id_worlds::world_replication_net::sync_replica_once(
+        &endpoint,
+        addr,
+        Some(world),
+        admin_token,
+        &mut receiver,
+    )
+    .await?;
+    drop(receiver);
+    endpoint.close().await;
+
+    let lease = lease_path
+        .map(|path| -> Result<SignedAdmissionLease> {
+            let bytes = std::fs::read(path)
+                .with_context(|| format!("read admission lease {}", path.display()))?;
+            serde_json::from_slice(&bytes)
+                .with_context(|| format!("parse admission lease {}", path.display()))
+        })
+        .transpose()?;
+
+    let (service, _report, _cursor, status) = id_worlds::world_store::open_replica_with_admission(
+        dir,
+        world,
+        source,
+        id_worlds::world::WorldLimits::default(),
+        id_worlds::world_limits::RuntimeLimits::default(),
+        |handle| id_worlds::world_session::WorldService::new(handle, None),
+        lease,
+        now_unix_ms(),
+    )
+    .await?;
+    println!("{}", replica_status_json(&status, chain));
+    if once {
+        service.world().shutdown().await?;
+        return Ok(());
+    }
+
+    let serve_endpoint = client_endpoint(&[], no_relay).await?;
+    let serve_node = serve_endpoint.id();
+    let router = Router::builder(serve_endpoint.clone())
+        .accept(
+            id_worlds::world_net::WORLD_ALPN,
+            id_worlds::world_net::WorldProtocol::new(id_worlds::world_hub::WorldHub::single_named(
+                world, service,
+            )),
+        )
+        .spawn();
+    println!(
+        "{}",
+        serde_json::json!({
+            "event": "replica_serving",
+            "world": world,
+            "node": serve_node.to_string(),
+        })
+    );
+    tokio::signal::ctrl_c().await?;
+    let _ = router.shutdown().await;
+    serve_endpoint.close().await;
+    Ok(())
+}
+
+/// A journal file's bytes for a fixture world: a `Created` header at
+/// `version`, then a `Forked` entry (a kind every version reads).
+fn journal_fixture(version: u32) -> Vec<u8> {
+    use id_worlds::world::JournalEntry;
+    let entries = [
+        JournalEntry::Created {
+            world_id: "world-1".to_owned(),
+            version,
+        },
+        JournalEntry::Forked {
+            from_world_id: "world-0".to_owned(),
+            from_module_hash: "abc123".to_owned(),
+            template: false,
+            at_sequence: 3,
+        },
+    ];
+    let mut bytes = Vec::new();
+    for entry in &entries {
+        bytes.extend_from_slice(&serde_json::to_vec(entry).unwrap());
+        bytes.push(b'\n');
+    }
+    bytes
+}
+
+fn write_journal(dir: &std::path::Path, bytes: &[u8]) {
+    std::fs::write(dir.join("journal.jsonl"), bytes).unwrap();
+}
+
+/// Oracle: F11.12's format contract — `journal check` reports the
+/// header version and validity of a well-formed journal.
+#[test]
+fn journal_check_reports_a_valid_journal() {
+    let dir = tempfile::tempdir().unwrap();
+    write_journal(dir.path(), &journal_fixture(1));
+    let check = check_journal_bytes(&journal_fixture(1));
+    assert!(check.problems.is_empty(), "{check:?}");
+    assert_eq!(check.world_id.as_deref(), Some("world-1"));
+    assert_eq!(check.header_version, Some(1));
+    assert_eq!(check.entries, 2);
+    assert!(print_journal_check(dir.path(), false).is_ok());
+    assert!(print_journal_check(dir.path(), true).is_ok());
+}
+
+/// Oracle: the restore path's refusal discipline — a journal from a
+/// newer format is flagged with the same "unsupported world journal
+/// version" wording, and the check exits nonzero.
+#[test]
+fn journal_check_flags_a_newer_format_journal() {
+    let newer = id_worlds::world::MAX_JOURNAL_VERSION + 1;
+    let dir = tempfile::tempdir().unwrap();
+    write_journal(dir.path(), &journal_fixture(newer));
+    let check = check_journal_bytes(&journal_fixture(newer));
+    assert!(
+        check
+            .problems
+            .iter()
+            .any(|problem| problem == &format!("unsupported world journal version {newer}")),
+        "{check:?}"
+    );
+    let err = print_journal_check(dir.path(), false).unwrap_err();
+    assert!(
+        format!("{err}").contains("unsupported world journal version"),
+        "{err}"
+    );
+}
+
+/// Oracle: F11.12's exit — a backup restores byte for byte. The
+/// backup file's bytes equal the source journal's, and a world
+/// directory holding only the backup as its journal checks valid
+/// and reads back the same provenance.
+#[test]
+fn journal_backup_is_byte_for_byte_and_restores() {
+    let dir = tempfile::tempdir().unwrap();
+    let bytes = journal_fixture(1);
+    write_journal(dir.path(), &bytes);
+    let out = dir.path().join("backup.jsonl");
+    journal_backup(dir.path(), &out).unwrap();
+    assert_eq!(std::fs::read(&out).unwrap(), bytes);
+
+    let restored = tempfile::tempdir().unwrap();
+    std::fs::copy(&out, restored.path().join("journal.jsonl")).unwrap();
+    assert!(print_journal_check(restored.path(), false).is_ok());
+    assert_eq!(
+        world_provenance(restored.path()).unwrap().world_id,
+        "world-1"
+    );
+}
+
+/// A backup never overwrites an existing file, and never copies a
+/// journal that does not check valid.
+#[test]
+fn journal_backup_refuses_existing_output_and_invalid_journal() {
+    let dir = tempfile::tempdir().unwrap();
+    write_journal(dir.path(), &journal_fixture(1));
+    let out = dir.path().join("backup.jsonl");
+    std::fs::write(&out, b"earlier backup").unwrap();
+    let err = journal_backup(dir.path(), &out).unwrap_err();
+    assert!(format!("{err}").contains("already exists"), "{err}");
+
+    let corrupt = tempfile::tempdir().unwrap();
+    write_journal(corrupt.path(), b"not a journal\n");
+    let err = journal_backup(corrupt.path(), &corrupt.path().join("b.jsonl")).unwrap_err();
+    assert!(format!("{err}").contains("invalid journal"), "{err}");
 }

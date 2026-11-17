@@ -131,10 +131,10 @@ class DispatchBatchTests(unittest.TestCase):
         ]
         return rc, records, fake_q
 
-    def base_argv(self, *extra):
+    def base_argv(self, *extra, queue=QUEUE):
         return [
             "--queue",
-            QUEUE,
+            queue,
             "--worker",
             WORKER,
             "--count",
@@ -208,6 +208,33 @@ class DispatchBatchTests(unittest.TestCase):
             self.assertEqual(s["reason"], "batch dispatch for the test bundle")
             self.assertEqual(s["notes"], "lane notes for the batch")
             self.assertIn(str(s["task"]), s["worktree"])
+
+    def test_one_queue_code_batch_preserves_stream_and_repo(self):
+        sends = []
+
+        def send_impl(queue_name, task_id, *rest):
+            sends.append((queue_name, task_id))
+            self.bound[task_id] = f"ses_item_{task_id}"
+            return {"ok": True, "session_id": self.bound[task_id], "task": task_id}
+
+        rc, records, fake_q = self.run_main(
+            self.base_argv(
+                "--to", "opencode", "--session-id", "ses_lane", queue="code"
+            ),
+            [dict(row(101, 555), queue="code"), dict(row(102, 556), queue="code")],
+            send_impl=send_impl,
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            [r["outcome"] for r in self.items(records)], ["bound", "bound"]
+        )
+        self.assertEqual(sends, [("code", 101), ("code", 102)])
+        (claim,) = fake_q.verbs("claim")
+        self.assertEqual(claim[claim.index("--queue") + 1], "code")
+        self.assertEqual(
+            [primary for primary, _, _ in self.worktree_calls],
+            ["/home/user/git/code", "/home/user/git/code"],
+        )
 
     def test_failed_send_releases_item_with_flag(self):
         rows = [row(101, 555), row(102, 556)]

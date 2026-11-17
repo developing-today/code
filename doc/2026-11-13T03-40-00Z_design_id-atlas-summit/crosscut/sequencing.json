@@ -17,10 +17,7 @@
       "id": 9111,
       "slot": "next",
       "wave": 2,
-      "hard_dependencies": [
-        9110,
-        9141
-      ],
+      "hard_dependencies": [9110, 9141],
       "kind": "design-and-schema",
       "reason": "Minimal V2 schema is part of the V2 gate; expanded behavior/modes follow core peer/namespace interfaces.",
       "research_slot": "next",
@@ -53,9 +50,7 @@
       "id": 9114,
       "slot": "next",
       "wave": 1,
-      "hard_dependencies": [
-        9113
-      ],
+      "hard_dependencies": [9113],
       "kind": "design",
       "reason": "Sidecar version identity depends on ID/profile decisions.",
       "research_slot": "next",
@@ -66,9 +61,7 @@
       "id": 9115,
       "slot": "next",
       "wave": 2,
-      "hard_dependencies": [
-        9114
-      ],
+      "hard_dependencies": [9114],
       "kind": "design",
       "reason": "Location harvest consumes signed sidecars and their ID profiles.",
       "research_slot": "next",
@@ -90,9 +83,7 @@
       "id": 9117,
       "slot": "next",
       "wave": 1,
-      "hard_dependencies": [
-        9116
-      ],
+      "hard_dependencies": [9116],
       "kind": "design",
       "reason": "URI syntax/dispatch uses registry resolution contract.",
       "research_slot": "next",
@@ -114,9 +105,7 @@
       "id": 9119,
       "slot": "next",
       "wave": 1,
-      "hard_dependencies": [
-        9118
-      ],
+      "hard_dependencies": [9118],
       "kind": "design",
       "reason": "Shorthand and streaming semantics use array-address core.",
       "research_slot": "next",
@@ -127,9 +116,7 @@
       "id": 9120,
       "slot": "next",
       "wave": 1,
-      "hard_dependencies": [
-        9113
-      ],
+      "hard_dependencies": [9113],
       "kind": "design",
       "reason": "Content-address core adopts the typed content profile, not an unspecified hash.",
       "research_slot": "next",
@@ -140,10 +127,7 @@
       "id": 9121,
       "slot": "next",
       "wave": 2,
-      "hard_dependencies": [
-        9116,
-        9117
-      ],
+      "hard_dependencies": [9116, 9117],
       "kind": "design",
       "reason": "String-path family requires registry and URI ownership boundaries.",
       "research_slot": "next",
@@ -154,10 +138,7 @@
       "id": 9122,
       "slot": "next",
       "wave": 2,
-      "hard_dependencies": [
-        9118,
-        9125
-      ],
+      "hard_dependencies": [9118, 9125],
       "kind": "design",
       "reason": "Numeric family composes array addressing and typed value encoding.",
       "research_slot": "next",
@@ -168,10 +149,7 @@
       "id": 9123,
       "slot": "next",
       "wave": 2,
-      "hard_dependencies": [
-        9110,
-        9118
-      ],
+      "hard_dependencies": [9110, 9118],
       "kind": "design",
       "reason": "Stream family needs stable array-address and stream capability seams.",
       "research_slot": "next",
@@ -182,11 +160,7 @@
       "id": 9124,
       "slot": "later",
       "wave": 5,
-      "hard_dependencies": [
-        9116,
-        9118,
-        9141
-      ],
+      "hard_dependencies": [9116, 9118, 9141],
       "kind": "design-and-implementation",
       "reason": "Signed coordinate worlds are horizon work after registry, address, and signer lifecycle contracts.",
       "review_date": "2027-02-12",
@@ -209,9 +183,7 @@
       "id": 9126,
       "slot": "next",
       "wave": 2,
-      "hard_dependencies": [
-        9125
-      ],
+      "hard_dependencies": [9125],
       "kind": "design",
       "reason": "Query/viz representation must consume the selected triple encoding; language choice may remain a research-only substage.",
       "research_slot": "next",
@@ -222,9 +194,7 @@
       "id": 9127,
       "slot": "next",
       "wave": 1,
-      "hard_dependencies": [
-        9125
-      ],
+      "hard_dependencies": [9125],
       "kind": "design",
       "reason": "User attributes and append protocol need typed object/triple representation.",
       "research_slot": "next",
@@ -235,10 +205,7 @@
       "id": 9128,
       "slot": "next",
       "wave": 3,
-      "hard_dependencies": [
-        9127,
-        9129
-      ],
+      "hard_dependencies": [9127, 9129],
       "kind": "design",
       "reason": "Social app reference model consumes attribute and succeeds/versioning contracts.",
       "research_slot": "next",
@@ -249,9 +216,7 @@
       "id": 9129,
       "slot": "next",
       "wave": 2,
-      "hard_dependencies": [
-        9127
-      ],
+      "hard_dependencies": [9127],
       "kind": "design",
       "reason": "Version relation semantics are required before social views carry comments forward.",
       "research_slot": "next",
@@ -262,10 +227,7 @@
       "id": 9130,
       "slot": "next",
       "wave": 3,
-      "hard_dependencies": [
-        9127,
-        9137
-      ],
+      "hard_dependencies": [9127, 9137],
       "kind": "design",
       "reason": "Moderation/deletion policy needs attribute ownership and GC lifecycle contract.",
       "research_slot": "next",
@@ -276,10 +238,7 @@
       "id": 9131,
       "slot": "next",
       "wave": 2,
-      "hard_dependencies": [
-        9118,
-        9141
-      ],
+      "hard_dependencies": [9118, 9141],
       "kind": "design",
       "reason": "Client-bound spaces need array addressing and signer identity contract.",
       "research_slot": "next",
@@ -290,10 +249,7 @@
       "id": 9132,
       "slot": "next",
       "wave": 3,
-      "hard_dependencies": [
-        9131,
-        9141
-      ],
+      "hard_dependencies": [9131, 9141],
       "kind": "design",
       "reason": "Delegation/transfer ceremony builds on signer-bound ownership semantics.",
       "research_slot": "next",
@@ -315,9 +271,7 @@
       "id": 9134,
       "slot": "next",
       "wave": 1,
-      "hard_dependencies": [
-        9133
-      ],
+      "hard_dependencies": [9133],
       "kind": "design",
       "reason": "Hot-cache decision should use benchmark evidence; cache policy still follows tenant boundary.",
       "research_slot": "next",
@@ -328,9 +282,7 @@
       "id": 9135,
       "slot": "next",
       "wave": 1,
-      "hard_dependencies": [
-        9133
-      ],
+      "hard_dependencies": [9133],
       "kind": "design",
       "reason": "Tenant placement alternatives need comparable cost/latency evidence.",
       "research_slot": "next",
@@ -341,9 +293,7 @@
       "id": 9136,
       "slot": "next",
       "wave": 1,
-      "hard_dependencies": [
-        9133
-      ],
+      "hard_dependencies": [9133],
       "kind": "design",
       "reason": "Shared bucket choice consumes benchmark inputs and #9084 threat boundary, not a replacement for it.",
       "research_slot": "next",
@@ -354,10 +304,7 @@
       "id": 9137,
       "slot": "next",
       "wave": 2,
-      "hard_dependencies": [
-        9135,
-        9136
-      ],
+      "hard_dependencies": [9135, 9136],
       "kind": "design",
       "reason": "GC needs placement/reference ownership and store location lifecycle.",
       "research_slot": "next",
@@ -368,9 +315,7 @@
       "id": 9138,
       "slot": "next",
       "wave": 3,
-      "hard_dependencies": [
-        9115
-      ],
+      "hard_dependencies": [9115],
       "kind": "design",
       "reason": "ID search consumes location/content identity; #9092 embedder and #9084 sensitivity/auth are external owned inputs, not hard issue-completion gates.",
       "research_slot": "next",
@@ -381,9 +326,7 @@
       "id": 9139,
       "slot": "later",
       "wave": 5,
-      "hard_dependencies": [
-        9138
-      ],
+      "hard_dependencies": [9138],
       "kind": "design-and-implementation",
       "reason": "Recommendation fan-out/DO follows search identity and authorization seams; review date applies unless a product consumer triggers earlier work.",
       "review_date": "2027-02-12",
@@ -395,9 +338,7 @@
       "id": 9140,
       "slot": "later",
       "wave": 5,
-      "hard_dependencies": [
-        9138
-      ],
+      "hard_dependencies": [9138],
       "kind": "design-and-implementation",
       "reason": "Recommendation history/retention object identity follows the search/recommendation schema; can proceed independently of worker topology once contract is stable.",
       "review_date": "2027-02-12",
@@ -409,9 +350,7 @@
       "id": 9141,
       "slot": "next",
       "wave": 1,
-      "hard_dependencies": [
-        9110
-      ],
+      "hard_dependencies": [9110],
       "kind": "design-and-implementation",
       "reason": "Safe federation depends on the fixed admission contract; V2 includes key disable/revocation and replay-window minimums.",
       "research_slot": "next",
@@ -422,9 +361,7 @@
       "id": 9142,
       "slot": "next",
       "wave": 2,
-      "hard_dependencies": [
-        9141
-      ],
+      "hard_dependencies": [9141],
       "kind": "design",
       "reason": "Conflict-first sync consumes authenticated peer and acceptance semantics.",
       "research_slot": "next",
@@ -435,9 +372,7 @@
       "id": 9143,
       "slot": "later",
       "wave": 5,
-      "hard_dependencies": [
-        9142
-      ],
+      "hard_dependencies": [9142],
       "kind": "research",
       "reason": "Named CRDT prior-art evaluation; research may start independently, but adoption is horizon work and cannot block conflict reports. Review by date or earlier if merge demand arises.",
       "review_date": "2027-02-12",
@@ -449,10 +384,7 @@
       "id": 9144,
       "slot": "next",
       "wave": 3,
-      "hard_dependencies": [
-        9141,
-        9145
-      ],
+      "hard_dependencies": [9141, 9145],
       "kind": "design-and-implementation",
       "reason": "Enabled remote fan-out requires authenticated peers and stable duplicate/request identity; transport prototype/design can run concurrently against that contract, but fan-out release waits for #9145.",
       "research_slot": "next",
@@ -463,9 +395,7 @@
       "id": 9145,
       "slot": "next",
       "wave": 2,
-      "hard_dependencies": [
-        9141
-      ],
+      "hard_dependencies": [9141],
       "kind": "design-and-implementation",
       "reason": "Request identity/dedup/loop ledger is a safety prerequisite to enabled fan-out in #9144.",
       "research_slot": "next",
@@ -476,9 +406,7 @@
       "id": 9146,
       "slot": "next",
       "wave": 2,
-      "hard_dependencies": [
-        9141
-      ],
+      "hard_dependencies": [9141],
       "kind": "design",
       "reason": "Routing-state validation needs authenticated peer updates; research/design does not require implemented fan-out.",
       "research_slot": "next",
@@ -489,9 +417,7 @@
       "id": 9147,
       "slot": "later",
       "wave": 6,
-      "hard_dependencies": [
-        9148
-      ],
+      "hard_dependencies": [9148],
       "kind": "design-and-implementation",
       "reason": "Advanced reputation/public claims synthesis follows evidence semantics; minimum disable/revocation is V2 in #9141, not deferred. Review by date or earlier security trigger.",
       "review_date": "2027-02-12",
@@ -503,10 +429,7 @@
       "id": 9148,
       "slot": "later",
       "wave": 5,
-      "hard_dependencies": [
-        9141,
-        9145
-      ],
+      "hard_dependencies": [9141, 9145],
       "kind": "design",
       "reason": "Advanced takeover blast-radius and comparable-ack contradiction analysis follows stable signer/request evidence. Minimum key disable/revocation is not deferred; it is V2 under #9141.",
       "review_date": "2027-02-12",
@@ -523,9 +446,7 @@
       "tenant_scope_required"
     ],
     "authority_ceiling": {
-      "tenant_allowed_sync_scope": [
-        "metadata"
-      ]
+      "tenant_allowed_sync_scope": ["metadata"]
     },
     "resource_ceiling": {
       "max_hops": 5

@@ -34,9 +34,6 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9198→runtime gate.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -83,8 +80,6 @@ Negative coverage: copy 450/1000 into live priority, derive impact from urgency,
 **First failing oracle:** `pmo_importance_axis_prior_art_comparison_is_reproducible` checks the research artifact contains a source-traceable alternatives matrix, evidence/limitations, a null-data path and explicit decision not to infer importance from urgency.
 **Done command:** `python3 -I -c 'from pathlib import Path; s=Path("doc/2026-11-13T03-20-24Z_design_pm-stack-fleet-orchestration/research/importance-axis-research.md").read_text(); assert all(x in s for x in ("alternatives", "prior art", "null", "not inferred from urgency", "limitations"))'`.
 **Acceptance:** use prior-art A/B receipts, current `#7030` taxonomy and source profile examples; distinguish fact/inference/anecdote, define falsifiable measurement needs and no-data behavior; mark all proposed weights DRAFT. **Negative:** copy 450/1000 into live priority, derive impact from urgency, assert simulated production benefit, or claim unlocated QTI equivalence. **Rollback:** research artifact only; no schema or runtime change.
-
-
 
 ## Merged source-key/facade acceptance
 

@@ -38,16 +38,13 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: none.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
 
 - **First failing test:** `page at 360px and 200% zoom must have no horizontal overflow for queue and detail flows; keyboard can reach filter, item, back, and capability panel. -`
 - **Oracle:** Bun reference-filter unit test `cd pm-stack/aggregator && bun test test/work-mobile-views.test.ts` plus browser assertions in `test/browser/mobile-work-view.spec.ts`, exact command `cd pm-stack/aggregator && bunx playwright test --config playwright.config.ts --grep pmo_mob_03/04`. Browser oracle checks rendered refs vs pure view filter at 360/768/1280 CSS px and 200% zoom; no screenshot-only pass. -
-- **Done command:** `Bun reference-filter unit test `cd pm-stack/aggregator && bun test test/work-mobile-views.test.ts` plus browser assertions in `test/browser/mobile-work-view.spec.ts`, exact command `cd pm-stack/aggregator && bunx playwright test --config playwright.config.ts --grep pmo_mob_03/04`. Browser oracle checks rendered refs vs pure view filter at 360/768/1280 CSS px and 200% zoom; no screenshot-only pass. -`
+- **Done command:** `Bun reference-filter unit test `cd pm-stack/aggregator && bun test test/work-mobile-views.test.ts`plus browser assertions in`test/browser/mobile-work-view.spec.ts`, exact command `cd pm-stack/aggregator && bunx playwright test --config playwright.config.ts --grep pmo_mob_03/04`. Browser oracle checks rendered refs vs pure view filter at 360/768/1280 CSS px and 200% zoom; no screenshot-only pass. -`
 - Tests must first be listed by exact name in the owning target (`-- --list`); assert the test exists before execution. A zero-test filter passing is not acceptance.
 
 ## Acceptance and negative cases

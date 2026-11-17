@@ -12,7 +12,7 @@
 //!   `restore(snapshot(m))` behaves exactly like `m`.
 
 use plaza_sdk::screen::{Screen, Style};
-use plaza_sdk::{text, World};
+use plaza_sdk::{World, text};
 
 pub struct Counter {
     pub count: i64,
@@ -92,10 +92,7 @@ mod tests {
         assert_eq!(m.count, 2);
         let view = String::from_utf8(CounterWorld::view(&m)).unwrap();
         assert!(view.contains("count=2"), "view: {view}");
-        assert_eq!(
-            CounterWorld::records(&m),
-            Some(b"{\"count\":2}".to_vec())
-        );
+        assert_eq!(CounterWorld::records(&m), Some(b"{\"count\":2}".to_vec()));
         // Snapshot/restore round-trips byte-identically, and restore is
         // total on invalid text.
         let snap = CounterWorld::snapshot(&m).unwrap();

@@ -133,3 +133,40 @@ export function groupBySet(events: DecisionSetEvent[]): Map<string, DecisionSetE
   }
   return map;
 }
+
+/** Composite read-back cursor for GET /sets/<setId>/events (#9614).
+ *
+ * Pagination orders by (ts, event_id), so the cursor must carry BOTH
+ * components: a bare-ts cursor (`ts > after`) makes every event after
+ * the first page boundary inside a same-ts group unreachable. The
+ * wire form is `<ts>|<eventId>` — ts never contains `|`, so splitting
+ * at the first `|` is unambiguous even if an eventId contains one.
+ * A bare ISO timestamp is still accepted as a legacy cursor and keeps
+ * its original meaning (strictly after that ts). */
+export interface EventsCursor {
+  ts: string;
+  eventId: string | null;
+}
+
+export function encodeEventsCursor(cursor: { ts: string; eventId: string }): string {
+  return `${cursor.ts}|${cursor.eventId}`;
+}
+
+export function parseEventsCursor(raw: string): { ok: true; value: EventsCursor } | { ok: false; error: string } {
+  const sep = raw.indexOf("|");
+  if (sep === -1) {
+    if (!isIsoTimestamp(raw)) {
+      return { ok: false, error: "after must be an ISO timestamp or a <ts>|<eventId> cursor" };
+    }
+    return { ok: true, value: { ts: raw, eventId: null } };
+  }
+  const ts = raw.slice(0, sep);
+  const eventId = raw.slice(sep + 1);
+  if (!isIsoTimestamp(ts)) {
+    return { ok: false, error: "after cursor ts must be an ISO timestamp" };
+  }
+  if (!ID_RE.test(eventId)) {
+    return { ok: false, error: "after cursor eventId is invalid" };
+  }
+  return { ok: true, value: { ts, eventId } };
+}

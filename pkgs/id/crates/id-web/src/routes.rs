@@ -2,12 +2,13 @@
 //!
 //! Defines all the Axum routes and their handlers for serving the web UI.
 
+use std::net::SocketAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{
     Form, Json, Router,
     body::Body,
-    extract::{DefaultBodyLimit, Multipart, Path, Query, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -28,7 +29,7 @@ use id_store::tags::TagStore;
 use id_sync::fileops::{FileOpError, FileOps, claim_archive_name, snapshot_provenance_tags};
 use iroh_base::EndpointId;
 
-mod file_handlers;
+pub(crate) mod file_handlers;
 use file_handlers::*;
 
 /// Default number of files per page.
@@ -72,6 +73,13 @@ const ALLOWED_IMAGE_TYPES: &[&str] = &[
     "image/bmp",
     "image/x-icon",
 ];
+
+/// Default and maximum number of images returned by one browser request.
+const DEFAULT_IMAGE_PAGE_SIZE: usize = 50;
+const MAX_IMAGE_PAGE_SIZE: usize = 100;
+
+/// Maximum number of concurrent metadata or blob-status reads for image pages.
+const IMAGE_LOOKUP_CONCURRENCY: usize = 16;
 
 /// Map an image MIME type to a file extension.
 fn mime_to_extension(mime: &str) -> &'static str {
@@ -598,6 +606,9 @@ fn create_router_inner(state: AppState) -> Router {
         .route("/api/new", post(new_file_handler))
         .route("/api/rename", post(rename_handler))
         .route("/api/copy", post(copy_handler))
+        // Server-to-server send (#5346): the browser carries only file
+        // references; this node's server performs the transfer itself.
+        .route("/api/files/send", post(send_file_handler))
         .route("/api/download", post(download_handler))
         .route("/api/delete", post(delete_handler))
         .route("/api/restore", post(restore_handler))
@@ -654,9 +665,74 @@ fn create_router_inner(state: AppState) -> Router {
         }
         None => router.merge(super::world_ws::world_http_routes().with_state(world_state)),
     };
-    router
+    let router = router
         .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
-        .with_state(state)
+        .with_state(state.clone());
+    // #2147 slice 3: dynamic publication mounts intercept here --
+    // inside the listener's security guard (applied by the caller
+    // around this router), above every Explorer route, so a mount
+    // overrides the Explorer route it shadows and unmounting
+    // restores it with no router rebuild.
+    router.layer(axum::middleware::from_fn_with_state(
+        state,
+        publication_mount_layer,
+    ))
+}
+
+/// #2147 slice 3: serve a dynamic publication mount. When the
+/// request path falls under a live mount (see
+/// [`PublicationMounts::lookup`]), the request is rewritten to the
+/// mount-relative path and answered by the mounted world's
+/// program-only router (the #2146 phase-2 surface, built on demand
+/// over the same shared state); anything else falls through to the
+/// Explorer routes unchanged.
+///
+/// The listener's own [`WebSecurity`] has already run (this layer
+/// sits inside `security::protect`), so the program router is
+/// built with the default policy -- re-applying the listener
+/// policy here would double-guard the request, not widen it.
+///
+/// Known limit: WebSocket upgrades under a mount do not complete,
+/// because the on-demand dispatch has no hyper upgrade handle to
+/// offer the world bridge; the program page and its HTTP surface
+/// serve normally. Dynamic publication *listeners* serve the same
+/// router through `axum::serve` directly and have no such limit.
+async fn publication_mount_layer(
+    State(state): State<AppState>,
+    req: axum::http::Request<Body>,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = req.uri().path().to_owned();
+    let Some((mount, world)) = state.publication_mounts.lookup(&path) else {
+        return next.run(req).await;
+    };
+    let rest: String = if mount == "/" {
+        path.clone()
+    } else if path.len() == mount.len() {
+        "/".to_owned()
+    } else {
+        path[mount.len()..].to_owned()
+    };
+    let path_and_query = match req.uri().query() {
+        Some(query) => format!("{rest}?{query}"),
+        None => rest,
+    };
+    let Ok(path_and_query) = path_and_query.parse::<axum::http::uri::PathAndQuery>() else {
+        return next.run(req).await;
+    };
+    let mut uri_parts = req.uri().clone().into_parts();
+    uri_parts.path_and_query = Some(path_and_query);
+    let Ok(new_uri) = axum::http::Uri::from_parts(uri_parts) else {
+        return next.run(req).await;
+    };
+    let (mut parts, body) = req.into_parts();
+    parts.uri = new_uri;
+    let req = axum::http::Request::from_parts(parts, body);
+    let router = create_program_router(state, &world, WebSecurity::default());
+    match tower::ServiceExt::oneshot(router, req).await {
+        Ok(response) => response,
+        Err(error) => match error {},
+    }
 }
 
 /// The program-only surface's root: the program frontend for the
@@ -726,14 +802,17 @@ async fn files_page_handler(
     State(state): State<AppState>,
     Query(query): Query<FileListQuery>,
     headers: HeaderMap,
-) -> impl IntoResponse {
-    let page = get_file_list_page(&state, &query).await;
+) -> Response {
+    let page = match get_file_list_page(&state, &query).await {
+        Ok(page) => page,
+        Err(error) => return file_list_error_response(error),
+    };
     let content = render_file_list(&page);
     if is_partial_request(&headers) {
         // Partial request - return wrapped content with header/footer
-        Html(render_main_page_wrapper(&content))
+        Html(render_main_page_wrapper(&content)).into_response()
     } else {
-        Html(render_page("Files", &content, "", &state.assets))
+        Html(render_page("Files", &content, "", &state.assets)).into_response()
     }
 }
 
@@ -990,6 +1069,16 @@ fn safe_blob_content_type(filename: &str) -> (&'static str, bool) {
     }
 }
 
+/// Reduce a multipart upload filename to a plain file name (#10585).
+///
+/// A client can send a path (`../../x.png`, `C:\fakepath\x.png`) or a
+/// padded name; uploads are stored as plain names, so everything before
+/// the final path separator is dropped and the remainder trimmed. The
+/// result is validated against the canonical-name rule before use.
+fn normalize_upload_filename(name: &str) -> &str {
+    name.rsplit(['/', '\\']).next().unwrap_or(name).trim()
+}
+
 /// Reconcile an uploaded file's name with its validated content type
 /// (#908): a name whose extension disagrees with the type the upload
 /// was validated as gets that extension replaced (or appended when it
@@ -1079,10 +1168,13 @@ async fn blob_handler(
 async fn files_list_handler(
     State(state): State<AppState>,
     Query(query): Query<FileListQuery>,
-) -> impl IntoResponse {
-    let page = get_file_list_page(&state, &query).await;
+) -> Response {
+    let page = match get_file_list_page(&state, &query).await {
+        Ok(page) => page,
+        Err(error) => return file_list_error_response(error),
+    };
     // Return just the inner content (list + pagination) for partial replacement
-    Html(render_file_list_content(&page))
+    Html(render_file_list_content(&page)).into_response()
 }
 
 /// API handler for peers partial (used by auto-refresh).
@@ -1376,18 +1468,49 @@ async fn blob_size(store: &iroh_blobs::api::Store, hash: iroh_blobs::Hash) -> u6
 /// Files are sorted: primary files first (alphabetically), then auto, then archive.
 /// Internal tags (starting with `.`) are excluded.
 /// Soft-deleted files are included but marked with `is_deleted = true`.
-async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileListError {
+    MetadataTags,
+    TagList,
+    TagStream,
+    SearchTags,
+}
+
+fn checked_file_list_result<T, E>(
+    result: Result<T, E>,
+    failure: FileListError,
+) -> Result<T, FileListError> {
+    result.map_err(|_| failure)
+}
+
+fn file_list_error_response(error: FileListError) -> Response {
+    tracing::error!(?error, "Failed to build file list");
+    (StatusCode::INTERNAL_SERVER_ERROR, "Failed to list files").into_response()
+}
+
+async fn next_tag_info<S, T, E>(tags: &mut S) -> Result<Option<T>, FileListError>
+where
+    S: futures_lite::Stream<Item = Result<T, E>> + Unpin,
+{
     use futures_lite::StreamExt;
+
+    match tags.next().await {
+        Some(Ok(tag)) => Ok(Some(tag)),
+        Some(Err(_)) => Err(FileListError::TagStream),
+        None => Ok(None),
+    }
+}
+
+async fn get_file_list(state: &AppState) -> Result<Vec<FileInfo>, FileListError> {
     use std::collections::HashMap;
 
     let mut files = Vec::new();
 
     // Load all tags from the global namespace for created/modified/user-tag lookups.
-    let all_meta_tags = state
-        .tag_store
-        .list_all(&state.tag_store.global)
-        .await
-        .unwrap_or_default();
+    let all_meta_tags = checked_file_list_result(
+        state.tag_store.list_all(&state.tag_store.global).await,
+        FileListError::MetadataTags,
+    )?;
     let mut created_map: HashMap<String, u64> = HashMap::new();
     let mut modified_map: HashMap<String, u64> = HashMap::new();
     let mut origin_map: HashMap<String, String> = HashMap::new();
@@ -1444,10 +1567,9 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
     let mut hash_to_primary: HashMap<String, String> = HashMap::new();
     let mut raw_tags: Vec<(String, String, u64)> = Vec::new();
 
-    let Ok(mut tags) = state.store.tags().list().await else {
-        return files;
-    };
-    while let Some(Ok(tag_info)) = tags.next().await {
+    let mut tags =
+        checked_file_list_result(state.store.tags().list().await, FileListError::TagList)?;
+    while let Some(tag_info) = next_tag_info(&mut tags).await? {
         let name = String::from_utf8_lossy(tag_info.name.as_ref()).to_string();
 
         // Skip internal tags (e.g., .meta)
@@ -1539,7 +1661,7 @@ async fn get_file_list(state: &AppState) -> Vec<FileInfo> {
         })
     });
 
-    files
+    Ok(files)
 }
 
 fn record_display_name(
@@ -1596,8 +1718,11 @@ fn paginate<T: Clone>(
     (page_items, page, per_page)
 }
 
-async fn get_file_list_page(state: &AppState, query: &FileListQuery) -> FileListPage {
-    let mut files = get_file_list(state).await;
+async fn get_file_list_page(
+    state: &AppState,
+    query: &FileListQuery,
+) -> Result<FileListPage, FileListError> {
+    let mut files = get_file_list(state).await?;
 
     let show_deleted = query.show_deleted.unwrap_or(false);
 
@@ -1619,24 +1744,26 @@ async fn get_file_list_page(state: &AppState, query: &FileListQuery) -> FileList
 
         // Collect subjects that match via tags (key or value contains needle)
         let mut tag_matches: std::collections::HashSet<String> = std::collections::HashSet::new();
-        if let Ok(all_tags) = state.tag_store.list_all(&state.tag_store.global).await {
-            for tag in &all_tags {
-                // Skip internal/system tags for search
-                if tag.key.starts_with(b"archive.") {
-                    continue;
-                }
-                if tag
-                    .key
-                    .display_lossy()
-                    .to_lowercase()
-                    .contains(&needle_lower)
-                    || tag
-                        .value
-                        .as_ref()
-                        .is_some_and(|v| v.display_lossy().to_lowercase().contains(&needle_lower))
-                {
-                    tag_matches.insert(tag.subject.display_lossy());
-                }
+        let all_tags = checked_file_list_result(
+            state.tag_store.list_all(&state.tag_store.global).await,
+            FileListError::SearchTags,
+        )?;
+        for tag in &all_tags {
+            // Skip internal/system tags for search
+            if tag.key.starts_with(b"archive.") {
+                continue;
+            }
+            if tag
+                .key
+                .display_lossy()
+                .to_lowercase()
+                .contains(&needle_lower)
+                || tag
+                    .value
+                    .as_ref()
+                    .is_some_and(|v| v.display_lossy().to_lowercase().contains(&needle_lower))
+            {
+                tag_matches.insert(tag.subject.display_lossy());
             }
         }
 
@@ -1700,7 +1827,7 @@ async fn get_file_list_page(state: &AppState, query: &FileListQuery) -> FileList
     let total = files.len();
     let (page_files, page, per_page) = paginate(&files, query.page, query.per_page);
 
-    FileListPage {
+    Ok(FileListPage {
         files: page_files,
         total,
         page,
@@ -1709,7 +1836,7 @@ async fn get_file_list_page(state: &AppState, query: &FileListQuery) -> FileList
         show_deleted,
         sort,
         origin_filter,
-    }
+    })
 }
 
 /// Get the human-readable name for a hash, preferring primary file names.
@@ -1836,6 +1963,22 @@ struct ImageEntry {
     size: u64,
 }
 
+/// Query parameters for one image-browser page.
+#[derive(Debug, Deserialize)]
+struct ImageListQuery {
+    /// URL-safe-base64 tag-name cursor returned by the previous page.
+    after: Option<String>,
+    /// Requested page size, clamped to [`MAX_IMAGE_PAGE_SIZE`].
+    limit: Option<usize>,
+}
+
+/// A bounded page of image-browser entries.
+#[derive(Debug, Serialize)]
+struct ImageListResponse {
+    images: Vec<ImageEntry>,
+    next_cursor: Option<String>,
+}
+
 /// Request body for renaming a file.
 #[derive(Debug, Deserialize)]
 struct RenameRequest {
@@ -1878,6 +2021,49 @@ struct CopyResponse {
     hash: String,
 }
 
+/// Request body for sending a stored file to another server (#5346).
+///
+/// The browser carries only references — the file name here, the
+/// destination's node ID there — never file bytes: this server performs
+/// the transfer itself, with its own identity, through the shared
+/// transfer module from #5345 ([`id_sync::transfer::send_file`]).
+#[derive(Debug, Deserialize)]
+struct SendFileRequest {
+    /// Name of the stored file on this server.
+    name: String,
+    /// Destination server's node ID (64 hex characters), as exposed by
+    /// the peers surface.
+    dest: String,
+    /// Name to register on the destination. Defaults to `name`.
+    dest_name: Option<String>,
+    /// Whether an existing, different destination file may be archived
+    /// and replaced. Conflicts refuse by default, as in CLI/REPL.
+    #[serde(default)]
+    replace: bool,
+}
+
+/// Response from sending a file to another server (#5346).
+///
+/// Returned only after the destination has confirmed blob completion
+/// and name registration (the transfer module's receipt), so a 200 is
+/// never a send that did not land.
+#[derive(Debug, Serialize)]
+struct SendFileResponse {
+    /// Name of the file on this (source) server.
+    name: String,
+    /// Name registered on the destination.
+    dest_name: String,
+    /// Destination server's node ID.
+    dest: String,
+    /// Content hash that was transferred.
+    hash: String,
+    /// The destination already had the name pointing at this hash;
+    /// nothing was pushed (a retry of the same send is safe).
+    already_present: bool,
+    /// An existing, different destination file was archived and replaced.
+    replaced: bool,
+}
+
 /// Request body for downloading editor content.
 #[derive(Debug, Deserialize)]
 struct DownloadRequest {
@@ -1908,6 +2094,99 @@ struct DeleteResponse {
 ///
 /// The file remains in the store and can be restored by removing the "deleted" tag.
 /// Soft-deleted files are hidden from the file list.
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod identity_register_rate_limit_tests {
+    use std::{sync::Arc, time::Duration};
+
+    use axum::{body::to_bytes, extract::State};
+    use iroh::endpoint::{Endpoint, RelayMode, presets};
+    use iroh_blobs::{api::Store, store::mem::MemStore};
+    use iroh_docs::protocol::Docs;
+    use iroh_gossip::net::Gossip;
+
+    use super::*;
+    use id_store::tags::TagStore;
+
+    use crate::{AppState, RegisterRateLimiter};
+
+    async fn state_with_limit(limit: usize) -> AppState {
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let store: Store = MemStore::new().into();
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let docs = Docs::memory()
+            .spawn(endpoint.clone(), store.clone(), gossip)
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let tags = Arc::new(
+            TagStore::init_in(&docs, "register-limit-test", dir.path().join("meta"))
+                .await
+                .unwrap(),
+        );
+        let mut state = AppState::new(
+            store,
+            None,
+            "register-limit-test".to_owned(),
+            tags,
+            [7; 32],
+            dir.path().join(".identity.redb"),
+        )
+        .await
+        .unwrap();
+        state.register_limiter = RegisterRateLimiter::new(limit, Duration::from_secs(60));
+        state
+    }
+
+    async fn register(state: &AppState, name: &str) -> Response {
+        identity_register_handler(
+            State(state.clone()),
+            ConnectInfo("203.0.113.7:12345".parse().unwrap()),
+            Json(IdentityRegisterRequest {
+                name: Some(name.to_owned()),
+            }),
+        )
+        .await
+        .into_response()
+    }
+
+    async fn response_json(response: Response) -> serde_json::Value {
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn register_is_rate_limited_per_source_with_an_observable_429() {
+        let state = state_with_limit(2).await;
+
+        // Under the limit: registrations succeed.
+        let first = register(&state, "one").await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_body = response_json(first).await;
+        let token = first_body["token"].as_str().unwrap().to_owned();
+        let second = register(&state, "two").await;
+        assert_eq!(second.status(), StatusCode::OK);
+
+        // Over the limit: a structured 429 with a Retry-After header.
+        let third = register(&state, "three").await;
+        assert_eq!(third.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(third.headers().contains_key(header::RETRY_AFTER));
+        let third_body = response_json(third).await;
+        assert_eq!(third_body["error"], "registration_rate_limited");
+        assert_eq!(third_body["reason"], "rate_limited");
+
+        // The limit is on registration only: /api/identity/me for an
+        // already-registered identity is unaffected.
+        let me = identity_me_handler(State(state.clone()), Query(IdentityMeQuery { token }))
+            .await
+            .into_response();
+        assert_eq!(me.status(), StatusCode::OK);
+    }
+}
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -1956,6 +2235,18 @@ mod save_publication_tests {
         .await
         .unwrap();
         (state, endpoint, docs)
+    }
+
+    #[tokio::test]
+    async fn empty_store_file_list_remains_a_successful_empty_result() {
+        let (state, _endpoint, _docs) = state().await;
+
+        assert!(get_file_list(&state).await.unwrap().is_empty());
+        let page = get_file_list_page(&state, &FileListQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(page.total, 0);
+        assert!(page.files.is_empty());
     }
 
     async fn save(state: AppState, name: &str, text: &str) -> Response {
@@ -2120,7 +2411,7 @@ mod save_publication_tests {
             }
         }
 
-        let files = get_file_list(&state).await;
+        let files = get_file_list(&state).await.unwrap();
         let mut origins: Vec<String> = files
             .iter()
             .filter(|f| f.hash == hash.to_string())
@@ -2142,7 +2433,8 @@ mod save_publication_tests {
                     ..Default::default()
                 },
             )
-            .await;
+            .await
+            .unwrap();
             assert_eq!(page.total, 1, "origin filter {origin}");
             assert_eq!(page.files[0].name, expected_name, "origin filter {origin}");
         }
@@ -2241,6 +2533,52 @@ mod upload_router_tests {
                 admin.map(str::to_owned),
             ),
         )
+    }
+
+    #[tokio::test]
+    async fn publication_mount_overrides_explorer_and_unmount_restores_it() {
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        state.world = Some(hub_with_world("arena", Some("s3cret")));
+        let app = create_router(state.clone(), WebSecurity::default());
+
+        // Before any mount, /prog is not an Explorer route.
+        let before = app
+            .clone()
+            .oneshot(Request::builder().uri("/prog").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(before.status(), StatusCode::NOT_FOUND);
+
+        // Mounting at runtime (no router rebuild) makes /prog serve
+        // the mounted world's program surface.
+        state.publication_mounts.mount("arena", "/prog");
+        let mounted = app
+            .clone()
+            .oneshot(Request::builder().uri("/prog").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(mounted.status(), StatusCode::OK);
+        let body = to_bytes(mounted.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("data-world-program=\"arena\""), "{text}");
+
+        // The Explorer root is untouched while the mount lives.
+        let root = app
+            .clone()
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(root.status(), StatusCode::OK);
+        let body = to_bytes(root.into_body(), usize::MAX).await.unwrap();
+        assert!(!String::from_utf8_lossy(&body).contains("data-world-program"));
+
+        // Unmounting restores the Explorer answer at /prog.
+        state.publication_mounts.unmount("/prog").unwrap();
+        let after = app
+            .oneshot(Request::builder().uri("/prog").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(after.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -2800,12 +3138,12 @@ mod upload_router_tests {
         (status, String::from_utf8_lossy(&bytes).into_owned())
     }
 
-    async fn list_images(router: Router) -> Vec<serde_json::Value> {
+    async fn list_images_page(router: Router, uri: &str) -> serde_json::Value {
         let response = router
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/api/images")
+                    .uri(uri)
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2814,6 +3152,46 @@ mod upload_router_tests {
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    async fn list_images(router: Router) -> Vec<serde_json::Value> {
+        let mut images = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let uri = cursor
+                .as_deref()
+                .map(|cursor| format!("/api/images?after={cursor}"))
+                .unwrap_or_else(|| "/api/images".to_owned());
+            let page = list_images_page(router.clone(), &uri).await;
+            images.extend(
+                page["images"]
+                    .as_array()
+                    .expect("image page has an images array")
+                    .iter()
+                    .cloned(),
+            );
+            cursor = page["next_cursor"].as_str().map(str::to_owned);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        images
+    }
+
+    async fn add_tagged_blob(state: &AppState, name: &str, content_type: &str, bytes: &[u8]) {
+        let added = state.store.blobs().add_bytes(bytes.to_vec()).await.unwrap();
+        state.store.tags().set(name, added.hash).await.unwrap();
+        state
+            .tag_store
+            .set_tag(
+                &state.tag_store.global,
+                name.as_bytes(),
+                b"content-type",
+                Some(content_type.as_bytes()),
+                b"",
+            )
+            .await
+            .unwrap();
     }
 
     fn multipart_body_noname(content_type: &str, file_bytes: &[u8]) -> Vec<u8> {
@@ -3125,6 +3503,213 @@ mod upload_router_tests {
         assert_eq!((oks, conflicts), (1, 1));
     }
 
+    /// POST a JSON `{ "name": ... }` body to a file route.
+    async fn post_name(router: Router, uri: &str, name: &str) -> (StatusCode, String) {
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::json!({ "name": name }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    const NON_CANONICAL_NAMES: [&str; 4] = [
+        "a/../b.md",
+        "../escape.md",
+        "/rooted.md",
+        "doc.md.archive.1234567890",
+    ];
+
+    // #10549: create holds web names to the canonical rule. A padded name
+    // is normalized to its trimmed form; rooted/traversal names and the
+    // reserved archive namespace are refused before any tag write.
+    #[tokio::test]
+    async fn create_rejects_non_canonical_names_and_trims_padding() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+
+        let (status, body) = post_name(router.clone(), "/api/new", " padded.md ").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            upload_name_owner(&state.store, "padded.md")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            upload_name_owner(&state.store, " padded.md ")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        for name in NON_CANONICAL_NAMES {
+            let (status, body) = post_name(router.clone(), "/api/new", name).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{name}: {body}");
+            assert!(
+                upload_name_owner(&state.store, name)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "{name} must not be stored"
+            );
+        }
+    }
+
+    // #10549: save refuses the same non-canonical shapes before it
+    // publishes, archives, or writes any tag; a valid name still saves.
+    #[tokio::test]
+    async fn save_rejects_non_canonical_names() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+        let doc = serde_json::json!({
+            "type": "doc",
+            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "hi"}]}],
+        });
+        let save = |name: &str| {
+            let router = router.clone();
+            let body = serde_json::json!({
+                "doc_id": iroh_blobs::Hash::from_bytes([42; 32]).to_string(),
+                "name": name,
+                "doc": doc.clone(),
+            })
+            .to_string();
+            async move {
+                let response = router
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri("/api/save")
+                            .header("content-type", "application/json")
+                            .body(Body::from(body))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                response.status()
+            }
+        };
+
+        for name in NON_CANONICAL_NAMES {
+            let status = save(name).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{name}");
+            assert!(
+                upload_name_owner(&state.store, name)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "{name} must not be stored"
+            );
+        }
+
+        assert_eq!(save("notes.md").await, StatusCode::OK);
+        assert!(
+            upload_name_owner(&state.store, "notes.md")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    // #10573: soft delete and restore hold their name to the canonical
+    // rule before the `deleted` tag is written, and normalize padding to
+    // the trimmed (stored) name.
+    #[tokio::test]
+    async fn delete_and_restore_reject_non_canonical_names() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+        let (status, body) = post_name(router.clone(), "/api/new", "notes.md").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        for name in NON_CANONICAL_NAMES {
+            for uri in ["/api/delete", "/api/restore", "/api/hard-delete"] {
+                let (status, body) = post_name(router.clone(), uri, name).await;
+                assert_eq!(status, StatusCode::BAD_REQUEST, "{uri} {name}: {body}");
+                let tags = state
+                    .tag_store
+                    .get_by_key(&state.tag_store.global, name.as_bytes(), b"deleted")
+                    .await
+                    .unwrap();
+                assert!(tags.is_empty(), "{uri} {name} wrote a deleted tag");
+            }
+        }
+
+        let (status, body) = post_name(router.clone(), "/api/delete", " notes.md ").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("\"name\":\"notes.md\""), "body: {body}");
+        let tags = state
+            .tag_store
+            .get_by_key(&state.tag_store.global, b"notes.md", b"deleted")
+            .await
+            .unwrap();
+        assert_eq!(tags.len(), 1, "padded delete marks the trimmed name");
+
+        let (status, body) = post_name(router.clone(), "/api/restore", " notes.md ").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let tags = state
+            .tag_store
+            .get_by_key(&state.tag_store.global, b"notes.md", b"deleted")
+            .await
+            .unwrap();
+        assert!(tags.is_empty(), "padded restore clears the trimmed name");
+
+        // #10623: hard-delete holds the same canonical rule; padding is
+        // normalized to the trimmed name, non-canonical shapes are refused.
+        let (status, body) = post_name(router.clone(), "/api/hard-delete", " notes.md ").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            upload_name_owner(&state.store, "notes.md")
+                .await
+                .unwrap()
+                .is_none(),
+            "padded hard-delete removes the trimmed name"
+        );
+    }
+
+    // #10585: a multipart filename carrying a path or padding is stored as
+    // its plain, canonical file name (drop the leading path, trim), never
+    // verbatim.
+    #[tokio::test]
+    async fn upload_normalizes_path_shaped_and_padded_filenames() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+        for (sent, stored) in [
+            ("../../x.png", "x.png"),
+            ("/abs.png", "abs.png"),
+            ("C:\\fakepath\\ie.png", "ie.png"),
+            (" padded.png ", "padded.png"),
+        ] {
+            let (status, body) = upload(
+                router.clone(),
+                multipart_body_named(sent, "image/png", b"\x89PNG\r\n\x1a\nbytes"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{sent}: {body}");
+            assert!(
+                body.contains(&format!("\"name\":\"{stored}\"")),
+                "{sent}: {body}"
+            );
+            assert!(
+                upload_name_owner(&state.store, stored)
+                    .await
+                    .unwrap()
+                    .is_some(),
+                "{sent} stored as {stored}"
+            );
+            assert!(
+                upload_name_owner(&state.store, sent)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "{sent} stored verbatim"
+            );
+        }
+    }
+
     // #1549: a second upload under the same filename with different
     // bytes must not silently un-name the first: the second is stored
     // uniquified, both stay listed and resolvable, and the first name
@@ -3224,6 +3809,85 @@ mod upload_router_tests {
         };
         assert_eq!(hash_of(&first_name), uploaded_hash(&first));
         assert_eq!(hash_of(&second_name), uploaded_hash(&second));
+    }
+
+    #[tokio::test]
+    async fn image_listing_pages_filter_mixed_tags_in_name_order() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+        add_tagged_blob(&state, "a-image.png", "image/png", b"first-image").await;
+        add_tagged_blob(&state, "b-not-image.txt", "text/plain", b"text").await;
+        add_tagged_blob(&state, ".internal.png", "image/png", b"internal").await;
+        add_tagged_blob(&state, "c-image.jpg", "image/jpeg", b"second-image").await;
+        add_tagged_blob(&state, "z-image.webp", "image/webp", b"third-image").await;
+
+        let first = list_images_page(router.clone(), "/api/images?limit=2").await;
+        let first_images = first["images"].as_array().unwrap();
+        assert_eq!(first_images.len(), 2);
+        assert_eq!(first_images[0]["name"], "a-image.png");
+        assert_eq!(first_images[1]["name"], "c-image.jpg");
+        assert_eq!(first_images[0]["size"], 11);
+        assert!(first["next_cursor"].as_str().is_some());
+
+        let cursor = first["next_cursor"].as_str().unwrap();
+        let second = list_images_page(
+            router.clone(),
+            &format!("/api/images?limit=2&after={cursor}"),
+        )
+        .await;
+        let second_images = second["images"].as_array().unwrap();
+        assert_eq!(second_images.len(), 1);
+        assert_eq!(second_images[0]["name"], "z-image.webp");
+        assert_eq!(second["next_cursor"], serde_json::Value::Null);
+        assert!(
+            second_images[0]["url"]
+                .as_str()
+                .unwrap()
+                .starts_with("/blob/")
+        );
+    }
+
+    #[tokio::test]
+    async fn image_listing_rejects_malformed_cursor_and_clamps_page_size() {
+        let (router, state, _dir, _endpoint, _docs) = router_with_state().await;
+        for index in 0..=MAX_IMAGE_PAGE_SIZE {
+            add_tagged_blob(
+                &state,
+                &format!("image-{index:03}.png"),
+                "image/png",
+                b"image",
+            )
+            .await;
+        }
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/images?limit=1000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let page: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            page["images"].as_array().unwrap().len(),
+            MAX_IMAGE_PAGE_SIZE
+        );
+        assert!(page["next_cursor"].as_str().is_some());
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/images?after=not-base64!")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     // #751: a body over UPLOAD_BODY_LIMIT must surface as the clear 413,
@@ -3660,10 +4324,44 @@ struct IdentityUpdateNameRequest {
 /// for future reconnection.
 async fn identity_register_handler(
     State(state): State<AppState>,
+    connect_info: ConnectInfo<SocketAddr>,
     Json(req): Json<IdentityRegisterRequest>,
 ) -> impl IntoResponse {
+    // #1766 (remainder): throttle registrations per source. The key is
+    // the peer IP from the listener's connect-info — forwarded headers
+    // are client-spoofable on the direct listener and are never
+    // consulted (security.rs doctrine). The `id serve` listener wiring
+    // supplies connect-info (id-cli serve.rs); a surface that served
+    // this router without it would reject the request, and no such
+    // production surface exists (the program router served by
+    // publication listeners carries no identity routes). Only
+    // successful registrations are recorded, so a refusal at the
+    // admission cap below does not consume a source's budget.
+    let source = connect_info.0.ip().to_string();
+    if let Err(remaining) = state.register_limiter.check(&source).await {
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        let secs = remaining.as_secs_f64().ceil() as u64;
+        tracing::info!(
+            "[identity] Registration rate limited for source {source}: {secs}s remaining"
+        );
+        // Structured refusal, same shape as the save limiter's
+        // (#2244): machine-readable reason + retry value in the body,
+        // `Retry-After` header alongside.
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, secs.to_string())],
+            Json(serde_json::json!({
+                "error": "registration_rate_limited",
+                "detail": format!("Too many registrations from this source. Try again in {secs}s."),
+                "reason": "rate_limited",
+                "retry_after_ms": secs.saturating_mul(1_000),
+            })),
+        )
+            .into_response();
+    }
     match state.identity.register(req.name).await {
         Ok((token, identity)) => {
+            state.register_limiter.record(&source).await;
             tracing::info!("[identity] Registered new client: {}", identity.client_id);
             (
                 StatusCode::OK,
@@ -3782,6 +4480,36 @@ async fn identity_update_name_handler(
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn file_list_backend_failures_map_to_server_errors() {
+        for failure in [
+            FileListError::MetadataTags,
+            FileListError::TagList,
+            FileListError::SearchTags,
+        ] {
+            let result = checked_file_list_result::<(), _>(Err("injected"), failure);
+            assert_eq!(result, Err(failure));
+            assert_eq!(
+                file_list_error_response(failure).status(),
+                StatusCode::INTERNAL_SERVER_ERROR
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn file_list_stream_failure_does_not_return_partial_success() {
+        let mut tags = futures_lite::stream::iter([
+            Ok::<_, &'static str>("first tag"),
+            Err("injected stream failure"),
+        ]);
+
+        assert_eq!(next_tag_info(&mut tags).await, Ok(Some("first tag")));
+        assert_eq!(
+            next_tag_info(&mut tags).await,
+            Err(FileListError::TagStream)
+        );
+    }
 
     fn raw_doc(blocks: &[&[&str]]) -> serde_json::Value {
         let content: Vec<serde_json::Value> = blocks

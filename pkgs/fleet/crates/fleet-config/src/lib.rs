@@ -46,7 +46,27 @@ pub const DEFAULT_TARGET_HOST: &str = "100.99.113.103";
 /// `HTTPS_PROXY` — fixed by the tunnel setup, as in
 /// laptop-proxy-connect.py (the URL's own port is not used).
 pub const DEFAULT_EGRESS_PROXY_PORT: u16 = 3130;
+/// The named Cloudflare tunnel hostname the broker's Cloudflare
+/// leg dials for the laptop-agent daemon (code#10356, Drew's
+/// 2026-11-15 transport ruling): the tunnel's ingress lands on
+/// the daemon's own listener from the laptop side, so the daemon
+/// is untouched and its token auth is preserved end to end.
+pub const DEFAULT_CF_HOST: &str = "sandbox-link.security.cab";
+/// The Cloudflare Access service-token file for the tunnel
+/// (home-relative, like [`DEFAULT_BROKER_TOKEN_FILE`]): a JSON
+/// object with `client_id` / `client_secret`, mode 600, read by
+/// the broker per request and sent only as `CF-Access-*` headers
+/// — never stored, never logged. The file's EXISTENCE is what
+/// puts the Cloudflare leg in play (the Python broker's rule);
+/// no file, no leg, the tailnet path carries everything.
+pub const DEFAULT_CF_ACCESS_FILE: &str = "tools/laptop-agent-cf-access.json";
 
+/// The gh credential/token cache daemon's default TCP port (code#10742):
+/// the next port after the queue broker's 4801. Both the localhost
+/// daemon and the laptop daemon listen on this port unless the
+/// `[gh]` settings say otherwise; an address without a port gets
+/// this one.
+pub const DEFAULT_GH_CACHE_PORT: u16 = 4802;
 /// Default listen address for the CONNECT-UDP endpoint
 /// (RFC 9298 spike, #6109) when `[proxy] connect_udp` enables
 /// it: loopback only. The endpoint is a local capability,
@@ -82,6 +102,25 @@ pub struct SearchConfig {
     pub url: Option<String>,
 }
 
+/// `[gh]` — the gh domain's credential-cache view (code#10742).
+/// All optional: with no section the client tries the localhost
+/// daemon at the default port, then the laptop daemon (the proxy's
+/// reach target) at the same port. Both are preferences between
+/// working routes, never a disable: an unreachable daemon falls
+/// back to in-process resolution with a visible note.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct GhConfig {
+    /// Localhost daemon address (`host[:port]`); default
+    /// `127.0.0.1:<DEFAULT_GH_CACHE_PORT>`. A bare host without a
+    /// port gets the default port.
+    pub cache_local: Option<String>,
+    /// Laptop daemon address (`host[:port]`); default
+    /// `<target_host>:<DEFAULT_GH_CACHE_PORT>`. Same default-port
+    /// rule. On the laptop itself localhost IS the laptop, so the
+    /// same localhost-then-laptop order serves both machines.
+    pub cache_laptop: Option<String>,
+}
 /// The `fleet serve` role names a `[host]` manifest may assign
 /// (design #5687 §1). The role set of a manifest is exactly the key
 /// set of its `[host.roles]` table; any other name is a loud parse
@@ -322,6 +361,8 @@ pub struct Config {
     #[serde(rename = "dispatch-test")]
     pub dispatch_test: DispatchTestConfig,
     pub search: SearchConfig,
+    /// `[gh]` — the gh domain's credential-cache view (code#10742).
+    pub gh: GhConfig,
     /// `[host]` — the location/role manifest (design #5687,
     /// implementation #6770). Absent means "no manifest": fleet
     /// init reports an unknown location and starts nothing.
@@ -345,6 +386,16 @@ pub struct ProxyConfig {
     /// [`DEFAULT_EGRESS_PROXY_PORT`]). `0` is rejected at load
     /// (#6412): port 0 cannot be dialled.
     pub egress_proxy_port: Option<u16>,
+    /// Hostname of the named Cloudflare tunnel the broker's
+    /// Cloudflare leg dials for the laptop-agent daemon (default
+    /// [`DEFAULT_CF_HOST`]; code#10356). Blank is rejected at load
+    /// (#6405's rule, same as `target_host`).
+    pub cf_host: Option<String>,
+    /// Cloudflare Access service-token file for the tunnel,
+    /// home-relative (default [`DEFAULT_CF_ACCESS_FILE`]). The
+    /// broker reads it per request; its existence enables the
+    /// Cloudflare leg for the daemon port.
+    pub cf_access_file: Option<String>,
     /// Dial the target directly instead of through a CONNECT tunnel
     /// (a broker running on the target host itself; also the
     /// hermetic-test mode). Default false — today's topology.
@@ -731,10 +782,14 @@ impl Config {
         for (value, field) in [
             (&self.proxy.broker_socket, "[proxy] broker_socket"),
             (&self.proxy.target_host, "[proxy] target_host"),
+            (&self.proxy.cf_host, "[proxy] cf_host"),
+            (&self.proxy.cf_access_file, "[proxy] cf_access_file"),
             (&self.proxy.connect_udp_listen, "[proxy] connect_udp_listen"),
             (&self.secrets.token_file, "[secrets] token_file"),
             (&self.dispatch.url, "[dispatch] url"),
             (&self.dispatch.token_name, "[dispatch] token_name"),
+            (&self.gh.cache_local, "[gh] cache_local"),
+            (&self.gh.cache_laptop, "[gh] cache_laptop"),
         ] {
             if blank(value) {
                 return Err(ConfigError::Parse {
@@ -821,7 +876,10 @@ impl Config {
     /// its own `[host]` section instead of growing this table.
     pub fn builtin_host(location: &str) -> Option<(InitMode, Vec<String>)> {
         match location {
-            "sandbox" => Some((InitMode::Spawn, vec!["proxy".to_string()])),
+            "sandbox" => Some((
+                InitMode::Spawn,
+                vec!["proxy".to_string(), "secrets-broker".to_string()],
+            )),
             "laptop" => Some((
                 InitMode::Systemd,
                 vec![
@@ -1134,6 +1192,22 @@ impl Config {
             .unwrap_or(DEFAULT_EGRESS_PROXY_PORT)
     }
 
+    /// The named Cloudflare tunnel hostname for the broker's
+    /// Cloudflare leg (see [`DEFAULT_CF_HOST`]).
+    pub fn cf_host(&self) -> &str {
+        self.proxy.cf_host.as_deref().unwrap_or(DEFAULT_CF_HOST)
+    }
+
+    /// The Cloudflare Access service-token file (see
+    /// [`DEFAULT_CF_ACCESS_FILE`]), resolved under $HOME like the
+    /// other token files.
+    pub fn cf_access_file(&self) -> PathBuf {
+        match &self.proxy.cf_access_file {
+            Some(raw) => resolve_under_home(raw),
+            None => resolve_under_home(DEFAULT_CF_ACCESS_FILE),
+        }
+    }
+
     /// Whether the broker dials the target directly (no CONNECT).
     pub fn proxy_direct(&self) -> bool {
         self.proxy.direct.unwrap_or(false)
@@ -1311,6 +1385,83 @@ impl Config {
             .filter(|v| !v.is_empty())
     }
 
+    /// Append the default gh-cache port when `addr` carries none
+    /// (code#10742): `host` → `host:<DEFAULT_GH_CACHE_PORT>`,
+    /// `host:port` unchanged. A trailing `]`-less IPv6 literal
+    /// without brackets also gets the port suffix; bracketed forms
+    /// pass through on the same rule (a closing `]:` means a port
+    /// is present).
+    pub fn with_default_port(addr: &str) -> String {
+        let addr = addr.trim();
+        if addr.is_empty() {
+            return format!("127.0.0.1:{}", DEFAULT_GH_CACHE_PORT);
+        }
+        if addr.starts_with('[') {
+            if addr.contains("]:") {
+                return addr.to_string();
+            }
+            return format!("{addr}:{}", DEFAULT_GH_CACHE_PORT);
+        }
+        match addr.chars().filter(|&c| c == ':').count() {
+            0 => format!("{addr}:{}", DEFAULT_GH_CACHE_PORT),
+            1 => {
+                let after = addr.rsplit(':').next().unwrap_or("");
+                if after.is_empty() {
+                    format!("{addr}{}", DEFAULT_GH_CACHE_PORT)
+                } else if after.chars().all(|c| c.is_ascii_digit()) {
+                    addr.to_string()
+                } else {
+                    format!("{addr}:{}", DEFAULT_GH_CACHE_PORT)
+                }
+            }
+            // Bare IPv6 literal (multiple colons, no brackets): suffix
+            // the port rather than misreading an interior colon.
+            _ => format!("{addr}:{}", DEFAULT_GH_CACHE_PORT),
+        }
+    }
+
+    /// The gh credential-cache daemon addresses to try, in order
+    /// (code#10742): `FLEET_GH_CACHE` (comma list, first wins per
+    /// position) beats `[gh] cache_local` / `[gh] cache_laptop`
+    /// beats the localhost-then-laptop defaults. Every address
+    /// without a port gets [`DEFAULT_GH_CACHE_PORT`]. All are
+    /// preferences between working routes: an unreachable daemon
+    /// falls back to in-process resolution with a visible note.
+    pub fn gh_cache_addrs(&self) -> Vec<String> {
+        if let Ok(env) = std::env::var("FLEET_GH_CACHE") {
+            let addrs: Vec<String> = env
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(Self::with_default_port)
+                .collect();
+            if !addrs.is_empty() {
+                return addrs;
+            }
+        }
+        let local = self
+            .gh
+            .cache_local
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(Self::with_default_port)
+            .unwrap_or_else(|| format!("127.0.0.1:{}", DEFAULT_GH_CACHE_PORT));
+        let laptop = self
+            .gh
+            .cache_laptop
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(Self::with_default_port)
+            .unwrap_or_else(|| format!("{}:{}", self.target_host(), DEFAULT_GH_CACHE_PORT));
+        if local == laptop {
+            vec![local]
+        } else {
+            vec![local, laptop]
+        }
+    }
+
     /// The secrets-broker token *file path* (never its contents).
     pub fn secrets_token_file(&self) -> PathBuf {
         match &self.secrets.token_file {
@@ -1394,6 +1545,70 @@ mod tests {
         let (_dir2, path2) = write_temp("[search]\nvia = \"sideways\"\n");
         let cfg2 = Config::load_from(&path2).unwrap();
         assert_eq!(cfg2.search_via(), None);
+    }
+
+    #[test]
+    fn gh_section_defaults_to_localhost_then_laptop() {
+        // Oracle: code#10742 — no [gh] section means try the
+        // localhost daemon at the default port, then the laptop
+        // daemon (the proxy's reach target) at the same port.
+        let cfg = Config::default();
+        assert_eq!(
+            cfg.gh_cache_addrs(),
+            vec![
+                format!("127.0.0.1:{}", DEFAULT_GH_CACHE_PORT),
+                format!("{}:{}", DEFAULT_TARGET_HOST, DEFAULT_GH_CACHE_PORT),
+            ]
+        );
+    }
+
+    #[test]
+    fn gh_section_parses_and_applies_default_port() {
+        // Oracle: code#10742 — a bare host without a port gets the
+        // default port; an explicit port is kept.
+        let (_dir, path) = write_temp("[gh]\ncache_local = \"127.0.0.1\"\ncache_laptop = \"laptop:9999\"\n");
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(
+            cfg.gh_cache_addrs(),
+            vec![
+                format!("127.0.0.1:{}", DEFAULT_GH_CACHE_PORT),
+                "laptop:9999".to_string(),
+            ]
+        );
+        assert_eq!(
+            Config::with_default_port("example.com"),
+            format!("example.com:{}", DEFAULT_GH_CACHE_PORT)
+        );
+        assert_eq!(
+            Config::with_default_port("example.com:1234"),
+            "example.com:1234"
+        );
+        assert_eq!(
+            Config::with_default_port("::1"),
+            format!("::1:{}", DEFAULT_GH_CACHE_PORT)
+        );
+        assert_eq!(
+            Config::with_default_port("[::1]:1234"),
+            "[::1]:1234"
+        );
+    }
+
+    #[test]
+    fn gh_blank_cache_addr_is_a_loud_error() {
+        // Oracle: the #6405 blank-scalar rule — a blank cache
+        // address is a misspelling-class error naming the field.
+        for contents in [
+            "[gh]\ncache_local = \"\"\n",
+            "[gh]\ncache_laptop = \"   \"\n",
+        ] {
+            let (_dir, path) = write_temp(contents);
+            match Config::load_from(&path) {
+                Err(ConfigError::Parse { message, .. }) => {
+                    assert!(message.contains("[gh]"), "{message}");
+                }
+                other => panic!("expected Parse error for {contents:?}, got {other:?}"),
+            }
+        }
     }
 
     #[test]
@@ -2284,7 +2499,10 @@ socket = "rel/s.sock"
     fn host_env_location_sandbox_builtin_map_is_proxy_spawn() {
         // The hermetic-provisioning shape: FLEET_LOCATION alone on
         // a machine with no [host] section resolves to exactly
-        // today's sandbox behaviour (design #5687 §5/§6).
+        // today's sandbox behaviour (design #5687 §5/§6): the
+        // session proxy plus the standing sandbox secrets broker
+        // (stage-2 broker resilience: secrets resolve locally, no
+        // laptop round trip).
         let cfg = Config::default();
         let path = PathBuf::from("/nonexistent/fleet.toml");
         let resolved = cfg
@@ -2292,7 +2510,10 @@ socket = "rel/s.sock"
             .unwrap()
             .unwrap();
         assert_eq!(resolved.init_mode, InitMode::Spawn);
-        assert_eq!(resolved.roles, vec!["proxy".to_string()]);
+        assert_eq!(
+            resolved.roles,
+            vec!["proxy".to_string(), "secrets-broker".to_string()]
+        );
     }
 
     #[test]

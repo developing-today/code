@@ -47,11 +47,11 @@ for first_level_dir in "$log_dir"/*/; do
         second_level_name=$(basename "$second_level_dir")
         echo "Compressing directory: $first_level_name/$second_level_name"
 
-        # Create a tar.gz archive of the second-level subdirectory
-        tar -czf "${first_level_dir}${second_level_name}.tar.gz" -C "$first_level_dir" "$second_level_name"
-
-        # Check if compression was successful
-        if [ $? -eq 0 ]; then
+        # Create a tar.gz archive of the second-level subdirectory. Keep the
+        # command in the conditional so `set -e` does not skip the failure
+        # handler.
+        archive_path="${first_level_dir}${second_level_name}.tar.gz"
+        if tar -czf "$archive_path" -C "$first_level_dir" "$second_level_name"; then
           echo "Successfully compressed $first_level_name/$second_level_name"
 
           # Remove the original directory
@@ -59,6 +59,9 @@ for first_level_dir in "$log_dir"/*/; do
           echo "Deleted original directory: $first_level_name/$second_level_name"
         else
           echo "Failed to compress $first_level_name/$second_level_name"
+          # A failed tar may leave a partial archive; retain the source and
+          # remove only that incomplete output before trying the next folder.
+          rm -f "$archive_path"
         fi
       fi
     done

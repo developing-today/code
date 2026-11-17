@@ -14,6 +14,7 @@ import (
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
 	"github.com/developing-today/code/pkgs/mcpx/internal/events"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // The ssh transport runs the system ssh binary. These tests put a fake
@@ -78,7 +79,7 @@ func shimSSH(t *testing.T, sock, logPath string) {
 // health check and a server-sent event stream.
 func testSocketServer(t *testing.T) string {
 	t.Helper()
-	sock := filepath.Join(t.TempDir(), "daemon.sock")
+	sock := filepath.Join(testsupport.SocketDir(t), "daemon.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)

@@ -36,9 +36,6 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: #9028 (runtime gate: reconcile the current PM PostgREST producer bypass before canonical reservation/cutover; offline contracts and fixtures may proceed).
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9200→PRI-01, #9203→REL-03, #9207→HYD-06, #9208→AUTH-01, #9209→REL-03.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -85,8 +82,6 @@ Negative coverage: CI failure prevents claiming conformance; reverting CI hook l
 - **First failing oracle:** `test_adapter_conformance_distinguishes_projection_ack_from_fleet_acceptance` in the shared conformance suite proves same request/event delivered twice produces one projection event, while canonical operation owner separately emits one accepted operation only after authorization; comparator/manifest/digest result matches independent golden oracle. These are two authorities and two distinct assertions.
 - **Done check:** CI runs existing package suite(s) and exact named filters; unexpected upstream/provider behavior is typed/degraded. Mocks prove contract only; if a live read/write/dispatch acceptance is required, it remains a separately authorized issue.
 - **Negative / rollback:** CI failure prevents claiming conformance; reverting CI hook leaves test scripts but does not roll back any live state. Never silently point projector writes at Fleet or treat projection ACK as command acceptance.
-
-
 
 ## Merged source-key/facade acceptance
 

@@ -16,38 +16,38 @@ Consequently the recoverable provenance identifies the count and seven category 
 
 These slices are inferred from the 384 numbered statements and live component scopes. They are candidate-sized units another Part B worker may combine, split, or reject. The explicit category anchors are marked **[named in proto]**; every other line is **[statement-derived]**. Not a claim that these were filed or included in the original 30.
 
-| # | Component | Reconstructed slice | Anchor / source statements |
-|---:|---|---|---|
-| 1 | #9141 | Key lifecycle: rotation, generation overlap, and preserving validity of data signed by a then-current key. | **[named category]**; S1.21 |
-| 2 | #9141 | Key compromise/revocation effect on previously accepted data (revalidate, flag, or quarantine). | **[statement-derived]**; S1.22 |
-| 3 | #9141 | Replay/freshness rules for re-presented signed data. | **[named category]**; S1.23 |
-| 4 | #9141 | Signature-suite agility and algorithm deprecation/migration. | **[statement-derived]**; S1.24 |
-| 5 | #9141 | Signer identity binding and validation distinct from mere signature presence. | **[statement-derived]**; S1.17–S1.18 |
-| 6 | #9141 | Observable, recordable rejection events at the universal signed-ingest gate. | **[statement-derived]**; S1.19, S1.25 |
-| 7 | #9142 | First-class conflict-report artifact: versions, signers/sources, disputed data, retention/actionability. | **[statement-derived]**; S1.34–S1.38 |
-| 8 | #9142 | Implicit-trust sync scope/tolerance under capacity, retention, tenant and trust-domain boundaries. | **[statement-derived]**; S1.28–S1.31 |
-| 9 | #9142 | Divergence detection and anti-entropy/reconciliation requirements before any later merge. | **[statement-derived]**; S1.32–S1.40 |
-| 10 | #9143 | Automerge fit/evaluation against the shared CRDT criteria. | **[statement-derived]**; S1.41 |
-| 11 | #9143 | Identify “diamonds” as Diamond Types and evaluate it on the shared criteria. | **[statement-derived]**; S1.42 |
-| 12 | #9143 | Willow protocol fit against reconciliation, scoping and signed-only acceptance. | **[statement-derived]**; S1.43 |
-| 13 | #9143 | OCAPN capability/attenuation fit for peer classes. | **[statement-derived]**; S1.44 |
-| 14 | #9143 | Common comparison matrix, non-exhaustive prior art and revisit threshold/recommendation. | **[statement-derived]**; S1.45–S1.46 |
-| 15 | #9144 | Prioritized remote selection: inputs, ordering, and treatment of a remote negative answer. | **[named category: prioritization scoring]**; S1.47–S1.53 |
-| 16 | #9144 | Trusted-relay permission, max-hop propagation, and breadth×depth resource bounds. | **[statement-derived]**; S1.54–S1.57, S1.61 |
-| 17 | #9144 | Query/relay/response signature validation, end-to-end responder provenance and stable request identity. | **[statement-derived]**; S1.58–S1.62 |
-| 18 | #9144 | Privacy surface of query-interest disclosure and explicit mitigation/acceptance decision. | **[named category: privacy surface]**; S1.63 |
-| 19 | #9144 | Acknowledgment primitive for reliable receipt evidence across transfers/relays. | **[named category: ack primitive]**; S1.100–S1.104 (coordinate with #9148) |
-| 20 | #9145 | Request identity, duplicate-vs-loop classification, finite dedup state and expiry. | **[statement-derived]**; S1.64, S1.70–S1.72 |
-| 21 | #9145 | Short-circuit and deduplicate in-flight/answered requests into coherent results. | **[statement-derived]**; S1.67–S1.68 |
-| 22 | #9145 | Inform requester/parties about duplicates and specifically signal detected loops. | **[statement-derived]**; S1.65–S1.66, S1.69 |
-| 23 | #9146 | Routing-state freshness, periodic validation, and detection of peer/topology changes. | **[statement-derived]**; S1.73–S1.76 |
-| 24 | #9146 | Signed/validated routing updates and protection against poisoning, suppression and manufactured loops. | **[statement-derived]**; S1.77–S1.78 |
-| 25 | #9147 | Evidence-based ratings and explicit way reputation affects prioritization/class changes. | **[statement-derived]**; S1.79–S1.82 |
-| 26 | #9147 | Abuse-protection research: manipulation, retaliation, Sybils, whitewashing, collusion and spam claims. | **[named category: reputation-abuse research]**; S1.88–S1.91, S1.99 |
-| 27 | #9147 | Public signed append-only claims/disputes log, right of reply, and use of evidence in reputation. | **[statement-derived]**; S1.92–S1.98 |
-| 28 | #9148 | Highly trusted server takeover/key compromise: rapid revocation, blast-radius identification and prior-data posture. | **[statement-derived]**; S1.83–S1.87 |
-| 29 | #9148 | Ack/recipient-list contradiction detection, evidence retention, collusion threshold and public-log integration. | **[statement-derived]**; S1.100–S1.108 |
-| 30 | #9148 | Federated-search tampering threat model: omission/injection/reordering/staleness and completeness claims. | **[statement-derived]**; S1.109–S1.113 |
+|   # | Component | Reconstructed slice                                                                                                  | Anchor / source statements                                                 |
+| --: | --------- | -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+|   1 | #9141     | Key lifecycle: rotation, generation overlap, and preserving validity of data signed by a then-current key.           | **[named category]**; S1.21                                                |
+|   2 | #9141     | Key compromise/revocation effect on previously accepted data (revalidate, flag, or quarantine).                      | **[statement-derived]**; S1.22                                             |
+|   3 | #9141     | Replay/freshness rules for re-presented signed data.                                                                 | **[named category]**; S1.23                                                |
+|   4 | #9141     | Signature-suite agility and algorithm deprecation/migration.                                                         | **[statement-derived]**; S1.24                                             |
+|   5 | #9141     | Signer identity binding and validation distinct from mere signature presence.                                        | **[statement-derived]**; S1.17–S1.18                                       |
+|   6 | #9141     | Observable, recordable rejection events at the universal signed-ingest gate.                                         | **[statement-derived]**; S1.19, S1.25                                      |
+|   7 | #9142     | First-class conflict-report artifact: versions, signers/sources, disputed data, retention/actionability.             | **[statement-derived]**; S1.34–S1.38                                       |
+|   8 | #9142     | Implicit-trust sync scope/tolerance under capacity, retention, tenant and trust-domain boundaries.                   | **[statement-derived]**; S1.28–S1.31                                       |
+|   9 | #9142     | Divergence detection and anti-entropy/reconciliation requirements before any later merge.                            | **[statement-derived]**; S1.32–S1.40                                       |
+|  10 | #9143     | Automerge fit/evaluation against the shared CRDT criteria.                                                           | **[statement-derived]**; S1.41                                             |
+|  11 | #9143     | Identify “diamonds” as Diamond Types and evaluate it on the shared criteria.                                         | **[statement-derived]**; S1.42                                             |
+|  12 | #9143     | Willow protocol fit against reconciliation, scoping and signed-only acceptance.                                      | **[statement-derived]**; S1.43                                             |
+|  13 | #9143     | OCAPN capability/attenuation fit for peer classes.                                                                   | **[statement-derived]**; S1.44                                             |
+|  14 | #9143     | Common comparison matrix, non-exhaustive prior art and revisit threshold/recommendation.                             | **[statement-derived]**; S1.45–S1.46                                       |
+|  15 | #9144     | Prioritized remote selection: inputs, ordering, and treatment of a remote negative answer.                           | **[named category: prioritization scoring]**; S1.47–S1.53                  |
+|  16 | #9144     | Trusted-relay permission, max-hop propagation, and breadth×depth resource bounds.                                    | **[statement-derived]**; S1.54–S1.57, S1.61                                |
+|  17 | #9144     | Query/relay/response signature validation, end-to-end responder provenance and stable request identity.              | **[statement-derived]**; S1.58–S1.62                                       |
+|  18 | #9144     | Privacy surface of query-interest disclosure and explicit mitigation/acceptance decision.                            | **[named category: privacy surface]**; S1.63                               |
+|  19 | #9144     | Acknowledgment primitive for reliable receipt evidence across transfers/relays.                                      | **[named category: ack primitive]**; S1.100–S1.104 (coordinate with #9148) |
+|  20 | #9145     | Request identity, duplicate-vs-loop classification, finite dedup state and expiry.                                   | **[statement-derived]**; S1.64, S1.70–S1.72                                |
+|  21 | #9145     | Short-circuit and deduplicate in-flight/answered requests into coherent results.                                     | **[statement-derived]**; S1.67–S1.68                                       |
+|  22 | #9145     | Inform requester/parties about duplicates and specifically signal detected loops.                                    | **[statement-derived]**; S1.65–S1.66, S1.69                                |
+|  23 | #9146     | Routing-state freshness, periodic validation, and detection of peer/topology changes.                                | **[statement-derived]**; S1.73–S1.76                                       |
+|  24 | #9146     | Signed/validated routing updates and protection against poisoning, suppression and manufactured loops.               | **[statement-derived]**; S1.77–S1.78                                       |
+|  25 | #9147     | Evidence-based ratings and explicit way reputation affects prioritization/class changes.                             | **[statement-derived]**; S1.79–S1.82                                       |
+|  26 | #9147     | Abuse-protection research: manipulation, retaliation, Sybils, whitewashing, collusion and spam claims.               | **[named category: reputation-abuse research]**; S1.88–S1.91, S1.99        |
+|  27 | #9147     | Public signed append-only claims/disputes log, right of reply, and use of evidence in reputation.                    | **[statement-derived]**; S1.92–S1.98                                       |
+|  28 | #9148     | Highly trusted server takeover/key compromise: rapid revocation, blast-radius identification and prior-data posture. | **[statement-derived]**; S1.83–S1.87                                       |
+|  29 | #9148     | Ack/recipient-list contradiction detection, evidence retention, collusion threshold and public-log integration.      | **[statement-derived]**; S1.100–S1.108                                     |
+|  30 | #9148     | Federated-search tampering threat model: omission/injection/reordering/staleness and completeness claims.            | **[statement-derived]**; S1.109–S1.113                                     |
 
 Cross-cutting **interop kit** is the seventh explicitly named category but maps to program-level non-specialness/conformance #9110 and statements S1.114–S1.120, rather than one of the eight Part B component homes. It is intentionally not forced into this 30-item Part B reconstruction; decide explicitly whether the intake count included it or whether the example list crosses Part B's boundary. This is an additional provenance ambiguity, not a recovered candidate.
 

@@ -9,10 +9,9 @@ use zeroize::Zeroizing;
 use crate::cli::KeyCommand;
 use crate::{CLIENT_KEY_FILE, KEY_FILE};
 use id_core::key_envelope;
+use id_core::key_envelope::MIN_PASSPHRASE_BYTES;
 use id_core::seed_phrase;
 use id_store::store::load_or_create_keypair;
-
-const MIN_PASSPHRASE_BYTES: usize = 8;
 
 /// Run a local-only identity-key export or import operation.
 pub async fn cmd_key(command: KeyCommand) -> Result<()> {

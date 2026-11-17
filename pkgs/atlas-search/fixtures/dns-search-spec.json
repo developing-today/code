@@ -1,0 +1,10 @@
+{
+  "comment": "Synthetic fixed-vector fixture for issue #2469. The query and document vectors are deliberately identical toy vectors, matching the existing atlas-core fixture convention; this proves the local vector-search retrieval path, not production embedding quality or production-corpus ingestion.",
+  "query": "Which MX host handles mail for 01b.us?",
+  "expected_source": "infra/dns/dns_config.yaml",
+  "expected_record": "monday.mxrouting.net",
+  "query_vector": [1.0, 0.0, 0.0, 0.0],
+  "vectors": {
+    "1": [1.0, 0.0, 0.0, 0.0]
+  }
+}

@@ -19,10 +19,18 @@ land in three places, all idempotent on `eventId`:
 | Route                                    | Auth          | Purpose                                                                                                                                                                                                          |
 | ---------------------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `POST /events` (alias `/webhook`)        | shared secret | Accept an event batch: `{events: [...]}` (or a bare array / single event). Stores new events in D1, fans them out to each set's Durable Object, returns `{accepted, inserted, duplicates, errors, fanout}`.      |
-| `GET /sets/<setId>/events?limit=&after=` | shared secret | Read a set's events back from D1, in `ts` order.                                                                                                                                                                 |
+| `GET /sets/<setId>/events?limit=&after=` | shared secret | Read a set's events back from D1, in `(ts, event_id)` order; the response's `nextAfter` is the composite cursor for the next page (see below).                                                                   |
 | `GET /sets/<setId>/state`                | shared secret | The set's Durable Object state merged with D1's stored count.                                                                                                                                                    |
 | `GET /sets/<setId>/stream`               | shared secret | WebSocket upgrade routed to the set's Durable Object; subscribers get `{type:"decision-events", setId, events}` per new batch, plus the current state on connect. Send `ping` → `pong`, `state` → current state. |
 | `GET /health`                            | none          | Liveness + whether the webhook secret is configured.                                                                                                                                                             |
+
+Read-back pagination: pass the previous page's `nextAfter` value as
+`after` to get the next page. The cursor is composite — `<ts>|<eventId>`,
+the (ts, event_id) pair of the page's last event — so paging returns
+every event exactly once, including groups of events that share one
+timestamp (#9614). `nextAfter` is null on an empty page. A bare ISO
+timestamp is still accepted as `after` with its legacy meaning
+(strictly after that ts, skipping any remaining same-ts events).
 
 Auth is the shared secret as `Authorization: Bearer <secret>` or the
 `X-Webhook-Secret` header, compared in constant time. With no secret

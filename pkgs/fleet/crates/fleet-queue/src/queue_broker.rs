@@ -1218,8 +1218,17 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
             if let Some(w) = req.get("worker").and_then(|s| s.as_str()) {
                 path += &format!("&worker_id=eq.{}", quote(w, ""));
             }
-            match st.postgrest("GET", &path, None, false) {
-                Ok((rows, _)) => ok(json!({"rows": rows})),
+            // #10376: request the exact count so the reply can
+            // name its total — without count=exact the
+            // Content-Range total is `*` and a limited listing
+            // reads as complete.
+            match st.postgrest("GET", &path, None, true) {
+                Ok((rows, content_range)) => {
+                    let total = content_range
+                        .as_deref()
+                        .and_then(crate::client::content_range_total);
+                    ok(crate::client::list_envelope(rows, total, offset))
+                }
                 Err(e) => fail(e.exit, e.msg),
             }
         }

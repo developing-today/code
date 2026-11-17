@@ -25,11 +25,13 @@ in
       "services/id-mail"
       "services/pm-stack"
       "services/lab-tunnel"
+      "services/sandbox-link-tunnel"
       "services/pm-apps"
       "services/power-guard"
       "services/openai-cred-watchdog"
       "services/opencode-go-seating-guard"
       "services/opencode-watchdog"
+      "services/keyring-auto-unlock"
       # "microvm"
       # "server"
       "networking/dhcp-nat"
@@ -70,6 +72,13 @@ in
         # Lab cluster Cloudflare Tunnel (code#6455): connector +
         # edge status service for lab.security.cab.
         services.lab-tunnel.enable = true;
+      }
+      {
+        # Sandbox link Cloudflare Tunnel (code#10356): connector for
+        # sandbox-link.security.cab — the sandbox -> laptop-agent
+        # control path rides it as primary transport; Tailscale is
+        # the client's fallback.
+        services.sandbox-link-tunnel.enable = true;
       }
       {
         # PM app servers (code#1752): Kaneo + PostgreSQL, Grist, and
@@ -117,6 +126,14 @@ in
             in
             if m == null then "" else builtins.head m;
         };
+      }
+      {
+        # Keyring auto-unlock (code#10724): re-unlock the GNOME login
+        # keyring after out-of-session daemon restarts. Caches the
+        # login password in the kernel user keyring at graphical login
+        # (RAM-only, never disk) and replays it via a .path-triggered
+        # user oneshot when the daemon control socket changes.
+        services.keyring-auto-unlock.enable = true;
       }
       {
         # Laptop backups (code#1516, dezren39/nix#976): the dashboard

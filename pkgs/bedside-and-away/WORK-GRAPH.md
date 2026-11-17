@@ -4,16 +4,16 @@ Updated 2026-11-13. Parent: [#9359](https://github.com/developing-today/code/iss
 
 The owner authorized full implementation. This graph preserves all 102 source requirements; issue creation is not implementation completion. Component contracts and plans must be reviewed before their implementation. Requirements retain their original requested/optional/research classifications.
 
-|Key|Published work item|BA scope|Dependencies|State|
-|---|---|---|---|---|
-|BA-W01|[#9365 identity, store membership and granular authorization](https://github.com/developing-today/code/issues/9365)|BA-003, BA-043–046, BA-078–089|Foundation|Open; design/build acceptance pending|
-|BA-W02|[#9366 canonical item graph, variants, ordering and annotations](https://github.com/developing-today/code/issues/9366)|BA-014–042|#9365, #9367|Open; design/build acceptance pending|
-|BA-W03|[#9367 versioned commands, durable history and safe replay](https://github.com/developing-today/code/issues/9367)|BA-017–018, BA-035–036, BA-047–051, BA-100|Foundation|Open; design/build acceptance pending|
-|BA-W04|[#9368 defaults, research jobs, evidence and scoped refresh](https://github.com/developing-today/code/issues/9368)|BA-059–075|#9365, #9366, #9367|Open; design/build acceptance pending|
-|BA-W05|[#9369 decision UX, inventory, receipt staging and reports](https://github.com/developing-today/code/issues/9369)|BA-048, BA-052–058, BA-092|#9365, #9366, #9367, #9368|Open; design/build acceptance pending|
-|BA-W06|[#9370 general and contextual steering with verified orchestration](https://github.com/developing-today/code/issues/9370)|BA-097–100|#9365, #9366, #9367, #9368|Open; design/build acceptance pending|
-|BA-W07|[#9371 backend integration, private release and operational evidence](https://github.com/developing-today/code/issues/9371)|BA-076–077, BA-090–091, BA-093–096, BA-101–102|#9365, #9366, #9367, #9368, #9369, #9370, #9372|Open; design/build acceptance pending|
-|BA-W08|[#9372 source-list recovery and product-research acceptance gates](https://github.com/developing-today/code/issues/9372)|BA-001–013|#9366, #9368|Open; design/build acceptance pending|
+| Key    | Published work item                                                                                                         | BA scope                                       | Dependencies                                    | State                                 |
+| ------ | --------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- | ----------------------------------------------- | ------------------------------------- |
+| BA-W01 | [#9365 identity, store membership and granular authorization](https://github.com/developing-today/code/issues/9365)         | BA-003, BA-043–046, BA-078–089                 | Foundation                                      | Open; design/build acceptance pending |
+| BA-W02 | [#9366 canonical item graph, variants, ordering and annotations](https://github.com/developing-today/code/issues/9366)      | BA-014–042                                     | #9365, #9367                                    | Open; design/build acceptance pending |
+| BA-W03 | [#9367 versioned commands, durable history and safe replay](https://github.com/developing-today/code/issues/9367)           | BA-017–018, BA-035–036, BA-047–051, BA-100     | Foundation                                      | Open; design/build acceptance pending |
+| BA-W04 | [#9368 defaults, research jobs, evidence and scoped refresh](https://github.com/developing-today/code/issues/9368)          | BA-059–075                                     | #9365, #9366, #9367                             | Open; design/build acceptance pending |
+| BA-W05 | [#9369 decision UX, inventory, receipt staging and reports](https://github.com/developing-today/code/issues/9369)           | BA-048, BA-052–058, BA-092                     | #9365, #9366, #9367, #9368                      | Open; design/build acceptance pending |
+| BA-W06 | [#9370 general and contextual steering with verified orchestration](https://github.com/developing-today/code/issues/9370)   | BA-097–100                                     | #9365, #9366, #9367, #9368                      | Open; design/build acceptance pending |
+| BA-W07 | [#9371 backend integration, private release and operational evidence](https://github.com/developing-today/code/issues/9371) | BA-076–077, BA-090–091, BA-093–096, BA-101–102 | #9365, #9366, #9367, #9368, #9369, #9370, #9372 | Open; design/build acceptance pending |
+| BA-W08 | [#9372 source-list recovery and product-research acceptance gates](https://github.com/developing-today/code/issues/9372)    | BA-001–013                                     | #9366, #9368                                    | Open; design/build acceptance pending |
 
 ## Execution order and gates
 

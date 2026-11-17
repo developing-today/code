@@ -9,12 +9,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 	"unicode"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/adapter"
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 // Declaration generation for `mcpx adapter import` (#1962 steps 2-5).
@@ -533,14 +533,21 @@ func buildCompletionFileImport(o importOptions) (adapter.Spec, []string, error) 
 		return adapter.Spec{}, nil, fmt.Errorf("%s does not look like a bash, zsh or fish completion script; say which with --shell", o.completion)
 	}
 	base := filepath.Base(o.completion)
-	name := o.name
-	if name == "" {
-		name = adapterName(completionName(base, shell))
+	// The program name is kept exactly as written for parsing and
+	// for the spec's command: parsers match completion lines against
+	// it (a fish file's -c value is the real program name), so
+	// normalising it first would filter out every line of a dotted
+	// program's file (toolbox.v2.fish) and store a command that does
+	// not exist. Only the adapter namespace name is sanitised (#9796).
+	program := o.name
+	if program == "" {
+		program = completionName(base, shell)
 	}
+	name := adapterName(program)
 	if name == "" || name == "-" {
 		return adapter.Spec{}, nil, fmt.Errorf("cannot tell which program %s completes; name it with --name", o.completion)
 	}
-	shape := parseCompletion(string(b), shell, name)
+	shape := parseCompletion(string(b), shell, program)
 	if shape.empty() {
 		return adapter.Spec{}, nil, fmt.Errorf("%s yielded no subcommands or flags as a %s completion; nothing to declare", o.completion, shell)
 	}
@@ -550,7 +557,7 @@ func buildCompletionFileImport(o importOptions) (adapter.Spec, []string, error) 
 		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
 		Generator:    "mcpx adapter import",
 	}
-	spec, notes, err := shapeToSpec(name, name, shape, prov)
+	spec, notes, err := shapeToSpec(name, program, shape, prov)
 	if err != nil {
 		return adapter.Spec{}, nil, err
 	}
@@ -675,7 +682,7 @@ func parseCompletion(text, shell, name string) *importShape {
 // runCapture runs a program for its text output with a bound: import
 // probes binaries, and a probe that hangs would hang the import.
 func runCapture(binary string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), defaults.PreflightProbeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, args...)
 	var out strings.Builder
@@ -724,14 +731,4 @@ func versionDrift(s adapter.Spec) (declared, found string, drift bool) {
 		return s.Provenance.BinaryVersion, "", false
 	}
 	return s.Provenance.BinaryVersion, found, found != s.Provenance.BinaryVersion
-}
-
-// sortedFlagNames is a small deterministic-order helper for notes.
-func sortedFlagNames(flags []importFlag) []string {
-	var names []string
-	for _, f := range flags {
-		names = append(names, f.flag())
-	}
-	sort.Strings(names)
-	return names
 }

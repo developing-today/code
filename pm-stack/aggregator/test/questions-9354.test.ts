@@ -136,8 +136,7 @@ function makeSet(setId: string, createdAt: string, open: number, settled: number
 }
 
 describe("questionsSectionHtml (#9354)", () => {
-  const urlFor = (s: { setId: string; token?: string }) =>
-    `/decisions/${s.setId}?t=tok-${s.setId}`;
+  const urlFor = (s: { setId: string; token?: string }) => `/decisions/${s.setId}?t=tok-${s.setId}`;
 
   test("open counts, token link for an open set, newest first — oracle: the rendered section HTML", () => {
     const older = makeSet("set-old", "2026-11-10T12:00:00.000Z", 2, 1);
@@ -166,7 +165,10 @@ describe("questionsSectionHtml (#9354)", () => {
 
   test("empty state when nothing is open — oracle: the clear-stack wording plus the index link, and no confident counts", () => {
     const settled = makeSet("set-done", "2026-11-12T12:00:00.000Z", 0, 1);
-    for (const html of [questionsSectionHtml([], (s) => urlFor(s)), questionsSectionHtml([summary(settled)], (s) => urlFor(s))]) {
+    for (const html of [
+      questionsSectionHtml([], (s) => urlFor(s)),
+      questionsSectionHtml([summary(settled)], (s) => urlFor(s)),
+    ]) {
       expect(html).toContain("No open questions right now — the stack is clear.");
       expect(html).toContain('href="/decisions"');
     }

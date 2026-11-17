@@ -41,8 +41,15 @@
 use std::sync::Arc;
 
 use id_core::residency::{
-    Decision, Evidence, EvidenceVerifier, Hop, Plane, ResourceId, Scope, evaluate,
+    Decision, Evidence, EvidenceVerifier, Hop, Plane, Policy, ResourceId, Scope, evaluate,
 };
+
+/// The planes a native sync path evaluates: the store the bytes occupy
+/// (Storage) and the session transport (Transport). Processing and
+/// Metadata are not properties of a sync path, so a scope policy's
+/// `required` set is narrowed to these before evaluation — the same
+/// path/plane filtering [`id_core::residency_inventory`] applies.
+const SYNC_PLANES: [Plane; 2] = [Plane::Storage, Plane::Transport];
 
 /// Residency configuration for one sync relationship: the local scope
 /// governing this store's content, the resources a session touches,
@@ -92,13 +99,27 @@ impl SyncResidency {
         ]
     }
 
+    /// Narrow the scope's policy to the planes this sync path
+    /// evaluates, so a policy built the documented way (`Policy::new`
+    /// leaves `required` at all four planes) is not denied with
+    /// `PlaneUnknown` for planes a sync path never touches. Mirrors
+    /// [`id_core::residency_inventory::admit`].
+    fn scope_for_path(scope: &Scope) -> Scope {
+        let Scope::Scoped(policy) = scope else {
+            return Scope::Unscoped;
+        };
+        let mut policy: Policy = policy.clone();
+        policy.required.retain(|p| SYNC_PLANES.contains(p));
+        Scope::Scoped(policy)
+    }
+
     /// Send-side preflight: may event bytes be sent to the peer's
     /// store over this transport, under the local scope? Evaluated
     /// before any event bytes are sent; a denial sends zero protected
     /// events.
     pub fn admit_send(&self, now: u64) -> Decision {
         evaluate(
-            &self.scope,
+            &Self::scope_for_path(&self.scope),
             &Self::hops(&self.peer_store, &self.transport, &self.peer_evidence),
             now,
             &*self.verifier,
@@ -111,7 +132,7 @@ impl SyncResidency {
     /// refuses the session, so nothing is ingested.
     pub fn admit_receive(&self, now: u64) -> Decision {
         evaluate(
-            &self.scope,
+            &Self::scope_for_path(&self.scope),
             &Self::hops(&self.local_store, &self.transport, &self.local_evidence),
             now,
             &*self.verifier,
@@ -167,16 +188,14 @@ mod tests {
     }
 
     fn scoped() -> Scope {
-        let mut policy = Policy::new(["operator-ca".to_string()])
+        let policy = Policy::new(["operator-ca".to_string()])
             .allow(Plane::Storage, &["eu"], &["local-store", "peer-store"])
             .allow(Plane::Transport, &["eu"], &["relay-eu"])
             .trust_evidence_source(Plane::Storage, "provider-control-plane")
             .trust_evidence_source(Plane::Transport, "provider-control-plane");
-        // A sync path touches the Storage and Transport planes; the
-        // policy for it requires exactly those (Policy::new defaults
-        // to all four, which would demand evidence this path never
-        // produces).
-        policy.required = [Plane::Storage, Plane::Transport].into_iter().collect();
+        // Built the documented way: `Policy::new` leaves `required` at
+        // all four planes. The sync gate narrows it to the planes the
+        // path evaluates (Storage, Transport) itself.
         Scope::Scoped(policy)
     }
 
@@ -198,6 +217,27 @@ mod tests {
                 revoked_serial: None,
             }),
         }
+    }
+
+    #[test]
+    fn default_policy_required_set_admits_fully_evidenced_scoped_sync() {
+        // Regression (#9617): a scope policy built the documented way
+        // (`Policy::new` + plane allows, `required` left at its default
+        // of all four planes) must not be denied with PlaneUnknown for
+        // planes a sync path never evaluates.
+        let Scope::Scoped(policy) = scoped() else {
+            unreachable!("scoped() builds a scoped policy");
+        };
+        assert_eq!(policy.required.len(), 4);
+
+        let gate = residency(Scope::Scoped(policy));
+        assert!(gate.admit_session(NOW).is_allow());
+
+        // Negative coverage still holds under the default policy: a
+        // missing receiver store evidence refuses.
+        let mut missing = residency(scoped());
+        missing.peer_evidence.retain(|e| e.plane != Plane::Storage);
+        assert!(!missing.admit_session(NOW).is_allow());
     }
 
     #[test]

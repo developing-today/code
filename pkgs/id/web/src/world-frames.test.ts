@@ -18,7 +18,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 const here = dirname(fileURLToPath(import.meta.url));
 
 function worldPageMarkup(): string {
-  const source = readFileSync(resolve(here, "../../src/web/templates.rs"), "utf8");
+  const source = readFileSync(resolve(here, "../../crates/id-web/src/templates.rs"), "utf8");
   const start = source.indexOf("pub fn render_world_page");
   const open = source.indexOf('r#"', start);
   const close = source.indexOf('"#;', open);

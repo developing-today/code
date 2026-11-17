@@ -1957,6 +1957,16 @@ func (c *Client) Close() error {
 	return c.t.Close()
 }
 
+// MarkRestartIntent marks this client's transport as closing for a daemon
+// restart rather than an explicit session end (#1414). A transport that can
+// resume its upstream session then keeps it alive for the next daemon process
+// instead of ending it in Close.
+func (c *Client) MarkRestartIntent() {
+	if m, ok := c.t.(interface{ MarkRestartIntent() }); ok {
+		m.MarkRestartIntent()
+	}
+}
+
 // CallTimeout is a convenience wrapper applying a deadline.
 func (c *Client) CallTimeout(parent context.Context, d time.Duration, name string, args any) (json.RawMessage, error) {
 	ctx, cancel := context.WithTimeout(parent, d)

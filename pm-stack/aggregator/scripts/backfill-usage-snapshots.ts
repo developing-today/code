@@ -31,6 +31,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sectionOf } from "../src/quota-extract.ts";
+import { defaultHiddenDir, defaultQuotaViewPath } from "../src/default-paths.ts";
 import { recordsFromDeepseekBalance } from "../src/snapshot-records.ts";
 import { SnapshotStore } from "../src/snapshots.ts";
 import type { SnapshotRecord } from "../src/model.ts";
@@ -76,15 +77,8 @@ function parseStoreDirArg(): string | undefined {
 }
 const dirValue = parseStoreDirArg();
 const storeDir = dirValue ?? process.env.PM_AGG_SNAPSHOTS_DIR ?? join(PKG, "snapshots");
-const quotaViewPath =
-  process.env.QUOTA_VIEW_PATH ??
-  join(
-    HOME,
-    "workspace/goals/stewardship-commission-recurring-review-and-dispatch/hidden_files/visibility/quota-view.md",
-  );
-const registryPath =
-  process.env.QUOTA_REGISTRY_PATH ??
-  join(HOME, "workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md");
+const quotaViewPath = process.env.QUOTA_VIEW_PATH ?? defaultQuotaViewPath(HOME);
+const registryPath = process.env.QUOTA_REGISTRY_PATH ?? join(defaultHiddenDir(HOME), "provider-quota-registry.md");
 
 const BY_VIEW = "backfill:quota-view.md";
 const BY_REGISTRY = "backfill:provider-quota-registry.md";

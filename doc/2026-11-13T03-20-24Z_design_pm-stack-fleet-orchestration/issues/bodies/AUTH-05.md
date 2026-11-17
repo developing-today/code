@@ -34,9 +34,6 @@ File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9206→CLI-02, #9207→HYD-06.
 
-
-
-
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
 ## Starting failing test, oracle, and done check
@@ -79,8 +76,8 @@ Negative coverage: shared App token, coincident same body, changed remote ID, mi
 
 **Tier:** recommended cross-link; #9207 HYD-07 is the canonical owner of external-only activity classification. **Goal/delta:** #9208 `authority.rs` defines trusted principal/operation provenance fields and visibility; #9207 consumes them to classify events. Do not create a second activity classifier or duplicate writer. **Owns:** `src/work/authority.rs` provenance schema/fixture only; cross-component acceptance `pmo_hyd_external_only_includes_uncertain_shared_actor` stays in #9207 HYD-07 and is referenced here, not separately reimplemented. **Hard blockers:** shared #9206 identity/auth contract and REL-03 operation identity; #9207 event envelope is a consumer integration edge. **First failing oracle:** provenance fixture rejects actor-username-only attribution and requires opaque provider session/ref strings. **Done command:** `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_auth_provenance_requires_operation_session_refs` after list check. **Negative:** shared App token, coincident same body, changed remote ID, missing op map. **Migration:** old attribution uncertain. **Docs:** one canonical external-only behavior, shared with HYD-07.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `AUTH-01` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/authority.rs`

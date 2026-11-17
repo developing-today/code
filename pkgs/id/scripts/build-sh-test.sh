@@ -8,9 +8,23 @@
 # cargo, so a variant-specific unbound variable (or a variant quietly
 # gaining/losing its cargo flags) fails here instead of in a just
 # recipe.
+# Usage: build-sh-test.sh
+#   Accepts no positional arguments (operator-script argument contract,
+#   #3352 / #10567): extra arguments are rejected before any fixture work.
 set -euo pipefail
 
+usage() {
+  echo "Usage: build-sh-test.sh" >&2
+}
+
+if [[ $# -ne 0 ]]; then
+  usage
+  echo "Error: unaccounted argument(s): $*" >&2
+  exit 1
+fi
+
 script="$(cd "$(dirname "$0")" && pwd)/build.sh"
+self="$(cd "$(dirname "$0")" && pwd)/build-sh-test.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -133,4 +147,38 @@ after="$(wc -l <"$tmp/cargo.log")"
 grep -q 'up to date' uptodate.out ||
   fail "exact-match re-run did not report 'up to date'"
 
+# ── Argument contract (#10501) ──────────────────────────────────────
+# Extra positional arguments must be rejected before any frontend or
+# Rust build work, with usage on stderr and non-zero exit.
+before="$(wc -l <"$tmp/cargo.log")"
+if bash ./build.sh lib debug extra >extra.out 2>extra.err; then
+  fail "extra argument was accepted"
+fi
+after="$(wc -l <"$tmp/cargo.log")"
+[ "$before" = "$after" ] || fail "extra argument invoked cargo"
+grep -q 'Usage: build.sh \[variant\] \[profile\]' extra.err ||
+  fail "extra argument did not print usage"
+grep -q 'unaccounted argument' extra.err ||
+  fail "extra argument did not report unaccounted argument"
+
+# ── Own argument contract (#10567) ────────────────────────────────────
+# This script takes no arguments either: a copy invoked with an extra
+# argument must be rejected (exit 1, usage + unaccounted-argument on
+# stderr) before any fixture work. TMPDIR is pointed at a fresh dir so
+# a broken preflight would leave its mktemp tree behind as evidence.
+mkdir -p "$tmp/selfcheck-empty"
+cp "$self" "$tmp/selfcheck.sh"
+rc=0
+TMPDIR="$tmp/selfcheck-empty" bash "$tmp/selfcheck.sh" extra >"$tmp/selfcheck.out" 2>"$tmp/selfcheck.err" || rc=$?
+[ "$rc" -eq 1 ] || fail "own extra argument exited $rc instead of 1"
+grep -q 'Usage: build-sh-test.sh' "$tmp/selfcheck.err" ||
+  fail "own extra argument did not print usage"
+grep -q 'unaccounted argument' "$tmp/selfcheck.err" ||
+  fail "own extra argument did not report unaccounted argument"
+if [ -n "$(ls -A "$tmp/selfcheck-empty")" ]; then
+  fail "own extra argument did fixture work before rejection"
+fi
+
+# ── Teardown: manifest/source rebuild path (#6883/#6869 fixed form) ─
+# Not part of the arg-contract case; keep the file ending stable.
 echo "build-sh tests passed"

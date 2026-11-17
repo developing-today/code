@@ -2,6 +2,39 @@
 
 use super::*;
 
+/// Response for a file name refused by the canonical-name rule.
+fn name_rejection_response(err: &FileOpError) -> Response {
+    match err {
+        FileOpError::EmptyName => {
+            (StatusCode::BAD_REQUEST, "File name cannot be empty").into_response()
+        }
+        FileOpError::InvalidName(name) => (
+            StatusCode::BAD_REQUEST,
+            format!("Invalid file name: {name}"),
+        )
+            .into_response(),
+        FileOpError::ReservedArchiveName(name) => (
+            StatusCode::BAD_REQUEST,
+            format!("File name is reserved for archives: {name}"),
+        )
+            .into_response(),
+        _ => (StatusCode::BAD_REQUEST, "Invalid file name").into_response(),
+    }
+}
+
+/// Apply the canonical-name rule to a web request's file name.
+///
+/// The web is a forgiving surface, so the caller's name is trimmed first;
+/// the stored name is that trimmed result. What remains is then held to
+/// the same rule every `FileOps` entry point enforces (#10549, #10573):
+/// rooted or drive-prefixed names, empty/`.`/`..` components, padded
+/// names, and the reserved archive namespace are refused with a 4xx
+/// instead of entering the tag/metadata namespace.
+fn canonical_web_name(name: &mut String) -> Result<(), Response> {
+    *name = name.trim().to_owned();
+    FileOps::validate_name(name).map_err(|err| name_rejection_response(&err))
+}
+
 /// Save the current editor document to the blob store.
 ///
 /// Converts the `ProseMirror` JSON to the appropriate format based on filename,
@@ -11,8 +44,11 @@ use super::*;
 /// Rate-limited: rejects saves within the cooldown period (default 5s) per file.
 pub(super) async fn save_handler(
     State(state): State<AppState>,
-    Json(req): Json<SaveRequest>,
+    Json(mut req): Json<SaveRequest>,
 ) -> Response {
+    if let Err(response) = canonical_web_name(&mut req.name) {
+        return response;
+    }
     tracing::info!(
         "[routes] save_handler: doc_id={}, name={}",
         req.doc_id,
@@ -211,13 +247,12 @@ pub(super) async fn save_handler(
 /// adds it as a blob, and creates a tag for it.
 pub(super) async fn new_file_handler(
     State(state): State<AppState>,
-    Json(req): Json<NewFileRequest>,
+    Json(mut req): Json<NewFileRequest>,
 ) -> Response {
-    tracing::info!("[routes] new_file_handler: name={}", req.name);
-
-    if req.name.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "File name cannot be empty").into_response();
+    if let Err(response) = canonical_web_name(&mut req.name) {
+        return response;
     }
+    tracing::info!("[routes] new_file_handler: name={}", req.name);
 
     // #8407: creating a name that is already in use must conflict, not
     // silently replace the existing file's content with an empty blob.
@@ -447,11 +482,21 @@ pub(super) async fn upload_handler(
     }
 
     // Get filename from the field, or generate one. A supplied name is
-    // reconciled with the validated content type (#908) so it cannot
-    // masquerade as a different type than the bytes were checked as.
+    // reduced to its plain file-name form (#10585: clients can send
+    // `../../x.png` or `C:\fakepath\x.png`), reconciled with the validated
+    // content type (#908) so it cannot masquerade as a different type than
+    // the bytes were checked as, and then held to the canonical-name rule
+    // every `FileOps` entry point enforces.
     let ext = mime_to_extension(&content_type);
-    let filename = match field.file_name().map(ToOwned::to_owned) {
-        Some(name) if !name.trim().is_empty() => reconcile_upload_filename(&name, ext),
+    let filename = match field.file_name().map(normalize_upload_filename) {
+        Some(name) if !name.is_empty() => {
+            let filename = reconcile_upload_filename(name, ext);
+            if let Err(err) = FileOps::validate_name(&filename) {
+                tracing::info!("[routes] Rejected upload filename: {err}");
+                return name_rejection_response(&err);
+            }
+            filename
+        }
         _ => {
             let ts = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -635,60 +680,200 @@ pub(super) async fn upload_handler(
     .into_response()
 }
 
-/// List all uploaded images.
+/// Map independent image-list lookups concurrently while preserving input
+/// order for stable cursor pagination.
+fn bounded_image_lookups<T, S, F, Fut>(items: S, map: F) -> impl futures::Stream<Item = Fut::Output>
+where
+    S: futures::Stream<Item = T>,
+    F: FnMut(T) -> Fut,
+    Fut: std::future::Future,
+{
+    use futures::stream::StreamExt;
+
+    items.map(map).buffered(IMAGE_LOOKUP_CONCURRENCY)
+}
+
+/// List one bounded page of uploaded images.
 ///
-/// Scans blob tags for entries with image content-type metadata.
-/// Returns a JSON array of `ImageEntry` objects.
-pub(super) async fn images_list_handler(State(state): State<AppState>) -> Response {
-    use futures_lite::StreamExt;
+/// Scans blob tags for entries with image content-type metadata, bounding
+/// per-name lookups and blob-status reads. The opaque cursor resumes after the
+/// last returned tag name.
+pub(super) async fn images_list_handler(
+    State(state): State<AppState>,
+    Query(query): Query<ImageListQuery>,
+) -> Response {
+    use std::ops::Bound::{Excluded, Unbounded};
 
-    let mut images: Vec<ImageEntry> = Vec::new();
+    use base64::Engine as _;
+    use futures::stream::{self, StreamExt};
+    use iroh_blobs::api::tags::ListOptions;
 
-    // List all tags (named blobs) and filter to those with image content-types
-    let mut tags_stream = match state.store.tags().list().await {
-        Ok(s) => s,
+    const MAX_CURSOR_BYTES: usize = 4 * 1024;
+
+    let after = match query.after {
+        Some(encoded) => {
+            if encoded.len() > MAX_CURSOR_BYTES {
+                return (StatusCode::BAD_REQUEST, "Invalid image cursor").into_response();
+            }
+            match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded) {
+                Ok(cursor) if cursor.len() <= MAX_CURSOR_BYTES => Some(cursor),
+                _ => return (StatusCode::BAD_REQUEST, "Invalid image cursor").into_response(),
+            }
+        }
+        None => None,
+    };
+    let page_size = query
+        .limit
+        .unwrap_or(DEFAULT_IMAGE_PAGE_SIZE)
+        .clamp(1, MAX_IMAGE_PAGE_SIZE);
+
+    let options = match after.as_deref() {
+        Some(cursor) => {
+            let range: (std::ops::Bound<&[u8]>, std::ops::Bound<&[u8]>) =
+                (Excluded(cursor), Unbounded);
+            ListOptions::range::<_, &[u8]>(range)
+        }
+        None => ListOptions::all(),
+    };
+    let tags_stream = match state.store.tags().list_with_opts(options).await {
+        Ok(stream) => stream,
         Err(err) => {
             tracing::error!("[routes] Failed to list tags for images: {}", err);
-            return Json(images).into_response();
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
-    while let Some(Ok(tag_info)) = tags_stream.next().await {
-        let name = String::from_utf8_lossy(tag_info.name.as_ref()).to_string();
-        let hash_str = tag_info.hash.to_string();
 
-        // Skip internal tags
-        if id_store::tags::is_internal_tag(&name) {
-            continue;
-        }
-
-        // Check content-type metadata via tag store
-        let ct_tags = state
-            .tag_store
-            .get_by_key(&state.tag_store.global, name.as_bytes(), b"content-type")
-            .await
-            .unwrap_or_default();
-
-        let ct = ct_tags
-            .first()
-            .and_then(|t| t.value.as_ref())
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        if !ALLOWED_IMAGE_TYPES.contains(&ct) {
-            continue;
-        }
-
-        let url = format!("/blob/{hash_str}?filename={}", urlencoding::encode(&name));
-
-        images.push(ImageEntry {
-            hash: hash_str,
-            name,
-            url,
-            size: blob_size(&state.store, tag_info.hash).await,
-        });
+    struct Candidate {
+        name: String,
+        raw_name: Vec<u8>,
+        hash: iroh_blobs::Hash,
     }
 
-    Json(images).into_response()
+    // Each per-name metadata lookup is independent. Keep at most a small,
+    // explicit number in flight instead of awaiting them serially; `buffered`
+    // preserves tag order so the opaque cursor cannot skip entries.
+    let mut candidate_stream = bounded_image_lookups(tags_stream, |result| async {
+        let tag_info = result.map_err(|err| err.to_string())?;
+        let raw_name = tag_info.name.as_ref().to_vec();
+        let name = String::from_utf8_lossy(&raw_name).to_string();
+        if id_store::tags::is_internal_tag(&name) {
+            return Ok::<Option<Candidate>, String>(None);
+        }
+
+        let content_type_tags = state
+            .tag_store
+            .get_by_key(&state.tag_store.global, &raw_name, b"content-type")
+            .await
+            .map_err(|err| format!("{err:#}"))?;
+        let content_type = content_type_tags
+            .first()
+            .and_then(|tag| tag.value.as_ref())
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if !ALLOWED_IMAGE_TYPES.contains(&content_type) {
+            return Ok(None);
+        }
+
+        Ok(Some(Candidate {
+            name,
+            raw_name,
+            hash: tag_info.hash,
+        }))
+    });
+
+    let mut candidates = Vec::with_capacity(page_size + 1);
+    let mut next_cursor = None;
+    while let Some(result) = candidate_stream.next().await {
+        let candidate = match result {
+            Ok(Some(candidate)) => candidate,
+            Ok(None) => continue,
+            Err(err) => {
+                tracing::error!("[routes] Failed to read image metadata: {err}");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        };
+
+        if candidates.len() == page_size {
+            next_cursor = candidates.last().map(|candidate: &Candidate| {
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&candidate.raw_name)
+            });
+            break;
+        }
+        candidates.push(candidate);
+    }
+
+    // Blob status is needed only for this bounded page. `buffered` keeps the
+    // tag order while allowing several independent status RPCs in flight.
+    let images = stream::iter(candidates)
+        .map(|candidate| {
+            let store = state.store.clone();
+            async move {
+                let size = blob_size(&store, candidate.hash).await;
+                let hash = candidate.hash.to_string();
+                let url = format!(
+                    "/blob/{hash}?filename={}",
+                    urlencoding::encode(&candidate.name)
+                );
+                ImageEntry {
+                    hash,
+                    name: candidate.name,
+                    url,
+                    size,
+                }
+            }
+        })
+        .buffered(IMAGE_LOOKUP_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+
+    Json(ImageListResponse {
+        images,
+        next_cursor,
+    })
+    .into_response()
+}
+
+#[cfg(test)]
+mod image_lookup_tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use futures::stream::{self, StreamExt};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn image_lookups_are_parallel_but_bounded() {
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let max_in_flight = Arc::new(AtomicUsize::new(0));
+        let output = bounded_image_lookups(stream::iter(0..IMAGE_LOOKUP_CONCURRENCY * 2), {
+            let in_flight = in_flight.clone();
+            let max_in_flight = max_in_flight.clone();
+            move |item| {
+                let in_flight = in_flight.clone();
+                let max_in_flight = max_in_flight.clone();
+                async move {
+                    let current = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_in_flight.fetch_max(current, Ordering::SeqCst);
+                    tokio::task::yield_now().await;
+                    in_flight.fetch_sub(1, Ordering::SeqCst);
+                    item
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .await;
+
+        assert_eq!(
+            output,
+            (0..IMAGE_LOOKUP_CONCURRENCY * 2).collect::<Vec<_>>()
+        );
+        let observed = max_in_flight.load(Ordering::SeqCst);
+        assert!(observed > 1, "image metadata calls ran serially");
+        assert_eq!(observed, IMAGE_LOOKUP_CONCURRENCY);
+    }
 }
 
 /// Rename a file by changing its tag name.
@@ -806,6 +991,147 @@ pub(super) async fn copy_handler(
     }
 }
 
+/// Send one stored file to another server (`POST /api/files/send`, #5346).
+///
+/// The web adapter for the #5345 transfer: the request carries only
+/// references (file name, destination node ID), and this server performs
+/// the transfer itself through [`id_sync::transfer::send_file`] with its
+/// own endpoint identity — no bytes pass through the browser. Caller
+/// authorization is the web surface's own guard (the same one every
+/// file-mutation route sits behind); the destination authorizes *this
+/// server* under its write policy, exactly as for a CLI/REPL send, so an
+/// unallowlisted destination denies the registration and the send fails.
+/// Success is answered only from the transfer receipt, which exists
+/// only after the destination confirmed blob completion and name
+/// registration.
+pub(super) async fn send_file_handler(
+    State(state): State<AppState>,
+    Json(req): Json<SendFileRequest>,
+) -> Response {
+    let name = req.name.trim().to_owned();
+    if name.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "File name cannot be empty",
+                "reason": "empty_name",
+            })),
+        )
+            .into_response();
+    }
+    let dest_id: EndpointId = match req.dest.trim().parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "Destination must be a server node ID (64 hex characters)",
+                    "reason": "invalid_dest",
+                })),
+            )
+                .into_response();
+        }
+    };
+    let dest_name = req
+        .dest_name
+        .map(|n| n.trim().to_owned())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| name.clone());
+    tracing::info!(
+        "[routes] send_file_handler: name={}, dest={}, dest_name={}, replace={}",
+        name,
+        dest_id,
+        dest_name,
+        req.replace
+    );
+    let Some(endpoint) = state.transfer_endpoint.clone() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "This server cannot initiate server-to-server transfers (no endpoint configured)",
+                "reason": "transfer_unavailable",
+            })),
+        )
+            .into_response();
+    };
+    let hash = match state.store.tags().get(&name).await {
+        Ok(Some(tag)) => tag.hash,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": "File not found",
+                    "reason": "not_found",
+                })),
+            )
+                .into_response();
+        }
+        Err(err) => {
+            tracing::error!("[routes] send lookup failed for '{name}': {err}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "Failed to look up file",
+                    "reason": "lookup_failed",
+                })),
+            )
+                .into_response();
+        }
+    };
+    match id_sync::transfer::send_file(
+        &state.store,
+        &endpoint,
+        iroh::EndpointAddr::from(dest_id),
+        &name,
+        hash,
+        &dest_name,
+        req.replace,
+    )
+    .await
+    {
+        Ok(receipt) => {
+            tracing::info!(
+                "[routes] File sent: {} -> {}:{}, hash={}, already_present={}, replaced={}",
+                name,
+                receipt.dest,
+                receipt.dest_name,
+                receipt.hash,
+                receipt.already_present,
+                receipt.replaced
+            );
+            Json(SendFileResponse {
+                name,
+                dest_name: receipt.dest_name,
+                dest: receipt.dest.to_string(),
+                hash: receipt.hash.to_string(),
+                already_present: receipt.already_present,
+                replaced: receipt.replaced,
+            })
+            .into_response()
+        }
+        Err(err) => {
+            let message = format!("{err:#}");
+            // The transfer module refuses a conflicting destination name
+            // before moving any bytes; that refusal is the caller's to
+            // resolve (retry with replacement), not a server fault.
+            let (status, reason) = if message.contains("refusing to replace") {
+                (StatusCode::CONFLICT, "conflict")
+            } else {
+                (StatusCode::BAD_GATEWAY, "transfer_failed")
+            };
+            tracing::warn!("[routes] send of '{name}' to {dest_id} failed: {message}");
+            (
+                status,
+                Json(serde_json::json!({
+                    "error": message,
+                    "reason": reason,
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
 /// Download the current editor content in the requested format.
 ///
 /// Supports two formats:
@@ -885,13 +1211,12 @@ pub(super) async fn download_handler(Json(req): Json<DownloadRequest>) -> Respon
 /// Request body for soft-deleting or hard-deleting a file.
 pub(super) async fn delete_handler(
     State(state): State<AppState>,
-    Json(req): Json<DeleteRequest>,
+    Json(mut req): Json<DeleteRequest>,
 ) -> Response {
-    tracing::info!("[routes] delete_handler: name={}", req.name);
-
-    if req.name.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "File name cannot be empty").into_response();
+    if let Err(response) = canonical_web_name(&mut req.name) {
+        return response;
     }
+    tracing::info!("[routes] delete_handler: name={}", req.name);
 
     // Verify the file exists
     match state.store.tags().get(&req.name).await {
@@ -936,22 +1261,38 @@ pub(super) async fn delete_handler(
 /// Restore a soft-deleted file by removing the "deleted" tag.
 pub(super) async fn restore_handler(
     State(state): State<AppState>,
-    Json(req): Json<DeleteRequest>,
+    Json(mut req): Json<DeleteRequest>,
 ) -> Response {
+    if let Err(response) = canonical_web_name(&mut req.name) {
+        return response;
+    }
     tracing::info!("[routes] restore_handler: name={}", req.name);
 
-    if req.name.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "File name cannot be empty").into_response();
+    // Verify the file exists, distinguishing an absent file from a lookup error.
+    match state.store.tags().get(&req.name).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return (StatusCode::NOT_FOUND, "File not found").into_response(),
+        Err(err) => {
+            tracing::error!("[routes] Failed to look up tag: {}", err);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to look up file").into_response();
+        }
     }
 
-    // Remove the "deleted" tag (all values for this key)
-    if let Err(err) = state
+    // Remove the "deleted" tag (all values for this key).
+    let removed = match state
         .tag_store
         .del_by_key(&state.tag_store.global, req.name.as_bytes(), b"deleted")
         .await
     {
-        tracing::error!("[routes] Failed to remove deleted tag: {}", err);
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to restore file").into_response();
+        Ok(removed) => removed,
+        Err(err) => {
+            tracing::error!("[routes] Failed to remove deleted tag: {}", err);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to restore file").into_response();
+        }
+    };
+
+    if removed == 0 {
+        return (StatusCode::CONFLICT, "File is not deleted").into_response();
     }
 
     tracing::info!("[routes] File restored: name={}", req.name);
@@ -969,8 +1310,11 @@ pub(super) async fn restore_handler(
 /// The blob data itself may be garbage-collected later by iroh-blobs.
 pub(super) async fn hard_delete_handler(
     State(state): State<AppState>,
-    Json(req): Json<DeleteRequest>,
+    Json(mut req): Json<DeleteRequest>,
 ) -> Response {
+    if let Err(response) = canonical_web_name(&mut req.name) {
+        return response;
+    }
     tracing::info!("[routes] hard_delete_handler: name={}", req.name);
     let ops = FileOps::new(&state.store, &state.tag_store);
     match ops.delete(&req.name).await {
@@ -989,6 +1333,9 @@ pub(super) async fn hard_delete_handler(
         }
         Err(FileOpError::EmptyName) => {
             (StatusCode::BAD_REQUEST, "File name cannot be empty").into_response()
+        }
+        Err(err @ (FileOpError::InvalidName(_) | FileOpError::ReservedArchiveName(_))) => {
+            name_rejection_response(&err)
         }
         Err(err) => {
             tracing::error!("[routes] hard delete failed: {err}");
@@ -1075,7 +1422,7 @@ pub(super) fn convert_doc_to_bytes(name: &str, doc: &serde_json::Value) -> Resul
 /// non-empty, otherwise nothing; a `footnote_reference` contributes
 /// `[^<label>]` when its label is non-empty. A `front_matter` block
 /// contributes its `text` attr verbatim (#5639).
-pub(super) fn extract_plain_text(doc: &serde_json::Value) -> String {
+pub(crate) fn extract_plain_text(doc: &serde_json::Value) -> String {
     let mut lines = Vec::new();
     if let Some(content) = doc.get("content").and_then(|c| c.as_array()) {
         collect_plain_text_lines(content, &mut lines);
@@ -1292,5 +1639,290 @@ pub(super) async fn archive_original_tag(
             tracing::error!("[routes] Failed to create archive tag: {}", err);
             None
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod send_file_tests {
+    use std::sync::Arc;
+
+    use axum::{body::to_bytes, extract::State};
+    use iroh::address_lookup::memory::MemoryLookup;
+    use iroh::endpoint::{Endpoint, RelayMode, presets};
+    use iroh::protocol::Router;
+    use iroh_blobs::{BlobsProtocol, api::Store, store::mem::MemStore};
+    use iroh_docs::protocol::Docs;
+    use iroh_gossip::net::Gossip;
+
+    use super::*;
+    use crate::AppState;
+
+    /// An `AppState` over an in-memory store, on `endpoint`, with that
+    /// endpoint wired in as the transfer identity (as `id serve` does).
+    async fn state_on(endpoint: Endpoint, ns: &str) -> (AppState, Store, Docs) {
+        let store: Store = MemStore::new().into();
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let docs = Docs::memory()
+            .spawn(endpoint.clone(), store.clone(), gossip)
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let tags = Arc::new(
+            TagStore::init_in(&docs, ns, dir.path().join("meta"))
+                .await
+                .unwrap(),
+        );
+        let mut state = AppState::new(
+            store.clone(),
+            None,
+            ns.to_owned(),
+            tags,
+            [7; 32],
+            dir.path().join(".identity.redb"),
+        )
+        .await
+        .unwrap();
+        state.set_transfer_endpoint(Some(endpoint));
+        (state, store, docs)
+    }
+
+    async fn plain_endpoint() -> Endpoint {
+        Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap()
+    }
+
+    async fn put_named(store: &Store, name: &str, data: &[u8]) -> iroh_blobs::Hash {
+        let outcome = store.blobs().add_bytes(data.to_vec()).await.unwrap();
+        store
+            .tags()
+            .set(iroh_blobs::api::Tag::from(name.to_owned()), outcome.hash)
+            .await
+            .unwrap();
+        outcome.hash
+    }
+
+    async fn send(state: AppState, name: &str, dest: &str, replace: bool) -> Response {
+        send_file_handler(
+            State(state),
+            Json(SendFileRequest {
+                name: name.to_owned(),
+                dest: dest.to_owned(),
+                dest_name: None,
+                replace,
+            }),
+        )
+        .await
+    }
+
+    async fn response_json(response: Response) -> serde_json::Value {
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
+    }
+
+    const SOME_NODE: &str = "abababababababababababababababababababababababababababababababab";
+
+    #[tokio::test]
+    async fn empty_name_is_a_400() {
+        let (state, _store, _docs) = state_on(plain_endpoint().await, "send-t-empty").await;
+        let response = send(state, "  ", SOME_NODE, false).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response_json(response).await["reason"], "empty_name");
+    }
+
+    #[tokio::test]
+    async fn invalid_destination_is_a_400() {
+        let (state, _store, _docs) = state_on(plain_endpoint().await, "send-t-dest").await;
+        let response = send(state, "report.txt", "not-a-node-id", false).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(response_json(response).await["reason"], "invalid_dest");
+    }
+
+    #[tokio::test]
+    async fn no_transfer_endpoint_is_a_503() {
+        let endpoint = plain_endpoint().await;
+        let dest = endpoint.id().to_string();
+        let (mut state, _store, _docs) = state_on(endpoint, "send-t-noep").await;
+        state.set_transfer_endpoint(None);
+        let response = send(state, "report.txt", &dest, false).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response_json(response).await["reason"],
+            "transfer_unavailable"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_file_is_a_404() {
+        let endpoint = plain_endpoint().await;
+        let dest = endpoint.id().to_string();
+        let (state, _store, _docs) = state_on(endpoint, "send-t-404").await;
+        let response = send(state, "nope.txt", &dest, false).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response_json(response).await["reason"], "not_found");
+    }
+
+    /// A destination node serving the meta + blobs protocols with a
+    /// write policy admitting only `allowed` — the in-process half of
+    /// the two-server probe, mirroring `LocalNode::serve`.
+    struct DestNode {
+        endpoint: Endpoint,
+        store: Store,
+        router: Router,
+        _docs: Docs,
+    }
+
+    async fn dest_node(lookup: &MemoryLookup, allowed: EndpointId, ns: &str) -> DestNode {
+        let endpoint = plain_endpoint().await;
+        let store: Store = MemStore::new().into();
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let docs = Docs::memory()
+            .spawn(endpoint.clone(), store.clone(), gossip)
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let tags = Arc::new(
+            TagStore::init_in(&docs, ns, dir.path().join("meta"))
+                .await
+                .unwrap(),
+        );
+        let access = id_core::access::AccessPolicy::restricted([allowed]);
+        let mut meta = id_sync::protocol::MetaProtocol::new(
+            &store,
+            None,
+            tags,
+            access.clone(),
+            endpoint.id(),
+            None,
+        );
+        if let Some(inner) = Arc::get_mut(&mut meta) {
+            inner.endpoint = Some(endpoint.clone());
+        }
+        let blobs = BlobsProtocol::new(&store, Some(id_core::access::blobs_events(access)));
+        let router = Router::builder(endpoint.clone())
+            .accept(id_sync::protocol::META_ALPN, meta)
+            .accept(iroh_blobs::ALPN, blobs)
+            .spawn();
+        lookup.add_endpoint_info(endpoint.addr());
+        DestNode {
+            endpoint,
+            store,
+            router,
+            _docs: docs,
+        }
+    }
+
+    #[tokio::test]
+    async fn send_through_the_handler_copies_the_file_and_retries_safely() {
+        let lookup = MemoryLookup::new();
+        let source_endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .address_lookup(lookup.clone())
+            .bind()
+            .await
+            .unwrap();
+        let source_id = source_endpoint.id();
+        let (state, source_store, _docs) = state_on(source_endpoint, "send-t-source").await;
+        let dest = dest_node(&lookup, source_id, "send-t-destnode").await;
+        let dest_id = dest.endpoint.id().to_string();
+
+        // Success: the receipt exists only after the destination
+        // confirmed, and the destination now names the hash.
+        let hash = put_named(&source_store, "report.txt", b"hello web send").await;
+        let response = send(state.clone(), "report.txt", &dest_id, false).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["name"], "report.txt");
+        assert_eq!(body["dest_name"], "report.txt");
+        assert_eq!(body["dest"], dest_id);
+        assert_eq!(body["hash"], hash.to_string());
+        assert_eq!(body["already_present"], false);
+        assert_eq!(
+            dest.store
+                .tags()
+                .get("report.txt")
+                .await
+                .unwrap()
+                .map(|t| t.hash),
+            Some(hash)
+        );
+        // The source is untouched: a send is a copy, never a move.
+        assert_eq!(
+            source_store
+                .tags()
+                .get("report.txt")
+                .await
+                .unwrap()
+                .map(|t| t.hash),
+            Some(hash)
+        );
+
+        // Retry of the same send is idempotent, not a conflict.
+        let response = send(state.clone(), "report.txt", &dest_id, false).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["already_present"], true);
+
+        // Conflict refuses by default (409, destination untouched) and
+        // an explicit replacement archives and lands.
+        let new_hash = put_named(&source_store, "data.bin", b"new content").await;
+        let old_hash = put_named(&dest.store, "data.bin", b"old content").await;
+        let response = send(state.clone(), "data.bin", &dest_id, false).await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            dest.store
+                .tags()
+                .get("data.bin")
+                .await
+                .unwrap()
+                .map(|t| t.hash),
+            Some(old_hash)
+        );
+        let response = send(state.clone(), "data.bin", &dest_id, true).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["replaced"], true);
+        assert_eq!(
+            dest.store
+                .tags()
+                .get("data.bin")
+                .await
+                .unwrap()
+                .map(|t| t.hash),
+            Some(new_hash)
+        );
+
+        dest.router.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn unallowlisted_destination_denies_the_send() {
+        let lookup = MemoryLookup::new();
+        let source_endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .address_lookup(lookup.clone())
+            .bind()
+            .await
+            .unwrap();
+        let (state, source_store, _docs) = state_on(source_endpoint, "send-t-denied-source").await;
+        // The destination admits a different writer, not this server.
+        let other = plain_endpoint().await;
+        let dest = dest_node(&lookup, other.id(), "send-t-denied-dest").await;
+        put_named(&source_store, "report.txt", b"not for you").await;
+
+        let response = send(state, "report.txt", &dest.endpoint.id().to_string(), false).await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            dest.store
+                .tags()
+                .get("report.txt")
+                .await
+                .unwrap()
+                .map(|t| t.hash),
+            None
+        );
+
+        dest.router.shutdown().await.unwrap();
     }
 }

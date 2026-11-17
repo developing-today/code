@@ -3,7 +3,8 @@
 //! A search takes a name and a [`ValueMatch`], and returns each subject that has a live claim
 //! matching them, as [`Hit`]s. It is a thin query: the live set comes from
 //! [`EventStore::tag_claims`], and the answer from the [`TagIndex`] built over it. The index is
-//! rebuilt on each call, as [`EventStore::tag_index`] rebuilds it (#183). Nothing is persisted here.
+//! rebuilt on each call over the live claims; the claims fold under it is the persisted one
+//! (#183): `tag_claims` serves its persisted fold while the fold's input fingerprint holds.
 //!
 //! A value matches as a whole field. The tuple encoding ends every field with `00 00`, so the value
 //! `a` does not match `a\0b`, and the name `a` does not match `a\0b` either. The design's "prefix"

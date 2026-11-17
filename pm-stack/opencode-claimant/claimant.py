@@ -13,8 +13,15 @@ It handles:
 Mode: shadow (default) or live (read from ~/.local/state/opencode-claimant/mode)
 
 Usage: python3 pm-stack/opencode-claimant/claimant.py
+
+Argument contract (#3352, doc/agents/operator-script-argument-contract.md):
+this script takes NO command-line arguments. The command line is parsed
+strictly (argparse) before any file read, subprocess, network, claim, or
+launch step; any argument at all (including --help and unknown flags) is
+a usage error with exit 2.
 """
 
+import argparse
 import base64
 import json
 import os
@@ -164,17 +171,45 @@ LAUNCHED_BY_RECOVERY_GONE_SESSION = "opencode-claimant-recovery:gone-session"
 
 
 def read_mode() -> str:
-    """Read the execution mode from the mode file."""
+    """Read the execution mode from the mode file.
+
+    Fail-safe default (#10141, close-authority program #10136 P5):
+    a missing, unreadable, or invalid mode file still defaults to
+    "shadow" — the non-mutating behaviour is the right safety
+    default — but it is NEVER silent about it. Before #10141 a
+    missing file was indistinguishable from an intentional shadow
+    and summit dispatch stalled on it with no signal anywhere; now
+    every such read logs a loud CLAIMANT-MODE-WARNING line, and the
+    aggregator's host-health watchdog surfaces the same fact as a
+    needs-attention tier item.
+    """
     if not MODE_FILE.exists():
+        print(
+            f"CLAIMANT-MODE-WARNING (#10141): mode file {MODE_FILE} is MISSING "
+            "- defaulting to shadow; dispatch will return mode_not_live and "
+            "stall until the file is restored with the intended mode.",
+            file=sys.stderr,
+        )
         return "shadow"
 
     try:
-        mode = MODE_FILE.read_text().strip().lower()
-        if mode in ("shadow", "live"):
-            return mode
+        raw = MODE_FILE.read_text()
+    except Exception as exc:
+        print(
+            f"CLAIMANT-MODE-WARNING (#10141): mode file {MODE_FILE} is "
+            f"UNREADABLE ({exc}) - defaulting to shadow.",
+            file=sys.stderr,
+        )
         return "shadow"
-    except Exception:
-        return "shadow"
+    mode = raw.strip().lower()
+    if mode in ("shadow", "live"):
+        return mode
+    print(
+        f"CLAIMANT-MODE-WARNING (#10141): mode file {MODE_FILE} content "
+        f"{raw.strip()[:40]!r} is not live|shadow - defaulting to shadow.",
+        file=sys.stderr,
+    )
+    return "shadow"
 
 
 def ensure_state_dir() -> None:
@@ -266,10 +301,13 @@ def _load_poll_module():
 
 
 def get_active_root_session_count() -> int:
-    """Get the count of active root sessions from the OpenCode server.
+    """Get the count of active CLAIMANT root sessions from the OpenCode
+    server.
 
     Delegates to poll.py: fetch the session list and the server's
-    active set, then count_active_roots over both. Returns -1
+    active set, then count_active_claimant_roots over both — scheduled
+    fleet sessions (lane runners, the claimant's own fire) are outside
+    the cap per ruling `session-cap-5016` (#5016). Returns -1
     (unknown) when either read fails, so cap_step fails closed."""
     try:
         poll = _load_poll_module()
@@ -279,7 +317,9 @@ def get_active_root_session_count() -> int:
         active_ids = poll.fetch_active_ids()
         if active_ids is None:
             return -1  # Unknown
-        count = poll.count_active_roots(sessions, int(time.time() * 1000), active_ids)
+        count = poll.count_active_claimant_roots(
+            sessions, int(time.time() * 1000), active_ids
+        )
         return -1 if count is None else count
     except Exception as e:
         print(f"Warning: Could not get active session count: {e}")
@@ -953,5 +993,25 @@ def main():
     return 0
 
 
+def parse_args(argv):
+    """Strictly parse the (empty) declared command line (#3352).
+
+    claimant.py takes no arguments: anything on the command line is
+    unaccounted for and argparse exits 2 with a usage error. --help is
+    disabled (add_help=False) so it is rejected the same way instead of
+    exiting 0.
+    """
+    parser = argparse.ArgumentParser(
+        prog="claimant.py",
+        add_help=False,
+        allow_abbrev=False,
+        description="OpenCode lane claimant/executor. Takes no arguments.",
+    )
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
+    # Strict parse first: a usage error (exit 2) must precede every
+    # file read, subprocess, network, claim, and launch step in main().
+    parse_args(sys.argv[1:])
     sys.exit(main())

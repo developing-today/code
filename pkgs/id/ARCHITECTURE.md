@@ -226,12 +226,12 @@ stays behind its own port boundary.
 
 ### Seam-map classification
 
-| Port | Owning crate / seam (consumer-owned files) | Concrete types | Backing storage | Authority |
-| ---- | ------------------------------------------ | -------------- | --------------- | --------- |
-| blob | `id-store` — `crates/id-store/src/store.rs` | `StoreType` (`Persistent(FsStore)` / `Ephemeral(MemStore)`), `StoreType::as_store()` | iroh-blobs file store: redb metadata plus blob data files under `.iroh-store/` (`STORE_PATH`); `MemStore` in memory | content-addressed blob bytes and name-to-hash tags |
-| event | `id-events` — `crates/id-events/src/event_store/mod.rs` | `EventStore`, behind the `Storage` / `FileStorage` file seam | one separate redb file per store directory | signed event log: chains, heads, fork proofs, waiting pool |
-| world | `id-worlds` — `crates/id-worlds/src/world_store.rs` | `FileJournal`, `ModuleDir` | fsynced `journal.jsonl` plus content-addressed `modules/<blake3>.wasm` | durable world state: journal replay and installed modules |
-| sync | `id-sync` — `crates/id-sync/src/envelope_outbox.rs`, `crates/id-sync/src/log_sync.rs` | `Outbox`, `SyncProtocol` | append-only outbox journal file, replayed on open | pending envelope delivery only; no stored-data authority |
+| Port  | Owning crate / seam (consumer-owned files)                                            | Concrete types                                                                       | Backing storage                                                                                                     | Authority                                                  |
+| ----- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| blob  | `id-store` — `crates/id-store/src/store.rs`                                           | `StoreType` (`Persistent(FsStore)` / `Ephemeral(MemStore)`), `StoreType::as_store()` | iroh-blobs file store: redb metadata plus blob data files under `.iroh-store/` (`STORE_PATH`); `MemStore` in memory | content-addressed blob bytes and name-to-hash tags         |
+| event | `id-events` — `crates/id-events/src/event_store/mod.rs`                               | `EventStore`, behind the `Storage` / `FileStorage` file seam                         | one separate redb file per store directory                                                                          | signed event log: chains, heads, fork proofs, waiting pool |
+| world | `id-worlds` — `crates/id-worlds/src/world_store.rs`                                   | `FileJournal`, `ModuleDir`                                                           | fsynced `journal.jsonl` plus content-addressed `modules/<blake3>.wasm`                                              | durable world state: journal replay and installed modules  |
+| sync  | `id-sync` — `crates/id-sync/src/envelope_outbox.rs`, `crates/id-sync/src/log_sync.rs` | `Outbox`, `SyncProtocol`                                                             | append-only outbox journal file, replayed on open                                                                   | pending envelope delivery only; no stored-data authority   |
 
 Non-authority is part of the boundary: the event store decides nothing
 about blob bytes, the world journal decides nothing about event-log
@@ -256,7 +256,7 @@ Compatibility adapters that exist today, each confined to one port:
 
 - **Blob:** `StoreType::as_store()` is the compatibility adapter over
   iroh-blobs `FsStore`/`MemStore`, yielding one iroh-blobs `Store`
-  handle. It unifies two backends of the *same* blob port only.
+  handle. It unifies two backends of the _same_ blob port only.
 - **Event:** `id-store::store_traits::EventStoreBackend`, implemented
   by `SharedEventStore<S>`, adapts the event store for in-fleet
   consumers. Event authority stays in `id-events`; the trait is a

@@ -47,6 +47,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use futures::{SinkExt, StreamExt};
 use id_core::frames::MAX_FRAME_BYTES;
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast::Receiver;
 
 use super::AppState;
 use id_store::tags::{CustomNamespace, NamespacePair, Tag, TagStore};
@@ -210,6 +211,22 @@ pub async fn ws_tags_handler(
         .on_upgrade(move |socket| handle_tags_socket(socket, state))
 }
 
+enum TagBroadcastRead {
+    Event(id_store::tags::TagEvent),
+    Lagged(u64),
+    Closed,
+}
+
+async fn recv_tag_broadcast(receiver: &mut Receiver<id_store::tags::TagEvent>) -> TagBroadcastRead {
+    match receiver.recv().await {
+        Ok(event) => TagBroadcastRead::Event(event),
+        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+            TagBroadcastRead::Lagged(skipped)
+        }
+        Err(tokio::sync::broadcast::error::RecvError::Closed) => TagBroadcastRead::Closed,
+    }
+}
+
 /// Handle a tag WebSocket connection.
 ///
 /// Subscribes to the `TagStore` broadcast channel and forwards events
@@ -235,11 +252,11 @@ async fn handle_tags_socket(socket: axum::extract::ws::WebSocket, state: AppStat
     // reading any more, so the socket must close instead of lingering.
     loop {
         let received = tokio::select! {
-            received = rx.recv() => received,
+            received = recv_tag_broadcast(&mut rx) => received,
             _ = &mut drain_handle => break,
         };
         match received {
-            Ok(event) => {
+            TagBroadcastRead::Event(event) => {
                 let json = match serde_json::to_string(&event) {
                     Ok(j) => j,
                     Err(e) => {
@@ -251,10 +268,12 @@ async fn handle_tags_socket(socket: axum::extract::ws::WebSocket, state: AppStat
                     break; // Client disconnected.
                 }
             }
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                tracing::warn!("[tags_ws] Lagged {n} events, continuing");
+            TagBroadcastRead::Lagged(skipped) => {
+                tracing::warn!("[tags_ws] Lagged {skipped} events; closing to force client resync");
+                let _ = sender.send(Message::Close(None)).await;
+                break;
             }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+            TagBroadcastRead::Closed => {
                 break; // Channel closed (TagStore dropped).
             }
         }
@@ -701,5 +720,29 @@ mod tests {
             ),
             "oversized message was not rejected: {closed:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn broadcast_lag_is_classified_as_resync_required() {
+        use id_store::tags::TagEvent;
+
+        let (sender, mut receiver) = tokio::sync::broadcast::channel(1);
+        for subject in ["first.md", "second.md"] {
+            sender
+                .send(TagEvent::DelAll {
+                    ns: "global".to_owned(),
+                    subject: subject.to_owned(),
+                })
+                .unwrap();
+        }
+
+        assert!(matches!(
+            recv_tag_broadcast(&mut receiver).await,
+            TagBroadcastRead::Lagged(1)
+        ));
+        assert!(matches!(
+            recv_tag_broadcast(&mut receiver).await,
+            TagBroadcastRead::Event(TagEvent::DelAll { subject, .. }) if subject == "second.md"
+        ));
     }
 }

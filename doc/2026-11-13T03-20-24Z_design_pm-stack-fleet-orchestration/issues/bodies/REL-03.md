@@ -74,7 +74,8 @@ operation id + key/request digest and stable effect receipt shared by commands.
 - **P-R062 — design-only (candidate)**; occurrences `P-1486, P-1487, P-1488, P-1489`; full trace: census/requirements-crosswalk.jsonl
 - **P-R063 — design-only (candidate)**; occurrences `P-1490, P-1491, P-1492`; full trace: census/requirements-crosswalk.jsonl
 - **P-R068 — design-only (candidate)**; occurrences `P-1698, P-1699, P-1700, P-1701, P-1702, P-1703, P-1704`; full trace: census/requirements-crosswalk.jsonl
-Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+  Deliver this bounded slice only. It enables downstream work only after its stated contracts and prerequisites are accepted; it does not imply that other component specs, closed parent issues, source code, tests, deployments, or runtime behavior are complete.
+
 ## Owned files and boundaries
 
 - `pkgs/fleet/crates/fleet-queue/src/work/operations.rs`
@@ -89,9 +90,6 @@ Hard blockers named by the source slice, after granular-key normalization: CLI-0
 File-collision sequencing edges added by stable topological serialization: none.
 Existing issue references retained as non-blocking runtime/evidence gates: none.
 Domain-starter parent references are never emitted as hard native blockers. Source parents normalized to granular slices or runtime gates: #9206→CLI-02, #9198→CEN-04.
-
-
-
 
 Use only granular issue-key edges after all keys are resolved. Never make a whole domain starter a hard blocker when it creates a cycle. File collisions are hard sequencing edges. Parent integration adds native parent/blocker edges in a later pass after the command map, requirements IDs, and acyclic graph are verified.
 
@@ -135,13 +133,12 @@ Negative coverage: canonical request ordering changes digest, principal scope le
 
 **Tier:** crucial. **Goal:** operation id + key/request digest and stable effect receipt shared by commands. **Owns:** `src/work/contracts.rs` serialization fixtures and `src/work/operations.rs` idempotency model/tests; not main.rs/registry. **Hard blockers:** #9206 shared Command/Result schema; #9198 storage authority. **First failing oracle:** `pmo_rel_same_key_same_digest_replays_receipt` and `pmo_rel_same_key_different_digest_conflicts`. **Done command:** list both tests, then run `cargo test --manifest-path pkgs/fleet/Cargo.toml -p fleet-queue --lib --features client,queue-broker pmo_rel_same_key_`. **Negative:** canonical request ordering changes digest, principal scope leak, timeout after side effect. **Migration:** old operations remain legacy/unknown; no fabricated receipts. **Docs:** snake_case, authority/work pair, decimal integer encoding, principal authorization.
 
-
 ## Merged source-key/facade acceptance
 
 - `DSP-03` → `REL-03`: Webhook delivery and semantic action dedupe are merged into REL-03 operation identity; retain delivery-ID distinct from normalized command/idempotency digest. Exact command rows allocated here: agent.slash.retry, flag.dispatch-idempotency-key, github.events.since.
 
-
 ## Shared-file sequencing
 
 Added hard sequencing edges (the predecessor owns the same exact writable file):
+
 - blocked by `DSP-08` — `shared-file:pkgs/fleet/crates/fleet-queue/src/work/operations.rs`

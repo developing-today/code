@@ -17,6 +17,7 @@ license = "MIT OR Apache-2.0"
 
 [features]
 default = []
+sandbox = ["id-worlds/sandbox"]
 
 [dependencies]
 anyhow = "1"
@@ -33,6 +34,7 @@ id-groups = { path = "../id-groups", default-features = false }
 id-store = { path = "../id-store", default-features = false }
 id-sync = { path = "../id-sync", default-features = false }
 id-worlds = { path = "../id-worlds", default-features = false }
+iroh = "1"
 iroh-base = "1"
 iroh-blobs = "0.103"
 redb = "=4.3.0"
@@ -55,7 +57,10 @@ mime_guess = { version = "2" }
 futures = { version = "0.3.32" }
 comrak = { version = "0.56", default-features = false }
 urlencoding = { version = "2" }
-aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc"] }
+aes-gcm = { version = "0.11", default-features = false, features = [
+  "aes",
+  "alloc",
+] }
 hkdf = { version = "0.13" }
 qrcode = { version = "0.14.1", default-features = false }
 
@@ -67,6 +72,7 @@ id-core = { path = "../id-core", default-features = false, features = [
 # (world_hub::testing), as the facade test build did.
 id-worlds = { path = "../id-worlds", default-features = false, features = [
   "test-utils",
+  "sandbox",
 ] }
 iroh = "1"
 iroh-docs = "0.101"

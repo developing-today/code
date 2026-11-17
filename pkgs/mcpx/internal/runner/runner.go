@@ -76,6 +76,12 @@ type Options struct {
 	// Runtime is "auto", a kind (deno, bun, node), a name declared in
 	// Setup.Runtimes, or a path or binary name whose basename is a kind.
 	Runtime string
+	// Language is the explicit script-language selection for this run
+	// (script.language / --language / ExecOptions.language): auto,
+	// typescript, javascript or python. Empty means auto. It decides the
+	// language -- and so which generated client is installed -- when no
+	// shebang or configured interpreter dispatch decides first (#1917).
+	Language string
 	// Setup carries the configured runtimes, auto-detection order and
 	// permission profiles. The zero value means the built-ins.
 	Setup Setup
@@ -176,6 +182,11 @@ type Options struct {
 	ImportsNetwork string
 	// ImportsTimeout bounds the graph computation.
 	ImportsTimeout time.Duration
+	// Devshell selects the environment the script process runs inside
+	// (script.devshell): "" or "host" runs the runtime directly, and
+	// "flake:<ref>" wraps the spawn in `nix develop <ref> -c`. The CLI
+	// resolves the registry default into it.
+	Devshell       string
 	Stdout, Stderr interface{ Write([]byte) (int, error) }
 	// Stdin is what the script reads. Nil inherits the caller's, which is
 	// right for a terminal and wrong for a daemon: a script run on somebody
@@ -398,9 +409,57 @@ func (o Options) evidenceFile() string {
 }
 
 // Run generates the client, writes the script and executes it.
+// wrapDevshell applies the script.devshell setting to a spawn: "host"
+// (or empty) is the runtime command unchanged; "flake:<ref>" prefixes
+// `nix develop <ref> -c` so the runtime resolves inside the flake's
+// devshell. The environment the caller built is inherited by nix
+// develop unchanged, so MCPX_* values and script.env survive, with the
+// devshell's PATH taking precedence inside. A missing nix or an
+// unknown value is a loud error naming the setting — never a silent
+// host fallback.
+// devshellIsFlake reports whether the setting selects a flake devshell.
+func devshellIsFlake(devshell string) bool {
+	return strings.HasPrefix(devshell, "flake:")
+}
+
+// devshellSpawnName picks the command a spawn should invoke. Under a
+// flake devshell the shell owns command resolution, so the unresolved
+// invocation name is what must reach `nix develop -c`: handing it the
+// host-resolved absolute path would run the host's runtime version
+// inside the shell, defeating the pin (Codex review, PR #8381). On the
+// host the resolved binary is used exactly as before.
+func devshellSpawnName(devshell, bin, invoke string) string {
+	if devshellIsFlake(devshell) && invoke != "" {
+		return invoke
+	}
+	return bin
+}
+
+func wrapDevshell(devshell, bin string, args []string, lookPath func(string) (string, error)) (string, []string, error) {
+	switch {
+	case devshell == "" || devshell == "host":
+		return bin, args, nil
+	case strings.HasPrefix(devshell, "flake:"):
+		ref := strings.TrimPrefix(devshell, "flake:")
+		if ref == "" {
+			return "", nil, fmt.Errorf("script.devshell %q: the flake reference is empty", devshell)
+		}
+		nix, err := lookPath("nix")
+		if err != nil {
+			return "", nil, fmt.Errorf("script.devshell %q requires nix on PATH: %w", devshell, err)
+		}
+		return nix, append([]string{"develop", ref, "-c", bin}, args...), nil
+	default:
+		return "", nil, fmt.Errorf("script.devshell %q: want \"host\" or \"flake:<ref>\"", devshell)
+	}
+}
+
 func Run(ctx context.Context, opts Options) (*Result, error) {
 	if opts.Source == "" && opts.File == "" {
 		return nil, errors.New("runner: need Source or File")
+	}
+	if _, lerr := NormalizeLanguage(opts.Language); lerr != nil {
+		return nil, lerr
 	}
 	// Dispatch ranks 1-2 (#2167): a shebang or a configured interpreter
 	// runs the script under that interpreter, before any JavaScript
@@ -424,7 +483,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// harness path honours what the raw path preserves.
 		opts.Runtime = js.runtime
 		jsEnv = js
-	} else if ScriptLanguage(opts.evidenceFile(), opts.Source) == codegen.Python.Name {
+	} else if EffectiveScriptLanguage(opts.evidenceFile(), opts.Source, opts.Language) == codegen.Python.Name {
 		// Rank 3: nothing named an interpreter and the script is Python
 		// by extension, so the run is a Python harness run rather than a
 		// TypeScript one. Installing the client is the difference from a
@@ -447,11 +506,25 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		// review). The later block fills in Bin, and reports a runtime
 		// that is missing from both.
 		if jsEnv.runtime == "" {
-			return nil, err
-		}
-		rt, err = ResolveDeferred(jsEnv.runtime, opts.Permissions, opts.Setup)
-		if err != nil {
-			return nil, err
+			// A flake devshell may provide a runtime the host lacks:
+			// defer the lookup to the shell the same way the shebang
+			// case below defers it, so the run reaches the spawn and
+			// the shell's pinned runtime is what executes (Codex
+			// review, PR #8381). Only an explicit kind name can be
+			// deferred; auto order has no single name to hand the
+			// shell, so its error stands.
+			if !devshellIsFlake(opts.Devshell) {
+				return nil, err
+			}
+			rt, err = ResolveDeferred(opts.Runtime, opts.Permissions, opts.Setup)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			rt, err = ResolveDeferred(jsEnv.runtime, opts.Permissions, opts.Setup)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -709,7 +782,10 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 			rt.Bin = abs
 		}
 	}
-	if rt.Kind == KindNode {
+	if rt.Kind == KindNode && (!devshellIsFlake(opts.Devshell) || rt.Bin != rt.Invoke) {
+		// A devshell-deferred runtime has no host binary to probe: Bin
+		// is still the bare name the shell will resolve. Probing it
+		// here would fail the run before the shell gets its chance.
 		if err := checkNodeTransformTypes(rt.Bin); err != nil {
 			return nil, err
 		}
@@ -804,7 +880,11 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	// through to the script, so no "--" separator is needed.
 	args := append(rt.Args(scriptPath), opts.Args...)
 
-	cmd := exec.Command(rt.Bin, args...)
+	bin, cmdArgs, werr := wrapDevshell(opts.Devshell, devshellSpawnName(opts.Devshell, rt.Bin, rt.Invoke), args, exec.LookPath)
+	if werr != nil {
+		return nil, werr
+	}
+	cmd := exec.Command(bin, cmdArgs...)
 	// The script.cwd policy decides the working directory. The default,
 	// caller, inherits the caller's directory rather than the script's:
 	// a relative path in a script should mean what it means on the

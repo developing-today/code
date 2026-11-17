@@ -104,8 +104,12 @@ claimant = _load_sibling("claimant")
 STATE_DIR = claimant.STATE_DIR
 CLAIMANT_WORKER = "opencode-claimant"
 
+CODE_CHECKOUT = ("developing-today/code", "/home/user/git/code")
 REPOS = {
-    "repo-health-code-pilot": ("developing-today/code", "/home/user/git/code"),
+    # The one-queue broker uses the stream name verbatim. Its code stream
+    # shares a checkout with the legacy pilot, but not a broker queue key.
+    "code": CODE_CHECKOUT,
+    "repo-health-code-pilot": CODE_CHECKOUT,
     "repo-health-opencode-pilot": (
         "developing-today-forks/opencode",
         "/home/user/git/opencode",
