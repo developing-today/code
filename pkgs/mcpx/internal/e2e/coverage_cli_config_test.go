@@ -50,7 +50,7 @@ func TestCoverageCLIAPIListAndTools(t *testing.T) {
 func TestCoverageCLICompletion(t *testing.T) {
 	e := newEnv(t, "{}")
 	out := e.run("completion", "bash")
-	if !strings.Contains(out, "mcpx") || len(out) < 500 {
+	if !strings.Contains(out, "_mcpx() {") || !strings.Contains(out, "complete -o default -F _mcpx mcpx") {
 		t.Fatalf("completion bash produced no real script (%d bytes):\n%s", len(out), out)
 	}
 	if _, err := e.try("completion", "tcsh"); err == nil {
