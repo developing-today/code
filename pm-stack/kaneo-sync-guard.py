@@ -81,11 +81,14 @@ def main():
             if val in FORBIDDEN_TARGETS and key not in EXPECTED:
                 problems.append(f"{key} targets forbidden state {val!r}")
         format_bad = raw.strip() != json.dumps(
-            cfg, separators=(",", ":"), ensure_ascii=False)
+            cfg, separators=(",", ":"), ensure_ascii=False
+        )
         if format_bad:
-            problems.append("config text is not in JSON.stringify "
-                            "compact form (breaks outbound state sync; "
-                            "see KANEO-GITHUB-SYNC.md)")
+            problems.append(
+                "config text is not in JSON.stringify "
+                "compact form (breaks outbound state sync; "
+                "see KANEO-GITHUB-SYNC.md)"
+            )
         if not problems:
             print(f"OK {repo}: statusTransitions conform")
             continue
@@ -140,4 +143,12 @@ def main():
 
 
 if __name__ == "__main__":
+    # Argument contract (#3352): no command-line arguments; anything given
+    # is a usage error before any work runs.
+    if len(sys.argv) > 1:
+        print(
+            f"kaneo-sync-guard.py: unexpected argument {sys.argv[1]!r}; usage: python3 kaneo-sync-guard.py",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     sys.exit(main())

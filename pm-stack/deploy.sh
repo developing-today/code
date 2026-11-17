@@ -24,6 +24,15 @@
 # The stack itself binds 127.0.0.1:5173 and stores data in the Docker
 # named volume pm-stack_postgres_data on this host.
 set -euo pipefail
+# Argument contract (#3352): at most one command, deploy (the default),
+# render or restart; anything else is a usage error before any work.
+case "$#:${1-deploy}" in
+0:deploy | 1:deploy | 1:render | 1:restart) ;;
+*)
+  echo "$0: unexpected arguments '$*'; usage: $0 [deploy|render|restart]" >&2
+  exit 2
+  ;;
+esac
 
 cd "$(dirname "$0")"
 STACK_DIR="$PWD"

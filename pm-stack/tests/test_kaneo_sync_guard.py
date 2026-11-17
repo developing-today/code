@@ -48,13 +48,24 @@ class FakePsql:
     def __call__(self, sql):
         if sql.startswith("SELECT id ||"):
             return "\n".join(
-                f"{integ_id}\t{json.dumps(cfg)}" for integ_id, cfg in self.store.items()
+                # Stored text is Kaneo's JSON.stringify compact form
+                # (#10140); a spaced form is itself drift.
+                f"{integ_id}\t{json.dumps(cfg, separators=(',', ':'), ensure_ascii=False)}"
+                for integ_id, cfg in self.store.items()
             )
         if sql.startswith("UPDATE integration"):
             self.updates += 1
             if not self.apply_updates:
                 return ""
             integ_id = re.search(r"WHERE id='([^']+)'", sql).group(1)
+            if "jsonb_set(" not in sql:
+                # The compaction rewrite (#10140): the whole config, as
+                # compact JSON text, replaces the stored row.
+                raw = re.search(r"SET config = '(.*)' WHERE id=", sql, re.DOTALL).group(
+                    1
+                )
+                self.store[integ_id] = json.loads(raw)
+                return ""
             raw = re.search(
                 r"'\{statusTransitions\}', '(.*)'::jsonb", sql, re.DOTALL
             ).group(1)
