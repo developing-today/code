@@ -93,6 +93,28 @@ gateway API" silently assumes (a) works.
   stays open for the authorized-caller / per-consumer identity remainder;
   the invalid-token rejection alone does not close it.
 
+- **Status (2026-11-17, task 19760, issue #2300):** the remainder is now
+  **verified live**, and #2300 closes with this update. From the laptop, a
+  probe client connected to the tailnet gateway
+  (`ws://100.99.113.103:18789`) presenting the gateway token — fetched at
+  probe time from the secrets-manager entry named
+  `openclaw.gateway-token` and held only in the probe process's
+  environment (names and references only; no credential value was read
+  into any file, doc, or chat, and none is recorded here) — and completed
+  the gateway connect handshake (protocol v4; server version 2026.10.7),
+  then made an authorized `health` call, which returned ok. Two distinct
+  named caller identities were demonstrated in the same run: in this
+  gateway build the connect frame's `client.id` is the application class
+  (`gateway-client`), and the per-consumer identity is carried as
+  `client.instanceId` — the probe connected successfully as instanceId
+  `muse-gateway-client` (the first consumer named in the design decision
+  above) and as instanceId `fleet-verification-probe`, each with its own
+  authorized connect + `health` call. G2's decision is therefore met on
+  the tailnet bind: token authentication is enforced (invalid callers
+  rejected per the 2026-11-08 status) and authorized callers present a
+  named per-consumer identity. Future consumers follow the same shape:
+  the shared token by secret reference, plus their own `instanceId`.
+
 ### G3. The sandbox has no non-SSH route to the laptop
 
 The sandbox VM is not a tailnet node; its CONNECT proxy is SSH-only and
@@ -239,8 +261,11 @@ wrote it.
   reference; verify the tailnet bind requires it. Filed as a follow-up
   issue from this doc's PR pass: **#2300**.
   Status 2026-11-08: invalid-token rejection verified live on the tailnet
-  bind (close code 1008); #2300 stays open for the authorized-caller /
+  bind (close code 1008); #2300 stayed open for the authorized-caller /
   per-consumer identity remainder — see the G2 status note in §2.
+  Status 2026-11-17: that remainder is verified live (authorized connect
+  + `health` call under two distinct per-consumer `instanceId`s) and
+  #2300 is closed — see the G2 status note in §2.
 - **Sandbox tailnet route (G3):** join the sandbox VM to the tailnet (or
   record the stated refusal and fall back to a relay design) so the
   phase-2 direct-API path has a route. Filed as a follow-up issue: **#2301**.
