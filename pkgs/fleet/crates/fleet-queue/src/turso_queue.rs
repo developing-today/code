@@ -6274,6 +6274,12 @@ fn quarantine_recheck_one(t: &TursoBackend, row: &Value) -> Result<&'static str,
         }
         QuarantineRecheck::Release => {
             if !quarantine_transition(t, row, "queued", None)? {
+                // #10671 fairness: a guarded write that did not apply
+                // leaves the row as it is, so it rotates like the other
+                // no-write outcomes. Without the touch, rows whose
+                // provenance or lease keeps failing the guard pin the
+                // front of the window every pass.
+                touch_recheck_cursor(t, id)?;
                 return Ok("release_raced");
             }
             // No lease deletion: a quarantined row must be lease-free at
@@ -6294,6 +6300,7 @@ fn quarantine_recheck_one(t: &TursoBackend, row: &Value) -> Result<&'static str,
         QuarantineRecheck::StillQuarantined(reason) => {
             if reason != recorded {
                 if !quarantine_transition(t, row, "blocked", Some(&reason))? {
+                    touch_recheck_cursor(t, id)?;
                     return Ok("release_raced");
                 }
                 event(
@@ -6340,7 +6347,7 @@ pub fn run_quarantine_rechecks(t: &TursoBackend, limit: i64) -> Result<Value, TE
         &[],
         &TASK_JSON_COLS,
     )?;
-    let (mut checked, mut released, mut still_quarantined) = (0i64, 0i64, 0i64);
+    let (mut checked, mut released, mut still_quarantined, mut raced) = (0i64, 0i64, 0i64, 0i64);
     for row in &rows {
         match quarantine_recheck_one(t, row)? {
             "released" => {
@@ -6351,12 +6358,13 @@ pub fn run_quarantine_rechecks(t: &TursoBackend, limit: i64) -> Result<Value, TE
                 checked += 1;
                 still_quarantined += 1;
             }
+            "release_raced" => raced += 1,
             _ => {}
         }
     }
     Ok(json!({
         "checked": checked, "released": released,
-        "still_quarantined": still_quarantined,
+        "still_quarantined": still_quarantined, "raced": raced,
     }))
 }
 
@@ -9910,9 +9918,20 @@ mod tests {
         );
         assert_eq!(
             one.matches("touch_recheck_cursor(t, id)?;").count(),
-            2,
-            "both no-write outcomes rotate"
+            4,
+            "every no-write outcome rotates, a raced guarded write included (#10671)"
         );
+        assert_eq!(
+            one.matches("return Ok(\"release_raced\");").count(),
+            2,
+            "both guarded writes report a race"
+        );
+        for raced in one.split("return Ok(\"release_raced\");").take(2) {
+            assert!(
+                raced.trim_end().ends_with("touch_recheck_cursor(t, id)?;"),
+                "a raced guarded write rotates before it returns (#10671)"
+            );
+        }
         let touch = seg8217(
             src,
             "fn touch_recheck_cursor(",
