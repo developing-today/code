@@ -299,6 +299,19 @@ export interface TaskRequest {
   issue: boolean;
   issueNumber?: number;
   dedupeKey?: string;
+  /** #3418: optional minimum uninterrupted budget in minutes. */
+  requiredBudgetMinutes?: number;
+}
+
+/** Optional `required_budget_minutes` (#3418): when present it must
+ * be a positive integer — the minimum uninterrupted budget the
+ * enqueued task requires a claiming lane to declare. */
+export function parseRequiredBudgetMinutes(input: unknown): number | undefined {
+  if (input === undefined || input === null) return undefined;
+  if (typeof input !== "number" || !Number.isInteger(input) || input < 1) {
+    throw new ValidationError(`required_budget_minutes: must be a positive integer`);
+  }
+  return input;
 }
 
 /** Optional `issue_number`: when present it must be a positive integer —
@@ -336,6 +349,7 @@ export function parseTaskRequest(body: unknown): TaskRequest {
     issue: optBool(b, "issue", false),
     issueNumber: parseIssueNumber(b.issue_number),
     dedupeKey: optNonBlankString(b, "dedupe_key"),
+    requiredBudgetMinutes: parseRequiredBudgetMinutes(b.required_budget_minutes),
   };
 }
 

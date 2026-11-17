@@ -2045,8 +2045,8 @@ fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
         }
         let ins = t.exec(
             "INSERT INTO tasks (queue, title, body, payload, dedupe_key, priority, \
-               status, not_before, max_attempts, platform, progress, result, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, '{}', '{}', ?, ?)",
+               status, not_before, max_attempts, required_budget_minutes, platform, progress, result, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, '{}', '{}', ?, ?)",
             &[
                 Arg::Text(queue.clone()),
                 arg_str(task.get("title").and_then(|v| v.as_str())),
@@ -2066,6 +2066,16 @@ fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                     .unwrap_or(Arg::Int(
                         crate::validate::TASK_DEFAULT_MAX_ATTEMPTS as i64,
                     )),
+                // #3418: persist the effective requirement in the
+                // queryable column (task_from_packet selects
+                // packet > payload, absent in both = NULL =
+                // legacy claim behavior). The claim predicate
+                // COALESCEs column-then-payload, so this stamp
+                // and the payload mirror stay equivalent.
+                task.get("required_budget_minutes")
+                    .and_then(|v| v.as_i64())
+                    .map(Arg::Int)
+                    .unwrap_or(Arg::Null),
                 arg_str(platform.as_deref()),
                 Arg::Text(now.clone()),
                 Arg::Text(now),
@@ -4742,10 +4752,95 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
     })();
     match work {
         Ok(Some(row)) => ok(json!({"row": row})),
-        Ok(None) => ok(json!({"row": Value::Null})),
+        Ok(None) => {
+            // #3418 (#4712): surface the budget-skip summary on an
+            // empty default pick so impossible-fit work escalates
+            // instead of skipping silently forever. By-id and
+            // handoff picks name their row/mode, so no summary.
+            let mut resp = json!({"row": Value::Null});
+            if !handoff_pick && req_i64(req, "task_id").is_none() {
+                let summary =
+                    budget_skip_summary(t, &iso(now_unix()), &scope, remaining_budget_minutes);
+                if let Some(obj) = resp.as_object_mut() {
+                    if let Some(s) = summary.as_object() {
+                        for (k, v) in s {
+                            obj.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+            }
+            ok(resp)
+        }
         Err(e) if e.starts_with("claim_repo_task:") => fail(4, e),
         Err(e) => terr(e),
     }
+}
+
+/// #3418 (#4712): impossible-fit surfacing. When a default-pick
+/// claim finds no claimable row, count the otherwise-eligible rows
+/// skipped purely on budget and report the largest requirement
+/// seen, so a lane or orchestrator can escalate work no shift can
+/// fit instead of silently skipping it forever. The liveness
+/// predicate mirrors default_pick_predicate minus the budget gate
+/// (queued-due rows under the attempts cap; parked rows whose
+/// timer passed, plus capacity parks, which the budget bypass can
+/// take early). Scope (queue/filter/requirements) applies, so the
+/// summary describes exactly the stream this claim searched.
+/// #3418 (#4712): the impossible-fit summary query shape. Counts
+/// otherwise-eligible rows skipped purely on budget and reports the
+/// largest requirement seen. The liveness predicate mirrors
+/// default_pick_predicate minus the budget gate; scope applies so
+/// the summary describes exactly the stream the claim searched.
+fn budget_skip_sql(scope_sql: &str) -> String {
+    let req_expr = REQUIRED_BUDGET_EXPR;
+    format!(
+        "SELECT COUNT(*) AS n, MAX({req_expr}) AS m FROM tasks \
+         WHERE payload IS NOT NULL AND payload <> '' AND payload <> '{{}}' \
+         AND (((status = 'queued' AND attempts < max_attempts \
+           AND (not_before IS NULL OR not_before <= ?)) \
+         OR (status = 'parked' AND ((not_before IS NOT NULL AND not_before <= ?) \
+           OR wait_kind = 'capacity'))) \
+         AND {req_expr} IS NOT NULL \
+         AND {req_expr} > COALESCE(?, -1)){scope_sql}"
+    )
+}
+
+fn budget_skip_summary(
+    t: &TursoBackend,
+    now: &str,
+    scope: &ClaimScope,
+    remaining_budget_minutes: Option<i64>,
+) -> Value {
+    let sql = budget_skip_sql(&scope.sql);
+    let remaining_arg = match remaining_budget_minutes {
+        Some(v) => Arg::Int(v),
+        None => Arg::Null,
+    };
+    let mut args: Vec<Arg> = vec![
+        Arg::Text(now.to_string()),
+        Arg::Text(now.to_string()),
+        remaining_arg,
+    ];
+    for a in &scope.args {
+        args.push(a.clone());
+    }
+    let (n, m) = match t.query_objs(&sql, &args, &[]) {
+        Ok(rows) => {
+            let first = rows.into_iter().next();
+            let n = first
+                .as_ref()
+                .and_then(|r| r.get("n"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let m = first.and_then(|mut r| r.get_mut("m").map(|v| v.take()));
+            (n, m.unwrap_or(Value::Null))
+        }
+        Err(_) => return json!({}),
+    };
+    json!({
+        "budget_skipped": n,
+        "max_required_budget_minutes": m,
+    })
 }
 
 fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
@@ -6713,9 +6808,9 @@ fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
                         };
                         let ins = t.exec(
                             "INSERT INTO tasks (queue, title, body, payload, dedupe_key, \
-                               priority, status, max_attempts, progress, result, \
+                               priority, status, max_attempts, required_budget_minutes, progress, result, \
                                created_at, updated_at) \
-                             VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, '{}', ?, ?)",
+                             VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, '{}', ?, ?)",
                             &[
                                 Arg::Text(queue.clone()),
                                 arg_str(row.get("title").and_then(|v| v.as_str())),
@@ -6734,6 +6829,14 @@ fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
                                             crate::validate::TASK_DEFAULT_MAX_ATTEMPTS as i64,
                                         ),
                                 ),
+                                // #3418: fpayload clones the triage
+                                // source payload, so an explicit
+                                // requirement rides along here.
+                                fpayload
+                                    .get("required_budget_minutes")
+                                    .and_then(|v| v.as_i64())
+                                    .map(Arg::Int)
+                                    .unwrap_or(Arg::Null),
                                 Arg::Text(fprogress.to_string()),
                                 Arg::Text(now_iso()),
                                 Arg::Text(now_iso()),
@@ -8154,6 +8257,48 @@ mod tests {
         assert_eq!(park_required_budget(Some(30), &ci, &payload), Some(30));
         assert_eq!(park_required_budget(None, &capacity, &json!({})), None);
         assert_eq!(park_required_budget(Some(0), &capacity, &payload), None);
+    }
+
+    #[test]
+    fn enqueue_insert_stamps_required_budget_column_3418() {
+        // #3418 (#4712) oracle: the live enqueue INSERT persists the
+        // effective requirement in the queryable column (NULL when
+        // the packet declares none), and the triage follow-on
+        // INSERT carries the cloned payload's requirement the same
+        // way. Both inserts must name the column exactly once.
+        let src = include_str!("turso_queue.rs");
+        // Both INSERT sites name the column exactly once: the main
+        // enqueue INSERT and the triage follow-on INSERT below it
+        // (matched here by its distinct column list).
+        assert!(
+            src.contains("status, not_before, max_attempts, required_budget_minutes, platform"),
+            "main enqueue INSERT stamps the column"
+        );
+        assert!(
+            src.contains("max_attempts, required_budget_minutes, progress, result,"),
+            "triage follow-on INSERT stamps the column"
+        );
+    }
+
+    #[test]
+    fn budget_skip_summary_query_shape_3418() {
+        // #3418 (#4712) oracle: the impossible-fit summary counts
+        // otherwise-eligible rows whose effective requirement
+        // exceeds the claimer's declared budget, and reports the
+        // max. Placeholders: the two liveness `now`s, then the
+        // declared budget once. No `IS NULL` pass arm — a NULL
+        // requirement is not a skip.
+        let sql = budget_skip_sql(" AND queue = ?");
+        assert_eq!(sql.matches('?').count(), 4, "{sql}");
+        assert!(sql.contains("COUNT(*) AS n"), "{sql}");
+        assert!(sql.contains("MAX("), "{sql}");
+        assert!(sql.contains("wait_kind = 'capacity'"), "{sql}");
+        assert!(
+            sql.contains("json_extract(payload, '$.required_budget_minutes')"),
+            "{sql}"
+        );
+        assert!(!sql.contains("IS NULL OR COALESCE"), "{sql}");
+        assert!(sql.ends_with(" AND queue = ?"), "{sql}");
     }
 
     #[test]

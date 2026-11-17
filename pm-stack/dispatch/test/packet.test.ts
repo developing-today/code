@@ -73,4 +73,66 @@ describe("packet building", () => {
     expect(packet.payload.max_attempts).toBe(1000);
     expect(packet.payload.issue).toBeUndefined();
   });
+
+  test("#3418: explicit requiredBudgetMinutes is emitted and passes the self-check", () => {
+    const packet = buildPacket(
+      {
+        repo: "developing-today/code",
+        kind: "small_fix",
+        title: "long job",
+        prompt: "a job needing a full shift",
+        priority: 30,
+        caller,
+        model: null,
+        directory: "/home/user/git/code",
+        issue: { number: 4712, url: "https://github.com/developing-today/code/issues/4712" },
+        requiredBudgetMinutes: 120,
+      },
+      canonicalDedupeKey("small_fix", "developing-today/code", 4712)!,
+    );
+    expect(packet.payload.required_budget_minutes).toBe(120);
+    expect(validatePayload(packet.payload)).toEqual([]);
+  });
+
+  test("#3418: absent requiredBudgetMinutes emits nothing (legacy claim behavior)", () => {
+    const packet = buildPacket(
+      {
+        repo: "developing-today/code",
+        kind: "small_fix",
+        title: "short job",
+        prompt: "a normal job",
+        priority: 30,
+        caller,
+        model: null,
+        directory: "/home/user/git/code",
+        issue: { number: 4712, url: "https://github.com/developing-today/code/issues/4712" },
+      },
+      canonicalDedupeKey("small_fix", "developing-today/code", 4712)!,
+    );
+    expect("required_budget_minutes" in packet.payload).toBe(false);
+    expect(validatePayload(packet.payload)).toEqual([]);
+  });
+
+  test("#3418: a non-positive required_budget_minutes fails the self-check", () => {
+    const base = buildPacket(
+      {
+        repo: "developing-today/code",
+        kind: "small_fix",
+        title: "job",
+        prompt: "job",
+        priority: 30,
+        caller,
+        model: null,
+        directory: "/home/user/git/code",
+        issue: { number: 4712, url: "https://github.com/developing-today/code/issues/4712" },
+      },
+      canonicalDedupeKey("small_fix", "developing-today/code", 4712)!,
+    ).payload;
+    for (const bad of [0, -3, 1.5, "120"]) {
+      expect(validatePayload({ ...base, required_budget_minutes: bad })).toContain(
+        "payload.required_budget_minutes: must be a positive integer",
+      );
+    }
+    expect(validatePayload({ ...base, required_budget_minutes: 120 })).toEqual([]);
+  });
 });
