@@ -4655,7 +4655,7 @@ dependencies = [
  "postcard",
  "proptest",
  "rand 0.10.3",
- "redb 4.3.0",
+ "redb 4.6.0",
  "rpassword",
  "rusqlite",
  "russh",
@@ -4827,7 +4827,7 @@ dependencies = [
  "p2panda-auth",
  "p2panda-core",
  "proptest",
- "redb 4.3.0",
+ "redb 4.6.0",
  "serde",
  "serde_json",
  "tempfile",
@@ -4903,7 +4903,7 @@ dependencies = [
  "p2panda-store",
  "postcard",
  "proptest",
- "redb 4.3.0",
+ "redb 4.6.0",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -4983,7 +4983,7 @@ dependencies = [
  "proptest",
  "qrcode",
  "rand 0.10.3",
- "redb 4.3.0",
+ "redb 4.6.0",
  "rmp-serde",
  "rust-embed",
  "serde",
@@ -5269,7 +5269,7 @@ dependencies = [
  "postcard",
  "rand 0.10.3",
  "range-collections",
- "redb 4.3.0",
+ "redb 4.6.0",
  "ref-cast",
  "reflink-copy",
  "self_cell",
@@ -5329,7 +5329,7 @@ dependencies = [
  "postcard",
  "rand 0.10.3",
  "redb 3.1.3",
- "redb 4.3.0",
+ "redb 4.6.0",
  "self_cell",
  "serde",
  "serde-error",
@@ -8112,9 +8112,9 @@ dependencies = [
 
 [[package]]
 name = "redb"
-version = "4.3.0"
+version = "4.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb338a6c67830a61bed824b78c2bb034ab1ff401a20616bd7957524f4fdc2f22"
+checksum = "096b1dd5ec053c9c2a5a26a93aafeadf73ebcb710ea54dc3151f17a8e20535ef"
 dependencies = [
  "libc",
 ]

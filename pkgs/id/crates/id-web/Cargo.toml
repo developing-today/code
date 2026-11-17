@@ -37,7 +37,7 @@ id-worlds = { path = "../id-worlds", default-features = false }
 iroh = "1"
 iroh-base = "1"
 iroh-blobs = "0.103"
-redb = "=4.3.0"
+redb = "=4.6.0"
 rmp-serde = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
