@@ -1,5 +1,5 @@
 <!--
-  The home-page example component (#1876, Approach C stages 1-2).
+  The home-page example component (#1876, Approach C stages 1-3).
 
   This is a fragment for the docs site generator (#1874 owns the page,
   #1941 the site build) to include where the home page's example slot is.
@@ -13,14 +13,26 @@
   gets — the same fallback the issue specifies. With JS, the static block
   is replaced by an editable textarea, the Run and copy buttons appear,
   and Run executes the example in the page against the fake daemon,
-  clearly labelled as simulated.
+  clearly labelled as simulated. Stage 3 adds the opt-in "Run on my
+  machine" control: off by default; when the reader turns it on, Run
+  talks to their own local daemon instead (local-daemon.js), and the
+  label says so.
 -->
 <section class="mcpx-home-example" aria-label="Try mcpx in your browser">
-  <p class="mcpx-home-example-label">
+  <p class="mcpx-home-example-label mcpx-home-example-label-simulated">
     <strong>Simulated — runs in your browser.</strong>
     This example calls a mock <code>demo</code> server in this page, through the
     real generated mcpx client. No daemon, no install, nothing leaves the tab.
-    To run it for real, copy it as a command below.
+    To run it for real, copy it as a command below — or run it against your
+    own daemon with "Run on my machine".
+  </p>
+  <p class="mcpx-home-example-label mcpx-home-example-label-local" hidden>
+    <strong>Local daemon — runs on your machine.</strong>
+    This example calls the mcpx daemon at the address below, through the
+    real generated mcpx client. That daemon must be running, listen on a
+    fixed <code>daemon.port</code>, and list this site's origin in
+    <code>transport.allowedOrigins</code>; if it cannot be reached, the
+    output says what to check instead of failing silently.
   </p>
 
   <!-- Static fallback: shown as-is when JavaScript is unavailable. -->
@@ -37,6 +49,19 @@ console.log("demo.echo:", String(echoed));</code></pre>
     <span class="mcpx-home-example-visually-hidden">Editable example</span>
     <textarea rows="5" spellcheck="false"></textarea>
   </label>
+
+  <!-- Stage 3 opt-in: hidden until JS enables it, off by default,
+       and only ever switched by the reader's own action. -->
+  <div class="mcpx-home-example-local" hidden>
+    <label>
+      <input type="checkbox" data-action="local-toggle" />
+      Run on my machine — against my local mcpx daemon
+    </label>
+    <label class="mcpx-home-example-daemon-addr" hidden>
+      Daemon address
+      <input type="text" value="http://127.0.0.1:7432" size="24" />
+    </label>
+  </div>
 
   <div class="mcpx-home-example-actions" hidden>
     <button type="button" data-action="run">Run</button>
@@ -64,10 +89,28 @@ console.log("demo.echo:", String(echoed));</code></pre>
     const textarea = editorWrap.querySelector("textarea");
     const actions = root.querySelector(".mcpx-home-example-actions");
     const output = root.querySelector(".mcpx-home-example-output");
+    const localControls = root.querySelector(".mcpx-home-example-local");
+    const localToggle = localControls.querySelector(
+      '[data-action="local-toggle"]',
+    );
+    const addrWrap = root.querySelector(".mcpx-home-example-daemon-addr");
+    const addrInput = addrWrap.querySelector("input");
+    const simLabel = root.querySelector(
+      ".mcpx-home-example-label-simulated",
+    );
+    const localLabel = root.querySelector(".mcpx-home-example-label-local");
 
     textarea.value = source;
     editorWrap.hidden = false;
     actions.hidden = false;
+    localControls.hidden = false;
+
+    localToggle.addEventListener("change", () => {
+      const on = localToggle.checked;
+      addrWrap.hidden = !on;
+      simLabel.hidden = on;
+      localLabel.hidden = !on;
+    });
     root.querySelector(".mcpx-home-example-static").hidden = true;
 
     const copy = async (text) => {
@@ -95,9 +138,16 @@ console.log("demo.echo:", String(echoed));</code></pre>
         try {
           output.hidden = false;
           output.textContent = "";
-          await runExample(textarea.value, client, (line) => {
-            output.textContent += line + "\n";
-          });
+          await runExample(
+            textarea.value,
+            client,
+            (line) => {
+              output.textContent += line + "\n";
+            },
+            localToggle.checked
+              ? { transport: "local", daemonBase: addrInput.value }
+              : {},
+          );
         } finally {
           runButton.disabled = false;
         }
