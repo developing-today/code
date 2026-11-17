@@ -1,0 +1,32 @@
+name: note-submission
+
+on:
+  pull_request:
+    paths:
+      - "pkgs/note-submission/**"
+      - ".github/workflows/note-submission-pr.yml"
+  push:
+    branches: [main]
+    paths:
+      - "pkgs/note-submission/**"
+      - ".github/workflows/note-submission-pr.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: note-submission-${{ github.event_name == 'push' && github.run_id || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: "basic: note-submission package tests"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pkgs/note-submission -> target
+      - name: Test note-submission
+        run: cargo test --manifest-path pkgs/note-submission/Cargo.toml --all-targets --locked
