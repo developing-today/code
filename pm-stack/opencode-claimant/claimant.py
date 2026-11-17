@@ -34,10 +34,28 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
+def _required_home() -> Path:
+    """Home per the #5762 home-resolution contract (code#8221): a
+    non-empty HOME, or a named error -- never the passwd fallback
+    Path.home() applies when HOME is unset. The claimant is fired
+    programmatically (OpenChamber cron), a context with no HOME
+    guarantee, and every path anchored below is fleet state."""
+    home = os.environ.get("HOME")
+    if not home:
+        raise RuntimeError(
+            "HOME is unset or empty: opencode-claimant cannot resolve "
+            "its state paths (#5762 home-resolution contract)"
+        )
+    return Path(home)
+
+
+HOME_DIR = _required_home()
+
+
 # Constants
-MODE_FILE = Path.home() / ".local" / "state" / "opencode-claimant" / "mode"
-FIRES_FILE = Path.home() / ".local" / "state" / "opencode-claimant" / "fires.jsonl"
-STATE_DIR = Path.home() / ".local" / "state" / "opencode-claimant"
+MODE_FILE = HOME_DIR / ".local" / "state" / "opencode-claimant" / "mode"
+FIRES_FILE = HOME_DIR / ".local" / "state" / "opencode-claimant" / "fires.jsonl"
+STATE_DIR = HOME_DIR / ".local" / "state" / "opencode-claimant"
 
 QUEUES = [
     "repo-health-code-pilot",
@@ -50,8 +68,8 @@ QUEUES = [
 # (~/.local/bin/repo-queue -> ~/.local/bin/fleet); the hand-built
 # ~/fleet-brokers/bin tree was retired by the code#5362 cutover
 # (task 12731).
-REPO_QUEUE_CMD = Path.home() / ".local" / "bin" / "repo-queue"
-PRIMARY_CLONE = Path.home() / "git" / "code"
+REPO_QUEUE_CMD = HOME_DIR / ".local" / "bin" / "repo-queue"
+PRIMARY_CLONE = HOME_DIR / "git" / "code"
 
 # OpenCode server coordinates: the standing server requires HTTP
 # Basic auth (user "opencode", password in its state file — the same
@@ -60,7 +78,7 @@ PRIMARY_CLONE = Path.home() / "git" / "code"
 OPENCODE_URL = os.environ.get("OPENCODE_URL", "http://127.0.0.1:13420")
 AUTH_FILE = os.environ.get(
     "OPENCODE_AUTH_FILE",
-    os.path.expanduser("~/.local/state/opencode/service-prod.json"),
+    str(HOME_DIR / ".local/state/opencode/service-prod.json"),
 )
 
 
