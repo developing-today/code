@@ -27,11 +27,18 @@
 #       pm-stack-<date>.tar.zst archive. The directory is created before
 #       dumps run, so an empty fresh dir is not evidence of a backup.
 #       Hosts without this independent backup root skip the check.
+#   (e) when the state job is enabled, laptop-state-backup's success
+#       marker ($HOME/backups/restic/.laptop-state-last-success-epoch,
+#       an epoch written only after local + R2 + Drive all succeed)
+#       must exist and be fresher than the threshold, and its timer
+#       must have triggered within the threshold (via (b)). A timer
+#       that never fires writes no marker, so the stall that ran
+#       2026-11-02..2026-11-14 (code#10294) is named within a day.
 # repo-archive-backup is covered via its timer's last-trigger time
 # only: its script and restic credentials live outside this repo, so
 # no run record is required of it (stated in laptop-backups.nix too).
 # cold-store-nightly is covered via its timer's last-trigger time
-# PLUS completion evidence (e): its service's last Result must be
+# PLUS completion evidence (f): its service's last Result must be
 # success and the cold-store manifest's transfer ledger must hold a
 # fresh backup-upload row. A trigger alone cannot see the 2026-11-12
 # failure shape (code#9093): the timer fired and the service started,
@@ -42,8 +49,8 @@
 #   max-age-hours   (default 26, a little over one daily period; the
 #                   module option services.laptop-backups.watchdog
 #                   .maxAgeHours feeds this argument).
-#   jobs            comma-separated subset of dashboard,repo-archive,cold-store
-#                   (default both). The module passes only the jobs
+#   jobs            comma-separated subset of dashboard,repo-archive,state,opencode-db,cold-store
+#                   (default dashboard,repo-archive). The module passes only the jobs
 #                   whose enable flag is on: a disabled job has no
 #                   record and no timer, so requiring them would fail
 #                   the watchdog forever in a supported configuration.
@@ -107,6 +114,8 @@ fi
 timers=()
 want_job dashboard && timers+=(pm-dashboard-backup.timer)
 want_job repo-archive && timers+=(repo-archive-backup.timer)
+want_job state && timers+=(laptop-state-backup.timer)
+want_job opencode-db && timers+=(opencode-db-backup.timer)
 want_job cold-store && timers+=(cold-store-nightly.timer)
 for timer in "${timers[@]}"; do
   job="${timer%.timer}"
@@ -127,6 +136,30 @@ for timer in "${timers[@]}"; do
     complain "$job: timer $timer last triggered $((age / 3600))h ago (threshold ${MAX_AGE_HOURS}h)"
   fi
 done
+
+# --- (e) opencode-db success marker (completion evidence, code#10297) -------
+# opencode-db-backup.sh writes the epoch of its last fully successful
+# run (all three restic legs verified) to the marker; a stale, future,
+# unreadable or missing marker names the job, exactly like the
+# dashboard run record in (a). Timer coverage comes from (b) above.
+OPENCODE_DB_MARKER="${LAPTOP_BACKUPS_OPENCODE_DB_MARKER:-$HOME/backups/restic/.opencode-db-last-success-epoch}"
+if want_job opencode-db; then
+  if [ ! -f "$OPENCODE_DB_MARKER" ]; then
+    complain "opencode-db-backup: no success marker at $OPENCODE_DB_MARKER"
+  else
+    marker_epoch="$(head -1 "$OPENCODE_DB_MARKER" 2>/dev/null || true)"
+    if ! [[ $marker_epoch =~ ^[0-9]+$ ]]; then
+      complain "opencode-db-backup: success marker at $OPENCODE_DB_MARKER is unreadable"
+    else
+      age=$((NOW_EPOCH - marker_epoch))
+      if [ "$age" -lt "$((-SKEW_TOLERANCE_SEC))" ]; then
+        complain "opencode-db-backup: success marker is $((-age))s in the future (skew tolerance ${SKEW_TOLERANCE_SEC}s)"
+      elif [ "$age" -gt "$MAX_AGE_SEC" ]; then
+        complain "opencode-db-backup: last success $((age / 3600))h ago (threshold ${MAX_AGE_HOURS}h)"
+      fi
+    fi
+  fi
+fi
 
 # --- (c) offsite presence on R2 ----------------------------------------------
 if want_job dashboard && [ "${LAPTOP_BACKUPS_OFFSITE_CHECK:-0}" = "1" ]; then
@@ -222,7 +255,27 @@ if [ -d "$PM_STACK_ROOT" ]; then
   fi
 fi
 
-# --- (e) cold-store-nightly completion evidence ------------------------------
+# --- (e) laptop-state success marker -----------------------------------------
+if want_job state; then
+  MARKER="${LAPTOP_STATE_MARKER:-$HOME/backups/restic/.laptop-state-last-success-epoch}"
+  if [ ! -f "$MARKER" ]; then
+    complain "laptop-state-backup: no success marker at $MARKER"
+  else
+    marker_epoch="$(tr -d '[:space:]' <"$MARKER" 2>/dev/null || true)"
+    if ! [[ $marker_epoch =~ ^[0-9]+$ ]]; then
+      complain "laptop-state-backup: success marker at $MARKER is unreadable"
+    else
+      marker_age=$((NOW_EPOCH - marker_epoch))
+      if [ "$marker_age" -lt "$((-SKEW_TOLERANCE_SEC))" ]; then
+        complain "laptop-state-backup: success marker is $((-marker_age))s in the future (skew tolerance ${SKEW_TOLERANCE_SEC}s)"
+      elif [ "$marker_age" -gt "$MAX_AGE_SEC" ]; then
+        complain "laptop-state-backup: last success $((marker_age / 3600))h ago (threshold ${MAX_AGE_HOURS}h)"
+      fi
+    fi
+  fi
+fi
+
+# --- (f) cold-store-nightly completion evidence ------------------------------
 if want_job cold-store; then
   cs_result="$(systemctl --user show -p Result --value cold-store-nightly.service 2>/dev/null || true)"
   if [ "$cs_result" != "success" ]; then

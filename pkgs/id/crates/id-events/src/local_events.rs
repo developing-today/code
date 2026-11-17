@@ -28,6 +28,7 @@ use id_store::chain::{ChainExt, Event, MAX_AFTER, sign};
 use id_store::chat::{CHAT_MESSAGE_KIND, ChatMessage, ChatRecord, SendRate};
 use id_store::chat_anchor::{AnchorProjection, CHAT_ANCHOR_KIND, ChatAnchor, project_anchors};
 use id_store::documents::{DOCUMENT_KIND, DocumentRef, REMOVAL_KIND};
+use id_store::identity::{IDENTITY_KIND, is_identity_kind};
 use id_store::notes::{
     AppliedNote, CREATE_KIND as NOTE_CREATE_KIND, NoteFoldError, NoteOp, NoteRecord,
     REVISE_KIND as NOTE_REVISE_KIND, check_note_op, fold_notes,
@@ -287,6 +288,33 @@ impl LocalEvents {
     #[must_use]
     pub fn author(&self) -> AuthorKey {
         *self.key.verifying_key().as_bytes()
+    }
+
+    /// Publishes this node's identity event if its log has none (#160, Option A).
+    ///
+    /// The identity event is a kind-only signed event whose ID is the node's user subject
+    /// for tags and aliases. It is published at most once per log: when one already exists,
+    /// this returns `None`. Resolution never waits for one — a log without an identity
+    /// event resolves its subject from its earliest event instead (Option B), so a store
+    /// that cannot take the event (a forked chain, a refusal) is reported to the caller and
+    /// never blocks startup.
+    ///
+    /// # Errors
+    ///
+    /// Returns a store error if the node's chain cannot be read, or the refusal the store
+    /// gives for the identity event itself.
+    pub fn ensure_identity_event(&mut self) -> Result<Option<Hash>> {
+        let author = self.author();
+        let chain = self.store.chain(&author)?.unwrap_or_default();
+        for seq in 0..chain.next_seq {
+            if let Some(event) = self.store.event(&author, seq)? {
+                if is_identity_kind(&event.header.extensions.kind) {
+                    return Ok(None);
+                }
+            }
+        }
+        let id = self.record(IDENTITY_KIND, None, None, None, None, None, None, None, &[])?;
+        Ok(Some(id))
     }
 
     /// Adds `block` to the operator block list (#2245), replacing any row

@@ -138,7 +138,7 @@ describe("handleLaunchFailure", () => {
     expect(calls.closes).toEqual([["developing-today/code", 2901, "not_planned"]]);
   });
 
-  async function assertCreatedSessionFailure(stage: "sendPrompt" | "claim patch") {
+  async function assertCreatedSessionFailure(stage: "sendPrompt" | "claim") {
     const sessionId = "session/created-42";
     const launchError = new Error(`${stage} failed`);
     const context = { sessionId: null as string | null };
@@ -164,8 +164,8 @@ describe("handleLaunchFailure", () => {
     };
     const queue = {
       async ensureWorker(): Promise<void> {},
-      async patchTask(): Promise<void> {
-        if (stage === "claim patch") throw launchError;
+      async claimTask(): Promise<void> {
+        if (stage === "claim") throw launchError;
       },
       async cancelTask(id: number, reason: string): Promise<void> {
         calls.events.push("cancel");
@@ -191,7 +191,7 @@ describe("handleLaunchFailure", () => {
       await withCreatedSession(session.id, context, async () => {
         await opencode.sendPrompt();
         await queue.ensureWorker();
-        await queue.patchTask();
+        await queue.claimTask();
       });
     } catch (e) {
       thrown = e;
@@ -228,8 +228,8 @@ describe("handleLaunchFailure", () => {
     await assertCreatedSessionFailure("sendPrompt");
   });
 
-  test("created session is cleaned up and reported after claim patch fails", async () => {
-    await assertCreatedSessionFailure("claim patch");
+  test("created session is cleaned up and reported after the claim fails", async () => {
+    await assertCreatedSessionFailure("claim");
   });
 });
 

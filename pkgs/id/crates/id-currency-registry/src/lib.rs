@@ -28,6 +28,7 @@
 
 pub mod allocator;
 pub mod factory;
+pub mod grants;
 pub mod registry;
 pub mod store;
 
@@ -35,6 +36,12 @@ pub use allocator::{AllocError, Allocator};
 pub use factory::{
     ACCOUNT_DOMAIN_SEP, AccountCluster, AccountFlags, AccountSpec, ClusterError, CreateOutcome,
     CurrencyAccounts, Factory, FactoryError, PLATFORM_OWNER_ID, account_spec, derive_account_id,
+};
+pub use grants::{
+    DEFAULT_TIMEOUT_SLACK_SECONDS, GRANT_TRANSFER_CODE, Grant, GrantConfig, GrantError,
+    GrantService, GrantState, GrantStore, GrantStoreError, InMemoryGrantStore, LedgerError,
+    PendingLedger, PendingTransferSpec, RegisterGrant, StubLedger, steam_key_hash,
+    steam_key_hash_u64,
 };
 pub use registry::{
     AccountKind, AccountRecord, CurrencyRecord, CurrencyStatus, IssuerGrant, IssuerRole,
@@ -45,6 +52,14 @@ pub use store::{InMemoryStore, Store, StoreError};
 /// The first migration: the four registry tables, the allocator
 /// sequences and function, and the never-delete guard.
 pub const MIGRATION_0001_UP: &str = include_str!("../migrations/0001_currency_registry.up.sql");
+
+/// The second migration: the `grant` table of the refundable-
+/// grants design (section 2.3), its live-key-hash uniqueness
+/// index, and the reconciler's pending-window sweep index.
+pub const MIGRATION_0002_UP: &str = include_str!("../migrations/0002_grants.up.sql");
+
+/// The reverse of [`MIGRATION_0002_UP`].
+pub const MIGRATION_0002_DOWN: &str = include_str!("../migrations/0002_grants.down.sql");
 
 /// The reverse of [`MIGRATION_0001_UP`].
 pub const MIGRATION_0001_DOWN: &str = include_str!("../migrations/0001_currency_registry.down.sql");

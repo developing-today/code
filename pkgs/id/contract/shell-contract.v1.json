@@ -1,7 +1,7 @@
 {
   "contract": "id-shell",
   "version": 1,
-  "revision": 9,
+  "revision": 10,
   "description": "The client-server frame protocol every id shell (terminal, web, native) speaks to a world host. Version 1 is the protocol behind the /id-world/1 ALPN. A shell sends only frames and fields named here; it ignores server frame types and fields it does not know. Additive changes bump `revision`; removing or changing a frame or field needs version 2 and a new ALPN. Event-producing frames must name their stable world-event contract here.",
   "max_frame_bytes": 1048576,
   "routing_fields": ["world"],
@@ -288,6 +288,49 @@
       "phases": ["joined"],
       "fields": { "text": { "type": "string", "max_bytes": 4096 } }
     },
+    "pointer": {
+      "class": "event",
+      "phases": ["joined"],
+      "fields": {
+        "event": {
+          "type": "string",
+          "enum": ["press", "release", "cancel", "drag_move", "scroll", "long_press", "secondary_press"]
+        },
+        "environment": {
+          "type": "string",
+          "enum": ["native", "web", "tui", "android"]
+        },
+        "pointer_id": "u32",
+        "x": "u16",
+        "y": "u16",
+        "button": {
+          "type": "string",
+          "optional": true,
+          "enum": ["primary", "secondary"]
+        },
+        "held_duration_ms": "u64?",
+        "is_click": "bool?",
+        "dx": "i64?",
+        "dy": "i64?"
+      }
+    },
+    "hover": {
+      "class": "ephemeral",
+      "phases": ["joined"],
+      "fields": {
+        "event": {
+          "type": "string",
+          "enum": ["hover_enter", "hover_leave", "hover_move"]
+        },
+        "environment": {
+          "type": "string",
+          "enum": ["native", "web", "tui", "android"]
+        },
+        "pointer_id": "u32",
+        "x": "u16",
+        "y": "u16"
+      }
+    },
     "resize": {
       "class": "ephemeral",
       "phases": ["joined"],
@@ -482,6 +525,34 @@
         "args": "object",
         "deadline_ms": "u64"
       }
+    },
+    "input_refused": {
+      "class": "reply",
+      "fields": {
+        "event": "string",
+        "environment": {
+          "type": "string",
+          "optional": true,
+          "enum": ["native", "web", "tui", "android"]
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "no_timing_source",
+            "hover_unsupported",
+            "context_menu_not_claimed",
+            "reserved_by_browser",
+            "no_secondary_button",
+            "not_reported_by_terminal",
+            "button_identity_unavailable",
+            "no_tracking_mode",
+            "gesture_not_in_subset",
+            "multi_touch_deferred",
+            "not_declared_by_app",
+            "unknown_or_unsupported_event"
+          ]
+        }
+      }
     }
   },
   "projection": {
@@ -489,7 +560,8 @@
     "redacted_keys": ["seed"]
   },
   "features": {
-    "surface": "A view frame may carry a typed `surface` (the portable screen document). A shell that does not understand it renders `data`."
+    "surface": "A view frame may carry a typed `surface` (the portable screen document). A shell that does not understand it renders `data`.",
+    "input_events": "Pointer input per the input event model design (doc/2026-11-08T05-48-47Z_design_input_event_model, issue #1831 slice S2; landed in revision 10). Coordinates are cells in the target surface's grid: producers map device pixels to cells at the edge, so frames never carry pixels. `pointer` frames are class event — journaled and replayed like `input`; a drag is a press, a sequence of drag_move frames, and a release, and each drag_move is its own frame, so the frame limit bounds one move, never the whole path. `hover` frames are class ephemeral: connection-local presentation context, never journaled and never seen by other sessions. A pointer_id is unique only within its producing connection; the host namespaces it with the connection's identity when journaling, and press/release pairing is scoped to that (connection, pointer_id) pair. An event an environment cannot produce, or that the target app did not declare in its manifest `interfaces.input`, is refused explicitly: the host answers `input_refused` naming the event and a reason from that frame's enum — an input event is never silently dropped."
   },
   "reserved": {
     "presentation_tiers": "In-band terminal tier detection and negotiation (F13.4). Needs a new frame kind, so it waits for F11.12.",

@@ -42,6 +42,10 @@ const (
 	// uses to call /v1. Not SetByPlugin -- that is the opencode plugin, a
 	// consumer of mcpx, where this is mcpx loading a plugin of its own.
 	SetByPluginLoader Setter = "plugin-loader"
+	// SetByPool is the client pool (internal/mcpclient), which arms the
+	// supervisor owner watch in its own environment so that every
+	// supervisor it spawns inherits the owner PID (#10774).
+	SetByPool Setter = "pool"
 )
 
 // Describe is the setter as a reader of the documentation knows it.
@@ -59,6 +63,8 @@ func (s Setter) Describe() string {
 		return "the opencode plugin"
 	case SetByPluginLoader:
 		return "the plugin loader, for a discovered plugin"
+	case SetByPool:
+		return "the client pool, arming the supervisor owner watch"
 	case SetByHooks:
 		return "the declared-hook runner, for a hook it runs"
 	}
@@ -378,5 +384,14 @@ func ScriptEnv() []EnvVar {
 			Meaning: "when the session was created, ISO 8601", ReadBy: "the command"},
 		{Name: "MCPX_SESSION_AGE_MS", SetBy: []Setter{SetByPlugin}, When: "plugin.env=full, when known",
 			Meaning: "the session's age when the command started, in milliseconds", ReadBy: "the command"},
+		// ---- the supervisor owner watch ----
+		{
+			Name:  "MCPX_SUPERVISOR_OWNER_PID",
+			SetBy: []Setter{SetByPool},
+			When:  "a test suite arms the watch via EnableSupervisorOwnerWatch (internal/testsupport); production daemons never set it",
+			Meaning: "the PID of the process a supervisor belongs to; when that process dies, " +
+				"the supervisor terminates its child and exits instead of leaking (#10774)",
+			ReadBy: nested + ", which arms the supervisors it spawns (internal/mcpclient owner watch)",
+		},
 	}
 }

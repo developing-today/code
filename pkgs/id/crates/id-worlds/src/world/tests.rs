@@ -5261,6 +5261,85 @@ mod tests {
         assert_eq!(fresh["ok"], true);
     }
 
+    /// A program that wants a `client.file.read` whose id flips from
+    /// `read-stale` to `read-fresh` once it hears the first result.
+    struct ReopenRead {
+        heard: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl WorldProgram for ReopenRead {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::System { event } = &event.kind {
+                self.heard.lock().unwrap().push(event.clone());
+            }
+            Ok(())
+        }
+
+        fn wants(&mut self) -> Result<Option<String>> {
+            let id = if self.heard.lock().unwrap().is_empty() {
+                "read-stale"
+            } else {
+                "read-fresh"
+            };
+            Ok(Some(
+                serde_json::json!({
+                    "v": 1,
+                    "requests": [{
+                        "id": id,
+                        "cap": "client.file.read",
+                        "args": {"path": "notes.txt"},
+                    }],
+                })
+                .to_string(),
+            ))
+        }
+    }
+
+    /// F13.7 step 6: the restart rule covers client providers too. A
+    /// pre-open `client.file.read` want is refused `restarted` and
+    /// never routed to a client — no local file is read unattributed
+    /// after a reopen — and the refusal joins the provider audit
+    /// trail (broker-level coverage:
+    /// `restarted_refusal_is_recorded_in_the_audit_trail`). A fresh
+    /// want in the same pass still reaches the broker.
+    #[tokio::test]
+    async fn reopened_client_provider_wants_are_refused_not_routed() {
+        let mut core = world(16);
+        core.ledger
+            .set_allowed(BTreeSet::from(["client.file.read".to_owned()]));
+        core.ledger
+            .set_granted(BTreeSet::from(["client.file.read".to_owned()]));
+        let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(ReopenRead {
+                heard: heard.clone(),
+            }),
+            None,
+        );
+        actor.stale_wants_at_open = BTreeSet::from(["read-stale".to_owned()]);
+
+        actor.after_change().await;
+
+        let heard = heard.lock().unwrap();
+        assert_eq!(heard.len(), 2, "unexpected deliveries: {heard:?}");
+        let refusal: serde_json::Value = serde_json::from_str(&heard[0]).unwrap();
+        assert_eq!(refusal["id"], "read-stale");
+        assert_eq!(refusal["ok"], false);
+        assert_eq!(refusal["error"], "actor_denied");
+        assert_eq!(refusal["reason"], "restarted");
+        // The fresh want reached the broker, which refused it
+        // unattributed (this harness has no joined session) rather
+        // than routing it to any client.
+        let fresh: serde_json::Value = serde_json::from_str(&heard[1]).unwrap();
+        assert_eq!(fresh["id"], "read-fresh");
+        assert_eq!(fresh["ok"], false);
+        assert_eq!(fresh["error"], "actor_denied");
+        assert_eq!(fresh["reason"], "unattributed");
+        assert_eq!(actor.provider_broker.pending_count(), 0);
+        assert!(actor.handled_requests.contains("read-stale"));
+    }
+
     /// The capture half of the restart rule: `spawn_restored` refuses the
     /// requests present in `wants` at open, while a fresh spawn executes the
     /// same wants.

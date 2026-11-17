@@ -64,6 +64,7 @@ import {
   getNeedsDrew,
   listOpenNeedsDrew,
   raiseNeedsDrew,
+  needsDrewIncidentKey,
   recordAnswer,
   shouldFetchNeedsDrewCensus,
   validateNeedsDrew,
@@ -138,11 +139,13 @@ import { buildEpicRollups } from "./epics.ts";
 import { SpendRollupStore } from "./spend-rollups.ts";
 import { buildSpendCards, type SpendCardsView } from "./spend-cards.ts";
 import { buildProgramData, programRefs } from "./program.ts";
+import { buildReleaseSnapshots } from "./releases.ts";
 import {
   PROJECT_CONFIGS,
   allProjectRefs,
   buildProjectDetail,
   buildProjectSummaries,
+  projectDocTarget,
   projectConfigById,
 } from "./project-config.ts";
 import { PHASE12_REPO, parsePhase12Steps, type Phase12Snapshot } from "./phase12.ts";
@@ -3168,9 +3171,14 @@ async function handler(req: Request): Promise<Response> {
         }
       }
     }
+    // #1108 remainder: the project's derived doc (roadmap
+    // description + newest status record) from the checkout-reading
+    // source, when it carries one; null keeps the registry text.
+    const docTarget = projectDocTarget(config);
+    const projectDoc = docTarget && source.projectDoc ? await source.projectDoc(docTarget).catch(() => null) : null;
     return html(
       renderProgramProject(
-        buildProjectDetail(config, items, pool, rows),
+        buildProjectDetail(config, items, pool, rows, projectDoc),
         items,
         prov(),
         provDetail(),
@@ -3198,7 +3206,9 @@ async function handler(req: Request): Promise<Response> {
       source.projects().catch(() => []),
       source.roadmap().catch(() => []),
     ]);
-    return json(buildProjectDetail(config, items, pool, rows));
+    const docTarget = projectDocTarget(config);
+    const projectDoc = docTarget && source.projectDoc ? await source.projectDoc(docTarget).catch(() => null) : null;
+    return json(buildProjectDetail(config, items, pool, rows, projectDoc));
   }
 
   if (path === "/health") {
@@ -3255,6 +3265,19 @@ async function handler(req: Request): Promise<Response> {
       { showAllDone },
     );
     return jsonCompact({ board: bounded.board, items: bounded.items, view: resolved.view?.id ?? null });
+  }
+  if (path === "/api/releases.json") {
+    // #9067 (design section 4/6): milestone close-out snapshots over
+    // the collector's per-item milestone ingestion — program
+    // milestones get retroactive counts, release milestones get the
+    // close-out record (counts split closed vs carried-over, the
+    // release date, and the description line).
+    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
+    return json({
+      generatedAt: new Date().toISOString(),
+      source: "project pool milestone ingestion (#9067)",
+      releases: buildReleaseSnapshots(pool),
+    });
   }
   if (path === "/api/roadmap.json") {
     const { rows, items, reconciliation } = await roadmapContext();
@@ -3625,6 +3648,22 @@ async function handler(req: Request): Promise<Response> {
       via: "api",
     });
     if (!updated?.answer) return json({ error: "answer not recorded" }, 500);
+    // #8605: the answer resolves the question, so close its alert
+    // incident — the raiser posted it under this question's source with
+    // key needs-drew:<ledgerId>, and until now nothing ever closed it.
+    // Best-effort, like the stack-health close in the intake above: a
+    // store failure is logged and never fails the recorded answer.
+    try {
+      const store = await getAlertsStore();
+      if (store) {
+        await store.closeOpenIncidentByKey(item.source, needsDrewIncidentKey(ledgerId));
+        requestAlertTick();
+      }
+    } catch (err) {
+      console.error(
+        `needs-drew answer: incident close failed (${err instanceof Error ? err.message : "error"})`,
+      );
+    }
     return json({
       ledgerId,
       answered: true,

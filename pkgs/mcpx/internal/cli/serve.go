@@ -153,6 +153,12 @@ func (b mcpBackend) Call(ctx context.Context, ns, tool string, args json.RawMess
 		ctx = mcpclient.WithClientCapabilities(ctx, mcpserver.DeclaredCapabilities(ctx))
 	}
 	ctx = mcpclient.WithCallerVersion(ctx, mcpserver.PeerVersion(ctx))
+	if mcpserver.WithinTask(ctx) {
+		// The call is a task's inner call (SEP-2663): say so on the way
+		// to the daemon, whose write ledger must not record the call's
+		// cancellation as an unknown write outcome (#8922).
+		ctx = mcpclient.WithTaskExecution(ctx)
+	}
 	var res *CallResult
 	if r := mcpserver.RelayFrom(ctx); r != nil {
 		notify := r.Notify

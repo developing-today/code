@@ -77,8 +77,9 @@ pub(crate) use documents::{
 
 pub use types::MAX_ADMIN_TOKEN_BYTES;
 pub(crate) use types::{
-    CAPS_CEILING_NOTICE, ClientFrame, MAX_CAPABILITY_BYTES, MAX_CONCURRENT_MODULE_UPLOADS,
-    MAX_RESUME_TOKEN_BYTES, ServerFrame, invite_bounds,
+    CAPS_CEILING_NOTICE, ClientFrame, HoverEvent, InputEnvironment, InputRefusalReason,
+    MAX_CAPABILITY_BYTES, MAX_CONCURRENT_MODULE_UPLOADS, MAX_RESUME_TOKEN_BYTES, PointerButton,
+    PointerEvent, ServerFrame, invite_bounds,
 };
 pub use types::{
     INVITE_DEFAULT_SECS, INVITE_MAX_SECS, Inbound, InstallError, InviteError, InviteResponse,
@@ -1636,6 +1637,107 @@ async fn handle_client_frame<I: SessionIo>(
                     .await;
             }
         },
+        ClientFrame::Pointer {
+            event,
+            environment,
+            pointer_id,
+            x,
+            y,
+            button,
+            held_duration_ms,
+            is_click,
+            dx,
+            dy,
+        } => {
+            // #1831 slice S2 (input event model design, Decision 3):
+            // activation events are journaled and replayed like
+            // keyboard `Input`, in sequence order — the frame's
+            // canonical JSON goes through the same input path, which
+            // also namespaces the connection-local pointer_id with
+            // this session's identity. `secondary_press` is a
+            // per-environment extra: Android has no secondary button
+            // (long_press is its equivalent), so it is refused with
+            // the design's named reason — never silently dropped.
+            if event == PointerEvent::SecondaryPress && environment == InputEnvironment::Android {
+                let _ = send_json(
+                    service.frame_meter(),
+                    io,
+                    &ServerFrame::InputRefused {
+                        event: "secondary_press",
+                        environment: Some(environment),
+                        reason: InputRefusalReason::NoSecondaryButton,
+                    },
+                )
+                .await;
+                return true;
+            }
+            let mut encoded = serde_json::json!({
+                "type": "pointer",
+                "event": event,
+                "environment": environment,
+                "pointer_id": pointer_id,
+                "x": x,
+                "y": y,
+            });
+            if let Some(button) = button {
+                encoded["button"] = serde_json::json!(button);
+            }
+            if let Some(held_duration_ms) = held_duration_ms {
+                encoded["held_duration_ms"] = serde_json::json!(held_duration_ms);
+            }
+            if let Some(is_click) = is_click {
+                encoded["is_click"] = serde_json::json!(is_click);
+            }
+            if let Some(dx) = dx {
+                encoded["dx"] = serde_json::json!(dx);
+            }
+            if let Some(dy) = dy {
+                encoded["dy"] = serde_json::json!(dy);
+            }
+            match serde_json::to_vec(&encoded) {
+                Ok(bytes) => {
+                    world
+                        .input_from_session(token.clone(), bytes, session_id)
+                        .await
+                }
+                Err(_) => {
+                    return send_error(
+                        service.frame_meter(),
+                        io,
+                        "pointer frame could not be encoded",
+                    )
+                    .await;
+                }
+            }
+        }
+        ClientFrame::Hover {
+            event, environment, ..
+        } => {
+            // #1831 slice S2, Decision 3: hover is ephemeral —
+            // connection-local presentation context, never journaled
+            // and never seen by other sessions. Android producers
+            // cannot produce it (the design's extras table), so it is
+            // refused there with the named reason; elsewhere it is
+            // accepted, and its presentation consumer is later S2 work.
+            if environment == InputEnvironment::Android {
+                let event_name = match event {
+                    HoverEvent::HoverEnter => "hover_enter",
+                    HoverEvent::HoverLeave => "hover_leave",
+                    HoverEvent::HoverMove => "hover_move",
+                };
+                let _ = send_json(
+                    service.frame_meter(),
+                    io,
+                    &ServerFrame::InputRefused {
+                        event: event_name,
+                        environment: Some(environment),
+                        reason: InputRefusalReason::HoverUnsupported,
+                    },
+                )
+                .await;
+            }
+            return true;
+        }
         ClientFrame::Records { prefix, after, .. } => {
             // Authorized by the session's own capability.
             if let Err(message) = records_session(

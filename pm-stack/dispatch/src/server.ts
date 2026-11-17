@@ -4,7 +4,8 @@
 //                      tracked by a queue task (assigned immediately) and
 //                      usually a GitHub issue.
 //   POST /v1/tasks     enqueue-only: a repo-task/v1 packet into the
-//                      Supabase queue, optionally with a GitHub issue.
+//                      fleet queue via the queue broker, optionally
+//                      with a GitHub issue.
 //   GET  /v1/tasks/:id    authenticated read: that task's status,
 //                      worker and progress (issue #5555) — callers no
 //                      longer cross domains into the queue store.
@@ -17,6 +18,7 @@
 // secret — see auth.ts). Binds loopback + the laptop tailnet address only
 // (DISPATCH_HOSTS); public reachability arrives later via the pm-stack
 // Cloudflare tunnel, not from here.
+import { readFileSync } from "node:fs";
 import { APP_INSTALLED_REPOS, REPO_DIRS, REPO_QUEUES, loadConfig, type Config } from "./config.ts";
 import { AuthError, assertCallerRepo, authenticate, type CallerIdentity } from "./auth.ts";
 import {
@@ -48,7 +50,20 @@ import { GitHubClient } from "./github.ts";
 import { OpenCodeClient, OpenCodeError } from "./opencode.ts";
 
 const cfg: Config = loadConfig();
-const queue = cfg.supabaseServiceRoleKey ? new QueueClient(cfg.supabaseUrl, cfg.supabaseServiceRoleKey) : null;
+// #9028: the queue client talks to the fleet queue broker. Its token
+// comes from QUEUE_BROKER_TOKEN or the broker token file — never from
+// a database credential: this process holds no service-role key.
+function loadBrokerToken(): string | null {
+  if (cfg.queueBrokerToken) return cfg.queueBrokerToken;
+  try {
+    const t = readFileSync(cfg.queueBrokerTokenFile, "utf8").trim();
+    return t ? t : null;
+  } catch {
+    return null;
+  }
+}
+const brokerToken = loadBrokerToken();
+const queue = brokerToken ? new QueueClient(cfg.queueBrokerUrl, brokerToken) : null;
 const github = new GitHubClient(cfg.githubAppId, cfg.githubAppPrivateKeyPem);
 const opencode = new OpenCodeClient(cfg.opencodeUrl, cfg.opencodeAuthFile);
 
@@ -114,7 +129,9 @@ async function readJsonBody(req: Request): Promise<unknown> {
 
 function requireQueue(): QueueClient {
   if (!queue) {
-    throw new QueueError("dispatch is not configured with SUPABASE_SERVICE_ROLE_KEY — queue unavailable");
+    throw new QueueError(
+      "dispatch is not configured with a queue broker token (QUEUE_BROKER_TOKEN or the broker token file) — queue unavailable",
+    );
   }
   return queue;
 }
@@ -171,47 +188,17 @@ async function launchSession(
   await withCreatedSession(session.id, failureContext, async () => {
     await opencode.sendPrompt(session.id, `${prefix}\n\n${req.prompt}`);
 
-    // Assign immediately: PATCH the exact row the enqueue created (the
-    // claim RPC claims the next task in a queue, not a specific one). The
-    // worker identity must exist in agent.workers first (worker_id is an
-    // FK), so register it idempotently. The PATCH applies only while the
-    // row is still queued (#10737): a fleet worker that claimed it in the
+    // Assign immediately: a broker claim-flow naming the exact row
+    // the enqueue created (claim-by-id + lane ledger + session bind
+    // in one trip, #9028). The claim applies only while the row is
+    // still queued (#10737): a fleet worker that claimed it in the
     // meantime keeps it, and this launch backs out (ClaimLostError).
-    await requireQueue().ensureWorker();
-    const now = new Date();
-    await requireQueue().patchTask(
-      task.id,
-      {
-        status: "claimed",
-        worker_id: "dispatch-opencode",
-        claimed_at: now.toISOString(),
-        lease_until: new Date(now.getTime() + LEASE_SECONDS * 1000).toISOString(),
-        progress: {
-          lane: "opencode",
-          session_id: session.id,
-          issue_number: issue?.number ?? null,
-          launched_by: caller,
-        },
-      },
-      { onlyIfStatus: "queued" },
-    );
+    await requireQueue().claimTask(task, session.id, describeCaller(caller), LEASE_SECONDS);
   });
 
-  // Lane ledger: the same assignment the queue workers record after a
-  // claim, so a later completion can record the executed lane. The
-  // launch itself is already real at this point, so a ledger failure is
-  // noted on the task rather than failing the dispatch.
-  try {
-    await requireQueue().assignLane(task.id);
-  } catch (e) {
-    try {
-      await requireQueue().patchTask(task.id, {
-        last_error: `lane assignment failed (launch unaffected): ${e instanceof Error ? e.message : String(e)}`,
-      });
-    } catch {
-      /* nothing more to do — the claim stands */
-    }
-  }
+  // The lane ledger is recorded inside claimTask's claim-flow (a
+  // lane-step failure there is noted on the task by the client and
+  // never fails the launch), so there is no separate ledger call here.
 
   if (issue) {
     // Post-claim annotations are best-effort and individually guarded
@@ -373,7 +360,7 @@ export const TERMINAL_TASK_STATUSES = new Set(["done", "cancelled", "failed"]);
  * terminal — it is never the task this request just queued.
  *
  * Deliberately clock-independent (issue #4661): the row's created_at is
- * assigned by the Supabase Postgres server while any request-side
+ * assigned by the queue store while any request-side
  * timestamp comes from the dispatch host, so comparing the two
  * misclassifies in both directions under ordinary skew (a DB-behind
  * fresh row reads pre-existing; a DB-ahead live row reads fresh).

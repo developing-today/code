@@ -133,9 +133,9 @@ expect "retryable 500 is never retried" 1 1
 
 grep -Fq 'INPUT_DEDUPE_KEY: ${{ inputs.dedupe_key }}' "$ACTION_YML" || fail "action does not wire the dedupe_key input"
 grep -Fq "jq --arg dedupe_key \"\$INPUT_DEDUPE_KEY\" '. + {dedupe_key: \$dedupe_key}'" "$ACTION_YML" || fail "action does not include the dedupe_key in its POST payload"
-grep -Fq 'dedupe_key: main-broken-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-dispatch-append' "$WATCHER_YML" || fail "watcher append call does not supply a stable dedupe_key"
+grep -Fq 'dedupe_key: main-broken-run-${{ steps.identify.outputs.run_id }}-dispatch-append' "$WATCHER_YML" || fail "watcher append call does not supply the per-run dedupe_key (#9546)"
 grep -Fq '[ -n "$INPUT_ISSUE_NUMBER" ] || [ "$INPUT_ISSUE" != "true" ]' "$ACTION_YML" || fail "action does not restrict retries to existing-issue or no-issue requests"
 echo "pass: action restricts retries to existing-issue or no-issue requests"
-echo "pass: watcher append supplies the stable key that makes retries idempotent"
+echo "pass: watcher append supplies the per-run key that makes retries idempotent and dedupes repeat firings for one run (#9546)"
 
 echo "pm-dispatch-queue-post.test: all contract tests passed"

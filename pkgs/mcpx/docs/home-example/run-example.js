@@ -1,8 +1,12 @@
 // Run the (possibly edited) home-page example in the page (#1876 stage 2).
 //
 // The pieces, in order:
-//   1. the fake daemon is installed (fake-daemon.js) so the generated
-//      client's POST /v1/call lands in the in-page mocks;
+//   1. a daemon transport is installed: the fake daemon
+//      (fake-daemon.js) so the generated client's POST /v1/call lands
+//      in the in-page mocks -- or, when the reader has opted in to
+//      Run on my machine (#1876 stage 3), the local-daemon
+//      transport (local-daemon.js), which rewrites /v1 requests to
+//      the reader's own daemon and lets the real fetch carry them;
 //   2. the real generated client's `tools` object (client.browser.js —
 //      client.ts after the build-time strip, see generate-client.sh) is
 //      put on globalThis, along with the client's standard script
@@ -19,6 +23,7 @@
 // a terminal run would print them, not swallowed.
 
 import { installFakeDaemon } from "./fake-daemon.js";
+import { installLocalDaemon, DEFAULT_DAEMON_BASE } from "./local-daemon.js";
 import { stripTypes } from "./strip-types.js";
 
 /**
@@ -142,14 +147,19 @@ function format(value) {
 // can break it.
 let runTail = Promise.resolve();
 
-export function runExample(source, client, onLine) {
-  const run = runTail.then(() => runExampleOnce(source, client, onLine));
+export function runExample(source, client, onLine, options = {}) {
+  const run = runTail.then(() => runExampleOnce(source, client, onLine, options));
   runTail = run.catch(() => {});
   return run;
 }
 
-async function runExampleOnce(source, client, onLine) {
-  const restoreFetch = installFakeDaemon();
+async function runExampleOnce(source, client, onLine, options = {}) {
+  // Stage 3 opt-in: only an explicit options.transport of local
+  // leaves the simulation; anything else is the stage-2 fake daemon.
+  const restoreFetch =
+    options.transport === "local"
+      ? installLocalDaemon(options.daemonBase || DEFAULT_DAEMON_BASE)
+      : installFakeDaemon();
   const hadTools = "tools" in globalThis;
   const prevTools = globalThis.tools;
   const prevLog = console.log;

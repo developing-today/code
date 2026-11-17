@@ -179,6 +179,19 @@ func isWithinTask(ctx context.Context) bool {
 	return v
 }
 
+// MarkWithinTask is withinTask for cross-package callers (the daemon's
+// ledger classification, tests): it stamps the context as a task's
+// inner call.
+func MarkWithinTask(ctx context.Context) context.Context {
+	return withinTask(ctx)
+}
+
+// WithinTask is isWithinTask for cross-package callers: it reports
+// whether the context is a task's inner call (see runInner).
+func WithinTask(ctx context.Context) bool {
+	return isWithinTask(ctx)
+}
+
 // Tool-level task support, from execution.taskSupport.
 const (
 	supportForbidden = "forbidden"
@@ -451,6 +464,22 @@ func (s *Server) askTask(ctx context.Context, req request, peer Peer) (*response
 	return s.created(req, t.TaskID), true
 }
 
+// abandonAsked stops an asked call. A task's own cancellation goes
+// through the driver's AbandonTask when it offers one, so the daemon can
+// tell a protocol task's cancellation (SEP-2663 -- the task store owns
+// the disposition, and the write ledger must not record the call's
+// outcome as unknown, #8922) from a request the client merely dropped,
+// which keeps the ordinary Abandon.
+func (s *Server) abandonAsked(callID string, forTask bool) {
+	if forTask {
+		if ta, ok := s.Ask.(interface{ AbandonTask(string) }); ok {
+			ta.AbandonTask(callID)
+			return
+		}
+	}
+	s.Ask.Abandon(callID)
+}
+
 // driveAsked is the body of an asked task: wait for the call, publishing the
 // questions it is waiting on as the task's inputRequests.
 func (s *Server) driveAsked(ctx context.Context, req request, peer Peer, callID string) (any, *tasks.Fault) {
@@ -459,7 +488,7 @@ func (s *Server) driveAsked(ctx context.Context, req request, peer Peer, callID 
 	for {
 		if ctx.Err() != nil {
 			// Cancelled: tasks/cancel, or the TTL. Nobody will answer.
-			s.Ask.Abandon(callID)
+			s.abandonAsked(callID, true)
 			return nil, &tasks.Fault{Code: codeInternal, Message: "the task was cancelled"}
 		}
 		out, err := s.Ask.Poll(ctx, callID, tm.AskPoll)

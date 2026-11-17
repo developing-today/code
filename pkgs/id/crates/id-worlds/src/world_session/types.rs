@@ -88,6 +88,71 @@ impl Default for SessionConfig {
     }
 }
 
+/// A producer environment for pointer input (#1831 slice S2). Every
+/// input rule in the model is stated per environment; there is no
+/// environment-free event.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum InputEnvironment {
+    Native,
+    Web,
+    Tui,
+    Android,
+}
+
+/// A journaled pointer activation event (#1831 slice S2). The common
+/// core is `press` / `release` / `cancel` / `drag_move` (the wire form
+/// of a drag) / `scroll`, plus `long_press` where the producer has a
+/// timing source; `secondary_press` is a per-environment extra.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PointerEvent {
+    Press,
+    Release,
+    Cancel,
+    DragMove,
+    Scroll,
+    LongPress,
+    SecondaryPress,
+}
+
+/// An ephemeral pointer hover event (#1831 slice S2).
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum HoverEvent {
+    HoverEnter,
+    HoverLeave,
+    HoverMove,
+}
+
+/// Which pointer button a frame concerns (#1831 slice S2).
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PointerButton {
+    Primary,
+    Secondary,
+}
+
+/// Why the host refused a pointer event (#1831 slice S2, the design's
+/// refusal table). A refused event is answered explicitly with one of
+/// these reasons — never silently dropped.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum InputRefusalReason {
+    NoTimingSource,
+    HoverUnsupported,
+    ContextMenuNotClaimed,
+    ReservedByBrowser,
+    NoSecondaryButton,
+    NotReportedByTerminal,
+    ButtonIdentityUnavailable,
+    NoTrackingMode,
+    GestureNotInSubset,
+    MultiTouchDeferred,
+    NotDeclaredByApp,
+    UnknownOrUnsupportedEvent,
+}
+
 // Install frames are only produced/consumed with the `sandbox` feature.
 #[cfg_attr(not(feature = "sandbox"), allow(dead_code))]
 #[derive(Debug, Deserialize)]
@@ -308,6 +373,46 @@ pub(crate) enum ClientFrame {
     /// Explicit bounded clipboard text, delivered as one durable input event.
     Paste {
         text: String,
+    },
+    /// Pointer activation input (#1831 slice S2, input event model design):
+    /// journaled and replayed like `Input`. Coordinates are cells in the
+    /// target surface's grid — producers map device pixels to cells at the
+    /// edge, so a frame never carries pixels. A drag arrives as a `press`,
+    /// a sequence of `drag_move` frames, and a `release`.
+    Pointer {
+        event: PointerEvent,
+        environment: InputEnvironment,
+        /// Unique only within the producing connection; the host namespaces
+        /// it with the connection's identity when journaling.
+        pointer_id: u32,
+        x: u16,
+        y: u16,
+        /// Which button a `secondary_press` / `release` concerns.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        button: Option<PointerButton>,
+        /// Producer-measured hold time; `release` only. Carried so replay
+        /// derives the same click semantic without a wall clock.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        held_duration_ms: Option<u64>,
+        /// The producer's click classification; `release` only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        is_click: Option<bool>,
+        /// Cell delta; `scroll` only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dx: Option<i64>,
+        /// Cell delta; `scroll` only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dy: Option<i64>,
+    },
+    /// Pointer hover (#1831 slice S2): connection-local presentation
+    /// context, ephemeral like `Resize` — never journaled and never seen
+    /// by other sessions.
+    Hover {
+        event: HoverEvent,
+        environment: InputEnvironment,
+        pointer_id: u32,
+        x: u16,
+        y: u16,
     },
     InstallBegin {
         /// The admin secret, for the pre-join admin path. Joined builder
@@ -573,6 +678,16 @@ pub(crate) enum ServerFrame<'a> {
         /// error, so their serialized shape is unchanged.
         #[serde(skip_serializing_if = "Option::is_none")]
         code: Option<&'a str>,
+    },
+    /// A pointer event the host refused (#1831 slice S2): the event the
+    /// environment cannot produce, or that the target app did not
+    /// declare in its manifest `interfaces.input`, is answered with the
+    /// design's named reason — never silently dropped.
+    InputRefused {
+        event: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        environment: Option<InputEnvironment>,
+        reason: InputRefusalReason,
     },
 }
 

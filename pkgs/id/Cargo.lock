@@ -4778,6 +4778,7 @@ name = "id-currency-registry"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -4871,6 +4872,8 @@ dependencies = [
  "iroh-blobs",
  "serde_json",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -4917,6 +4920,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
+ "cbor-core",
  "ed25519-dalek 3.0.0",
  "futures-lite",
  "futures-util",
