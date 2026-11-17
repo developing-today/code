@@ -37,16 +37,18 @@ echo "pass: compliant tree passes"
 grep -q "GRANDFATHERED pkgs/id/src/boards.rs: 3000 production lines (limit 2500) - split tracked by #8891" "$TMP/ok.out"
 echo "pass: grandfathered file passes with a warning naming its split issue"
 
-# A grandfathered file that MOVED keeps its exemption only when the
-# key names its current path (#8894): directory.rs moved again from
-# id-worlds to pkgs/id/crates/id-directory/src/; with a stale key
-# this fixture would report OVER LIMIT instead of GRANDFATHERED.
+# A split file has its grandfather entry deleted (#8591 removed the
+# directory.rs entry when it dropped under the limit), so a file that
+# regrows past the limit at its old path with no entry must fail, not
+# be exempted by a stale key.
 mkdir -p "$TMP/moved/pkgs/id/crates/id-directory/src"
 gen "$TMP/moved/pkgs/id/crates/id-directory/src/directory.rs" 3000
-bash "$SCRIPT" "$TMP/moved" >"$TMP/moved.out"
-grep -q "production-line-guard: OK" "$TMP/moved.out"
-grep -q "GRANDFATHERED pkgs/id/crates/id-directory/src/directory.rs: 3000 production lines (limit 2500) - split tracked by #8591" "$TMP/moved.out"
-echo "pass: grandfather entry matches the file at its moved (crates/id-directory) path"
+if bash "$SCRIPT" "$TMP/moved" >"$TMP/moved.out" 2>&1; then
+  echo "FAIL: guard exempted a file with no grandfather entry" >&2
+  exit 1
+fi
+grep -q "OVER LIMIT pkgs/id/crates/id-directory/src/directory.rs: 3000 production lines" "$TMP/moved.out"
+echo "pass: file with no grandfather entry at its moved (crates/id-directory) path is over limit"
 
 # Violating tree: one synthetic over-limit production file.
 mkdir -p "$TMP/bad/pkgs/id/src"
