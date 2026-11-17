@@ -5261,6 +5261,85 @@ mod tests {
         assert_eq!(fresh["ok"], true);
     }
 
+    /// A program that wants a `client.file.read` whose id flips from
+    /// `read-stale` to `read-fresh` once it hears the first result.
+    struct ReopenRead {
+        heard: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl WorldProgram for ReopenRead {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::System { event } = &event.kind {
+                self.heard.lock().unwrap().push(event.clone());
+            }
+            Ok(())
+        }
+
+        fn wants(&mut self) -> Result<Option<String>> {
+            let id = if self.heard.lock().unwrap().is_empty() {
+                "read-stale"
+            } else {
+                "read-fresh"
+            };
+            Ok(Some(
+                serde_json::json!({
+                    "v": 1,
+                    "requests": [{
+                        "id": id,
+                        "cap": "client.file.read",
+                        "args": {"path": "notes.txt"},
+                    }],
+                })
+                .to_string(),
+            ))
+        }
+    }
+
+    /// F13.7 step 6: the restart rule covers client providers too. A
+    /// pre-open `client.file.read` want is refused `restarted` and
+    /// never routed to a client — no local file is read unattributed
+    /// after a reopen — and the refusal joins the provider audit
+    /// trail (broker-level coverage:
+    /// `restarted_refusal_is_recorded_in_the_audit_trail`). A fresh
+    /// want in the same pass still reaches the broker.
+    #[tokio::test]
+    async fn reopened_client_provider_wants_are_refused_not_routed() {
+        let mut core = world(16);
+        core.ledger
+            .set_allowed(BTreeSet::from(["client.file.read".to_owned()]));
+        core.ledger
+            .set_granted(BTreeSet::from(["client.file.read".to_owned()]));
+        let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(ReopenRead {
+                heard: heard.clone(),
+            }),
+            None,
+        );
+        actor.stale_wants_at_open = BTreeSet::from(["read-stale".to_owned()]);
+
+        actor.after_change().await;
+
+        let heard = heard.lock().unwrap();
+        assert_eq!(heard.len(), 2, "unexpected deliveries: {heard:?}");
+        let refusal: serde_json::Value = serde_json::from_str(&heard[0]).unwrap();
+        assert_eq!(refusal["id"], "read-stale");
+        assert_eq!(refusal["ok"], false);
+        assert_eq!(refusal["error"], "actor_denied");
+        assert_eq!(refusal["reason"], "restarted");
+        // The fresh want reached the broker, which refused it
+        // unattributed (this harness has no joined session) rather
+        // than routing it to any client.
+        let fresh: serde_json::Value = serde_json::from_str(&heard[1]).unwrap();
+        assert_eq!(fresh["id"], "read-fresh");
+        assert_eq!(fresh["ok"], false);
+        assert_eq!(fresh["error"], "actor_denied");
+        assert_eq!(fresh["reason"], "unattributed");
+        assert_eq!(actor.provider_broker.pending_count(), 0);
+        assert!(actor.handled_requests.contains("read-stale"));
+    }
+
     /// The capture half of the restart rule: `spawn_restored` refuses the
     /// requests present in `wants` at open, while a fresh spawn executes the
     /// same wants.
@@ -9182,6 +9261,173 @@ mod schedule_tests {
         actor.after_change().await;
         actor.acting = None;
         let _ = response.await.unwrap().unwrap();
+    }
+
+    /// A journal that records how the actor persisted - plain appends
+    /// vs batches with their sizes - so a group-commit test observes the
+    /// batching itself, not just its effects (#8239).
+    #[derive(Clone, Default)]
+    struct BatchJournal {
+        entries: Arc<std::sync::Mutex<Vec<JournalEntry>>>,
+        appends: Arc<std::sync::Mutex<usize>>,
+        batches: Arc<std::sync::Mutex<Vec<usize>>>,
+    }
+
+    impl BatchJournal {
+        fn for_world(world_id: &str) -> Self {
+            let journal = Self::default();
+            journal.entries.lock().unwrap().push(JournalEntry::Created {
+                world_id: world_id.to_owned(),
+                version: JOURNAL_VERSION,
+            });
+            journal
+        }
+
+        fn committed(&self) -> Vec<JournalEntry> {
+            self.entries
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|entry| matches!(entry, JournalEntry::Committed { .. }))
+                .cloned()
+                .collect()
+        }
+    }
+
+    impl WorldJournal for BatchJournal {
+        fn append(&mut self, entry: &JournalEntry) -> Result<()> {
+            *self.appends.lock().unwrap() += 1;
+            self.entries.lock().unwrap().push(entry.clone());
+            Ok(())
+        }
+
+        fn append_batch(&mut self, entries: &[JournalEntry]) -> Result<()> {
+            self.batches.lock().unwrap().push(entries.len());
+            self.entries.lock().unwrap().extend(entries.iter().cloned());
+            Ok(())
+        }
+    }
+
+    /// A program that refuses the input `boom` and accepts everything else.
+    struct BatchProgram;
+
+    impl WorldProgram for BatchProgram {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::Input(input) = &event.kind {
+                ensure!(input != b"boom", "the program refuses this input");
+            }
+            Ok(())
+        }
+    }
+
+    fn batch_actor(
+        id: &str,
+        bounds: CapabilityBounds,
+    ) -> (WorldActor, JoinCapability, BatchJournal) {
+        let journal = BatchJournal::for_world(id);
+        let mut core = WorldCore::new(id, WorldLimits::default()).unwrap();
+        let (ann, token) = core
+            .issue_capability("ann", WorldScopes::GUEST, bounds)
+            .unwrap();
+        let issued = core.issued_entry(ann.id).unwrap();
+        journal.entries.lock().unwrap().push(issued);
+        let actor = WorldActor::for_test(
+            core,
+            Box::new(BatchProgram),
+            Some(Box::new(journal.clone())),
+        );
+        (actor, token, journal)
+    }
+
+    /// Drive one drained batch through the actor's batch handler and
+    /// collect every reply, in order.
+    async fn batch_replies(
+        actor: &mut WorldActor,
+        token: &JoinCapability,
+        inputs: &[&[u8]],
+    ) -> Vec<Result<WorldEvent>> {
+        let mut commands = Vec::new();
+        let mut responses = Vec::new();
+        for input in inputs {
+            let (reply, response) = tokio::sync::oneshot::channel();
+            commands.push(WorldCommand::Input {
+                token: token.clone(),
+                input: input.to_vec(),
+                session_id: None,
+                signed_move: None,
+                reply,
+            });
+            responses.push(response);
+        }
+        actor.handle_input_batch(commands).await;
+        let mut results = Vec::new();
+        for response in responses {
+            results.push(response.await.unwrap());
+        }
+        results
+    }
+
+    // #8239 oracle: a batch of N inputs commits N events in order, with
+    // consecutive sequences, persisted as ONE batch append and no plain
+    // appends - one sync covers the whole group.
+    #[tokio::test]
+    async fn input_batch_commits_n_events_with_one_batch_append() {
+        let (mut actor, token, journal) = batch_actor("batch-ok", CapabilityBounds::default());
+        let results = batch_replies(
+            &mut actor,
+            &token,
+            &[b"one", b"two", b"three", b"four", b"five"],
+        )
+        .await;
+        let sequences: Vec<u64> = results
+            .iter()
+            .map(|result| result.as_ref().unwrap().sequence)
+            .collect();
+        assert_eq!(sequences, vec![1, 2, 3, 4, 5]);
+        assert_eq!(journal.committed().len(), 5);
+        assert_eq!(*journal.batches.lock().unwrap(), vec![5]);
+        assert_eq!(*journal.appends.lock().unwrap(), 0);
+    }
+
+    // #8239 oracle: staging stops at the first program rejection - the
+    // staged prefix commits, the rejected input is answered with the
+    // rejection the single path produces, and the input after it is
+    // routed through the single path, where the now-unhealthy program
+    // refuses it as unavailable. Nothing after the prefix is journaled.
+    #[tokio::test]
+    async fn input_batch_stops_at_program_rejection() {
+        let (mut actor, token, journal) = batch_actor("batch-boom", CapabilityBounds::default());
+        let results = batch_replies(&mut actor, &token, &[b"one", b"boom", b"two"]).await;
+        assert!(results[0].is_ok(), "{:?}", results[0]);
+        let rejected = format!("{:#}", results[1].as_ref().unwrap_err());
+        assert!(
+            rejected.contains("world program rejected input"),
+            "{rejected}"
+        );
+        let unavailable = format!("{:#}", results[2].as_ref().unwrap_err());
+        assert!(unavailable.contains("unavailable"), "{unavailable}");
+        assert_eq!(journal.committed().len(), 1);
+        assert_eq!(*journal.batches.lock().unwrap(), vec![1]);
+        assert!(!actor.program_healthy);
+    }
+
+    // #8239 oracle: staged spends count against the uses limit before
+    // commit - a batch of three from a participant with two uses left
+    // admits exactly two, and the third is refused at prepare time with
+    // the single path's uses error.
+    #[tokio::test]
+    async fn input_batch_accounts_staged_spends_against_uses() {
+        let bounds = CapabilityBounds {
+            expires_at: None,
+            uses: Some(2),
+        };
+        let (mut actor, token, journal) = batch_actor("batch-uses", bounds);
+        let results = batch_replies(&mut actor, &token, &[b"one", b"two", b"three"]).await;
+        assert!(results[0].is_ok(), "{:?}", results[0]);
+        assert!(results[1].is_ok(), "{:?}", results[1]);
+        let refused = format!("{:#}", results[2].as_ref().unwrap_err());
+        assert!(refused.contains("no uses left"), "{refused}");
+        assert_eq!(journal.committed().len(), 2);
     }
 
     #[tokio::test]

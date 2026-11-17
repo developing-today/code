@@ -9,9 +9,9 @@
 // orchestration (enqueueDispatchTask) with a stubbed queue — no network,
 // no Supabase.
 import { describe, expect, test } from "bun:test";
-// src/server.ts loads config at import; loadConfig requires SUPABASE_URL
+// src/server.ts loads config at import; the broker token file fixture keeps the queue unconfigured.
 // (#5120), so pin a fixture project before the dynamic import below.
-process.env.SUPABASE_URL ??= "https://fixture.supabase.co";
+process.env.QUEUE_BROKER_TOKEN_FILE ??= "/nonexistent-dispatch-test/broker-token";
 const { enqueueDispatchTask, isPreExistingTaskRow } = await import("../src/server.ts");
 import type { TaskRow } from "../src/queue.ts";
 

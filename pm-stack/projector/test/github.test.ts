@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
-import { appJwt, apiTokenFor, listResource } from "../src/github";
+import { appJwt, apiTokenFor, listResource, MAX_LIST_PAGES } from "../src/github";
 
 function testKeyB64(type: "pkcs8" | "pkcs1"): string {
   const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -97,6 +97,50 @@ describe("listResource pagination", () => {
     );
     expect(rows).toEqual([{ n: 1 }, { n: 2 }]);
     expect(calls[1]).toBe("https://api.github.com/repos/o/r/issues?per_page=100&page=2");
+  });
+});
+
+describe("listResource pagination bound (#9010)", () => {
+  test("a stream that keeps minting next links errors at the bound, naming the listing", async () => {
+    let calls = 0;
+    const fetchFn = async (url: string) => {
+      calls += 1;
+      const next = url + (url.includes("page=") ? "" : "?page=2");
+      return new Response(JSON.stringify([{ n: calls }]), {
+        status: 200,
+        headers: { link: "<" + next + '>; rel="next"' },
+      });
+    };
+    const result = await listResource<{ n: number }>(
+      { kind: "token", token: "t" },
+      "repos/o/r/issues?per_page=100",
+      fetchFn as unknown as typeof fetch,
+    ).catch((error: unknown) => error);
+    expect(result).toBeInstanceOf(Error);
+    expect((result as Error).message).toContain("github_api_pagination_bound");
+    expect((result as Error).message).toContain("repos/o/r/issues?per_page=100");
+    expect(calls).toBe(MAX_LIST_PAGES);
+  });
+
+  test("a legitimate read of exactly the bound completes when the last page has no next link", async () => {
+    let calls = 0;
+    const fetchFn = async () => {
+      calls += 1;
+      const isLast = calls >= MAX_LIST_PAGES;
+      return new Response(JSON.stringify([{ n: calls }]), {
+        status: 200,
+        headers: isLast
+          ? {}
+          : { link: "<https://api.github.com/repos/o/r/issues?page=" + (calls + 1) + '>; rel="next"' },
+      });
+    };
+    const rows = await listResource<{ n: number }>(
+      { kind: "token", token: "t" },
+      "repos/o/r/issues?per_page=100",
+      fetchFn as unknown as typeof fetch,
+    );
+    expect(rows.length).toBe(MAX_LIST_PAGES);
+    expect(calls).toBe(MAX_LIST_PAGES);
   });
 });
 

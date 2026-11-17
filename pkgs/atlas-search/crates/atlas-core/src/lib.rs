@@ -46,6 +46,7 @@ pub mod search;
 pub mod shards;
 pub mod shingles;
 pub mod stage;
+pub mod sweep;
 pub mod trace;
 pub mod trace_ingest;
 pub mod trace_stats;

@@ -66,6 +66,10 @@ pub struct FileJournal {
     bytes: u64,
     /// The byte cap this journal enforces (see [`MAX_JOURNAL_BYTES`]).
     max_bytes: u64,
+    /// Lock on a stable sibling file. The journal itself is replaced by
+    /// compaction, so locking its inode would not protect the path lifetime.
+    /// Keep this last so the writer is shut down before ownership is released.
+    _lock: File,
 }
 
 #[derive(Debug)]
@@ -136,6 +140,37 @@ impl Drop for JournalWriter {
     }
 }
 
+fn acquire_journal_lock(path: &Path) -> Result<File> {
+    let mut lock_path = path.as_os_str().to_owned();
+    lock_path.push(".lock");
+    let lock_path = PathBuf::from(lock_path);
+
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let lock = options
+        .open(&lock_path)
+        .with_context(|| format!("open world journal lock {}", lock_path.display()))?;
+    match lock.try_lock() {
+        Ok(()) => Ok(lock),
+        Err(std::fs::TryLockError::WouldBlock) => {
+            bail!(
+                "world journal {} is already open by another handle (lock {})",
+                path.display(),
+                lock_path.display()
+            )
+        }
+        Err(std::fs::TryLockError::Error(error)) => Err(error).with_context(|| {
+            format!(
+                "lock world journal {} via {}",
+                path.display(),
+                lock_path.display()
+            )
+        }),
+    }
+}
+
 fn journal_writer_loop(mut file: File, receiver: Receiver<JournalWriterRequest>) {
     while let Ok(request) = receiver.recv() {
         match request {
@@ -183,6 +218,7 @@ impl FileJournal {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create {}", parent.display()))?;
         }
+        let lock = acquire_journal_lock(path)?;
         let mut options = OpenOptions::new();
         options.read(true).append(true).create(true);
         #[cfg(unix)]
@@ -216,6 +252,7 @@ impl FileJournal {
             version,
             bytes: good_len,
             max_bytes,
+            _lock: lock,
         };
         if entries.is_empty() {
             let header = JournalEntry::Created {
@@ -376,6 +413,48 @@ impl WorldJournal for FileJournal {
         Ok(())
     }
 
+    fn append_batch(&mut self, entries: &[JournalEntry]) -> Result<()> {
+        ensure!(
+            !self.broken,
+            "world journal is unusable after a failed compaction"
+        );
+        if entries.is_empty() {
+            return Ok(());
+        }
+        // One sync covers the whole batch (#8239) - unless an entry needs
+        // a header version bump, whose rewrite-then-append dance is the
+        // per-entry path's job; fall back to it for the whole batch so
+        // ordering and bump semantics stay exactly the single-append ones.
+        if entries
+            .iter()
+            .any(|entry| journal_version_required_by(entry) > self.version)
+        {
+            for entry in entries {
+                self.append(entry)?;
+            }
+            return Ok(());
+        }
+        let mut batch = Vec::new();
+        for entry in entries {
+            batch.extend_from_slice(&serde_json::to_vec(entry).context("encode journal entry")?);
+            batch.push(b'\n');
+        }
+        // The byte cap is checked on the batch total BEFORE writing, so a
+        // refusal writes nothing - never a prefix of the batch.
+        let new_bytes = self.bytes + batch.len() as u64;
+        ensure!(
+            new_bytes <= self.max_bytes,
+            "world journal {} would exceed its byte cap ({new_bytes} > {} bytes); append refused",
+            self.path.display(),
+            self.max_bytes
+        );
+        // JournalWriter::append is one write_all + one sync_data, so the
+        // concatenated batch is durable after a single sync.
+        self.writer.append(batch)?;
+        self.bytes = new_bytes;
+        Ok(())
+    }
+
     fn replication_snapshot(&mut self) -> Result<crate::world::JournalSnapshot> {
         let bytes = std::fs::read(&self.path)
             .with_context(|| format!("read world journal snapshot {}", self.path.display()))?;
@@ -459,6 +538,9 @@ impl WorldJournal for FileJournal {
             !self.broken,
             "world journal is unusable after a failed compaction"
         );
+        // One lifetime-held lock per journal path makes concurrent compaction
+        // of the same journal unreachable; the sibling temp can therefore be
+        // shared safely between sequential compactions.
         let tmp = self.path.with_extension("jsonl.tmp");
         // Build the replacement beside the journal; the live file is untouched
         // until the rename, so any failure before it leaves the old journal.
@@ -1233,6 +1315,99 @@ mod tests {
         line
     }
 
+    #[test]
+    fn journal_rejects_a_second_live_handle_and_reopens_after_drop() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let (journal, _) = FileJournal::open(&path, "w").unwrap();
+
+        let error = FileJournal::open(&path, "w")
+            .expect_err("a second handle must not own the same journal");
+        let message = format!("{error:#}");
+        assert!(message.contains(&path.display().to_string()), "{message}");
+        assert!(message.contains("already open"), "{message}");
+
+        drop(journal);
+        FileJournal::open(&path, "w").expect("the lock is released when the handle drops");
+    }
+
+    // #8239 group commit: a batch lands every entry in order, readable
+    // back exactly, after the one concatenated write + sync.
+    #[test]
+    fn journal_append_batch_lands_every_entry_in_order() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let batch: Vec<JournalEntry> = ["a", "b", "c"]
+            .iter()
+            .map(|name| JournalEntry::CapsGranted {
+                granted: vec![(*name).to_owned()],
+            })
+            .collect();
+        {
+            let (mut journal, entries) = FileJournal::open(&path, "w").unwrap();
+            assert_eq!(entries.len(), 1, "a fresh journal holds only its header");
+            journal.append_batch(&batch).unwrap();
+        }
+        let entries = journal_entries(dir.path());
+        assert_eq!(entries.len(), 1 + batch.len(), "{entries:?}");
+        assert_eq!(&entries[1..], batch.as_slice());
+    }
+
+    // #8239: the byte cap is checked on the batch total before writing,
+    // so a refused batch writes nothing - never a prefix of the batch.
+    #[test]
+    fn journal_append_batch_over_the_cap_writes_nothing() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let (mut journal, _) = FileJournal::open_with_max_bytes(&path, "w", 512).unwrap();
+        let batch: Vec<JournalEntry> = (0..8)
+            .map(|n| JournalEntry::CapsGranted {
+                granted: vec![format!("capability-number-{n}-with-a-long-name")],
+            })
+            .collect();
+        let error = journal.append_batch(&batch).unwrap_err();
+        assert!(error.to_string().contains("byte cap"), "{error:#}");
+        drop(journal);
+        let entries = journal_entries(dir.path());
+        assert_eq!(
+            entries.len(),
+            1,
+            "only the header survives a refused batch: {entries:?}"
+        );
+    }
+
+    // #8239: a batch containing an entry that needs a header version bump
+    // falls back to the per-entry path, whose bump semantics are unchanged.
+    #[test]
+    fn journal_append_batch_with_a_bump_entry_bumps_the_header() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let profile = crate::world_limits::WorldExecutionProfile {
+            wasm_fuel: Some(7),
+            ..Default::default()
+        };
+        let (mut journal, _) = FileJournal::open(&path, "w").unwrap();
+        journal
+            .append_batch(&[
+                JournalEntry::CapsGranted {
+                    granted: vec!["chat".to_owned()],
+                },
+                JournalEntry::ExecutionProfile { profile },
+            ])
+            .unwrap();
+        drop(journal);
+        let entries = journal_entries(dir.path());
+        assert_eq!(entries.len(), 3, "{entries:?}");
+        assert!(matches!(
+            entries[0],
+            JournalEntry::Created {
+                version: crate::world::JOURNAL_VERSION_EXECUTION_PROFILE,
+                ..
+            }
+        ));
+        assert!(matches!(entries[2], JournalEntry::ExecutionProfile { .. }));
+    }
+
     // #560 (option B): appends refuse at the byte cap, the file never
     // exceeds it, and the accepted prefix is exactly what a reopen reads.
     #[test]
@@ -1261,6 +1436,7 @@ mod tests {
             file_len <= 512,
             "the file never exceeds the cap: {file_len}"
         );
+        drop(journal);
         let (_journal, replayed) = FileJournal::open_with_max_bytes(&path, "w", 512).unwrap();
         assert_eq!(replayed.len(), 1 + appended);
     }
@@ -1311,6 +1487,7 @@ mod tests {
             std::fs::metadata(&path).unwrap().len() <= cap,
             "the file never exceeds the cap"
         );
+        drop(journal);
         let (_journal, replayed) = FileJournal::open_with_max_bytes(&path, "w", cap).unwrap();
         assert_eq!(
             replayed.len(),
@@ -1379,6 +1556,7 @@ mod tests {
             "the trim brings the journal back under the cap"
         );
         journal.append(&bulk).unwrap();
+        drop(journal);
         let (_journal, replayed) = FileJournal::open_with_max_bytes(&path, "w", cap).unwrap();
         assert_eq!(replayed.len(), trimmed.len() + 1, "writes resumed");
     }
@@ -2734,17 +2912,35 @@ mod tests {
     #[tokio::test]
     async fn a_journal_for_another_world_is_refused() {
         let dir = TempDir::new().unwrap();
+        // Capture the first world's handle so it can be shut down
+        // explicitly: dropping the service alone leaves its actor -
+        // and the actor's journal ownership (#8459) - alive, so the
+        // second open would be refused as a concurrent open instead
+        // of reaching the belongs-to check below.
+        let first_handle = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let captured = first_handle.clone();
         drop(
             open_world(
                 dir.path(),
                 "one",
                 WorldLimits::default(),
                 RuntimeLimits::default(),
-                service(None),
+                move |handle| {
+                    *captured.lock().unwrap() = Some(handle.clone());
+                    service(None)(handle)
+                },
             )
             .await
             .unwrap(),
         );
+        first_handle
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap()
+            .shutdown()
+            .await
+            .unwrap();
         let err = open_world(
             dir.path(),
             "two",

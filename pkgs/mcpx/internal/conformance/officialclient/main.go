@@ -102,9 +102,14 @@ func run(url, scenario string) error {
 	if version >= modernFloor {
 		protocol = "force-discover"
 	}
+	// writePolicy allow: the daemon's write-policy gate asks a human to confirm every
+	// write-classified call, and this adapter's empty elicitation answers read as
+	// refusals at that gate, so no scenario call ever reached the server under test
+	// (#8922). The gate is covered by the daemon's unit tests; this harness measures
+	// protocol conformance, so its daemon does not ask.
 	cfg := map[string]any{"mcpServers": map[string]any{*namespace: map[string]any{
 		"url": url, "transport": "http", "protocol": protocol,
-		"mcpx": map[string]any{"sharing": "shared", "scope": "global"},
+		"mcpx": map[string]any{"sharing": "shared", "scope": "global", "writePolicy": "allow"},
 	}}}
 	b, _ := json.MarshalIndent(cfg, "", "  ")
 	cfgPath := filepath.Join(dir, ".mcpx.json")

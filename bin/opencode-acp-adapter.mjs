@@ -29,8 +29,12 @@
 //                                session id)
 // There is no v1 route shape left in this file: every serve call
 // above is the pinned server's v2 contract (#4706 rule 1, #4614).
-// No DELETE /api/session/:id call exists here — see the #4707
-// closing-audit disposition of the sessions map (issue #4707).
+// Shutdown deletes the serve sessions this adapter created
+// (DELETE /api/session/:id for every key of the sessions map):
+// the pinned serve never expires idle sessions server-side, so
+// without that they would outlive the adapter on the ONE standing
+// shared serve (#8313; the gap the #4707 closing audit filed).
+// Best-effort and bounded — exit is never blocked on the serve.
 //
 // Prompt lifecycle (design #4706, closing audit #4707) — the four
 // rules every state container below obeys:
@@ -232,7 +236,24 @@ async function serveJson(pathname, { method = 'GET', body } = {}) {
 // ---------------------------------------------------------------------------
 
 let nextOutgoingId = 1;
-const pendingClientRequests = new Map(); // id -> { resolve, reject }
+const pendingClientRequests = new Map(); // id -> { resolve, reject, timer }
+
+// #8314: bound the wait for a client answer to a request we send.
+// requestClient's only caller is handlePermissionAsked
+// (session/request_permission): an approver who never answers would
+// otherwise hold the pending entry — and, through it, the serve-side
+// permission reply — for the process lifetime, wedging the gated
+// tool call until the session is interrupted. On expiry the request
+// rejects through the same failed-request path an errored answer
+// takes, which posts the reject decision to the serve reply
+// endpoint, and the pending entry is dropped. The default is
+// generous (10 minutes: a human approver may be reading the prompt,
+// and the serve has no shorter deadline of its own) but finite.
+// Tests override it via OPENCODE_ACP_PERMISSION_TIMEOUT_MS.
+const PERMISSION_REQUEST_TIMEOUT_MS = (() => {
+  const fromEnv = Number(process.env.OPENCODE_ACP_PERMISSION_TIMEOUT_MS);
+  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 600_000;
+})();
 
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -254,7 +275,17 @@ function requestClient(method, params) {
   const id = nextOutgoingId;
   nextOutgoingId += 1;
   return new Promise((resolve, reject) => {
-    pendingClientRequests.set(id, { resolve, reject });
+    const timer = setTimeout(() => {
+      if (pendingClientRequests.delete(id)) {
+        reject(
+          new Error(
+            `client did not answer ${method} within ${PERMISSION_REQUEST_TIMEOUT_MS}ms (#8314)`,
+          ),
+        );
+      }
+    }, PERMISSION_REQUEST_TIMEOUT_MS);
+    timer.unref?.();
+    pendingClientRequests.set(id, { resolve, reject, timer });
     send({ jsonrpc: '2.0', id, method, params });
   });
 }
@@ -736,6 +767,7 @@ async function dispatch(message) {
     if (isRequest && pendingClientRequests.has(id)) {
       const pending = pendingClientRequests.get(id);
       pendingClientRequests.delete(id);
+      clearTimeout(pending.timer);
       if (message.error) pending.reject(new Error(message.error.message || 'client request failed'));
       else pending.resolve(message.result);
     }
@@ -755,6 +787,57 @@ async function dispatch(message) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Shutdown session cleanup (#8313)
+// ---------------------------------------------------------------------------
+
+// The pinned serve never expires idle sessions server-side (verified
+// against the flake.lock-pinned fork: its inactivity sweep only
+// interrupts executions and evicts location caches; session records
+// are removed solely through the explicit DELETE route). Every serve
+// session this adapter created would therefore outlive it on the ONE
+// standing shared serve, so shutdown deletes the sessions it owns —
+// the keys of the sessions map. Best-effort and bounded: each delete
+// is abort-timed and exit proceeds on the same overall bound whether
+// or not the serve answers. Crash case: if the adapter is killed
+// hard (SIGKILL, host death) no cleanup runs and its sessions persist
+// until the serve restarts — accepted residual, recorded on #8313.
+const SHUTDOWN_CLEANUP_BUDGET_MS = 2000;
+
+async function deleteOwnedServeSessions() {
+  const ids = [...sessions.keys()];
+  if (ids.length === 0) return;
+  debug(`shutdown: deleting ${ids.length} owned serve session(s)`);
+  const deadline = Date.now() + SHUTDOWN_CLEANUP_BUDGET_MS;
+  await Promise.allSettled(
+    ids.map(async (id) => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return;
+      try {
+        await fetch(`${serverBase}/api/session/${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+          headers: authHeaders(),
+          signal: AbortSignal.timeout(remaining),
+        });
+      } catch {
+        // Best-effort: a failed delete never blocks or fails shutdown.
+      }
+    }),
+  );
+}
+
+let shutdownStarted = false;
+function shutdown() {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  shuttingDown = true;
+  const forceExit = setTimeout(() => process.exit(0), SHUTDOWN_CLEANUP_BUDGET_MS + 500);
+  void deleteOwnedServeSessions().finally(() => {
+    clearTimeout(forceExit);
+    process.exit(0);
+  });
+}
+
 function main() {
   void runEventStream();
   const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
@@ -770,14 +853,8 @@ function main() {
     }
     void dispatch(message);
   });
-  rl.on('close', () => {
-    shuttingDown = true;
-    process.exit(0);
-  });
-  process.on('SIGTERM', () => {
-    shuttingDown = true;
-    process.exit(0);
-  });
+  rl.on('close', shutdown);
+  process.on('SIGTERM', shutdown);
   debug(`started; server=${serverBase}`);
 }
 

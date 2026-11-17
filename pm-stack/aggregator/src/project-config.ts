@@ -14,6 +14,7 @@
 import type { GhItem, ProjectPoolItem, RefKey, RoadmapRow } from "./model.ts";
 import { parseRef, refUrl } from "./model.ts";
 import { PROGRAM, TRACKED_REFS, type ProgramEntry, type TrackedIssue } from "./program.ts";
+import type { ProjectDocSnapshot, ProjectDocTarget } from "./project-doc.ts";
 import { summarizeWeights, type WeightSummary } from "./weights.ts";
 import { isIsoDate } from "./validate.ts";
 
@@ -808,6 +809,12 @@ export interface ProjectDetail {
   repoCards: RepoCardDetail[];
   /** Whole-pool items with no Area (the gap note for null-area projects). */
   unsetPoolCount: number;
+  /** The project's derived doc (#1108 remainder): description from
+   * its roadmap file + newest doc/ status record, read from the code
+   * checkout by the Source. Null when the source cannot read the
+   * checkout (or the project has no roadmap home doc) — the page
+   * then falls back to the registry intro / statusReport. */
+  doc: ProjectDocSnapshot | null;
 }
 
 export function buildProjectDetail(
@@ -815,6 +822,7 @@ export function buildProjectDetail(
   items: Map<RefKey, GhItem>,
   pool: ProjectPoolItem[],
   rows: RoadmapRow[],
+  doc: ProjectDocSnapshot | null = null,
 ): ProjectDetail {
   const poolItems =
     config.poolArea === null
@@ -839,6 +847,24 @@ export function buildProjectDetail(
       tracked: card.trackedRefs.map((ref) => ({ ref, item: items.get(ref) ?? null })),
     })),
     unsetPoolCount: unsetPoolCount(pool),
+    doc,
+  };
+}
+
+/** The derived-doc target for a project (#1108 remainder): only a
+ * home doc that is a planning/roadmaps/*.md file in the code repo
+ * qualifies — that is the roadmap the aggregator's checkout carries,
+ * and its basename is the doc/ status-record slug. Anything else
+ * (the pm-dashboard design record, a project with no home doc) has
+ * no derived doc and keeps the registry text. */
+export function projectDocTarget(config: ProjectConfig): ProjectDocTarget | null {
+  const homeDoc = config.homeDoc;
+  if (!homeDoc || homeDoc.repo !== CODE) return null;
+  if (!homeDoc.path.startsWith("planning/roadmaps/") || !homeDoc.path.endsWith(".md")) return null;
+  return {
+    repo: homeDoc.repo,
+    roadmapPath: homeDoc.path,
+    slug: homeDoc.path.split("/").pop()!.replace(/\.md$/, ""),
   };
 }
 

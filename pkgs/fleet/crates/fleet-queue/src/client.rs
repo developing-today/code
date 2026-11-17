@@ -853,7 +853,8 @@ Run `repo-queue <verb> --help` for flags:\n\
   revive <task-id> [--worker <id>] [--reason <text>] [--not-before <ts>]\n\
   fail <task-id> [--worker <id>] [--error <text>] [--reason-class <c>] [--execution <id>]\n\
   complete <task-id> [--worker <id>] [--result <json>] [--result-file <f>] [--telemetry <json>] [--execution <id>] [--queue <name>]\n\
-  timeline <task-id> [--worker <id>]\n\
+  timeline <task-id> [--worker <id>] [--json]\n\
+  history <task-id> [--worker <id>] [--json]  (alias of timeline)\n\
   models [--days <n>] [--json]\n\
   health [--queue <name>] [--worker <id>]\n\
   signal [--queue <name>] [--reason <text>]\n\
@@ -925,7 +926,10 @@ pub(crate) fn usage(verb: &str) -> &'static str {
             "usage: repo-queue complete <task-id> [--worker <id>] [--result <json>] [--result-file <f>] [--telemetry <json>] [--execution <id>] [--queue <name>]\n\nCompletes a task."
         }
         "timeline" => {
-            "usage: repo-queue timeline <task-id> [--worker <id>]\n\nShows a task's event timeline."
+            "usage: repo-queue timeline <task-id> [--worker <id>] [--json]\n\nShows a task's event timeline."
+        }
+        "history" => {
+            "usage: repo-queue history <task-id> [--worker <id>] [--json]\n\nAlias of timeline: shows a task's event timeline."
         }
         "models" => {
             "usage: repo-queue models [--days <n>] [--json]\n\nRolls up serving-model stamps."
@@ -1385,6 +1389,47 @@ fn queue_scope_from(flag: Option<String>, env: Option<&str>) -> Option<String> {
     env.map(str::trim)
         .filter(|v| !v.is_empty())
         .map(str::to_string)
+}
+
+/// #8606: why a claim refuses as bare, or None when it carries
+/// intent. A claim with no task, no filter, no queue scope (flag
+/// or env), no batch count, no handoff pick, and no identity
+/// marks (worker, lane, session, pool, platform, from-session)
+/// is a probing accident, never a meaningful intent: five
+/// recorded firings (tasks 10945, 12706, 14884, 11421, 5865)
+/// each stole the queue's top task under the default identity
+/// while a lane probed the CLI's usage. Every documented claim
+/// form names at least one of these — lanes pass --worker and
+/// --lane, directed claims pass --task, designated lanes pass
+/// --filter, scoped claims pass --queue — so the refusal fires
+/// only on the zero-intent shape, before any broker contact.
+fn bare_claim_refusal(args: &Args, queue_scope: &Option<String>) -> Option<String> {
+    if queue_scope.is_some() || args.has("handoff") || args.has("bind") {
+        return None;
+    }
+    const INTENT_FLAGS: [&str; 10] = [
+        "task",
+        "filter",
+        "queue",
+        "count",
+        "worker",
+        "lane",
+        "session-id",
+        "pool",
+        "platform",
+        "from-session",
+    ];
+    if INTENT_FLAGS.iter().any(|name| args.get(name).is_some()) {
+        return None;
+    }
+    Some(
+        "claim: refusing a bare claim with no task, filter, queue, or identity \
+         arguments — a bare claim is never a meaningful intent and has repeatedly \
+         stolen the queue's top task during CLI probing (#8606). Pass the claim \
+         you mean: --worker <w> --lane <l> for a lane claim, --task <id> for a \
+         directed claim, or --filter '<expr>' / --queue <name> to scope it."
+            .to_string(),
+    )
 }
 
 fn opt_worker(args: &Args) -> String {
@@ -2224,6 +2269,18 @@ fn cmd_list(rest: &[String]) -> i32 {
         Ok(limit) => limit,
         Err(e) => die(2, &e),
     };
+    // #9027: --not-before is validated with the same rule park and
+    // revive apply (#6426). Forwarded raw, a garbage value silently
+    // narrowed the listing on the Turso backend, whose TEXT
+    // comparison made the predicate false for every row carrying a
+    // not_before (or disabled the filter) with exit 0.
+    let not_before = match args.get("not-before") {
+        Some(nb) => match validate_not_before_flag(&nb) {
+            Ok(v) => Some(v),
+            Err(e) => die(2, &e),
+        },
+        None => None,
+    };
     // #7871: fetch in pages of LIST_PAGE_SIZE (see list_pages) — a
     // single oversized /list response comes back unusable and used
     // to render as a silent "(no tasks)". `--task <id>` narrows to
@@ -2240,7 +2297,7 @@ fn cmd_list(rest: &[String]) -> i32 {
                 "status": args.get("status"),
                 "limit": page_limit,
                 "offset": offset,
-                "not_before": args.get("not-before"),
+                "not_before": not_before,
                 "lane": args.get("lane"),
                 "worker": args.get("worker"),
                 "task": args.get_i64("task"),
@@ -2493,7 +2550,10 @@ fn unbound_append(worker: &str, row: &Value, trigger: &str) {
 /// #9046: fleet session ids are `ses_` + alphanumerics — the
 /// shape every session surface mints. Anything else is not a
 /// session id and must never reach a route_attempt SQL string.
-fn valid_session_id(s: &str) -> bool {
+/// #8287: this is the crate's one session-id predicate — the
+/// broker's bind verb (turso_queue::verb_bind) validates against
+/// it too; do not fork a second definition.
+pub(crate) fn valid_session_id(s: &str) -> bool {
     s.len() > 4 && s.starts_with("ses_") && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
@@ -2704,9 +2764,9 @@ fn binding_windows(events: &[TimelineEvent]) -> Vec<(String, String, Option<Stri
 /// #9046: render one task's model timeline — binding windows,
 /// stamps, and transitions in order, with the exact resolved
 /// models per window joined from route_attempt.
-fn cmd_timeline(rest: &[String]) -> i32 {
-    let args = parse_verb_args("timeline", rest, &["worker"], &[]);
-    reject_extra_pos("timeline", &args, 1);
+fn cmd_timeline(verb: &str, rest: &[String]) -> i32 {
+    let args = parse_verb_args(verb, rest, &["worker"], &["json"]);
+    reject_extra_pos(verb, &args, 1);
     let task_id = args.pos_i64(0, "task_id");
     let mut events: Vec<TimelineEvent> = Vec::new();
     for kind in [
@@ -2754,8 +2814,63 @@ fn cmd_timeline(rest: &[String]) -> i32 {
     }
     events.sort_by_key(|e| e.id);
     let events = collapse_timeline(events);
+    let json_out = args.has("json");
     if events.is_empty() {
+        if json_out {
+            print_json(&json!({"task_id": task_id, "events": [], "served": []}));
+            return 0;
+        }
         println!("task {task_id}: no timeline records");
+        return 0;
+    }
+    if json_out {
+        // --json (#8200 residual): the same records the table below
+        // prints, as structured data — events in order, plus the
+        // route_attempt served windows. Marks print as recorded:
+        // an absent mark is null, never invented.
+        let windows = binding_windows(&events);
+        let served: Vec<Value> = windows
+            .iter()
+            .map(|(sid, start, end)| {
+                let start_ms = parse_ts_str(start).map(|us| us / 1000).unwrap_or(0);
+                let end_ms = end
+                    .as_ref()
+                    .and_then(|e| parse_ts_str(e))
+                    .map(|us| us / 1000)
+                    .unwrap_or_else(|| {
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as i64)
+                            .unwrap_or(0)
+                    });
+                json!({
+                    "session_id": sid,
+                    "start": start,
+                    "end": end,
+                    "segments": route_segments_for_session(sid, start_ms, end_ms)
+                        .unwrap_or_default(),
+                })
+            })
+            .collect();
+        print_json(&json!({
+            "task_id": task_id,
+            "events": events
+                .iter()
+                .map(|ev| {
+                    json!({
+                        "id": ev.id,
+                        "kind": ev.kind,
+                        "created_at": ev.created_at,
+                        "session_id": ev.session_id,
+                        "provider": ev.provider,
+                        "model": ev.model,
+                        "variant": ev.variant,
+                        "trigger": ev.trigger,
+                    })
+                })
+                .collect::<Vec<_>>(),
+            "served": served,
+        }));
         return 0;
     }
     for ev in &events {
@@ -3138,6 +3253,12 @@ fn cmd_claim(rest: &[String]) -> i32 {
         &["handoff", "bind"],
     );
     reject_extra_pos("claim", &args, 0);
+    // #8606: a zero-intent claim refuses before any broker
+    // contact (see bare_claim_refusal).
+    let queue_scope = opt_queue_scoped(&args);
+    if let Some(msg) = bare_claim_refusal(&args, &queue_scope) {
+        die(2, &msg);
+    }
     let worker = opt_worker(&args);
     let lease_seconds = match lease_seconds_or_default(args.get_i64("lease-seconds")) {
         Ok(v) => v,
@@ -3153,7 +3274,7 @@ fn cmd_claim(rest: &[String]) -> i32 {
     // in priority order. An explicit --queue still scopes the
     // claim to one stream exactly as before, so existing shift
     // bodies keep working unchanged.
-    if let Some(q) = opt_queue_scoped(&args) {
+    if let Some(q) = queue_scope {
         body["queue"] = json!(q);
     }
     // --filter '<expr>': the claimer-side boolean filter
@@ -3351,7 +3472,11 @@ fn cmd_claim(rest: &[String]) -> i32 {
     }
     let (mut out, code) = claim_output(&resp);
     if code != 0 {
-        eprint("repo-queue: no claimable task");
+        // #8154: name why when the envelope carries the counts.
+        eprint(
+            &no_claim_diagnostic(&resp)
+                .unwrap_or_else(|| "repo-queue: no claimable task".to_string()),
+        );
         print_json(&out);
         return code;
     }
@@ -3545,14 +3670,33 @@ fn claim_batch_output(resp: &Value, worker: &str, requested: i64) -> i32 {
         }
     }
     let claimed = tasks.len();
-    print_json(&json!({
+    let mut out = json!({
         "tasks": tasks,
         "claimed": claimed,
         "requested": requested,
         "guard_held": held,
-    }));
+    });
+    // #8154: an empty batch carries the no-claim counts too.
     if claimed == 0 {
-        eprint("repo-queue: no claimable task");
+        if let Some(obj) = out.as_object_mut() {
+            for k in [
+                "queued",
+                "at_cap_queued",
+                "queued_not_yet_due",
+                "parked_due",
+            ] {
+                if let Some(v) = resp.get(k) {
+                    obj.insert(k.to_string(), v.clone());
+                }
+            }
+        }
+    }
+    print_json(&out);
+    if claimed == 0 {
+        eprint(
+            &no_claim_diagnostic(resp)
+                .unwrap_or_else(|| "repo-queue: no claimable task".to_string()),
+        );
         return NO_CLAIM_EXIT;
     }
     0
@@ -3619,6 +3763,33 @@ const NO_CLAIM_EXIT: i32 = 5;
 /// (or missing) row yields the distinct `{"task": null}` marker with
 /// NO_CLAIM_EXIT, a value carrying no id/queue/status/dedupe_key
 /// fields a caller could mistake for a task.
+/// #8154 (follow-on #2937 acceptance 4): the no-claim diagnostic.
+/// When the broker's no-row envelope carries the scoped counts,
+/// name why the claim found nothing — most importantly the attempt
+/// cap, the case that otherwise reads as a mysteriously empty
+/// queue. Returns None when the envelope has no counts (an older
+/// broker), so callers fall back to the bare line.
+fn no_claim_diagnostic(resp: &Value) -> Option<String> {
+    let queued = resp.get("queued")?.as_i64()?;
+    let at_cap = resp
+        .get("at_cap_queued")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let not_due = resp
+        .get("queued_not_yet_due")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let parked_due = resp.get("parked_due").and_then(|v| v.as_i64()).unwrap_or(0);
+    let mut line = format!(
+        "repo-queue: no claimable task — {queued} queued ({at_cap} at the attempt cap, \
+         {not_due} not yet due), {parked_due} parked due (#8154)"
+    );
+    if queued > 0 && at_cap >= queued {
+        line.push_str("; every queued task is at the attempt cap");
+    }
+    Some(line)
+}
+
 fn claim_output(resp: &Value) -> (Value, i32) {
     let row = resp.get("row").cloned().unwrap_or(Value::Null);
     if row.is_null() {
@@ -3627,7 +3798,16 @@ fn claim_output(resp: &Value) -> (Value, i32) {
         // instead of an empty claim.
         let mut out = json!({"task": Value::Null});
         if let Some(obj) = out.as_object_mut() {
-            for k in ["budget_skipped", "max_required_budget_minutes"] {
+            for k in [
+                "budget_skipped",
+                "max_required_budget_minutes",
+                // #8154: the no-claim counts ride the printed
+                // envelope next to the budget summary.
+                "queued",
+                "at_cap_queued",
+                "queued_not_yet_due",
+                "parked_due",
+            ] {
                 if let Some(v) = resp.get(k) {
                     obj.insert(k.to_string(), v.clone());
                 }
@@ -6385,7 +6565,8 @@ pub fn run(args: &[String]) -> i32 {
         "revive" => cmd_revive(rest),
         "fail" => cmd_fail(rest),
         "complete" => cmd_complete(rest),
-        "timeline" => cmd_timeline(rest),
+        "timeline" => cmd_timeline("timeline", rest),
+        "history" => cmd_timeline("history", rest),
         "models" => cmd_models(rest),
         "health" => cmd_health(rest),
         "signal" => cmd_signal(rest),
@@ -6493,6 +6674,76 @@ mod tests {
     }
 
     #[test]
+    fn bare_claim_refuses_and_intent_claims_pass_8606() {
+        // #8606 oracle: the zero-intent claim shape that fired
+        // five times during CLI probing refuses; every documented
+        // claim form passes. Args are built through the same
+        // parser cmd_claim uses, with its own flag/bool lists.
+        let mk = |tokens: &[&str]| {
+            let rest: Vec<String> = tokens.iter().map(|s| s.to_string()).collect();
+            parse_verb_args(
+                "claim",
+                &rest,
+                &[
+                    "queue",
+                    "worker",
+                    "lease-seconds",
+                    "lane",
+                    "task",
+                    "count",
+                    "from-session",
+                    "platform",
+                    "session-id",
+                    "model-provider",
+                    "model-id",
+                    "model-variant",
+                    "filter",
+                    "pool",
+                    "launched-by",
+                    "remaining-budget-minutes",
+                ],
+                &["handoff", "bind"],
+            )
+        };
+        // Bare: no arguments at all — the probing shape.
+        assert!(bare_claim_refusal(&mk(&[]), &None).is_some());
+        // A lease alone is not intent either.
+        assert!(bare_claim_refusal(&mk(&["--lease-seconds", "60"]), &None).is_some());
+        // An env queue scope is intent even with no flags.
+        assert!(
+            bare_claim_refusal(&mk(&[]), &Some("repo-health-code-pilot".to_string())).is_none()
+        );
+        // The documented forms all pass: scoped, lane, directed,
+        // filtered, batch, handoff.
+        assert!(bare_claim_refusal(&mk(&["--queue", "repo-health-code-pilot"]), &None).is_none());
+        assert!(
+            bare_claim_refusal(
+                &mk(&[
+                    "--worker",
+                    "repo-worker-code",
+                    "--lane",
+                    "any-b",
+                    "--lease-seconds",
+                    "2700",
+                    "--remaining-budget-minutes",
+                    "120",
+                ]),
+                &None,
+            )
+            .is_none()
+        );
+        assert!(bare_claim_refusal(&mk(&["--task", "123"]), &None).is_none());
+        assert!(bare_claim_refusal(&mk(&["--filter", "repo = code"]), &None).is_none());
+        assert!(
+            bare_claim_refusal(
+                &mk(&["--count", "3", "--worker", "repo-worker-code"]),
+                &None
+            )
+            .is_none()
+        );
+        assert!(bare_claim_refusal(&mk(&["--handoff"]), &None).is_none());
+    }
+
     fn rollup_event_reads_row_task_id() {
         // Claim-link rollup: the row's own task_id column joins
         // the stamp (fleet-cli stamp details carry no task_id).
@@ -7292,6 +7543,50 @@ mod tests {
     }
 
     #[test]
+    fn no_claim_diagnostic_names_at_cap_reason_8154() {
+        // #8154 oracle (follow-on #2937 acceptance 4): a null row
+        // whose envelope carries the counts produces a diagnostic
+        // naming the attempt cap; when every queued task is at cap
+        // the line says so outright. No counts (older broker) -> no
+        // diagnostic, and claim_output still carries the counts on
+        // the printed {task: null} envelope with exit 5.
+        let resp = json!({
+            "row": Value::Null,
+            "queued": 7,
+            "at_cap_queued": 7,
+            "queued_not_yet_due": 0,
+            "parked_due": 2,
+        });
+        let line = no_claim_diagnostic(&resp).expect("counts yield a diagnostic");
+        assert!(line.contains("7 queued"), "{line}");
+        assert!(line.contains("7 at the attempt cap"), "{line}");
+        assert!(
+            line.contains("every queued task is at the attempt cap"),
+            "{line}"
+        );
+        assert!(line.contains("2 parked due"), "{line}");
+        let mixed = json!({
+            "row": Value::Null,
+            "queued": 9,
+            "at_cap_queued": 3,
+            "queued_not_yet_due": 4,
+            "parked_due": 0,
+        });
+        let line = no_claim_diagnostic(&mixed).expect("counts yield a diagnostic");
+        assert!(line.contains("3 at the attempt cap"), "{line}");
+        assert!(line.contains("4 not yet due"), "{line}");
+        assert!(!line.contains("every queued task"), "{line}");
+        assert!(no_claim_diagnostic(&json!({"row": Value::Null})).is_none());
+        let (out, code) = claim_output(&resp);
+        assert_eq!(code, NO_CLAIM_EXIT);
+        assert!(out["task"].is_null());
+        assert_eq!(out["queued"], 7);
+        assert_eq!(out["at_cap_queued"], 7);
+        assert_eq!(out["queued_not_yet_due"], 0);
+        assert_eq!(out["parked_due"], 2);
+    }
+
+    #[test]
     fn claim_bind_path_requires_explicit_bind_single_claim_and_session() {
         // #5757-A oracle: /claim-flow is chosen ONLY for an
         // explicit --bind with a session to bind, a single claim,
@@ -7483,6 +7778,43 @@ mod tests {
             "2026-11-06T05:30:00+05:30",
         ] {
             assert_eq!(validate_not_before_flag(ok), Ok(ok.to_string()));
+        }
+    }
+
+    #[test]
+    fn list_not_before_is_validated_before_the_call_9027() {
+        // #9027: cmd_list forwarded --not-before raw; on the Turso
+        // backend the TEXT comparison then silently narrowed the
+        // listing (a value sorting before every timestamp hid every
+        // row carrying a not_before; one sorting after disabled the
+        // filter) with exit 0. cmd_list now validates the flag with
+        // the park/revive rule and the /list body carries the
+        // validated value.
+        let src = include_str!("client.rs");
+        let seg = src
+            .split("fn cmd_list(")
+            .nth(1)
+            .and_then(|s| s.split("fn cmd_").next())
+            .unwrap_or("");
+        assert!(
+            seg.contains("validate_not_before_flag(&nb)"),
+            "cmd_list validates --not-before before the /list call"
+        );
+        assert!(
+            seg.contains("\"not_before\": not_before"),
+            "the /list body carries the validated value, not the raw flag"
+        );
+        assert!(
+            !seg.contains("\"not_before\": args.get(\"not-before\")"),
+            "the raw flag must not reach the /list body"
+        );
+        // The exact garbage shapes from the finding die at the
+        // validator the client now applies:
+        for bad in ["0", "!", "banana"] {
+            assert!(
+                validate_not_before_flag(bad).is_err(),
+                "{bad} must be rejected"
+            );
         }
     }
 

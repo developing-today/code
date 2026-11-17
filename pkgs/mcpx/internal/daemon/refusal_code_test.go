@@ -25,7 +25,7 @@ func refusalRegistry(t *testing.T, askTimeout time.Duration) (*Registry, *elicit
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { broker.Close() })
+	t.Cleanup(func() { _ = broker.Close() })
 	r := &Registry{
 		consumer: ConsumerPolicy{
 			WritePolicy:        "allow",

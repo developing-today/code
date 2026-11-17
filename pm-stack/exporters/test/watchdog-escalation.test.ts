@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test";
 import {
   applyEscalationActions,
   buildEscalationPacket,
+  buildQueueTaskWrapper,
   EscalationPartialError,
   ESCALATION_NEEDS_DREW_AFTER_MS,
   planEscalation,
@@ -77,11 +78,11 @@ describe("planEscalation + dedupe (#6033 acceptance 1)", () => {
     const health = escalatingHealth();
     const plan = planEscalation(health, CTX);
     expect(plan.deduped).toBe(false);
-    expect(plan.actions.map((a) => a.type)).toEqual(["enqueue_task", "open_issue"]);
+    expect(plan.actions.map((a) => a.type)).toEqual(["open_issue", "enqueue_task"]);
 
     const { calls, effectors } = countingEffectors();
     const refs = await applyEscalationActions(plan.actions, effectors);
-    expect(calls).toEqual(["enqueue", "open"]);
+    expect(calls).toEqual(["open", "enqueue"]);
     expect(refs).toEqual({ queueTaskId: "task-4242", issueNumber: 777 });
 
     const recorded = recordEscalation(health, CTX, refs, T0);
@@ -125,6 +126,76 @@ describe("packet completeness (#6033 acceptance 2)", () => {
     expect(packet.stopConditions.join(" ")).toContain("human-only challenge");
     expect(packet.stopConditions.join(" ")).toContain("origin allowlist");
     expect(packet.dedupeKey).toBe("watchdog-escalation:mistral:session-expired");
+    expect(packet.issueRepo).toBe(CTX.issueRepo);
+    // A fresh plan has no incident issue yet: it is created first in
+    // the hand-off and its number is stamped in at apply time.
+    expect(packet.issueNumber).toBeNull();
+  });
+});
+
+describe("queue task wrapper — the repo-task/v1 contract (task 20118)", () => {
+  test("apply stamps the confirmed issue number into the enqueue packet", async () => {
+    const seen: (number | null)[] = [];
+    const effectors: EscalationEffectors = {
+      enqueueTask: async (packet) => {
+        seen.push(packet.issueNumber);
+        return "task-4242";
+      },
+      openIssue: async () => 777,
+      commentIssue: async () => {},
+      closeIssue: async () => {},
+      completeTask: async () => {},
+    };
+    const plan = planEscalation(escalatingHealth(), CTX);
+    const refs = await applyEscalationActions(plan.actions, effectors);
+    expect(seen).toEqual([777]);
+    expect(refs).toEqual({ queueTaskId: "task-4242", issueNumber: 777 });
+  });
+
+  test("the wrapper names the incident issue in its dedupe key and payload identity", () => {
+    const packet = { ...buildEscalationPacket(escalatingHealth(), CTX), issueNumber: 777 };
+    const w = buildQueueTaskWrapper(packet, T0);
+    expect(w.dedupe_key).toBe("repo-health:v1:fix:developing-today-forks/openchamber:issue:777");
+    expect(w.priority).toBe(30);
+    const p = w.payload as Record<string, any>;
+    expect(p.schema).toBe("repo-task/v1");
+    expect(p.kind).toBe("small_fix");
+    expect(p.repo).toBe(CTX.issueRepo);
+    expect(p.issue).toEqual({ number: 777 });
+    expect(typeof p.problem).toBe("string");
+    expect((p.problem as string).length).toBeGreaterThan(0);
+    expect(typeof p.priority_reason).toBe("string");
+    for (const f of ["evidence", "acceptance", "tests", "context_refs"]) {
+      expect(Array.isArray(p[f])).toBe(true);
+      expect((p[f] as unknown[]).length).toBeGreaterThan(0);
+      expect((p[f] as unknown[]).every((e) => typeof e === "string")).toBe(true);
+    }
+    expect((p.scope as any).include.length).toBeGreaterThan(0);
+    expect((p.scope as any).exclude.length).toBeGreaterThan(0);
+    expect((p.risk as any).level).toBe("low");
+    expect(p.timebox_minutes).toBeGreaterThan(0);
+    expect((p.dedupe as any).checked_at).toBe(T0);
+    expect(((p.dedupe as any).basis as string).length).toBeGreaterThan(0);
+    // The full escalation context survives inside the payload, so a
+    // browser-enabled agent can start from the claimed task alone.
+    expect((p.escalation_packet as any).dedupeKey).toBe("watchdog-escalation:mistral:session-expired");
+    expect((p.escalation_packet as any).failure.stateFilePath).toBe(CTX.stateFilePath);
+    expect((p.escalation_packet as any).requiredCapability).toContain("browser-enabled");
+  });
+
+  test("the wrapper refuses a packet whose incident issue does not exist yet", () => {
+    const packet = buildEscalationPacket(escalatingHealth(), CTX);
+    expect(packet.issueNumber).toBeNull();
+    expect(() => buildQueueTaskWrapper(packet, T0)).toThrow(/no incident issue number/);
+  });
+
+  test("a resume packet carries the recorded issue number, so the retry needs no new issue", () => {
+    const recorded = recordEscalation(escalatingHealth(), CTX, { queueTaskId: null, issueNumber: 777 }, T0);
+    const plan = planEscalation(recorded, CTX);
+    expect(plan.actions.map((a) => a.type)).toEqual(["enqueue_task"]);
+    const action = plan.actions[0] as Extract<(typeof plan.actions)[number], { type: "enqueue_task" }>;
+    expect(action.packet.issueNumber).toBe(777);
+    expect(action.packet.issueRepo).toBe(CTX.issueRepo);
   });
 });
 
@@ -209,14 +280,14 @@ describe("Codex findings on PR #8357 (class change, partial progress, surfacing 
     expect(plan.actions).toEqual([]);
   });
 
-  test("a failed openIssue surfaces the confirmed task id; the retry plans only the missing issue", async () => {
+  test("a failed enqueueTask surfaces the confirmed issue number; the retry plans only the missing task", async () => {
     const health = escalatingHealth();
     const plan = planEscalation(health, CTX);
     const failing: EscalationEffectors = {
-      enqueueTask: async () => "task-4242",
-      openIssue: async () => {
-        throw new Error("gh unavailable");
+      enqueueTask: async () => {
+        throw new Error("queue unavailable");
       },
+      openIssue: async () => 777,
       commentIssue: async () => {},
       closeIssue: async () => {},
       completeTask: async () => {},
@@ -224,16 +295,16 @@ describe("Codex findings on PR #8357 (class change, partial progress, surfacing 
     const err = await applyEscalationActions(plan.actions, failing).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(EscalationPartialError);
     expect((err as EscalationPartialError).refs).toEqual({
-      queueTaskId: "task-4242",
-      issueNumber: null,
+      queueTaskId: null,
+      issueNumber: 777,
     });
 
     const recorded = recordEscalation(health, CTX, (err as EscalationPartialError).refs, T0);
     const retry = planEscalation(recorded, CTX);
     expect(retry.deduped).toBe(false);
-    expect(retry.actions.map((a) => a.type)).toEqual(["open_issue"]);
+    expect(retry.actions.map((a) => a.type)).toEqual(["enqueue_task"]);
 
-    const completed = recordEscalation(recorded, CTX, { queueTaskId: null, issueNumber: 777 }, T0);
+    const completed = recordEscalation(recorded, CTX, { queueTaskId: "task-4242", issueNumber: null }, T0);
     expect(completed.incident?.escalation?.queueTaskId).toBe("task-4242");
     expect(completed.incident?.escalation?.issueNumber).toBe(777);
     expect(completed.incident?.escalation?.since).toBe(T0);

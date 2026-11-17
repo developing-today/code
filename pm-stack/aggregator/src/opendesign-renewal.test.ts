@@ -6,6 +6,7 @@ import {
   horizonHours,
   pickOpenDesignSessionCookie,
   renewOpenDesignSession,
+  SESSION_READ_TRANSPORT_ERROR,
   type OpenDesignCredentialLike,
 } from "./opendesign-renewal.ts";
 
@@ -51,6 +52,46 @@ describe("horizonHours", () => {
 });
 
 describe("renewOpenDesignSession", () => {
+  test("transport failure is unknown: keep last-known horizon; no capture or alert", async () => {
+    let captures = 0;
+    const state = await renewOpenDesignSession(
+      baseDeps({
+        fetchSession: async () => SESSION_READ_TRANSPORT_ERROR,
+        getBrowserCookies: async () => {
+          captures++;
+          return [];
+        },
+      }) as never,
+    );
+    // Oracle: transport-error sentinel must produce unknown state, preserve
+    // the previous session horizon, and bypass every browser capture path.
+    expect(state.status).toBe("unknown");
+    expect(state.sessionExpiresAt).toBeNull();
+    expect(state.capture).toEqual({ attempted: false, result: "not-attempted" });
+    expect(state.alert).toBeNull();
+    expect(captures).toBe(0);
+  });
+
+  test("a definitive rejected session enters the browser re-capture path", async () => {
+    let captures = 0;
+    const state = await renewOpenDesignSession(
+      baseDeps({
+        fetchSession: async () => null,
+        getBrowserCookies: async () => {
+          captures++;
+          return [];
+        },
+        refreshBrowserTab: async () => undefined,
+      }) as never,
+    );
+    // Oracle: null denotes a completed rejection, so the keeper attempts
+    // capture and reports sign-in-needed when the browser has no session.
+    expect(state.status).toBe("attention");
+    expect(captures).toBe(2);
+    expect(state.capture).toEqual({ attempted: true, result: "no-browser-session" });
+    expect(state.alert).toContain("sign-in");
+  });
+
   test("a healthy sliding session is valid and untouched", async () => {
     let writes = 0;
     const state = await renewOpenDesignSession(

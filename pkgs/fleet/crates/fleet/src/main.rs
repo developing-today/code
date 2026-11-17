@@ -732,6 +732,18 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
         println!("{}", fleet_search::serve::SERVE_USAGE);
         return EXIT_OK;
     }
+    // The proxy role under its serve spelling has its own usage
+    // (SERVE_PROXY_USAGE, #6770): `fleet serve proxy --help` asks for
+    // the role's help, not the serve domain's — answer it before the
+    // generic interception below, the same carve-out the search role
+    // gets above (#6400).
+    if d.name == "serve"
+        && args.first().map(|s| s.as_str()) == Some("proxy")
+        && args.get(1).is_some_and(|a| is_help_flag(a))
+    {
+        println!("{SERVE_PROXY_USAGE}");
+        return EXIT_OK;
+    }
     // Domain help is registry data: always available, even where the
     // domain itself is not (§3).
     if wants_domain_help(d, args) {

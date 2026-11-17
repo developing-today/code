@@ -477,6 +477,9 @@ func (c *Client) open(ctx context.Context, method, path string, body []byte, con
 		req.Header.Set(daemon.CallerVersionHeader, v)
 	}
 	c.authorize(req)
+	if mcpclient.TaskExecutionFrom(ctx) {
+		req.Header.Set(daemon.TaskExecutionHeader, "1")
+	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		if isDialErr(err) {

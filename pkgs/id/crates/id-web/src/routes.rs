@@ -581,6 +581,10 @@ fn create_router_inner(state: AppState) -> Router {
     let router = Router::new()
         // Page routes (return full HTML pages)
         .route("/", get(index_handler))
+        .route(
+            "/.well-known/id-transport-advertisement",
+            get(super::transport_ad::transport_advertisement_handler),
+        )
         .route("/files", get(files_page_handler))
         .route(&world_route, get(world_page_handler))
         .route("/settings", get(settings_handler))
@@ -2194,6 +2198,7 @@ mod save_publication_tests {
     use std::{sync::Arc, time::Duration};
 
     use axum::{body::to_bytes, extract::State};
+    use futures_lite::StreamExt;
     use iroh::endpoint::{Endpoint, RelayMode, presets};
     use iroh_blobs::{api::Store, store::mem::MemStore};
     use iroh_docs::protocol::Docs;
@@ -2250,10 +2255,20 @@ mod save_publication_tests {
     }
 
     async fn save(state: AppState, name: &str, text: &str) -> Response {
+        save_based_on(
+            state,
+            name,
+            text,
+            &iroh_blobs::Hash::from_bytes([42; 32]).to_string(),
+        )
+        .await
+    }
+
+    async fn save_based_on(state: AppState, name: &str, text: &str, base: &str) -> Response {
         save_handler(
             State(state),
             Json(SaveRequest {
-                doc_id: iroh_blobs::Hash::from_bytes([42; 32]).to_string(),
+                doc_id: base.to_owned(),
                 name: name.to_owned(),
                 doc: json!({"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":text}]}]}),
             }),
@@ -2306,7 +2321,15 @@ mod save_publication_tests {
         )));
 
         // Repeated successful checkpoints get distinct durable revision events.
-        let second = save(state.clone(), "revision.md", "second revision").await;
+        // The second save names the first save's hash as its base (#8524:
+        // a save whose base is no longer current is refused as stale).
+        let second = save_based_on(
+            state.clone(),
+            "revision.md",
+            "second revision",
+            body["hash"].as_str().unwrap(),
+        )
+        .await;
         assert_eq!(second.status(), StatusCode::OK);
         let second_body = response_json(second).await;
         assert_ne!(body["document_id"], second_body["document_id"]);
@@ -2317,6 +2340,105 @@ mod save_publication_tests {
             .unwrap();
         assert!(state.local_events.lock().await.history(event_id).is_ok());
         assert!(state.local_events.lock().await.history(second_id).is_ok());
+    }
+
+    #[tokio::test]
+    async fn stale_save_is_refused_and_the_current_version_is_preserved() {
+        // #8524: clients A and B both open H1. A saves (base H1) and the
+        // name moves to H2. B's save, still based on H1, must NOT
+        // silently supersede A's version.
+        let (mut state, _endpoint, _docs) = state().await;
+        state.save_limiter = SaveRateLimiter::new(Duration::ZERO);
+
+        let first = save(state.clone(), "notes.md", "original").await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_body = response_json(first).await;
+        let h1 = first_body["hash"].as_str().unwrap().to_owned();
+
+        let a = save_based_on(state.clone(), "notes.md", "A edit", &h1).await;
+        assert_eq!(a.status(), StatusCode::OK);
+        let a_body = response_json(a).await;
+        let h2 = a_body["hash"].as_str().unwrap().to_owned();
+
+        let b = save_based_on(state.clone(), "notes.md", "B stale edit", &h1).await;
+        assert_eq!(b.status(), StatusCode::CONFLICT);
+        let b_body = response_json(b).await;
+        assert_eq!(b_body["reason"], "stale_save_conflict");
+        assert_eq!(b_body["current_doc_id"], h2);
+
+        // The current version is A's, untouched by B's refused save.
+        let current = current_filename_hash(&state.store, "notes.md")
+            .await
+            .unwrap();
+        assert_eq!(current.to_string(), h2);
+    }
+
+    #[tokio::test]
+    async fn matching_save_archives_the_displaced_version() {
+        // #8524: the non-stale path is unchanged — a save based on the
+        // current hash succeeds and the displaced version is archived
+        // under its timestamped name.
+        let (mut state, _endpoint, _docs) = state().await;
+        state.save_limiter = SaveRateLimiter::new(Duration::ZERO);
+
+        let first = save(state.clone(), "notes.md", "original").await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_body = response_json(first).await;
+        let h1 = first_body["hash"].as_str().unwrap().to_owned();
+
+        let second = save_based_on(state.clone(), "notes.md", "updated", &h1).await;
+        assert_eq!(second.status(), StatusCode::OK);
+
+        let mut archived = false;
+        let mut tags = state.store.tags().list().await.unwrap();
+        while let Some(Ok(tag_info)) = tags.next().await {
+            let tag_name = String::from_utf8_lossy(tag_info.name.as_ref()).to_string();
+            if tag_name.starts_with("notes.md.archive.") && tag_info.hash.to_string() == h1 {
+                archived = true;
+            }
+        }
+        assert!(archived, "the displaced version must keep its archive tag");
+    }
+
+    #[tokio::test]
+    async fn concurrent_saves_from_the_same_base_have_exactly_one_winner() {
+        // #8524: two saves racing from the same base — the name lock
+        // serializes them and the loser meets the conflict policy
+        // instead of silently superseding the winner.
+        let (mut state, _endpoint, _docs) = state().await;
+        state.save_limiter = SaveRateLimiter::new(Duration::ZERO);
+
+        let first = save(state.clone(), "notes.md", "original").await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_body = response_json(first).await;
+        let h1 = first_body["hash"].as_str().unwrap().to_owned();
+
+        let (r1, r2) = tokio::join!(
+            save_based_on(state.clone(), "notes.md", "racer one", &h1),
+            save_based_on(state.clone(), "notes.md", "racer two", &h1),
+        );
+        let statuses = [r1.status(), r2.status()];
+        // Exactly one racer wins. The loser is refused — with the 409
+        // conflict when it reaches the stale check, or with the
+        // limiter's 429 while the winner's save is still in flight
+        // (the #2466 name reservation). Either way it never silently
+        // supersedes the winner.
+        assert!(
+            statuses.contains(&StatusCode::OK)
+                && (statuses.contains(&StatusCode::CONFLICT)
+                    || statuses.contains(&StatusCode::TOO_MANY_REQUESTS)),
+            "exactly one racer wins and the other is refused: {statuses:?}"
+        );
+        let winner_body = response_json(if r1.status() == StatusCode::OK {
+            r1
+        } else {
+            r2
+        })
+        .await;
+        let current = current_filename_hash(&state.store, "notes.md")
+            .await
+            .unwrap();
+        assert_eq!(current.to_string(), winner_body["hash"].as_str().unwrap());
     }
 
     #[tokio::test]
@@ -2551,7 +2673,7 @@ mod upload_router_tests {
 
         // Mounting at runtime (no router rebuild) makes /prog serve
         // the mounted world's program surface.
-        state.publication_mounts.mount("arena", "/prog");
+        state.publication_mounts.mount("arena", "/prog").unwrap();
         let mounted = app
             .clone()
             .oneshot(Request::builder().uri("/prog").body(Body::empty()).unwrap())
@@ -2579,6 +2701,36 @@ mod upload_router_tests {
             .await
             .unwrap();
         assert_eq!(after.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn publication_mount_on_a_reserved_route_is_refused_and_explorer_still_answers() {
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        state.world = Some(hub_with_world("arena", Some("s3cret")));
+        let app = create_router(state.clone(), WebSecurity::default());
+
+        // Phase 4: /world is a reserved Explorer route, so the
+        // table refuses the mount instead of letting it shadow the
+        // Explorer page there.
+        let error = state
+            .publication_mounts
+            .mount("arena", "/world")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("reserved Explorer route /world"), "{error}");
+        assert_eq!(state.publication_mounts.lookup("/world"), None);
+
+        // The Explorer world page still answers at /world.
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/world")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
     }
 
     #[tokio::test]

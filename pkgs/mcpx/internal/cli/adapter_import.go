@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -252,6 +254,12 @@ type importShape struct {
 	Subs        []importSub
 	Global      []importFlag
 	Positionals []importFlag // Long holds the name; always TakesValue
+	// SourceText is the exact source text the shape was parsed from:
+	// the completion script, the man page rendering, or the captured
+	// --help output (top-level first, then each subcommand's, in
+	// order). Provenance fingerprints it as SourceSHA256 (#9172,
+	// salvaged from PR #9041).
+	SourceText string
 }
 
 // empty reports whether the parse found nothing worth declaring: the
@@ -495,6 +503,7 @@ func buildGeneratedImport(binary string, o importOptions) (adapter.Spec, []strin
 		SourceDetail:  detail,
 		BinaryPath:    resolved,
 		BinaryVersion: version,
+		SourceSHA256:  sourceSHA256(shape.SourceText),
 		GeneratedAt:   time.Now().UTC().Format(time.RFC3339),
 		Generator:     "mcpx adapter import",
 	}
@@ -548,12 +557,14 @@ func buildCompletionFileImport(o importOptions) (adapter.Spec, []string, error) 
 		return adapter.Spec{}, nil, fmt.Errorf("cannot tell which program %s completes; name it with --name", o.completion)
 	}
 	shape := parseCompletion(string(b), shell, program)
+	shape.SourceText = string(b)
 	if shape.empty() {
 		return adapter.Spec{}, nil, fmt.Errorf("%s yielded no subcommands or flags as a %s completion; nothing to declare", o.completion, shell)
 	}
 	prov := &adapter.Provenance{
 		Source:       "completion",
 		SourceDetail: o.completion,
+		SourceSHA256: sourceSHA256(shape.SourceText),
 		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
 		Generator:    "mcpx adapter import",
 	}
@@ -611,6 +622,7 @@ func completionForBinary(binary, base string, probe bool) (*importShape, string)
 				continue
 			}
 			if shape := parseCompletion(string(b), shell, base); !shape.empty() {
+				shape.SourceText = string(b)
 				return shape, path
 			}
 		}
@@ -624,6 +636,7 @@ func completionForBinary(binary, base string, probe bool) (*importShape, string)
 			continue
 		}
 		if shape := parseCompletion(out, shell, base); !shape.empty() {
+			shape.SourceText = out
 			return shape, binary + " completion " + shell
 		}
 	}
@@ -696,6 +709,19 @@ func runCapture(binary string, args ...string) (string, error) {
 }
 
 var versionTokenRE = regexp.MustCompile(`\d+\.\d+(?:\.\d+)?`)
+
+// sourceSHA256 is the provenance fingerprint of the exact source text
+// a declaration was generated from: the hex SHA-256 of the text, or
+// empty when there is no source text (a --bare declaration records
+// none). Re-importing an unchanged source yields the same fingerprint,
+// so a generation is recognisably the same one (#9172).
+func sourceSHA256(text string) string {
+	if text == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:])
+}
 
 // binaryVersion reads a program's version the one way nearly every
 // program offers: `--version`, first line, first version-shaped token.

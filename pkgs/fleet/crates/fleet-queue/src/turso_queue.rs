@@ -2225,6 +2225,14 @@ fn verb_revive(t: &TursoBackend, req: &Value) -> Value {
         .unwrap_or("fleet-queue-cli")
         .to_string();
     let reason = req_str(req, "reason").unwrap_or("").to_string();
+    // #9179: same storage-layer rule as verb_park — a garbage
+    // not_before stored on a revived (queued) row hits the same
+    // TEXT comparison in the claim predicate and never lapses.
+    if let Some(nb) = req_str(req, "not_before") {
+        if let Err(e) = validate_stored_not_before(nb) {
+            return fail(2, format!("revive_task: {e}"));
+        }
+    }
     let not_before = req_str(req, "not_before")
         .map(str::to_string)
         .unwrap_or_else(now_iso);
@@ -4120,6 +4128,35 @@ fn lane_decision(
     }
 }
 
+/// The session a lane row is *live*-bound to (#8368): the ledger
+/// session_id, unless the broker itself cleared that exact binding
+/// (progress.session_cleared.session_id, stamped by clear_binding
+/// when park/release/expire dropped it). A broker-cleared session is
+/// not bound in any live sense — a row still carrying its id must
+/// behave as unbound for reassignment, or the task loops claim/park
+/// across lanes with no lane-side exit (no flip, no transfer, no
+/// fresh launch).
+fn bound_session<'a>(
+    session_id: Option<&'a str>,
+    cleared_session_id: Option<&str>,
+) -> Option<&'a str> {
+    let sid = session_id.map(str::trim).unwrap_or("");
+    if sid.is_empty() || cleared_session_id == Some(sid) {
+        None
+    } else {
+        session_id
+    }
+}
+
+/// The session id the broker recorded as cleared on a task's
+/// progress (clear_binding's session_cleared stamp), if any (#8368).
+fn cleared_session_id(task: &Value) -> Option<&str> {
+    task.get("progress")
+        .and_then(|p| p.get("session_cleared"))
+        .and_then(|c| c.get("session_id"))
+        .and_then(|v| v.as_str())
+}
+
 /// Whether an EXISTING ledger row flips to direct (#8187): only an
 /// opencode row, only when the caller passes --exclusion-reason
 /// (a Muse lane taking a sink/legacy opencode task direct), and
@@ -4682,11 +4719,23 @@ fn verb_claim_batch(
     match work {
         Ok(rows) => {
             let claimed = rows.len();
-            ok(json!({
+            let mut env = json!({
                 "rows": rows,
                 "claimed": claimed,
                 "requested": count,
-            }))
+            });
+            // #8154: an empty batch names why, same as a single claim.
+            if claimed == 0 {
+                let counts = no_claim_counts(t, &iso(now_unix()), scope);
+                if let Some(obj) = env.as_object_mut() {
+                    if let Some(c) = counts.as_object() {
+                        for (k, v) in c {
+                            obj.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+            }
+            ok(env)
         }
         Err(e) if e.starts_with("claim_repo_task:") => fail(4, e),
         Err(e) => terr(e),
@@ -4881,6 +4930,19 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
                         }
                     }
                 }
+                // #8154 (follow-on #2937 acceptance 4): name WHY the
+                // claim found nothing — the scoped queued / at-cap /
+                // not-yet-due / parked-due counts ride the no-row
+                // envelope so the client diagnostic can say whether
+                // the stream is empty, capped, or merely not due.
+                let counts = no_claim_counts(t, &iso(now_unix()), &scope);
+                if let Some(obj) = resp.as_object_mut() {
+                    if let Some(c) = counts.as_object() {
+                        for (k, v) in c {
+                            obj.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
             }
             ok(resp)
         }
@@ -4954,6 +5016,53 @@ fn budget_skip_summary(
         "budget_skipped": n,
         "max_required_budget_minutes": m,
     })
+}
+
+/// #8154 (follow-on #2937 acceptance 4): the no-claim counts query
+/// shape. One aggregate pass over the claim's own scope counts the
+/// rows the claim searched but could not take, split by reason:
+/// queued (all), at_cap_queued (attempts >= max_attempts — the
+/// #6528 health definition), queued_not_yet_due (under cap, parked
+/// behind a future not_before), parked_due (parked rows the pick
+/// could have taken early: timer lapsed or a capacity park).
+/// Placeholders: the not-yet-due `now`, then the parked-due `now`,
+/// then the scope args.
+fn no_claim_counts_sql(scope_sql: &str) -> String {
+    format!(
+        "SELECT \
+         COALESCE(SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END), 0) AS queued, \
+         COALESCE(SUM(CASE WHEN status = 'queued' AND attempts >= max_attempts THEN 1 ELSE 0 END), 0) AS at_cap_queued, \
+         COALESCE(SUM(CASE WHEN status = 'queued' AND attempts < max_attempts \
+           AND not_before IS NOT NULL AND not_before > ? THEN 1 ELSE 0 END), 0) AS queued_not_yet_due, \
+         COALESCE(SUM(CASE WHEN status = 'parked' AND ((not_before IS NOT NULL AND not_before <= ?) \
+           OR wait_kind = 'capacity') THEN 1 ELSE 0 END), 0) AS parked_due \
+         FROM tasks \
+         WHERE payload IS NOT NULL AND payload <> '' AND payload <> '{{}}'{scope_sql}"
+    )
+}
+
+fn no_claim_counts(t: &TursoBackend, now: &str, scope: &ClaimScope) -> Value {
+    let sql = no_claim_counts_sql(&scope.sql);
+    let mut args: Vec<Arg> = vec![Arg::Text(now.to_string()), Arg::Text(now.to_string())];
+    for a in &scope.args {
+        args.push(a.clone());
+    }
+    match t.query_objs(&sql, &args, &[]) {
+        Ok(rows) => {
+            let first = rows.into_iter().next().unwrap_or_else(|| json!({}));
+            let get = |k: &str| first.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
+            json!({
+                "queued": get("queued"),
+                "at_cap_queued": get("at_cap_queued"),
+                "queued_not_yet_due": get("queued_not_yet_due"),
+                "parked_due": get("parked_due"),
+            })
+        }
+        // A failed count leaves the envelope without counts (the
+        // client then falls back to the bare diagnostic) — never a
+        // fabricated number.
+        Err(_) => json!({}),
+    }
 }
 
 fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
@@ -5046,18 +5155,22 @@ fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            // #8368: the binding that counts is the *live* one —
+            // a ledger session_id the broker itself cleared (it
+            // matches progress.session_cleared) is not bound, and a
+            // row carrying it flips like an unbound row.
+            let bound = bound_session(
+                existing.get("session_id").and_then(|v| v.as_str()),
+                cleared_session_id(&task),
+            );
             // #8187 reassignment: an unbound opencode row flips to
             // direct when the caller passes --exclusion-reason (a
             // Muse lane taking a sink/legacy opencode task direct).
             // The progress.lane re-sync below then stamps direct.
-            if lane_reassignment_flip(
-                &lane,
-                existing.get("session_id").and_then(|v| v.as_str()),
-                exclusion.as_deref(),
-            ) {
+            if lane_reassignment_flip(&lane, bound, exclusion.as_deref()) {
                 t.exec(
                     "UPDATE repo_task_lane_ledger SET assigned_lane = 'direct', \
-                       exclusion_reason = ?, updated_at = ? WHERE task_id = ?",
+                       session_id = NULL, exclusion_reason = ?, updated_at = ? WHERE task_id = ?",
                     &[
                         arg_str(exclusion.as_deref()),
                         Arg::Text(now_iso()),
@@ -5087,14 +5200,10 @@ fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
             // task to opencode with a stated reason) and no
             // session is bound. The progress.lane re-sync below
             // then stamps opencode.
-            if lane_flip_to_opencode(
-                &lane,
-                existing.get("session_id").and_then(|v| v.as_str()),
-                opencode_reason.as_deref(),
-            ) {
+            if lane_flip_to_opencode(&lane, bound, opencode_reason.as_deref()) {
                 t.exec(
                     "UPDATE repo_task_lane_ledger SET assigned_lane = 'opencode', \
-                       opencode_reason = ?, exclusion_reason = NULL, updated_at = ? \
+                       session_id = NULL, opencode_reason = ?, exclusion_reason = NULL, updated_at = ? \
                      WHERE task_id = ?",
                     &[
                         arg_str(opencode_reason.as_deref()),
@@ -5119,6 +5228,28 @@ fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
                     ),
                 )?;
                 lane = "opencode".to_string();
+            }
+            // #8368: a requested flip that a *live* bound session
+            // refuses is an explicit error naming the session —
+            // never the silent unchanged row, which lanes cannot
+            // distinguish from success.
+            if exclusion.is_some() && lane == "opencode" {
+                if let Some(sid) = bound {
+                    return Err(format!(
+                        "assign_repo_task_lane: task {task_id} is bound to session {sid} \
+                         (live, not cleared) \u{2014} the #8187 exclusion flip is refused \
+                         for a live bound session; its owner must release or transfer it"
+                    ));
+                }
+            }
+            if opencode_reason.is_some() && lane == "direct" {
+                if let Some(sid) = bound {
+                    return Err(format!(
+                        "assign_repo_task_lane: task {task_id} is bound to session {sid} \
+                         (live, not cleared) \u{2014} the #8210 opencode flip is refused \
+                         for a live bound session; its owner must release or transfer it"
+                    ));
+                }
             }
             let cur = task
                 .get("progress")
@@ -5210,6 +5341,20 @@ fn verb_bind(t: &TursoBackend, req: &Value) -> Value {
     let launched_by = req_str(req, "launched_by")
         .unwrap_or("opencode-claimant")
         .to_string();
+    // #8287: a malformed session id refuses here, as a usage
+    // error, before any state is touched — binding a ghost id
+    // strands the task until stuck-bound supervision recovers
+    // it. The predicate is the one the client/claim paths keep
+    // (client::valid_session_id); do not fork a second one.
+    if !crate::client::valid_session_id(&session_id) {
+        return fail(
+            2,
+            format!(
+                "bind_repo_task_lane_session: invalid session_id {session_id:?} \
+                 (expected ses_ + alphanumeric/underscore)"
+            ),
+        );
+    }
     // #9046: a bind may carry the bound session's own model (the
     // claimant derives it from the session record, #8176); when
     // it does, the bind stamps it via stamp_claim_model below.
@@ -5589,6 +5734,17 @@ fn verb_park(t: &TursoBackend, req: &Value) -> Value {
         Ok(r) => r,
         Err(v) => return v,
     };
+    // #9179: an explicit not_before is validated HERE, at the
+    // storage layer — the dispatch gate (#6426) only covers
+    // requests that pass through it, and the audit's malformed
+    // rows ("3600"/"7200" stored verbatim) prove a path around it
+    // existed. A value that fails the rule fails the park before
+    // any state changes.
+    if let Some(nb) = req_str(req, "not_before") {
+        if let Err(e) = validate_stored_not_before(nb) {
+            return fail(2, format!("park_task: {e}"));
+        }
+    }
     let (not_before, park_kind) = match req_str(req, "not_before") {
         Some(nb) => (nb.to_string(), "absolute"),
         None => (
@@ -5657,15 +5813,27 @@ fn verb_park(t: &TursoBackend, req: &Value) -> Value {
     // triage classification above is a genuine wait by #8184's own
     // rule and never sinks.
     let to_sink = wk != "triage" && handoff_park(&progress, condition_defaulted, &condition);
+    // #8368: an explicit caller delay (delay_seconds / not_before in
+    // the request) is a caller-declared wait. The sink landing below
+    // keeps it as not_before even though every other wait field is
+    // NULL — discarding it re-served bound tasks immediately,
+    // defeating the park.
+    let explicit_delay = req.get("not_before").is_some_and(|v| !v.is_null())
+        || req.get("delay_seconds").is_some_and(|v| !v.is_null());
     let work = (|| -> Result<Value, TErr> {
         if to_sink {
             t.exec(
                 "UPDATE tasks SET status = 'handed_off', worker_id = NULL, lease_until = NULL, \
-                   not_before = NULL, park_kind = NULL, wait_kind = NULL, ready_condition = NULL, \
+                   not_before = ?, park_kind = NULL, wait_kind = NULL, ready_condition = NULL, \
                    required_budget_minutes = NULL, \
                    last_checked_at = ?, check_outcome = NULL, progress = ?, result = ?, \
                    updated_at = ? WHERE id = ?",
                 &[
+                    if explicit_delay {
+                        Arg::Text(not_before.clone())
+                    } else {
+                        Arg::Null
+                    },
                     Arg::Text(now_iso()),
                     Arg::Text(progress.to_string()),
                     Arg::Text(result.to_string()),
@@ -5702,7 +5870,12 @@ fn verb_park(t: &TursoBackend, req: &Value) -> Value {
             json!({
                 "reason": reason, "status": "handed_off",
                 "park_kind": Value::Null, "wait_kind": Value::Null,
-                "not_before": Value::Null, "ready_condition": Value::Null,
+                "not_before": if explicit_delay {
+                    Value::String(not_before.clone())
+                } else {
+                    Value::Null
+                },
+                "ready_condition": Value::Null,
                 "cleared_session_id": cleared,
             })
         } else {
@@ -7147,7 +7320,7 @@ fn verb_list(t: &TursoBackend, req: &Value) -> Value {
 fn health_entry(queue: &str) -> Value {
     json!({
         "queue": queue, "queued": 0, "at_cap_queued": 0, "claimed": 0,
-        "parked": 0, "handed_off": 0, "blocked": 0, "dep_blocked": 0, "done": 0, "cancelled": 0,
+        "parked": 0, "malformed_parked": 0, "handed_off": 0, "blocked": 0, "dep_blocked": 0, "done": 0, "cancelled": 0,
         "failed": 0, "total": 0, "oldest_queued_at": Value::Null,
         "terminal_events_24h": 0, "terminal_events_7d": 0,
     })
@@ -7181,6 +7354,40 @@ fn apply_dep_blocked(by_queue: &mut Map<String, Value>, rows: &[Value]) {
         let n = r.get("n").and_then(|v| v.as_i64()).unwrap_or(0);
         if let Some(obj) = by_queue.get_mut(q).and_then(|e| e.as_object_mut()) {
             obj.insert("dep_blocked".to_string(), json!(n));
+        }
+    }
+}
+
+/// The storage-layer not_before rule (#9179, closing the #6426
+/// bypass): every value a verb stores in a row's not_before must
+/// satisfy the same rule the client flag validator and the broker
+/// dispatch gate apply — a non-empty RFC 3339 timestamp no more
+/// than 366 days out. The dispatch gate covers requests that pass
+/// through it; the verbs are the last line, because a stored
+/// "3600" (delay-seconds semantics in the absolute field) sorts
+/// after every real timestamp in the claim predicate's TEXT
+/// comparison and the parked row can never lapse.
+fn validate_stored_not_before(raw: &str) -> Result<(), String> {
+    crate::validate::validate_not_before(&json!(raw), "not_before")
+}
+
+/// Fold per-queue malformed parked counts (#9179 hygiene) into
+/// health entries: parked rows whose stored not_before fails the
+/// rule above are invisible to the lapse path until woken by hand,
+/// so health names them instead of letting them hide inside the
+/// ordinary parked count. Rows arrive as {queue, not_before}.
+fn apply_malformed_parked(by_queue: &mut Map<String, Value>, rows: &[Value]) {
+    let mut counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for r in rows {
+        let nb = r.get("not_before").and_then(|v| v.as_str()).unwrap_or("");
+        if validate_stored_not_before(nb).is_err() {
+            let q = r.get("queue").and_then(|v| v.as_str()).unwrap_or("");
+            *counts.entry(q.to_string()).or_insert(0) += 1;
+        }
+    }
+    for (q, n) in counts {
+        if let Some(obj) = by_queue.get_mut(&q).and_then(|e| e.as_object_mut()) {
+            obj.insert("malformed_parked".to_string(), json!(n));
         }
     }
 }
@@ -7257,6 +7464,19 @@ fn verb_health(t: &TursoBackend, req: &Value) -> Value {
         dsql += " GROUP BY queue";
         let drows = t.query_objs(&dsql, &dargs, &[])?;
         apply_dep_blocked(&mut by_queue, &drows);
+        // Malformed parked rows (#9179 hygiene): fetched as raw
+        // values because the failure test is the shared validator,
+        // not a SQL predicate; parked counts are small.
+        let mut hsql = "SELECT queue, not_before FROM tasks \
+             WHERE status = 'parked' AND not_before IS NOT NULL"
+            .to_string();
+        let mut hargs: Vec<Arg> = Vec::new();
+        if let Some(q) = &queue_filter {
+            hsql += " AND queue = ?";
+            hargs.push(Arg::Text(q.clone()));
+        }
+        let hrows = t.query_objs(&hsql, &hargs, &[])?;
+        apply_malformed_parked(&mut by_queue, &hrows);
         // Terminal-event counters, the agent.repo_queue_health
         // view's terminal_events_24h/7d (#5690): events and tasks
         // share this database, so the JOIN the PG view did is a
@@ -8470,6 +8690,25 @@ mod tests {
     }
 
     #[test]
+    fn no_claim_counts_query_shape_8154() {
+        // #8154 oracle (follow-on #2937 acceptance 4): the no-claim
+        // counts aggregate splits the searched scope by reason —
+        // queued, at-cap (attempts >= max_attempts, the #6528
+        // definition), not-yet-due, parked-due — over payload-bearing
+        // rows only. Placeholders: two `now`s, then the scope's.
+        let sql = no_claim_counts_sql(" AND queue = ?");
+        assert_eq!(sql.matches('?').count(), 3, "{sql}");
+        assert!(sql.contains("AS queued"), "{sql}");
+        assert!(sql.contains("AS at_cap_queued"), "{sql}");
+        assert!(sql.contains("attempts >= max_attempts"), "{sql}");
+        assert!(sql.contains("AS queued_not_yet_due"), "{sql}");
+        assert!(sql.contains("not_before > ?"), "{sql}");
+        assert!(sql.contains("AS parked_due"), "{sql}");
+        assert!(sql.contains("wait_kind = 'capacity'"), "{sql}");
+        assert!(sql.ends_with(" AND queue = ?"), "{sql}");
+    }
+
+    #[test]
     fn task_creation_defaults_max_attempts_1000_per_8973() {
         // #8973 oracle: every task-creation default in this crate is
         // 1000 (Drew order 2026-11-12) - the tasks schema default
@@ -8554,6 +8793,48 @@ mod tests {
         let out = verb_enqueue(&backend, &req);
         assert_eq!(out["ok"], true, "{out}");
         assert_eq!(out["task"]["max_attempts"], 1000, "{out}");
+    }
+
+    #[test]
+    fn bind_rejects_malformed_session_id_8287() {
+        // #8287 oracle: verb_bind refuses a malformed session id
+        // as a usage error (exit 2) before any store access, so
+        // the task is left unbound — the dummy backend proves the
+        // refusal happens pre-store (any store touch would fail
+        // differently). A well-formed id must NOT produce the
+        // invalid-session refusal (it proceeds to the store path
+        // and fails there against this backend, or on the task).
+        let backend = TursoBackend::new(
+            "http://127.0.0.1:0".to_string(),
+            "test".to_string(),
+            ureq::agent(),
+        );
+        for bad in ["not-a-session", "", "ses_", "ses_a'; DROP TABLE tasks; --"] {
+            let out = verb_bind(
+                &backend,
+                &json!({"task_id": 1, "worker": "w", "session_id": bad}),
+            );
+            assert_eq!(out["ok"], false, "{bad}: {out}");
+            assert_eq!(out["exit"], 2, "{bad}: {out}");
+            assert!(
+                out["error"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("invalid session_id"),
+                "{bad}: {out}"
+            );
+        }
+        let out = verb_bind(
+            &backend,
+            &json!({"task_id": 1, "worker": "w", "session_id": "ses_e5e37addeb0ffeumu1UPO2bI8G"}),
+        );
+        assert!(
+            !out["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("invalid session_id"),
+            "well-formed id refused as invalid: {out}"
+        );
     }
 
     #[test]
@@ -9332,6 +9613,65 @@ mod tests {
         // Direct rows are already direct; nothing to flip.
         assert!(!lane_reassignment_flip("direct", None, Some("x")));
         assert!(!lane_reassignment_flip("direct", None, None));
+    }
+
+    #[test]
+    fn bound_session_treats_broker_cleared_as_unbound_8368() {
+        // #8368: a ledger session_id the broker itself cleared
+        // (progress.session_cleared names it) is not a live binding.
+        assert_eq!(bound_session(None, None), None);
+        assert_eq!(bound_session(Some(""), Some("ses_x")), None);
+        assert_eq!(bound_session(Some("ses_dead"), Some("ses_dead")), None);
+        assert_eq!(
+            bound_session(Some("ses_live"), Some("ses_dead")),
+            Some("ses_live")
+        );
+        assert_eq!(bound_session(Some("ses_live"), None), Some("ses_live"));
+        // Composed with the flip predicates, as verb_lane calls them:
+        // the cleared row flips; the live-bound row never does.
+        assert!(lane_reassignment_flip(
+            "opencode",
+            bound_session(Some("ses_dead"), Some("ses_dead")),
+            Some("lane takes it direct")
+        ));
+        assert!(!lane_reassignment_flip(
+            "opencode",
+            bound_session(Some("ses_live"), Some("ses_dead")),
+            Some("lane takes it direct")
+        ));
+        assert!(lane_flip_to_opencode(
+            "direct",
+            bound_session(Some("ses_dead"), Some("ses_dead")),
+            Some("send to opencode")
+        ));
+    }
+
+    #[test]
+    fn lane_and_park_honor_cleared_session_and_explicit_delay_8368() {
+        // Source-shape companions to the predicate test above, in
+        // this file's seg8217 style: verb_lane must consult the
+        // task's session_cleared stamp and refuse live-bound flips
+        // explicitly; verb_park's sink landing must be able to
+        // carry an explicit caller delay as not_before.
+        let src = include_str!("turso_queue.rs");
+        let lane_seg = seg8217(src, "fn verb_lane(", "\nfn verb_bind(");
+        assert!(
+            lane_seg.contains("cleared_session_id(&task)"),
+            "verb_lane consults progress.session_cleared (#8368)"
+        );
+        assert!(
+            lane_seg.contains("is bound to session"),
+            "a live-bound flip refusal is an explicit error naming the session (#8368)"
+        );
+        let park_seg = seg8217(src, "fn verb_park(", "\nfn verb_release(");
+        assert!(
+            park_seg.contains("explicit_delay"),
+            "the park verb tracks an explicit caller delay (#8368)"
+        );
+        assert!(
+            park_seg.contains("not_before = ?, park_kind = NULL"),
+            "the sink landing carries the explicit not_before (#8368)"
+        );
     }
 
     #[test]
@@ -10300,6 +10640,55 @@ mod tests {
         let client_src = include_str!("client.rs");
         assert!(client_src.contains("\"quarantine-recheck\" => cmd_quarantine_recheck"));
         assert!(client_src.contains("call(\"/quarantine-recheck\""));
+    }
+
+    #[test]
+    #[test]
+    fn stored_not_before_rule_9179() {
+        // #9179 (closing the #6426 bypass): the values the audit
+        // found stored verbatim — delay-seconds in the absolute
+        // field — fail the storage-layer rule, as do the other
+        // garbage shapes; valid timestamps pass; a timestamp past
+        // the 366-day horizon fails like everywhere else the rule
+        // is applied.
+        for bad in ["3600", "7200", "banana", "", "0", "9999-01-01T00:00:00Z"] {
+            let err = validate_stored_not_before(bad)
+                .err()
+                .expect("malformed not_before must be rejected");
+            assert!(err.contains("not_before"), "error names the field: {err}");
+        }
+        for ok in ["2020-01-01T00:00:00Z", "2026-11-06T05:30:00+05:30"] {
+            assert!(validate_stored_not_before(ok).is_ok(), "{ok} must pass");
+        }
+        // Both verbs that store a caller-supplied not_before apply
+        // the rule before mutating (source oracle over each verb's
+        // own segment).
+        let src = include_str!("turso_queue.rs");
+        for (verb, next) in [
+            ("fn verb_park(", "\nfn verb_release("),
+            ("fn verb_revive(", "\nfn verb_"),
+        ] {
+            let seg = src
+                .split(verb)
+                .nth(1)
+                .and_then(|s| s.split(next).next())
+                .unwrap_or("");
+            assert!(
+                seg.contains("validate_stored_not_before(nb)"),
+                "{verb} validates an explicit not_before at the storage layer"
+            );
+        }
+        // The hygiene fold counts only failing rows, per queue.
+        let mut by_queue: Map<String, Value> = Map::new();
+        by_queue.insert("q1".to_string(), health_entry("q1"));
+        let rows = vec![
+            json!({"queue": "q1", "not_before": "3600"}),
+            json!({"queue": "q1", "not_before": "2020-01-01T00:00:00Z"}),
+            json!({"queue": "q1", "not_before": "7200"}),
+        ];
+        apply_malformed_parked(&mut by_queue, &rows);
+        assert_eq!(by_queue["q1"]["malformed_parked"], 2);
+        assert_eq!(health_entry("q2")["malformed_parked"], 0);
     }
 
     #[test]

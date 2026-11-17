@@ -58,6 +58,10 @@ type ConnectOptions struct {
 	AllowSpawn bool
 	// AllowInline permits running servers in this process.
 	AllowInline bool
+	// ForceInline skips the socket and spawn rungs and goes straight to
+	// the in-process rung (daemon.inline=always). A named Endpoint still
+	// wins: naming a daemon means that daemon.
+	ForceInline bool
 	// SpawnTimeout bounds how long to wait for a spawned daemon to answer.
 	SpawnTimeout time.Duration
 }
@@ -103,31 +107,45 @@ func (a *App) Connect(ctx context.Context, opt ConnectOptions) (*Client, *Ladder
 			"start a local one in its place", opt.Endpoint, err)
 	}
 
-	// Rung one: a socket already listening.
-	start := time.Now()
-	c := NewClient(paths, a.ConfigPath)
-	if c.Ping(ctx) {
-		record("socket", paths.Socket, start, nil)
-		l.Chosen = "socket"
-		return c, l, nil
+	forceInline := opt.ForceInline && opt.Endpoint == ""
+	if forceInline {
+		l.Attempts = append(l.Attempts,
+			Attempt{How: "socket", Target: paths.Socket, OK: false, Detail: "skipped by daemon.inline=always"},
+			Attempt{How: "spawn", Target: paths.Socket, OK: false, Detail: "skipped by daemon.inline=always"})
 	}
-	record("socket", paths.Socket, start, fmt.Errorf("nothing listening"))
+
+	// Rung one: a socket already listening.
+	c := NewClient(paths, a.ConfigPath)
+	var start time.Time
+	if !forceInline {
+		start = time.Now()
+		if c.Ping(ctx) {
+			record("socket", paths.Socket, start, nil)
+			l.Chosen = "socket"
+			return c, l, nil
+		}
+		record("socket", paths.Socket, start, fmt.Errorf("nothing listening"))
+	}
 
 	// Rung two: any other socket in the state directory. A daemon started
 	// for a slightly different configuration is still a daemon, and asking
 	// it is cheaper than starting another -- but only if it agrees about
 	// what it is serving, which Ping does not tell us. So this rung is
 	// reported and not taken automatically.
-	if others := siblingSockets(paths); len(others) > 0 {
-		l.Attempts = append(l.Attempts, Attempt{
-			How: "sibling-socket", OK: false,
-			Detail: fmt.Sprintf("%d other daemon(s) here, for other configurations: %s",
-				len(others), strings.Join(others, ", ")),
-		})
+	if !forceInline {
+		if others := siblingSockets(paths); len(others) > 0 {
+			l.Attempts = append(l.Attempts, Attempt{
+				How: "sibling-socket", OK: false,
+				Detail: fmt.Sprintf("%d other daemon(s) here, for other configurations: %s",
+					len(others), strings.Join(others, ", ")),
+			})
+		}
 	}
 
 	// Rung three: start one.
-	if opt.AllowSpawn {
+	if forceInline {
+		// Already recorded as a skipped attempt above.
+	} else if opt.AllowSpawn {
 		start = time.Now()
 		err := c.EnsureDaemon(ctx)
 		if record("spawn", paths.Socket, start, err) {
@@ -141,7 +159,7 @@ func (a *App) Connect(ctx context.Context, opt ConnectOptions) (*Client, *Ladder
 	}
 
 	// Rung four: no daemon at all.
-	if opt.AllowInline {
+	if opt.AllowInline || forceInline {
 		start = time.Now()
 		inline, err := a.inlineDaemon(ctx)
 		if record("inline", "in-process", start, err) {

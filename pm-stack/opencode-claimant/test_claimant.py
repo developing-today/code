@@ -17,6 +17,12 @@ exercises the real step logic with no server and no queue:
 - launch_step records a skip (not silence) when a candidate's state
   changes before launch, and main() writes those skips into the
   fires.jsonl entry;
+- launch_step stops at the provider-capacity wall (#8166): a
+  tier_limit_exceeded answer from session create or the prompt POST
+  closes the gate for the rest of the fire, a prompt-walled launch
+  is rolled back (delete + recovery bind) so it does not stand as
+  an attempt-consuming launch, and main() records the verbatim
+  provider error under the fires entry's provider_wall key;
 - supervision_step recovers a bound task whose session is gone from
   the server (error body, zero messages) via delete + recovery bind;
 - supervision_step treats an unreadable message read as UNKNOWN, not
@@ -32,7 +38,9 @@ against the 307-line Slice-1 shadow stub that replaced it
 import importlib.util
 import json
 import tempfile
+import time
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import patch
 
@@ -154,15 +162,29 @@ BOUND_ROW = {
 }
 
 
-def stub_claimed_rows(rows):
+def stub_claimed_rows(rows, sessions=None, active_ids=None):
     """Patch the poll module's broker read (supervision's row source)
-    to serve `rows` for the first queue and [] for the rest."""
+    to serve `rows` for the first queue and [] for the rest. Also
+    stubs supervision's poll session-list / active-set reads
+    (#8038): by default both are unreadable (None), which fails
+    stuck-bound selection closed exactly as poll.py requires; tests
+    for the stuck-bound path pass concrete sessions / active_ids."""
     poll_mod = claimant._load_poll_module()
 
     def fake_fetch(queue):
         return list(rows) if queue == claimant.QUEUES[0] else []
 
-    return patch.object(poll_mod, "fetch_claimed_rows", side_effect=fake_fetch)
+    stack = ExitStack()
+    stack.enter_context(
+        patch.object(poll_mod, "fetch_claimed_rows", side_effect=fake_fetch)
+    )
+    stack.enter_context(
+        patch.object(claimant, "_fetch_sessions", return_value=sessions)
+    )
+    stack.enter_context(
+        patch.object(claimant, "_fetch_active_ids", return_value=active_ids)
+    )
+    return stack
 
 
 CANDIDATE = {
@@ -397,6 +419,151 @@ class TestLaunchStep(unittest.TestCase):
         self.assertEqual(binds, [])
 
 
+WALL_ERROR = (
+    "[code=tier_limit_exceeded] membership concurrency limit exceeded: "
+    "11/10 resets 2026-11-10T15:12:00Z"
+)
+WALL_BODY = json.dumps({"error": {"message": WALL_ERROR}})
+
+
+def make_wall_run(binds, *, wall_on, creates=None, deletes=None):
+    """Build a subprocess.run stub like make_fake_run, except the
+    named launch surface ("create" or "prompt") answers 400 with
+    the provider's tier_limit_exceeded body (#8166) - the shape the
+    Workhorse route returned in the 2026-11-10 fires."""
+
+    base = make_fake_run(binds, deletes=deletes)
+
+    def fake_run(cmd, **kwargs):
+        argv = [str(part) for part in cmd]
+        joined = " ".join(argv)
+        if (
+            argv[0] == "curl"
+            and "POST" in argv
+            and joined.rstrip().endswith("/api/session")
+        ):
+            if creates is not None:
+                creates.append(cmd)
+            if wall_on == "create":
+                return Result(0, WALL_BODY + "\n400")
+        if (
+            argv[0] == "curl"
+            and wall_on == "prompt"
+            and joined.rstrip().endswith("/prompt")
+        ):
+            return Result(0, WALL_BODY + "\n400")
+        return base(cmd, **kwargs)
+
+    return fake_run
+
+
+class TestProviderWallGate(unittest.TestCase):
+    def test_create_wall_stops_the_fire_and_records_it(self):
+        # #8166: the first candidate's session create is answered
+        # with the provider wall - nothing launches, the second
+        # candidate is never even attempted (one create total), and
+        # the fire record carries the wall verbatim with the route
+        # and serving leaf.
+        binds = []
+        creates = []
+        two = [dict(CANDIDATE), dict(CANDIDATE, id=778)]
+        with (
+            patch.object(claimant, "run_poll", return_value={"candidates": two}),
+            patch.object(
+                claimant.subprocess,
+                "run",
+                make_wall_run(binds, wall_on="create", creates=creates),
+            ),
+        ):
+            launched, skips = claimant.launch_step("live", 3)
+        self.assertEqual(launched, [])
+        self.assertEqual(
+            skips,
+            [
+                {"task_id": 777, "reason": "provider_wall"},
+                {"task_id": 778, "reason": "provider_wall"},
+            ],
+        )
+        self.assertEqual(len(creates), 1)
+        self.assertEqual(binds, [])
+        self.assertEqual(
+            claimant._fire_provider_wall,
+            {
+                "error": WALL_ERROR,
+                "route": claimant.LAUNCH_MODEL_PROVIDER,
+                "serving_leaf": claimant.LAUNCH_MODEL_ID,
+            },
+        )
+
+    def test_prompt_wall_rolls_back_the_launch(self):
+        # #8166 item 3: create + bind succeed but the prompt POST is
+        # answered with the wall - the session's first step died on
+        # provider capacity, so the launch is rolled back (verified
+        # delete + recovery bind) instead of standing as a launched
+        # session consuming the task's attempt.
+        binds = []
+        deletes = []
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+            ),
+            patch.object(
+                claimant.subprocess,
+                "run",
+                make_wall_run(binds, wall_on="prompt", deletes=deletes),
+            ),
+        ):
+            launched, skips = claimant.launch_step("live", 3)
+        self.assertEqual(launched, [])
+        self.assertEqual(skips, [{"task_id": 777, "reason": "provider_wall"}])
+        self.assertEqual(len(deletes), 1)
+        self.assertEqual(len(binds), 2)
+        recovery_argv = [str(part) for part in binds[1]]
+        self.assertIn(claimant.LAUNCHED_BY_RECOVERY_PROVIDER_WALL, recovery_argv)
+        self.assertEqual(claimant._fire_provider_wall["error"], WALL_ERROR)
+
+    def test_main_records_provider_wall_in_fires_entry(self):
+        # #8166 item 2: a walled fire's log line carries the
+        # provider_wall entry - verbatim error, route, serving
+        # leaf - next to zero launches, so the record distinguishes
+        # "nowhere to run them" from "no candidates".
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            fires = state_dir / "fires.jsonl"
+            with (
+                patch.object(claimant, "read_mode", return_value="live"),
+                patch.object(
+                    claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+                ),
+                patch.object(
+                    claimant, "run_queue_health", return_value="health-test-line"
+                ),
+                stub_claimed_rows([]),
+                patch.object(claimant, "get_active_root_session_count", return_value=0),
+                patch.object(
+                    claimant.subprocess,
+                    "run",
+                    make_wall_run([], wall_on="create"),
+                ),
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", fires),
+            ):
+                self.assertEqual(claimant.main(), 0)
+            entries = [
+                json.loads(line) for line in fires.read_text().splitlines() if line
+            ]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["sessions_launched"], [])
+        self.assertEqual(
+            entries[0]["provider_wall"],
+            {
+                "error": WALL_ERROR,
+                "route": claimant.LAUNCH_MODEL_PROVIDER,
+                "serving_leaf": claimant.LAUNCH_MODEL_ID,
+            },
+        )
+
+
 class TestSupervisionStep(unittest.TestCase):
     def test_gone_zero_message_session_is_recovered(self):
         binds = []
@@ -585,9 +752,11 @@ class TestMainFireLog(unittest.TestCase):
 
         def poll_stub():
             calls["n"] += 1
-            # gate + launch discovery see the candidate; the launch
-            # re-verification finds it gone -> a recorded skip.
-            if calls["n"] <= 2:
+            # The gate (call 1) sees the candidate and main threads
+            # it into launch_step as the fire-start snapshot (#8038);
+            # the launch re-verification poll (call 2) finds it gone
+            # -> a recorded skip.
+            if calls["n"] <= 1:
                 return {"candidates": [dict(CANDIDATE)]}
             return {"candidates": []}
 
@@ -609,6 +778,7 @@ class TestMainFireLog(unittest.TestCase):
             ]
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["sessions_launched"], [])
+        self.assertEqual(entries[0]["candidates_seen"], [dict(CANDIDATE)])
         self.assertEqual(
             entries[0]["skips"], [{"task_id": 777, "reason": "task_state_changed"}]
         )
@@ -626,6 +796,9 @@ class TestCapUnknownFireLog(unittest.TestCase):
                 patch.object(claimant, "read_mode", return_value="live"),
                 patch.object(
                     claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+                ),
+                patch.object(
+                    claimant, "run_queue_health", return_value="health-test-line"
                 ),
                 stub_claimed_rows([]),
                 patch.object(
@@ -657,6 +830,9 @@ class TestGateUnknownFireLog(unittest.TestCase):
                 patch.object(
                     claimant, "run_poll", side_effect=RuntimeError("poll blew up")
                 ),
+                patch.object(
+                    claimant, "run_queue_health", return_value="health-test-line"
+                ),
                 stub_claimed_rows([]),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
@@ -682,6 +858,9 @@ class TestGateExitFireLog(unittest.TestCase):
             with (
                 patch.object(claimant, "read_mode", return_value="shadow"),
                 patch.object(claimant, "run_poll", return_value={"candidates": []}),
+                patch.object(
+                    claimant, "run_queue_health", return_value="health-test-line"
+                ),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
             ):
@@ -709,7 +888,10 @@ class TestGateQueueReadFailed(unittest.TestCase):
                 }
             },
         }
-        with patch.object(claimant, "run_poll", return_value=poll_data):
+        with (
+            patch.object(claimant, "run_poll", return_value=poll_data),
+            patch.object(claimant, "run_queue_health", return_value="health-test-line"),
+        ):
             self.assertIsNone(claimant.gate_step())
 
     def test_verified_empty_queue_is_still_no_candidates(self):
@@ -717,7 +899,10 @@ class TestGateQueueReadFailed(unittest.TestCase):
             "candidates": [],
             "queues": {"repo-health-code-pilot": {"read_ok": True, "read_errors": {}}},
         }
-        with patch.object(claimant, "run_poll", return_value=poll_data):
+        with (
+            patch.object(claimant, "run_poll", return_value=poll_data),
+            patch.object(claimant, "run_queue_health", return_value="health-test-line"),
+        ):
             self.assertFalse(claimant.gate_step())
 
     def test_verified_candidate_wins_despite_another_queues_failed_read(self):
@@ -730,7 +915,10 @@ class TestGateQueueReadFailed(unittest.TestCase):
                 }
             },
         }
-        with patch.object(claimant, "run_poll", return_value=poll_data):
+        with (
+            patch.object(claimant, "run_poll", return_value=poll_data),
+            patch.object(claimant, "run_queue_health", return_value="health-test-line"),
+        ):
             self.assertTrue(claimant.gate_step())
 
     def test_main_logs_gate_unknown_on_failed_read(self):
@@ -749,6 +937,9 @@ class TestGateQueueReadFailed(unittest.TestCase):
             with (
                 patch.object(claimant, "read_mode", return_value="live"),
                 patch.object(claimant, "run_poll", return_value=poll_data),
+                patch.object(
+                    claimant, "run_queue_health", return_value="health-test-line"
+                ),
                 stub_claimed_rows([]),
                 patch.object(claimant, "STATE_DIR", state_dir),
                 patch.object(claimant, "FIRES_FILE", fires),
@@ -781,7 +972,9 @@ class TestBindFailedRecordsError(unittest.TestCase):
             return base_fake(cmd, **kwargs)
 
         with (
-            patch.object(claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}),
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+            ),
             patch.object(claimant.subprocess, "run", fake_run),
         ):
             launched, skips = claimant.launch_step("live", 1)
@@ -792,6 +985,250 @@ class TestBindFailedRecordsError(unittest.TestCase):
         self.assertEqual(
             skips[0]["error"], "bind failed: task not claimed with a live lease"
         )
+
+
+class TestClaimant8038(unittest.TestCase):
+    """#8038: supervision consumes poll.is_stuck_bound, step-1e
+    attempts-exhausted terminal fail, candidates_seen threading,
+    gate health, launch agent-note + same-fire exclusion."""
+
+    STUCK_SESSION = {"id": "ses_gone", "time": {"created": 1, "updated": 2}}
+
+    def test_stuck_bound_session_is_recovered_via_poll_selection(self):
+        binds = []
+        with (
+            stub_claimed_rows(
+                [BOUND_ROW], sessions=[self.STUCK_SESSION], active_ids=set()
+            ),
+            patch.object(
+                claimant.subprocess,
+                "run",
+                make_fake_run(binds, session_get="active"),
+            ),
+        ):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(
+            recovered,
+            [{"task_id": 4242, "session_id": "ses_gone", "reason": "zero_message"}],
+        )
+        self.assertEqual(len(binds), 1)
+
+    def test_poll_vetoes_leave_the_task_bound(self):
+        now_ms = int(time.time() * 1000)
+        cases = {
+            "terminal_marker": (
+                [
+                    dict(
+                        self.STUCK_SESSION, time={"created": 1, "updated": 2, "idle": 3}
+                    )
+                ],
+                set(),
+                BOUND_ROW,
+            ),
+            "outcome_marker": (
+                [dict(self.STUCK_SESSION, outcome="completed")],
+                set(),
+                BOUND_ROW,
+            ),
+            "in_active_set": ([self.STUCK_SESSION], {"ses_gone"}, BOUND_ROW),
+            "recent_activity": (
+                [{"id": "ses_gone", "time": {"created": now_ms, "updated": now_ms}}],
+                set(),
+                BOUND_ROW,
+            ),
+            "live_lease": (
+                [self.STUCK_SESSION],
+                set(),
+                dict(BOUND_ROW, lease_until="2999-01-01T00:00:00Z"),
+            ),
+            "unreadable_active_set": ([self.STUCK_SESSION], None, BOUND_ROW),
+        }
+        for name, (sessions, active_ids, row) in cases.items():
+            with self.subTest(case=name):
+                binds = []
+                with (
+                    stub_claimed_rows([row], sessions=sessions, active_ids=active_ids),
+                    patch.object(
+                        claimant.subprocess,
+                        "run",
+                        make_fake_run(binds, session_get="active"),
+                    ),
+                ):
+                    recovered = claimant.supervision_step("live")
+                self.assertEqual(recovered, [])
+                self.assertEqual(binds, [])
+
+    def _fail_capture(self, binds):
+        base_fake = make_fake_run(binds)
+        fails = []
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and "fail" in argv:
+                fails.append(cmd)
+                return Result(0, "{}")
+            return base_fake(cmd, **kwargs)
+
+        return fake_run, fails
+
+    def test_attempts_exhausted_gone_session_is_terminally_failed(self):
+        row = dict(BOUND_ROW, attempts=5, max_attempts=5, worker_id="repo-worker-code")
+        binds = []
+        fake_run, fails = self._fail_capture(binds)
+        with (
+            stub_claimed_rows([row]),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(
+            recovered,
+            [
+                {
+                    "task_id": 4242,
+                    "session_id": "ses_gone",
+                    "reason": "attempts_exhausted",
+                }
+            ],
+        )
+        self.assertEqual(binds, [])
+        self.assertEqual(len(fails), 1)
+        argv = [str(part) for part in fails[0]]
+        self.assertIn(
+            "bound session ses_gone unavailable without terminal outcome; attempts exhausted",
+            argv,
+        )
+        self.assertIn("repo-worker-code", argv)
+        execution = json.loads(argv[argv.index("--execution") + 1])
+        self.assertEqual(
+            execution["fallback_reason"], "launch_failed_attempts_exhausted"
+        )
+        self.assertEqual(execution["session_id"], "ses_gone")
+        self.assertEqual(execution["lane"], "opencode")
+
+    def test_attempts_exhausted_stuck_session_is_failed_after_delete(self):
+        row = dict(BOUND_ROW, attempts=5, max_attempts=5, worker_id="repo-worker-code")
+        binds = []
+        deletes = []
+        base_fake = make_fake_run(binds, session_get="active", deletes=deletes)
+        fails = []
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if "repo-queue" in argv[0] and "fail" in argv:
+                fails.append(cmd)
+                return Result(0, "{}")
+            return base_fake(cmd, **kwargs)
+
+        with (
+            stub_claimed_rows([row], sessions=[self.STUCK_SESSION], active_ids=set()),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            recovered = claimant.supervision_step("live")
+        self.assertEqual(len(deletes), 1)
+        self.assertEqual(len(fails), 1)
+        self.assertEqual(recovered[0]["reason"], "attempts_exhausted")
+
+    def test_gate_records_health_and_snapshot(self):
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+            ),
+            patch.object(claimant, "run_queue_health", return_value="health-test-line"),
+        ):
+            self.assertTrue(claimant.gate_step())
+        self.assertEqual(claimant._fire_health, "health-test-line")
+        self.assertEqual(claimant._fire_candidates, [dict(CANDIDATE)])
+
+    def test_cap_exit_fire_log_carries_candidates_and_health(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            fires = state_dir / "fires.jsonl"
+            with (
+                patch.object(claimant, "read_mode", return_value="live"),
+                patch.object(
+                    claimant,
+                    "run_poll",
+                    return_value={"candidates": [dict(CANDIDATE)]},
+                ),
+                patch.object(
+                    claimant, "run_queue_health", return_value="health-test-line"
+                ),
+                stub_claimed_rows([]),
+                patch.object(
+                    claimant, "get_active_root_session_count", return_value=36
+                ),
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", fires),
+            ):
+                self.assertEqual(claimant.main(), 0)
+            entries = [
+                json.loads(line) for line in fires.read_text().splitlines() if line
+            ]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["candidates_seen"], [dict(CANDIDATE)])
+        self.assertEqual(entries[0]["queue_health"], "health-test-line")
+        self.assertEqual(entries[0]["skips"], [{"reason": "cap_saturated"}])
+
+    def test_recovered_this_fire_is_excluded_from_launch(self):
+        with patch.object(
+            claimant, "run_poll", return_value={"candidates": [dict(CANDIDATE)]}
+        ):
+            launched, skips = claimant.launch_step(
+                "live",
+                3,
+                exclude_task_ids=[777],
+                fire_start_candidates=[dict(CANDIDATE)],
+            )
+        self.assertEqual(launched, [])
+        self.assertEqual(
+            skips,
+            [{"task_id": 777, "reason": "recovered_this_fire_next_fire_only"}],
+        )
+
+    def test_launch_posts_agent_note_and_inlines_runbook(self):
+        binds = []
+        prompts = []
+        notes = []
+        base_fake = make_fake_run(binds, prompts=prompts)
+
+        def fake_run(cmd, **kwargs):
+            argv = [str(part) for part in cmd]
+            if argv[0] == "gh" and "view" in argv:
+                # The step-4a2 held-label read: no labels at all.
+                return Result(0, "[]")
+            if argv[0] == "gh":
+                notes.append(cmd)
+                return Result(0, "")
+            return base_fake(cmd, **kwargs)
+
+        candidate = dict(
+            CANDIDATE,
+            issue_number=1234,
+            packet={
+                "repo": "developing-today/code",
+                "issue": {"number": 1234},
+            },
+        )
+        with (
+            patch.object(
+                claimant, "run_poll", return_value={"candidates": [candidate]}
+            ),
+            patch.object(claimant.subprocess, "run", fake_run),
+        ):
+            launched, skips = claimant.launch_step("live", 3)
+        self.assertEqual(len(launched), 1)
+        self.assertEqual(launched[0]["agent_note"], "posted")
+        self.assertEqual(len(notes), 1)
+        note_argv = [str(part) for part in notes[0]]
+        body = note_argv[note_argv.index("--body") + 1]
+        self.assertIn("agent-note:v1", body)
+        self.assertIn("handed off", body)
+        self.assertIn("777", body)
+        self.assertIn("ses_new1", body)
+        prompt_argv = [str(part) for part in prompts[0]]
+        prompt_text = " ".join(prompt_argv)
+        self.assertIn("QUEUE RUNBOOK (step 4d, inlined)", prompt_text)
+        self.assertIn("heartbeat at least every 10 minutes", prompt_text)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 # pm-dispatch
 
 Authenticated intake for the fleet: launch an OpenCode session on Drew's
-laptop **now**, or just enqueue work into the Supabase repo-health queues —
+laptop **now**, or just enqueue work into the repo-health queues via the fleet queue broker —
 either way the work is tracked by a queue task and (usually) a GitHub
 issue, so nothing runs untracked and no queue worker double-books it.
 
@@ -503,19 +503,20 @@ touching any caller.
 
 ## Configuration (env)
 
-| Name                                              | Default                                     | Notes                                                                                                                                            |
-| ------------------------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `DISPATCH_HOSTS`                                  | `127.0.0.1`                                 | install.sh renders loopback + the laptop tailnet IP                                                                                              |
-| `DISPATCH_PORT`                                   | `4879`                                      |                                                                                                                                                  |
-| `DISPATCH_BUILD_VERSION`                          | `dev`                                       | set by install.sh to the deployed commit                                                                                                         |
-| `DISPATCH_API_TOKEN`                              | —                                           | from `~/secrets/dispatch.env`                                                                                                                    |
-| `DISPATCH_OIDC_AUDIENCE`                          | `pm-dispatch`                               |                                                                                                                                                  |
-| `DISPATCH_REPO_ALLOWLIST`                         | the six fleet repos                         |                                                                                                                                                  |
-| `SUPABASE_URL`                                    | — (required, no default)                    | rendered by install.sh from `~/secrets/pm-stack.sops.yaml` (`supabase_url`, muse-dev2)                                                           |
-| `SUPABASE_SERVICE_ROLE_KEY`                       | —                                           | rendered by install.sh from `~/secrets/pm-stack.sops.yaml` (`supabase_service_role_key`; Bitwarden source `supabase.muse-dev2.service-role-key`) |
-| `OPENCODE_URL`                                    | `http://127.0.0.1:13420`                    | laptop standing server                                                                                                                           |
-| `OPENCODE_AUTH_FILE`                              | `~/.local/state/opencode/service-prod.json` | password read at runtime, never logged                                                                                                           |
-| `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY_BASE64` | —                                           | rendered by install.sh from `~/secrets/pm-stack.sops.yaml`                                                                                       |
+| Name                                              | Default                                     | Notes                                                                                 |
+| ------------------------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `DISPATCH_HOSTS`                                  | `127.0.0.1`                                 | install.sh renders loopback + the laptop tailnet IP                                   |
+| `DISPATCH_PORT`                                   | `4879`                                      |                                                                                       |
+| `DISPATCH_BUILD_VERSION`                          | `dev`                                       | set by install.sh to the deployed commit                                              |
+| `DISPATCH_API_TOKEN`                              | —                                           | from `~/secrets/dispatch.env`                                                         |
+| `DISPATCH_OIDC_AUDIENCE`                          | `pm-dispatch`                               |                                                                                       |
+| `DISPATCH_REPO_ALLOWLIST`                         | the six fleet repos                         |                                                                                       |
+| `QUEUE_BROKER_URL`                                | `http://100.99.113.103:4801`                | rendered by install.sh (the laptop queue broker, #9028)                               |
+| `QUEUE_BROKER_TOKEN_FILE`                         | `~/.config/queue-broker/token`              | the broker token stays in its own file; dispatch holds no database credential (#9028) |
+| `QUEUE_BROKER_TOKEN`                              | —                                           | inline token override; wins over the token file                                       |
+| `OPENCODE_URL`                                    | `http://127.0.0.1:13420`                    | laptop standing server                                                                |
+| `OPENCODE_AUTH_FILE`                              | `~/.local/state/opencode/service-prod.json` | password read at runtime, never logged                                                |
+| `GITHUB_APP_ID` / `GITHUB_APP_PRIVATE_KEY_BASE64` | —                                           | rendered by install.sh from `~/secrets/pm-stack.sops.yaml`                            |
 
 GitHub issue creation uses the pm-stack GitHub App (installed on
 developing-today/code and dezren39/darwin-nix — **not** on
@@ -548,8 +549,8 @@ bash pm-stack/dispatch/install.sh
 ```
 
 install.sh copies the tree to `~/pm-stack/dispatch`, renders `.env`
-from the sops file (GitHub App material and the fleet Supabase
-config), ensures `~/secrets/dispatch.env` exists (generating
+from the sops file (GitHub App material) plus the queue broker
+URL, ensures `~/secrets/dispatch.env` exists (generating
 `DISPATCH_API_TOKEN` if absent — value never printed), installs
 `pm-stack/systemd/pm-dispatch.service` as a user unit, restarts only on
 change, and fails loudly unless `/health` reports the deployed build

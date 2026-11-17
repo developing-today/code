@@ -14,7 +14,7 @@ name: fleet-rust-tests
 # (auto-fixed on main by auto-format.yml), so this basic-tier job
 # runs tests only. #6400's per-variant smoke suite
 # (pkgs/fleet/smoke.sh) is a separate venue and is NOT part of
-# this job.
+# this job (its venue is .github/workflows/fleet-smoke.yml).
 
 on:
   schedule:

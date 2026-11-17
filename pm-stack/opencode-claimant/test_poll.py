@@ -941,9 +941,7 @@ class TestFetchRowsReadErrors(unittest.TestCase):
         self.assertEqual(poll.queue_read_errors("other-queue"), {})
 
     def test_successful_read_records_no_error(self):
-        with patch.object(
-            poll, "_broker_post", return_value={"rows": []}
-        ):
+        with patch.object(poll, "_broker_post", return_value={"rows": []}):
             rows = poll._fetch_rows("repo-health-code-pilot", "handed_off")
         self.assertEqual(rows, [])
         self.assertEqual(poll.queue_read_errors("repo-health-code-pilot"), {})

@@ -2801,10 +2801,17 @@
             "model": "opencode-go-plans/deepseek-v4.1-flash",
             "variants": { "medium": "high", "xhigh": "max" }
           },
-          {
-            "model": "cline-pass/deepseek-v4.1-flash",
-            "variants": { "medium": "high", "xhigh": "max" }
-          },
+          // 2026-11-17 (code#9961): the cline-pass seat is REMOVED from this
+                  // plan. cline-pass is monthly-walled (monthly 100%, weekly 99%;
+                  // 429 "monthly Clinepass limit" on every turn since 2026-11-14;
+                  // 37 sessions failed in one sweep and new waves wedged at retry
+                  // while the workhorse resolved through this door). The provider
+                  // definition stays in place per the switchboard rule, and per
+                  // Drew's 2026-11-15 ruling the provider is NOT disabled - only
+                  // the seat is pulled. Re-seat when the monthly window resets
+                  // (~2026-12-06, 22d from 2026-11-14) or a fresh quota read shows
+                  // monthly <100%, AND a live completion through the door proves
+                  // it answers again.
           {
             "model": "opendesign/deepseek-v4.1-flash",
             "variants": { "xhigh": "high", "max": "high" }
@@ -2818,7 +2825,6 @@
         // even within a tier.
         "weights": {
           "opencode-go-plans/deepseek-v4.1-flash": 2,
-          "cline-pass/deepseek-v4.1-flash": 1,
           "opendesign/deepseek-v4.1-flash": 1,
           "_commandcode/deepseek/deepseek-v4.1-flash": 1
         },
@@ -2870,10 +2876,17 @@
             "model": "opencode-go-plans/deepseek-v4-pro",
             "variants": { "medium": "high", "xhigh": "max" }
           },
-          {
-            "model": "cline-pass/deepseek-v4-pro",
-            "variants": { "low": "high", "medium": "high", "xhigh": "max" }
-          },
+          // 2026-11-17 (code#9961): the cline-pass seat is REMOVED from this
+                  // plan. cline-pass is monthly-walled (monthly 100%, weekly 99%;
+                  // 429 "monthly Clinepass limit" on every turn since 2026-11-14;
+                  // 37 sessions failed in one sweep and new waves wedged at retry
+                  // while the workhorse resolved through this door). The provider
+                  // definition stays in place per the switchboard rule, and per
+                  // Drew's 2026-11-15 ruling the provider is NOT disabled - only
+                  // the seat is pulled. Re-seat when the monthly window resets
+                  // (~2026-12-06, 22d from 2026-11-14) or a fresh quota read shows
+                  // monthly <100%, AND a live completion through the door proves
+                  // it answers again.
           {
             "model": "opendesign/deepseek-v4-pro",
             "variants": { "xhigh": "high", "max": "high" }
@@ -2888,7 +2901,6 @@
         "weights": {
           "opencode-go-plans/deepseek-v4-pro": 3,
           "_commandcode/deepseek/deepseek-v4-pro": 0.5,
-          "cline-pass/deepseek-v4-pro": 1,
           "opendesign/deepseek-v4-pro": 1
         }
       },
@@ -3185,7 +3197,17 @@
         "targets": [
           "opencode-go-plans/muse-spark-1.3-contributor",
           "_commandcode/meta/muse-spark-1.3-contributor",
-          "cline-pass/muse-spark-1.3-contributor",
+          // 2026-11-17 (code#9961): the cline-pass seat is REMOVED from this
+                  // plan. cline-pass is monthly-walled (monthly 100%, weekly 99%;
+                  // 429 "monthly Clinepass limit" on every turn since 2026-11-14;
+                  // 37 sessions failed in one sweep and new waves wedged at retry
+                  // while the workhorse resolved through this door). The provider
+                  // definition stays in place per the switchboard rule, and per
+                  // Drew's 2026-11-15 ruling the provider is NOT disabled - only
+                  // the seat is pulled. Re-seat when the monthly window resets
+                  // (~2026-12-06, 22d from 2026-11-14) or a fresh quota read shows
+                  // monthly <100%, AND a live completion through the door proves
+                  // it answers again.
           "_muse/muse-spark-1.3-contributor"
         ],
         "selection": "ordered",
@@ -3640,21 +3662,16 @@
         "selection": "round-robin",
         "autonomy": "rules"
       },
-      "minimax-flash-plan": {
-        "name": "MiniMax M3.1 Flash Free (Zen) - plan providers",
-        // NEW 2026-11-14 (Drew, Zen pass): MiniMax M3.1 Flash, free on
-        // Zen. AA v5 II 29 at ~137 tok/s. Caution from the fleet's AA
-        // pull: it rarely abstains — careless for facts — so it serves
-        // patient bulk work (background), not fact-facing tiers.
-        "targets": [
-          "zen-plans/minimax-m3.1-flash-free"
-        ],
-        "selection": "round-robin",
-        "autonomy": "rules",
-        "weights": {
-          "zen-plans/minimax-m3.1-flash-free": 3
-        }
-      },
+      // REMOVED 2026-11-16 (provider-model-watch): minimax-flash-plan
+      // deleted — its only leg, zen-plans/minimax-m3.1-flash-free, was
+      // delisted from the OpenCode Zen roster (endpoint check
+      // 2026-11-16 eve: Zen 87 -> 86 served, model absent on two
+      // fetches). Per the placement law a free model that vanishes
+      // from its provider's roster loses its seats the same run. The
+      // model also never recorded a single success (cap-exhausted on
+      // all 3 workspaces from its first attempt 2026-11-15; last
+      // attempt 2026-11-15T22:20Z). Re-seat only if it returns to
+      // the Zen roster.
       "flint-plan": {
         "name": "Flint 40B Free (Zen) - plan providers",
         // NEW 2026-11-14 (Drew, Zen pass): Recursive's Flint 40B coding
@@ -4009,7 +4026,6 @@
           "opencode-route/gemini-free-plan",
           "opencode-route/exaone-free-plan",
           "opencode-route/hy4-flash-plan",
-          "opencode-route/minimax-flash-plan",
           "opencode-route/glm-5-3-flash-zen-plan",
           "opencode-route/glm-flash-free-plan",
           "opencode-route/flint-plan",

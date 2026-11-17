@@ -437,7 +437,9 @@ func manShape(binary string) (*importShape, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parseManText(out), nil
+	shape := parseManText(out)
+	shape.SourceText = out
+	return shape, nil
 }
 
 // runCaptureEnv is runCapture with extra environment.
@@ -543,6 +545,7 @@ func helpShape(binary string) (*importShape, error) {
 		return nil, err
 	}
 	shape := parseHelpText(out)
+	shape.SourceText = out
 	// One level of recursion: a subcommand's own --help carries its
 	// flags, and without them the generated tools would be names only.
 	for i, sub := range shape.Subs {
@@ -551,6 +554,7 @@ func helpShape(binary string) (*importShape, error) {
 			continue
 		}
 		subShape := parseHelpText(subOut)
+		shape.SourceText += subOut
 		shape.Subs[i].Flags = subShape.Global
 		shape.Subs[i].Positionals = subShape.Positionals
 		if shape.Subs[i].Desc == "" {

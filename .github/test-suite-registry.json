@@ -112,6 +112,20 @@
       "status": "mapped"
     },
     {
+      "id": "id.rust.planted-bug-check",
+      "paths": ["pkgs/id/tests/planted-bug-check.sh", "pkgs/id/tests/planted/*.patch"],
+      "invocation": "bash pkgs/id/tests/planted-bug-check.sh (the planted-bug-check flake check stages a throwaway git repo around pkgs/id and runs the script there; also run by pkgs/id/check-all in non-quick mode)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check / Run full nix flake check (nightly schedule + workflow_dispatch)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [8037, 1395],
+      "notes": "Mutation proof for the membership/voiding suites (#1395): the unmutated baseline must pass, then each planted mutation (voiding-authority, frontier-mapping, delegation-voiding, tag-fold-clear) must make its judged suites fail. Nightly-only: excluded from the fast PR list in check-id-pr-checks.sh because it runs the judged suites five times over."
+    },
+    {
       "id": "id.web.unit",
       "paths": ["pkgs/id/web/src/*.test.ts"],
       "invocation": "cd pkgs/id/web && bun run test (vitest run)",
@@ -795,6 +809,20 @@
       "notes": "Current workflow YAML has workflow_dispatch plus push/pull_request path filters for external-comms; the registry records configuration, not an automatic coverage claim."
     },
     {
+      "id": "pm-stack.scheduled-history.collect",
+      "paths": ["pm-stack/scheduled-history/**"],
+      "invocation": "python3 pm-stack/scheduled-history/test_collect.py",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test scheduled-history collector Python suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [10423],
+      "notes": "Script-style suite (19 checks; not unittest-discoverable). The workflow runs nightly on main with no path filters (2026-11-16 nightly-CI policy), so the step is the coverage; the step asserts the file exists and requires the checks-passed line."
+    },
+    {
       "id": "pm-stack.meta-exporter",
       "paths": ["pm-stack/meta-exporter/meta-quota-export.test.mjs"],
       "invocation": "node --test pm-stack/meta-exporter/meta-quota-export.test.mjs",
@@ -1043,6 +1071,7 @@
         "nixos/home/pm-dashboard-backup*.test.sh",
         "nixos/home/laptop-autocommit-in-progress.test.sh",
         "nixos/home/laptop-autocommit-merge-abort.test.sh",
+        "nixos/home/laptop-autocommit-oversized.test.sh",
         "nixos/home/laptop-repo-keeper.test.sh",
         "nixos/home/laptop-untracked-review.test.sh",
         "nixos/home/openclaw-backup.test.sh"
@@ -1090,6 +1119,19 @@
       },
       "status": "mapped",
       "related_issues": [8941]
+    },
+    {
+      "id": "fleet.smoke",
+      "paths": ["pkgs/fleet/smoke.sh"],
+      "invocation": "nix build .#fleet .#fleet-serve .#fleet-connect .#fleet-connect-static, then bash pkgs/fleet/smoke.sh <fleet> <fleet-serve> <fleet-connect> <fleet-connect-static>",
+      "venue": {
+        "workflow": ".github/workflows/fleet-smoke.yml",
+        "job_step": "fleet-smoke / Run the per-variant smoke suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [6400]
     },
     {
       "id": "web-gen-api.e2e",

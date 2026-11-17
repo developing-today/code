@@ -93,6 +93,44 @@ pub(super) async fn save_handler(
     // archive, tag set and metadata writes are one claim.
     let _save_name_guard = state.upload_name_lock.lock().await;
 
+    // Stale-save conflict policy (#8524): the client's doc_id is the
+    // hash its edit is based on (the hash it loaded or last saved —
+    // see pkgs/id/web/src/main.ts). If the filename has since been
+    // bound to a different version, this save is stale: refuse it
+    // with an actionable conflict and preserve the current version,
+    // instead of silently superseding it while the archive helper —
+    // keyed to the stale hash — archives nothing and the displaced
+    // version loses its named archive. The check runs under the
+    // name lock above, so the binding it reads is the binding the
+    // tag set below would displace: no check-then-set window. A name
+    // with no binding yet (first save) passes, as does a doc_id that
+    // names the current binding; a doc_id that does not parse as a
+    // hash comes from a legacy client that cannot state a base and
+    // is not second-guessed here.
+    if let Some(current) = current_filename_hash(&state.store, &req.name).await
+        && let Ok(base) = req.doc_id.parse::<iroh_blobs::Hash>()
+        && base != current
+    {
+        tracing::info!(
+            "[routes] Save conflict for '{}': base {} is stale, current is {}",
+            req.name,
+            base,
+            current
+        );
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": format!(
+                    "Save conflict: '{}' has a newer version than the one this edit is based on. Reload the file and re-apply the edit.",
+                    req.name
+                ),
+                "reason": "stale_save_conflict",
+                "current_doc_id": current.to_string(),
+            })),
+        )
+            .into_response();
+    }
+
     // Convert ProseMirror doc to the appropriate format based on file name
     let bytes = match convert_doc_to_bytes(&req.name, &req.doc) {
         Ok(b) => b,
@@ -1577,6 +1615,23 @@ pub(super) fn extract_raw_text(doc: &serde_json::Value) -> String {
     }
 
     blocks.join("\n")
+}
+
+/// The hash the filename tag currently points to, if the name is
+/// bound at all. Used by the stale-save conflict check (#8524).
+pub(super) async fn current_filename_hash(
+    store: &iroh_blobs::api::Store,
+    name: &str,
+) -> Option<iroh_blobs::Hash> {
+    use futures_lite::StreamExt;
+
+    let mut tags = store.tags().list().await.ok()?;
+    while let Some(Ok(tag_info)) = tags.next().await {
+        if tag_info.name.as_ref() == name.as_bytes() {
+            return Some(tag_info.hash);
+        }
+    }
+    None
 }
 
 /// Archive the original tag by creating a timestamped copy.

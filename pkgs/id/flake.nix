@@ -465,6 +465,33 @@
           # green on any correctly regenerated file.
           just-recipes-drift = mkCheck "just-recipes-drift" "just-recipes-check && bash scripts/just-recipes-check-test.sh";
 
+          # Planted-bug mutation proof (#8037, plan #1395): the script
+          # plants one named mutation at a time and requires the
+          # voiding/frontier suites to FAIL on each, after a green
+          # unmutated baseline. It drives git (rev-parse / apply /
+          # checkout) against repo-root-relative paths, and a flake
+          # check's src is pkgs/id alone with no .git, so the check
+          # stages a throwaway repo whose pkgs/id is this source tree,
+          # commits it, and runs the script there; the cargo vendor
+          # config the setup hook put in CARGO_HOME carries over, so
+          # the staged suites build offline like every other check.
+          # Nightly-only (full flake check): it runs the judged suites
+          # five times over, so it is excluded from the fast PR list
+          # in check-id-pr-checks.sh.
+          planted-bug-check = mkCheckWith {
+            name = "planted-bug-check";
+            extraNativeBuildInputs = [ pkgs.git ];
+            checkCommand = ''
+              stage=$(mktemp -d)
+              mkdir -p "$stage/pkgs/id"
+              tar --exclude=./target --exclude=./web/node_modules --exclude=./web/dist -cf - . | tar -xf - -C "$stage/pkgs/id"
+              git -C "$stage" init -q
+              git -C "$stage" add -A
+              git -C "$stage" -c user.email=ci@example.invalid -c user.name=ci commit -qm "stage pkgs/id for planted-bug-check"
+              bash "$stage/pkgs/id/tests/planted-bug-check.sh"
+            '';
+          };
+
           # Regression pins for scripts/build.sh variant handling (#6869):
           # the fixture suite stubs cargo and exercises every variant, so a
           # variant-specific regression fails here instead of in a just recipe.

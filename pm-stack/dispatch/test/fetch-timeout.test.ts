@@ -25,13 +25,13 @@ describe("outbound fetch timeouts (issue #10825)", () => {
     expect(sig).toBeInstanceOf(AbortSignal);
   });
 
-  test("queue Supabase fetch carries a timeout signal", async () => {
+  test("queue broker fetch carries a timeout signal", async () => {
     let seen: unknown;
     globalThis.fetch = (async (_url: unknown, init?: unknown) => {
       seen = init;
       return Response.json([]);
     }) as typeof fetch;
-    const q = new QueueClient("https://example.supabase.co", "key");
+    const q = new QueueClient("http://broker.test", "token");
     await q.findByDedupeKey("k");
     expect((seen as { signal?: unknown }).signal).toBeInstanceOf(AbortSignal);
   });
