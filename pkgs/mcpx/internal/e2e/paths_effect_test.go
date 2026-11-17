@@ -41,3 +41,19 @@ func TestPathsScriptsFindsRecipesThatLiveOnlyThere(t *testing.T) {
 		t.Fatalf("paths.scripts should make the off-path recipe runnable by name: %v\n%s", err, out)
 	}
 }
+
+func TestPathsCacheChangesTheDoctorDirectory(t *testing.T) {
+	e := newEnv(t, oneServer)
+	defaultCache := filepath.Join(e.dir, "cache")
+	out := e.run("doctor", "-v")
+	if !strings.Contains(out, defaultCache) {
+		t.Fatalf("doctor should report the configured default cache directory %q:\n%s", defaultCache, out)
+	}
+
+	customCache := filepath.Join(e.dir, "alternate-cache")
+	e.setenv("MCPX_CACHE_DIR=" + customCache)
+	out = e.run("doctor", "-v")
+	if !strings.Contains(out, customCache) || strings.Contains(out, defaultCache) {
+		t.Fatalf("paths.cache should redirect doctor to %q instead of %q:\n%s", customCache, defaultCache, out)
+	}
+}
