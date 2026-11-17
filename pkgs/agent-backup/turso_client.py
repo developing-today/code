@@ -304,19 +304,27 @@ class Turso:
         self._token = None
         self._token_source = None
         self._conn = None
+        self._baton = None
         if self.file_mode:
             self._conn = sqlite3.connect(self.url[5:])
         if self.print_only:
             self.file_mode = False
 
     # -- remote ------------------------------------------------------
-    def _pipeline(self, statements):
+    def _pipeline(self, statements, close=True):
         reqs = [
             {"type": "execute", "stmt": {"sql": sql, "args": [_typed(v) for v in args]}}
             for sql, args in statements
         ]
-        reqs.append({"type": "close"})
-        body = json.dumps({"requests": reqs}).encode()
+        if close:
+            reqs.append({"type": "close"})
+        payload = {"requests": reqs}
+        if self._baton:
+            # Resume the session the previous pipeline call opened, so
+            # temp tables and session state survive across the calls of
+            # one batch (#8545).
+            payload["baton"] = self._baton
+        body = json.dumps(payload).encode()
         r = urllib.request.Request(
             DB_HTTP_URL,
             data=body,
@@ -333,6 +341,10 @@ class Turso:
             if e.code in (401, 404) and "auth" in detail:
                 raise AuthError(f"HTTP {e.code}: {detail}")
             raise RuntimeError(f"pipeline HTTP {e.code}: {detail}")
+        if close:
+            self._baton = None
+        elif data.get("baton"):
+            self._baton = data["baton"]
         results = []
         for item in data.get("results", []):
             if item.get("type") == "error":
@@ -341,6 +353,16 @@ class Turso:
             if res is not None:
                 results.append(res)
         return results
+
+    def _drop_session(self):
+        """Best-effort close of a session left open by a failed batch,
+        so its temp tables cannot leak into the next batch."""
+        if not self._baton:
+            return
+        try:
+            self._pipeline([], close=True)
+        except Exception:
+            self._baton = None
 
     def _get_token(self, source):
         if source == "fleet":
@@ -372,22 +394,35 @@ class Turso:
             return []
         if self.file_mode:
             return self._file_exec(statements)
-        # chunk into pipeline calls of at most 100 statements
+        # Chunk into pipeline calls of at most 100 statements, but keep
+        # ONE session across the chunks of a batch (#8545): each chunk
+        # carries the baton of the previous one and only the final
+        # chunk closes. Before this, every chunk opened a fresh
+        # session, so a batch that staged rows in a TEMP table
+        # (load_rows' rde_incoming: CREATE + one INSERT per row + the
+        # archive INSERT..SELECT) lost the table at the first chunk
+        # boundary and the archive/merge statements failed.
         out = []
         for i in range(0, len(statements), 100):
             chunk = statements[i : i + 100]
+            final = i + 100 >= len(statements)
             if self._token is None:
                 self._token_source = "fleet"
                 self._token = self._get_token("fleet")
             try:
-                raw = self._pipeline(chunk)
+                raw = self._pipeline(chunk, close=final)
             except AuthError:
                 if self._token_source == "bws":
                     raise
                 # broker value rejected: rotate to the direct BWS read
                 self._token_source = "bws"
                 self._token = self._get_token("bws")
-                raw = self._pipeline(chunk)
+                raw = self._pipeline(chunk, close=final)
+            except Exception:
+                # A failed batch must not hand its session (and its
+                # temp tables) to the next batch.
+                self._drop_session()
+                raise
             for res in raw:
                 cols = [c.get("name") for c in res.get("cols", [])]
                 rows = []
