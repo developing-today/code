@@ -1473,6 +1473,90 @@ fn progress_arg(args: &Args) -> Option<Value> {
     Some(val)
 }
 
+/// #7598: two different "lane" vocabularies share the word. The
+/// claim path's `--lane` takes a registry lane id (code-a, any-n);
+/// `--execution.lane` historically took only the execution MODE
+/// ('opencode' | 'direct') and died on a lane id, so a worker that
+/// naturally passed its own lane id was rejected client-side and
+/// retried with the surface name -- recording executed_lane as the
+/// surface next to a claim stamped with the lane id: the recorded
+/// claim-to-complete "lane mismatch". The split: `lane` keeps the
+/// mode; a lane id passed in `lane` (or explicitly as `lane_id`)
+/// is recorded under `lane_id` and the mode is derived from its
+/// family (the opencode family executed via an opencode session;
+/// every other family executed directly). Mirrors the broker's
+/// lane_family_of (turso_queue.rs) family rule.
+fn execution_lane_id_family(lane_id: &str) -> Option<&'static str> {
+    const FAMILIES: [&str; 7] = [
+        "code",
+        "any",
+        "not-code",
+        "opencode",
+        "openchamber",
+        "nix",
+        "darwin-nix",
+    ];
+    let (family, suffix) = lane_id.rsplit_once('-')?;
+    if suffix.is_empty() || !suffix.bytes().all(|b| b.is_ascii_lowercase()) {
+        return None;
+    }
+    FAMILIES.iter().find(|f| **f == family).copied()
+}
+
+fn normalize_execution(mut val: Value) -> Result<Value, String> {
+    let mut lane_id: Option<String> = None;
+    {
+        let obj = val.as_object_mut().expect("execution object");
+        if let Some(raw_id) = obj.get("lane_id").cloned() {
+            let Some(id) = raw_id.as_str() else {
+                return Err(
+                    "--execution.lane_id must be a string lane id (e.g. 'code-a')".to_string(),
+                );
+            };
+            if execution_lane_id_family(id).is_none() {
+                return Err(format!(
+                    "--execution.lane_id '{id}' is not a known lane id (family + lowercase suffix, e.g. 'code-a', 'any-n', 'opencode-a')"
+                ));
+            }
+            lane_id = Some(id.to_string());
+        }
+        if let Some(raw_lane) = obj.get("lane").cloned() {
+            let Some(lane) = raw_lane.as_str() else {
+                return Err(
+                    "--execution.lane must be a string: the execution mode 'opencode' or 'direct', or a lane id (e.g. 'code-a')"
+                        .to_string(),
+                );
+            };
+            if lane == "opencode" || lane == "direct" {
+                // The mode, exactly as before.
+            } else if let Some(family) = execution_lane_id_family(lane) {
+                if let Some(existing) = &lane_id {
+                    if existing != lane {
+                        return Err(format!(
+                            "--execution.lane '{lane}' and --execution.lane_id '{existing}' disagree"
+                        ));
+                    }
+                }
+                lane_id = Some(lane.to_string());
+                let mode = if family == "opencode" {
+                    "opencode"
+                } else {
+                    "direct"
+                };
+                obj.insert("lane".to_string(), json!(mode));
+            } else {
+                return Err(format!(
+                    "--execution.lane '{lane}' is neither the execution mode ('opencode' or 'direct') nor a known lane id (e.g. 'code-a'); pass the mode in 'lane' and the executing lane in 'lane_id'"
+                ));
+            }
+        }
+        if let Some(id) = &lane_id {
+            obj.insert("lane_id".to_string(), json!(id));
+        }
+    }
+    Ok(val)
+}
+
 fn execution_arg(args: &Args) -> Option<Value> {
     let raw = args.get("execution")?;
     let val: Value = match serde_json::from_str(&raw) {
@@ -1482,12 +1566,10 @@ fn execution_arg(args: &Args) -> Option<Value> {
     if !val.is_object() {
         die(2, "--execution must be a JSON object");
     }
-    if let Some(lane) = val.get("lane") {
-        if lane != &json!("opencode") && lane != &json!("direct") {
-            die(2, "--execution.lane must be 'opencode' or 'direct'");
-        }
+    match normalize_execution(val) {
+        Ok(v) => Some(v),
+        Err(e) => die(2, &e),
     }
-    Some(val)
 }
 
 fn py_str_list(items: &[String]) -> String {
@@ -2468,7 +2550,10 @@ fn unbound_append(worker: &str, row: &Value, trigger: &str) {
 /// #9046: fleet session ids are `ses_` + alphanumerics — the
 /// shape every session surface mints. Anything else is not a
 /// session id and must never reach a route_attempt SQL string.
-fn valid_session_id(s: &str) -> bool {
+/// #8287: this is the crate's one session-id predicate — the
+/// broker's bind verb (turso_queue::verb_bind) validates against
+/// it too; do not fork a second definition.
+pub(crate) fn valid_session_id(s: &str) -> bool {
     s.len() > 4 && s.starts_with("ses_") && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
@@ -3594,7 +3679,12 @@ fn claim_batch_output(resp: &Value, worker: &str, requested: i64) -> i32 {
     // #8154: an empty batch carries the no-claim counts too.
     if claimed == 0 {
         if let Some(obj) = out.as_object_mut() {
-            for k in ["queued", "at_cap_queued", "queued_not_yet_due", "parked_due"] {
+            for k in [
+                "queued",
+                "at_cap_queued",
+                "queued_not_yet_due",
+                "parked_due",
+            ] {
                 if let Some(v) = resp.get(k) {
                     obj.insert(k.to_string(), v.clone());
                 }
@@ -3689,10 +3779,7 @@ fn no_claim_diagnostic(resp: &Value) -> Option<String> {
         .get("queued_not_yet_due")
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
-    let parked_due = resp
-        .get("parked_due")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
+    let parked_due = resp.get("parked_due").and_then(|v| v.as_i64()).unwrap_or(0);
     let mut line = format!(
         "repo-queue: no claimable task — {queued} queued ({at_cap} at the attempt cap, \
          {not_due} not yet due), {parked_due} parked due (#8154)"
@@ -6502,7 +6589,39 @@ mod tests {
     use proptest::prelude::*;
 
     #[test]
-    #[test]
+    fn execution_lane_split_7598() {
+        // Oracle (#7598): a worker passing its own lane id in
+        // --execution.lane is accepted; the recorded execution
+        // carries the mode in `lane` and the lane id in `lane_id`,
+        // so a claim-to-complete round trip leaves claim lane ==
+        // completion lane_id. The old mode values pass through
+        // unchanged, and garbage still dies with a clear message.
+        let v = normalize_execution(json!({"lane": "any-n"})).unwrap();
+        assert_eq!(v["lane"], json!("direct"));
+        assert_eq!(v["lane_id"], json!("any-n"));
+        let v = normalize_execution(json!({"lane": "opencode-a"})).unwrap();
+        assert_eq!(v["lane"], json!("opencode"));
+        assert_eq!(v["lane_id"], json!("opencode-a"));
+        let v = normalize_execution(json!({"lane": "code-a"})).unwrap();
+        assert_eq!(v["lane"], json!("direct"));
+        assert_eq!(v["lane_id"], json!("code-a"));
+        // Mode-only callers are untouched (no lane_id invented).
+        let v = normalize_execution(json!({"lane": "opencode"})).unwrap();
+        assert_eq!(v["lane"], json!("opencode"));
+        assert!(v.get("lane_id").is_none());
+        let v = normalize_execution(json!({"lane": "direct"})).unwrap();
+        assert_eq!(v["lane"], json!("direct"));
+        assert!(v.get("lane_id").is_none());
+        // Explicit lane_id alongside a mode is kept as-is.
+        let v = normalize_execution(json!({"lane": "direct", "lane_id": "any-f"})).unwrap();
+        assert_eq!(v["lane"], json!("direct"));
+        assert_eq!(v["lane_id"], json!("any-f"));
+        // Disagreement and garbage are refused, naming the semantics.
+        assert!(normalize_execution(json!({"lane": "any-n", "lane_id": "any-f"})).is_err());
+        assert!(normalize_execution(json!({"lane": "banana"})).is_err());
+        assert!(normalize_execution(json!({"lane_id": "banana-1"})).is_err());
+    }
+
     #[test]
     fn timeline_surfaces_claim_displacement_events_6985() {
         // #6985: the recurrence on task 17490 read as "exactly two
@@ -6527,6 +6646,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn collapse_timeline_9046_drops_only_duplicate_writes() {
         // #9046 oracle: same (kind, session, leaf, trigger) inside
         // 120 s = one record written by two surfaces; a changed
@@ -6623,6 +6743,7 @@ mod tests {
         assert!(bare_claim_refusal(&mk(&["--handoff"]), &None).is_none());
     }
 
+    #[test]
     fn rollup_event_reads_row_task_id() {
         // Claim-link rollup: the row's own task_id column joins
         // the stamp (fleet-cli stamp details carry no task_id).
@@ -7439,7 +7560,10 @@ mod tests {
         let line = no_claim_diagnostic(&resp).expect("counts yield a diagnostic");
         assert!(line.contains("7 queued"), "{line}");
         assert!(line.contains("7 at the attempt cap"), "{line}");
-        assert!(line.contains("every queued task is at the attempt cap"), "{line}");
+        assert!(
+            line.contains("every queued task is at the attempt cap"),
+            "{line}"
+        );
         assert!(line.contains("2 parked due"), "{line}");
         let mixed = json!({
             "row": Value::Null,

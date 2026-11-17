@@ -16,27 +16,79 @@ updates:
     schedule:
       interval: "weekly"
   - package-ecosystem: "docker"
-    directory: "/"
+    directory: "/pkgs/identity/web"
     schedule:
       interval: "weekly"
   - package-ecosystem: "cargo"
-    directory: "/"
+    directory: "/pkgs/id"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "cargo"
+    directory: "/pkgs/fleet"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "cargo"
+    directory: "/pkgs/atlas-search"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "cargo"
+    directory: "/pkgs/note-submission"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "cargo"
+    directory: "/pkgs/dht"
     schedule:
       interval: "weekly"
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
       interval: "weekly"
-  - package-ecosystem: "gitsubmodule"
-    directory: "/"
+  - package-ecosystem: "gomod"
+    directory: "/pkgs/chat"
     schedule:
       interval: "weekly"
   - package-ecosystem: "gomod"
-    directory: "/"
+    directory: "/pkgs/database"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "gomod"
+    directory: "/pkgs/fleet/placement"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "gomod"
+    directory: "/pkgs/graph"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "gomod"
+    directory: "/pkgs/identity"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "gomod"
+    directory: "/pkgs/import"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "gomod"
+    directory: "/pkgs/launcher"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "gomod"
+    directory: "/pkgs/map"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "gomod"
+    directory: "/pkgs/mcpx"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "gomod"
+    directory: "/pkgs/roc/platforms/go-basic-cli"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "gomod"
+    directory: "/pkgs/tea"
     schedule:
       interval: "weekly"
   - package-ecosystem: "terraform"
-    directory: "/"
+    directory: "/infra/dns"
     schedule:
       interval: "weekly"
   - package-ecosystem: "nuget"

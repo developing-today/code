@@ -1594,6 +1594,11 @@ export interface QuotaCurrentEntry {
    *  only one tick old, well inside the freshness bound). Absent on
    *  fresh reads. */
   retainedFromFailedTick?: string;
+  /** #8725: why the tick that retained this entry failed, when the
+   * gatherer classified the failure (Claude leg kinds: rate_limited,
+   * credential, other). A rate-limit retention must never be read
+   * downstream as a credential or session failure. */
+  retentionFailureKind?: string;
   source: string;
   error?: string;
   windows: QuotaCurrentWindow[];
@@ -1606,7 +1611,10 @@ export interface QuotaGatherHeartbeat {
   tickAt: string;
   ok: boolean;
   durationMs: number;
-  perProvider: Record<string, { state: "ok" | "error" | "lapsed"; ms: number; rows: number; error?: string }>;
+  perProvider: Record<
+    string,
+    { state: "ok" | "error" | "lapsed"; ms: number; rows: number; error?: string; errorKind?: string }
+  >;
   /** Set when the tick itself failed before any provider ran (import / credential store). */
   error?: string;
 }

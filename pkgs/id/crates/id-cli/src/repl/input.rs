@@ -149,10 +149,54 @@ pub enum ReplInput {
     Empty,
 }
 
+/// Largest stdout a shell substitution may capture, in bytes.
+///
+/// Applies to `$(...)`, backticks and `|>` alike. Output past this
+/// limit is never truncated into a successful result: the child is
+/// killed and reaped and [`ShellCaptureError::OutputLimit`] is returned.
+pub const SHELL_CAPTURE_MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+
+/// Largest stderr a shell substitution keeps, in bytes. Stderr only
+/// appears in the failure message, so bytes past this are drained and
+/// discarded; excess stderr never fails a substitution by itself.
+pub const SHELL_CAPTURE_MAX_STDERR_BYTES: usize = 64 * 1024;
+
+/// Wall-clock budget for one shell substitution. A command still
+/// running at the deadline is killed and reaped and
+/// [`ShellCaptureError::Timeout`] is returned.
+pub const SHELL_CAPTURE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How often the capture loop checks the child while waiting.
+const SHELL_CAPTURE_POLL: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Why a shell substitution produced no result. Distinguishable from
+/// an ordinary command failure by `downcast_ref::<ShellCaptureError>()`.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ShellCaptureError {
+    /// stdout exceeded [`SHELL_CAPTURE_MAX_OUTPUT_BYTES`].
+    #[error("command output exceeded {limit} bytes; the command was stopped")]
+    OutputLimit {
+        /// The byte limit that was exceeded.
+        limit: usize,
+    },
+    /// The command ran past [`SHELL_CAPTURE_DEADLINE`].
+    #[error("command did not finish within {seconds}s; the command was stopped")]
+    Timeout {
+        /// The deadline in whole seconds.
+        seconds: u64,
+    },
+}
+
 /// Execute a shell command and capture its stdout.
 ///
 /// This function runs a command through `/bin/sh -c` and returns the
-/// trimmed output. Used internally for `$()` and backtick substitution.
+/// trimmed output. Used internally for `$()`, backtick substitution and
+/// the `|>` pipe.
+///
+/// Bounds (see the constants above): stdout is read incrementally and
+/// stops at [`SHELL_CAPTURE_MAX_OUTPUT_BYTES`]; the whole run is limited
+/// to [`SHELL_CAPTURE_DEADLINE`]. On either limit the child is killed,
+/// reaped, and a [`ShellCaptureError`] is returned.
 ///
 /// # Arguments
 ///
@@ -167,6 +211,8 @@ pub enum ReplInput {
 /// Returns an error if:
 /// - The shell command cannot be spawned
 /// - The command exits with a non-zero status
+/// - Stdout exceeds the output limit ([`ShellCaptureError::OutputLimit`])
+/// - The deadline passes ([`ShellCaptureError::Timeout`])
 ///
 /// # Example
 ///
@@ -175,18 +221,152 @@ pub enum ReplInput {
 /// assert_eq!(output, "hello");
 /// ```
 pub fn shell_capture(cmd: &str) -> Result<String> {
-    let output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(cmd)
-        .output()
-        .map_err(|e| anyhow::anyhow!("failed to execute shell command: {e}"))?;
-    if !output.status.success() {
-        bail!(
-            "command failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+    shell_capture_with_limits(cmd, SHELL_CAPTURE_MAX_OUTPUT_BYTES, SHELL_CAPTURE_DEADLINE)
+}
+
+/// [`shell_capture`] with explicit limits, so tests can exercise the
+/// limit paths with small, deterministic bounds.
+fn shell_capture_with_limits(
+    cmd: &str,
+    max_output: usize,
+    deadline: std::time::Duration,
+) -> Result<String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    // Own process group, so a stopped substitution takes every
+    // descendant with it: `sh -c 'echo hi; sleep 100'` forks a child
+    // that keeps the stdout pipe open, and killing only `sh` would
+    // leave the reader blocked and leak the grandchild.
+    let mut child = {
+        use std::os::unix::process::CommandExt;
+        Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("failed to execute shell command: {e}"))?
+    };
+
+    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        bail!("failed to capture shell command output pipes");
+    };
+
+    // Read at most limit+1 bytes: one byte over the limit is the signal
+    // that the limit was exceeded, without buffering anything further.
+    let overflow = Arc::new(AtomicBool::new(false));
+    let stdout_overflow = Arc::clone(&overflow);
+    let stdout_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stdout.take(max_output as u64 + 1).read_to_end(&mut buf);
+        if buf.len() > max_output {
+            stdout_overflow.store(true, Ordering::SeqCst);
+        }
+        buf
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        // Drain stderr completely but keep only the first
+        // SHELL_CAPTURE_MAX_STDERR_BYTES: leaving the pipe unread would
+        // block a command that writes a lot to stderr until the
+        // deadline, turning an ordinary failure into a timeout.
+        let mut all = Vec::new();
+        let mut buf = [0u8; 8192];
+        let mut stderr = stderr;
+        loop {
+            match stderr.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let room = SHELL_CAPTURE_MAX_STDERR_BYTES.saturating_sub(all.len());
+                    all.extend_from_slice(&buf[..n.min(room)]);
+                }
+            }
+        }
+        all
+    });
+
+    let started = std::time::Instant::now();
+    let status = loop {
+        if overflow.load(Ordering::SeqCst) {
+            stop_child(&mut child);
+            join_readers(stdout_reader, stderr_reader);
+            return Err(ShellCaptureError::OutputLimit { limit: max_output }.into());
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(e) => {
+                stop_child(&mut child);
+                join_readers(stdout_reader, stderr_reader);
+                bail!("failed to wait for shell command: {e}");
+            }
+        }
+        if started.elapsed() >= deadline {
+            stop_child(&mut child);
+            join_readers(stdout_reader, stderr_reader);
+            return Err(ShellCaptureError::Timeout {
+                seconds: deadline.as_secs(),
+            }
+            .into());
+        }
+        std::thread::sleep(SHELL_CAPTURE_POLL);
+    };
+
+    // A background job the command left running would keep the pipes
+    // open and block the join below with no deadline. The substitution
+    // owns its whole group, so the group is killed here as well.
+    kill_process_group(child.id() as i32);
+    let (stdout_bytes, stderr_bytes) = join_readers(stdout_reader, stderr_reader);
+    if overflow.load(Ordering::SeqCst) {
+        return Err(ShellCaptureError::OutputLimit { limit: max_output }.into());
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    if !status.success() {
+        bail!("command failed: {}", String::from_utf8_lossy(&stderr_bytes));
+    }
+    Ok(String::from_utf8_lossy(&stdout_bytes).trim().to_owned())
+}
+
+/// Kill a still-running child's whole process group and reap the child,
+/// so no zombie or descendant outlives a stopped substitution. The
+/// child is still unreaped here, so its pid (and the group id) cannot
+/// have been reused. Errors are ignored: the group may already be gone.
+fn stop_child(child: &mut std::process::Child) {
+    kill_process_group(child.id() as i32);
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// SIGKILL every member of the process group `group`, which is the pid
+/// of a child spawned with `process_group(0)`. Signals nothing else.
+/// Called after the child was reaped too, so the group id may be stale;
+/// then the kill finds no group, or (if the pid was recycled into a new
+/// group leader in that instant) signals that unrelated group. That
+/// window is one `try_wait` poll wide and is accepted.
+#[allow(unsafe_code)] // Required for libc::kill on the process group
+fn kill_process_group(group: i32) {
+    // SAFETY: a negative pid addresses a process group; SIGKILL only
+    // signals it and touches no memory.
+    unsafe {
+        libc::kill(-group, libc::SIGKILL);
+    }
+}
+
+/// Join the stdout and stderr readers. Both finish once their pipe
+/// closes, which happens when the child has been reaped.
+fn join_readers(
+    stdout: std::thread::JoinHandle<Vec<u8>>,
+    stderr: std::thread::JoinHandle<Vec<u8>>,
+) -> (Vec<u8>, Vec<u8>) {
+    (
+        stdout.join().unwrap_or_default(),
+        stderr.join().unwrap_or_default(),
+    )
 }
 
 /// Find the first occurrence of `needle` in `haystack` that lies
@@ -1520,6 +1700,115 @@ mod tests {
     fn test_shell_capture_nonexistent_command() {
         let result = shell_capture("nonexistent_command_12345");
         assert!(result.is_err());
+    }
+
+    fn capture_error(err: &anyhow::Error) -> Option<&ShellCaptureError> {
+        err.downcast_ref::<ShellCaptureError>()
+    }
+
+    #[test]
+    fn test_shell_capture_output_at_limit_is_allowed() {
+        let within =
+            shell_capture_with_limits("printf abcd", 4, std::time::Duration::from_secs(10));
+        assert_eq!(within.unwrap(), "abcd");
+    }
+
+    #[test]
+    fn test_shell_capture_output_over_limit_is_error_not_truncation() {
+        // The command writes far more than the limit and finishes on its
+        // own: the result must be the typed error, never a truncated Ok.
+        let err = shell_capture_with_limits(
+            "head -c 65536 /dev/zero",
+            1024,
+            std::time::Duration::from_secs(10),
+        )
+        .unwrap_err();
+        assert_eq!(
+            capture_error(&err),
+            Some(&ShellCaptureError::OutputLimit { limit: 1024 }),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_shell_capture_unbounded_output_stops_at_limit() {
+        // A large finite producer: the limit must stop reading and kill
+        // the writer, so the call returns without consuming all of it.
+        let err = shell_capture_with_limits(
+            "head -c 10000000 /dev/zero",
+            4096,
+            std::time::Duration::from_secs(10),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            capture_error(&err),
+            Some(ShellCaptureError::OutputLimit { .. })
+        ));
+    }
+
+    #[test]
+    fn test_shell_capture_deadline_kills_and_returns_timeout() {
+        let err =
+            shell_capture_with_limits("sleep 30", 1024, std::time::Duration::from_millis(100))
+                .unwrap_err();
+        assert_eq!(
+            capture_error(&err),
+            Some(&ShellCaptureError::Timeout { seconds: 0 }),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_shell_capture_deadline_kills_grandchild_holding_pipe() {
+        // `sh` forks `sleep` (it cannot exec a compound list) and the
+        // grandchild keeps stdout open. Killing only `sh` would leave the
+        // reader blocked for 30s; the process-group kill must end it at
+        // the deadline.
+        let started = std::time::Instant::now();
+        let err = shell_capture_with_limits(
+            "sleep 30; echo done",
+            1024,
+            std::time::Duration::from_millis(100),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            capture_error(&err),
+            Some(ShellCaptureError::Timeout { .. })
+        ));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "returned only after the grandchild finished"
+        );
+    }
+
+    #[test]
+    fn test_shell_capture_ordinary_failure_is_not_a_limit_error() {
+        let err = shell_capture_with_limits("exit 3", 1024, std::time::Duration::from_secs(10))
+            .unwrap_err();
+        assert!(capture_error(&err).is_none(), "{err}");
+    }
+
+    #[test]
+    fn test_substitution_forms_share_output_limit() {
+        // $(...), backticks and |> all run through shell_capture, so all
+        // three refuse 2 MiB of output (limit 1 MiB) with the typed error.
+        let producer = "head -c 2097152 /dev/zero";
+        for line in [
+            format!("get $({producer})"),
+            format!("get `{producer}`"),
+            format!("{producer} |> put - name"),
+        ] {
+            let err = preprocess_repl_line(&line).unwrap_err();
+            assert!(
+                matches!(
+                    capture_error(&err),
+                    Some(ShellCaptureError::OutputLimit {
+                        limit: SHELL_CAPTURE_MAX_OUTPUT_BYTES
+                    })
+                ),
+                "{line}: {err}"
+            );
+        }
     }
 
     #[test]
