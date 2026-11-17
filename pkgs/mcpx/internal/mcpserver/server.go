@@ -907,11 +907,20 @@ func (s *Server) handle(ctx context.Context, c *Conn, req request) *response {
 	// Advertised-capability gate (#2436, Phase 2 of #2434): a method
 	// whose gating capability was not advertised to this peer is
 	// method-not-found, even though mcpx answers it for peers it was
-	// advertised to. The gated set is exactly the two proven
+	// advertised to. The gated set began as the two proven
 	// advertisement/dispatch disagreements — completion/complete and
 	// resources/subscribe|unsubscribe; widening it needs its own
-	// evidence per #2434. Placement is after the Removed check, whose
-	// precedence it keeps.
+	// evidence per #2434. #7844 is that evidence for the skills
+	// extension methods (skills/list, skills/get,
+	// resources/directory/read): dispatched unconditionally but
+	// advertised only under extensions, and only when skills are
+	// served. The era disposition for the widened set is recorded in
+	// docs/spec/revision-conflicts.md (item C24): a gate applies only
+	// where the peer's revision can express the advertisement
+	// (gateEraApplies) — pre-2026 peers keep liberal acceptance of
+	// the extension methods, exactly as 2024-11-05 keeps
+	// completion/complete. Placement is after the Removed check,
+	// whose precedence it keeps.
 	//
 	// The capability source is what the peer was (or would now be)
 	// advertised, never a dispatch-time guess: for a legacy peer the
@@ -934,7 +943,7 @@ func (s *Server) handle(ctx context.Context, c *Conn, req request) *response {
 		if version == "" && c != nil {
 			version = c.Version()
 		}
-		if version != "" && (capName != "completions" || Defines(version, FeatCompletions)) {
+		if version != "" && gateEraApplies(version, capName) {
 			// The completions exemption: 2024-11-05 has no completions
 			// capability to advertise with, but completion/complete
 			// itself is older than the capability (see FeatCompletions),
@@ -2685,23 +2694,56 @@ func (s *Server) capabilities(ctx context.Context, version string, c *Conn) map[
 }
 
 // gatedCapability names the advertised capability a method depends on
-// for the dispatch gate in handle (#2436). The set is deliberately
-// only the two advertisement/dispatch disagreements proven in #2434's
-// triage; a method not listed is not gated.
+// for the dispatch gate in handle (#2436). The set began as the two
+// advertisement/dispatch disagreements proven in #2434's triage;
+// #7844 added the skills extension methods on the conformance row's
+// evidence (errors-method-not-found-for-unadvertised-capability):
+// they are dispatched unconditionally, but the extensions.skills
+// advertisement that covers them exists only in 2026-07-28 and only
+// when skills are served. A method not listed is not gated: tools/*,
+// resources/list|read and prompts/* ride on capabilities
+// capabilities() advertises unconditionally, so no peer can be
+// unadvertised for them, and the tasks methods carry their own era
+// rules inside handleTask (see revision-conflicts.md item C24).
 func gatedCapability(method string) (string, bool) {
 	switch method {
 	case "completion/complete":
 		return "completions", true
 	case "resources/subscribe", "resources/unsubscribe":
 		return "resources.subscribe", true
+	case "skills/list", "skills/get", "resources/directory/read":
+		return "extensions.skills", true
 	}
 	return "", false
+}
+
+// gateEraApplies reports whether the dispatch gate may judge a peer
+// of the given revision against the named capability's advertisement:
+// only where the peer's revision defines the feature that makes the
+// advertisement expressible. A peer cannot be refused for missing an
+// advertisement its own schema has no shape for — the completions
+// exemption (#2716: 2024-11-05 has no completions capability to
+// advertise with) is the first case of this rule, and the skills
+// extension is the second: extensions exist only in 2026-07-28, so
+// pre-2026 peers keep liberal acceptance of the extension methods
+// (#7844; revision-conflicts.md item C24).
+func gateEraApplies(version, capName string) bool {
+	switch capName {
+	case "completions":
+		return Defines(version, FeatCompletions)
+	case "extensions.skills":
+		return Defines(version, FeatExtensions)
+	}
+	return true
 }
 
 // capabilityAdvertised reports whether the capabilities map caps
 // advertises the named gating capability: completions by presence
 // (it is declared as an empty object when the revision defines it),
-// resources.subscribe by its boolean.
+// resources.subscribe by its boolean, extensions.skills by the
+// presence of the skills extension entry (declared, with
+// directoryRead, exactly when skills are served — which is also
+// what resources/directory/read depends on).
 func capabilityAdvertised(caps map[string]any, capName string) bool {
 	switch capName {
 	case "completions":
@@ -2711,6 +2753,10 @@ func capabilityAdvertised(caps map[string]any, capName string) bool {
 		res, _ := caps["resources"].(map[string]any)
 		on, _ := res["subscribe"].(bool)
 		return on
+	case "extensions.skills":
+		ext, _ := caps["extensions"].(map[string]any)
+		_, ok := ext[ExtSkills]
+		return ok
 	}
 	return true
 }

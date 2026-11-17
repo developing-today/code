@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -201,7 +202,28 @@ func TestServerKeysAnotherHostWritesAreRecordedNotRefused(t *testing.T) {
 	t.Setenv("HOME", dir)
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	sub := filepath.Join(dir, "proj")
-	write(t, sub, ".mcpx.json", `{"mcpServers":{"b":{"command":"y","trust":true}}}`)
+	fixture := write(t, sub, ".mcpx.json", `{"mcpServers":{"b":{"command":"y","trust":true}}}`)
+	// Hermetic chain (#8007, the #7686 pattern): HOME/XDG isolation
+	// does not bound the load. The chain is governed by whatever the
+	// host supplies: an ambient MCPX_PATHS_CONFIG seed with no null
+	// replaces the discovery walk outright (the devshell case — the
+	// fixture never loads and the merged load loses the ignored
+	// key: "a merged load lost the ignored key: []"), and without a
+	// seed SearchPathFrom walks up from sub to /, so every ancestor
+	// of t.TempDir() joins the chain (the real home directory itself
+	// when TMPDIR lives under it, so the real ~/.mcpx.json merges
+	// in), plus /etc/mcpx/config.json — where a host mcpx block with
+	// an unknown key fails the load instead. Seed the chain with
+	// exactly the fixture file — no null, so the seed replaces the
+	// walk outright — and the merged load merges the fixture
+	// anywhere TMPDIR lives and whatever the host exports.
+	seed, err := json.Marshal([]string{fixture})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MCPX_PATHS_CONFIG", string(seed))
+	config.SetPathsConfigSeed(nil)
+	t.Cleanup(func() { config.SetPathsConfigSeed(nil) })
 	merged, err := config.LoadFrom("", sub)
 	if err != nil {
 		t.Fatal(err)

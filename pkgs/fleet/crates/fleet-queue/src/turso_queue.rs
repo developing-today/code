@@ -4683,11 +4683,23 @@ fn verb_claim_batch(
     match work {
         Ok(rows) => {
             let claimed = rows.len();
-            ok(json!({
+            let mut env = json!({
                 "rows": rows,
                 "claimed": claimed,
                 "requested": count,
-            }))
+            });
+            // #8154: an empty batch names why, same as a single claim.
+            if claimed == 0 {
+                let counts = no_claim_counts(t, &iso(now_unix()), scope);
+                if let Some(obj) = env.as_object_mut() {
+                    if let Some(c) = counts.as_object() {
+                        for (k, v) in c {
+                            obj.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+            }
+            ok(env)
         }
         Err(e) if e.starts_with("claim_repo_task:") => fail(4, e),
         Err(e) => terr(e),
@@ -4882,6 +4894,19 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
                         }
                     }
                 }
+                // #8154 (follow-on #2937 acceptance 4): name WHY the
+                // claim found nothing — the scoped queued / at-cap /
+                // not-yet-due / parked-due counts ride the no-row
+                // envelope so the client diagnostic can say whether
+                // the stream is empty, capped, or merely not due.
+                let counts = no_claim_counts(t, &iso(now_unix()), &scope);
+                if let Some(obj) = resp.as_object_mut() {
+                    if let Some(c) = counts.as_object() {
+                        for (k, v) in c {
+                            obj.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
             }
             ok(resp)
         }
@@ -4955,6 +4980,53 @@ fn budget_skip_summary(
         "budget_skipped": n,
         "max_required_budget_minutes": m,
     })
+}
+
+/// #8154 (follow-on #2937 acceptance 4): the no-claim counts query
+/// shape. One aggregate pass over the claim's own scope counts the
+/// rows the claim searched but could not take, split by reason:
+/// queued (all), at_cap_queued (attempts >= max_attempts — the
+/// #6528 health definition), queued_not_yet_due (under cap, parked
+/// behind a future not_before), parked_due (parked rows the pick
+/// could have taken early: timer lapsed or a capacity park).
+/// Placeholders: the not-yet-due `now`, then the parked-due `now`,
+/// then the scope args.
+fn no_claim_counts_sql(scope_sql: &str) -> String {
+    format!(
+        "SELECT \
+         COALESCE(SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END), 0) AS queued, \
+         COALESCE(SUM(CASE WHEN status = 'queued' AND attempts >= max_attempts THEN 1 ELSE 0 END), 0) AS at_cap_queued, \
+         COALESCE(SUM(CASE WHEN status = 'queued' AND attempts < max_attempts \
+           AND not_before IS NOT NULL AND not_before > ? THEN 1 ELSE 0 END), 0) AS queued_not_yet_due, \
+         COALESCE(SUM(CASE WHEN status = 'parked' AND ((not_before IS NOT NULL AND not_before <= ?) \
+           OR wait_kind = 'capacity') THEN 1 ELSE 0 END), 0) AS parked_due \
+         FROM tasks \
+         WHERE payload IS NOT NULL AND payload <> '' AND payload <> '{{}}'{scope_sql}"
+    )
+}
+
+fn no_claim_counts(t: &TursoBackend, now: &str, scope: &ClaimScope) -> Value {
+    let sql = no_claim_counts_sql(&scope.sql);
+    let mut args: Vec<Arg> = vec![Arg::Text(now.to_string()), Arg::Text(now.to_string())];
+    for a in &scope.args {
+        args.push(a.clone());
+    }
+    match t.query_objs(&sql, &args, &[]) {
+        Ok(rows) => {
+            let first = rows.into_iter().next().unwrap_or_else(|| json!({}));
+            let get = |k: &str| first.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
+            json!({
+                "queued": get("queued"),
+                "at_cap_queued": get("at_cap_queued"),
+                "queued_not_yet_due": get("queued_not_yet_due"),
+                "parked_due": get("parked_due"),
+            })
+        }
+        // A failed count leaves the envelope without counts (the
+        // client then falls back to the bare diagnostic) — never a
+        // fabricated number.
+        Err(_) => json!({}),
+    }
 }
 
 fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
@@ -8578,6 +8650,25 @@ mod tests {
             "{sql}"
         );
         assert!(!sql.contains("IS NULL OR COALESCE"), "{sql}");
+        assert!(sql.ends_with(" AND queue = ?"), "{sql}");
+    }
+
+    #[test]
+    fn no_claim_counts_query_shape_8154() {
+        // #8154 oracle (follow-on #2937 acceptance 4): the no-claim
+        // counts aggregate splits the searched scope by reason —
+        // queued, at-cap (attempts >= max_attempts, the #6528
+        // definition), not-yet-due, parked-due — over payload-bearing
+        // rows only. Placeholders: two `now`s, then the scope's.
+        let sql = no_claim_counts_sql(" AND queue = ?");
+        assert_eq!(sql.matches('?').count(), 3, "{sql}");
+        assert!(sql.contains("AS queued"), "{sql}");
+        assert!(sql.contains("AS at_cap_queued"), "{sql}");
+        assert!(sql.contains("attempts >= max_attempts"), "{sql}");
+        assert!(sql.contains("AS queued_not_yet_due"), "{sql}");
+        assert!(sql.contains("not_before > ?"), "{sql}");
+        assert!(sql.contains("AS parked_due"), "{sql}");
+        assert!(sql.contains("wait_kind = 'capacity'"), "{sql}");
         assert!(sql.ends_with(" AND queue = ?"), "{sql}");
     }
 

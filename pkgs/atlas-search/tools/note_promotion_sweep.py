@@ -89,8 +89,9 @@ def is_stub(text: str) -> bool:
     return STUB_MARKER in text.split("---", 2)[1] if text.startswith("---") else False
 
 
-def record_promotion(db_path: Path, old: str, new: str, home_id: str,
-                     sha: str, now: str) -> None:
+def record_promotion(
+    db_path: Path, old: str, new: str, home_id: str, sha: str, now: str
+) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
         conn.execute(SCHEMA)
@@ -115,12 +116,21 @@ def lookup_promotion(db_path: Path, old: str) -> dict | None:
         ).fetchone()
     if row is None:
         return None
-    return {"new_path": row[0], "new_home_id": row[1],
-            "content_sha256": row[2], "promoted_at": row[3]}
+    return {
+        "new_path": row[0],
+        "new_home_id": row[1],
+        "content_sha256": row[2],
+        "promoted_at": row[3],
+    }
 
 
-def promote(old: Path, new: Path, db_path: Path,
-            new_home_id: str | None = None, now: str | None = None) -> dict:
+def promote(
+    old: Path,
+    new: Path,
+    db_path: Path,
+    new_home_id: str | None = None,
+    now: str | None = None,
+) -> dict:
     """Perform one promotion; returns the receipt dict."""
     now = now or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     home_id = new_home_id or str(new)
@@ -142,8 +152,7 @@ def promote(old: Path, new: Path, db_path: Path,
 
     if new.exists():
         if not new.is_file() or sha256_hex(new.read_bytes()) != sha:
-            raise Refusal(
-                f"new home already exists with different content: {new_s}")
+            raise Refusal(f"new home already exists with different content: {new_s}")
     else:
         new.parent.mkdir(parents=True, exist_ok=True)
         new.write_bytes(original)
@@ -152,16 +161,22 @@ def promote(old: Path, new: Path, db_path: Path,
 
     record_promotion(db_path, old_s, new_s, home_id, sha, now)
 
-    stub = STUB_TEMPLATE.format(marker=STUB_MARKER, new_home_id=home_id,
-                                new_path=new_s, sha=sha, now=now)
+    stub = STUB_TEMPLATE.format(
+        marker=STUB_MARKER, new_home_id=home_id, new_path=new_s, sha=sha, now=now
+    )
     old.write_text(stub, encoding="utf-8")
-    return {"status": "promoted", "old": old_s, "new_path": new_s,
-            "new_home_id": home_id, "content_sha256": sha, "promoted_at": now}
+    return {
+        "status": "promoted",
+        "old": old_s,
+        "new_path": new_s,
+        "new_home_id": home_id,
+        "content_sha256": sha,
+        "promoted_at": now,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="note-promotion-sweep",
-                                     description=__doc__)
+    parser = argparse.ArgumentParser(prog="note-promotion-sweep", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("promote", help="promote one note")
@@ -179,16 +194,27 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.cmd == "promote":
-            receipt = promote(Path(args.old), Path(args.new), Path(args.db),
-                              args.new_home_id, args.now)
+            receipt = promote(
+                Path(args.old),
+                Path(args.new),
+                Path(args.db),
+                args.new_home_id,
+                args.now,
+            )
             print(json.dumps(receipt, indent=2))
             return 0
         entries = json.loads(Path(args.map).read_text(encoding="utf-8"))
         receipts = []
         for entry in entries:
-            receipts.append(promote(Path(entry["old"]), Path(entry["new"]),
-                                    Path(args.db), entry.get("new_home_id"),
-                                    args.now))
+            receipts.append(
+                promote(
+                    Path(entry["old"]),
+                    Path(entry["new"]),
+                    Path(args.db),
+                    entry.get("new_home_id"),
+                    args.now,
+                )
+            )
         print(json.dumps(receipts, indent=2))
         return 0
     except Refusal as exc:

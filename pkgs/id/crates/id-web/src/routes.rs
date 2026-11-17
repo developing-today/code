@@ -2673,7 +2673,7 @@ mod upload_router_tests {
 
         // Mounting at runtime (no router rebuild) makes /prog serve
         // the mounted world's program surface.
-        state.publication_mounts.mount("arena", "/prog");
+        state.publication_mounts.mount("arena", "/prog").unwrap();
         let mounted = app
             .clone()
             .oneshot(Request::builder().uri("/prog").body(Body::empty()).unwrap())
@@ -2701,6 +2701,36 @@ mod upload_router_tests {
             .await
             .unwrap();
         assert_eq!(after.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn publication_mount_on_a_reserved_route_is_refused_and_explorer_still_answers() {
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        state.world = Some(hub_with_world("arena", Some("s3cret")));
+        let app = create_router(state.clone(), WebSecurity::default());
+
+        // Phase 4: /world is a reserved Explorer route, so the
+        // table refuses the mount instead of letting it shadow the
+        // Explorer page there.
+        let error = state
+            .publication_mounts
+            .mount("arena", "/world")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("reserved Explorer route /world"), "{error}");
+        assert_eq!(state.publication_mounts.lookup("/world"), None);
+
+        // The Explorer world page still answers at /world.
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/world")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
     }
 
     #[tokio::test]
