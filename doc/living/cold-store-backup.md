@@ -44,6 +44,18 @@ Shipped and operating nightly. Designed 2026-10-25; first recorded failure
   hash-tree scoping, Backblaze — the register notes backups is the most
   fragmented domain, with no single owning epic.
 
+## Recorded decisions
+
+- The DIY backup `api` transport deliberately excludes the four Supabase
+  platform schemas — `auth`, `storage`, `realtime`, `vault`. The backup
+  config's 12-schema list covers every fleet-owned schema; in the
+  2026-11-06 pgdump the platform schemas' user-facing tables are all
+  empty and only platform bookkeeping (schema_migrations / migrations)
+  is nonzero, so the partial list is a decision, not a gap. Recorded
+  decision: developing-today/code#6935 (filed 2026-11-07 while killing
+  the backup schema-list trap, #5695 / #6619; triage verdict CONFIRMED
+  2026-11-09).
+
 ## Open follow-ups
 
 - The libsql `/dump` malformed-schema-rows quirk owed an upstream filing
