@@ -29,7 +29,9 @@
  *   1. Every tick: read the stored session (get-session). The read
  *      is itself the renewal-by-use; expiresAt + horizon land in the
  *      state file, so the horizon is a watched number, not a
- *      surprise.
+ *      surprise. A read that fails at the transport level is not a
+ *      failed auth: the outcome is unknown, the last-known horizon is
+ *      kept, and the read is retried next tick.
  *   2. Stored session failed auth, or horizon below
  *      LOW_HORIZON_HOURS: re-capture from the standing laptop
  *      Helium over CDP — read the live better-auth session cookie
@@ -77,7 +79,10 @@ export type CaptureResult = "stored" | "no-browser-session" | "cdp-unreachable" 
 export interface OpenDesignRenewalState {
   provider: "opendesign";
   checkedAt: string;
-  status: "not-configured" | "valid" | "renewed" | "attention";
+  /** "unknown" = the last read failed at the transport level (#11017):
+   * neither valid nor rejected; the last-known horizon is kept and the
+   * read is retried next tick. */
+  status: "not-configured" | "valid" | "renewed" | "attention" | "unknown";
   sessionExpiresAt: string | null;
   horizonHours: number | null;
   capture: { attempted: boolean; result: CaptureResult | string | null };
@@ -96,7 +101,7 @@ export interface OpenDesignRenewalDeps {
   forceCapture?: boolean;
   lowHorizonHours?: number;
   /** Injectable for tests; default is the real get-session read. */
-  fetchSession?: (credential: OpenDesignCredentialLike) => Promise<{ expiresAt: string | null } | null>;
+  fetchSession?: (credential: OpenDesignCredentialLike) => Promise<SessionReadResult>;
   /** Injectable for tests; defaults are the real CDP operations. */
   getBrowserCookies?: (cdpUrl: string) => Promise<BrowserCookie[]>;
   refreshBrowserTab?: (cdpUrl: string) => Promise<void>;
@@ -118,9 +123,21 @@ export function horizonHours(expiresAt: string | null, now: Date): number | null
   return Number.isFinite(ms) ? Math.round((ms / 3_600_000) * 10) / 10 : null;
 }
 
+/**
+ * The three session-read outcomes (#11017). A completed read carries a
+ * session ({ expiresAt } — the read itself slides the Better Auth expiry
+ * by use), or is a definitive rejection (null: HTTP 401/403, or a 200
+ * whose body names no live session). Other HTTP statuses, malformed
+ * bodies, and fetch failures are transport/unknown outcomes: no answer
+ * was obtained, so retry next tick, never re-capture or raise a
+ * sign-in alert.
+ */
+export const SESSION_READ_TRANSPORT_ERROR = "transport-error" as const;
+export type SessionReadResult = { expiresAt: string | null } | null | typeof SESSION_READ_TRANSPORT_ERROR;
+
 const defaultFetchSession = async (
   credential: OpenDesignCredentialLike,
-): Promise<{ expiresAt: string | null } | null> => {
+): Promise<SessionReadResult> => {
   const headers: Record<string, string> = {
     Accept: "application/json",
     "x-vela-workspace-id": credential.workspaceId,
@@ -133,8 +150,14 @@ const defaultFetchSession = async (
       headers,
       signal: AbortSignal.timeout(15_000),
     });
-    if (!response.ok) return null;
-    const payload = (await response.json().catch(() => null)) as { session?: { expiresAt?: unknown } | null } | null;
+    if (response.status === 401 || response.status === 403) return null;
+    if (!response.ok) return SESSION_READ_TRANSPORT_ERROR;
+    let payload: { session?: { expiresAt?: unknown } | null } | null;
+    try {
+      payload = (await response.json()) as { session?: { expiresAt?: unknown } | null } | null;
+    } catch {
+      return SESSION_READ_TRANSPORT_ERROR;
+    }
     // Better Auth answers 200 with a null/empty body when the cookie
     // names no live session — that is an auth failure, not a session
     // with an unknown expiry.
@@ -142,7 +165,7 @@ const defaultFetchSession = async (
     if (!session || typeof session !== "object") return null;
     return { expiresAt: typeof session.expiresAt === "string" ? session.expiresAt : null };
   } catch {
-    return null;
+    return SESSION_READ_TRANSPORT_ERROR;
   }
 };
 
@@ -297,6 +320,18 @@ export async function renewOpenDesignSession(deps: OpenDesignRenewalDeps): Promi
   }
 
   let session = await fetchSession(credential);
+  // A transport failure is unknown, not a rejection (#11017): record it,
+  // keep the last-known horizon, and let the next tick re-read — it must
+  // not buy a re-capture attempt or a sign-in alert.
+  if (session === SESSION_READ_TRANSPORT_ERROR) {
+    return finish({
+      status: "unknown",
+      sessionExpiresAt: previous?.sessionExpiresAt ?? null,
+      horizonHours: horizonHours(previous?.sessionExpiresAt ?? null, now),
+      capture: { attempted: false, result: "not-attempted" },
+      alert: null,
+    });
+  }
   let horizon = horizonHours(session?.expiresAt ?? null, now);
   const needsCapture = deps.forceCapture === true || session === null || horizon === null || horizon < lowHorizon;
 
@@ -349,6 +384,15 @@ export async function renewOpenDesignSession(deps: OpenDesignRenewalDeps): Promi
   if (captureResult === "stored") {
     const renewed = deps.readCredential();
     session = renewed ? await fetchSession(renewed) : null;
+    if (session === SESSION_READ_TRANSPORT_ERROR) {
+      return finish({
+        status: "unknown",
+        sessionExpiresAt: previous?.sessionExpiresAt ?? null,
+        horizonHours: horizonHours(previous?.sessionExpiresAt ?? null, now),
+        capture: { attempted: true, result: captureResult },
+        alert: null,
+      });
+    }
     horizon = horizonHours(session?.expiresAt ?? null, now);
     return finish({
       status: "renewed",
