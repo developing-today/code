@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -337,9 +338,41 @@ func (d daemonAsker) Reply(ctx context.Context, callID string, answers map[strin
 	if err != nil {
 		return err
 	}
-	_, err = c.do(ctx, http.MethodPost, "/v1/ask/"+callID+"/answers",
+	body, err := c.do(ctx, http.MethodPost, "/v1/ask/"+callID+"/answers",
 		map[string]any{"answers": answers})
-	return err
+	if err != nil {
+		return err
+	}
+	// The route answers 200 even when it refused some of the answers,
+	// naming each refusal in problems. Dropping that body was the
+	// #8922 loop: the broker kept the question pending, the caller
+	// believed it answered, re-polled, re-pushed the same question
+	// and got the same answer until AskRounds ran out. A refusal is
+	// terminal for the answer that caused it -- the client already
+	// answered and will answer the same way again -- so surface it
+	// and let the caller fail the call with the reason.
+	var out struct {
+		Problems map[string]string `json:"problems"`
+	}
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &out); err != nil {
+			return fmt.Errorf("reading the daemon's answer receipt: %w", err)
+		}
+	}
+	if len(out.Problems) > 0 {
+		ids := make([]string, 0, len(out.Problems))
+		for id := range out.Problems {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		parts := make([]string, 0, len(ids))
+		for _, id := range ids {
+			parts = append(parts, id+": "+out.Problems[id])
+		}
+		return fmt.Errorf("the daemon refused %d answer(s): %s",
+			len(ids), strings.Join(parts, "; "))
+	}
+	return nil
 }
 
 func (d daemonAsker) Abandon(callID string) {
