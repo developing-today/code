@@ -26,31 +26,31 @@ use common::within;
 
 use id::{
     access::AccessPolicy,
-    blob_gate::{blob_events, BlobPolicy, WorldAccess},
-    chain::{sign, ChainExt, Event},
+    blob_gate::{BlobPolicy, WorldAccess, blob_events},
+    chain::{ChainExt, Event, sign},
     commands::put::add_raw,
-    documents::{DocumentRef, DOCUMENT_KIND, REMOVAL_KIND},
+    documents::{DOCUMENT_KIND, DocumentRef, REMOVAL_KIND},
     event_store::{EventStore, Ingest, Refusal},
     groups::{
-        event::encode as encode_group_event, Body as GroupBody, DeviceOp, Event as GroupEvent,
-        Role as GroupRole,
+        Body as GroupBody, DeviceOp, Event as GroupEvent, Role as GroupRole,
+        event::encode as encode_group_event,
     },
-    membership::{body::encode_body, AuthId},
-    tag_claims::{TagOp, SET_KIND},
+    membership::{AuthId, body::encode_body},
+    tag_claims::{SET_KIND, TagOp},
     waiting::WaitingLimits,
 };
 use iroh::{
-    endpoint::{presets, RelayMode},
-    protocol::Router,
     Endpoint, EndpointAddr,
+    endpoint::{RelayMode, presets},
+    protocol::Router,
 };
 use iroh_base::{EndpointId, SecretKey};
 use iroh_blobs::{
-    api::Store, get::request::get_blob, store::mem::MemStore, BlobsProtocol, Hash as BlobHash,
+    BlobsProtocol, Hash as BlobHash, api::Store, get::request::get_blob, store::mem::MemStore,
 };
 use p2panda_auth::{
-    group::{GroupAction, GroupMember},
     Access,
+    group::{GroupAction, GroupMember},
 };
 use p2panda_core::{Hash, SeqNum, SigningKey};
 

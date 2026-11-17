@@ -318,6 +318,22 @@
   // gathered read is "near", not walled (monthly 99.513%, no
   // reset stated), so its legs serve and bench reactively on
   // failure, per Drew's stated tolerance.
+  // 2026-11-16 (Drew, correction): the pool-composition run 42
+  // unseating of _commandcode (PR #10875, R34), its MiniMax Zen
+  // leaf removal (R35), and the flint-plan emptying (PR #10882)
+  // are REVERTED in this pass. Entries stay in the pools: dead
+  // doors are sidelined by walls and benches, not by hand-removal
+  // — a quota-walled provider is enabled and skipped, not
+  // disabled and not unseated (Drew's 2026-11-15 ruling, above).
+  // Why the quota wall never fired on _commandcode: its gathered
+  // read sits at 99.5% ("near", under the wall trigger) and its
+  // refusals are permanent plan errors (the free Beam tier has
+  // ended; Sol is not in the plan), which a quota read cannot
+  // see. The fork's plan-wall bench (opencode#2570, merged
+  // 2026-11-16) walls a leaf on that error class once deployed;
+  // until then the legs serve and bench reactively, per the
+  // tolerance above. The MiniMax and flint Zen leaves are
+  // restored on the same ruling.
   "disabled_providers": [
     "google",
     "google-vertex",
@@ -977,6 +993,19 @@
     // 2026-11-16) -- re-issue at docs.exaone.ai My Profile >
     // API Key when auth failures start. Wire-proven direct
     // 2026-11-16 (HTTP 200 chat completion on k-exaone_v2.5).
+    // KEY EXPIRY: this key dies 2026-12-16 (30 days after its
+    // 2026-11-16 issuance); auth failures from that date are the
+    // known expiry, not a new breakage -- re-issue and rotate the
+    // Bitwarden item + credential-store row.
+    // 2026-11-16 (R33 fix): the model's limit MUST name output
+    // alongside context -- the fork's v1 config schema requires
+    // limit.output, and a context-only limit fails the whole
+    // provider's decode: normalization silently skips the provider
+    // ("$.provider.exaone kind=invalid"), the route resolves to
+    // no models, and the door draws zero attempts with no error
+    // anywhere but the server log. Output 524288 is the vendor's
+    // published max output (docs.exaone.ai Models: 512K max
+    // output; endpoint caps input + max_tokens at 524,288).
     "exaone": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "EXAONE (K-EXAONE 2.5 Free API)",
@@ -987,7 +1016,8 @@
         "k-exaone_v2.5": {
           "name": "K-EXAONE 2.5 (EXAONE API Platform Free)",
           "limit": {
-            "context": 524288
+            "context": 524288,
+            "output": 524288
           }
         }
       }
@@ -2466,7 +2496,8 @@
   },
   "instructions": [
     ".opencode/instructions/mcpx.md",
-    ".opencode/instructions/subagents.md"
+    ".opencode/instructions/subagents.md",
+    ".opencode/instructions/routing-policy.md"
   ],
   "compaction": {
     "reserved": 8192

@@ -44,6 +44,13 @@ export interface PacketInput {
   model: ModelRef | null;
   directory: string;
   issue: { number: number; url: string } | null;
+  /** #3418: optional minimum uninterrupted budget in minutes.
+   *  Emitted into the payload only when provided; no default from
+   *  timebox_minutes here — stamping a default would make every
+   *  dispatch-created task requirement-bearing while deployed
+   *  helpers predate --remaining-budget-minutes and could then
+   *  claim nothing (#4712 deployment lag). */
+  requiredBudgetMinutes?: number | null;
 }
 
 export interface Packet {
@@ -87,6 +94,10 @@ export function buildPacket(input: PacketInput, dedupeKey: string): Packet {
     priority_reason: `Caller-supplied dispatch priority (resolved to ${input.priority} on the queue design scale).`,
     timebox_minutes: isTriage ? 20 : 45,
     max_attempts: 1000, // #8973: Drew order 2026-11-12 - new tasks default to 1000 on every creation path
+    // #3418: explicit requirement only; see PacketInput.requiredBudgetMinutes.
+    ...(input.requiredBudgetMinutes != null
+      ? { required_budget_minutes: input.requiredBudgetMinutes }
+      : {}),
     context_refs: input.issue ? [input.issue.url] : [],
     dedupe: {
       checked_at: now,
@@ -162,6 +173,15 @@ export function validatePayload(payload: Record<string, unknown>): string[] {
     if (!Number.isInteger(payload[f]) || (payload[f] as number) < 1) {
       errs.push(`payload.${f}: must be a positive integer`);
     }
+  }
+  // #3418: optional; when present it must be a positive integer.
+  if (
+    payload.required_budget_minutes !== undefined &&
+    payload.required_budget_minutes !== null &&
+    (!Number.isInteger(payload.required_budget_minutes) ||
+      (payload.required_budget_minutes as number) < 1)
+  ) {
+    errs.push("payload.required_budget_minutes: must be a positive integer");
   }
   const ded = payload.dedupe as Record<string, unknown> | undefined;
   if (!ded || !ded.checked_at || !ded.basis) errs.push("payload.dedupe: must have checked_at and basis");

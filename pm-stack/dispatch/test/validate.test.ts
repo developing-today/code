@@ -363,6 +363,17 @@ describe("session blank title/directory parsing (issue #2664)", () => {
     expect(r.title).toBe("My session");
     expect(r.directory).toBe("/home/user/git/code/pkgs");
   });
+
+  test("padded title and directory are trimmed (issue #10835)", () => {
+    const r = parseSessionRequest({
+      repo: "developing-today/code",
+      prompt: "do the thing",
+      title: "  My session  ",
+      directory: "  /home/user/git/code/pkgs  ",
+    });
+    expect(r.title).toBe("My session");
+    expect(r.directory).toBe("/home/user/git/code/pkgs");
+  });
 });
 
 describe("task blank dedupe_key parsing (issue #10739)", () => {
@@ -386,8 +397,34 @@ describe("task blank dedupe_key parsing (issue #10739)", () => {
     expect(parseTaskRequest({ ...base, dedupe_key: key }).dedupeKey).toBe(key);
   });
 
+  test("padded dedupe_key is trimmed so mirror padding cannot defeat dedupe (issue #10835)", () => {
+    expect(parseTaskRequest({ ...base, dedupe_key: "  abc  " }).dedupeKey).toBe("abc");
+  });
+
   test("a non-string dedupe_key is still rejected", () => {
     expect(() => parseTaskRequest({ ...base, dedupe_key: 42 })).toThrow(/dedupe_key/);
+  });
+});
+
+describe("#3418 required_budget_minutes parsing", () => {
+  const base = {
+    repo: "developing-today/code",
+    title: "long job",
+    prompt: "a job needing a full shift",
+  };
+  test("omitted and null parse as omitted", () => {
+    expect(parseTaskRequest(base).requiredBudgetMinutes).toBeUndefined();
+    expect(parseTaskRequest({ ...base, required_budget_minutes: null }).requiredBudgetMinutes).toBeUndefined();
+  });
+  test("a positive integer is preserved", () => {
+    expect(parseTaskRequest({ ...base, required_budget_minutes: 120 }).requiredBudgetMinutes).toBe(120);
+  });
+  test("non-positive, fractional, and non-numeric values are rejected", () => {
+    for (const bad of [0, -5, 1.5, "120", true]) {
+      expect(() => parseTaskRequest({ ...base, required_budget_minutes: bad })).toThrow(
+        /required_budget_minutes/,
+      );
+    }
   });
 });
 

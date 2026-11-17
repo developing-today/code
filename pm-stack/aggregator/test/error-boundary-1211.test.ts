@@ -27,6 +27,18 @@ describe("error-boundary responses (#1211)", () => {
     expect(((await api.json()) as { error: string }).error).toBe("not found");
   });
 
+  test("not found: a page path with HTML metacharacters is escaped, never reflected raw (#2267 class, #10865)", async () => {
+    const raw = '/x<script>alert(1)</script>"q\'a&b';
+    const page = notFoundResponse(raw);
+    expect(page.status).toBe(404);
+    const body = await page.text();
+    expect(body).not.toContain("<script>alert(1)</script>");
+    expect(body).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    expect(body).toContain("&quot;q&#39;a&amp;b");
+    const api = notFoundResponse("/api/x<script>");
+    expect(((await api.json()) as { path: string }).path).toBe("/api/x<script>");
+  });
+
   test("error boundary: page routes get a styled 500, APIs get JSON 500 with the message", async () => {
     const page = errorBoundaryResponse("/board", new Error("boom"));
     expect(page.status).toBe(500);

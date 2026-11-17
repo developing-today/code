@@ -71,7 +71,7 @@ use super::markdown::{
 use id_core::frames::MAX_FRAME_BYTES;
 use id_core::waiting::AuthorKey;
 use id_store::documents::{DocumentError, DocumentRef};
-use id_store::note_checkpoints::{CheckpointError, NoteCheckpoints};
+use id_store::note_checkpoints::{CheckpointError, GroupRoles, NoteAccess, NoteCheckpoints};
 use id_store::notes::{AppliedNote, NoteRecord};
 use p2panda_core::Hash;
 
@@ -87,6 +87,8 @@ mod msg {
     pub const NEW_VERSION: u8 = 7;
     pub const AUTH: u8 = 8;
     pub const AUTH_OK: u8 = 9;
+    pub const CHECKPOINT: u8 = 10;
+    pub const CHECKPOINTED: u8 = 11;
 }
 
 /// Maximum number of steps accepted in one client message.
@@ -437,12 +439,50 @@ pub struct CollabState {
     /// [`CollabState::get_or_create_for_note`], so publishing a
     /// checkpoint needs only the session's key.
     note_bindings: RwLock<HashMap<String, Hash>>,
+    /// Resolves group roles for the note access boundary (#3819
+    /// slice 3): the host installs its folded-groups resolver with
+    /// [`CollabState::with_note_group_roles`]; the default knows no
+    /// groups, so scoped notes honor user grants and the owner, and
+    /// public notes behave exactly as before the boundary existed.
+    note_group_roles: GroupRoles,
 }
 
 impl CollabState {
     /// Create a new collaborative state manager.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Installs the group-role resolver the note access boundary
+    /// consults for group grants (#3819 slice 3, #2048 Q2/Q3). The
+    /// host builds it over its folded group state, mapping group
+    /// roles onto note roles (Read -> Read, Write/Manage -> Write,
+    /// Admin -> Admin).
+    #[must_use]
+    pub fn with_note_group_roles(mut self, roles: GroupRoles) -> Self {
+        self.note_group_roles = roles;
+        self
+    }
+
+    /// Replaces a note's access policy in the checkpoint log
+    /// (#3819 slice 3): only an author holding Admin on the note —
+    /// its owner, or an admin grant — may re-scope it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the checkpoint core's refusal (unknown note, or
+    /// [`CheckpointError::NotAuthorized`] when `by` holds less than
+    /// Admin).
+    pub async fn set_note_access(
+        &self,
+        note: Hash,
+        by: AuthorKey,
+        access: NoteAccess,
+    ) -> Result<(), CheckpointError> {
+        self.note_log
+            .lock()
+            .await
+            .set_access(note, by, access, &self.note_group_roles)
     }
 
     /// Get or create a document for editing.
@@ -512,7 +552,6 @@ impl CollabState {
         doc
     }
 
-
     /// The note a session serves, when the session was opened as a
     /// note session ([`Self::get_or_create_for_note`]).
     pub async fn note_id_for_key(&self, key: &str) -> Option<Hash> {
@@ -576,6 +615,35 @@ impl CollabState {
         key: &str,
         author: AuthorKey,
     ) -> Result<NoteRecord, PublishCheckpointError> {
+        let doc = {
+            let documents = self.documents.read().await;
+            documents.get(key).map(Arc::clone)
+        };
+        let Some(doc) = doc else {
+            return Err(PublishCheckpointError::NotNoteSession(key.to_owned()));
+        };
+        let doc_json = doc.doc.read().await;
+        let text = super::routes::file_handlers::extract_plain_text(&*doc_json);
+        drop(doc_json);
+        self.publish_note_checkpoint_text(key, author, &text).await
+    }
+
+    /// Publishes a checkpoint of the note a session serves from text
+    /// the caller supplies (#3819 slice 4): the live session's client
+    /// holds the step-edited content — the server never applies steps
+    /// to the session document — so the WebSocket checkpoint path
+    /// publishes the client's text, not the session's base document.
+    /// Same recording rules as [`Self::publish_note_checkpoint`].
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::publish_note_checkpoint`].
+    pub async fn publish_note_checkpoint_text(
+        &self,
+        key: &str,
+        author: AuthorKey,
+        text: &str,
+    ) -> Result<NoteRecord, PublishCheckpointError> {
         let Some(note) = self.note_id_for_key(key).await else {
             return Err(PublishCheckpointError::NotNoteSession(key.to_owned()));
         };
@@ -586,8 +654,6 @@ impl CollabState {
         let Some(doc) = doc else {
             return Err(PublishCheckpointError::NotNoteSession(key.to_owned()));
         };
-        let doc_json = doc.doc.read().await;
-        let text = super::routes::file_handlers::extract_plain_text(&*doc_json);
         let content = DocumentRef::for_bytes("text/markdown", text.as_bytes())?;
         let mut log = self.note_log.lock().await;
         if log.record(note)?.is_none() {
@@ -595,7 +661,43 @@ impl CollabState {
         }
         let heads = log.heads(note)?;
         let event_id = mint_checkpoint_event_id(&note, &author, &heads, &content, doc.version());
-        Ok(log.checkpoint_on_heads(note, event_id, author, content)?)
+        Ok(log.checkpoint_on_heads_checked(
+            note,
+            event_id,
+            author,
+            content,
+            &self.note_group_roles,
+        )?)
+    }
+
+    /// The content reference a reopened note session hydrates from:
+    /// the content of the note's current head revision (#3819
+    /// slice 4). A note with concurrent heads hydrates from the
+    /// smallest head ID — a deterministic choice every reopen agrees
+    /// on; the heads themselves are untouched, and joining them
+    /// stays the explicit merge. `None` when the log has no such
+    /// note (or the note has no revisions, which cannot happen for a
+    /// recorded note).
+    ///
+    /// # Errors
+    ///
+    /// Returns the checkpoint core's storage refusals unchanged.
+    pub async fn note_head_content(
+        &self,
+        note: Hash,
+    ) -> Result<Option<DocumentRef>, CheckpointError> {
+        let log = self.note_log.lock().await;
+        let Some(record) = log.record(note)? else {
+            return Ok(None);
+        };
+        let Some(head) = record.heads.iter().min() else {
+            return Ok(None);
+        };
+        Ok(record
+            .revisions
+            .iter()
+            .find(|revision| &revision.id == head)
+            .map(|revision| revision.content.clone()))
     }
 
     /// Remove a document from the state.
@@ -727,6 +829,15 @@ pub enum CollabMessage {
         name: Option<String>,
         token: Option<String>,
     },
+    /// `[10, text]` - Publish a durable checkpoint of a note session
+    /// (#3819 slice 4). The client holds the live, step-edited
+    /// content — the server never applies steps to the session
+    /// document — so publication carries the text explicitly.
+    /// Filename sessions refuse it.
+    Checkpoint { text: String },
+    /// `[11, head]` - A checkpoint was recorded; `head` is the hex of
+    /// the note's new head revision.
+    Checkpointed { head: String },
 }
 
 /// True when `data` is exactly one complete `MessagePack` value with no bytes after it.
@@ -774,6 +885,8 @@ impl CollabMessage {
                 to_vec(&(msg::NEW_VERSION, hash, name)).unwrap_or_default()
             }
             Self::Auth { token } => to_vec(&(msg::AUTH, token)).unwrap_or_default(),
+            Self::Checkpoint { text } => to_vec(&(msg::CHECKPOINT, text)).unwrap_or_default(),
+            Self::Checkpointed { head } => to_vec(&(msg::CHECKPOINTED, head)).unwrap_or_default(),
             Self::AuthOk {
                 client_id,
                 name,
@@ -883,6 +996,14 @@ impl CollabMessage {
                 token,
             });
         }
+        if let Ok((msg::CHECKPOINT, text)) = from_slice::<(u8, String)>(data) {
+            return Some(Self::Checkpoint { text });
+        }
+
+        if let Ok((msg::CHECKPOINTED, head)) = from_slice::<(u8, String)>(data) {
+            return Some(Self::Checkpointed { head });
+        }
+
         // AUTH_OK without token (legacy format)
         if let Ok((msg::AUTH_OK, client_id, name)) =
             from_slice::<(u8, String, Option<String>)>(data)
@@ -1037,7 +1158,37 @@ async fn handle_collab_socket(
     } else {
         super::routes::get_hash_for_name(&store, &doc_id).await
     };
-    let initial_content = if let Some(h) = &hash_str {
+    let mut hydrated_filename: Option<&str> = None;
+    let initial_content = if let Some(note) = &note_session {
+        // A reopened note session hydrates from its checkpoint log
+        // (#3819 slice 4): the current head revision's content,
+        // fetched from the blob store under its document hash (a
+        // `DocumentRef`'s content hash is the blob's hash). A note
+        // the log does not know, or whose head blob is missing,
+        // starts empty, like a file with no stored hash.
+        match collab.note_head_content(*note).await {
+            Ok(Some(reference)) => {
+                // The publish path records checkpoints as
+                // text/markdown; mode detection needs the filename
+                // hint that media type implies, or the hydrated
+                // bytes read as a non-editable mode and are dropped
+                // from the document.
+                if reference.media_type == "text/markdown" {
+                    hydrated_filename = Some("note.md");
+                }
+                let content = load_file_content(&store, &reference.content.to_string()).await;
+                if content.is_none() {
+                    tracing::debug!("[collab] Head blob for note '{}' not in the store", doc_id);
+                }
+                content
+            }
+            Ok(None) => None,
+            Err(err) => {
+                tracing::warn!("[collab] Note log unreadable for '{}': {err}", doc_id);
+                None
+            }
+        }
+    } else if let Some(h) = &hash_str {
         let content = load_file_content(&store, h).await;
         if content.is_some() {
             tracing::debug!(
@@ -1058,7 +1209,7 @@ async fn handle_collab_socket(
                 note,
                 hash_str.as_deref().unwrap_or(""),
                 initial_content.as_deref(),
-                _filename.as_deref(),
+                _filename.as_deref().or(hydrated_filename),
             )
             .await
     } else {
@@ -1457,6 +1608,57 @@ async fn handle_collab_socket(
                         );
 
                     }
+                    CollabMessage::Checkpoint { text } => {
+                        // Durable publication is client-driven (#3819
+                        // slice 4): the client holds the live content.
+                        let Some(note) = &note_session else {
+                            let error_msg = CollabMessage::Error {
+                                error: "checkpoints are only available in note sessions"
+                                    .to_owned(),
+                            };
+                            let mut sender = sender.lock().await;
+                            let _ = sender
+                                .send(Message::Binary(error_msg.encode().into()))
+                                .await;
+                            continue;
+                        };
+                        let author_key = identity_store.author_key();
+                        let key = note_session_key(note);
+                        match collab
+                            .publish_note_checkpoint_text(&key, author_key, &text)
+                            .await
+                        {
+                            Ok(record) => {
+                                // The checkpoint names the content by
+                                // its document hash; put the bytes in
+                                // the blob store under that hash so a
+                                // reopened session can hydrate from
+                                // the head.
+                                let _ = store
+                                    .blobs()
+                                    .add_bytes(text.into_bytes())
+                                    .await;
+                                let head = record
+                                    .heads
+                                    .first()
+                                    .map(ToString::to_string)
+                                    .unwrap_or_default();
+                                let ack = CollabMessage::Checkpointed { head };
+                                let mut sender = sender.lock().await;
+                                let _ =
+                                    sender.send(Message::Binary(ack.encode().into())).await;
+                            }
+                            Err(err) => {
+                                let error_msg = CollabMessage::Error {
+                                    error: err.to_string(),
+                                };
+                                let mut sender = sender.lock().await;
+                                let _ = sender
+                                    .send(Message::Binary(error_msg.encode().into()))
+                                    .await;
+                            }
+                        }
+                    }
                     _ => {
                         tracing::debug!("[collab] Received unexpected message type, ignoring");
                     }
@@ -1499,88 +1701,20 @@ async fn handle_collab_socket(
     // connection opened it, publish the checkpoint, signed with this
     // server's key. A refusal (notably a multi-head note, which needs
     // an explicit merge) is logged, never fatal to the disconnect.
-    if remaining_clients == 0 && doc.version() > version_at_connect {
-        if let Some(note) = &note_session {
-            let key = note_session_key(note);
-            match collab
-                .publish_note_checkpoint(&key, identity_store.author_key())
-                .await
-            {
-                Ok(record) => {
-                    tracing::info!(
-                        "[collab] Published checkpoint for note session '{}': {} head(s)",
-                        doc_id,
-                        record.heads.len()
-                    );
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        "[collab] Checkpoint for note session '{}' refused: {err}",
-                        doc_id
-                    );
-                }
-            }
-        }
-    }
-    tracing::info!(
-        "[collab] Client disconnected from doc '{}', {} clients remaining",
-        doc_id,
-        remaining_clients
-    );
-
-    // Mark cursor as disconnected and schedule cleanup
-    let client_id_opt = client_id_for_disconnect.read().await.clone();
-    if let Some(client_id_str) = client_id_opt {
-        let now = Instant::now();
-
-        // Parse client_id for broadcast
-        let client_id_num: u64 = client_id_str.parse().unwrap_or(0);
-
-        {
-            let mut cursors = doc.cursors.write().await;
-            if let Some(cursor) = cursors.get_mut(&client_id_str) {
-                cursor.disconnected_at = Some(now);
-                tracing::info!(
-                    "[collab] Marked cursor {} as disconnected, will remove in 5m if not reconnected",
-                    client_id_str
-                );
-            }
-        }
-
-        // Broadcast cursor removal to all connected clients
-        let remove_msg = CollabMessage::CursorRemove {
-            client_id: client_id_num,
-        };
-        let _ = doc.broadcast.send(remove_msg);
+    if remaining_clients == 0 {
         tracing::debug!(
-            "[collab] Broadcast cursor removal for client {}",
-            client_id_str
+            "[collab] Note/filename session '{}' ended at version {} (connected at {}); \
+             publication is client-driven, never a disconnect side effect",
+            doc_id,
+            doc.version(),
+            version_at_connect
         );
-
-        // Schedule cursor cleanup after 5 minutes
-        let doc_for_cleanup = Arc::clone(&doc);
-        let client_id_for_task = client_id_str.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(timeouts::CURSOR_CLEANUP).await;
-
-            let mut cursors = doc_for_cleanup.cursors.write().await;
-            if let Some(cursor) = cursors.get(&client_id_for_task) {
-                // Only remove if still disconnected (not reconnected)
-                if cursor.disconnected_at.is_some() {
-                    cursors.remove(&client_id_for_task);
-                    tracing::info!(
-                        "[cursor-lifecycle] removed client={} after 5m disconnect timeout",
-                        client_id_for_task
-                    );
-                } else {
-                    tracing::debug!(
-                        "[collab] Cursor {} reconnected, not removing",
-                        client_id_for_task
-                    );
-                }
-            }
-        });
     }
+    // Note sessions publish through the client's Checkpoint message,
+    // never from this cleanup (#3819 slice 4): the server does not
+    // apply editor steps to the session document, so the document
+    // held here is the session's base content, and recording it at
+    // disconnect would sign stale text as a new revision.
 
     // Schedule document cleanup if no clients remain
     if remaining_clients == 0 {
@@ -2542,6 +2676,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_publish_note_checkpoint_enforces_the_access_boundary() {
+        use id_store::note_checkpoints::{NoteGrant, NotePrincipal, NoteRole};
+
+        // The owner publishes the create (public by default), then
+        // scopes the note to a single write-grant user. From then
+        // on, publication is the boundary: the granted author
+        // chains a checkpoint; another author is refused and the
+        // log does not move.
+        let state = CollabState::new();
+        let note = Hash::from_bytes([17u8; 32]);
+        let key = note_session_key(&note);
+        let owner: AuthorKey = [7u8; 32];
+        let granted: AuthorKey = [8u8; 32];
+        let stranger: AuthorKey = [9u8; 32];
+        let doc = state
+            .get_or_create_for_note(&note, "", Some(b"# First"), Some("n.md"))
+            .await;
+        state.publish_note_checkpoint(&key, owner).await.unwrap();
+        state
+            .set_note_access(
+                note,
+                owner,
+                NoteAccess::Scoped(vec![NoteGrant {
+                    principal: NotePrincipal::User(granted),
+                    role: NoteRole::Write,
+                }]),
+            )
+            .await
+            .unwrap();
+
+        *doc.doc.write().await = plain_text_to_prosemirror("# Second");
+        let chained = state.publish_note_checkpoint(&key, granted).await.unwrap();
+        assert_eq!(chained.revisions.len(), 2);
+
+        *doc.doc.write().await = plain_text_to_prosemirror("# Third");
+        let err = state
+            .publish_note_checkpoint(&key, stranger)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                PublishCheckpointError::Checkpoint(CheckpointError::NotAuthorized { .. })
+            ),
+            "a stranger's publication is refused at the boundary: {err}"
+        );
+        assert_eq!(
+            state.note_events().await.len(),
+            2,
+            "the refusal recorded nothing"
+        );
+
+        // And a non-admin cannot re-open the note.
+        assert!(
+            state
+                .set_note_access(note, granted, NoteAccess::Public)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn test_publish_note_checkpoint_refuses_a_filename_session() {
         let state = CollabState::new();
         state.get_or_create("plain.md", "", Some(b"# File")).await;
@@ -2581,7 +2777,10 @@ mod tests {
             .get_or_create_for_note(&note, "", Some(b"# Two"), Some("n.md"))
             .await;
         drop(doc);
-        let chained = restarted.publish_note_checkpoint(&key, author).await.unwrap();
+        let chained = restarted
+            .publish_note_checkpoint(&key, author)
+            .await
+            .unwrap();
         assert_eq!(chained.revisions.len(), 2);
         assert_eq!(chained.revisions[1].parents, heads_before);
     }
@@ -2600,19 +2799,25 @@ mod tests {
         log.checkpoint(note, Hash::from_bytes([21u8; 32]), author, fork, vec![note])
             .unwrap();
         let other = DocumentRef::for_bytes("text/markdown", b"# Other").unwrap();
-        log.checkpoint(note, Hash::from_bytes([22u8; 32]), author, other, vec![note])
-            .unwrap();
+        log.checkpoint(
+            note,
+            Hash::from_bytes([22u8; 32]),
+            author,
+            other,
+            vec![note],
+        )
+        .unwrap();
         assert_eq!(log.heads(note).unwrap().len(), 2);
 
         let state = CollabState::new();
-        state
-            .seed_note_events(log.events().to_vec())
-            .await
-            .unwrap();
+        state.seed_note_events(log.events().to_vec()).await.unwrap();
         state
             .get_or_create_for_note(&note, "", Some(b"# Merged?"), Some("n.md"))
             .await;
-        let err = state.publish_note_checkpoint(&key, author).await.unwrap_err();
+        let err = state
+            .publish_note_checkpoint(&key, author)
+            .await
+            .unwrap_err();
         assert!(
             matches!(
                 err,
@@ -2622,5 +2827,297 @@ mod tests {
         );
         // The refused publication recorded nothing.
         assert_eq!(state.note_events().await.len(), 3);
+    }
+
+    #[test]
+    fn test_checkpoint_messages_round_trip() {
+        let checkpoint = CollabMessage::Checkpoint {
+            text: "# Notes".to_owned(),
+        };
+        assert!(matches!(
+            CollabMessage::decode(&checkpoint.encode()),
+            Some(CollabMessage::Checkpoint { ref text }) if text == "# Notes"
+        ));
+        // A checkpoint frame must not decode as any other variant.
+        assert!(!matches!(
+            CollabMessage::decode(&checkpoint.encode()),
+            Some(CollabMessage::Error { .. })
+        ));
+        let checkpointed = CollabMessage::Checkpointed {
+            head: "ab".repeat(32),
+        };
+        assert!(matches!(
+            CollabMessage::decode(&checkpointed.encode()),
+            Some(CollabMessage::Checkpointed { ref head }) if head.len() == 64
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_publish_note_checkpoint_text_records_the_given_text() {
+        let state = CollabState::new();
+        let note = Hash::from_bytes([31u8; 32]);
+        let key = note_session_key(&note);
+        state
+            .get_or_create_for_note(&note, "", Some(b"# Base"), Some("n.md"))
+            .await;
+        let author: AuthorKey = [7u8; 32];
+        // The session's base document says "# Base"; the client's
+        // live text is what gets recorded (#3819 slice 4).
+        let record = state
+            .publish_note_checkpoint_text(&key, author, "# Edited live")
+            .await
+            .unwrap();
+        let expected = DocumentRef::for_bytes("text/markdown", b"# Edited live").unwrap();
+        assert_eq!(record.revisions[0].content, expected);
+        let base = DocumentRef::for_bytes("text/markdown", b"# Base").unwrap();
+        assert_ne!(record.revisions[0].content, base);
+    }
+
+    #[tokio::test]
+    async fn test_note_head_content_tracks_publications_and_heads() {
+        let state = CollabState::new();
+        let note = Hash::from_bytes([33u8; 32]);
+        // Unknown note: nothing to hydrate from.
+        assert_eq!(state.note_head_content(note).await.unwrap(), None);
+
+        let key = note_session_key(&note);
+        state
+            .get_or_create_for_note(&note, "", None, Some("n.md"))
+            .await;
+        let author: AuthorKey = [7u8; 32];
+        state
+            .publish_note_checkpoint_text(&key, author, "first")
+            .await
+            .unwrap();
+        let first = DocumentRef::for_bytes("text/markdown", b"first").unwrap();
+        assert_eq!(state.note_head_content(note).await.unwrap(), Some(first));
+
+        state
+            .publish_note_checkpoint_text(&key, author, "second")
+            .await
+            .unwrap();
+        let second = DocumentRef::for_bytes("text/markdown", b"second").unwrap();
+        assert_eq!(
+            state.note_head_content(note).await.unwrap(),
+            Some(second.clone())
+        );
+
+        // Concurrent heads: hydration still answers, deterministically
+        // — the smallest head ID wins. Built on a seeded log, the way
+        // the slice-2 tests build forks: two checkpoints parented on
+        // the create revision.
+        let note2 = Hash::from_bytes([35u8; 32]);
+        let mut log = NoteCheckpoints::new();
+        let base = DocumentRef::for_bytes("text/markdown", b"# Base").unwrap();
+        log.create(note2, author, base).unwrap();
+        let fork = DocumentRef::for_bytes("text/markdown", b"# Fork").unwrap();
+        log.checkpoint(
+            note2,
+            Hash::from_bytes([21u8; 32]),
+            author,
+            fork.clone(),
+            vec![note2],
+        )
+        .unwrap();
+        let other = DocumentRef::for_bytes("text/markdown", b"# Other").unwrap();
+        log.checkpoint(
+            note2,
+            Hash::from_bytes([22u8; 32]),
+            author,
+            other,
+            vec![note2],
+        )
+        .unwrap();
+        let state2 = CollabState::new();
+        state2
+            .seed_note_events(log.events().to_vec())
+            .await
+            .unwrap();
+        assert_eq!(state2.note_heads(note2).await.unwrap().len(), 2);
+        assert_eq!(state2.note_head_content(note2).await.unwrap(), Some(fork));
+    }
+
+    type WireClient = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
+
+    async fn next_collab_message(client: &mut WireClient) -> CollabMessage {
+        use futures::StreamExt;
+        loop {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(15), client.next())
+                .await
+                .expect("timed out waiting for a collab frame")
+                .expect("websocket closed while waiting for a collab frame")
+                .expect("websocket error while waiting for a collab frame");
+            if let tokio_tungstenite::tungstenite::Message::Binary(bytes) = frame {
+                if let Some(message) = CollabMessage::decode(&bytes) {
+                    return message;
+                }
+            }
+        }
+    }
+
+    async fn wait_for_message(client: &mut WireClient, want: &str) -> CollabMessage {
+        loop {
+            let message = next_collab_message(client).await;
+            let matched = match (want, &message) {
+                ("init", CollabMessage::Init { .. }) => true,
+                ("ack", CollabMessage::Ack { .. }) => true,
+                ("checkpointed", CollabMessage::Checkpointed { .. }) => true,
+                ("error", CollabMessage::Error { .. }) => true,
+                _ => false,
+            };
+            if matched {
+                return message;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_note_session_wire_round_trip_publishes_and_hydrates() {
+        use axum::Router;
+        use futures::SinkExt;
+        use iroh::endpoint::{Endpoint, RelayMode, presets};
+        use iroh_blobs::{api::Store, store::mem::MemStore};
+        use iroh_docs::protocol::Docs;
+        use iroh_gossip::net::Gossip;
+        use tokio_tungstenite::tungstenite::Message as ClientMessage;
+
+        // An application state on in-memory stores, built the way
+        // the routes tests build theirs.
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let store: Store = MemStore::new().into();
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let docs = Docs::memory()
+            .spawn(endpoint.clone(), store.clone(), gossip)
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let tags = Arc::new(
+            id_store::tags::TagStore::init_in(
+                &docs,
+                "collab-note-wire-test",
+                dir.path().join("meta"),
+            )
+            .await
+            .unwrap(),
+        );
+        let state = crate::AppState::new(
+            store,
+            None,
+            "collab-note-wire-test".to_owned(),
+            tags,
+            [7; 32],
+            dir.path().join(".identity.redb"),
+        )
+        .await
+        .unwrap();
+
+        let app = Router::new()
+            .route("/ws/collab/{doc_id}", axum::routing::get(ws_collab_handler))
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let note = Hash::from_bytes([41u8; 32]);
+        let url = format!("ws://{addr}/ws/collab/{}", note_session_key(&note));
+
+        // First session: connect, edit (steps), checkpoint the live
+        // text, disconnect.
+        let (mut client, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        // A non-auth first frame ends the auth wait immediately; the
+        // step batch is buffered and acked after Init.
+        let steps = CollabMessage::Steps {
+            version: 0,
+            steps: vec![serde_json::json!({"stepType": "replace"})],
+            client_id: 1,
+        };
+        client
+            .send(ClientMessage::Binary(steps.encode().into()))
+            .await
+            .unwrap();
+        let init = wait_for_message(&mut client, "init").await;
+        let CollabMessage::Init { doc, .. } = init else {
+            panic!("expected Init for a fresh note session");
+        };
+        assert_eq!(
+            crate::routes::file_handlers::extract_plain_text(&doc),
+            "",
+            "a note with no checkpoints hydrates empty"
+        );
+        let ack = wait_for_message(&mut client, "ack").await;
+        assert!(matches!(ack, CollabMessage::Ack { version: 1 }));
+
+        let checkpoint = CollabMessage::Checkpoint {
+            text: "# Saved over the wire".to_owned(),
+        };
+        client
+            .send(ClientMessage::Binary(checkpoint.encode().into()))
+            .await
+            .unwrap();
+        let done = wait_for_message(&mut client, "checkpointed").await;
+        let CollabMessage::Checkpointed { head } = done else {
+            panic!("expected Checkpointed after a note checkpoint");
+        };
+        assert_eq!(head.len(), 64, "head is a hex hash: {head}");
+        drop(client);
+
+        // Exactly one durable event exists: the client-driven
+        // checkpoint. Publication already happened, synchronously,
+        // before the Checkpointed reply.
+        let events = state.collab.note_events().await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(state.collab.note_heads(note).await.unwrap().len(), 1);
+
+        // A session document outlives its last client by a one-hour
+        // cleanup grace period (DOCUMENT_CLEANUP), so a quick
+        // reconnect rejoins the live session; hydration is the
+        // cold-open path, after eviction or a restart. Simulate the
+        // eviction the cleanup task performs.
+        state.collab.remove_document(&note_session_key(&note)).await;
+
+        // Second session: the Init document is the checkpointed
+        // text, hydrated from the blob store under its document
+        // hash. The checkpoint is recorded as text/markdown, so the
+        // heading parses as a heading and its plain text drops the
+        // `#` marker.
+        let (mut client, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let init = wait_for_message(&mut client, "init").await;
+        let CollabMessage::Init { doc, .. } = init else {
+            panic!("expected Init for the reopened note session");
+        };
+        assert_eq!(
+            crate::routes::file_handlers::extract_plain_text(&doc),
+            "Saved over the wire"
+        );
+        drop(client);
+        // Disconnects published nothing further.
+        assert_eq!(state.collab.note_events().await.len(), 1);
+
+        // A filename session refuses checkpoints.
+        let (mut client, _) =
+            tokio_tungstenite::connect_async(format!("ws://{addr}/ws/collab/plain.md"))
+                .await
+                .unwrap();
+        let checkpoint = CollabMessage::Checkpoint {
+            text: "nope".to_owned(),
+        };
+        client
+            .send(ClientMessage::Binary(checkpoint.encode().into()))
+            .await
+            .unwrap();
+        let refused = wait_for_message(&mut client, "error").await;
+        assert!(matches!(refused, CollabMessage::Error { .. }));
+        drop(client);
+        assert_eq!(state.collab.note_events().await.len(), 1);
+
+        server.abort();
     }
 }

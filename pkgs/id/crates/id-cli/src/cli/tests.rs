@@ -970,6 +970,33 @@ fn test_cli_parse_put_hash() {
 }
 
 #[test]
+fn test_cli_parse_doc_content() {
+    let cli = Cli::parse_from(["id", "doc", "content", "abc123"]);
+    match cli.command {
+        Some(Command::Doc {
+            command: DocCommand::Content { document, output },
+            ..
+        }) => {
+            assert_eq!(document, "abc123");
+            assert_eq!(output, "-");
+        }
+        _ => panic!("Expected Doc::Content command"),
+    }
+
+    let cli = Cli::parse_from(["id", "doc", "content", "abc123", "out.txt"]);
+    match cli.command {
+        Some(Command::Doc {
+            command: DocCommand::Content { document, output },
+            ..
+        }) => {
+            assert_eq!(document, "abc123");
+            assert_eq!(output, "out.txt");
+        }
+        _ => panic!("Expected Doc::Content command"),
+    }
+}
+
+#[test]
 fn test_cli_verify() {
     // Verify CLI structure is valid
     Cli::command().debug_assert();
