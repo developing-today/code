@@ -307,8 +307,7 @@ mod tests {
 
     fn test_events() -> (tempfile::TempDir, LocalEvents) {
         let dir = tempfile::TempDir::new().unwrap();
-        let events =
-            LocalEvents::open(dir.path(), SigningKey::from_bytes(&[7; 32])).unwrap();
+        let events = LocalEvents::open(dir.path(), SigningKey::from_bytes(&[7; 32])).unwrap();
         (dir, events)
     }
 
