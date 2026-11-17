@@ -19,7 +19,7 @@
 //! exports after module outputs land, so this test must not edit
 //! shared roots either.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 #[path = "../src/federation/slices/b21_result_dedup.rs"]
 mod b21;

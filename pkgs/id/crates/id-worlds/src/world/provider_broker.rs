@@ -422,7 +422,10 @@ impl ProviderBroker {
             if entry_session != session {
                 return ReplyOutcome::IgnoredWrongSession;
             }
-            let entry = inner.pending.remove(nonce).expect("pending entry checked");
+            // Checked just above under the same lock, so the entry is there.
+            let Some(entry) = inner.pending.remove(nonce) else {
+                return ReplyOutcome::IgnoredUnknownNonce;
+            };
             if Instant::now() >= entry.deadline {
                 inner.completions.push(BrokerCompletion {
                     guest_request_id: entry.guest_request_id.clone(),
@@ -685,6 +688,7 @@ fn validate_args(manifest: &ProviderManifest, args: &serde_json::Value) -> Resul
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::world_caps::{

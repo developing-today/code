@@ -281,7 +281,17 @@ pub fn lower_gui(
     if !errors.is_empty() {
         return Err(errors);
     }
-    let root = root.expect("no errors means every element lowered");
+    // No errors means every element lowered; a missing root without an
+    // error would be an internal fault, reported as a located error
+    // rather than a panic.
+    let Some(root) = root else {
+        return Err(vec![BuildError::new(
+            "lower_gui: the composed root did not lower and no build error was reported"
+                .to_string(),
+            composed.root.span.line,
+            composed.root.span.col,
+        )]);
+    };
     let a11y = a11y_tree(&composed.root, &source_by_path);
     Ok((
         GuiArtefact {

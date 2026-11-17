@@ -234,6 +234,7 @@ pub fn export_otlp_json(records: &[AuditRecord]) -> serde_json::Value {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
