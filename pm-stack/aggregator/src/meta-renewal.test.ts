@@ -3,6 +3,7 @@ import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  cdpSetCookieParam,
   credentialFromCookies,
   pickMetaCookies,
   renewMetaSession,
@@ -200,13 +201,44 @@ describe("renewMetaSession — browser-jar restore (#10839)", () => {
 
     const fromHeader = restoreCookiesFromCredential(storedCred());
     expect(fromHeader).toEqual([
-      { name: "session", value: "stored-value", domain: ".meta.ai", expires: Date.parse(FUTURE) / 1000 },
+      { name: "session", value: "stored-value", domain: ".meta.ai", secure: true, expires: Date.parse(FUTURE) / 1000 },
     ]);
 
     expect(restoreBackoffMs(1)).toBe(30 * 60 * 1000);
     expect(restoreBackoffMs(2)).toBe(2 * 3_600_000);
     expect(restoreBackoffMs(3)).toBe(6 * 3_600_000);
     expect(restoreBackoffMs(9)).toBe(6 * 3_600_000);
+  });
+
+  test("cdpSetCookieParam: a restore writes the captured attributes back, not a bare name=value", () => {
+    expect(
+      cdpSetCookieParam({
+        name: "session",
+        value: "v",
+        domain: ".meta.ai",
+        path: "/api",
+        expires: 1_900_000_000,
+        secure: true,
+        httpOnly: true,
+        sameSite: "None",
+      }),
+    ).toEqual({
+      name: "session",
+      value: "v",
+      domain: ".meta.ai",
+      path: "/api",
+      expires: 1_900_000_000,
+      secure: true,
+      httpOnly: true,
+      sameSite: "None",
+    });
+    // Nothing captured: path defaults to "/", no attribute is invented.
+    expect(cdpSetCookieParam({ name: "s", value: "v", domain: ".meta.ai" })).toEqual({
+      name: "s",
+      value: "v",
+      domain: ".meta.ai",
+      path: "/",
+    });
   });
 
   test("persistent exporter session-expired + valid stored credential → jar restored from the stored credential", async () => {

@@ -145,6 +145,29 @@ export interface MetaBrowserCookie {
   value: string;
   domain: string;
   expires?: number;
+  /** Attributes CDP Storage.getCookies reports; kept so a jar restore
+   * writes the cookie back as it was captured (#10878 follow-up). */
+  path?: string;
+  secure?: boolean;
+  httpOnly?: boolean;
+  sameSite?: "Strict" | "Lax" | "None";
+}
+
+/** The Storage.setCookies parameter for one cookie: the captured
+ * attributes verbatim, with path "/" only when none was captured.
+ * Dropping secure/httpOnly/sameSite would hand a restored session
+ * cookie to page scripts and plain-http requests. */
+export function cdpSetCookieParam(c: MetaBrowserCookie): Record<string, unknown> {
+  return {
+    name: c.name,
+    value: c.value,
+    domain: c.domain,
+    path: typeof c.path === "string" && c.path.length > 0 ? c.path : "/",
+    ...(typeof c.expires === "number" && c.expires > 0 ? { expires: c.expires } : {}),
+    ...(typeof c.secure === "boolean" ? { secure: c.secure } : {}),
+    ...(typeof c.httpOnly === "boolean" ? { httpOnly: c.httpOnly } : {}),
+    ...(c.sameSite === "Strict" || c.sameSite === "Lax" || c.sameSite === "None" ? { sameSite: c.sameSite } : {}),
+  };
 }
 
 export interface MetaRenewalDeps {
@@ -337,13 +360,7 @@ const defaultSetBrowserCookies = async (cdpUrl: string, cookies: MetaBrowserCook
   const { send, close } = await cdpSession(cdpUrl);
   try {
     const answer = await send("Storage.setCookies", {
-      cookies: cookies.map((c) => ({
-        name: c.name,
-        value: c.value,
-        domain: c.domain,
-        path: "/",
-        ...(typeof c.expires === "number" && c.expires > 0 ? { expires: c.expires } : {}),
-      })),
+      cookies: cookies.map(cdpSetCookieParam),
     });
     if ((answer as { error?: unknown }).error) throw new Error("CDP Storage.setCookies returned an error");
   } finally {
@@ -396,7 +413,9 @@ export function restoreCookiesFromCredential(credential: MetaCredential): MetaBr
     const name = part.slice(0, eq).trim();
     const value = part.slice(eq + 1).trim();
     if (!name) continue;
-    out.push({ name, value, domain: ".meta.ai", ...(expires !== undefined ? { expires } : {}) });
+    // A header-only credential lost the attributes; dev.meta.ai is
+    // https-only, so the restored cookie is at least marked secure.
+    out.push({ name, value, domain: ".meta.ai", secure: true, ...(expires !== undefined ? { expires } : {}) });
   }
   return out;
 }
