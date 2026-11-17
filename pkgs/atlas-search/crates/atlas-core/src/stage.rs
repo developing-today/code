@@ -36,10 +36,10 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::{Error, Result};
-use crate::shards::{EMBEDDING_MODEL_ID, Tier};
+use crate::shards::{Tier, EMBEDDING_MODEL_ID};
 
 /// The staging schema version this build knows how to provision and
 /// read. Bump only together with a new `atlas_stage_vN.sql` artifact;
@@ -112,6 +112,17 @@ pub struct StagingUnit {
     pub schema_version: i64,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// Immutable audit record written as part of a successful promotion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergeManifest {
+    pub unit_id: String,
+    pub rows_in: i64,
+    pub rows_promoted: i64,
+    pub content_hash: String,
+    pub embedding_model: String,
+    pub promoted_at: String,
 }
 
 // ------------------------------------------------------- provisioning --
@@ -574,6 +585,19 @@ impl Registry {
         Ok(())
     }
 
+    /// Return the durable promotion record for a unit, if it has been promoted.
+    pub fn merge_manifest(&self, unit_id: &str) -> Result<Option<MergeManifest>> {
+        self.conn.query_row(
+            "SELECT unit_id, rows_in, rows_promoted, content_hash, embedding_model, promoted_at \
+             FROM merge_manifests WHERE unit_id = ?1",
+            params![unit_id],
+            |r| Ok(MergeManifest {
+                unit_id: r.get(0)?, rows_in: r.get(1)?, rows_promoted: r.get(2)?,
+                content_hash: r.get(3)?, embedding_model: r.get(4)?, promoted_at: r.get(5)?,
+            }),
+        ).optional().map_err(|e| Error::backend(format!("registry: reading merge manifest for {unit_id}: {e}")))
+    }
+
     /// Promote a unit into a tier: the merge-on-close transition to
     /// [`UnitState::Merged`], gated on the embedding-model contract
     /// (#7648, contract point M6 of the #6060 decision record — one
@@ -596,8 +620,111 @@ impl Registry {
             Error::fatal(format!("registry: no staging unit {unit_id:?} to promote"))
         })?;
         assert_unit_embedding_model(&unit)?;
-        self.set_state(unit_id, UnitState::Merged, now)
+        let staged = build_merge_manifest(&unit, now)?;
+        let tx = self.conn.unchecked_transaction().map_err(|e| {
+            Error::backend(format!("registry: beginning promotion for {unit_id}: {e}"))
+        })?;
+        tx.execute(
+            "INSERT INTO merge_manifests (unit_id, rows_in, rows_promoted, content_hash, embedding_model, promoted_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![staged.unit_id, staged.rows_in, staged.rows_promoted, staged.content_hash, staged.embedding_model, staged.promoted_at],
+        ).map_err(|e| Error::backend(format!("registry: writing merge manifest for {unit_id}: {e}")))?;
+        let changed = tx.execute(
+            "UPDATE staging_units SET state = 'merged', updated_at = ?2 WHERE unit_id = ?1 AND state != 'merged'",
+            params![unit_id, now],
+        ).map_err(|e| Error::backend(format!("registry: closing promoted unit {unit_id}: {e}")))?;
+        if changed == 0 {
+            return Err(Error::fatal(format!(
+                "registry: unit {unit_id:?} is already merged"
+            )));
+        }
+        tx.commit().map_err(|e| {
+            Error::backend(format!("registry: committing promotion for {unit_id}: {e}"))
+        })
     }
+}
+
+/// Hash the complete staged set in a stable, typed encoding. The table
+/// and column order is explicit and rows are ordered by rowid; SQLite
+/// storage classes are tagged so NULL, integers, text and blobs cannot
+/// collide. Each table's row count contributes to the manifest counts.
+fn build_merge_manifest(unit: &StagingUnit, now: &str) -> Result<MergeManifest> {
+    use rusqlite::types::ValueRef;
+    use sha2::{Digest, Sha256};
+    let conn = open(Path::new(&unit.db_uri))?;
+    let tables = [
+        ("items", "SELECT id, unit_id, kind, source, text, sensitivity, created_at, meta FROM items WHERE unit_id = ?1 ORDER BY rowid"),
+        ("chunks_raw", "SELECT c.id, c.item_id, c.idx, c.text, c.content_hash, c.created_at FROM chunks_raw c JOIN items i ON i.id = c.item_id WHERE i.unit_id = ?1 ORDER BY c.rowid"),
+        ("notes", "SELECT id, unit_id, body, created_at, meta FROM notes WHERE unit_id = ?1 ORDER BY rowid"),
+        ("kv", "SELECT key, value, updated_at FROM kv ORDER BY rowid"),
+    ];
+    let mut hasher = Sha256::new();
+    let mut rows_in = 0i64;
+    for (table, query) in tables {
+        hasher.update((table.len() as u64).to_le_bytes());
+        hasher.update(table.as_bytes());
+        let mut stmt = conn
+            .prepare(query)
+            .map_err(|e| Error::backend(format!("staging: preparing {table} for manifest: {e}")))?;
+        let columns = stmt.column_count();
+        let mut rows = if query.contains("?1") {
+            stmt.query(params![unit.unit_id])
+        } else {
+            stmt.query([])
+        }
+        .map_err(|e| Error::backend(format!("staging: reading {table} for manifest: {e}")))?;
+        while let Some(row) = rows
+            .next()
+            .map_err(|e| Error::backend(format!("staging: reading {table} for manifest: {e}")))?
+        {
+            rows_in += 1;
+            hasher.update([0xff]);
+            for col in 0..columns {
+                match row.get_ref(col).map_err(|e| {
+                    Error::backend(format!("staging: reading {table} manifest value: {e}"))
+                })? {
+                    ValueRef::Null => hasher.update([0]),
+                    ValueRef::Integer(v) => {
+                        hasher.update([1]);
+                        hasher.update(v.to_le_bytes());
+                    }
+                    ValueRef::Real(v) => {
+                        hasher.update([2]);
+                        hasher.update(v.to_bits().to_le_bytes());
+                    }
+                    ValueRef::Text(v) => {
+                        hasher.update([3]);
+                        hasher.update((v.len() as u64).to_le_bytes());
+                        hasher.update(v);
+                    }
+                    ValueRef::Blob(v) => {
+                        hasher.update([4]);
+                        hasher.update((v.len() as u64).to_le_bytes());
+                        hasher.update(v);
+                    }
+                }
+            }
+        }
+    }
+    if rows_in == 0 {
+        return Err(Error::fatal(format!(
+            "staging: refusing to promote empty unit {}",
+            unit.unit_id
+        )));
+    }
+    let content_hash = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    Ok(MergeManifest {
+        unit_id: unit.unit_id.clone(),
+        rows_in,
+        rows_promoted: rows_in,
+        content_hash,
+        embedding_model: EMBEDDING_MODEL_ID.to_string(),
+        promoted_at: now.to_string(),
+    })
 }
 
 /// The staging unit's recorded `embedding_model`, if its database
@@ -806,6 +933,9 @@ mod tests {
         // Mandated model: promotion succeeds exactly as a state move.
         let db = provision_unit(&dir, &reg, "unit-good");
         stamp_embedding_model(&db, EMBEDDING_MODEL_ID);
+        Connection::open(&db).expect("open staged unit")
+            .execute("INSERT INTO items (unit_id, kind, text, sensitivity, created_at) VALUES ('unit-good', 'test', 'payload', 'internal', 'now')", [])
+            .expect("stage test item");
         reg.promote("unit-good", "2026-11-10T01:00:00Z")
             .expect("mandated model must promote");
         assert_eq!(
@@ -814,6 +944,57 @@ mod tests {
                 .expect("unit")
                 .state,
             UnitState::Merged
+        );
+        let promoted = reg
+            .merge_manifest("unit-good")
+            .expect("manifest query")
+            .expect("manifest persisted");
+        assert_eq!(promoted.rows_in, 1);
+        assert_eq!(promoted.rows_promoted, 1);
+        assert_eq!(promoted.embedding_model, EMBEDDING_MODEL_ID);
+        assert_eq!(promoted.promoted_at, "2026-11-10T01:00:00Z");
+        // Independent oracle: the single items row's canonical encoding is
+        // the table tag, row marker, and each typed SQLite value in SELECT order.
+        use sha2::{Digest, Sha256};
+        // The query includes id, NULL source, and NULL meta around the
+        // inserted fields; encode those values independently as well.
+        let mut expected = Sha256::new();
+        expected.update(("items".len() as u64).to_le_bytes());
+        expected.update(b"items");
+        expected.update([0xff]);
+        expected.update([1]);
+        expected.update(1i64.to_le_bytes());
+        expected.update([3]);
+        expected.update((9u64).to_le_bytes());
+        expected.update(b"unit-good");
+        expected.update([3]);
+        expected.update(4u64.to_le_bytes());
+        expected.update(b"test");
+        expected.update([0]);
+        expected.update([3]);
+        expected.update(7u64.to_le_bytes());
+        expected.update(b"payload");
+        expected.update([3]);
+        expected.update(8u64.to_le_bytes());
+        expected.update(b"internal");
+        expected.update([3]);
+        expected.update(3u64.to_le_bytes());
+        expected.update(b"now");
+        expected.update([0]);
+        for table in ["chunks_raw", "notes", "kv"] {
+            expected.update((table.len() as u64).to_le_bytes());
+            expected.update(table.as_bytes());
+        }
+        let expected_hash: String = expected
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(promoted.content_hash, expected_hash);
+        assert!(reg.promote("unit-good", "2026-11-10T02:00:00Z").is_err());
+        assert_eq!(
+            reg.merge_manifest("unit-good").expect("manifest query"),
+            Some(promoted)
         );
 
         // Non-mandated model: refusal naming unit and both ids, and
@@ -831,6 +1012,10 @@ mod tests {
             reg.lookup("unit-bad").expect("lookup").expect("unit").state,
             UnitState::Open
         );
+        assert!(reg
+            .merge_manifest("unit-bad")
+            .expect("manifest query")
+            .is_none());
 
         // No recorded model: refused as unknown provenance, state
         // unchanged.
@@ -846,6 +1031,25 @@ mod tests {
                 .state,
             UnitState::Open
         );
+        assert!(reg
+            .merge_manifest("unit-unknown")
+            .expect("manifest query")
+            .is_none());
+
+        let empty_db = provision_unit(&dir, &reg, "unit-empty");
+        stamp_embedding_model(&empty_db, EMBEDDING_MODEL_ID);
+        assert!(reg.promote("unit-empty", "2026-11-10T01:00:00Z").is_err());
+        assert_eq!(
+            reg.lookup("unit-empty")
+                .expect("lookup")
+                .expect("unit")
+                .state,
+            UnitState::Open
+        );
+        assert!(reg
+            .merge_manifest("unit-empty")
+            .expect("manifest query")
+            .is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
