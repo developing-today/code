@@ -1,214 +1,187 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { ClaimLostError, QueueClient, QueueError } from "../src/queue.ts";
+import type { Packet } from "../src/packet.ts";
 
-// #2902: ensureWorker memoized its registration promise with ??=,
-// including when it rejected -- one transient failure wedged every
-// later launch for the life of the process. The memo must reset on
-// rejection (retry next call) and stay cached on success.
+// #9028: the queue client talks to the fleet queue broker, not
+// PostgREST. These tests stub fetch at the broker boundary: every
+// call is a POST to a broker verb path with the X-Agent-Token header,
+// and every answer is a broker envelope ({ok, row|rows, error}).
 
-const realFetch = globalThis.fetch;
-
-// Read-route lookups (issue #5555): a failed PostgREST lookup is an
-// error, never a "not found" — getTask backs the task read route and
-// findTaskBySessionId backs the session route's repo gate, so both
-// fail closed with QueueError on a non-OK response and reserve null
-// for a successful empty result.
-describe("getTask / findTaskBySessionId failure mapping (#5555)", () => {
-  test("getTask throws QueueError on a non-OK response", async () => {
-    stubFetch(async () => new Response("unavailable", { status: 503 }));
-    const client = new QueueClient("http://queue.test", "test-key");
-    await expect(client.getTask(42)).rejects.toBeInstanceOf(QueueError);
-  });
-
-  test("getTask returns null only for a successful empty result", async () => {
-    stubFetch(async () => Response.json([]));
-    const client = new QueueClient("http://queue.test", "test-key");
-    expect(await client.getTask(42)).toBeNull();
-  });
-
-  test("getTask returns the row on success", async () => {
-    stubFetch(async () => Response.json([{ id: 42, queue: "q", status: "queued", dedupe_key: "k" }]));
-    const client = new QueueClient("http://queue.test", "test-key");
-    expect((await client.getTask(42))?.id).toBe(42);
-  });
-
-  test("findTaskBySessionId throws QueueError on a non-OK response (gate fails closed)", async () => {
-    stubFetch(async () => new Response("boom", { status: 500 }));
-    const client = new QueueClient("http://queue.test", "test-key");
-    await expect(client.findTaskBySessionId("ses_1")).rejects.toBeInstanceOf(QueueError);
-  });
-
-  test("findTaskBySessionId returns the launching task on success", async () => {
-    stubFetch(async () => Response.json([{ id: 7, queue: "q", status: "claimed", dedupe_key: "k" }]));
-    const client = new QueueClient("http://queue.test", "test-key");
-    expect((await client.findTaskBySessionId("ses_1"))?.id).toBe(7);
-  });
-
-  test("findTaskBySessionId falls back to the cleared binding the queue preserves on the task row", async () => {
-    const urls: string[] = [];
-    globalThis.fetch = (async (...args: unknown[]) => {
-      urls.push(String(args[0]));
-      if (urls.length === 1) return Response.json([]);
-      return Response.json([{ id: 9, queue: "q", status: "parked", dedupe_key: "k" }]);
-    }) as unknown as typeof fetch;
-    const client = new QueueClient("http://queue.test", "test-key");
-    expect((await client.findTaskBySessionId("ses_1"))?.id).toBe(9);
-    expect(urls[0]).toContain("progress->>session_id=eq.ses_1");
-    expect(urls[1]).toContain("progress->session_cleared->>session_id=eq.ses_1");
-  });
-
-  test("findTaskBySessionId throws QueueError when the cleared-binding lookup fails", async () => {
-    stubFetch(async (n) => (n === 1 ? Response.json([]) : new Response("boom", { status: 500 })));
-    const client = new QueueClient("http://queue.test", "test-key");
-    await expect(client.findTaskBySessionId("ses_1")).rejects.toBeInstanceOf(QueueError);
-  });
-});
-
-// Row-body shape validation (#7299): a PostgREST 200 body is
-// shape-untrusted in all three row readers. Null, scalar, object,
-// and non-JSON bodies must land in the module's own vocabulary —
-// QueueError for patchTask and getTask, null ("unknown") only for
-// the degrade-by-contract dedupe lookup —
-// never a raw TypeError/SyntaxError and never a phantom row.
-describe("row body shape validation (#7299)", () => {
-  const ROW = { id: 7, queue: "q", status: "queued", dedupe_key: "k" };
-  const badBodies: Array<[string, () => Response]> = [
-    ["null", () => new Response("null")],
-    ["string", () => Response.json("x")],
-    ["object", () => Response.json(ROW)],
-    ["non-JSON", () => new Response("not json{")],
-    ["array of non-object", () => Response.json(["x"])],
-  ];
-
-  for (const [name, make] of badBodies) {
-    test(`patchTask throws QueueError on a ${name} body`, async () => {
-      stubFetch(async () => make());
-      const client = new QueueClient("http://queue.test", "test-key");
-      await expect(client.patchTask(7, { status: "claimed" })).rejects.toBeInstanceOf(QueueError);
-    });
-
-    // A malformed body is a lookup failure, not a missing task:
-    // null is reserved for a successful empty array (Codex P2 on
-    // PR #8706 — the read route turns null into a definitive 404).
-    test(`getTask throws QueueError on a ${name} body`, async () => {
-      stubFetch(async () => make());
-      const client = new QueueClient("http://queue.test", "test-key");
-      await expect(client.getTask(7)).rejects.toBeInstanceOf(QueueError);
-    });
-
-    test(`findByDedupeKey resolves null on a ${name} body`, async () => {
-      stubFetch(async () => make());
-      const client = new QueueClient("http://queue.test", "test-key");
-      expect(await client.findByDedupeKey("k")).toBeNull();
-    });
-  }
-
-  test("the control array body resolves the row in all three methods", async () => {
-    const client = new QueueClient("http://queue.test", "test-key");
-    stubFetch(async () => Response.json([ROW]));
-    expect((await client.patchTask(7, { status: "claimed" }))?.id).toBe(7);
-    stubFetch(async () => Response.json([ROW]));
-    expect((await client.getTask(7))?.id).toBe(7);
-    stubFetch(async () => Response.json([ROW]));
-    expect((await client.findByDedupeKey("k"))?.id).toBe(7);
-  });
-
-  test("findTaskBySessionId fails closed with QueueError on a malformed body", async () => {
-    stubFetch(async () => new Response("not json{"));
-    const client = new QueueClient("http://queue.test", "test-key");
-    await expect(client.findTaskBySessionId("ses_1")).rejects.toBeInstanceOf(QueueError);
-  });
-});
-
+const origFetch = globalThis.fetch;
 afterEach(() => {
-  globalThis.fetch = realFetch;
+  globalThis.fetch = origFetch;
 });
 
-function stubFetch(handler: (call: number) => Promise<Response>) {
-  let calls = 0;
-  globalThis.fetch = (async () => handler(++calls)) as unknown as typeof fetch;
-  return () => calls;
+interface SeenCall {
+  url: string;
+  body: Record<string, unknown>;
+  token: string | null;
 }
 
-describe("ensureWorker registration memo", () => {
-  test("first attempt fails, second succeeds, later calls reuse the success", async () => {
-    const calls = stubFetch(async (n) =>
-      n === 1 ? new Response("postgrest unavailable", { status: 503 }) : new Response(null, { status: 201 }),
-    );
-    const client = new QueueClient("http://queue.test", "test-key");
+function stubBroker(handler: (path: string, body: Record<string, unknown>) => unknown) {
+  const calls: SeenCall[] = [];
+  globalThis.fetch = (async (input: unknown, init?: { headers?: Record<string, string>; body?: string }) => {
+    const url = String(input);
+    const body = JSON.parse(init?.body ?? "{}") as Record<string, unknown>;
+    calls.push({ url, body, token: init?.headers?.["X-Agent-Token"] ?? null });
+    const path = new URL(url).pathname;
+    return Response.json(handler(path, body));
+  }) as typeof fetch;
+  return calls;
+}
 
-    await expect(client.ensureWorker()).rejects.toBeInstanceOf(QueueError);
-    expect(calls()).toBe(1);
+const packet = { title: "t", body: "b", priority: 30, dedupe_key: "k", payload: { schema: "repo-task/v1" } } as unknown as Packet;
+const row7 = { id: 7, queue: "repo-health-code-pilot", status: "queued", dedupe_key: "k" };
 
-    // The rejection was not cached: the next call retries the upsert.
-    await client.ensureWorker();
-    expect(calls()).toBe(2);
-
-    // The success IS cached: later calls do not re-fetch.
-    await client.ensureWorker();
-    await client.ensureWorker();
-    expect(calls()).toBe(2);
-  });
-
-  test("a fetch throw also resets the memo", async () => {
-    const calls = stubFetch(async (n) => {
-      if (n === 1) throw new Error("network blip");
-      return new Response(null, { status: 201 });
+describe("broker enqueue", () => {
+  test("posts the packet to /enqueue with the mapped queue and the broker token", async () => {
+    const calls = stubBroker((path) => {
+      expect(path).toBe("/enqueue");
+      return { ok: true, row: row7 };
     });
-    const client = new QueueClient("http://queue.test", "test-key");
-
-    await expect(client.ensureWorker()).rejects.toThrow("network blip");
-    await client.ensureWorker();
-    expect(calls()).toBe(2);
+    const client = new QueueClient("http://broker.test", "tok-1");
+    const row = await client.enqueue(packet, "developing-today/code");
+    expect(row.id).toBe(7);
+    expect(calls[0].body.queue).toBe("repo-health-code-pilot");
+    expect((calls[0].body.packet as Packet).dedupe_key).toBe("k");
+    expect(calls[0].token).toBe("tok-1");
   });
 
-  test("concurrent callers share one attempt and one retry", async () => {
-    const calls = stubFetch(async (n) =>
-      n === 1 ? new Response("boom", { status: 500 }) : new Response(null, { status: 201 }),
-    );
-    const client = new QueueClient("http://queue.test", "test-key");
+  test("a broker validation refusal is a QueueError carrying its message", async () => {
+    stubBroker(() => ({ ok: false, exit: 2, error: "packet validation failed (1 error(s))" }));
+    const client = new QueueClient("http://broker.test", "tok-1");
+    await expect(client.enqueue(packet, "developing-today/code")).rejects.toThrow("packet validation failed");
+  });
 
-    const [a, b] = await Promise.allSettled([client.ensureWorker(), client.ensureWorker()]);
-    expect(a.status).toBe("rejected");
-    expect(b.status).toBe("rejected");
-    expect(calls()).toBe(1);
+  test("an envelope whose row is not a task row is a QueueError, never a phantom row", async () => {
+    stubBroker(() => ({ ok: true, row: "nope" }));
+    const client = new QueueClient("http://broker.test", "tok-1");
+    await expect(client.enqueue(packet, "developing-today/code")).rejects.toBeInstanceOf(QueueError);
+  });
 
-    await Promise.all([client.ensureWorker(), client.ensureWorker()]);
-    expect(calls()).toBe(2);
+  test("an unmapped repo is refused before any broker call", async () => {
+    const calls = stubBroker(() => ({ ok: true, row: row7 }));
+    const client = new QueueClient("http://broker.test", "tok-1");
+    await expect(client.enqueue(packet, "nobody/nothing")).rejects.toThrow("no queue mapped");
+    expect(calls).toHaveLength(0);
   });
 });
 
-// #10737: the dispatch launch assigns its row with a compare-and-swap
-// on status, so a fleet worker that claimed the task first keeps it.
-describe("patchTask onlyIfStatus (#10737)", () => {
-  const ROW = { id: 7, queue: "q", status: "claimed", dedupe_key: "k" };
-
-  test("filters the PATCH on the required status and returns the row", async () => {
-    let url = "";
-    globalThis.fetch = (async (input: RequestInfo | URL) => {
-      url = String(input);
-      return Response.json([ROW]);
-    }) as unknown as typeof fetch;
-    const client = new QueueClient("http://queue.test", "test-key");
-    const row = await client.patchTask(7, { status: "claimed" }, { onlyIfStatus: "queued" });
-    expect(row.id).toBe(7);
-    expect(url).toBe("http://queue.test/rest/v1/tasks?id=eq.7&status=eq.queued");
+describe("broker claimTask (claim-flow, #10737 + #9028)", () => {
+  test("claims the exact enqueued row and binds the session in one call", async () => {
+    const calls = stubBroker((path) => {
+      expect(path).toBe("/claim-flow");
+      return { ok: true, row: { ...row7, status: "claimed" } };
+    });
+    const client = new QueueClient("http://broker.test", "tok-1");
+    const row = await client.claimTask(row7 as never, "ses_1", "tester", 3600);
+    expect(row.status).toBe("claimed");
+    expect(calls[0].body).toMatchObject({
+      task_id: 7,
+      worker: "dispatch-opencode",
+      queue: "repo-health-code-pilot",
+      session_id: "ses_1",
+      launched_by: "tester",
+      lease_seconds: 3600,
+    });
   });
 
-  test("a row that is no longer queued throws ClaimLostError", async () => {
-    stubFetch(async () => Response.json([]));
-    const client = new QueueClient("http://queue.test", "test-key");
-    const err = await client.patchTask(7, { status: "claimed" }, { onlyIfStatus: "queued" }).catch((e) => e);
+  test("a null row (another worker claimed it first) is ClaimLostError", async () => {
+    stubBroker(() => ({ ok: true, row: null }));
+    const client = new QueueClient("http://broker.test", "tok-1");
+    const err = await client.claimTask(row7 as never, "ses_1", "tester", 3600).catch((e) => e);
     expect(err).toBeInstanceOf(ClaimLostError);
-    expect(err).toBeInstanceOf(QueueError);
-    expect((err as ClaimLostError).httpStatus).toBe(409);
+    expect((err as ClaimLostError).taskId).toBe(7);
   });
 
-  test("an unconditional PATCH that matches nothing stays a plain QueueError", async () => {
-    stubFetch(async () => Response.json([]));
-    const client = new QueueClient("http://queue.test", "test-key");
-    const err = await client.patchTask(7, { last_error: "x" }).catch((e) => e);
-    expect(err).toBeInstanceOf(QueueError);
-    expect(err).not.toBeInstanceOf(ClaimLostError);
+  test("a bind-step partial throws — the session binding is the point of the claim", async () => {
+    stubBroker(() => ({ ok: true, row: { ...row7, status: "claimed" }, claim_flow_partial: { step: "bind", error: "no lane ledger" } }));
+    const client = new QueueClient("http://broker.test", "tok-1");
+    await expect(client.claimTask(row7 as never, "ses_1", "tester", 3600)).rejects.toThrow("bind failed");
+  });
+
+  test("a lane-step partial is noted on the task and the claim still returns", async () => {
+    const calls = stubBroker((path) => {
+      if (path === "/claim-flow") {
+        return { ok: true, row: { ...row7, status: "claimed" }, claim_flow_partial: { step: "lane", error: "lane rpc 500" } };
+      }
+      return { ok: true, row: { ...row7, status: "claimed" } };
+    });
+    const client = new QueueClient("http://broker.test", "tok-1");
+    const row = await client.claimTask(row7 as never, "ses_1", "tester", 3600);
+    expect(row.status).toBe("claimed");
+    const note = calls.find((c) => c.url.endsWith("/checkpoint"));
+    expect(note).toBeTruthy();
+    expect((note!.body.progress as { last_error: string }).last_error).toContain("lane rpc 500");
+  });
+});
+
+describe("broker reads", () => {
+  test("getTask returns the row, and null only for a successful empty result", async () => {
+    stubBroker(() => ({ ok: true, rows: [row7], total: 1 }));
+    const client = new QueueClient("http://broker.test", "tok-1");
+    expect((await client.getTask(7))?.id).toBe(7);
+    stubBroker(() => ({ ok: true, rows: [], total: 0 }));
+    expect(await client.getTask(7)).toBeNull();
+  });
+
+  test("getTask throws QueueError on a broker refusal — a failed lookup is not a missing task", async () => {
+    stubBroker(() => ({ ok: false, error: "broker down" }));
+    const client = new QueueClient("http://broker.test", "tok-1");
+    await expect(client.getTask(7)).rejects.toBeInstanceOf(QueueError);
+  });
+
+  test("findByDedupeKey finds the row and degrades to null on a broker failure (#4661)", async () => {
+    stubBroker(() => ({ ok: true, rows: [row7], total: 1 }));
+    const client = new QueueClient("http://broker.test", "tok-1");
+    expect((await client.findByDedupeKey("k"))?.id).toBe(7);
+    stubBroker(() => ({ ok: false, error: "broker down" }));
+    expect(await client.findByDedupeKey("k")).toBeNull();
+  });
+
+  test("findTaskBySessionId matches the live binding, then the cleared record (#5555)", async () => {
+    const live = { ...row7, id: 8, status: "claimed", progress: { session_id: "ses_live" } };
+    const cleared = { ...row7, id: 9, status: "done", progress: { session_cleared: { session_id: "ses_old" } } };
+    stubBroker((_path, body) => {
+      const rows = body.status === "claimed" ? [live] : body.status === "done" ? [cleared] : [];
+      return { ok: true, rows, total: rows.length };
+    });
+    const client = new QueueClient("http://broker.test", "tok-1");
+    expect((await client.findTaskBySessionId("ses_live"))?.id).toBe(8);
+    expect((await client.findTaskBySessionId("ses_old"))?.id).toBe(9);
+    expect(await client.findTaskBySessionId("ses_nope")).toBeNull();
+  });
+
+  test("findTaskBySessionId fails closed on a broker refusal (it backs the repo gate)", async () => {
+    stubBroker(() => ({ ok: false, error: "broker down" }));
+    const client = new QueueClient("http://broker.test", "tok-1");
+    await expect(client.findTaskBySessionId("ses_x")).rejects.toBeInstanceOf(QueueError);
+  });
+});
+
+describe("broker notes and cancels", () => {
+  test("noteTask records the note as a checkpoint progress merge", async () => {
+    const calls = stubBroker(() => ({ ok: true, row: { ...row7, status: "claimed" } }));
+    const client = new QueueClient("http://broker.test", "tok-1");
+    await client.noteTask(7, "lane assignment failed (launch unaffected): x");
+    expect(calls[0].url).toContain("/checkpoint");
+    expect(calls[0].body).toMatchObject({ task_id: 7, worker: "dispatch-opencode", stage: "dispatch_note" });
+    expect((calls[0].body.progress as { dispatch_note: string }).dispatch_note).toContain("lane assignment failed");
+  });
+
+  test("cancelTask posts /cancel with the reason", async () => {
+    const calls = stubBroker(() => ({ ok: true, row: { ...row7, status: "cancelled" } }));
+    const client = new QueueClient("http://broker.test", "tok-1");
+    await client.cancelTask(7, "dispatch launch failed: boom");
+    expect(calls[0].url).toContain("/cancel");
+    expect(calls[0].body).toMatchObject({ task_id: 7, reason: "dispatch launch failed: boom" });
+  });
+
+  test("a transport failure is a QueueError, not a silent success", async () => {
+    globalThis.fetch = (async () => {
+      throw new Error("connect refused");
+    }) as unknown as typeof fetch;
+    const client = new QueueClient("http://broker.test", "tok-1");
+    await expect(client.getTask(7)).rejects.toBeInstanceOf(QueueError);
   });
 });
