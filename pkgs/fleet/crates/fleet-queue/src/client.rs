@@ -853,7 +853,8 @@ Run `repo-queue <verb> --help` for flags:\n\
   revive <task-id> [--worker <id>] [--reason <text>] [--not-before <ts>]\n\
   fail <task-id> [--worker <id>] [--error <text>] [--reason-class <c>] [--execution <id>]\n\
   complete <task-id> [--worker <id>] [--result <json>] [--result-file <f>] [--telemetry <json>] [--execution <id>] [--queue <name>]\n\
-  timeline <task-id> [--worker <id>]\n\
+  timeline <task-id> [--worker <id>] [--json]\n\
+  history <task-id> [--worker <id>] [--json]  (alias of timeline)\n\
   models [--days <n>] [--json]\n\
   health [--queue <name>] [--worker <id>]\n\
   signal [--queue <name>] [--reason <text>]\n\
@@ -925,7 +926,10 @@ pub(crate) fn usage(verb: &str) -> &'static str {
             "usage: repo-queue complete <task-id> [--worker <id>] [--result <json>] [--result-file <f>] [--telemetry <json>] [--execution <id>] [--queue <name>]\n\nCompletes a task."
         }
         "timeline" => {
-            "usage: repo-queue timeline <task-id> [--worker <id>]\n\nShows a task's event timeline."
+            "usage: repo-queue timeline <task-id> [--worker <id>] [--json]\n\nShows a task's event timeline."
+        }
+        "history" => {
+            "usage: repo-queue history <task-id> [--worker <id>] [--json]\n\nAlias of timeline: shows a task's event timeline."
         }
         "models" => {
             "usage: repo-queue models [--days <n>] [--json]\n\nRolls up serving-model stamps."
@@ -2675,9 +2679,9 @@ fn binding_windows(events: &[TimelineEvent]) -> Vec<(String, String, Option<Stri
 /// #9046: render one task's model timeline — binding windows,
 /// stamps, and transitions in order, with the exact resolved
 /// models per window joined from route_attempt.
-fn cmd_timeline(rest: &[String]) -> i32 {
-    let args = parse_verb_args("timeline", rest, &["worker"], &[]);
-    reject_extra_pos("timeline", &args, 1);
+fn cmd_timeline(verb: &str, rest: &[String]) -> i32 {
+    let args = parse_verb_args(verb, rest, &["worker"], &["json"]);
+    reject_extra_pos(verb, &args, 1);
     let task_id = args.pos_i64(0, "task_id");
     let mut events: Vec<TimelineEvent> = Vec::new();
     for kind in [
@@ -2725,8 +2729,63 @@ fn cmd_timeline(rest: &[String]) -> i32 {
     }
     events.sort_by_key(|e| e.id);
     let events = collapse_timeline(events);
+    let json_out = args.has("json");
     if events.is_empty() {
+        if json_out {
+            print_json(&json!({"task_id": task_id, "events": [], "served": []}));
+            return 0;
+        }
         println!("task {task_id}: no timeline records");
+        return 0;
+    }
+    if json_out {
+        // --json (#8200 residual): the same records the table below
+        // prints, as structured data — events in order, plus the
+        // route_attempt served windows. Marks print as recorded:
+        // an absent mark is null, never invented.
+        let windows = binding_windows(&events);
+        let served: Vec<Value> = windows
+            .iter()
+            .map(|(sid, start, end)| {
+                let start_ms = parse_ts_str(start).map(|us| us / 1000).unwrap_or(0);
+                let end_ms = end
+                    .as_ref()
+                    .and_then(|e| parse_ts_str(e))
+                    .map(|us| us / 1000)
+                    .unwrap_or_else(|| {
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as i64)
+                            .unwrap_or(0)
+                    });
+                json!({
+                    "session_id": sid,
+                    "start": start,
+                    "end": end,
+                    "segments": route_segments_for_session(sid, start_ms, end_ms)
+                        .unwrap_or_default(),
+                })
+            })
+            .collect();
+        print_json(&json!({
+            "task_id": task_id,
+            "events": events
+                .iter()
+                .map(|ev| {
+                    json!({
+                        "id": ev.id,
+                        "kind": ev.kind,
+                        "created_at": ev.created_at,
+                        "session_id": ev.session_id,
+                        "provider": ev.provider,
+                        "model": ev.model,
+                        "variant": ev.variant,
+                        "trigger": ev.trigger,
+                    })
+                })
+                .collect::<Vec<_>>(),
+            "served": served,
+        }));
         return 0;
     }
     for ev in &events {
@@ -6362,7 +6421,8 @@ pub fn run(args: &[String]) -> i32 {
         "revive" => cmd_revive(rest),
         "fail" => cmd_fail(rest),
         "complete" => cmd_complete(rest),
-        "timeline" => cmd_timeline(rest),
+        "timeline" => cmd_timeline("timeline", rest),
+        "history" => cmd_timeline("history", rest),
         "models" => cmd_models(rest),
         "health" => cmd_health(rest),
         "signal" => cmd_signal(rest),
