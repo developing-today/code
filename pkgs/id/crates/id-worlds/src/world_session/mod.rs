@@ -66,7 +66,9 @@ mod session_core;
 mod view;
 
 pub(crate) use session_core::run_world_session;
-pub(crate) use view::{PresenceGuard, ViewRevisionState, Viewport, normalize_paste, send_view};
+pub(crate) use view::{
+    PresenceGuard, ScreenSubscriptionState, ViewRevisionState, Viewport, normalize_paste, send_view,
+};
 
 pub(crate) use documents::{
     DocumentError, DocumentPageSelector, MAX_DOCUMENT_BYTES, MAX_DOCUMENT_LIST_BYTES,
@@ -79,7 +81,7 @@ pub use types::MAX_ADMIN_TOKEN_BYTES;
 pub(crate) use types::{
     CAPS_CEILING_NOTICE, ClientFrame, HoverEvent, InputEnvironment, InputRefusalReason,
     MAX_CAPABILITY_BYTES, MAX_CONCURRENT_MODULE_UPLOADS, MAX_RESUME_TOKEN_BYTES, PointerButton,
-    PointerEvent, ServerFrame, invite_bounds,
+    PointerEvent, SEMANTIC_EVENT_CLASSES, ScreenRegion, ServerFrame, invite_bounds,
 };
 pub use types::{
     INVITE_DEFAULT_SECS, INVITE_MAX_SECS, Inbound, InstallError, InviteError, InviteResponse,
@@ -1111,6 +1113,7 @@ async fn joined<I: SessionIo>(
     after: Option<u64>,
     screen_patches: bool,
     resume_token: Option<String>,
+    agent_profile: bool,
     documents_store: Option<Store>,
 ) {
     let world = service.world();
@@ -1133,6 +1136,11 @@ async fn joined<I: SessionIo>(
     let mut viewport = None;
     let mut view_state = ViewRevisionState::default();
     view_state.participant = participant_id;
+    // Agent profile (contract revision 11, #6300 section 4.2): the join
+    // flag is the capability advertisement; it changes only what this
+    // session is sent (semantic diffs for its subscription), never its
+    // authority.
+    view_state.agent_profile = agent_profile;
     // The token is a cursor for a later view send, never a bypass: the join
     // capability above already authorized this session. An oversized token
     // cannot name a retained baseline, so it is dropped here and the client
@@ -1323,6 +1331,24 @@ async fn joined<I: SessionIo>(
                     if !send_json(service.frame_meter(), io, &ServerFrame::Event { event: &shown }).await {
                         break;
                     }
+                    // Agent profile (contract revision 11, #6300 section
+                    // 4.2): a subscribed agent session also receives the
+                    // event as a semantic diff — what changed in world
+                    // terms, scoped to its subscription's event classes.
+                    if let Some((class, change)) = semantic_event_change(&shown) {
+                        if view_state.wants_event_diff(class) {
+                            let diff_frame = ServerFrame::SemanticDiff {
+                                sequence: shown.sequence,
+                                view_revision: view_state.current_revision().unwrap_or(0),
+                                base_view_revision: None,
+                                changes: vec![change],
+                                region: None,
+                            };
+                            if !send_json(service.frame_meter(), io, &diff_frame).await {
+                                break;
+                            }
+                        }
+                    }
                     pending_view_sequence = cursor;
                     pending_view_deadline.get_or_insert_with(|| tokio::time::Instant::now() + VIEW_COALESCE_WINDOW);
                 }
@@ -1421,6 +1447,41 @@ pub(crate) fn names_uses(value: &serde_json::Value) -> bool {
     }
 }
 
+/// The semantic reading of one projected world event (contract revision
+/// 11, #6300 section 4.2): its subscribable class and the change object a
+/// `semantic_diff` carries for it. The change describes what happened in
+/// world terms, never the raw payload — an input event's bytes and a
+/// system event's JSON stay out of the diff, and a program install's
+/// seed is not a change field at all.
+fn semantic_event_change(
+    event: &crate::world::WorldEvent,
+) -> Option<(&'static str, serde_json::Value)> {
+    use crate::world::WorldEventKind;
+    let participant_id = event.participant_id;
+    match &event.kind {
+        WorldEventKind::Chat(text) => Some((
+            "chat_posted",
+            serde_json::json!({"kind": "chat_posted", "participant_id": participant_id, "text": text}),
+        )),
+        WorldEventKind::Input(_) => Some((
+            "input_applied",
+            serde_json::json!({"kind": "input_applied", "participant_id": participant_id}),
+        )),
+        WorldEventKind::EntityInput { entity_ref, .. } => Some((
+            "object_changed",
+            serde_json::json!({"kind": "object_changed", "participant_id": participant_id, "entity_ref": entity_ref}),
+        )),
+        WorldEventKind::System { .. } => Some((
+            "system_event",
+            serde_json::json!({"kind": "system_event", "participant_id": participant_id}),
+        )),
+        WorldEventKind::ProgramInstalled { module_hash, .. } => Some((
+            "program_changed",
+            serde_json::json!({"kind": "program_changed", "participant_id": participant_id, "module_hash": module_hash}),
+        )),
+    }
+}
+
 /// Handle one frame from a joined participant. Returns `false` to end the session.
 async fn handle_client_frame<I: SessionIo>(
     service: &WorldService,
@@ -1446,7 +1507,132 @@ async fn handle_client_frame<I: SessionIo>(
     let Ok(frame) = serde_json::from_value::<ClientFrame>(value) else {
         return send_error(service.frame_meter(), io, "invalid world frame").await;
     };
+    // Stale-decision gate (contract revision 11, #6300 section 4.3): an
+    // agent input frame carrying `screen_revision` is applied only while
+    // that revision is still this session's current screen revision. A
+    // stale input is rejected before any dispatch — nothing is journaled
+    // and no authority is exercised — with a `stale_decision` error, and
+    // the current view follows so the agent can re-decide against fresh
+    // state. Frames without the token are decided as before.
+    let decided_against = match &frame {
+        ClientFrame::Input {
+            screen_revision, ..
+        }
+        | ClientFrame::Chat {
+            screen_revision, ..
+        }
+        | ClientFrame::Paste {
+            screen_revision, ..
+        }
+        | ClientFrame::FormResult {
+            screen_revision, ..
+        }
+        | ClientFrame::Pointer {
+            screen_revision, ..
+        } => *screen_revision,
+        _ => None,
+    };
+    if let Some(decided) = decided_against {
+        if view_state.current_revision() != Some(decided) {
+            let current = view_state
+                .current_revision()
+                .map_or_else(|| "none".to_owned(), |revision| revision.to_string());
+            let message = format!(
+                "stale decision: input was decided against screen revision {decided}, current is {current}"
+            );
+            if !send_json(
+                service.frame_meter(),
+                io,
+                &ServerFrame::Error {
+                    message: &message,
+                    code: Some("stale_decision"),
+                },
+            )
+            .await
+            {
+                return false;
+            }
+            return send_view(
+                service,
+                io,
+                token,
+                sequence,
+                *viewport,
+                view_state,
+                screen_patches,
+            )
+            .await;
+        }
+    }
     let result = match frame {
+        ClientFrame::ScreenSubscribe {
+            region,
+            event_classes,
+        } => {
+            // Agent profile (contract revision 11, #6300 section 4.2):
+            // record this session's subscription and echo it back with
+            // the current screen revision. The subscription is
+            // connection-local presentation context — nothing journals.
+            if !view_state.agent_profile {
+                return send_error(
+                    service.frame_meter(),
+                    io,
+                    "screen_subscribe needs the agent profile: join with agent_profile",
+                )
+                .await;
+            }
+            if let Some(region) = region {
+                let in_bounds = region.width >= 1
+                    && region.height >= 1
+                    && region.x < 500
+                    && region.y < 200
+                    && region.x.saturating_add(region.width) <= 500
+                    && region.y.saturating_add(region.height) <= 200;
+                if !in_bounds {
+                    return send_error(
+                        service.frame_meter(),
+                        io,
+                        "subscription region must fit the 500x200 screen: x+width <= 500, y+height <= 200, width and height at least 1",
+                    )
+                    .await;
+                }
+            }
+            if region.is_none() && event_classes.is_none() {
+                return send_error(
+                    service.frame_meter(),
+                    io,
+                    "screen_subscribe needs a region and/or event_classes",
+                )
+                .await;
+            }
+            if let Some(classes) = &event_classes {
+                if let Some(unknown) = classes
+                    .iter()
+                    .find(|named| !SEMANTIC_EVENT_CLASSES.contains(&named.as_str()))
+                {
+                    return send_error(
+                        service.frame_meter(),
+                        io,
+                        &format!("unknown semantic event class `{unknown}`"),
+                    )
+                    .await;
+                }
+            }
+            view_state.subscription = Some(ScreenSubscriptionState {
+                region,
+                event_classes: event_classes.clone(),
+            });
+            return send_json(
+                service.frame_meter(),
+                io,
+                &ServerFrame::ScreenSubscription {
+                    region,
+                    event_classes,
+                    view_revision: view_state.current_revision().unwrap_or(0),
+                },
+            )
+            .await;
+        }
         ClientFrame::ProviderOffer { providers } => {
             // F13.7 step 3: record what this session's shell can
             // serve. An offer enables nothing by itself — the broker
@@ -1517,6 +1703,7 @@ async fn handle_client_frame<I: SessionIo>(
             presentation_token,
             action,
             values,
+            ..
         } => {
             let result = id_core::world_presentation::FormResult {
                 form_id: form_id.clone(),
@@ -1576,7 +1763,7 @@ async fn handle_client_frame<I: SessionIo>(
                 }
             }
         }
-        ClientFrame::Chat { text } => world.chat(token.clone(), text).await,
+        ClientFrame::Chat { text, .. } => world.chat(token.clone(), text).await,
         ClientFrame::Resize { width, height } => {
             if width == 0 || height == 0 || width > 500 || height > 200 {
                 return send_error(
@@ -1613,7 +1800,7 @@ async fn handle_client_frame<I: SessionIo>(
             )
             .await;
         }
-        ClientFrame::Paste { text } => {
+        ClientFrame::Paste { text, .. } => {
             let Ok(bytes) = normalize_paste(&text) else {
                 return send_error(
                     service.frame_meter(),
@@ -1626,7 +1813,7 @@ async fn handle_client_frame<I: SessionIo>(
                 .input_from_session(token.clone(), bytes, session_id)
                 .await
         }
-        ClientFrame::Input { data_hex } => match decode_hex(&data_hex) {
+        ClientFrame::Input { data_hex, .. } => match decode_hex(&data_hex) {
             Some(data) => {
                 world
                     .input_from_session(token.clone(), data, session_id)
@@ -1998,6 +2185,43 @@ async fn handle_client_frame<I: SessionIo>(
                     .await;
                 }
             }
+        }
+        ClientFrame::Hover { .. } => {
+            // #1831 slice S2: hover is ephemeral presentation context,
+            // like resize without a consumer — the host has no hover
+            // consumer yet, so it is accepted and dropped by design:
+            // never journaled, never answered.
+            return true;
+        }
+        ClientFrame::Pointer {
+            event, environment, ..
+        } => {
+            // #1831 slice S2 landed the pointer contract frames
+            // (revision 10) ahead of the host's pointer routing, which
+            // left these matches non-exhaustive and the crate not
+            // compiling. Until the manifest-declared routing lands, a
+            // pointer event is refused explicitly with the design's
+            // `input_refused` answer — an input event is never silently
+            // dropped (contract `features.input_events`).
+            let event_name = match event {
+                PointerEvent::Press => "press",
+                PointerEvent::Release => "release",
+                PointerEvent::Cancel => "cancel",
+                PointerEvent::DragMove => "drag_move",
+                PointerEvent::Scroll => "scroll",
+                PointerEvent::LongPress => "long_press",
+                PointerEvent::SecondaryPress => "secondary_press",
+            };
+            return send_json(
+                service.frame_meter(),
+                io,
+                &ServerFrame::InputRefused {
+                    event: event_name,
+                    environment: Some(environment),
+                    reason: InputRefusalReason::UnknownOrUnsupportedEvent,
+                },
+            )
+            .await;
         }
         ClientFrame::Join { .. }
         | ClientFrame::Invite { .. }
