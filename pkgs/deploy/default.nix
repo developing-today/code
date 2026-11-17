@@ -33,6 +33,18 @@ let
       cf = callPackage ../cf { };
     };
     developingTodayBackupDeploy = callPackage ../../infra/github-backup/deploy.nix { };
+    # Issue #5767, phase 2: the remaining in-repo Workers join the
+    # registry the same way — each deploy app carries its Worker's
+    # flake package (bundle / Worker tree, lockfile-pinned deps).
+    coldStoreRehydratorDeploy = callPackage ../../pkgs/cold-store-reaper/worker/deploy.nix {
+      coldStoreRehydratorBundle = callPackage ../../pkgs/cold-store-reaper/worker/package.nix { };
+    };
+    labOpsHubDeploy = callPackage ../../pkgs/lab-ops-hub/deploy.nix {
+      labOpsHub = callPackage ../../pkgs/lab-ops-hub/package.nix { };
+    };
+    cfContainerHelloDeploy = callPackage ../../pkgs/cf-container-hello/deploy.nix {
+      cfContainerHello = callPackage ../../pkgs/cf-container-hello/package.nix { };
+    };
   };
   jsonDefinitions = lib.mapAttrs (name: defn: defn // { package = "${defn.package}"; }) definitions;
 in

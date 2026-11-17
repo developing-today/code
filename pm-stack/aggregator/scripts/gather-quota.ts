@@ -107,7 +107,6 @@
 //      disables the Turso sink (default on; token resolved by name
 //      via the resolveBwsSecret plumbing:
 //      turso.fleet-platform-rw-token).
-import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { access, appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -135,6 +134,7 @@ import { SnapshotStore, isSnapshotRecord, snapshotKey } from "../src/snapshots.t
 import { safeProviderReason } from "../src/credential-lifecycle.ts";
 import { renewOpenDesignSession, type OpenDesignCredentialLike } from "../src/opendesign-renewal.ts";
 import { ensureLibDependencies } from "../src/lib-deps.ts";
+import { loadOpenChamberLib, resolveLibDir as resolveOpenChamberLib } from "../src/openchamber-lib.ts";
 import { readProviderAuthAlerts } from "../src/provider-auth-alerts.ts";
 import { renewMetaSession } from "../src/meta-renewal.ts";
 import { classEnabled, getAlertsStore } from "../src/alerts.ts";
@@ -144,22 +144,19 @@ const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
 const HIDDEN = join(HOME, "workspace/goals/keep-the-four-repos-healthy/hidden_files");
 
-/** The OpenDesign keeper's credential-store accessors live in the
- * OpenChamber lib (the managed store's home). Store plumbing for ONE
- * credential the keeper maintains — never a quota reading path: all
- * readings come from the subcommand (see the header). */
-function resolveLibDir(): string {
-  const candidates = [
+/** Candidate checkouts for the OpenDesign keeper's managed credential
+ * store (the OpenChamber lib). Store plumbing for ONE credential the
+ * keeper maintains, never a quota reading path: all readings come from
+ * the subcommand (see the header). Each candidate must be a clean main
+ * checkout (src/openchamber-lib.ts), so a parked or stale checkout is
+ * rejected rather than imported. */
+function openChamberLibCandidates(): string[] {
+  return [
     process.env.OPENCHAMBER_LIB_DIR,
     join(HOME, "git/devtoday-openchamber/packages/web/server/lib"),
     join(HOME, "git/openchamber-fork/packages/web/server/lib"),
   ].filter((d): d is string => typeof d === "string" && d !== "");
-  for (const dir of candidates) {
-    if (existsSync(join(dir, "quota/index.js"))) return dir;
-  }
-  return candidates[0];
 }
-const libDir = resolveLibDir();
 const currentPath = process.env.QUOTA_CURRENT_PATH ?? join(PKG, "quota-current.json");
 const heartbeatPath = process.env.QUOTA_HEARTBEAT_PATH ?? join(PKG, "quota-gatherer-heartbeat.json");
 const statePath = process.env.QUOTA_GATHERER_STATE_PATH ?? join(PKG, "quota-gatherer-state.json");
@@ -294,15 +291,6 @@ async function resolveBwsSecret(key: string): Promise<string | null> {
   }
 }
 
-/** Managed-credential accessors for the OpenDesign keeper (libDir). */
-interface OpenDesignCredentialsModule {
-  readManagedCredential: (providerId: string) => OpenDesignCredentialLike | null;
-  writeManagedCredential: (providerId: string, value: OpenDesignCredentialLike) => unknown;
-}
-interface OpenDesignProviderModule {
-  fetchOpenDesignQuota: (credential: OpenDesignCredentialLike) => Promise<unknown>;
-}
-
 /**
  * The OpenDesign session keeper run. Runs before the subcommand so a
  * credential renewed this tick is the one the tick's OpenDesign read
@@ -315,6 +303,10 @@ interface OpenDesignProviderModule {
 async function runOpenDesignRenewal(tickAt: string): Promise<void> {
   if (process.env.OPENDESIGN_RENEWAL_DISABLED === "1") return;
   try {
+    // Resolve first: a parked, dirty or non-main checkout is rejected
+    // here, before anything from it is installed or imported. The keeper
+    // then fails soft and the subcommand readings still run.
+    const lib = await resolveOpenChamberLib(openChamberLibCandidates());
     // #8759: the lib checkout is a plain clone; if its declared
     // dependencies were never installed, every import below fails
     // with "Cannot find package ..." and Bun caches that failure
@@ -338,16 +330,11 @@ async function runOpenDesignRenewal(tickAt: string): Promise<void> {
           }
         : undefined;
     await ensureLibDependencies({
-      libDir,
+      libDir: lib.dir,
       log: (line) => console.log("quota-gatherer: " + line),
       ...(install ? { install } : {}),
     });
-    const credentials = (await import(
-      join(libDir, "quota/credentials/providers.js")
-    )) as unknown as OpenDesignCredentialsModule;
-    const provider = (await import(
-      join(libDir, "quota/providers/opendesign.js")
-    )) as unknown as OpenDesignProviderModule;
+    const { credentials, provider } = await loadOpenChamberLib(lib);
     const state = await renewOpenDesignSession({
       readCredential: () => credentials.readManagedCredential("opendesign"),
       writeCredential: (value) => {
