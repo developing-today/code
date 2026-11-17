@@ -51,6 +51,7 @@ excluded=(
   test-web
   test-int
   crash-gate
+  planted-bug-check
 )
 
 # normalise_names: read names on stdin, print one clean name per line —
