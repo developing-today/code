@@ -180,15 +180,12 @@ export class UserDO {
     }
   }
 
-  /** The largest value (bytes) a KV PUT can carry over `priorBytes`
-   * of existing data without being refused: a value that fits the
-   * ceiling, or one no larger than what it replaces (shrinking never
-   * grows storage, even when usage is already over the ceiling).
-   * null = no ceiling. */
+  /** The largest value (bytes) a KV PUT over `priorBytes` of existing
+   * data can carry and still pass assertWritable; null = no ceiling. */
   private kvHeadroom(priorBytes: number): number | null {
     const ceiling = this.ceilingBytes();
     if (ceiling === null) return null;
-    return Math.max(ceiling - this.usage().storage_bytes + priorBytes, priorBytes);
+    return ceiling - this.usage().storage_bytes + priorBytes;
   }
 
   private meta(key: string): string | null {
