@@ -16,11 +16,10 @@ name: yard-reaper-tests
 # no network, no credentials, no external CLIs.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "infra/yard-reaper/**"
-      - ".github/workflows/yard-reaper-tests.yml"
+  schedule:
+    # Nightly instead of on every push to main (Drew, 2026-11-16; see
+    # .github/ci-policy.md "Nightly main CI").
+    - cron: "17 7 * * *"
   workflow_dispatch:
 
 permissions:

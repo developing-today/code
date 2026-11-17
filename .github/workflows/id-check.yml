@@ -44,8 +44,6 @@ name: id
 # CI tier policy: see .github/ci-policy.md
 
 on:
-  push:
-    branches: [main]
   schedule:
     # Nightly backstop for the full flake check (main tier, #1781).
     - cron: "41 8 * * *"
@@ -194,7 +192,7 @@ jobs:
   # digests must match the x86_64-pinned values above.
   world-snapshot-arm64:
     name: "native arm64: world snapshot determinism"
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'schedule'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     env:
