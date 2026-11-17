@@ -1363,20 +1363,28 @@ fn opt_queue(args: &Args) -> String {
     args.get("queue").unwrap_or_else(default_queue)
 }
 
-/// The claim command's queue resolution (#8097 one-queue
-/// model): an explicit --queue wins, then the
-/// REPO_QUEUE_DEFAULT_QUEUE env; with neither, the claim is
-/// UNSCOPED (None) and the broker claims across the one fleet
-/// queue in priority order. Every other command keeps
-/// opt_queue's built-in default.
-fn opt_queue_claim(args: &Args) -> Option<String> {
-    if let Some(q) = args.get("queue") {
+/// The queue scope for `claim` and `list` (#8097 one-queue model,
+/// #7358): an explicit --queue wins, then the REPO_QUEUE_DEFAULT_QUEUE
+/// env; with neither, the verb is UNSCOPED (None) and the broker works
+/// across the one fleet queue. Neither verb falls back to the built-in
+/// shadow default, so a bare `claim` never burns a lease on
+/// repo-health-code-shadow and a bare `list` never shows only the
+/// shadow stream as if it were the whole picture. Every other command
+/// keeps opt_queue's built-in default.
+fn opt_queue_scoped(args: &Args) -> Option<String> {
+    let env = std::env::var("REPO_QUEUE_DEFAULT_QUEUE").ok();
+    queue_scope_from(args.get("queue"), env.as_deref())
+}
+
+/// Pure core of [`opt_queue_scoped`], so the no-default rule is
+/// unit-testable without touching the process env.
+fn queue_scope_from(flag: Option<String>, env: Option<&str>) -> Option<String> {
+    if let Some(q) = flag {
         return Some(q);
     }
-    std::env::var("REPO_QUEUE_DEFAULT_QUEUE")
-        .ok()
-        .map(|v| v.trim().to_string())
+    env.map(str::trim)
         .filter(|v| !v.is_empty())
+        .map(str::to_string)
 }
 
 fn opt_worker(args: &Args) -> String {
@@ -2095,14 +2103,18 @@ fn find_task_row(rows: &[Value], task_id: i64) -> Option<&Value> {
 /// the broker answers in its default ordering for one queue
 /// (newest terminal rows first), which reads as "nothing to do".
 /// Pure over the parsed args so the trigger is unit-testable.
-pub(crate) fn bare_list_note(args: &Args, resolved_queue: &str) -> Option<String> {
+pub(crate) fn bare_list_note(args: &Args, resolved_queue: Option<&str>) -> Option<String> {
     for key in ["queue", "status", "not-before", "lane", "worker", "task"] {
         if args.opts.contains_key(key) {
             return None;
         }
     }
+    let scope = match resolved_queue {
+        Some(queue) => format!("queue {queue:?}"),
+        None => "every queue".to_string(),
+    };
     Some(format!(
-        "note: bare `list` shows queue {resolved_queue:?} in the broker's default ordering (newest terminal rows first) — not the actionable set. Use --status queued|parked|claimed|blocked for actionable work, --queue <name> to pick a stream (e.g. repo-health-code-pilot), --limit <n> to widen the window."
+        "note: bare `list` shows {scope} in the broker's default ordering (newest terminal rows first) — not the actionable set. Use --status queued|parked|claimed|blocked for actionable work, --queue <name> to pick a stream (e.g. repo-health-code-pilot), --limit <n> to widen the window."
     ))
 }
 
@@ -2122,7 +2134,8 @@ fn cmd_list(rest: &[String]) -> i32 {
         &[],
     );
     reject_extra_pos("list", &args, 0);
-    if let Some(note) = bare_list_note(&args, &opt_queue(&args)) {
+    let queue = opt_queue_scoped(&args);
+    if let Some(note) = bare_list_note(&args, queue.as_deref()) {
         eprintln!("repo-queue: {note}");
     }
     let limit = match list_limit_or_default(args.get_i64("limit")) {
@@ -2141,7 +2154,7 @@ fn cmd_list(rest: &[String]) -> i32 {
         let resp = call(
             "/list",
             &json!({
-                "queue": opt_queue(&args),
+                "queue": queue,
                 "status": args.get("status"),
                 "limit": page_limit,
                 "offset": offset,
@@ -2490,7 +2503,7 @@ fn route_segments_for_session(session_id: &str, start_ms: i64, end_ms: i64) -> O
 /// task's queue to fetch its row; every miss returns None and
 /// the completion proceeds without the summary.
 fn dominant_model_for_task(args: &Args, task_id: i64) -> Option<Value> {
-    let queue = opt_queue_claim(args)?;
+    let queue = opt_queue_scoped(args)?;
     let resp = call(
         "/list",
         &json!({"queue": queue, "rich": true, "task": task_id, "limit": 1}),
@@ -3055,7 +3068,7 @@ fn cmd_claim(rest: &[String]) -> i32 {
     // in priority order. An explicit --queue still scopes the
     // claim to one stream exactly as before, so existing shift
     // bodies keep working unchanged.
-    if let Some(q) = opt_queue_claim(&args) {
+    if let Some(q) = opt_queue_scoped(&args) {
         body["queue"] = json!(q);
     }
     // --filter '<expr>': the claimer-side boolean filter
@@ -8299,7 +8312,7 @@ esac
     #[test]
     fn bare_list_note_fires_only_on_unfiltered_list() {
         let bare = parse_args_inner(&[], &["queue", "status", "limit"], &[]).unwrap();
-        let note = bare_list_note(&bare, "repo-queue-code-pilot");
+        let note = bare_list_note(&bare, Some("repo-queue-code-pilot"));
         assert!(note.is_some(), "bare list must carry the scope note");
         let note = note.unwrap();
         assert!(
@@ -8319,10 +8332,35 @@ esac
             )
             .unwrap();
             assert!(
-                bare_list_note(&filtered, "repo-queue-code-pilot").is_none(),
+                bare_list_note(&filtered, Some("repo-queue-code-pilot")).is_none(),
                 "--{flag} must silence the note"
             );
         }
+    }
+
+    /// #7358: with no --queue and no REPO_QUEUE_DEFAULT_QUEUE, claim
+    /// and list are unscoped; they never fall back to the shadow queue.
+    #[test]
+    fn claim_and_list_scope_never_defaults_to_the_shadow_queue() {
+        assert_eq!(queue_scope_from(None, None), None);
+        assert_eq!(queue_scope_from(None, Some("  ")), None);
+        assert_eq!(
+            queue_scope_from(None, Some(" repo-health-code-pilot ")).as_deref(),
+            Some("repo-health-code-pilot")
+        );
+        assert_eq!(
+            queue_scope_from(Some("q-flag".to_string()), Some("q-env")).as_deref(),
+            Some("q-flag")
+        );
+        // The shadow queue is reachable only by naming it.
+        assert_eq!(
+            queue_scope_from(Some(DEFAULT_QUEUE.to_string()), None).as_deref(),
+            Some(DEFAULT_QUEUE)
+        );
+        let bare = parse_args_inner(&[], &["queue", "status", "limit"], &[]).unwrap();
+        let note = bare_list_note(&bare, None).unwrap();
+        assert!(note.contains("every queue"), "{note:?}");
+        assert!(!note.contains(DEFAULT_QUEUE), "{note:?}");
     }
 
     #[test]
