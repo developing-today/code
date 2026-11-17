@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -342,5 +344,59 @@ func TestHelpImportSubcommandOptionalPositional(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("params: %+v", spec.Tools[0].Params)
+	}
+}
+
+const fingerprintToolScript = `#!/bin/sh
+case "$1 $2" in
+  "--help ")
+    echo 'Usage:'
+    echo '  toolbox [command]'
+    echo
+    echo 'Available Commands:'
+    echo '  add   Add an item'
+    ;;
+  "add --help")
+    echo 'Usage:'
+    echo '  toolbox add [flags]'
+    echo
+    echo 'Flags:'
+    echo '  -f, --force   overwrite existing'
+    ;;
+  "--version ") echo 'toolbox version 1.0.0' ;;
+esac
+exit 0
+`
+
+func TestGeneratedImportRecordsSourceFingerprint(t *testing.T) {
+	// Oracle (#9172): the fingerprint is the SHA-256 of the exact
+	// source text the declaration was generated from -- for the help
+	// rung, the captured --help output: the top-level text followed
+	// by each subcommand's, in order. The expected text below is the
+	// fake binary's own output, written out independently of the
+	// capture path under test.
+	dir := t.TempDir()
+	bin := fakeTool(t, dir, "toolbox", fingerprintToolScript)
+	spec, _, err := buildGeneratedImport(bin, importOptions{source: "help"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Provenance == nil || spec.Provenance.Source != "help" {
+		t.Fatalf("provenance: %+v", spec.Provenance)
+	}
+	topHelp := "Usage:\n  toolbox [command]\n\nAvailable Commands:\n  add   Add an item\n"
+	subHelp := "Usage:\n  toolbox add [flags]\n\nFlags:\n  -f, --force   overwrite existing\n"
+	sum := sha256.Sum256([]byte(topHelp + subHelp))
+	if want := hex.EncodeToString(sum[:]); spec.Provenance.SourceSHA256 != want {
+		t.Errorf("source fingerprint: got %q, want sha256(help text) %q", spec.Provenance.SourceSHA256, want)
+	}
+	// Re-importing the unchanged source recognises the same
+	// generation: the fingerprint is stable across runs.
+	again, _, err := buildGeneratedImport(bin, importOptions{source: "help"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Provenance.SourceSHA256 != spec.Provenance.SourceSHA256 {
+		t.Errorf("fingerprint not stable across re-import: %q then %q", spec.Provenance.SourceSHA256, again.Provenance.SourceSHA256)
 	}
 }
