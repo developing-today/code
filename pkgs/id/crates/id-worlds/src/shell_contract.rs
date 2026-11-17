@@ -113,6 +113,9 @@ pub enum FieldType {
     /// A non-negative integer.
     #[serde(rename = "u64")]
     U64,
+    /// A signed integer (e.g. a scroll delta, which may be negative).
+    #[serde(rename = "i64")]
+    I64,
     /// An array of strings.
     #[serde(rename = "string[]")]
     StringArray,
@@ -439,6 +442,13 @@ fn check_fields(
 }
 
 fn check_value(field: &Field, value: &Value) -> Result<(), String> {
+    if field.kind == FieldType::I64 {
+        return if value.as_i64().is_some() {
+            Ok(())
+        } else {
+            Err("must be an integer".to_owned())
+        };
+    }
     let integer_max = match field.kind {
         FieldType::U16 => Some(u64::from(u16::MAX)),
         FieldType::U32 => Some(u64::from(u32::MAX)),
@@ -488,7 +498,7 @@ fn check_value(field: &Field, value: &Value) -> Result<(), String> {
         FieldType::Array => Err("must be an array".to_owned()),
         FieldType::Object if value.is_object() => Ok(()),
         FieldType::Object => Err("must be an object".to_owned()),
-        FieldType::U16 | FieldType::U32 | FieldType::U64 => Ok(()),
+        FieldType::U16 | FieldType::U32 | FieldType::U64 | FieldType::I64 => Ok(()),
     }
 }
 
@@ -699,6 +709,7 @@ pub(crate) fn sample_client_frame(contract: &ShellContract, kind: &str, capabili
             FieldType::Hex => Value::from("00"),
             FieldType::Bool => Value::from(false),
             FieldType::U16 | FieldType::U32 | FieldType::U64 => Value::from(field.min.unwrap_or(1)),
+            FieldType::I64 => Value::from(1_i64),
             FieldType::StringArray | FieldType::Array => Value::Array(Vec::new()),
             FieldType::Object => Value::Object(serde_json::Map::new()),
         };
