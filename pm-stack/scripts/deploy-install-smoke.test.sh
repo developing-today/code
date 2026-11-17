@@ -327,7 +327,7 @@ cp "$PM_STACK_DIR/systemd/pm-aggregator.service" "$AGG_HOME/git/code/pm-stack/sy
 printf '%s\n' 'fake encrypted aggregator fixture' >"$AGG_HOME/secrets/pm-stack.sops.yaml"
 AGG_SOPS_LOG="$TMP/aggregator-sops.log"
 AGG_OUTPUT="$TMP/aggregator-install.out"
-if env HOME="$AGG_HOME" PATH="$STUB_BIN:$SYSTEM_PATH" \
+if env HOME="$AGG_HOME" XDG_STATE_HOME="$AGG_HOME/.local/state" PATH="$STUB_BIN:$SYSTEM_PATH" \
   PM_TEST_ROOT="$TMP" PM_TEST_SECRETS="$AGG_HOME/secrets/pm-stack.sops.yaml" \
   PM_TEST_COMMAND_LOG="$COMMAND_LOG" PM_TEST_SOPS_LOG="$AGG_SOPS_LOG" \
   PM_TEST_BUILD_VERSION=smoke-build-v1 TAILNET_IP=100.64.20.21 \
