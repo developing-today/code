@@ -1666,6 +1666,40 @@ func TestErrorsCarryStructuredFramesAndAString(t *testing.T) {
 	}
 }
 
+// Bun fidelity for the emitted shim (#8350). Two gaps closed in emit.go:
+// captureConsole picked the Deno inspect branch under Bun (Bun exposes a
+// Deno compatibility global), rendering values in Deno's format instead of
+// Bun's own; and captureFrames trusted Bun's V8 CallSite shim, which can
+// return a single unnamed frame for a stack Bun's default stack string
+// names correctly. The caller below is deliberately not a one-liner:
+// JavaScriptCore inlines trivial wrappers, and a frame that was inlined
+// away exists in no stack representation on any runtime -- that is the
+// documented Bun exception, and it is why TestCaptureFramesIsAvailableTo
+// Scripts keeps its one-liner assertion on the default runtime only.
+func TestBunCaptureFramesAndConsoleMatchTheRuntime(t *testing.T) {
+	testsupport.RequireBinary(t, "bun")
+	e := newEnv(t, oneServer)
+	out := e.run("exec", "--runtime", "bun", "--format", "bare",
+		`function worker(n) { let acc = 0; for (let i = 0; i < n; i++) acc += i * 3;
+		   const f = captureFrames(0, 4); return { acc, top: f[0]?.function }; }
+		 console.log(JSON.stringify(worker(5)));`)
+	if !strings.Contains(out, `"top":"worker"`) {
+		t.Errorf("captureFrames should name its caller under Bun:\n%s", out)
+	}
+	// Bun's console renders an object multi-line with a trailing comma and
+	// collapses values deeper than depth 2 to [Object ...]; the captured
+	// record must read the same way.
+	out = e.run("exec", "--runtime", "bun", "--format", "compact",
+		`console.info("shaped", { a: 1, b: [1, 2] });
+		 console.info("obj", { nested: { deep: [1, { x: 2 }] } });`)
+	if !strings.Contains(out, "b: [ 1, 2 ],") {
+		t.Errorf("console records under Bun should use Bun's own formatting:\n%s", out)
+	}
+	if !strings.Contains(out, "[Object ...]") {
+		t.Errorf("console records under Bun should collapse past depth 2 like Bun's console:\n%s", out)
+	}
+}
+
 func TestConsoleTraceCapturesFrames(t *testing.T) {
 	e := newEnv(t, oneServer)
 	out := e.run("exec", "--format", "json", "--log-level", "debug",

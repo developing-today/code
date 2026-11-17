@@ -681,6 +681,19 @@ let
         cf = pkgs.callPackage ../pkgs/cf { };
       };
       developingTodayBackupDeploy = pkgs.callPackage ../infra/github-backup/deploy.nix { };
+      # Issue #5767, phase 2: Worker flake packages + their deploy apps.
+      coldStoreRehydrator = pkgs.callPackage ../pkgs/cold-store-reaper/worker/package.nix { };
+      coldStoreRehydratorDeploy = pkgs.callPackage ../pkgs/cold-store-reaper/worker/deploy.nix {
+        coldStoreRehydratorBundle = coldStoreRehydrator;
+      };
+      labOpsHub = pkgs.callPackage ../pkgs/lab-ops-hub/package.nix { };
+      labOpsHubDeploy = pkgs.callPackage ../pkgs/lab-ops-hub/deploy.nix {
+        inherit labOpsHub;
+      };
+      cfContainerHello = pkgs.callPackage ../pkgs/cf-container-hello/package.nix { };
+      cfContainerHelloDeploy = pkgs.callPackage ../pkgs/cf-container-hello/deploy.nix {
+        inherit cfContainerHello;
+      };
     in
     {
       packages = {
@@ -690,6 +703,12 @@ let
           idMailDeploy
           pkarrDeploy
           developingTodayBackupDeploy
+          coldStoreRehydrator
+          coldStoreRehydratorDeploy
+          labOpsHub
+          labOpsHubDeploy
+          cfContainerHello
+          cfContainerHelloDeploy
           ;
         mcpx-docs = mcpxDocs;
         mcpx-real-servers = mcpxRealServers;
@@ -757,6 +776,9 @@ let
         id-mail-deploy = mkApp idMailDeploy "Deploy the mail Worker from this checkout (needs Bitwarden and sops access)";
         pkarr-deploy = mkApp pkarrDeploy "Deploy the pkarr Worker via the cf versions flow (needs Bitwarden and sops access)";
         developing-today-backup-deploy = mkApp developingTodayBackupDeploy "Deploy the developing-today-backup Worker (github-backup webhook receiver) via the wrangler versions flow (needs Bitwarden and sops access)";
+        cold-store-rehydrator-deploy = mkApp coldStoreRehydratorDeploy "Deploy the cold-store-rehydrator Worker from its flake bundle via the wrangler versions flow (needs Bitwarden and sops access)";
+        lab-ops-hub-deploy = mkApp labOpsHubDeploy "Deploy the lab-ops-hub Worker and push its crawler container image as one command (needs Bitwarden and sops access)";
+        cf-container-hello-deploy = mkApp cfContainerHelloDeploy "Deploy the cf-container-hello Worker from its flake package (needs Bitwarden and sops access)";
         mcpx = {
           type = "app";
           program = "${mcpx}/bin/mcpx";
@@ -1462,6 +1484,9 @@ let
               ${deployPkgs.deploy}/bin/deploy list > list.txt
               cat list.txt
               grep -q "queue-broker" list.txt
+              grep -q "cold-store-rehydrator" list.txt
+              grep -q "lab-ops-hub" list.txt
+              grep -q "cf-container-hello" list.txt
               grep -q "secrets-broker" list.txt
               grep -q "session-proxy" list.txt
               grep -q "mcpx" list.txt

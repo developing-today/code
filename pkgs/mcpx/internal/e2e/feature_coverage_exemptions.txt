@@ -28,9 +28,6 @@ cli	reload	no integration-test exercise yet; burn-down #8461 (cli daemon group)
 cli	stdio-proxy	no integration-test exercise yet; burn-down #8461 (cli daemon group)
 cli	supervise	no integration-test exercise yet; burn-down #8461 (cli daemon group)
 cli	upgrade	no integration-test exercise yet; burn-down #8461 (cli daemon group)
-cli	batch	no integration-test exercise yet; burn-down #8462 (cli discovery group)
-cli	list	no integration-test exercise yet; burn-down #8462 (cli discovery group)
-cli	namespaces	no integration-test exercise yet; burn-down #8462 (cli discovery group)
 cli	dashboard	no integration-test exercise yet; burn-down #8463 (cli inspection group)
 cli	explore	no integration-test exercise yet; burn-down #8463 (cli inspection group)
 cli	hook	no integration-test exercise yet; burn-down #8463 (cli inspection group)
@@ -40,11 +37,6 @@ cli	artifacts	no integration-test exercise yet; burn-down #8464 (cli operations 
 cli	complete	no integration-test exercise yet; burn-down #8464 (cli operations group)
 cli	events	no integration-test exercise yet; burn-down #8464 (cli operations group)
 cli	tool	no integration-test exercise yet; burn-down #8464 (cli operations group)
-cli	embeddings	no integration-test exercise yet; burn-down #8465 (cli running group)
-cli	feedback	no integration-test exercise yet; burn-down #8465 (cli running group)
-cli	proxy	no integration-test exercise yet; burn-down #8465 (cli running group)
-cli	scripts	no integration-test exercise yet; burn-down #8465 (cli running group)
-cli	skills	no integration-test exercise yet; burn-down #8465 (cli running group)
 setting	daemon.address	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.autostart	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.endpoint	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
@@ -103,7 +95,6 @@ setting	script.runtime	no integration-test exercise yet; burn-down #8474 (settin
 setting	script.runtimeOrder	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
 setting	script.runtimes	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
 setting	script.suffix	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
-setting	proto.askPoll	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
 setting	proto.askRounds	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
 setting	proto.askTTL	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
 setting	proto.askTimeout	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
