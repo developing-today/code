@@ -29,10 +29,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use atlas_core::types::BranchPools;
 use atlas_core::{
-    BranchPoolExecutor, BranchQuery, Error as CoreError, Filters, JsonlFeedbackSink, QueryEmbedder,
-    SearchBackend, SearchMode as CoreSearchMode, SearchOptions, Sensitivity as CoreSensitivity,
-    VectorBackend as CoreVectorBackend, feedback_for, load_feedback_dir, record_feedback,
-    run_get_chunk, run_search_with_executor,
+    BranchPoolExecutor, BranchQuery, Error as CoreError, Filters, JsonlFeedbackSink,
+    JsonlTraceSink, QueryEmbedder, SearchBackend, SearchMode as CoreSearchMode, SearchOptions,
+    Sensitivity as CoreSensitivity, TraceContext, VectorBackend as CoreVectorBackend, feedback_for,
+    load_feedback_dir, record_feedback, run_get_chunk, run_search_with_executor_traced,
 };
 use atlas_proto::{
     BranchState, BranchStates, EmbedRequest, EmbedResponse, ErrorResponse, HealthResponse,
@@ -669,12 +669,19 @@ where
             backend: self.backend.as_ref(),
             branch_states: branch_states.clone(),
         };
-        run_search_with_executor(
+        // Trace capture (issue #9973): fail-closed — a trace
+        // write failure fails the search. The service surface
+        // does not retain raw query text (hash only).
+        let trace_sink = JsonlTraceSink::new(JsonlTraceSink::default_dir());
+        let trace_ctx = TraceContext::new("service-api", "agent", "atlas-service");
+        run_search_with_executor_traced(
             self.backend.as_ref(),
             self.embedder.as_ref(),
             filters,
             &opts,
             &executor,
+            &trace_sink,
+            trace_ctx,
         )
         .map_err(|e| ServerError::from_core(&e))
     }
