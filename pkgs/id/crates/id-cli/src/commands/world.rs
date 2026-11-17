@@ -1991,16 +1991,27 @@ where
     W: tokio::io::AsyncWrite + Unpin,
 {
     write_frame_to(&mut send, first.as_bytes()).await?;
+    // Set once the reader has printed at least one server frame. The
+    // stdin-EOF arm below reads it: EOF before the first frame must
+    // not end the pump (see that arm); EOF after frames is the
+    // scripted client's normal leave.
+    let frames_printed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let frames_flag = frames_printed.clone();
     let mut reader = tokio::spawn(async move {
         while let Some(body) = read_frame_from(&mut recv).await? {
             println!("{}", String::from_utf8_lossy(&body));
+            frames_flag.store(true, std::sync::atomic::Ordering::SeqCst);
         }
         anyhow::Ok(())
     });
     let mut lines = BufReader::new(PreloadedStdin::new(replay)).lines();
+    // True once stdin hit EOF before the first server frame: the
+    // stdin arm is then disabled (it would return EOF forever) and
+    // the reader arm ends the pump when the stream closes.
+    let mut eof_before_first_frame = false;
     let result = loop {
         tokio::select! {
-            line = lines.next_line() => match line? {
+            line = lines.next_line(), if !eof_before_first_frame => match line? {
                 Some(line) => {
                     let line = line.trim();
                     if line.is_empty() { continue; }
@@ -2029,7 +2040,24 @@ where
                 // closing stdin (interactive users have Ctrl-C). Keeping
                 // the pump alive past EOF hung every scripted join until
                 // the server happened to close the connection first.
-                None => break Ok(()),
+                // One exception to that rule: EOF before the first server
+                // frame. The join request
+                // has been sent but its answer, a snapshot or a refusal
+                // frame such as "join denied", is still in flight, and
+                // breaking here aborts the reader before the answer can
+                // print, so a scripted join with stdin already closed
+                // (the one-shot probe shape) could never observe a
+                // refusal. A refusal closes the stream right after the
+                // error frame, so the pump waits: the stdin arm is
+                // disabled and the reader arm ends the pump when the
+                // stream closes, after the refusal has printed.
+                None => {
+                    if frames_printed.load(std::sync::atomic::Ordering::SeqCst) {
+                        break Ok(());
+                    }
+                    eof_before_first_frame = true;
+                    continue;
+                }
             },
             ended = &mut reader => {
                 break ended.context("reader task")?;
