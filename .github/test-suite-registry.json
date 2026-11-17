@@ -112,6 +112,20 @@
       "status": "mapped"
     },
     {
+      "id": "id.rust.planted-bug-check",
+      "paths": ["pkgs/id/tests/planted-bug-check.sh", "pkgs/id/tests/planted/*.patch"],
+      "invocation": "bash pkgs/id/tests/planted-bug-check.sh (the planted-bug-check flake check stages a throwaway git repo around pkgs/id and runs the script there; also run by pkgs/id/check-all in non-quick mode)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check / Run full nix flake check (nightly schedule + workflow_dispatch)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [8037, 1395],
+      "notes": "Mutation proof for the membership/voiding suites (#1395): the unmutated baseline must pass, then each planted mutation (voiding-authority, frontier-mapping, delegation-voiding, tag-fold-clear) must make its judged suites fail. Nightly-only: excluded from the fast PR list in check-id-pr-checks.sh because it runs the judged suites five times over."
+    },
+    {
       "id": "id.web.unit",
       "paths": ["pkgs/id/web/src/*.test.ts"],
       "invocation": "cd pkgs/id/web && bun run test (vitest run)",
