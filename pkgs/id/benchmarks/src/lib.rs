@@ -7,6 +7,8 @@
 //! synthetic workload fixture pins row-by-row. It is a specification
 //! model for benchmark adapters, not a production store.
 
+pub mod adapters;
+
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
