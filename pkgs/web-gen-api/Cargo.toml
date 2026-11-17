@@ -3,6 +3,10 @@ name = "leptos_start"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+members = ["web-gen-api-app"]
+resolver = "2"
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
@@ -17,12 +21,13 @@ leptos_meta = { version = "0.4", features = ["nightly"] }
 leptos_actix = { version = "0.4", optional = true }
 leptos_router = { version = "0.4", features = ["nightly"] }
 wasm-bindgen = "=0.2.87"
+web-gen-api-app = { path = "web-gen-api-app" }
 # libsql = "0.1.5"
 # libsql-client = "0.31.8"
 
 [features]
-csr = ["leptos/csr", "leptos_meta/csr", "leptos_router/csr"]
-hydrate = ["leptos/hydrate", "leptos_meta/hydrate", "leptos_router/hydrate"]
+csr = ["leptos/csr", "leptos_meta/csr", "leptos_router/csr", "web-gen-api-app/csr"]
+hydrate = ["leptos/hydrate", "leptos_meta/hydrate", "leptos_router/hydrate", "web-gen-api-app/hydrate"]
 ssr = [
   "dep:actix-files",
   "dep:actix-web",
@@ -30,6 +35,7 @@ ssr = [
   "leptos/ssr",
   "leptos_meta/ssr",
   "leptos_router/ssr",
+  "web-gen-api-app/ssr",
 ]
 
 [package.metadata.leptos]
