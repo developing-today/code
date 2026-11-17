@@ -113,6 +113,12 @@ pub enum ServerUpdate {
     /// The host answered a `screen_subscribe` with the now-active
     /// subscription (`screen_subscription`, contract revision 11).
     ScreenSubscription,
+    /// The host answered a `form_result` with `form_result_status`
+    /// (#8938): the reply is kept for the presenter to fold through
+    /// [`crate::form::FormPresenter::settle`], which rotates the
+    /// presentation token on a rejection exactly as the SSH presenter
+    /// does.
+    FormResultStatus,
 }
 
 /// Render one `semantic_diff` frame as plain text: one line per change,
@@ -162,6 +168,7 @@ pub struct SessionState {
     provider_requests: Vec<Value>,
     semantic_diffs: Vec<Value>,
     screen_subscription: Option<Value>,
+    form_result_status: Option<Value>,
 }
 
 /// Maximum durable events retained since the most recent snapshot.
@@ -237,6 +244,13 @@ impl SessionState {
                 self.screen_subscription = Some(frame);
                 Ok(ServerUpdate::ScreenSubscription)
             }
+            "form_result_status" => {
+                // #8938: the answer to one `form_result`. Retained for the
+                // presenter's `settle`; a form the shell is not rendering
+                // is simply ignored there, so this is never a failure.
+                self.form_result_status = Some(frame);
+                Ok(ServerUpdate::FormResultStatus)
+            }
             "program_changed" => {
                 // A live program install is a normal point in a session
                 // stream (snapshot, this notification, replacement view),
@@ -282,6 +296,20 @@ impl SessionState {
     #[must_use]
     pub fn program_module_hash(&self) -> Option<&str> {
         self.program_module_hash.as_deref()
+    }
+
+    /// The most recent `form_result_status` reply, if any (#8938).
+    ///
+    /// A reply is presentation input, not durable state: the presenter
+    /// consumes it once with [`SessionState::take_form_result_status`].
+    #[must_use]
+    pub fn form_result_status(&self) -> Option<&Value> {
+        self.form_result_status.as_ref()
+    }
+
+    /// Take the pending `form_result_status` reply, if one arrived.
+    pub fn take_form_result_status(&mut self) -> Option<Value> {
+        self.form_result_status.take()
     }
 
     /// Drain the queued F13.7 `provider_request` frames, oldest

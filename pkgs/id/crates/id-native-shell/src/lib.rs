@@ -23,6 +23,7 @@
 //! parity criterion against a live host.
 
 pub mod events;
+pub mod form;
 pub mod providers;
 pub mod render;
 mod session;
