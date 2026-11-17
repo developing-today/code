@@ -180,11 +180,7 @@ impl ProviderAdapter {
     /// Register the executor that serves one provider name. A
     /// provider with an executor but no grant for a world is still
     /// never offered or executed for that world.
-    pub fn register_executor(
-        &mut self,
-        provider: &str,
-        executor: Box<dyn ClientProviderExecutor>,
-    ) {
+    pub fn register_executor(&mut self, provider: &str, executor: Box<dyn ClientProviderExecutor>) {
         self.executors.insert(provider.to_owned(), executor);
     }
 
@@ -487,8 +483,7 @@ mod tests {
         assert_eq!(first["ok"], true);
         let second = adapter.handle_request("world-a", &request("02", "client.file.read"), 2_000);
         assert_eq!(second["error"], REFUSAL_RATE_LIMITED);
-        let third =
-            adapter.handle_request("world-a", &request("03", "client.file.read"), 62_000);
+        let third = adapter.handle_request("world-a", &request("03", "client.file.read"), 62_000);
         assert_eq!(third["ok"], true);
     }
 

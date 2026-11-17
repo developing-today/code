@@ -32,6 +32,7 @@ pub use crate::groups::worlds::Isolation;
 pub(crate) use crate::time::unix_ms;
 mod actor;
 mod admission_lease;
+pub(crate) mod audit;
 mod clock;
 mod coordinator;
 mod core;
@@ -39,7 +40,6 @@ mod handle;
 mod handoff_operations;
 pub mod hotness;
 mod journal;
-pub(crate) mod audit;
 mod metrics;
 mod provider_broker;
 mod replica;
@@ -57,11 +57,11 @@ pub(crate) use actor::{
     AUDIT_TRACE_TARGET, AuditRecord, WorldActor, WorldCommand, emit_audit_record,
     next_audit_correlation_id,
 };
-pub(crate) use provider_broker::{BeginRequest, ProviderBroker};
 pub use admission_lease::{
     ADMISSION_LEASE_DOMAIN, ADMISSION_LEASE_VERSION, AdmissionLease, AdmissionLeaseError,
     MAX_ADMISSION_LEASE_DURATION_MS, ReplicaAdmissionGate, SignedAdmissionLease,
 };
+pub use audit::{GrantsState, WorldAuditLog, export_otlp_json, replay_grants};
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use coordinator::{
     ActiveHandoff, Coordinator, CoordinatorError, EntityInTransit, EntityOwner, ExportReceipt,
@@ -76,6 +76,9 @@ pub use handoff_operations::{
     RouteDecision, StaleRoute,
 };
 pub use hotness::{FiredSignal, HotnessBand, HotnessReport, HotnessSignal};
+/// The F12.14 portal policy types (code#1068), re-exported so the
+/// handle/hub portal surface names the same types the kernel checks.
+pub use id_caps::portal::{PortalGrantState, PortalGrants, PortalRefusal};
 pub(crate) use journal::JournalAdminHistory;
 pub use journal::{
     CoordinatorJournalEntry, JOURNAL_VERSION, JOURNAL_VERSION_CHECKPOINT_PARTS,
@@ -85,13 +88,10 @@ pub use journal::{
     JournalEntry, JournalSignedMove, JournalSnapshot, JournalSnapshotSource, MAX_JOURNAL_VERSION,
     TrustBasis, TrustDecision, WorldJournal, journal_version_required_by,
 };
-pub use audit::{GrantsState, WorldAuditLog, export_otlp_json, replay_grants};
-/// The F12.14 portal policy types (code#1068), re-exported so the
-/// handle/hub portal surface names the same types the kernel checks.
-pub use id_caps::portal::{PortalGrantState, PortalGrants, PortalRefusal};
 pub use metrics::{
     HistogramSnapshot, MetricsSnapshot, RegionWrites, WorldMetrics, WriteLocalitySnapshot,
 };
+pub(crate) use provider_broker::{BeginRequest, ProviderBroker};
 pub use replica::{
     ReplicaCursor, ReplicaRestore, parse_replica_journal, restore_replica_entries,
     restore_replica_entries_with_runtime, restore_replica_journal,
@@ -1361,9 +1361,7 @@ pub(crate) type PortalDeliveryFuture<'a, T> =
 /// through the same sink.
 #[derive(Clone, Default)]
 pub(crate) struct PortalDeliverySlot {
-    inner: std::sync::Arc<
-        std::sync::Mutex<Option<std::sync::Arc<dyn PortalDelivery>>>,
-    >,
+    inner: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<dyn PortalDelivery>>>>,
 }
 
 impl std::fmt::Debug for PortalDeliverySlot {
