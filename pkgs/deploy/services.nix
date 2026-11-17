@@ -18,6 +18,9 @@
   idMailDeploy,
   pkarrDeploy,
   developingTodayBackupDeploy,
+  coldStoreRehydratorDeploy,
+  labOpsHubDeploy,
+  cfContainerHelloDeploy,
 }:
 {
   queue-broker = {
@@ -158,6 +161,54 @@
   pkarr = {
     package = pkarrDeploy;
     entryPoint = "bin/pkarr-deploy";
+    args = [ ];
+    environment = { };
+    secrets = [ ]; # resolved by the deploy app itself at deploy time
+    user = "user";
+    ports = [ ];
+    restart = "no";
+    healthCheck = null;
+    targets = [ "cloudflare" ];
+    class = "cloudflare";
+  };
+
+  # Issue #5767, phase 2: the remaining in-repo Workers from the
+  # issue's target list, registered behind the deploy CLI. Each
+  # deploy app runs its Worker's flake package (bundle / Worker tree
+  # with lockfile-pinned deps — no deploy-time npm install) and
+  # gathers its Cloudflare credentials impurely at deploy time, so
+  # the definitions name no secrets of their own (the phase-1 shape).
+  cold-store-rehydrator = {
+    package = coldStoreRehydratorDeploy;
+    entryPoint = "bin/cold-store-rehydrator-deploy";
+    args = [ ];
+    environment = { };
+    secrets = [ ]; # resolved by the deploy app itself at deploy time
+    user = "user";
+    ports = [ ];
+    restart = "no";
+    healthCheck = null;
+    targets = [ "cloudflare" ];
+    class = "cloudflare";
+  };
+
+  lab-ops-hub = {
+    package = labOpsHubDeploy;
+    entryPoint = "bin/lab-ops-hub-deploy";
+    args = [ ];
+    environment = { };
+    secrets = [ ]; # resolved by the deploy app itself at deploy time
+    user = "user";
+    ports = [ ];
+    restart = "no";
+    healthCheck = null;
+    targets = [ "cloudflare" ];
+    class = "cloudflare";
+  };
+
+  cf-container-hello = {
+    package = cfContainerHelloDeploy;
+    entryPoint = "bin/cf-container-hello-deploy";
     args = [ ];
     environment = { };
     secrets = [ ]; # resolved by the deploy app itself at deploy time
