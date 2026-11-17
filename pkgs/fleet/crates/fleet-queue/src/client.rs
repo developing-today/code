@@ -8226,9 +8226,13 @@ esac
             list(&src[start..start + src[start..].find(']').unwrap()])
         };
         let mut checked = 0;
-        let marker = ["parse_verb", "_args(\""].concat();
+        // Split so this test's own source doesn't match the marker.
+        let marker = ["parse_verb", "_args("].concat();
         for (at, _) in src.match_indices(marker.as_str()) {
-            let call = &src[at + marker.len()..];
+            // rustfmt may put the verb on its own line.
+            let Some(call) = src[at + marker.len()..].trim_start().strip_prefix('"') else {
+                continue;
+            };
             let verb = &call[..call.find('"').unwrap()];
             if verb.is_empty() || verb.contains('{') {
                 continue;
