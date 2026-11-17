@@ -784,6 +784,64 @@ class TestMainFireLog(unittest.TestCase):
         )
 
 
+class TestSingleInstanceLock(unittest.TestCase):
+    """#8039: a second fire while one holds the lock exits early and
+    logs already_running, touching nothing else."""
+
+    def test_second_fire_exits_with_already_running(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            fires = state_dir / "fires.jsonl"
+            with (
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", fires),
+                patch.object(claimant, "read_mode", return_value="live"),
+                patch.object(claimant, "_fire") as fire,
+            ):
+                held = claimant.acquire_fire_lock()
+                self.assertIsNotNone(held)
+                try:
+                    self.assertEqual(claimant.main(), 0)
+                finally:
+                    held.close()
+                fire.assert_not_called()
+                entries = [json.loads(l) for l in fires.read_text().splitlines() if l]
+                self.assertEqual(len(entries), 1)
+                self.assertEqual(entries[0]["skips"], [{"reason": "already_running"}])
+                self.assertIsNone(entries[0]["candidates_seen"])
+                self.assertIsNone(entries[0]["cap_room"])
+
+    def test_lock_is_released_after_a_fire(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            with (
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "FIRES_FILE", state_dir / "fires.jsonl"),
+                patch.object(claimant, "read_mode", return_value="live"),
+                patch.object(claimant, "_fire", return_value=0) as fire,
+            ):
+                self.assertEqual(claimant.main(), 0)
+                self.assertEqual(claimant.main(), 0)
+                self.assertEqual(fire.call_count, 2)
+                again = claimant.acquire_fire_lock()
+                self.assertIsNotNone(again, "the lock is free once fires finish")
+                again.close()
+
+    def test_lock_is_released_when_a_fire_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp)
+            with (
+                patch.object(claimant, "STATE_DIR", state_dir),
+                patch.object(claimant, "read_mode", return_value="live"),
+                patch.object(claimant, "_fire", side_effect=RuntimeError("boom")),
+            ):
+                with self.assertRaises(RuntimeError):
+                    claimant.main()
+                again = claimant.acquire_fire_lock()
+                self.assertIsNotNone(again)
+                again.close()
+
+
 class TestCapUnknownFireLog(unittest.TestCase):
     def test_cap_unknown_logs_cap_room_null_not_sentinel(self):
         # #7770 Phase 4 audit: cap_step's -1 is an internal unknown

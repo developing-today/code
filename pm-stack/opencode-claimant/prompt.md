@@ -20,9 +20,10 @@ The deterministic implementation of these steps is
 (`python3 pm-stack/opencode-claimant/claimant.py`, run from the
 primary clone) and reports from its fire-log line; it does not
 improvise the steps by hand. Inside a fire, claimant.py launches
-distinct candidates in parallel under a bounded pool and a
-single-instance lock; exactly-once stays anchored on the atomic DB
-bind. (History: the cap was 12 until 2026-11-05, when the
+distinct candidates one at a time, under a single-instance lock
+(an exclusive flock on ~/.local/state/opencode-claimant/claimant.lock;
+a second fire exits with fire-log reason `already_running`);
+exactly-once stays anchored on the atomic DB bind. (History: the cap was 12 until 2026-11-05, when the
 binding-rate fix raised it first to 20, then to 36 the same day (at 20, scheduled lane-runner waves of ~39 roots at load ~4/16 cores still left the claimant cap_room 0; 36 sits above the observed wave size while keeping total roots within ~2x the census-proven level);
 claimant.py itself was committed the same day - before that it
 existed only as an untracked file in the laptop primary checkout,

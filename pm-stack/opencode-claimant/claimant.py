@@ -23,6 +23,7 @@ a usage error with exit 2.
 
 import argparse
 import base64
+import fcntl
 import json
 import os
 import subprocess
@@ -1403,10 +1404,43 @@ Finish with a queue terminal verb (complete, park, block, or fail) carrying --wo
     return launched, skips
 
 
+def acquire_fire_lock():
+    """Take the single-instance fire lock, or return None if held (#8039).
+
+    Two overlapping fires (the scheduled task plus an ad-hoc run) each
+    computed cap_room from the same active-root count and could spend
+    the same free slots or race one candidate. An exclusive,
+    non-blocking flock on STATE_DIR/claimant.lock makes a second fire
+    exit at once. The lock is released when the returned file is closed,
+    or by the kernel when the process exits, so a crashed fire never
+    leaves a stale lock.
+    """
+    ensure_state_dir()
+    handle = (STATE_DIR / "claimant.lock").open("a")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    return handle
+
+
 def main():
     """Main entry point for the claimant/executor."""
     mode = read_mode()
+    lock = acquire_fire_lock()
+    if lock is None:
+        print("Another claimant fire is running. Exiting.")
+        log_fire(mode, None, [], None, [{"reason": "already_running"}])
+        return 0
+    try:
+        return _fire(mode)
+    finally:
+        lock.close()
 
+
+def _fire(mode: str):
+    """One claimant fire, run under the single-instance lock."""
     print(f"OpenCode claimant starting in {mode} mode")
 
     # Step 1: Supervision (always runs in live mode). Tasks it
