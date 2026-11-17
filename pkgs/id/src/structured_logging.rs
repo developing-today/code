@@ -17,7 +17,13 @@
 //!   caller warns about the fallback (as `ID_LOG_TZ` does).
 //! - `ID_LOG_FILE` — path of a second destination. Events are appended
 //!   to the file in the same format as the console destination, without
-//!   ANSI escapes.
+//!   ANSI escapes. The default is no file destination (stderr only),
+//!   and this setting does not impose a size or retention limit. The
+//!   writer follows rename-and-create external rotation: after the path
+//!   is replaced, its next write reopens the path, shared safely by all
+//!   writer clones. For example, a logrotate rule can use `daily`,
+//!   `rotate 7`, and `create` for this path; do not use `copytruncate`.
+//!   Internal rotation is not performed.
 //! - `ID_LOG_FILE_LEVEL` — an independent filter for the file
 //!   destination (anything `tracing_subscriber::EnvFilter` accepts,
 //!   e.g. `debug` or `id=trace,iroh=info`). Without it the file uses the
@@ -296,7 +302,13 @@ impl<'writer> FormatFields<'writer> for PlainFields {
 /// whole events without interleaving.
 #[derive(Clone, Debug)]
 pub struct SharedFileWriter {
-    inner: Arc<Mutex<std::fs::File>>,
+    inner: Arc<Mutex<SharedFileState>>,
+}
+
+#[derive(Debug)]
+struct SharedFileState {
+    path: PathBuf,
+    file: std::fs::File,
 }
 
 impl SharedFileWriter {
@@ -308,26 +320,61 @@ impl SharedFileWriter {
         }
         let file = OpenOptions::new().create(true).append(true).open(path)?;
         Ok(Self {
-            inner: Arc::new(Mutex::new(file)),
+            inner: Arc::new(Mutex::new(SharedFileState {
+                path: path.to_path_buf(),
+                file,
+            })),
         })
     }
+
+    /// Reopen the configured path if external rotation replaced its file.
+    fn reopen_if_rotated(state: &mut SharedFileState) -> io::Result<()> {
+        let path_metadata = std::fs::metadata(&state.path)?;
+        let file_metadata = state.file.metadata()?;
+        if same_file(&path_metadata, &file_metadata) {
+            return Ok(());
+        }
+
+        state.file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&state.path)?;
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn same_file(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    left.dev() == right.dev() && left.ino() == right.ino()
+}
+
+// Platforms without stable file identity metadata reopen on each write.
+// This keeps path-following semantics correct without relying on size or
+// timestamps, which cannot distinguish all rename-and-create rotations.
+#[cfg(not(unix))]
+fn same_file(_left: &std::fs::Metadata, _right: &std::fs::Metadata) -> bool {
+    false
 }
 
 impl io::Write for SharedFileWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let mut file = self
+        let mut state = self
             .inner
             .lock()
             .map_err(|_| io::Error::other("log file lock poisoned"))?;
-        file.write(buf)
+        Self::reopen_if_rotated(&mut state)?;
+        state.file.write_all(buf)?;
+        Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        let mut file = self
+        let mut state = self
             .inner
             .lock()
             .map_err(|_| io::Error::other("log file lock poisoned"))?;
-        file.flush()
+        Self::reopen_if_rotated(&mut state)?;
+        state.file.flush()
     }
 }
 
@@ -510,6 +557,68 @@ mod tests {
         drop(second);
         let contents = std::fs::read_to_string(&path).expect("read log file");
         assert_eq!(contents, "one\ntwo\n");
+        std::fs::remove_dir_all(&dir).expect("clean up temp dir");
+    }
+
+    #[test]
+    fn structured_logging_shared_file_writer_follows_external_rotation() {
+        let dir = std::env::temp_dir().join(format!(
+            "id-structured-logging-rotation-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        let path = dir.join("id.log");
+        let rotated = dir.join("id.log.1");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        let mut first = SharedFileWriter::open(&path).expect("open log file");
+        let mut second = first.clone();
+        first
+            .write_all(b"before rotation\n")
+            .expect("write before rotation");
+
+        std::fs::rename(&path, &rotated).expect("rename rotated log");
+        std::fs::write(&path, b"").expect("create replacement log");
+
+        let mut workers = Vec::new();
+        for worker in 0..4 {
+            let mut writer = if worker % 2 == 0 {
+                first.clone()
+            } else {
+                second.clone()
+            };
+            workers.push(std::thread::spawn(move || {
+                for event in 0..25 {
+                    writeln!(writer, "worker-{worker}-event-{event}").expect("write rotated event");
+                }
+            }));
+        }
+        for worker in workers {
+            worker.join().expect("writer thread");
+        }
+        drop(first);
+        drop(second);
+
+        assert_eq!(
+            std::fs::read_to_string(&rotated).expect("read rotated log"),
+            "before rotation\n"
+        );
+        let contents = std::fs::read_to_string(&path).expect("read replacement log");
+        let lines: Vec<_> = contents.lines().collect();
+        assert_eq!(lines.len(), 100, "all events should reach the new path");
+        let unique: std::collections::HashSet<_> = lines.iter().copied().collect();
+        assert_eq!(unique.len(), 100, "events should not be duplicated");
+        for worker in 0..4 {
+            for event in 0..25 {
+                assert!(
+                    unique.contains(format!("worker-{worker}-event-{event}").as_str()),
+                    "missing worker-{worker}-event-{event}"
+                );
+            }
+        }
         std::fs::remove_dir_all(&dir).expect("clean up temp dir");
     }
 
