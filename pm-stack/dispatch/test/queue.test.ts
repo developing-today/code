@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { QueueClient, QueueError } from "../src/queue.ts";
+import { ClaimLostError, QueueClient, QueueError } from "../src/queue.ts";
 
 // #2902: ensureWorker memoized its registration promise with ??=,
 // including when it rejected -- one transient failure wedged every
@@ -175,5 +175,40 @@ describe("ensureWorker registration memo", () => {
 
     await Promise.all([client.ensureWorker(), client.ensureWorker()]);
     expect(calls()).toBe(2);
+  });
+});
+
+// #10737: the dispatch launch assigns its row with a compare-and-swap
+// on status, so a fleet worker that claimed the task first keeps it.
+describe("patchTask onlyIfStatus (#10737)", () => {
+  const ROW = { id: 7, queue: "q", status: "claimed", dedupe_key: "k" };
+
+  test("filters the PATCH on the required status and returns the row", async () => {
+    let url = "";
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      url = String(input);
+      return Response.json([ROW]);
+    }) as unknown as typeof fetch;
+    const client = new QueueClient("http://queue.test", "test-key");
+    const row = await client.patchTask(7, { status: "claimed" }, { onlyIfStatus: "queued" });
+    expect(row.id).toBe(7);
+    expect(url).toBe("http://queue.test/rest/v1/tasks?id=eq.7&status=eq.queued");
+  });
+
+  test("a row that is no longer queued throws ClaimLostError", async () => {
+    stubFetch(async () => Response.json([]));
+    const client = new QueueClient("http://queue.test", "test-key");
+    const err = await client.patchTask(7, { status: "claimed" }, { onlyIfStatus: "queued" }).catch((e) => e);
+    expect(err).toBeInstanceOf(ClaimLostError);
+    expect(err).toBeInstanceOf(QueueError);
+    expect((err as ClaimLostError).httpStatus).toBe(409);
+  });
+
+  test("an unconditional PATCH that matches nothing stays a plain QueueError", async () => {
+    stubFetch(async () => Response.json([]));
+    const client = new QueueClient("http://queue.test", "test-key");
+    const err = await client.patchTask(7, { last_error: "x" }).catch((e) => e);
+    expect(err).toBeInstanceOf(QueueError);
+    expect(err).not.toBeInstanceOf(ClaimLostError);
   });
 });
