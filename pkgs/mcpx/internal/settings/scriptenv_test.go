@@ -22,6 +22,7 @@ var setterSources = map[settings.Setter]string{
 	settings.SetByPlugin:       "plugin/opencode/",
 	settings.SetByPluginLoader: "internal/plugin/",
 	settings.SetByHooks:        "internal/hooks/",
+	settings.SetByPool:         "internal/mcpclient/",
 }
 
 func setterOf(file string) (settings.Setter, bool) {
