@@ -1,0 +1,2734 @@
+{
+ "summary": {
+  "mismatch_only": 133,
+  "payload_defect": 168,
+  "payload_missing": 2
+ },
+ "classes": {
+  "payload_missing": [
+   1016,
+   1017
+  ],
+  "mismatch_only": [
+   2926,
+   3029,
+   4616,
+   4650,
+   5826,
+   5874,
+   6405,
+   6538,
+   6693,
+   6811,
+   7038,
+   7534,
+   7543,
+   7989,
+   8039,
+   8511,
+   8674,
+   8675,
+   8806,
+   8937,
+   8944,
+   9341,
+   9439,
+   9492,
+   9495,
+   9573,
+   9724,
+   9734,
+   9897,
+   9901,
+   9961,
+   9963,
+   10143,
+   10625,
+   10630,
+   10984,
+   11015,
+   11037,
+   11400,
+   11439,
+   11793,
+   11896,
+   12094,
+   12126,
+   12169,
+   12209,
+   12573,
+   12583,
+   12771,
+   12831,
+   12837,
+   12839,
+   12882,
+   12924,
+   12927,
+   12928,
+   13035,
+   13039,
+   13229,
+   13255,
+   13271,
+   13492,
+   13656,
+   13664,
+   13967,
+   14212,
+   14262,
+   14263,
+   14269,
+   14341,
+   14376,
+   14378,
+   14400,
+   14418,
+   14465,
+   14477,
+   14488,
+   14492,
+   14507,
+   14566,
+   14666,
+   14751,
+   14821,
+   14822,
+   14838,
+   15029,
+   15122,
+   15130,
+   15333,
+   15341,
+   15344,
+   15345,
+   15354,
+   15676,
+   15840,
+   15848,
+   15851,
+   15853,
+   15856,
+   15859,
+   15860,
+   15863,
+   15865,
+   15866,
+   15870,
+   15872,
+   15873,
+   15875,
+   15876,
+   15879,
+   15884,
+   15885,
+   15886,
+   15887,
+   15889,
+   15982,
+   15988,
+   15993,
+   16003,
+   16007,
+   16011,
+   16019,
+   16026,
+   16027,
+   16031,
+   16034,
+   16057,
+   16069,
+   16087,
+   16121,
+   16139,
+   16147,
+   16151
+  ],
+  "payload_defect": [
+   5782,
+   6294,
+   6295,
+   6298,
+   6300,
+   6303,
+   8993,
+   9522,
+   9523,
+   9689,
+   9737,
+   9738,
+   9752,
+   9811,
+   9928,
+   10509,
+   10510,
+   10576,
+   10577,
+   10663,
+   10810,
+   10949,
+   15155,
+   15156,
+   15157,
+   15158,
+   15159,
+   15160,
+   15161,
+   15162,
+   15163,
+   15164,
+   15165,
+   15166,
+   15167,
+   15168,
+   15169,
+   15170,
+   15171,
+   15172,
+   15173,
+   15174,
+   15175,
+   15176,
+   15177,
+   15178,
+   15179,
+   15180,
+   15181,
+   15182,
+   15183,
+   15184,
+   15185,
+   15186,
+   15187,
+   15188,
+   15189,
+   15190,
+   15191,
+   15192,
+   15193,
+   15194,
+   15195,
+   15196,
+   15197,
+   15198,
+   15199,
+   15200,
+   15201,
+   15202,
+   15203,
+   15204,
+   15205,
+   15206,
+   15207,
+   15208,
+   15209,
+   15210,
+   15211,
+   15212,
+   15213,
+   15214,
+   15215,
+   15216,
+   15217,
+   15218,
+   15219,
+   15220,
+   15221,
+   15222,
+   15223,
+   15224,
+   15225,
+   15226,
+   15227,
+   15229,
+   15230,
+   15231,
+   15232,
+   15233,
+   15234,
+   15235,
+   15236,
+   15237,
+   15238,
+   15239,
+   15240,
+   15241,
+   15242,
+   15243,
+   15244,
+   15245,
+   15246,
+   15247,
+   15248,
+   15249,
+   15250,
+   15251,
+   15252,
+   15253,
+   15254,
+   15255,
+   15256,
+   15257,
+   15258,
+   15259,
+   15260,
+   15261,
+   15262,
+   15263,
+   15264,
+   15265,
+   15266,
+   15267,
+   15268,
+   15269,
+   15270,
+   15271,
+   15272,
+   15273,
+   15274,
+   15275,
+   15276,
+   15277,
+   15278,
+   15279,
+   15280,
+   15281,
+   15282,
+   15283,
+   15284,
+   15285,
+   15286,
+   15287,
+   15288,
+   15289,
+   15290,
+   15291,
+   15292,
+   15293,
+   15294,
+   15328,
+   15864,
+   16078,
+   16101,
+   16102,
+   16103,
+   16104
+  ]
+ },
+ "errors": {
+  "1016": [
+   "payload missing/empty"
+  ],
+  "1017": [
+   "payload missing/empty"
+  ],
+  "2926": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "3029": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "4616": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "4650": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "5782": [
+   "packet.max_attempts: must match payload.max_attempts",
+   "packet.priority: 15 is not on the design scale [10, 20, 30, 40, 50, 70, 90]"
+  ],
+  "5826": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "5874": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "6294": [
+   "packet.max_attempts: must match payload.max_attempts",
+   "packet.priority: 15 is not on the design scale [10, 20, 30, 40, 50, 70, 90]"
+  ],
+  "6295": [
+   "packet.max_attempts: must match payload.max_attempts",
+   "packet.priority: 15 is not on the design scale [10, 20, 30, 40, 50, 70, 90]"
+  ],
+  "6298": [
+   "packet.max_attempts: must match payload.max_attempts",
+   "packet.priority: 15 is not on the design scale [10, 20, 30, 40, 50, 70, 90]"
+  ],
+  "6300": [
+   "packet.max_attempts: must match payload.max_attempts",
+   "packet.priority: 15 is not on the design scale [10, 20, 30, 40, 50, 70, 90]"
+  ],
+  "6303": [
+   "packet.max_attempts: must match payload.max_attempts",
+   "packet.priority: 15 is not on the design scale [10, 20, 30, 40, 50, 70, 90]"
+  ],
+  "6405": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "6538": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "6693": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "6811": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "7038": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "7534": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "7543": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "7989": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "8039": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "8511": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "8674": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "8675": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "8806": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "8937": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "8944": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "8993": [
+   "payload identity: need issue.number, a non-empty prs list, a set object, or a pre-filing source {pr, finding}",
+   "packet.max_attempts: must match payload.max_attempts",
+   "packet.dedupe_key: 'repo-health:v1:triage:dezren39/dezren39:dispatch:7f5bade1' matches no design pattern:"
+  ],
+  "9341": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "9439": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "9492": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "9495": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "9522": [
+   "payload identity: need issue.number, a non-empty prs list, a set object, or a pre-filing source {pr, finding}",
+   "packet.max_attempts: must match payload.max_attempts",
+   "packet.dedupe_key: 'repo-health:v1:triage:dezren39/dezren39:dispatch:090c2862' matches no design pattern:"
+  ],
+  "9523": [
+   "payload identity: need issue.number, a non-empty prs list, a set object, or a pre-filing source {pr, finding}",
+   "packet.max_attempts: must match payload.max_attempts",
+   "packet.dedupe_key: 'repo-health:v1:triage:dezren39/dezren39:dispatch:bd76c608' matches no design pattern:"
+  ],
+  "9573": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "9689": [
+   "packet.max_attempts: must match payload.max_attempts",
+   "packet.dedupe_key: family 'pr-set' requires a non-empty payload.prs matching pr-set [1497, 1504, 1566] or a source-only payload.source.pr in [1497, 1504, 1566], but neither is present (#6446)"
+  ],
+  "9724": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "9734": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "9737": [
+   "payload identity: need issue.number, a non-empty prs list, a set object, or a pre-filing source {pr, finding}",
+   "packet.max_attempts: must match payload.max_attempts",
+   "packet.dedupe_key: 'repo-health:v1:triage:developing-today/zettel:dispatch:db6b0b09' matches no design pattern:"
+  ],
+  "9738": [
+   "payload identity: need issue.number, a non-empty prs list, a set object, or a pre-filing source {pr, finding}",
+   "packet.max_attempts: must match payload.max_attempts",
+   "packet.dedupe_key: 'repo-health:v1:triage:developing-today/zettel:dispatch:0902d264' matches no design pattern:"
+  ],
+  "9752": [
+   "payload identity: need issue.number, a non-empty prs list, a set object, or a pre-filing source {pr, finding}",
+   "packet.max_attempts: must match payload.max_attempts",
+   "packet.dedupe_key: 'repo-health:v1:triage:developing-today/zettel:dispatch:5cefa344' matches no design pattern:"
+  ],
+  "9811": [
+   "packet.max_attempts: must match payload.max_attempts",
+   "packet.priority: 15 is not on the design scale [10, 20, 30, 40, 50, 70, 90]"
+  ],
+  "9897": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "9901": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "9928": [
+   "packet.max_attempts: must match payload.max_attempts",
+   "packet.dedupe_key: family 'pr' requires a non-empty payload.prs containing PR 1459 or a source-only payload.source.pr 1459, but neither is present (#6446)"
+  ],
+  "9961": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "9963": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "10143": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "10509": [
+   "payload identity: need issue.number, a non-empty prs list, a set object, or a pre-filing source {pr, finding}",
+   "packet.max_attempts: must match payload.max_attempts",
+   "packet.dedupe_key: 'repo-health:v1:triage:dezren39/dezren39:dispatch:d99782e6' matches no design pattern:"
+  ],
+  "10510": [
+   "payload identity: need issue.number, a non-empty prs list, a set object, or a pre-filing source {pr, finding}",
+   "packet.max_attempts: must match payload.max_attempts",
+   "packet.dedupe_key: 'repo-health:v1:triage:dezren39/dezren39:dispatch:f7e17b21' matches no design pattern:"
+  ],
+  "10576": [
+   "payload identity: need issue.number, a non-empty prs list, a set object, or a pre-filing source {pr, finding}",
+   "packet.max_attempts: must match payload.max_attempts",
+   "packet.dedupe_key: 'repo-health:v1:triage:developing-today/zettel:dispatch:d443c62a' matches no design pattern:"
+  ],
+  "10577": [
+   "payload identity: need issue.number, a non-empty prs list, a set object, or a pre-filing source {pr, finding}",
+   "packet.max_attempts: must match payload.max_attempts",
+   "packet.dedupe_key: 'repo-health:v1:triage:developing-today/zettel:dispatch:6768e1d2' matches no design pattern:"
+  ],
+  "10625": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "10630": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "10663": [
+   "packet.max_attempts: must match payload.max_attempts",
+   "packet.dedupe_key: family 'pr' requires a non-empty payload.prs containing PR 1473 or a source-only payload.source.pr 1473, but neither is present (#6446)"
+  ],
+  "10810": [
+   "payload identity: need issue.number, a non-empty prs list, a set object, or a pre-filing source {pr, finding}",
+   "packet.max_attempts: must match payload.max_attempts",
+   "packet.dedupe_key: 'repo-health:v1:triage:dezren39/dezren39:dispatch:a6e4aac8' matches no design pattern:"
+  ],
+  "10949": [
+   "payload identity: need issue.number, a non-empty prs list, a set object, or a pre-filing source {pr, finding}",
+   "packet.max_attempts: must match payload.max_attempts",
+   "packet.dedupe_key: 'repo-health:v1:triage:developing-today/zettel:dispatch:443cc557' matches no design pattern:"
+  ],
+  "10984": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "11015": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "11037": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "11400": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "11439": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "11793": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "11896": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "12094": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "12126": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "12169": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "12209": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "12573": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "12583": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "12771": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "12831": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "12837": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "12839": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "12882": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "12924": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "12927": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "12928": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "13035": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "13039": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "13229": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "13255": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "13271": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "13492": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "13656": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "13664": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "13967": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "14212": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "14262": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "14263": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "14269": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "14341": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "14376": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "14378": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "14400": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "14418": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "14465": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "14477": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "14488": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "14492": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "14507": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "14566": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "14666": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "14751": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "14821": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "14822": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "14838": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15029": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15122": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15130": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15155": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15156": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15157": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15158": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15159": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15160": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15161": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15162": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15163": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15164": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15165": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15166": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15167": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15168": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15169": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15170": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15171": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15172": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15173": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15174": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15175": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15176": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15177": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15178": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15179": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15180": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15181": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15182": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15183": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15184": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15185": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15186": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15187": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15188": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15189": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15190": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15191": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15192": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15193": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15194": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15195": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15196": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15197": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15198": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15199": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15200": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15201": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15202": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15203": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15204": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15205": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15206": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15207": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15208": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15209": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15210": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15211": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15212": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15213": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15214": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15215": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15216": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15217": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15218": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15219": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15220": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15221": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15222": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15223": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15224": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15225": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15226": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15227": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15229": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15230": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15231": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15232": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15233": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15234": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15235": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15236": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15237": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15238": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15239": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15240": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15241": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15242": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15243": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15244": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15245": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15246": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15247": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15248": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15249": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15250": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15251": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15252": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15253": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15254": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15255": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15256": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15257": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15258": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15259": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15260": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15261": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15262": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15263": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15264": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15265": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15266": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15267": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15268": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15269": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15270": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15271": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15272": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15273": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15274": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15275": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15276": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15277": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15278": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15279": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15280": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15281": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15282": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15283": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15284": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15285": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15286": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15287": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15288": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15289": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15290": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15291": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15292": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15293": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15294": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15328": [
+   "payload.kind: must be one of [\"ci_investigation\", \"pr_shepherd\", \"second_pass\", \"small_fix\", \"triage\"]",
+   "payload.risk.level: must be low|medium|high",
+   "payload.dedupe: must have checked_at and basis as non-empty strings"
+  ],
+  "15333": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15341": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15344": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15345": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15354": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15676": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15840": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15848": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15851": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15853": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15856": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15859": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15860": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15863": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15864": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.kind: must be one of [\"ci_investigation\", \"pr_shepherd\", \"second_pass\", \"small_fix\", \"triage\"]",
+   "payload.repo: None is not a fleet repo",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings",
+   "payload.issue.number: must be a positive integer",
+   "payload identity: need issue.number, a non-empty prs list, a set object, or a pre-filing source {pr, finding}",
+   "packet.dedupe_key: 'design-mill-pool-effort-2026-11-13' matches no design pattern:"
+  ],
+  "15865": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15866": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15870": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15872": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15873": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15875": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15876": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15879": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15884": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15885": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15886": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15887": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15889": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15982": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15988": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "15993": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "16003": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "16007": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "16011": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "16019": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "16026": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "16027": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "16031": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "16034": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "16057": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "16069": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "16078": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.kind: must be one of [\"ci_investigation\", \"pr_shepherd\", \"second_pass\", \"small_fix\", \"triage\"]",
+   "payload.repo: None is not a fleet repo",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings",
+   "packet.dedupe_key: 'design-pm-prompt-surface-2026-11-13' matches no design pattern:"
+  ],
+  "16087": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "16101": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.kind: must be one of [\"ci_investigation\", \"pr_shepherd\", \"second_pass\", \"small_fix\", \"triage\"]",
+   "payload.repo: None is not a fleet repo",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings",
+   "packet.dedupe_key: 'fix-9427-rust-overlay-bump-2026-11-13' matches no design pattern:"
+  ],
+  "16102": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.kind: must be one of [\"ci_investigation\", \"pr_shepherd\", \"second_pass\", \"small_fix\", \"triage\"]",
+   "payload.repo: None is not a fleet repo",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings",
+   "packet.dedupe_key: 'openclaw-picker-cleanup-9551' matches no design pattern:"
+  ],
+  "16103": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.kind: must be one of [\"ci_investigation\", \"pr_shepherd\", \"second_pass\", \"small_fix\", \"triage\"]",
+   "payload.repo: None is not a fleet repo",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings",
+   "packet.dedupe_key: 'decisions-store-reconcile-2026-11-13' matches no design pattern:"
+  ],
+  "16104": [
+   "payload.schema: must be 'repo-task/v1'",
+   "payload.kind: must be one of [\"ci_investigation\", \"pr_shepherd\", \"second_pass\", \"small_fix\", \"triage\"]",
+   "payload.repo: None is not a fleet repo",
+   "payload.problem: required field missing or empty",
+   "payload.priority_reason: required field missing or empty",
+   "payload.evidence: must be a list",
+   "payload.acceptance: must be a list",
+   "payload.tests: must be a list",
+   "payload.context_refs: must be a list",
+   "payload.scope: must be an object with include/exclude",
+   "payload.risk.level: must be low|medium|high",
+   "payload.timebox_minutes: must be a positive integer",
+   "payload.dedupe: must have checked_at and basis as non-empty strings",
+   "packet.dedupe_key: 'quota-surfaces-ct-horizon-spaces-9553' matches no design pattern:"
+  ],
+  "16121": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "16139": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "16147": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ],
+  "16151": [
+   "packet.max_attempts: must match payload.max_attempts"
+  ]
+ }
+}
