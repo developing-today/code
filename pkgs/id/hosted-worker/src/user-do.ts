@@ -149,7 +149,11 @@ export class UserDO {
    * reference is what each user's storage pays for). */
   private usage() {
     const sql = this.state.storage.sql;
-    const kv = sql.exec("SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(value)), 0) AS bytes FROM kv").toArray()[0];
+    // LENGTH on TEXT counts characters; casting to BLOB counts the
+    // UTF-8 bytes the ceiling is defined in (#11349).
+    const kv = sql
+      .exec("SELECT COUNT(*) AS n, COALESCE(SUM(LENGTH(CAST(value AS BLOB))), 0) AS bytes FROM kv")
+      .toArray()[0];
     const blobs = sql.exec("SELECT COUNT(*) AS n, COALESCE(SUM(size), 0) AS bytes FROM blobs").toArray()[0];
     const kvBytes = Number(kv.bytes);
     const blobBytes = Number(blobs.bytes);
@@ -331,7 +335,7 @@ export class UserDO {
       const kvMatch = url.pathname.match(/^\/v1\/kv\/([A-Za-z0-9._-]{1,128})$/);
       if (kvMatch && req.method === "PUT") {
         const prior = this.state.storage.sql
-          .exec("SELECT LENGTH(value) AS n FROM kv WHERE key = ?", kvMatch[1])
+          .exec("SELECT LENGTH(CAST(value AS BLOB)) AS n FROM kv WHERE key = ?", kvMatch[1])
           .toArray();
         const priorBytes = prior.length === 0 ? 0 : Number(prior[0].n);
         const headroom = this.kvHeadroom(priorBytes);
