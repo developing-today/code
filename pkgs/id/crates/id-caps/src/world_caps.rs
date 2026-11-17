@@ -661,6 +661,55 @@ const TEST_PROVIDER_MANIFEST: ProviderManifest = ProviderManifest {
     side: ProviderSide::Host,
 };
 
+/// The name of the first client-side provider (F13.7 step 5).
+pub const CLIENT_FILE_READ_NAME: &str = "client.file.read";
+
+/// Argument schema for `client.file.read`: one required `path` string,
+/// interpreted by the client executor relative to its user-selected
+/// root (never as a host path).
+const CLIENT_FILE_READ_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
+    name: "path",
+    value_type: ArgumentType::String,
+    required: true,
+}];
+
+/// Largest single read `client.file.read` may return, in bytes: the
+/// design's starting bound for the first slice (32 KiB), mirrored by
+/// the client shell's `LocalBounds::DESIGN_DEFAULT`.
+pub const MAX_CLIENT_FILE_READ_BYTES: usize = 32_768;
+
+/// Bounds for `client.file.read`: argument bytes plus the read cap.
+const CLIENT_FILE_READ_BOUNDS: &[ProviderBound] = &[
+    ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
+    ProviderBound::ResponseBytes(MAX_CLIENT_FILE_READ_BYTES),
+];
+
+/// The `client.file.read` manifest (F13.7 step 5, design
+/// `doc/2026-11-01_design_id789.md`): the first provider executed by
+/// the originating session's client rather than the host. It registers
+/// exactly like a production provider — one manifest entry — and is
+/// excluded from every default ceiling, so registration alone widens
+/// no world's authority: both the world ceiling/grant and the local
+/// client grant must permit it before any read can happen.
+pub const CLIENT_FILE_READ_MANIFEST: ProviderManifest = ProviderManifest {
+    name: CLIENT_FILE_READ_NAME,
+    version: 1,
+    kind: ProviderKind::Request,
+    argument_schema: ArgumentSchema::JsonObject(CLIENT_FILE_READ_ARGUMENTS),
+    bounds: CLIENT_FILE_READ_BOUNDS,
+    required_scope: RequiredScope::Join,
+    default_ceiling: DefaultCeiling::Excluded,
+    side: ProviderSide::Client,
+};
+
+/// Production client-side entries, assembled into the registry after
+/// the host production entries. They are deliberately not part of the
+/// macro-generated legacy [`CATALOG`] name view: that view is the host
+/// catalog compatibility surface, and adding a client provider must
+/// not edit it (F13.7 acceptance: registry growth without a host
+/// catalog edit).
+const CLIENT_CATALOG_ENTRIES: &[ProviderManifest] = &[CLIENT_FILE_READ_MANIFEST];
+
 /// Registry-only entries added on top of [`PRODUCTION_CATALOG_ENTRIES`].
 #[cfg(feature = "test-provider")]
 const EXTRA_CATALOG_ENTRIES: &[ProviderManifest] = &[TEST_PROVIDER_MANIFEST];
@@ -669,10 +718,12 @@ const EXTRA_CATALOG_ENTRIES: &[ProviderManifest] = &[TEST_PROVIDER_MANIFEST];
 const EXTRA_CATALOG_ENTRIES: &[ProviderManifest] = &[];
 
 /// Number of manifests in the assembled provider registry.
-const CATALOG_ENTRY_COUNT: usize = PRODUCTION_CATALOG_ENTRIES.len() + EXTRA_CATALOG_ENTRIES.len();
+const CATALOG_ENTRY_COUNT: usize =
+    PRODUCTION_CATALOG_ENTRIES.len() + CLIENT_CATALOG_ENTRIES.len() + EXTRA_CATALOG_ENTRIES.len();
 
-/// Assemble the production manifests plus any feature-gated registry-only
-/// additions into one array.
+/// Assemble the production manifests, the production client-side
+/// entries, and any feature-gated registry-only additions into one
+/// array, in that order.
 ///
 /// This is the only place the registry grows. Adding a provider means adding a
 /// manifest — never editing dispatch or core files (#1061).
@@ -683,9 +734,15 @@ const fn assemble_catalog_entries() -> [ProviderManifest; CATALOG_ENTRY_COUNT] {
         entries[index] = PRODUCTION_CATALOG_ENTRIES[index];
         index += 1;
     }
+    let mut client = 0;
+    while client < CLIENT_CATALOG_ENTRIES.len() {
+        entries[PRODUCTION_CATALOG_ENTRIES.len() + client] = CLIENT_CATALOG_ENTRIES[client];
+        client += 1;
+    }
     let mut extra = 0;
     while extra < EXTRA_CATALOG_ENTRIES.len() {
-        entries[PRODUCTION_CATALOG_ENTRIES.len() + extra] = EXTRA_CATALOG_ENTRIES[extra];
+        entries[PRODUCTION_CATALOG_ENTRIES.len() + CLIENT_CATALOG_ENTRIES.len() + extra] =
+            EXTRA_CATALOG_ENTRIES[extra];
         extra += 1;
     }
     entries
@@ -2257,12 +2314,21 @@ mod tests {
     fn test_catalog_entries_satisfy_the_f137_side_contract() {
         for entry in CATALOG_ENTRIES {
             assert_eq!(entry.side_contract_violation(), None, "{}", entry.name);
-            // F13.7 step 1 lands the contract only: no client provider
-            // is registered yet (the first, client.file.read, is step
-            // 5), so every catalog entry is still host-side and the
-            // host catalog is unchanged.
-            assert_eq!(entry.side, ProviderSide::Host, "{}", entry.name);
         }
+        // F13.7 step 5 registers the first client provider,
+        // client.file.read. Every other catalog entry is still
+        // host-side, and the legacy host catalog view is unchanged:
+        // the client provider joins the registry without joining
+        // CATALOG or any default ceiling.
+        let client_entries: Vec<&ProviderManifest> = CATALOG_ENTRIES
+            .iter()
+            .filter(|entry| entry.side == ProviderSide::Client)
+            .collect();
+        assert_eq!(client_entries.len(), 1);
+        assert_eq!(client_entries[0].name, CLIENT_FILE_READ_NAME);
+        assert_eq!(client_entries[0].default_ceiling, DefaultCeiling::Excluded);
+        assert!(!CATALOG.contains(&CLIENT_FILE_READ_NAME));
+        assert!(!default_ceiling_names().contains(CLIENT_FILE_READ_NAME));
     }
 
     #[test]
@@ -2310,6 +2376,14 @@ mod tests {
             .collect();
         #[cfg(not(feature = "test-provider"))]
         let production_names: Vec<&str> = entry_names.clone();
+        // F13.7 step 5: the registry also carries the production
+        // client-side entries (client.file.read), which are
+        // deliberately not part of the legacy catalog view this test
+        // pins — registration without a host catalog edit.
+        let production_names: Vec<&str> = production_names
+            .into_iter()
+            .filter(|name| *name != CLIENT_FILE_READ_NAME)
+            .collect();
         assert_eq!(
             production_names, CATALOG,
             "legacy catalog derives from manifests"
@@ -2345,7 +2419,7 @@ mod tests {
         );
         assert_eq!(
             PROVIDER_REGISTRY.entries().len(),
-            production_names.len() + EXTRA_CATALOG_ENTRIES.len()
+            production_names.len() + CLIENT_CATALOG_ENTRIES.len() + EXTRA_CATALOG_ENTRIES.len()
         );
         assert!(
             PROVIDER_REGISTRY
@@ -2390,7 +2464,10 @@ mod tests {
         // existing world's authority. The RegistryProbe is Excluded
         // for the same reason (#838), so under `test-provider` it is
         // subtracted the same way.
-        let mut excluded_from_ceiling = names(&["loc.position", "loc.watch"]);
+        // client.file.read (F13.7 step 5) is likewise Excluded: it is
+        // in the registry's name set but joins no default ceiling.
+        let mut excluded_from_ceiling =
+            names(&["loc.position", "loc.watch", CLIENT_FILE_READ_NAME]);
         #[cfg(feature = "test-provider")]
         excluded_from_ceiling.insert(TEST_PROVIDER_NAME.to_owned());
         assert_eq!(
