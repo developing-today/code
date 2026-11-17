@@ -14,8 +14,10 @@
 //! last-known-good cache and substrate resolution; slice 4 adds the
 //! server side: `AdMinter` (minting on transport change and per
 //! TTL, Decision 3), whose current bytes the `.well-known` handler
-//! in id-web serves byte-for-byte. Fetch-side HTTPS substrates are
-//! the remaining slice.
+//! in id-web serves byte-for-byte. Slice 3 adds the fetch side:
+//! the well-known and Workers-rendezvous HTTPS substrates bound
+//! to an injected fetch closure (no HTTP dependency in id-core),
+//! DNS bootstrap-hint parsing, and background revalidation.
 //!
 //! The oracle for the tests below is the decision record itself:
 //! invariants 1–3 and 8, and the #8214 acceptance tests
@@ -961,5 +963,356 @@ mod minter_tests {
         let bytes = m.mint(transports(443), NOW).unwrap();
         let ad = parse(&bytes).advertisement;
         assert_eq!(ad.expires_at - ad.issued_at, MAX_TTL_SECONDS);
+    }
+}
+
+// ---------------------------------------------------------------------
+// Slice 3 (#8214): fetch-side HTTPS substrates.
+//
+// HTTP-stack decision (recorded on issue #8214 by lane any-j,
+// 2026-11-17, following lane any-c's framing): id-core takes NO
+// HTTP client dependency. The substrates below bind the Substrate
+// trait to an injected fetch closure (FetchBytes) owned by the
+// eventual caller's HTTP stack, so the choice of client library
+// stays with the client binary and never gets buried in id-core.
+// Substrates are untrusted (Decision 1): they return the opaque
+// signed object, and resolve()/AdCache verification against the
+// pinned subject is what makes a hostile substrate fail closed.
+
+/// An injected HTTPS GET: returns the response body for `url`, or
+/// `None` when the fetch fails or the substrate has nothing. This
+/// is the seam the caller's HTTP stack binds to; implementations
+/// must use plain HTTPS (Decision 2, invariant 5).
+pub trait FetchBytes {
+    fn get(&self, url: &str) -> Option<Vec<u8>>;
+}
+
+impl<F> FetchBytes for F
+where
+    F: Fn(&str) -> Option<Vec<u8>>,
+{
+    fn get(&self, url: &str) -> Option<Vec<u8>> {
+        self(url)
+    }
+}
+
+/// Parse substrate bytes as a signed advertisement. Malformed
+/// bytes are `None` (an empty substrate), never an error worth
+/// failing resolution over; well-formed but forged bytes parse
+/// here and are rejected later by signature verification.
+fn parse_served(bytes: &[u8]) -> Option<SignedAdvertisement> {
+    serde_json::from_slice(bytes).ok()
+}
+
+/// The well-known URL for `subject` on `host` (Decision 2.2):
+/// `https://<host>/.well-known/id-transport-advertisement?subject=<fp>`.
+pub fn well_known_url(host: &str, subject: &str) -> String {
+    format!("https://{host}/.well-known/id-transport-advertisement?subject={subject}")
+}
+
+/// `H(subject)` for the Workers rendezvous (Decision 2.3): the
+/// lowercase hex SHA-256 of the subject fingerprint string. The
+/// rendezvous learns only this hash, never the named subject
+/// (record privacy note, Decision 3). The Workers component must
+/// key its stored blobs by this same value.
+pub fn subject_hash(subject: &str) -> String {
+    use sha2::Digest as _;
+    hex_encode(&sha2::Sha256::digest(subject.as_bytes()))
+}
+
+/// The Workers rendezvous fetch URL for `subject` under
+/// `rendezvous_base` (Decision 2.3):
+/// `https://<rendezvous-host>/v1/advertisement/<H(subject)>`.
+pub fn rendezvous_url(rendezvous_base: &str, subject: &str) -> String {
+    format!(
+        "{}/v1/advertisement/{}",
+        rendezvous_base.trim_end_matches('/'),
+        subject_hash(subject)
+    )
+}
+
+/// The authoritative self-hosted substrate (Decision 2.2): fetch
+/// the subject's current signed ad from a known host's
+/// `.well-known` endpoint over the injected HTTPS fetch.
+#[derive(Debug)]
+pub struct WellKnownSubstrate<F> {
+    host: String,
+    fetch: F,
+}
+
+impl<F> WellKnownSubstrate<F> {
+    pub fn new(host: impl Into<String>, fetch: F) -> Self {
+        Self {
+            host: host.into(),
+            fetch,
+        }
+    }
+}
+
+impl<F: FetchBytes> Substrate for WellKnownSubstrate<F> {
+    fn fetch(&self, subject: &str) -> Option<SignedAdvertisement> {
+        let bytes = self.fetch.get(&well_known_url(&self.host, subject))?;
+        parse_served(&bytes)
+    }
+}
+
+/// The hosted-mirror substrate (Decision 2.3): fetch the subject's
+/// signed ad from the Workers rendezvous by `H(subject)`. The
+/// rendezvous stores opaque signed blobs only; it holds no keys
+/// and cannot mint or alter ads.
+#[derive(Debug)]
+pub struct RendezvousSubstrate<F> {
+    base: String,
+    fetch: F,
+}
+
+impl<F> RendezvousSubstrate<F> {
+    pub fn new(base: impl Into<String>, fetch: F) -> Self {
+        Self {
+            base: base.into(),
+            fetch,
+        }
+    }
+}
+
+impl<F: FetchBytes> Substrate for RendezvousSubstrate<F> {
+    fn fetch(&self, subject: &str) -> Option<SignedAdvertisement> {
+        let bytes = self.fetch.get(&rendezvous_url(&self.base, subject))?;
+        parse_served(&bytes)
+    }
+}
+
+/// Bootstrap hints learned from DNS `_id.<host>` TXT records
+/// (Decision 2.4). DNS is bootstrap-only and never authoritative:
+/// hints name the hosts for the well-known and rendezvous
+/// substrates, and everything those substrates return is still
+/// authenticated by signature (Decision 1). A TXT record carries
+/// hints as whitespace-separated `key=value` tokens:
+/// `well-known=<host>` and `rendezvous=<base-url>`; unknown tokens
+/// are ignored, so records may carry other bootstrap data.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BootstrapHints {
+    pub well_known_hosts: Vec<String>,
+    pub rendezvous_bases: Vec<String>,
+}
+
+/// Parse `_id.<host>` TXT record values into bootstrap hints.
+/// Duplicate hints are kept once, in first-seen order.
+pub fn parse_bootstrap_hints(txt_records: &[String]) -> BootstrapHints {
+    let mut hints = BootstrapHints::default();
+    for record in txt_records {
+        for token in record.split_whitespace() {
+            if let Some(host) = token.strip_prefix("well-known=") {
+                if !host.is_empty() && !hints.well_known_hosts.iter().any(|h| h == host) {
+                    hints.well_known_hosts.push(host.to_string());
+                }
+            } else if let Some(base) = token.strip_prefix("rendezvous=") {
+                if !base.is_empty() && !hints.rendezvous_bases.iter().any(|b| b == base) {
+                    hints.rendezvous_bases.push(base.to_string());
+                }
+            }
+        }
+    }
+    hints
+}
+
+/// Background revalidation (Decision 3): when a resolution came
+/// back degraded — an expired last-known-good in use — the caller
+/// revalidates in the background by re-walking every substrate.
+/// This is that re-walk: it folds any fresher valid ad into the
+/// cache and returns the post-revalidation selection, which is
+/// non-degraded exactly when a substrate produced a fresh ad.
+/// Calling it on a timer or from a background task never blocks
+/// the connection that is proceeding on the degraded selection.
+pub fn revalidate<'c>(
+    cache: &'c mut AdCache,
+    substrates: &[&dyn Substrate],
+    pinned_subject: &str,
+    now: u64,
+) -> Option<Selection<'c>> {
+    resolve(cache, substrates, pinned_subject, now)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod substrate_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    // Oracle: the #5793 decision record, Decision 2 (substrate
+    // selection + disagreement rule) and Decision 3 (freshness,
+    // replay, last-known-good + background revalidation).
+
+    const NOW: u64 = 1_700_000_000;
+
+    fn key() -> SigningKey {
+        SigningKey::from_bytes(&[7u8; 32])
+    }
+
+    fn subject() -> String {
+        TransportAdvertisement::subject_for(&key().verifying_key())
+    }
+
+    fn signed(sequence: u64, issued_at: u64, ttl: u64) -> SignedAdvertisement {
+        TransportAdvertisement {
+            subject: subject(),
+            transports: vec![TransportEntry {
+                kind: TransportKind::Tcp,
+                endpoint: "203.0.113.7:443".to_string(),
+                priority: 30,
+                broker: None,
+            }],
+            issued_at,
+            expires_at: issued_at + ttl,
+            sequence,
+        }
+        .sign(&key())
+    }
+
+    fn served(signed: &SignedAdvertisement) -> Vec<u8> {
+        serde_json::to_vec(signed).unwrap()
+    }
+
+    #[test]
+    fn well_known_substrate_fetches_the_decision_2_url_and_parses() {
+        let seen = RefCell::new(Vec::new());
+        let body = served(&signed(3, NOW, 3600));
+        let substrate = WellKnownSubstrate::new("id.example.com", |url: &str| {
+            seen.borrow_mut().push(url.to_string());
+            Some(body.clone())
+        });
+        let fetched = substrate.fetch(&subject()).expect("substrate has the ad");
+        assert_eq!(fetched.advertisement.sequence, 3);
+        let urls = seen.borrow();
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0], well_known_url("id.example.com", &subject()));
+        assert!(
+            urls[0].starts_with(
+                "https://id.example.com/.well-known/id-transport-advertisement?subject="
+            )
+        );
+    }
+
+    #[test]
+    fn rendezvous_substrate_fetches_by_subject_hash_only() {
+        // Decision 3 privacy: the rendezvous URL carries H(subject),
+        // never the subject fingerprint itself.
+        let seen = RefCell::new(Vec::new());
+        let body = served(&signed(4, NOW, 3600));
+        let substrate = RendezvousSubstrate::new("https://rendezvous.example", |url: &str| {
+            seen.borrow_mut().push(url.to_string());
+            Some(body.clone())
+        });
+        let fetched = substrate.fetch(&subject()).expect("substrate has the ad");
+        assert_eq!(fetched.advertisement.sequence, 4);
+        let urls = seen.borrow();
+        assert_eq!(urls.len(), 1);
+        assert_eq!(
+            urls[0],
+            format!(
+                "https://rendezvous.example/v1/advertisement/{}",
+                subject_hash(&subject())
+            )
+        );
+        assert!(!urls[0].contains(&subject()));
+        // H is a stable 32-byte SHA-256 hex digest.
+        assert_eq!(subject_hash(&subject()).len(), 64);
+        assert_eq!(subject_hash(&subject()), subject_hash(&subject()));
+        assert_ne!(subject_hash(&subject()), subject_hash("other-subject"));
+    }
+
+    #[test]
+    fn hostile_https_substrate_fails_closed_through_resolve() {
+        // Invariants 1-3 via a real substrate: forged bytes parse
+        // but never verify, so resolution ignores them entirely.
+        let forged = TransportAdvertisement {
+            subject: subject(),
+            transports: vec![],
+            issued_at: NOW,
+            expires_at: NOW + 3600,
+            sequence: 99,
+        }
+        .sign(&SigningKey::from_bytes(&[9u8; 32]));
+        let body = served(&forged);
+        let substrate =
+            WellKnownSubstrate::new("id.example.com", move |_url: &str| Some(body.clone()));
+        let mut cache = AdCache::new();
+        let substrates: [&dyn Substrate; 1] = [&substrate];
+        assert!(resolve(&mut cache, &substrates, &subject(), NOW).is_none());
+        assert_eq!(cache.cached_sequence(), 0);
+    }
+
+    #[test]
+    fn disagreement_across_https_substrates_highest_sequence_wins() {
+        // Decision 2 disagreement rule across the two HTTPS
+        // substrates, in both fetch orders.
+        let wk_body = served(&signed(5, NOW, 3600));
+        let rv_body = served(&signed(8, NOW, 3600));
+        let wk = WellKnownSubstrate::new("id.example.com", move |_url: &str| Some(wk_body.clone()));
+        let rv = RendezvousSubstrate::new("https://rendezvous.example", move |_url: &str| {
+            Some(rv_body.clone())
+        });
+        let forward: [&dyn Substrate; 2] = [&wk, &rv];
+        let reverse: [&dyn Substrate; 2] = [&rv, &wk];
+        for substrates in [forward, reverse] {
+            let mut cache = AdCache::new();
+            let sel = resolve(&mut cache, &substrates, &subject(), NOW).expect("resolution");
+            assert_eq!(sel.advertisement.sequence, 8);
+            assert!(!sel.degraded);
+        }
+    }
+
+    #[test]
+    fn unreachable_or_malformed_substrate_is_empty_not_an_error() {
+        let down = WellKnownSubstrate::new("id.example.com", |_url: &str| None);
+        assert!(down.fetch(&subject()).is_none());
+        let garbage = RendezvousSubstrate::new("https://rendezvous.example", |_url: &str| {
+            Some(b"not json".to_vec())
+        });
+        assert!(garbage.fetch(&subject()).is_none());
+    }
+
+    #[test]
+    fn bootstrap_hints_name_hosts_only_and_ignore_the_rest() {
+        // Decision 2.4: TXT hints name substrate hosts; they carry
+        // no advertisement and vouch for nothing.
+        let records = vec![
+            "well-known=id.example.com rendezvous=https://rendezvous.example".to_string(),
+            "well-known=id.example.com other=data v=spf1".to_string(),
+            "rendezvous=https://rendezvous.example well-known=backup.example.com".to_string(),
+        ];
+        let hints = parse_bootstrap_hints(&records);
+        assert_eq!(
+            hints.well_known_hosts,
+            vec![
+                "id.example.com".to_string(),
+                "backup.example.com".to_string()
+            ]
+        );
+        assert_eq!(
+            hints.rendezvous_bases,
+            vec!["https://rendezvous.example".to_string()]
+        );
+        assert_eq!(parse_bootstrap_hints(&[]), BootstrapHints::default());
+    }
+
+    #[test]
+    fn degraded_selection_is_upgraded_by_background_revalidation() {
+        // Decision 3: an expired last-known-good is used degraded
+        // while substrates are down; background revalidation with
+        // a recovered substrate upgrades it to a fresh selection.
+        let mut cache = AdCache::new();
+        assert!(cache.accept(signed(4, NOW - 7200, 3600), &subject()));
+        let down = WellKnownSubstrate::new("id.example.com", |_url: &str| None);
+        let substrates: [&dyn Substrate; 1] = [&down];
+        let sel = resolve(&mut cache, &substrates, &subject(), NOW).expect("LKG fallback");
+        assert!(sel.degraded);
+
+        let body = served(&signed(6, NOW, 3600));
+        let up = WellKnownSubstrate::new("id.example.com", move |_url: &str| Some(body.clone()));
+        let substrates: [&dyn Substrate; 1] = [&up];
+        let sel = revalidate(&mut cache, &substrates, &subject(), NOW).expect("revalidated");
+        assert!(!sel.degraded);
+        assert_eq!(sel.advertisement.sequence, 6);
     }
 }
