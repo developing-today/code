@@ -121,8 +121,7 @@ export function parseAdapter(
       else errors.push(`rungMap[${JSON.stringify(k)}] is not class->rung: ${JSON.stringify(v)}`);
     }
   }
-  const posMs = (v: unknown, dflt: number) =>
-    typeof v === "number" && Number.isFinite(v) && v > 0 ? v : dflt;
+  const posMs = (v: unknown, dflt: number) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : dflt);
   if (errors.length > 0 || !name || !issueRepo) return { adapter: null, errors };
   return {
     errors,

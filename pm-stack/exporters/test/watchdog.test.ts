@@ -41,28 +41,29 @@ interface Harness {
   tick(min: number, liveEscalation?: boolean): ReturnType<typeof runTick>;
 }
 
-async function harness(opts: {
-  rung2?: () => RungOutcome;
-  rung3?: () => RungOutcome;
-  cdpOk?: boolean;
-} = {}): Promise<Harness> {
+async function harness(
+  opts: { rung2?: () => RungOutcome; rung3?: () => RungOutcome; cdpOk?: boolean } = {},
+): Promise<Harness> {
   const dir = await mkdtemp(join(tmpdir(), "watchdog-test-"));
   const adaptersDir = join(dir, "adapters");
   const fixtureDir = join(dir, "fixture");
   await mkdir(adaptersDir, { recursive: true });
   await mkdir(fixtureDir, { recursive: true });
-  await writeFile(join(adaptersDir, "fixture.json"), JSON.stringify({
-    name: "fixture",
-    latestPath: join(fixtureDir, "latest.json"),
-    cdpPort: 19299,
-    origins: ["https://fixture.invalid"],
-    cookieNames: ["fixture-session"],
-    loginUrl: "https://fixture.invalid/login",
-    challengeMarkers: ["verify-it", "2fa"],
-    issueRepo: "developing-today/code",
-    staleAfterMs: 30 * 60_000,
-    cooldownMs: 15 * 60_000,
-  }));
+  await writeFile(
+    join(adaptersDir, "fixture.json"),
+    JSON.stringify({
+      name: "fixture",
+      latestPath: join(fixtureDir, "latest.json"),
+      cdpPort: 19299,
+      origins: ["https://fixture.invalid"],
+      cookieNames: ["fixture-session"],
+      loginUrl: "https://fixture.invalid/login",
+      challengeMarkers: ["verify-it", "2fa"],
+      issueRepo: "developing-today/code",
+      staleAfterMs: 30 * 60_000,
+      cooldownMs: 15 * 60_000,
+    }),
+  );
   const logs: string[] = [];
   const escCalls: string[] = [];
   const h: Harness = {
@@ -75,9 +76,10 @@ async function harness(opts: {
     rung3Calls: 0,
     escCalls,
     effects: {
-      probeCdp: async () => opts.cdpOk === false
-        ? { ok: false, detail: "CDP /json/version unreachable: connection refused" }
-        : { ok: true, detail: "CDP answered" },
+      probeCdp: async () =>
+        opts.cdpOk === false
+          ? { ok: false, detail: "CDP /json/version unreachable: connection refused" }
+          : { ok: true, detail: "CDP answered" },
       rung2: async () => {
         h.rung2Calls++;
         return opts.rung2?.() ?? { outcome: "failed", detail: "re-validation failed" };
@@ -87,11 +89,24 @@ async function harness(opts: {
         return opts.rung3?.() ?? { outcome: "failed", detail: "re-login failed" };
       },
       escalation: {
-        enqueueTask: async (packet) => { escCalls.push(`enqueue:${packet.dedupeKey}`); escCalls.push(`enqueue-issue:${packet.issueNumber}`); return "4242"; },
-        openIssue: async (a) => { escCalls.push(`open:${a.repo}`); return 777; },
-        commentIssue: async (a) => { escCalls.push(`comment:${a.issueNumber}`); },
-        closeIssue: async (a) => { escCalls.push(`close:${a.issueNumber}`); },
-        completeTask: async (a) => { escCalls.push(`complete:${a.queueTaskId}`); },
+        enqueueTask: async (packet) => {
+          escCalls.push(`enqueue:${packet.dedupeKey}`);
+          escCalls.push(`enqueue-issue:${packet.issueNumber}`);
+          return "4242";
+        },
+        openIssue: async (a) => {
+          escCalls.push(`open:${a.repo}`);
+          return 777;
+        },
+        commentIssue: async (a) => {
+          escCalls.push(`comment:${a.issueNumber}`);
+        },
+        closeIssue: async (a) => {
+          escCalls.push(`close:${a.issueNumber}`);
+        },
+        completeTask: async (a) => {
+          escCalls.push(`complete:${a.queueTaskId}`);
+        },
       } satisfies EscalationEffectors,
       log: (line) => logs.push(line),
     },
@@ -116,7 +131,10 @@ async function harness(opts: {
 
 const okDoc = (min: number) => ({ service: "fixture", status: "ok", measuredAt: iso(min) });
 const failDoc = (min: number, status: string, detail = "producer failed") => ({
-  service: "fixture", status, measuredAt: iso(min), detail,
+  service: "fixture",
+  status,
+  measuredAt: iso(min),
+  detail,
 });
 
 describe("watchdog entry point — acceptance fixtures", () => {
@@ -263,7 +281,10 @@ describe("adapter loader", () => {
 
   test("loadAdapters skips a broken file and reports it, keeping the good ones", async () => {
     const dir = await mkdtemp(join(tmpdir(), "watchdog-adapters-"));
-    await writeFile(join(dir, "good.json"), JSON.stringify({ name: "good", latestPath: "/tmp/l.json", issueRepo: "a/b" }));
+    await writeFile(
+      join(dir, "good.json"),
+      JSON.stringify({ name: "good", latestPath: "/tmp/l.json", issueRepo: "a/b" }),
+    );
     await writeFile(join(dir, "bad.json"), "{not json");
     const { adapters, errors } = await loadAdapters(dir);
     expect(adapters.map((a) => a.name)).toEqual(["good"]);
