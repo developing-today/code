@@ -57,3 +57,37 @@ func TestPathsCacheChangesTheDoctorDirectory(t *testing.T) {
 		t.Fatalf("paths.cache should redirect doctor to %q instead of %q:\n%s", customCache, defaultCache, out)
 	}
 }
+
+// Effect probe for paths.plugins (#8467 burn-down): a plugin manifest
+// outside every configured discovery path is invisible to `plugin list`,
+// then becomes discoverable when the user points paths.plugins at the
+// directory that holds it.
+func TestPathsPluginsDiscoversAPluginThatLivesOnlyThere(t *testing.T) {
+	e := newEnv(t, oneServer)
+	dir := filepath.Join(e.dir, "off-path-plugins")
+	pd := filepath.Join(dir, "weather")
+	if err := os.MkdirAll(pd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"name":"weather","description":"forecasts","command":"./weather-server"}`
+	if err := os.WriteFile(filepath.Join(pd, "mcpx-plugin.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pd, "weather-server"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := e.try("plugin", "list")
+	if err != nil {
+		t.Fatalf("plugin list: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "weather") {
+		t.Fatalf("a plugin outside every search path should not be discovered:\n%s", out)
+	}
+
+	e.envVars = append(e.envVars, "MCPX_PATHS_PLUGINS="+dir)
+	out = e.run("plugin", "list")
+	if !strings.Contains(out, "weather") {
+		t.Fatalf("paths.plugins should make the off-path plugin discoverable:\n%s", out)
+	}
+}
