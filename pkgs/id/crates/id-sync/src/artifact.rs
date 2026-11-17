@@ -2277,7 +2277,10 @@ mod tests {
             .join("proptest-regressions")
             .join("artifact.txt");
         let contents = std::fs::read_to_string(&path).unwrap_or_else(|error| {
-            panic!("proptest regression seed missing at {}: {error}", path.display())
+            panic!(
+                "proptest regression seed missing at {}: {error}",
+                path.display()
+            )
         });
         assert!(
             contents.lines().any(|line| line.starts_with("cc ")),
