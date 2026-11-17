@@ -26,6 +26,9 @@ fleet-proxy = { workspace = true, default-features = false }
 # fleet-secrets is linked only by builds whose domains resolve secrets;
 # the connect variant must not carry it (§2: "nothing else").
 fleet-secrets = { workspace = true, optional = true }
+# The laptop-agent client (developing-today/code#10796): the transport ladder
+# and the verbs over the laptop daemon; laptop builds only.
+fleet-laptop-agent = { workspace = true, optional = true }
 serde_json = { workspace = true }
 # The gh domain (code#8887) mints App installation tokens over the
 # GitHub API; same ureq pin as fleet-queue/fleet-search (rustls, no
@@ -96,4 +99,4 @@ secrets = ["dep:fleet-secrets"]
 # full only — the serve build's daemons shell out to it externally
 # if ever needed, it is not a daemon role.
 gh = ["dep:fleet-secrets", "dep:ureq"]
-laptop-agent = ["dep:fleet-secrets"]
+laptop-agent = ["dep:fleet-secrets", "dep:fleet-laptop-agent"]
