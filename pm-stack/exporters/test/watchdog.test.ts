@@ -87,7 +87,7 @@ async function harness(opts: {
         return opts.rung3?.() ?? { outcome: "failed", detail: "re-login failed" };
       },
       escalation: {
-        enqueueTask: async (packet) => { escCalls.push(`enqueue:${packet.dedupeKey}`); return "4242"; },
+        enqueueTask: async (packet) => { escCalls.push(`enqueue:${packet.dedupeKey}`); escCalls.push(`enqueue-issue:${packet.issueNumber}`); return "4242"; },
         openIssue: async (a) => { escCalls.push(`open:${a.repo}`); return 777; },
         commentIssue: async (a) => { escCalls.push(`comment:${a.issueNumber}`); },
         closeIssue: async (a) => { escCalls.push(`close:${a.issueNumber}`); },
@@ -155,15 +155,19 @@ describe("watchdog entry point — acceptance fixtures", () => {
     expect(health.incident?.surfacing).toBe("escalate");
     expect(health.incident?.escalation?.queueTaskId).toBe("4242");
     expect(health.incident?.escalation?.issueNumber).toBe(777);
-    expect(h.escCalls.filter((c) => c.startsWith("enqueue"))).toHaveLength(1);
+    expect(h.escCalls.filter((c) => c.startsWith("enqueue:"))).toHaveLength(1);
     expect(h.escCalls.filter((c) => c.startsWith("open"))).toHaveLength(1);
+    // The issue is created first and its number reaches the enqueue:
+    // the queue task names the incident issue (task 20118).
+    expect(h.escCalls).toContain("enqueue-issue:777");
+    expect(h.escCalls.indexOf("open:developing-today/code")).toBeLessThan(h.escCalls.indexOf("enqueue-issue:777"));
     // Repair log records every rung attempt and stays within its bound.
     const rungs = health.repairLog.filter((e) => e.outcome === "attempted").map((e) => e.rung);
     expect(rungs).toEqual([1, 1, 2, 2, 3, 3]);
     // A further failing tick dedupes: no second task, no second issue.
     await h.setDoc(failDoc(7, "mystery-failure"));
     await h.tick(7);
-    expect(h.escCalls.filter((c) => c.startsWith("enqueue"))).toHaveLength(1);
+    expect(h.escCalls.filter((c) => c.startsWith("enqueue:"))).toHaveLength(1);
     expect(h.escCalls.filter((c) => c.startsWith("open"))).toHaveLength(1);
     await rm(h.dir, { recursive: true, force: true });
   });
@@ -207,7 +211,7 @@ describe("watchdog entry point — acceptance fixtures", () => {
       await h.setDoc(failDoc(min, "mystery-failure"));
       await h.tick(min);
     }
-    expect(h.escCalls.filter((c) => c.startsWith("enqueue"))).toHaveLength(1);
+    expect(h.escCalls.filter((c) => c.startsWith("enqueue:"))).toHaveLength(1);
     await h.setDoc(okDoc(10));
     const { state } = await h.tick(10);
     expect(state.sources.fixture.incident).toBeNull();
