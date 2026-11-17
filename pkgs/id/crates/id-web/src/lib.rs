@@ -58,6 +58,7 @@ mod security;
 mod seitan;
 mod tags_ws;
 mod templates;
+mod transport_ad;
 pub mod world_ws;
 
 pub use content_mode::{ContentMode, MediaType, detect_mode, detect_mode_with_content};
@@ -492,6 +493,13 @@ pub struct AppState {
     /// for states built outside `id serve` (tests, embedded surfaces) —
     /// the send route then answers 503 rather than inventing an identity.
     pub transfer_endpoint: Option<iroh::endpoint::Endpoint>,
+    /// The transport-advertisement minter whose current signed ad
+    /// the `/.well-known/id-transport-advertisement` handler serves
+    /// (#8214 slice 4). `id serve` wires its node's minter in
+    /// through [`web_routers_with_surface`]; `None` for states
+    /// built anywhere else — the handler then answers 404 rather
+    /// than inventing an ad.
+    pub transport_ad: Option<Arc<id_core::transport_advertisement::AdMinter>>,
     /// State for collaborative editing sessions.
     pub collab: Arc<CollabState>,
     /// Asset URLs (with cache-busting hashes).
@@ -568,6 +576,7 @@ impl std::fmt::Debug for AppState {
             .field("cookie_secure", &self.cookie_secure)
             .field("groups_log", &self.groups_log)
             .field("seitan", &self.seitan)
+            .field("transport_ad", &self.transport_ad.is_some())
             .finish()
     }
 }
@@ -618,6 +627,7 @@ impl AppState {
         Ok(Self {
             store,
             transfer_endpoint: None,
+            transport_ad: None,
             collab: Arc::new(CollabState::new()),
             assets: load_asset_urls(),
             peers,
@@ -653,6 +663,16 @@ impl AppState {
     /// [`AppState::transfer_endpoint`].
     pub fn set_transfer_endpoint(&mut self, endpoint: Option<iroh::endpoint::Endpoint>) {
         self.transfer_endpoint = endpoint;
+    }
+
+    /// Wire the serving node's transport-advertisement minter in
+    /// (#8214 slice 4). `id serve` passes its minter through
+    /// [`web_routers_with_surface`]; see [`AppState::transport_ad`].
+    pub fn set_transport_ad(
+        &mut self,
+        minter: Option<Arc<id_core::transport_advertisement::AdMinter>>,
+    ) {
+        self.transport_ad = minter;
     }
 }
 
@@ -829,6 +849,7 @@ pub async fn web_routers(
         groups_log,
         seitan,
         None,
+        None,
     )
     .await?;
     Ok(routers)
@@ -908,6 +929,7 @@ pub async fn web_routers_with_surface(
     groups_log: Option<std::path::PathBuf>,
     seitan: SeitanState,
     transfer_endpoint: Option<iroh::endpoint::Endpoint>,
+    transport_ad: Option<Arc<id_core::transport_advertisement::AdMinter>>,
 ) -> anyhow::Result<(Vec<Router>, WebSurfaceFactory)> {
     let mut state = match local_events {
         Some(events) => {
@@ -935,6 +957,7 @@ pub async fn web_routers_with_surface(
         }
     };
     state.set_transfer_endpoint(transfer_endpoint);
+    state.set_transport_ad(transport_ad);
     let surface = WebSurfaceFactory {
         state: state.clone(),
         world: world.clone(),

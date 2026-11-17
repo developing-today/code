@@ -10,8 +10,12 @@
 //! (record Decision 1). This module is slice 1 of #8214: the type,
 //! the domain-separated canonical encoding, sign/verify, the
 //! freshest-valid-wins selection rule (Decisions 1+3), and the
-//! durable sequence counter (invariant 8). Fetch/cache transport
-//! and the `.well-known` serving handler are later slices.
+//! durable sequence counter (invariant 8). Slice 2 added the
+//! last-known-good cache and substrate resolution; slice 4 adds the
+//! server side: `AdMinter` (minting on transport change and per
+//! TTL, Decision 3), whose current bytes the `.well-known` handler
+//! in id-web serves byte-for-byte. Fetch-side HTTPS substrates are
+//! the remaining slice.
 //!
 //! The oracle for the tests below is the decision record itself:
 //! invariants 1–3 and 8, and the #8214 acceptance tests
@@ -337,6 +341,132 @@ impl SequenceFile {
         std::fs::write(&tmp, next.to_string())?;
         std::fs::rename(&tmp, &self.path)?;
         Ok(next)
+    }
+}
+
+/// The TTL the record recommends for minted ads (Decision 1:
+/// TTL <= 24 h, 1 h RECOMMENDED).
+pub const RECOMMENDED_TTL_SECONDS: u64 = 60 * 60;
+
+/// Server-side minter (#8214 slice 4): owns the subject identity
+/// key and the durable SequenceFile beside it, and produces the
+/// one current signed advertisement the server publishes (Decision
+/// 1). Minting follows Decision 3: a new ad (sequence + 1) is
+/// minted on any transport change and at least once per TTL;
+/// between those events the current ad's bytes are stable, so
+/// every substrate (the .well-known handler, a broker mirror, the
+/// Workers push) serves the identical object byte-for-byte
+/// (Decision 2 parity).
+pub struct AdMinter {
+    key: SigningKey,
+    sequence: SequenceFile,
+    ttl_seconds: u64,
+    current: std::sync::Mutex<Option<MintedAd>>,
+}
+
+struct MintedAd {
+    transports: Vec<TransportEntry>,
+    signed: SignedAdvertisement,
+    /// The exact bytes substrates serve: the serde JSON of the
+    /// SignedAdvertisement, captured at mint time so a later
+    /// serializer change can never alter what an already-minted
+    /// ad serves as.
+    bytes: Vec<u8>,
+}
+
+impl AdMinter {
+    /// A minter for the given identity key, issuing sequences from
+    /// the counter file that lives beside the identity key. The
+    /// TTL is clamped to the record's 24 h maximum.
+    pub fn new(key: SigningKey, sequence: SequenceFile, ttl_seconds: u64) -> Self {
+        Self {
+            key,
+            sequence,
+            ttl_seconds: ttl_seconds.clamp(1, MAX_TTL_SECONDS),
+            current: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// The subject fingerprint this minter signs for.
+    pub fn subject(&self) -> String {
+        TransportAdvertisement::subject_for(&self.key.verifying_key())
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<MintedAd>> {
+        self.current
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn mint_locked(
+        &self,
+        slot: &mut Option<MintedAd>,
+        transports: Vec<TransportEntry>,
+        now: u64,
+    ) -> std::io::Result<Vec<u8>> {
+        let sequence = self.sequence.next_sequence()?;
+        let ad = TransportAdvertisement {
+            subject: self.subject(),
+            transports,
+            issued_at: now,
+            expires_at: now.saturating_add(self.ttl_seconds),
+            sequence,
+        };
+        let signed = ad.sign(&self.key);
+        let bytes = serde_json::to_vec(&signed).map_err(std::io::Error::other)?;
+        *slot = Some(MintedAd {
+            transports: ad.transports.clone(),
+            signed,
+            bytes: bytes.clone(),
+        });
+        Ok(bytes)
+    }
+
+    /// Mint a new ad over the transports unconditionally
+    /// (sequence + 1) and return the bytes substrates should
+    /// serve.
+    pub fn mint(&self, transports: Vec<TransportEntry>, now: u64) -> std::io::Result<Vec<u8>> {
+        let mut slot = self.lock();
+        self.mint_locked(&mut slot, transports, now)
+    }
+
+    /// The Decision 3 refresh: mint only when there is no current
+    /// ad, the transport set changed, or the current ad has
+    /// expired; otherwise return the current bytes unchanged (a
+    /// no-op refresh consumes no sequence).
+    pub fn refresh(&self, transports: Vec<TransportEntry>, now: u64) -> std::io::Result<Vec<u8>> {
+        let mut slot = self.lock();
+        let stale = match &*slot {
+            None => true,
+            Some(minted) => {
+                minted.transports != transports || minted.signed.advertisement.expires_at <= now
+            }
+        };
+        if stale {
+            return self.mint_locked(&mut slot, transports, now);
+        }
+        Ok(slot.as_ref().map(|m| m.bytes.clone()).unwrap_or_default())
+    }
+
+    /// The bytes to serve right now, or None when nothing was
+    /// ever minted. An expired current ad is re-minted in place
+    /// over its last transport set (the per-TTL mint Decision 3
+    /// requires), so a server that is asked always answers with
+    /// a fresh ad.
+    pub fn current_bytes(&self, now: u64) -> std::io::Result<Option<Vec<u8>>> {
+        let mut slot = self.lock();
+        let expired = matches!(
+            &*slot,
+            Some(minted) if minted.signed.advertisement.expires_at <= now
+        );
+        if expired {
+            let transports = slot
+                .as_ref()
+                .map(|m| m.transports.clone())
+                .unwrap_or_default();
+            return self.mint_locked(&mut slot, transports, now).map(Some);
+        }
+        Ok(slot.as_ref().map(|m| m.bytes.clone()))
     }
 }
 
@@ -714,5 +844,116 @@ mod cache_tests {
         let sel = resolve(&mut cache, &substrates, &subject(), NOW).expect("LKG fallback");
         assert!(sel.degraded);
         assert_eq!(sel.advertisement.sequence, 4);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod minter_tests {
+    use super::*;
+
+    // Oracle: the #5793 decision record, Decision 3 (mint on
+    // transport change and at least once per TTL) and invariant 8
+    // (sequence durably monotonic per subject).
+
+    const NOW: u64 = 1_700_000_000;
+
+    fn key() -> SigningKey {
+        SigningKey::from_bytes(&[7u8; 32])
+    }
+
+    fn transports(port: u16) -> Vec<TransportEntry> {
+        vec![TransportEntry {
+            kind: TransportKind::Tcp,
+            endpoint: format!("203.0.113.7:{port}"),
+            priority: 30,
+            broker: None,
+        }]
+    }
+
+    fn parse(bytes: &[u8]) -> SignedAdvertisement {
+        serde_json::from_slice(bytes).expect("served bytes parse as a SignedAdvertisement")
+    }
+
+    fn minter(dir: &std::path::Path, ttl: u64) -> AdMinter {
+        AdMinter::new(
+            key(),
+            SequenceFile::new(dir.join("transport-ad.sequence")),
+            ttl,
+        )
+    }
+
+    #[test]
+    fn minted_ad_verifies_and_carries_the_recommended_shape() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = minter(dir.path(), RECOMMENDED_TTL_SECONDS);
+        let bytes = m.mint(transports(443), NOW).unwrap();
+        let signed = parse(&bytes);
+        let ad = signed
+            .verify(&m.subject())
+            .expect("a minted ad verifies against its subject");
+        assert_eq!(ad.sequence, 1);
+        assert_eq!(ad.expires_at - ad.issued_at, RECOMMENDED_TTL_SECONDS);
+        // Serving is byte-for-byte: what current_bytes returns is
+        // exactly what mint produced.
+        assert_eq!(
+            m.current_bytes(NOW).unwrap().as_deref(),
+            Some(bytes.as_slice())
+        );
+    }
+
+    #[test]
+    fn refresh_mints_only_on_change_or_expiry() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = minter(dir.path(), 3600);
+        let first = m.refresh(transports(443), NOW).unwrap();
+        // Same transports, still fresh: no new sequence.
+        let again = m.refresh(transports(443), NOW + 60).unwrap();
+        assert_eq!(first, again);
+        assert_eq!(parse(&again).advertisement.sequence, 1);
+        // Transport change: Decision 3 mints sequence + 1.
+        let changed = m.refresh(transports(8443), NOW + 120).unwrap();
+        assert_eq!(parse(&changed).advertisement.sequence, 2);
+        // Expiry of the current ad: the per-TTL mint fires even
+        // with unchanged transports.
+        let expired = m.refresh(transports(8443), NOW + 120 + 3600).unwrap();
+        assert_eq!(parse(&expired).advertisement.sequence, 3);
+    }
+
+    #[test]
+    fn current_bytes_remints_an_expired_ad() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = minter(dir.path(), 3600);
+        assert!(m.current_bytes(NOW).unwrap().is_none());
+        m.mint(transports(443), NOW).unwrap();
+        let bytes = m.current_bytes(NOW + 3600).unwrap().expect("re-minted");
+        let ad = parse(&bytes).advertisement;
+        assert_eq!(ad.sequence, 2);
+        assert_eq!(ad.issued_at, NOW + 3600);
+    }
+
+    #[test]
+    fn sequence_never_regresses_across_minter_restarts() {
+        // Invariant 8: the counter lives beside the identity key,
+        // so a restarted minter continues from the persisted
+        // sequence instead of reissuing a lower one.
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let m = minter(dir.path(), 3600);
+            m.mint(transports(443), NOW).unwrap();
+            m.mint(transports(443), NOW + 10).unwrap();
+        }
+        let restarted = minter(dir.path(), 3600);
+        let bytes = restarted.mint(transports(443), NOW + 20).unwrap();
+        assert_eq!(parse(&bytes).advertisement.sequence, 3);
+    }
+
+    #[test]
+    fn ttl_is_clamped_to_the_record_maximum() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = minter(dir.path(), MAX_TTL_SECONDS * 10);
+        let bytes = m.mint(transports(443), NOW).unwrap();
+        let ad = parse(&bytes).advertisement;
+        assert_eq!(ad.expires_at - ad.issued_at, MAX_TTL_SECONDS);
     }
 }

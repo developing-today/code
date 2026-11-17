@@ -1064,6 +1064,44 @@ impl ServeWorlds {
 /// `--groups-log` option when given, else the default file name —
 /// resolved with the group commands' semantics (#2778; serve used
 /// to hardcode the default and ignore the option).
+/// The transport set this node currently advertises (#8214
+/// slice 4): its endpoint's direct UDP socket addresses and its
+/// home relay, in the #5671 fallback order (direct first, relay
+/// second). Recomputed from the live endpoint address, so a
+/// watcher re-minting on change always signs the current set.
+fn ad_transports(
+    endpoint: &iroh::endpoint::Endpoint,
+) -> Vec<id_core::transport_advertisement::TransportEntry> {
+    use id_core::transport_advertisement::{TransportEntry, TransportKind};
+    let mut out = Vec::new();
+    for addr in endpoint.addr().addrs {
+        match addr {
+            iroh::TransportAddr::Ip(socket) => out.push(TransportEntry {
+                kind: TransportKind::Udp,
+                endpoint: socket.to_string(),
+                priority: 10,
+                broker: None,
+            }),
+            iroh::TransportAddr::Relay(url) => out.push(TransportEntry {
+                kind: TransportKind::RelayUdp,
+                endpoint: url.to_string(),
+                priority: 20,
+                broker: None,
+            }),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Unix seconds now, for advertisement minting.
+fn ad_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 fn serve_groups_log_path(path: Option<PathBuf>) -> PathBuf {
     crate::commands::group::log_path(path)
 }
@@ -2230,6 +2268,42 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
             );
             #[cfg(not(feature = "world"))]
             let seitan_state = id_web::SeitanState::default();
+            // #8214 slice 4: the transport-advertisement minter the
+            // web surface serves at
+            // /.well-known/id-transport-advertisement — signed by
+            // the node key, its sequence counter beside the
+            // identity key (KEY_FILE), first mint over the
+            // endpoint's current transports. A watcher re-mints
+            // when the endpoint's address set changes (Decision 3:
+            // mint on any transport change); the minter itself
+            // re-mints per TTL when the handler asks for the
+            // current bytes.
+            let transport_ad_minter = {
+                let minter = std::sync::Arc::new(id_core::transport_advertisement::AdMinter::new(
+                    ed25519_dalek::SigningKey::from_bytes(&key.to_bytes()),
+                    id_core::transport_advertisement::SequenceFile::new(
+                        std::path::Path::new(KEY_FILE).with_file_name(".transport-ad-sequence"),
+                    ),
+                    id_core::transport_advertisement::RECOMMENDED_TTL_SECONDS,
+                ));
+                if let Err(error) = minter.refresh(ad_transports(&endpoint), ad_now()) {
+                    warn!("transport advertisement: initial mint failed: {error}");
+                }
+                let watcher_minter = std::sync::Arc::clone(&minter);
+                let watcher_endpoint = endpoint.clone();
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+                    loop {
+                        tick.tick().await;
+                        if let Err(error) =
+                            watcher_minter.refresh(ad_transports(&watcher_endpoint), ad_now())
+                        {
+                            warn!("transport advertisement: refresh failed: {error}");
+                        }
+                    }
+                });
+                minter
+            };
             let (web_routers, surface) = id_web::web_routers_with_surface(
                 store_handle.clone(),
                 Some(peer_discovery.clone()),
@@ -2245,6 +2319,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 Some(groups_log.clone()),
                 seitan_state,
                 Some(endpoint.clone()),
+                Some(std::sync::Arc::clone(&transport_ad_minter)),
             )
             .await?;
             publication_surface = Some(surface);

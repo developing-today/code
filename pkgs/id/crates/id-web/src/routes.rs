@@ -581,6 +581,10 @@ fn create_router_inner(state: AppState) -> Router {
     let router = Router::new()
         // Page routes (return full HTML pages)
         .route("/", get(index_handler))
+        .route(
+            "/.well-known/id-transport-advertisement",
+            get(super::transport_ad::transport_advertisement_handler),
+        )
         .route("/files", get(files_page_handler))
         .route(&world_route, get(world_page_handler))
         .route("/settings", get(settings_handler))
