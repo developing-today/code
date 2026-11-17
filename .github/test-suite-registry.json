@@ -809,6 +809,20 @@
       "notes": "Wired by #6344: pm-stack-tests.yml gains pm-stack/meta-exporter/** in both push and pull_request path filters and a guarded step running the explicit test file under Node 24; the registry records configuration, not an automatic coverage claim."
     },
     {
+      "id": "pm-stack.watchdog-state",
+      "paths": ["pm-stack/exporters/test/watchdog-state.test.ts"],
+      "invocation": "bun test ../exporters/test/watchdog-state.test.ts (working-directory pm-stack/aggregator)",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test watchdog-state suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [8026],
+      "notes": "Wired by #8026: pm-stack-tests.yml gains a guarded step running the watchdog-state suite (the only verification of the quota watchdog decision layer, pm-stack/exporters/src/watchdog-state.ts) from pm-stack/aggregator per the exporters README invocation; the workflow runs nightly and on workflow_dispatch per .github/ci-policy.md, so no path filters remain to extend."
+    },
+    {
       "id": "github-backup.python",
       "paths": ["infra/github-backup/tests/test_*.py"],
       "invocation": "Run each matched Python file; fail if the glob is empty",
