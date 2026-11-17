@@ -13,15 +13,6 @@
 # (2026-11-11, task 14824): 403 required features, 152 covered, 251
 # exempt below.
 
-op	adapters_remove	no integration-test exercise yet; burn-down #8466 (ops group)
-op	authz_decisions_clear	no integration-test exercise yet; burn-down #8466 (ops group)
-op	daemon_restart	no integration-test exercise yet; burn-down #8466 (ops group)
-op	refresh	no integration-test exercise yet; burn-down #8466 (ops group)
-op	restart	no integration-test exercise yet; burn-down #8466 (ops group)
-op	secret_request_decline	no integration-test exercise yet; burn-down #8466 (ops group)
-op	secrets_set	no integration-test exercise yet; burn-down #8466 (ops group)
-op	secrets_unset	no integration-test exercise yet; burn-down #8466 (ops group)
-op	shutdown	no integration-test exercise yet; burn-down #8466 (ops group)
 cli	adapter	no integration-test exercise yet; burn-down #8460 (cli configuration group)
 cli	api	no integration-test exercise yet; burn-down #8460 (cli configuration group)
 cli	completion	no integration-test exercise yet; burn-down #8460 (cli configuration group)
