@@ -16,7 +16,7 @@
 use std::path::PathBuf;
 
 use id_core::world_presentation::{ScreenCell, ScreenSurface, StyleToken};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn cell(symbol: &str, fg: u8, bg: u8, bold: bool, columns: u8) -> ScreenCell {
     ScreenCell {
@@ -139,8 +139,8 @@ fn build_cases() -> Vec<Value> {
     cases()
         .into_iter()
         .map(|(name, width, height, cells)| {
-            let surface = ScreenSurface::from_cells(width, height, cells)
-                .expect("corpus case must build");
+            let surface =
+                ScreenSurface::from_cells(width, height, cells).expect("corpus case must build");
             json!({
                 "name": name,
                 "width": width,
@@ -171,7 +171,8 @@ fn screen_parity_corpus_matches_rust_presenter() {
         .expect("screen-parity corpus must be checked in at pkgs/id/test-data/");
     let corpus: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(
-        corpus["cases"], json!(built),
+        corpus["cases"],
+        json!(built),
         "Rust presenter verdicts drifted from the checked-in parity corpus; \
          if the change is intentional, regenerate with SCREEN_PARITY_GENERATE=1 \
          and record the divergence on #8340"

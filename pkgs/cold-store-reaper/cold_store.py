@@ -64,6 +64,14 @@ SUBFOLDERS = ("bundles", "manifests", "db-backups")
 # DB-backup class (DESIGN.md section 5): nightly dumps live unbundled under
 # db-backups/<db>/, one subfolder per database.
 BACKUP_DBS = ("supabase", "turso", "d1")
+# Backup families whose folder holds one file per source database per
+# run, named <family>-<stamp>-<database>.<ext>: retention runs per
+# source database (keyed by the name after the stamp), not across the
+# family. export-turso.sh files every Turso database into db-backups/
+# turso/ each night; read as one series, "newest per day" kept one
+# database's export per night and trashed the rest (2026-11-17: keep
+# 20, prune 37 of that night's 38 fresh exports).
+PER_SOURCE_RETENTION_DBS = frozenset({"turso"})
 
 # Manifest sync target (DESIGN.md section 3): the hosted copy of this schema lives
 # in Cloudflare D1. The token comes from the environment only; the account
@@ -1504,6 +1512,36 @@ class ColdStore:
                 prune.append({**f, "reasons": ["excess"]})
         return keep, prune, unparseable
 
+    @classmethod
+    def _per_source_retention_plan(
+        cls, db_name: str, files: list[dict]
+    ) -> tuple[list[dict], list[dict], list[dict]]:
+        """_retention_plan applied separately to each source database in
+        a family folder (PER_SOURCE_RETENTION_DBS). The source is the
+        part of <db>-<YYYYMMDDTHHMMSSZ>-<source> after the stamp; every
+        source keeps its own 30 daily / 12 weekly / 12 monthly set.
+        Unparseable names are never pruned, only reported."""
+        groups: dict[str, list[dict]] = {}
+        unparseable = []
+        for f in files:
+            m = re.fullmatch(re.escape(db_name) + r"-\d{8}T\d{6}Z-(.+)", f["name"])
+            if f["stamp"] is None or not m:
+                unparseable.append(f)
+                continue
+            groups.setdefault(m.group(1), []).append(f)
+        keep, prune = [], []
+        for group in groups.values():
+            k, p, _u = cls._retention_plan(group)
+            keep.extend(k)
+            prune.extend(p)
+
+        def order(f):
+            return (f["stamp"], f["name"])
+
+        keep.sort(key=order, reverse=True)
+        prune.sort(key=order, reverse=True)
+        return keep, prune, unparseable
+
     def prune_backups(
         self, db_name: str | None = None, apply: bool = False
     ) -> list[dict]:
@@ -1526,7 +1564,10 @@ class ColdStore:
             rows = self.list_backups(db)
             for r in rows:
                 r["stamp"] = self._parse_backup_stamp(db, r["name"])
-            keep, prune, unparseable = self._retention_plan(rows)
+            if db in PER_SOURCE_RETENTION_DBS:
+                keep, prune, unparseable = self._per_source_retention_plan(db, rows)
+            else:
+                keep, prune, unparseable = self._retention_plan(rows)
             plans.append(
                 {
                     "db": db,
