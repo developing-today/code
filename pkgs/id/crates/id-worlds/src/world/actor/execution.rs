@@ -7,14 +7,10 @@
 
 use super::*;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::Arc;
-
-use anyhow::{Context, Result, bail, ensure};
-use tokio::sync::{broadcast, mpsc, oneshot, watch};
-use tracing::Instrument;
-
 use crate::world_caps::{CapError, CapsReport, Decision, Request, Subscription};
+use anyhow::{Context, Result, bail, ensure};
+use std::collections::{BTreeSet, HashMap};
+use tokio::sync::oneshot;
 
 impl WorldActor {
     /// Durably record `entry`, or turn the world read-only.

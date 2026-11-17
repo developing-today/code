@@ -3,11 +3,11 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tracing::Instrument;
 
-use crate::world_caps::{CapError, CapsReport, Decision, Request, Subscription};
+use crate::world_caps::{CapsReport, Decision, Subscription};
 
 mod execution;
 
