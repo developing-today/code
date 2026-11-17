@@ -60,6 +60,41 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+function ceilingExceeded(headroom: number): FailClosed {
+  return new FailClosed(
+    413,
+    "ceiling_exceeded",
+    `storage ceiling exceeded: value is larger than the ${headroom} bytes of headroom; reads and export remain available`,
+  );
+}
+
+/** Reads a request body as text, giving up as soon as it exceeds
+ * `limit` bytes so an oversized body is never buffered whole. */
+async function readTextUpTo(req: Request, limit: number): Promise<string | null> {
+  if (!req.body) return "";
+  const reader = req.body.getReader();
+  const decoder = new TextDecoder();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return decoder.decode(bytes);
+}
+
 export class UserDO {
   private state: DOState;
   private ready: Promise<void>;
@@ -143,6 +178,14 @@ export class UserDO {
         `storage ceiling exceeded: ${after} bytes would exceed the ${ceiling}-byte ceiling; reads and export remain available`,
       );
     }
+  }
+
+  /** The largest value (bytes) a KV PUT may store over `priorBytes`
+   * of existing data without exceeding the ceiling; null = no ceiling. */
+  private kvHeadroom(priorBytes: number): number | null {
+    const ceiling = this.ceilingBytes();
+    if (ceiling === null) return null;
+    return ceiling - this.usage().storage_bytes + priorBytes;
   }
 
   private meta(key: string): string | null {
@@ -287,11 +330,20 @@ export class UserDO {
       }
       const kvMatch = url.pathname.match(/^\/v1\/kv\/([A-Za-z0-9._-]{1,128})$/);
       if (kvMatch && req.method === "PUT") {
-        const value = await req.text();
         const prior = this.state.storage.sql
           .exec("SELECT LENGTH(value) AS n FROM kv WHERE key = ?", kvMatch[1])
           .toArray();
         const priorBytes = prior.length === 0 ? 0 : Number(prior[0].n);
+        const headroom = this.kvHeadroom(priorBytes);
+        let value: string | null;
+        if (headroom === null) {
+          value = await req.text();
+        } else {
+          const declared = req.headers.get("content-length");
+          if (declared !== null && Number(declared) > headroom) throw ceilingExceeded(headroom);
+          value = await readTextUpTo(req, headroom);
+          if (value === null) throw ceilingExceeded(headroom);
+        }
         this.assertWritable(new TextEncoder().encode(value).byteLength - priorBytes);
         this.state.storage.sql.exec(
           "INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
