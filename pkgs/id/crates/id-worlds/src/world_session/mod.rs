@@ -1835,6 +1835,9 @@ async fn handle_client_frame<I: SessionIo>(
             is_click,
             dx,
             dy,
+            // The stale-decision token was checked before dispatch; it
+            // is not part of the journaled input.
+            ..
         } => {
             // #1831 slice S2 (input event model design, Decision 3):
             // activation events are journaled and replayed like
