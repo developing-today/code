@@ -41,6 +41,12 @@
 #
 # Usage (on the laptop, from the repo checkout):  bash install.sh
 set -euo pipefail
+# Argument contract (#3352): this script takes no command-line
+# arguments; anything given is a usage error before any work runs.
+if [ "$#" -gt 0 ]; then
+  echo "install.sh: unexpected argument '$1'; usage: bash install.sh" >&2
+  exit 2
+fi
 cd "$(dirname "$0")"
 SRC="$PWD"
 DST="$HOME/pm-stack/dispatch"
