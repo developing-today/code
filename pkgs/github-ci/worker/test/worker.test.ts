@@ -112,6 +112,29 @@ describe("github-ci worker", () => {
     expect(res.status).toBe(401);
   });
 
+  it("refuses an oversized unsigned body with 413 before reading it all (#11335)", async () => {
+    const chunk = new Uint8Array(1024 * 1024);
+    let pulled = 0;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(c) {
+          if (pulled >= 30 * chunk.byteLength) return c.close();
+          pulled += chunk.byteLength;
+          c.enqueue(chunk);
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const req = new Request("https://github-ci.test/", {
+      method: "POST",
+      headers: { "x-github-event": "workflow_run", "x-hub-signature-256": "sha256=00" },
+      body,
+    });
+    const res = await worker.fetch(req, env as unknown as Parameters<typeof worker.fetch>[1]);
+    expect(res.status).toBe(413);
+    expect(pulled).toBeLessThan(30 * chunk.byteLength);
+  });
+
   it("rejects a signed null body with 400 for workflow_run (#6946)", async () => {
     const body = "null";
     const res = await post(body, "workflow_run", await sign(body));

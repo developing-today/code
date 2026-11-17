@@ -18,6 +18,37 @@ const enc = new TextEncoder();
 // parallel delete fan-out.
 const KV_BULK_CHUNK = 100;
 
+// Bounded webhook body read (#11335): GitHub caps payloads at 25 MB,
+// so a declared or streamed body over that is refused before it is
+// buffered whole. The HMAC check below stays the authority.
+const MAX_WEBHOOK_BODY_BYTES = 25 * 1024 * 1024;
+
+async function readBodyUpTo(req, limit) {
+  const declared = req.headers.get("Content-Length");
+  if (declared !== null && Number(declared) > limit) return null;
+  if (!req.body) return "";
+  const reader = req.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
 async function hmacHex(secret, body) {
   const key = await crypto.subtle.importKey(
     "raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
@@ -41,7 +72,8 @@ export default {
       if (!env.GITHUB_WEBHOOK_SECRET) {
         return new Response("webhook secret not configured", { status: 500 });
       }
-      const body = await req.text();
+      const body = await readBodyUpTo(req, MAX_WEBHOOK_BODY_BYTES);
+      if (body === null) return new Response("payload too large", { status: 413 });
       const given = (req.headers.get("X-Hub-Signature-256") || "").replace("sha256=", "");
       const expect = await hmacHex(env.GITHUB_WEBHOOK_SECRET, body);
       let diff = given.length ^ expect.length;
