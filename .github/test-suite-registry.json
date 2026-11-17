@@ -250,7 +250,8 @@
       "paths": [
         "pkgs/id/hosted-worker/test/routing.test.ts",
         "pkgs/id/hosted-worker/test/blobs.test.ts",
-        "pkgs/id/hosted-worker/test/usage.test.ts"
+        "pkgs/id/hosted-worker/test/usage.test.ts",
+        "pkgs/id/hosted-worker/test/front-door.test.ts"
       ],
       "invocation": "cd pkgs/id/hosted-worker && npm test (node --test test/routing.test.ts)",
       "venue": {
