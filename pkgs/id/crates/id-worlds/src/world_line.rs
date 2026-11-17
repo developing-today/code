@@ -2,7 +2,8 @@
 //!
 //! The SSH command mode (`cmd:` login), the `id world join` stdin pump, and
 //! the `id world` CLI subcommands all speak the same verbs: chat, records,
-//! stats, logs, caps and quit. This module is the single parser that maps one
+//! stats, logs, caps, the object-discussion flow verbs of #5873 (anchor,
+//! talk, anchors, resolve, queue, flush) and quit. This module is the single parser that maps one
 //! line to one [`WorldLine`] action, so a sentence works identically as an SSH
 //! command, a piped script line, and a CLI one-off.
 
@@ -29,6 +30,47 @@ pub enum WorldLine {
     Logs { seconds: Option<u64> },
     /// `/caps`: the world's capability report.
     Caps,
+    /// `/anchor <target> [type]`: anchor the current conversation to an
+    /// object (#5873 section 3). The target is an `id://` reference or a
+    /// friendly-name phrase; the optional type is the anchor relation
+    /// (about, anchored-to-part, derived-from, talk-for), taken from the
+    /// final word when it names one.
+    Anchor {
+        /// The object the conversation anchors to.
+        target: String,
+        /// The anchor relation, when the line named one.
+        relation: Option<String>,
+    },
+    /// `/anchor confirm <n>`: confirm the proposed anchor numbered `n`
+    /// (#5873 sections 3 and 5.4).
+    AnchorConfirm {
+        /// The proposal number, as listed by `/anchor list`.
+        proposal: u64,
+    },
+    /// `/anchor list`: list this conversation's anchors and their state.
+    AnchorList,
+    /// `/talk <target>`: open (or create, per #5871) the object's talk page.
+    Talk {
+        /// The object whose talk page opens.
+        target: String,
+    },
+    /// `/anchors <target>`: list conversations anchored to an object.
+    Anchors {
+        /// The object whose anchored conversations are listed.
+        target: String,
+    },
+    /// `/resolve <thread> [into <target>]`: resolve a thread, optionally
+    /// into an edit of the target (#5874's mechanics).
+    Resolve {
+        /// The thread being resolved.
+        thread: String,
+        /// The edit target, when the line named one after `into`.
+        into: Option<String>,
+    },
+    /// `/queue`: inspect the offline outbox (#5873 section 6).
+    Queue,
+    /// `/flush`: drain the offline outbox (#5873 section 6).
+    Flush,
     /// `/help`: list the commands.
     Help,
     /// `/quit`: end the session.
@@ -59,6 +101,8 @@ pub fn parse_line(line: &str) -> Option<WorldLine> {
         Some("/quit") => return Some(WorldLine::Quit),
         Some("/stats") => return Some(WorldLine::Stats),
         Some("/caps") => return Some(WorldLine::Caps),
+        Some("/queue") => return Some(WorldLine::Queue),
+        Some("/flush") => return Some(WorldLine::Flush),
         _ => {}
     }
     if line == "/records" || line.starts_with("/records ") {
@@ -104,6 +148,101 @@ pub fn parse_line(line: &str) -> Option<WorldLine> {
             });
         }
         return Some(WorldLine::Message("usage: /logs [seconds]".to_owned()));
+    }
+    // The object-discussion flow verbs (#5873 section 3). /anchors is
+    // checked before /anchor: the names share a prefix, and the verb
+    // boundary rule (exact, or verb + space + argument) is what keeps
+    // /anchors from parsing as /anchor with a glued argument.
+    if line == "/anchors" {
+        return Some(WorldLine::Message("usage: /anchors <target>".to_owned()));
+    }
+    if let Some(rest) = line.strip_prefix("/anchors ") {
+        let target = rest.trim();
+        if !target.is_empty() {
+            return Some(WorldLine::Anchors {
+                target: target.to_owned(),
+            });
+        }
+        return Some(WorldLine::Message("usage: /anchors <target>".to_owned()));
+    }
+    if line == "/anchor" {
+        return Some(WorldLine::Message(
+            "usage: /anchor <target> [type] | /anchor confirm <n> | /anchor list".to_owned(),
+        ));
+    }
+    if let Some(rest) = line.strip_prefix("/anchor ") {
+        let rest = rest.trim();
+        if rest == "list" {
+            return Some(WorldLine::AnchorList);
+        }
+        if rest == "confirm" {
+            return Some(WorldLine::Message("usage: /anchor confirm <n>".to_owned()));
+        }
+        if let Some(number) = rest.strip_prefix("confirm ") {
+            if let Ok(proposal) = number.trim().parse::<u64>() {
+                return Some(WorldLine::AnchorConfirm { proposal });
+            }
+            return Some(WorldLine::Message("usage: /anchor confirm <n>".to_owned()));
+        }
+        // The optional [type] is the anchor relation, and it is the final
+        // word when it names one; a friendly-name target keeps its spaces
+        // otherwise, exactly as /document names do.
+        const RELATIONS: [&str; 4] = ["about", "anchored-to-part", "derived-from", "talk-for"];
+        if let Some((head, last)) = rest.rsplit_once(' ') {
+            let head = head.trim();
+            if !head.is_empty() && RELATIONS.contains(&last) {
+                return Some(WorldLine::Anchor {
+                    target: head.to_owned(),
+                    relation: Some(last.to_owned()),
+                });
+            }
+        }
+        return Some(WorldLine::Anchor {
+            target: rest.to_owned(),
+            relation: None,
+        });
+    }
+    if line == "/talk" {
+        return Some(WorldLine::Message("usage: /talk <target>".to_owned()));
+    }
+    if let Some(rest) = line.strip_prefix("/talk ") {
+        let target = rest.trim();
+        if !target.is_empty() {
+            return Some(WorldLine::Talk {
+                target: target.to_owned(),
+            });
+        }
+        return Some(WorldLine::Message("usage: /talk <target>".to_owned()));
+    }
+    if line == "/resolve" {
+        return Some(WorldLine::Message(
+            "usage: /resolve <thread> [into <target>]".to_owned(),
+        ));
+    }
+    if let Some(rest) = line.strip_prefix("/resolve ") {
+        let rest = rest.trim();
+        if let Some((thread, target)) = rest.split_once(" into ") {
+            let thread = thread.trim();
+            let target = target.trim();
+            if !thread.is_empty() && !target.is_empty() {
+                return Some(WorldLine::Resolve {
+                    thread: thread.to_owned(),
+                    into: Some(target.to_owned()),
+                });
+            }
+            return Some(WorldLine::Message(
+                "usage: /resolve <thread> [into <target>]".to_owned(),
+            ));
+        }
+        if !rest.is_empty() {
+            return Some(WorldLine::Resolve {
+                thread: rest.to_owned(),
+                into: None,
+            });
+        }
+        return Some(WorldLine::Message(
+            "usage: /resolve <thread> [into <target>]".to_owned(),
+        ));
     }
     if line == "/input" {
         return Some(WorldLine::Message("usage: /input <hex>".to_owned()));
@@ -286,6 +425,118 @@ mod tests {
         assert_eq!(
             parse_line("/logs  5"),
             Some(WorldLine::Logs { seconds: Some(5) })
+        );
+    }
+
+    #[test]
+    fn the_flow_verbs_parse() {
+        // #5873 section 3: the object-discussion verbs, in the shared
+        // grammar every surface consumes.
+        assert_eq!(
+            parse_line("/anchor id://abc"),
+            Some(WorldLine::Anchor {
+                target: "id://abc".into(),
+                relation: None
+            })
+        );
+        assert_eq!(
+            parse_line("/anchor id://abc#pa1~b~r1~p~blk anchored-to-part"),
+            Some(WorldLine::Anchor {
+                target: "id://abc#pa1~b~r1~p~blk".into(),
+                relation: Some("anchored-to-part".into())
+            })
+        );
+        // A friendly-name target keeps its spaces; a trailing relation
+        // word is the type, and only then.
+        assert_eq!(
+            parse_line("/anchor the design doc about"),
+            Some(WorldLine::Anchor {
+                target: "the design doc".into(),
+                relation: Some("about".into())
+            })
+        );
+        assert_eq!(
+            parse_line("/anchor the design doc"),
+            Some(WorldLine::Anchor {
+                target: "the design doc".into(),
+                relation: None
+            })
+        );
+        assert_eq!(
+            parse_line("/anchor confirm 2"),
+            Some(WorldLine::AnchorConfirm { proposal: 2 })
+        );
+        assert_eq!(parse_line("/anchor list"), Some(WorldLine::AnchorList));
+        assert_eq!(
+            parse_line("/talk id://abc"),
+            Some(WorldLine::Talk {
+                target: "id://abc".into()
+            })
+        );
+        assert_eq!(
+            parse_line("/anchors the design doc"),
+            Some(WorldLine::Anchors {
+                target: "the design doc".into()
+            })
+        );
+        assert_eq!(
+            parse_line("/resolve thread-9"),
+            Some(WorldLine::Resolve {
+                thread: "thread-9".into(),
+                into: None
+            })
+        );
+        assert_eq!(
+            parse_line("/resolve thread-9 into id://abc"),
+            Some(WorldLine::Resolve {
+                thread: "thread-9".into(),
+                into: Some("id://abc".into())
+            })
+        );
+        assert_eq!(parse_line("/queue"), Some(WorldLine::Queue));
+        assert_eq!(parse_line("/flush"), Some(WorldLine::Flush));
+    }
+
+    #[test]
+    fn the_flow_verbs_keep_the_verb_boundary() {
+        // /anchors is not /anchor with a glued argument, and a tab is not
+        // a separator for the new verbs either (#4492's one boundary rule).
+        assert_eq!(
+            parse_line("/anchorx id://abc"),
+            Some(WorldLine::Message("unknown command; type /help".into()))
+        );
+        assert_eq!(
+            parse_line("/talk\tid://abc"),
+            Some(WorldLine::Message("unknown command; type /help".into()))
+        );
+        assert_eq!(
+            parse_line("/queue\tnow"),
+            Some(WorldLine::Message("unknown command; type /help".into()))
+        );
+        // Bare argument verbs answer with their usage, like /document.
+        assert_eq!(
+            parse_line("/anchor"),
+            Some(WorldLine::Message(
+                "usage: /anchor <target> [type] | /anchor confirm <n> | /anchor list".into()
+            ))
+        );
+        assert_eq!(
+            parse_line("/anchor confirm later"),
+            Some(WorldLine::Message("usage: /anchor confirm <n>".into()))
+        );
+        assert_eq!(
+            parse_line("/anchors"),
+            Some(WorldLine::Message("usage: /anchors <target>".into()))
+        );
+        assert_eq!(
+            parse_line("/talk"),
+            Some(WorldLine::Message("usage: /talk <target>".into()))
+        );
+        assert_eq!(
+            parse_line("/resolve"),
+            Some(WorldLine::Message(
+                "usage: /resolve <thread> [into <target>]".into()
+            ))
         );
     }
 

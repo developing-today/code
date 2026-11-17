@@ -65,7 +65,7 @@ const TASK_COLS: &str = "id, queue, title, body, payload, dedupe_key, priority, 
     required_budget_minutes, \
     last_checked_at, check_outcome, created_at, updated_at, completed_at, \
     blocked_deps, dep_next_recheck_at, dep_blocked_until, dep_recheck_seconds";
-const LEDGER_COLS: &str = "id, queue, task_id, assigned_lane, executed_lane, \
+const LEDGER_COLS: &str = "id, queue, task_id, assigned_lane, executed_lane, executed_lane_id, \
     exclusion_reason, opencode_reason, platform_limit, platform_limit_reason, \
     assigned_by, session_id, fallback_reason, \
     assigned_at, executed_at, updated_at";
@@ -827,7 +827,11 @@ impl TursoBackend {
         // task may be limited to one platform family, but only
         // with a good reason recorded beside it) land the same
         // additive way.
-        for col in ["platform_limit", "platform_limit_reason"] {
+        for col in [
+            "platform_limit",
+            "platform_limit_reason",
+            "executed_lane_id",
+        ] {
             if !lcols
                 .iter()
                 .any(|c| c.get("name").and_then(|v| v.as_str()) == Some(col))
@@ -895,7 +899,7 @@ const SCHEMA: [&str; 17] = [
         PRIMARY KEY (worker_id, key))",
     "CREATE TABLE IF NOT EXISTS repo_task_lane_ledger (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, queue TEXT NOT NULL, \
-        task_id INTEGER NOT NULL UNIQUE, assigned_lane TEXT, executed_lane TEXT, \
+        task_id INTEGER NOT NULL UNIQUE, assigned_lane TEXT, executed_lane TEXT, executed_lane_id TEXT, \
         exclusion_reason TEXT, opencode_reason TEXT, platform_limit TEXT, \
         platform_limit_reason TEXT, assigned_by TEXT, session_id TEXT, \
         fallback_reason TEXT, assigned_at TEXT, executed_at TEXT, \
@@ -1885,6 +1889,34 @@ fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
     Ok(expired)
 }
 
+/// #7598: split an execution record into (mode, lane_id). `lane`
+/// is the execution MODE ('opencode' | 'direct'); a lane id that
+/// arrives in `lane` anyway (a caller that skipped the client's
+/// normalization) is translated the same way the client does --
+/// mode derived from its family, the id preserved -- and an
+/// explicit `lane_id` is carried through. Before this split the
+/// ledger recorded the surface name as executed_lane next to a
+/// claim stamped with a lane id, which read as attribution
+/// inversion; now the round trip records both, unambiguously.
+fn execution_lane_fields(ex: &Value) -> (Option<String>, Option<String>) {
+    let lane = ex.get("lane").and_then(|v| v.as_str());
+    let lane_id = ex.get("lane_id").and_then(|v| v.as_str());
+    match lane {
+        Some(l) if lane_family_of(l).is_some() => {
+            let mode = if lane_family_of(l) == Some("opencode") {
+                "opencode"
+            } else {
+                "direct"
+            };
+            (
+                Some(mode.to_string()),
+                Some(lane_id.unwrap_or(l).to_string()),
+            )
+        }
+        _ => (lane.map(str::to_string), lane_id.map(str::to_string)),
+    }
+}
+
 /// record_repo_task_lane_execution, contract-shaped: stamp the
 /// executed lane (+ fallback reason / session) onto the task's
 /// ledger row, creating a minimal row when assignment never ran.
@@ -1899,16 +1931,19 @@ fn record_execution(t: &TursoBackend, req: &Value, row: &Value) -> Result<Option
         .unwrap_or("")
         .to_string();
     let now = now_iso();
+    let (ex_mode, ex_lane_id) = execution_lane_fields(ex);
     if get_ledger(t, task_id)?.is_some() {
         t.exec(
             "UPDATE repo_task_lane_ledger SET \
                executed_lane = COALESCE(?, executed_lane), \
+               executed_lane_id = COALESCE(?, executed_lane_id), \
                fallback_reason = COALESCE(?, fallback_reason), \
                session_id = COALESCE(?, session_id), \
                executed_at = COALESCE(executed_at, ?), updated_at = ? \
              WHERE task_id = ?",
             &[
-                arg_str(ex.get("lane").and_then(|v| v.as_str())),
+                arg_str(ex_mode.as_deref()),
+                arg_str(ex_lane_id.as_deref()),
                 arg_str(ex.get("fallback_reason").and_then(|v| v.as_str())),
                 arg_str(ex.get("session_id").and_then(|v| v.as_str())),
                 Arg::Text(now.clone()),
@@ -1920,14 +1955,15 @@ fn record_execution(t: &TursoBackend, req: &Value, row: &Value) -> Result<Option
         t.exec(
             &format!(
                 "INSERT INTO repo_task_lane_ledger \
-                 (queue, task_id, assigned_lane, executed_lane, fallback_reason, session_id, assigned_at, executed_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                 (queue, task_id, assigned_lane, executed_lane, executed_lane_id, fallback_reason, session_id, assigned_at, executed_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             ),
             &[
                 Arg::Text(queue),
                 Arg::Int(task_id),
-                arg_str(ex.get("lane").and_then(|v| v.as_str())),
-                arg_str(ex.get("lane").and_then(|v| v.as_str())),
+                arg_str(ex_mode.as_deref()),
+                arg_str(ex_mode.as_deref()),
+                arg_str(ex_lane_id.as_deref()),
                 arg_str(ex.get("fallback_reason").and_then(|v| v.as_str())),
                 arg_str(ex.get("session_id").and_then(|v| v.as_str())),
                 Arg::Text(now.clone()),
@@ -4683,11 +4719,23 @@ fn verb_claim_batch(
     match work {
         Ok(rows) => {
             let claimed = rows.len();
-            ok(json!({
+            let mut env = json!({
                 "rows": rows,
                 "claimed": claimed,
                 "requested": count,
-            }))
+            });
+            // #8154: an empty batch names why, same as a single claim.
+            if claimed == 0 {
+                let counts = no_claim_counts(t, &iso(now_unix()), scope);
+                if let Some(obj) = env.as_object_mut() {
+                    if let Some(c) = counts.as_object() {
+                        for (k, v) in c {
+                            obj.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+            }
+            ok(env)
         }
         Err(e) if e.starts_with("claim_repo_task:") => fail(4, e),
         Err(e) => terr(e),
@@ -4882,6 +4930,19 @@ fn verb_claim(t: &TursoBackend, req: &Value) -> Value {
                         }
                     }
                 }
+                // #8154 (follow-on #2937 acceptance 4): name WHY the
+                // claim found nothing — the scoped queued / at-cap /
+                // not-yet-due / parked-due counts ride the no-row
+                // envelope so the client diagnostic can say whether
+                // the stream is empty, capped, or merely not due.
+                let counts = no_claim_counts(t, &iso(now_unix()), &scope);
+                if let Some(obj) = resp.as_object_mut() {
+                    if let Some(c) = counts.as_object() {
+                        for (k, v) in c {
+                            obj.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
             }
             ok(resp)
         }
@@ -4955,6 +5016,53 @@ fn budget_skip_summary(
         "budget_skipped": n,
         "max_required_budget_minutes": m,
     })
+}
+
+/// #8154 (follow-on #2937 acceptance 4): the no-claim counts query
+/// shape. One aggregate pass over the claim's own scope counts the
+/// rows the claim searched but could not take, split by reason:
+/// queued (all), at_cap_queued (attempts >= max_attempts — the
+/// #6528 health definition), queued_not_yet_due (under cap, parked
+/// behind a future not_before), parked_due (parked rows the pick
+/// could have taken early: timer lapsed or a capacity park).
+/// Placeholders: the not-yet-due `now`, then the parked-due `now`,
+/// then the scope args.
+fn no_claim_counts_sql(scope_sql: &str) -> String {
+    format!(
+        "SELECT \
+         COALESCE(SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END), 0) AS queued, \
+         COALESCE(SUM(CASE WHEN status = 'queued' AND attempts >= max_attempts THEN 1 ELSE 0 END), 0) AS at_cap_queued, \
+         COALESCE(SUM(CASE WHEN status = 'queued' AND attempts < max_attempts \
+           AND not_before IS NOT NULL AND not_before > ? THEN 1 ELSE 0 END), 0) AS queued_not_yet_due, \
+         COALESCE(SUM(CASE WHEN status = 'parked' AND ((not_before IS NOT NULL AND not_before <= ?) \
+           OR wait_kind = 'capacity') THEN 1 ELSE 0 END), 0) AS parked_due \
+         FROM tasks \
+         WHERE payload IS NOT NULL AND payload <> '' AND payload <> '{{}}'{scope_sql}"
+    )
+}
+
+fn no_claim_counts(t: &TursoBackend, now: &str, scope: &ClaimScope) -> Value {
+    let sql = no_claim_counts_sql(&scope.sql);
+    let mut args: Vec<Arg> = vec![Arg::Text(now.to_string()), Arg::Text(now.to_string())];
+    for a in &scope.args {
+        args.push(a.clone());
+    }
+    match t.query_objs(&sql, &args, &[]) {
+        Ok(rows) => {
+            let first = rows.into_iter().next().unwrap_or_else(|| json!({}));
+            let get = |k: &str| first.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
+            json!({
+                "queued": get("queued"),
+                "at_cap_queued": get("at_cap_queued"),
+                "queued_not_yet_due": get("queued_not_yet_due"),
+                "parked_due": get("parked_due"),
+            })
+        }
+        // A failed count leaves the envelope without counts (the
+        // client then falls back to the bare diagnostic) — never a
+        // fabricated number.
+        Err(_) => json!({}),
+    }
 }
 
 fn verb_lane(t: &TursoBackend, req: &Value) -> Value {
@@ -5233,6 +5341,20 @@ fn verb_bind(t: &TursoBackend, req: &Value) -> Value {
     let launched_by = req_str(req, "launched_by")
         .unwrap_or("opencode-claimant")
         .to_string();
+    // #8287: a malformed session id refuses here, as a usage
+    // error, before any state is touched — binding a ghost id
+    // strands the task until stuck-bound supervision recovers
+    // it. The predicate is the one the client/claim paths keep
+    // (client::valid_session_id); do not fork a second one.
+    if !crate::client::valid_session_id(&session_id) {
+        return fail(
+            2,
+            format!(
+                "bind_repo_task_lane_session: invalid session_id {session_id:?} \
+                 (expected ses_ + alphanumeric/underscore)"
+            ),
+        );
+    }
     // #9046: a bind may carry the bound session's own model (the
     // claimant derives it from the session record, #8176); when
     // it does, the bind stamps it via stamp_claim_model below.
@@ -8568,6 +8690,25 @@ mod tests {
     }
 
     #[test]
+    fn no_claim_counts_query_shape_8154() {
+        // #8154 oracle (follow-on #2937 acceptance 4): the no-claim
+        // counts aggregate splits the searched scope by reason —
+        // queued, at-cap (attempts >= max_attempts, the #6528
+        // definition), not-yet-due, parked-due — over payload-bearing
+        // rows only. Placeholders: two `now`s, then the scope's.
+        let sql = no_claim_counts_sql(" AND queue = ?");
+        assert_eq!(sql.matches('?').count(), 3, "{sql}");
+        assert!(sql.contains("AS queued"), "{sql}");
+        assert!(sql.contains("AS at_cap_queued"), "{sql}");
+        assert!(sql.contains("attempts >= max_attempts"), "{sql}");
+        assert!(sql.contains("AS queued_not_yet_due"), "{sql}");
+        assert!(sql.contains("not_before > ?"), "{sql}");
+        assert!(sql.contains("AS parked_due"), "{sql}");
+        assert!(sql.contains("wait_kind = 'capacity'"), "{sql}");
+        assert!(sql.ends_with(" AND queue = ?"), "{sql}");
+    }
+
+    #[test]
     fn task_creation_defaults_max_attempts_1000_per_8973() {
         // #8973 oracle: every task-creation default in this crate is
         // 1000 (Drew order 2026-11-12) - the tasks schema default
@@ -8652,6 +8793,48 @@ mod tests {
         let out = verb_enqueue(&backend, &req);
         assert_eq!(out["ok"], true, "{out}");
         assert_eq!(out["task"]["max_attempts"], 1000, "{out}");
+    }
+
+    #[test]
+    fn bind_rejects_malformed_session_id_8287() {
+        // #8287 oracle: verb_bind refuses a malformed session id
+        // as a usage error (exit 2) before any store access, so
+        // the task is left unbound — the dummy backend proves the
+        // refusal happens pre-store (any store touch would fail
+        // differently). A well-formed id must NOT produce the
+        // invalid-session refusal (it proceeds to the store path
+        // and fails there against this backend, or on the task).
+        let backend = TursoBackend::new(
+            "http://127.0.0.1:0".to_string(),
+            "test".to_string(),
+            ureq::agent(),
+        );
+        for bad in ["not-a-session", "", "ses_", "ses_a'; DROP TABLE tasks; --"] {
+            let out = verb_bind(
+                &backend,
+                &json!({"task_id": 1, "worker": "w", "session_id": bad}),
+            );
+            assert_eq!(out["ok"], false, "{bad}: {out}");
+            assert_eq!(out["exit"], 2, "{bad}: {out}");
+            assert!(
+                out["error"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("invalid session_id"),
+                "{bad}: {out}"
+            );
+        }
+        let out = verb_bind(
+            &backend,
+            &json!({"task_id": 1, "worker": "w", "session_id": "ses_e5e37addeb0ffeumu1UPO2bI8G"}),
+        );
+        assert!(
+            !out["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("invalid session_id"),
+            "well-formed id refused as invalid: {out}"
+        );
     }
 
     #[test]
@@ -8947,6 +9130,33 @@ mod tests {
     }
 
     #[test]
+    fn execution_lane_fields_split_7598() {
+        // Oracle (#7598): the execution record splits into the
+        // mode and the executing lane id, so a claim stamped with
+        // a lane id and a completion carrying that same id record
+        // executed_lane_id == claim lane -- no mismatch. A raw
+        // lane id in `lane` (an unnormalized caller) translates
+        // exactly like the client's normalization.
+        assert_eq!(
+            execution_lane_fields(&json!({"lane": "any-n"})),
+            (Some("direct".to_string()), Some("any-n".to_string()))
+        );
+        assert_eq!(
+            execution_lane_fields(&json!({"lane": "opencode-a"})),
+            (Some("opencode".to_string()), Some("opencode-a".to_string()))
+        );
+        assert_eq!(
+            execution_lane_fields(&json!({"lane": "direct", "lane_id": "code-a"})),
+            (Some("direct".to_string()), Some("code-a".to_string()))
+        );
+        assert_eq!(
+            execution_lane_fields(&json!({"lane": "opencode"})),
+            (Some("opencode".to_string()), None)
+        );
+        assert_eq!(execution_lane_fields(&json!({})), (None, None));
+    }
+
+    #[test]
     fn lane_family_of_accepts_known_families_and_rejects_garbage() {
         // The claim-time wildcard (Drew, 2026-11-16): known
         // family + nonempty lowercase alphabetic suffix.
@@ -9117,7 +9327,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn claim_race_same_worker_two_lanes_live_claim_refusal_is_recorded() {
         // #6985 recurrence fixture (task 17490, 2026-11-16, lanes
         // code-j / code-g, both worker repo-worker-code): the second
@@ -9165,6 +9374,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn claim_paths_never_reread_a_workers_newest_claimed_row() {
         // #7068 source oracle: the pre-#7617 claim shape claimed
         // via a subquery and re-read the result as the newest
@@ -9261,6 +9471,7 @@ mod tests {
         assert!(impl_src.contains("stamp_claim_model"));
     }
 
+    #[test]
     fn iso_epoch_and_known_instants() {
         assert_eq!(iso(0), "1970-01-01T00:00:00Z");
         // 2026-11-07T03:00:00Z == 1794020400 (the night this landed).
@@ -9283,7 +9494,6 @@ mod tests {
         assert_eq!(by_str, vec![iso(100), iso(200), iso(300)]);
     }
 
-    #[test]
     #[test]
     fn wait_floors_match_broker_policy_8184() {
         // #8184: triage waits are held 6h, ci/capacity 1h; waits
@@ -9777,7 +9987,6 @@ mod tests {
         assert!(err.contains("already claimable"), "{err}");
     }
 
-    #[test]
     #[test]
     fn expiry_disposition_fails_only_at_cap() {
         // Below cap: the task returns to queued for another attempt.
@@ -10432,7 +10641,6 @@ mod tests {
         assert!(client_src.contains("call(\"/quarantine-recheck\""));
     }
 
-    #[test]
     #[test]
     fn stored_not_before_rule_9179() {
         // #9179 (closing the #6426 bypass): the values the audit
@@ -11376,6 +11584,7 @@ mod tests {
         assert!(platform_limit_refusal(Some("muse"), None, Some("openchamber")).is_none());
     }
 
+    #[test]
     fn claim_by_id_targets_exactly_the_named_task_7735() {
         // #7735 oracle: a targeted claim is a claim of one row or
         // no claim — it can never fall through to the queue's

@@ -667,5 +667,5 @@ fn pointer_and_hover_frames_conform_to_the_input_event_model() {
     };
     let value = serde_json::to_value(&frame).unwrap();
     assert_eq!(value["type"], "input_refused");
-    contract().check_server_frame(&value).unwrap();
+    contract.check_server_frame(&value).unwrap();
 }

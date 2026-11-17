@@ -327,13 +327,60 @@ pub fn run_with_args(args: ServeArgs) -> i32 {
     run_settings(settings)
 }
 
+/// The shard discovery ceiling for serve mode (#6666 slice 1):
+/// the highest client ceiling cap in the service config.
+/// Discovery opens at the service maximum; per-caller ceilings
+/// only narrow the set at query time (`ShardSet::select`).
+fn serve_discovery_ceiling(clients: &[server::ClientConfig]) -> atlas_core::shards::TierCeiling {
+    fn height(t: atlas_core::shards::Tier) -> u8 {
+        match t {
+            atlas_core::shards::Tier::Public => 0,
+            atlas_core::shards::Tier::Internal => 1,
+            atlas_core::shards::Tier::Secret => 2,
+        }
+    }
+    let mut ceiling =
+        atlas_core::shards::TierCeiling::from_sensitivity(atlas_core::Sensitivity::Shareable);
+    for c in clients {
+        let cap = atlas_core::shards::TierCeiling::from_sensitivity(
+            atlas_core::Sensitivity::from_name(c.ceiling_cap.name())
+                .unwrap_or(atlas_core::Sensitivity::Personal),
+        );
+        if height(cap.0) > height(ceiling.0) {
+            ceiling = cap;
+        }
+    }
+    ceiling
+}
+
 fn run_settings(settings: ServeSettings) -> i32 {
-    // The role's only backend: the read-only Turso chain. This is
+    // The role's backend base: the read-only Turso chain. This is
     // the whole write-posture story — see the module docs.
     let backend = match TursoBackend::new(&settings.vec_table) {
         Ok(b) => b,
         Err(e) => return fail(EXIT_FAILURE, &e.to_string()),
     };
+    // Serve-mode shard fan-out (#6666 slice 1): with a `shards`
+    // spec in the service config, the vector branch is served by
+    // the shard set, re-discovered on the configured interval;
+    // without one the monolith serves exactly as before.
+    if let Some(spec) = &settings.shards {
+        let ceiling = serve_discovery_ceiling(&settings.clients);
+        let set = match atlas_core::shards::open_from_spec(spec, ceiling, &settings.vec_table) {
+            Ok(s) => s,
+            Err(e) => return fail(EXIT_FAILURE, &e.to_string()),
+        };
+        let backend = atlas_core::shards::ShardedBackend::new(backend, set).with_refresh(
+            spec.clone(),
+            ceiling,
+            settings.shard_refresh,
+        );
+        let engine = build_engine(backend, Arc::new(LazyEmbedder::new()));
+        return match server::serve_forever(settings, engine) {
+            Ok(()) => EXIT_FAILURE,
+            Err(m) => fail(EXIT_FAILURE, &m),
+        };
+    }
     let engine = build_engine(backend, Arc::new(LazyEmbedder::new()));
     match server::serve_forever(settings, engine) {
         Ok(()) => EXIT_FAILURE,

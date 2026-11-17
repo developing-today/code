@@ -998,6 +998,32 @@ fn cmd_get_chunk(args: GetChunkArgs) -> Result<(), CliError> {
     Ok(())
 }
 
+/// The shard discovery ceiling for serve mode (#6666 slice 1):
+/// the highest client ceiling cap in the service config.
+/// Discovery opens at the service maximum; per-caller ceilings
+/// only narrow the set at query time (`ShardSet::select`).
+fn serve_discovery_ceiling(clients: &[server::ClientConfig]) -> atlas_core::shards::TierCeiling {
+    fn height(t: atlas_core::shards::Tier) -> u8 {
+        match t {
+            atlas_core::shards::Tier::Public => 0,
+            atlas_core::shards::Tier::Internal => 1,
+            atlas_core::shards::Tier::Secret => 2,
+        }
+    }
+    let mut ceiling =
+        atlas_core::shards::TierCeiling::from_sensitivity(atlas_core::Sensitivity::Shareable);
+    for c in clients {
+        let cap = atlas_core::shards::TierCeiling::from_sensitivity(
+            atlas_core::Sensitivity::from_name(c.ceiling_cap.name())
+                .unwrap_or(atlas_core::Sensitivity::Personal),
+        );
+        if height(cap.0) > height(ceiling.0) {
+            ceiling = cap;
+        }
+    }
+    ceiling
+}
+
 fn cmd_serve(args: ServeArgs) -> Result<(), CliError> {
     let path = server::resolve_service_config_path(args.config.as_deref());
     let settings = server::load_service_settings(
@@ -1014,6 +1040,25 @@ fn cmd_serve(args: ServeArgs) -> Result<(), CliError> {
         CliEmbedder::new(atlas_core::DEFAULT_MODEL.to_string(), EmbedderChoice::Auto),
     )));
     let state_fn = shared.state_fn();
+    // Serve-mode shard fan-out (#6666 slice 1): with a `shards`
+    // spec in the service config, the vector branch is served by
+    // the shard set, re-discovered on the configured interval;
+    // without one the monolith serves exactly as before.
+    if let Some(spec) = &settings.shards {
+        let ceiling = serve_discovery_ceiling(&settings.clients);
+        let set = open_from_spec(spec, ceiling, &settings.vec_table).map_err(map_err)?;
+        let backend = ShardedBackend::new(backend, set).with_refresh(
+            spec.clone(),
+            ceiling,
+            settings.shard_refresh,
+        );
+        let engine = std::sync::Arc::new(server::CoreSearchEngine::new(
+            std::sync::Arc::new(backend),
+            shared,
+            state_fn,
+        ));
+        return server::serve_forever(settings, engine).map_err(|m| (1, m));
+    }
     let engine = std::sync::Arc::new(server::CoreSearchEngine::new(
         std::sync::Arc::new(backend),
         shared,

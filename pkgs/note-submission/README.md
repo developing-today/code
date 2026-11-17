@@ -18,5 +18,15 @@ Run the package tests with:
 cargo test --manifest-path pkgs/note-submission/Cargo.toml --all-targets
 ```
 
+A submission may also declare its placement class and intended Atlas tier
+from the §2 decision table of the agent-note placement design (#8204):
+`submit_with_declaration` records the declaration on the envelope, the
+decision table supplies the class's home and default tier when no tier is
+intended, and the staged record shows the effective declaration to the
+promoter. The declaration is information for the reviewer, not routing —
+the destination still arrives as a caller-supplied placement decision and
+still requires human approval; undeclared submissions behave exactly as
+before.
+
 Policy-aware classification and the ID-native publication format remain the
 responsibility of #7717 and #6062 respectively.
