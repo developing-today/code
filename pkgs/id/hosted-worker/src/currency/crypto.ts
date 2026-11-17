@@ -73,12 +73,7 @@ export class Ed25519Key {
     try {
       const raw = hexToBytes(publicKeyHex);
       const key = await subtle.importKey("raw", raw as BufferSource, "Ed25519", false, ["verify"]);
-      return await subtle.verify(
-        "Ed25519",
-        key,
-        hexToBytes(signatureHex) as BufferSource,
-        encoder.encode(message),
-      );
+      return await subtle.verify("Ed25519", key, hexToBytes(signatureHex) as BufferSource, encoder.encode(message));
     } catch {
       return false;
     }

@@ -36,7 +36,7 @@
 //! usable.
 
 use crate::{content_id, physical_key};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// D1 result `meta` counters for one executed operation.
@@ -126,9 +126,11 @@ impl FakeD1 {
         for (cid, row) in &self.objects {
             total += cid.len() as u64 + row.metadata.to_string().len() as u64 + 8;
         }
-        for ((cid, _), gen) in &self.generations {
-            total +=
-                cid.len() as u64 + gen.physical_key.len() as u64 + gen.lifecycle.len() as u64 + 16;
+        for ((cid, _), r#gen) in &self.generations {
+            total += cid.len() as u64
+                + r#gen.physical_key.len() as u64
+                + r#gen.lifecycle.len() as u64
+                + 16;
         }
         for (cid, _, reference) in &self.refs {
             total += cid.len() as u64 + reference.len() as u64 + 8;
@@ -182,15 +184,15 @@ impl D1Adapter {
                 let row = self.db.objects.get(cid).expect("row exists");
                 c.rows_read += 1; // SELECT_OBJECT probe
                 let generation = row.current_generation;
-                let gen = &self.db.generations[&(cid.to_string(), generation)];
+                let r#gen = &self.db.generations[&(cid.to_string(), generation)];
                 c.rows_read += 1; // SELECT_GENERATION probe
-                let bytes = &self.db.physical[&gen.physical_key];
+                let bytes = &self.db.physical[&r#gen.physical_key];
                 c.rows_read += 1; // SELECT_PHYSICAL probe
                 D1Outcome {
                     transition: json!({
                         "bytes_hex": hex::encode(bytes),
                         "generation": generation,
-                        "lifecycle": gen.lifecycle,
+                        "lifecycle": r#gen.lifecycle,
                     }),
                     counters: self.db.finish(c),
                     statements: vec![SELECT_OBJECT, SELECT_GENERATION, SELECT_PHYSICAL],
@@ -215,9 +217,9 @@ impl D1Adapter {
                 let mut ids: Vec<String> = Vec::new();
                 for (cid, row) in &self.db.objects {
                     c.rows_read += 1;
-                    let gen = &self.db.generations[&(cid.clone(), row.current_generation)];
+                    let r#gen = &self.db.generations[&(cid.clone(), row.current_generation)];
                     c.rows_read += 1;
-                    if gen.lifecycle == "Live"
+                    if r#gen.lifecycle == "Live"
                         && cid.starts_with(prefix)
                         && fixture["tenant"] == "tenant-a"
                     {
@@ -236,13 +238,13 @@ impl D1Adapter {
                 let generation = args["generation"].as_u64().expect("generation");
                 let reference = args["reference"].as_str().expect("reference").to_string();
                 let mut c = D1Counters::default();
-                let gen = self
+                let r#gen = self
                     .db
                     .generations
                     .get(&(cid.clone(), generation))
                     .expect("generation exists");
                 c.rows_read += 1; // EXISTS probe inside INSERT_REF_IF_LIVE
-                if gen.lifecycle == "Live" {
+                if r#gen.lifecycle == "Live" {
                     let inserted = self.db.refs.insert((cid.clone(), generation, reference));
                     if inserted {
                         c.rows_written += 1;
@@ -309,13 +311,13 @@ impl D1Adapter {
                     }
                 } else {
                     let key = {
-                        let gen = self
+                        let r#gen = self
                             .db
                             .generations
                             .get_mut(&(cid.clone(), generation))
                             .expect("generation exists");
-                        gen.lifecycle = "Tombstoned".to_string();
-                        gen.physical_key.clone()
+                        r#gen.lifecycle = "Tombstoned".to_string();
+                        r#gen.physical_key.clone()
                     };
                     c.rows_written += 1;
                     c.changes = 1;
@@ -339,19 +341,20 @@ impl D1Adapter {
                 let cid = Self::expected_id(fixture).to_string();
                 let generation = args["generation"].as_u64().expect("generation");
                 let mut c = D1Counters::default();
-                let gen = &self.db.generations[&(cid.clone(), generation)];
+                let r#gen = &self.db.generations[&(cid.clone(), generation)];
                 c.rows_read += 1; // SELECT_GENERATION probe
                 assert_eq!(
-                    gen.lifecycle, "Tombstoned",
+                    r#gen.lifecycle, "Tombstoned",
                     "delete before authoritative fence"
                 );
-                let key = gen.physical_key.clone();
+                let key = r#gen.physical_key.clone();
                 assert!(self.db.ever_used_keys.contains(&key));
-                assert!(self
-                    .db
-                    .generations
-                    .iter()
-                    .all(|((_, n), other)| *n == generation || other.physical_key != key));
+                assert!(
+                    self.db
+                        .generations
+                        .iter()
+                        .all(|((_, n), other)| *n == generation || other.physical_key != key)
+                );
                 let deleted = self.db.physical.remove(&key).is_some();
                 if deleted {
                     c.rows_written += 1;
@@ -398,9 +401,9 @@ impl D1Adapter {
 
         if let Some(existing) = self.db.objects.get(&cid).cloned() {
             let current = existing.current_generation;
-            let gen = self.db.generations[&(cid.clone(), current)].clone();
+            let r#gen = self.db.generations[&(cid.clone(), current)].clone();
             c.rows_read += 1; // SELECT_GENERATION probe
-            if gen.lifecycle == "Tombstoned"
+            if r#gen.lifecycle == "Tombstoned"
                 && args.get("resurrection").and_then(Value::as_bool) != Some(true)
             {
                 return D1Outcome {
@@ -412,7 +415,7 @@ impl D1Adapter {
                     statements: vec![SELECT_OBJECT, SELECT_GENERATION],
                 };
             }
-            if gen.lifecycle == "Tombstoned" {
+            if r#gen.lifecycle == "Tombstoned" {
                 // Explicit resurrection: a new generation row under a
                 // never-reused physical key; content identity is
                 // preserved by construction (asserted like the
@@ -470,7 +473,7 @@ impl D1Adapter {
                 transition: json!({
                     "accepted": true, "created": false, "generation": current,
                     "lifecycle": "Live", "reference_count": refs,
-                    "row_revision": gen.row_revision,
+                    "row_revision": r#gen.row_revision,
                 }),
                 counters: self.db.finish(c),
                 statements: vec![SELECT_OBJECT, SELECT_GENERATION, COUNT_REFS],

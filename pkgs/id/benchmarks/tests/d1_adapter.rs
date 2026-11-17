@@ -13,7 +13,7 @@
 //! latency: the fake's synthetic duration must stay exactly 0.0.
 
 use id_benchmarks::adapters::d1::{D1Adapter, SCHEMA};
-use id_benchmarks::{support_level, ReferenceStore};
+use id_benchmarks::{ReferenceStore, support_level};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;

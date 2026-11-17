@@ -61,9 +61,7 @@ export class SqlIntentStore implements IntentStore {
     this.#sql.exec("CREATE TABLE IF NOT EXISTS currency_intents (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
   }
   async get(key: string): Promise<string | null> {
-    const rows = this.#sql
-      .exec("SELECT value FROM currency_intents WHERE key = ?", key)
-      .toArray();
+    const rows = this.#sql.exec("SELECT value FROM currency_intents WHERE key = ?", key).toArray();
     return rows.length === 0 ? null : String(rows[0].value);
   }
   async put(key: string, value: string): Promise<void> {
@@ -250,9 +248,7 @@ export class UserDORelay {
   // signed snapshots only. An unverifiable or wrong-server snapshot
   // is refused, never cached.
   async refreshSnapshot(): Promise<SignedSnapshot> {
-    const res = await this.#gateway.fetch(
-      new Request(this.#base + "/v1/balances/" + encodeURIComponent(this.account)),
-    );
+    const res = await this.#gateway.fetch(new Request(this.#base + "/v1/balances/" + encodeURIComponent(this.account)));
     if (!res.ok) throw new RelayError("snapshot_failed", "snapshot fetch failed: " + res.status);
     const snapshot = (await res.json()) as SignedSnapshot;
     if (!(await verifySnapshot(snapshot, this.#serverId, this.#adminPub))) {
