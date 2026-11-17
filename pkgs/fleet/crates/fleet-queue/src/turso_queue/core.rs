@@ -17,7 +17,7 @@ pub(crate) const TASK_COLS: &str = "id, queue, title, body, payload, dedupe_key,
     required_budget_minutes, \
     last_checked_at, check_outcome, created_at, updated_at, completed_at, \
     blocked_deps, dep_next_recheck_at, dep_blocked_until, dep_recheck_seconds";
-pub(crate) const LEDGER_COLS: &str = "id, queue, task_id, assigned_lane, executed_lane, \
+pub(crate) const LEDGER_COLS: &str = "id, queue, task_id, assigned_lane, executed_lane, executed_lane_id, \
     exclusion_reason, opencode_reason, platform_limit, platform_limit_reason, \
     assigned_by, session_id, fallback_reason, \
     assigned_at, executed_at, updated_at";
@@ -779,7 +779,11 @@ impl TursoBackend {
         // task may be limited to one platform family, but only
         // with a good reason recorded beside it) land the same
         // additive way.
-        for col in ["platform_limit", "platform_limit_reason"] {
+        for col in [
+            "platform_limit",
+            "platform_limit_reason",
+            "executed_lane_id",
+        ] {
             if !lcols
                 .iter()
                 .any(|c| c.get("name").and_then(|v| v.as_str()) == Some(col))
@@ -847,7 +851,7 @@ pub(crate) const SCHEMA: [&str; 17] = [
         PRIMARY KEY (worker_id, key))",
     "CREATE TABLE IF NOT EXISTS repo_task_lane_ledger (\
         id INTEGER PRIMARY KEY AUTOINCREMENT, queue TEXT NOT NULL, \
-        task_id INTEGER NOT NULL UNIQUE, assigned_lane TEXT, executed_lane TEXT, \
+        task_id INTEGER NOT NULL UNIQUE, assigned_lane TEXT, executed_lane TEXT, executed_lane_id TEXT, \
         exclusion_reason TEXT, opencode_reason TEXT, platform_limit TEXT, \
         platform_limit_reason TEXT, assigned_by TEXT, session_id TEXT, \
         fallback_reason TEXT, assigned_at TEXT, executed_at TEXT, \
@@ -1837,6 +1841,34 @@ pub(crate) fn expire_leases(t: &TursoBackend) -> Result<i64, TErr> {
     Ok(expired)
 }
 
+/// #7598: split an execution record into (mode, lane_id). `lane`
+/// is the execution MODE ('opencode' | 'direct'); a lane id that
+/// arrives in `lane` anyway (a caller that skipped the client's
+/// normalization) is translated the same way the client does --
+/// mode derived from its family, the id preserved -- and an
+/// explicit `lane_id` is carried through. Before this split the
+/// ledger recorded the surface name as executed_lane next to a
+/// claim stamped with a lane id, which read as attribution
+/// inversion; now the round trip records both, unambiguously.
+fn execution_lane_fields(ex: &Value) -> (Option<String>, Option<String>) {
+    let lane = ex.get("lane").and_then(|v| v.as_str());
+    let lane_id = ex.get("lane_id").and_then(|v| v.as_str());
+    match lane {
+        Some(l) if lane_family_of(l).is_some() => {
+            let mode = if lane_family_of(l) == Some("opencode") {
+                "opencode"
+            } else {
+                "direct"
+            };
+            (
+                Some(mode.to_string()),
+                Some(lane_id.unwrap_or(l).to_string()),
+            )
+        }
+        _ => (lane.map(str::to_string), lane_id.map(str::to_string)),
+    }
+}
+
 /// record_repo_task_lane_execution, contract-shaped: stamp the
 /// executed lane (+ fallback reason / session) onto the task's
 /// ledger row, creating a minimal row when assignment never ran.
@@ -1851,16 +1883,19 @@ pub(crate) fn record_execution(t: &TursoBackend, req: &Value, row: &Value) -> Re
         .unwrap_or("")
         .to_string();
     let now = now_iso();
+    let (ex_mode, ex_lane_id) = execution_lane_fields(ex);
     if get_ledger(t, task_id)?.is_some() {
         t.exec(
             "UPDATE repo_task_lane_ledger SET \
                executed_lane = COALESCE(?, executed_lane), \
+               executed_lane_id = COALESCE(?, executed_lane_id), \
                fallback_reason = COALESCE(?, fallback_reason), \
                session_id = COALESCE(?, session_id), \
                executed_at = COALESCE(executed_at, ?), updated_at = ? \
              WHERE task_id = ?",
             &[
-                arg_str(ex.get("lane").and_then(|v| v.as_str())),
+                arg_str(ex_mode.as_deref()),
+                arg_str(ex_lane_id.as_deref()),
                 arg_str(ex.get("fallback_reason").and_then(|v| v.as_str())),
                 arg_str(ex.get("session_id").and_then(|v| v.as_str())),
                 Arg::Text(now.clone()),
@@ -1872,14 +1907,15 @@ pub(crate) fn record_execution(t: &TursoBackend, req: &Value, row: &Value) -> Re
         t.exec(
             &format!(
                 "INSERT INTO repo_task_lane_ledger \
-                 (queue, task_id, assigned_lane, executed_lane, fallback_reason, session_id, assigned_at, executed_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                 (queue, task_id, assigned_lane, executed_lane, executed_lane_id, fallback_reason, session_id, assigned_at, executed_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             ),
             &[
                 Arg::Text(queue),
                 Arg::Int(task_id),
-                arg_str(ex.get("lane").and_then(|v| v.as_str())),
-                arg_str(ex.get("lane").and_then(|v| v.as_str())),
+                arg_str(ex_mode.as_deref()),
+                arg_str(ex_mode.as_deref()),
+                arg_str(ex_lane_id.as_deref()),
                 arg_str(ex.get("fallback_reason").and_then(|v| v.as_str())),
                 arg_str(ex.get("session_id").and_then(|v| v.as_str())),
                 Arg::Text(now.clone()),

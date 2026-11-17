@@ -282,6 +282,48 @@ mod tests {
     }
 
     #[test]
+    fn bind_rejects_malformed_session_id_8287() {
+        // #8287 oracle: verb_bind refuses a malformed session id
+        // as a usage error (exit 2) before any store access, so
+        // the task is left unbound — the dummy backend proves the
+        // refusal happens pre-store (any store touch would fail
+        // differently). A well-formed id must NOT produce the
+        // invalid-session refusal (it proceeds to the store path
+        // and fails there against this backend, or on the task).
+        let backend = TursoBackend::new(
+            "http://127.0.0.1:0".to_string(),
+            "test".to_string(),
+            ureq::agent(),
+        );
+        for bad in ["not-a-session", "", "ses_", "ses_a'; DROP TABLE tasks; --"] {
+            let out = verb_bind(
+                &backend,
+                &json!({"task_id": 1, "worker": "w", "session_id": bad}),
+            );
+            assert_eq!(out["ok"], false, "{bad}: {out}");
+            assert_eq!(out["exit"], 2, "{bad}: {out}");
+            assert!(
+                out["error"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("invalid session_id"),
+                "{bad}: {out}"
+            );
+        }
+        let out = verb_bind(
+            &backend,
+            &json!({"task_id": 1, "worker": "w", "session_id": "ses_e5e37addeb0ffeumu1UPO2bI8G"}),
+        );
+        assert!(
+            !out["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("invalid session_id"),
+            "well-formed id refused as invalid: {out}"
+        );
+    }
+
+    #[test]
     fn model_stamp_detail_9046_carries_session_and_trigger() {
         // #9046 oracle: a stamp detail names the session it
         // belongs to (or null — a session is never fabricated),
@@ -574,6 +616,33 @@ mod tests {
     }
 
     #[test]
+    fn execution_lane_fields_split_7598() {
+        // Oracle (#7598): the execution record splits into the
+        // mode and the executing lane id, so a claim stamped with
+        // a lane id and a completion carrying that same id record
+        // executed_lane_id == claim lane -- no mismatch. A raw
+        // lane id in `lane` (an unnormalized caller) translates
+        // exactly like the client's normalization.
+        assert_eq!(
+            execution_lane_fields(&json!({"lane": "any-n"})),
+            (Some("direct".to_string()), Some("any-n".to_string()))
+        );
+        assert_eq!(
+            execution_lane_fields(&json!({"lane": "opencode-a"})),
+            (Some("opencode".to_string()), Some("opencode-a".to_string()))
+        );
+        assert_eq!(
+            execution_lane_fields(&json!({"lane": "direct", "lane_id": "code-a"})),
+            (Some("direct".to_string()), Some("code-a".to_string()))
+        );
+        assert_eq!(
+            execution_lane_fields(&json!({"lane": "opencode"})),
+            (Some("opencode".to_string()), None)
+        );
+        assert_eq!(execution_lane_fields(&json!({})), (None, None));
+    }
+
+    #[test]
     fn lane_family_of_accepts_known_families_and_rejects_garbage() {
         // The claim-time wildcard (Drew, 2026-11-16): known
         // family + nonempty lowercase alphabetic suffix.
@@ -744,7 +813,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn claim_race_same_worker_two_lanes_live_claim_refusal_is_recorded() {
         // #6985 recurrence fixture (task 17490, 2026-11-16, lanes
         // code-j / code-g, both worker repo-worker-code): the second
@@ -792,6 +860,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn claim_paths_never_reread_a_workers_newest_claimed_row() {
         // #7068 source oracle: the pre-#7617 claim shape claimed
         // via a subquery and re-read the result as the newest
@@ -888,6 +957,7 @@ mod tests {
         assert!(impl_src.contains("stamp_claim_model"));
     }
 
+    #[test]
     fn iso_epoch_and_known_instants() {
         assert_eq!(iso(0), "1970-01-01T00:00:00Z");
         // 2026-11-07T03:00:00Z == 1794020400 (the night this landed).
@@ -910,7 +980,6 @@ mod tests {
         assert_eq!(by_str, vec![iso(100), iso(200), iso(300)]);
     }
 
-    #[test]
     #[test]
     fn wait_floors_match_broker_policy_8184() {
         // #8184: triage waits are held 6h, ci/capacity 1h; waits
@@ -1248,7 +1317,16 @@ mod tests {
         assert!(impl_src.contains("\"transfer\": true"));
         assert!(impl_src.contains("\"from_session\": from_session"));
         assert!(impl_src.contains("\"previous_worker\": old_worker"));
-        let client_src = include_str!("client.rs");
+        let client_src = [
+            include_str!("client/transport.rs"),
+            include_str!("client/support.rs"),
+            include_str!("client/commands_query.rs"),
+            include_str!("client/commands_lifecycle.rs"),
+            include_str!("client/fallback_stack.rs"),
+            include_str!("client.rs"),
+        ]
+        .concat();
+        let client_src = client_src.as_str();
         assert!(client_src.contains("\"from-session\""));
         assert!(client_src.contains("body[\"from_session\"] = json!(fs)"));
     }
@@ -1310,7 +1388,16 @@ mod tests {
         assert!(impl_src.contains("ADD COLUMN {col} TEXT"));
         assert!(impl_src.contains("platform_limit_cleared_invalid"));
         assert!(impl_src.contains("\"platform_limit_cleared\": true"));
-        let client_src = include_str!("client.rs");
+        let client_src = [
+            include_str!("client/transport.rs"),
+            include_str!("client/support.rs"),
+            include_str!("client/commands_query.rs"),
+            include_str!("client/commands_lifecycle.rs"),
+            include_str!("client/fallback_stack.rs"),
+            include_str!("client.rs"),
+        ]
+        .concat();
+        let client_src = client_src.as_str();
         assert!(client_src.contains("\"limit-platform\""));
         assert!(client_src.contains("\"platform_limit\": args.get(\"limit-platform\")"));
         assert!(client_src.contains("\"clear-platform-limit\""));
@@ -1335,7 +1422,16 @@ mod tests {
         // No balancing artifact survives in the lane decision path.
         assert!(!impl_src.contains("opencode_count"));
         assert!(!impl_src.contains("o_count <= d_count"));
-        let client_src = include_str!("client.rs");
+        let client_src = [
+            include_str!("client/transport.rs"),
+            include_str!("client/support.rs"),
+            include_str!("client/commands_query.rs"),
+            include_str!("client/commands_lifecycle.rs"),
+            include_str!("client/fallback_stack.rs"),
+            include_str!("client.rs"),
+        ]
+        .concat();
+        let client_src = client_src.as_str();
         assert!(client_src.contains("\"opencode-reason\""));
         assert!(client_src.contains("\"opencode_reason\": args.get(\"opencode-reason\")"));
     }
@@ -1404,7 +1500,6 @@ mod tests {
         assert!(err.contains("already claimable"), "{err}");
     }
 
-    #[test]
     #[test]
     fn expiry_disposition_fails_only_at_cap() {
         // Below cap: the task returns to queued for another attempt.
@@ -1754,7 +1849,16 @@ mod tests {
             "pick must exclude blocked: {pred}"
         );
         // Client surface.
-        let client_src = include_str!("client.rs");
+        let client_src = [
+            include_str!("client/transport.rs"),
+            include_str!("client/support.rs"),
+            include_str!("client/commands_query.rs"),
+            include_str!("client/commands_lifecycle.rs"),
+            include_str!("client/fallback_stack.rs"),
+            include_str!("client.rs"),
+        ]
+        .concat();
+        let client_src = client_src.as_str();
         for f in [
             "blocked-by-pr",
             "blocked-by-issue",
@@ -2054,12 +2158,20 @@ mod tests {
         );
         assert!(impl_src.contains("run_quarantine_rechecks(t, req_i64(req, \"limit\")"));
         assert!(impl_src.contains("\"via\": \"quarantine_recheck\""));
-        let client_src = include_str!("client.rs");
+        let client_src = [
+            include_str!("client/transport.rs"),
+            include_str!("client/support.rs"),
+            include_str!("client/commands_query.rs"),
+            include_str!("client/commands_lifecycle.rs"),
+            include_str!("client/fallback_stack.rs"),
+            include_str!("client.rs"),
+        ]
+        .concat();
+        let client_src = client_src.as_str();
         assert!(client_src.contains("\"quarantine-recheck\" => cmd_quarantine_recheck"));
         assert!(client_src.contains("call(\"/quarantine-recheck\""));
     }
 
-    #[test]
     #[test]
     fn stored_not_before_rule_9179() {
         // #9179 (closing the #6426 bypass): the values the audit
@@ -3003,6 +3115,7 @@ mod tests {
         assert!(platform_limit_refusal(Some("muse"), None, Some("openchamber")).is_none());
     }
 
+    #[test]
     fn claim_by_id_targets_exactly_the_named_task_7735() {
         // #7735 oracle: a targeted claim is a claim of one row or
         // no claim — it can never fall through to the queue's

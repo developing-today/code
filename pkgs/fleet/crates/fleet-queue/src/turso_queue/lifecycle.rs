@@ -1220,6 +1220,20 @@ pub(crate) fn verb_bind(t: &TursoBackend, req: &Value) -> Value {
     let launched_by = req_str(req, "launched_by")
         .unwrap_or("opencode-claimant")
         .to_string();
+    // #8287: a malformed session id refuses here, as a usage
+    // error, before any state is touched — binding a ghost id
+    // strands the task until stuck-bound supervision recovers
+    // it. The predicate is the one the client/claim paths keep
+    // (client::valid_session_id); do not fork a second one.
+    if !crate::client::valid_session_id(&session_id) {
+        return fail(
+            2,
+            format!(
+                "bind_repo_task_lane_session: invalid session_id {session_id:?} \
+                 (expected ses_ + alphanumeric/underscore)"
+            ),
+        );
+    }
     // #9046: a bind may carry the bound session's own model (the
     // claimant derives it from the session record, #8176); when
     // it does, the bind stamps it via stamp_claim_model below.
