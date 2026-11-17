@@ -14,6 +14,7 @@
 
 import { TursoClient } from "./ledger";
 import type { Env } from "./session";
+import { parseIngestStatus } from "./ingest";
 
 export { VoiceSession } from "./session";
 
@@ -108,13 +109,15 @@ export default {
       if (!expected || request.headers.get("Authorization") !== `Bearer ${expected}`) {
         return new Response("unauthorized", { status: 401 });
       }
-      const body = (await request.json()) as Record<string, unknown>;
-      const snapshot = {
-        queued: Number(body.queued ?? 0),
-        claimed: Number(body.claimed ?? 0),
-        parked: Number(body.parked ?? 0),
-        blocked: Number(body.blocked ?? 0),
-      };
+      // #11014: refuse malformed bodies and bad counts with a 400
+      // instead of storing values the queue_state intent would speak.
+      const parsed = parseIngestStatus(await request.text());
+      if (!parsed.ok) {
+        return Response.json(parsed.field ? { error: parsed.error, field: parsed.field } : { error: parsed.error }, {
+          status: 400,
+        });
+      }
+      const snapshot = parsed.snapshot;
       const turso = new TursoClient(env.TURSO_URL, env.TURSO_TOKEN);
       await turso.ensureSchema();
       await turso.putSnapshot("queue_state", snapshot, new Date().toISOString());
