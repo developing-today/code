@@ -3310,6 +3310,7 @@ impl GhCreator {
     /// as proven absence, so every uncertain entry was re-created.
     fn find_by_marker(&mut self, entry: &Value) -> MarkerLookup {
         let repo = s(entry, "repo");
+        let kind = s(entry, "kind");
         let id = s(entry, "id");
         let q = format!("repo:{repo} fleet-outbox:{id}");
         let results = match self.gh.json(&[
@@ -3330,6 +3331,51 @@ impl GhCreator {
             let Some(number) = item.get("number").and_then(|n| n.as_i64()) else {
                 continue;
             };
+            if kind == "issue_comment" || kind == "pr_comment" {
+                // Search hits are issues/PRs, so `number` is the parent
+                // number, not the comment ID. List comments for each
+                // candidate and match the marker in the comment body.
+                // `--slurp` preserves paginated results as arrays of pages;
+                // accepting a flat array also keeps one-page stubs simple.
+                let comments = match self.gh.json(&[
+                    "api".into(),
+                    "--paginate".into(),
+                    "--slurp".into(),
+                    format!("repos/{repo}/issues/{number}/comments"),
+                ]) {
+                    Ok(v) => v,
+                    Err(class) => return MarkerLookup::CouldNotCheck(class),
+                };
+                let Some(pages) = comments.as_array() else {
+                    return MarkerLookup::CouldNotCheck(
+                        "unexpected_comment_list_shape".to_string(),
+                    );
+                };
+                for page_or_comment in pages {
+                    let candidates: Box<dyn Iterator<Item = &Value> + '_> =
+                        if let Some(page) = page_or_comment.as_array() {
+                            Box::new(page.iter())
+                        } else if page_or_comment.is_object() {
+                            Box::new(std::iter::once(page_or_comment))
+                        } else {
+                            continue;
+                        };
+                    for comment in candidates {
+                        let Some(comment_id) = comment.get("id").and_then(|n| n.as_i64()) else {
+                            continue;
+                        };
+                        let url = s(comment, "html_url");
+                        if !url.is_empty()
+                            && crate::creation_outbox::marker_id(&s(comment, "body"))
+                                == Some(id.clone())
+                        {
+                            return MarkerLookup::Found(comment_id, url);
+                        }
+                    }
+                }
+                continue;
+            }
+
             let url = s(item, "html_url");
             match self.read_back_checked(entry, number) {
                 Ok(true) => return MarkerLookup::Found(number, url),
