@@ -266,6 +266,45 @@ fn rename_is_one_changed_object_second_pass() {
 }
 
 #[test]
+fn every_rename_in_one_commit_is_one_changed_object() {
+    let repo = Repo::new("rename-two");
+    corpus(&repo);
+    let c1 = repo.commit("c1");
+    let mut ledger = DetectionLedger::new();
+    ledger.detect_git(repo.path(), "corpus", &c1).unwrap();
+
+    repo.git(&["mv", "src/a.rs", "src/a2.rs"]);
+    repo.git(&["mv", "src/b.rs", "src/b2.rs"]);
+    let c2 = repo.commit("rename a and b");
+
+    let pass = ledger.detect_git(repo.path(), "corpus", &c2).unwrap();
+    let mut renamed: Vec<_> = pass
+        .verdicts
+        .iter()
+        .filter(|v| v.previous_path.is_some())
+        .map(|v| (v.path.as_str(), v.previous_path.as_deref(), v.verdict))
+        .collect();
+    renamed.sort_by_key(|r| r.0);
+    assert_eq!(
+        renamed,
+        vec![
+            ("src/a2.rs", Some("src/a.rs"), Verdict::Changed),
+            ("src/b2.rs", Some("src/b.rs"), Verdict::Changed),
+        ],
+        "both renames coalesce: {:?}",
+        pass.verdicts
+    );
+    assert!(
+        !pass
+            .verdicts
+            .iter()
+            .any(|v| v.verdict == Verdict::Gone || v.verdict == Verdict::New),
+        "no rename may surface as Gone + New: {:?}",
+        pass.verdicts
+    );
+}
+
+#[test]
 fn resolve_commit_returns_full_oid() {
     let repo = Repo::new("resolve");
     corpus(&repo);

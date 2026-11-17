@@ -438,21 +438,33 @@ fn apply_rename_second_pass(verdicts: &mut Vec<PathVerdict>) {
         .filter(|(_, v)| v.verdict == Verdict::New)
         .map(|(i, _)| i)
         .collect();
+    // Pair every add with at most one not-yet-consumed delete, then drop
+    // the consumed deletes in one pass, so indices stay valid while
+    // pairing and every rename in the diff is coalesced, not just the
+    // first one.
+    let mut consumed = vec![false; verdicts.len()];
     for add in adds {
         let Some(add_blob) = verdicts[add].blob.clone() else {
             continue;
         };
-        if let Some(del) = verdicts.iter().position(|v| {
-            v.verdict == Verdict::Gone && v.previous_blob.as_deref() == Some(add_blob.as_str())
+        if let Some(del) = verdicts.iter().enumerate().position(|(i, v)| {
+            !consumed[i]
+                && v.verdict == Verdict::Gone
+                && v.previous_blob.as_deref() == Some(add_blob.as_str())
         }) {
+            consumed[del] = true;
             let old_path = verdicts[del].path.clone();
             verdicts[add].verdict = Verdict::Changed;
             verdicts[add].previous_path = Some(old_path);
             verdicts[add].previous_blob = Some(add_blob);
-            verdicts.remove(del);
-            break;
         }
     }
+    let mut index = 0;
+    verdicts.retain(|_| {
+        let keep = !consumed[index];
+        index += 1;
+        keep
+    });
 }
 
 /// Resolve a commit-ish to a full object id, so the ledger stores what
