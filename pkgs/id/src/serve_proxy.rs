@@ -401,26 +401,52 @@ impl FrameDecoder {
 /// [`CreditWindow::try_consume`] refuses rather than going negative,
 /// and the leg's reaction to a peer that overruns is an ERROR frame
 /// with [`ErrorReason::CreditOverrun`], built by the mux slice.
+///
+/// The window is also bounded above (#8970): the relay backpressure
+/// design requires hard finite per-stream and aggregate
+/// per-connection limits, with credit returning only as bounded
+/// buffer space is released. Each window therefore carries an
+/// explicit `ceiling` set at construction from the effective
+/// configuration — the design delegates the limit to configuration,
+/// so no universal deployment limit is invented here. The built-in
+/// constructors are fixed-size windows (ceiling = the configured
+/// initial credit): a WINDOW_UPDATE can only return credit the
+/// sender has actually consumed. A deployment that negotiates a
+/// larger maximum constructs the window with that ceiling via
+/// [`CreditWindow::new`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CreditWindow {
     available: u64,
+    ceiling: u64,
 }
 
 impl CreditWindow {
-    pub fn new(initial: u64) -> Self {
-        Self { available: initial }
+    /// A window holding `initial` credit that may never hold more
+    /// than `ceiling`. A ceiling below the initial grant is raised
+    /// to the initial grant: a window must always be able to hold
+    /// the credit it was constructed with.
+    pub fn new(initial: u64, ceiling: u64) -> Self {
+        Self {
+            available: initial,
+            ceiling: ceiling.max(initial),
+        }
     }
 
     pub fn per_stream() -> Self {
-        Self::new(INITIAL_STREAM_CREDIT)
+        Self::new(INITIAL_STREAM_CREDIT, INITIAL_STREAM_CREDIT)
     }
 
     pub fn per_connection() -> Self {
-        Self::new(INITIAL_CONNECTION_CREDIT)
+        Self::new(INITIAL_CONNECTION_CREDIT, INITIAL_CONNECTION_CREDIT)
     }
 
     pub fn available(&self) -> u64 {
         self.available
+    }
+
+    /// The finite maximum this window may ever hold.
+    pub fn ceiling(&self) -> u64 {
+        self.ceiling
     }
 
     /// Consume `bytes` of credit; `false` (and no state change) when the
@@ -433,9 +459,27 @@ impl CreditWindow {
         true
     }
 
-    /// Grant additional credit (a received WINDOW_UPDATE).
-    pub fn grant(&mut self, bytes: u64) {
-        self.available = self.available.saturating_add(bytes);
+    /// Grant additional credit (a received WINDOW_UPDATE). A grant
+    /// that would push the window past its ceiling — or overflow —
+    /// is an explicit protocol/resource error (the mux slice maps it
+    /// to [`ErrorReason::CreditOverrun`]): the window is left
+    /// unchanged, never silently saturated (#8970).
+    pub fn grant(&mut self, bytes: u64) -> Result<()> {
+        let next = self.available.checked_add(bytes).with_context(|| {
+            format!(
+                "credit grant of {bytes} bytes overflows the window ({} available)",
+                self.available
+            )
+        })?;
+        if next > self.ceiling {
+            bail!(
+                "credit grant of {bytes} bytes exceeds the window ceiling ({} available, {} ceiling)",
+                self.available,
+                self.ceiling
+            );
+        }
+        self.available = next;
+        Ok(())
     }
 }
 
@@ -515,7 +559,10 @@ mod tests {
         }
 
         /// Oracle: credit is never exceeded — any consume sequence the
-        /// window accepts sums to at most initial + granted.
+        /// window accepts sums to at most initial + granted, and the
+        /// window never holds more than its ceiling (#8970): a grant
+        /// the window refuses changes neither the accounting nor the
+        /// window state.
         #[test]
         fn credit_is_never_exceeded(
             ops in prop::collection::vec((any::<bool>(), 0u64..200_000), 0..32),
@@ -525,15 +572,57 @@ mod tests {
             let mut consumed = 0u64;
             for (is_grant, amount) in ops {
                 if is_grant {
-                    window.grant(amount);
-                    granted += amount;
+                    if window.grant(amount).is_ok() {
+                        granted += amount;
+                    }
                 } else if window.try_consume(amount) {
                     consumed += amount;
                 }
                 prop_assert!(consumed <= granted);
                 prop_assert_eq!(window.available(), granted - consumed);
+                prop_assert!(window.available() <= window.ceiling());
             }
         }
+    }
+
+    #[test]
+    fn credit_grant_returns_consumed_credit_up_to_the_ceiling() {
+        // #8970: normal credit return — consume, then a WINDOW_UPDATE
+        // returns exactly the consumed space.
+        let mut window = CreditWindow::per_stream();
+        assert!(window.try_consume(1_000));
+        window.grant(1_000).unwrap();
+        assert_eq!(window.available(), INITIAL_STREAM_CREDIT);
+        // An exact-ceiling grant on a drained window is accepted.
+        let mut drained = CreditWindow::per_stream();
+        assert!(drained.try_consume(INITIAL_STREAM_CREDIT));
+        drained.grant(INITIAL_STREAM_CREDIT).unwrap();
+        assert_eq!(drained.available(), drained.ceiling());
+    }
+
+    #[test]
+    fn credit_grant_past_the_ceiling_is_refused_without_state_change() {
+        // #8970: over-ceiling and repeated WINDOW_UPDATE grants are
+        // explicit errors and never mutate the window (no silent
+        // saturation toward u64::MAX).
+        let mut window = CreditWindow::per_stream();
+        let before = window;
+        assert!(window.grant(1).is_err());
+        assert_eq!(window, before);
+        for _ in 0..4 {
+            assert!(window.grant(u64::from(u32::MAX)).is_err());
+        }
+        assert_eq!(window, before);
+        // Overflow itself is an error, not a saturation.
+        assert!(window.grant(u64::MAX).is_err());
+        assert_eq!(window, before);
+        // A configured ceiling above the initial grant admits grants
+        // up to that ceiling and no further.
+        let mut configured = CreditWindow::new(100, 250);
+        configured.grant(150).unwrap();
+        assert_eq!(configured.available(), 250);
+        assert!(configured.grant(1).is_err());
+        assert_eq!(configured.available(), 250);
     }
 
     #[test]
