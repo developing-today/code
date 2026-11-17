@@ -58,6 +58,7 @@ mod security;
 mod seitan;
 mod tags_ws;
 mod templates;
+pub mod transport_advertisement;
 pub mod world_ws;
 
 pub use content_mode::{ContentMode, MediaType, detect_mode, detect_mode_with_content};
