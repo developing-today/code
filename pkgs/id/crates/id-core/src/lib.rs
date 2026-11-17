@@ -46,6 +46,7 @@ pub mod seed_phrase;
 pub mod sync_method;
 pub mod text;
 pub mod time;
+pub mod transport_advertisement;
 pub mod triples;
 pub mod tuple;
 mod unicode;
