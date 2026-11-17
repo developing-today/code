@@ -906,10 +906,10 @@ mod tests {
     #[tokio::test]
     async fn query_bootstrap_redirect_never_leaves_origin_for_multi_slash_paths() {
         for (target, want) in [
-            ("//evil.example/path?token=<redacted>", "/evil.example/path"),
-            ("///evil.example?x=1&token=<redacted>", "/evil.example?x=1"),
-            ("//?token=<redacted>", "/"),
-            ("/\\evil.example/p?token=<redacted>", "/evil.example/p"),
+            ("//evil.example/path?token=s3cret", "/evil.example/path"),
+            ("///evil.example?x=1&token=s3cret", "/evil.example?x=1"),
+            ("//?token=s3cret", "/"),
+            ("/\\evil.example/p?token=s3cret", "/evil.example/p"),
         ] {
             let r = call(
                 app(with_token()),
