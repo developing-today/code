@@ -16,7 +16,7 @@ ort = { version = "2.0.0-rc.15", default-features = false, features = [
   "load-dynamic",
   "ndarray",
 ] }
-tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 thiserror = "2"
 
 [dev-dependencies]
