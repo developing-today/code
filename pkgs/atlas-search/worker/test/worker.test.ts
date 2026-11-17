@@ -178,6 +178,21 @@ describe("atlas-search worker", () => {
     expect(counts.search).toBe(s0);
   });
 
+  it("refuses an oversized body with the 413 envelope before parsing it (#11331)", async () => {
+    const e0 = counts.embed;
+    const s0 = counts.search;
+    const resp = await SELF.fetch("https://worker.test/v1/search", {
+      method: "POST",
+      headers: { ...GATE, "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "x".repeat(70 * 1024) }),
+    });
+    expect(resp.status).toBe(413);
+    const body = (await resp.json()) as { error?: { code?: string } };
+    expect(body.error?.code).toBe("payload_too_large");
+    expect(counts.embed).toBe(e0);
+    expect(counts.search).toBe(s0);
+  });
+
   it("reports a null search-service response as a 502, not a raw TypeError (#6982)", async () => {
     const resp = await search({ query: "nullsearch query" });
     expect(resp.status).toBe(502);
