@@ -5,7 +5,7 @@ from import_runtime import Client
 from read_pipeline import execute_reads
 
 def response(n=1,baton='b'):
- return {'baton':baton,'results':[{'type':'ok','response':{'type':'execute','result':{'rows':[[{'type':'integer','value':'1'}]]}}} for _ in range(n)]}
+ return {'baton':baton,'results':[{'type':'ok','response':{'type':'execute','result':{'cols':[{'name':'1'}],'rows':[[{'type':'integer','value':'1'}]]}}} for _ in range(n)]}
 class Tests(unittest.TestCase):
  def run_response(self,value,queries=None):
   c=Client('test');c.transaction=True;c.baton='a'
@@ -27,6 +27,18 @@ class Tests(unittest.TestCase):
  def test_no_mutations(self):
   for sql in ['INSERT INTO x VALUES (1)','PRAGMA foreign_keys=OFF','SELECT 1; DELETE FROM x']:
    with self.assertRaises(ValueError):self.run_response(response(),[(sql,[])])
+ def test_empty_result_requires_columns(self):
+  r=response();r['results'][0]['response']['result']={'rows':[]}
+  with self.assertRaises(RuntimeError):self.run_response(r)
+ def test_missing_cell_value(self):
+  r=response();r['results'][0]['response']['result']['rows']=[[{'type':'text'}]]
+  with self.assertRaises(RuntimeError):self.run_response(r)
+ def test_wrong_row_width(self):
+  r=response();r['results'][0]['response']['result']['rows']=[[]]
+  with self.assertRaises(RuntimeError):self.run_response(r)
+ def test_invalid_integer(self):
+  r=response();r['results'][0]['response']['result']['rows']=[[{'type':'integer','value':'wrong'}]]
+  with self.assertRaises(RuntimeError):self.run_response(r)
  def test_chunked_baton(self):
   c=Client('test');c.transaction=True;c.baton='a';calls=[]
   def opener(req,timeout):

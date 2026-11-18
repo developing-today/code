@@ -1,5 +1,5 @@
 """Bounded SELECT-only Hrana pipeline; preserves existing Client transaction/host rules."""
-import json,urllib.request,urllib.error
+import json,urllib.request,urllib.error,math,re
 from urllib.parse import urlsplit
 from import_runtime import OPEN,arg
 
@@ -29,7 +29,23 @@ def execute_reads(c,queries):
    if not isinstance(result,dict) or result.get('type')!='ok':raise RuntimeError('guard pipeline SQL failure')
    response=result.get('response',{})
    if not isinstance(response,dict) or response.get('type')!='execute' or not isinstance(response.get('result'),dict) or not isinstance(response['result'].get('rows'),list):raise RuntimeError('invalid pipeline execute response')
+   cols=response['result'].get('cols')
+   if not isinstance(cols,list) or not cols or any(not isinstance(col,dict) or not isinstance(col.get('name'),str) for col in cols):raise RuntimeError('invalid pipeline column metadata')
    rows=response['result']['rows']
+   if any(not isinstance(row,list) or len(row)!=len(cols) for row in rows):raise RuntimeError('pipeline row width mismatch')
    if any(not isinstance(row,list) or any(not isinstance(cell,dict) or cell.get('type') not in ('null','integer','float','text','blob') for cell in row) for row in rows):raise RuntimeError('invalid pipeline row shape')
+   for row in rows:
+    for cell in row:
+     typ=cell['type'];v=cell.get('value')
+     if typ=='null':
+      if v is not None:raise RuntimeError('invalid null cell')
+     elif 'value' not in cell:raise RuntimeError('missing pipeline cell value')
+     elif typ in ('text','blob') and not isinstance(v,str):raise RuntimeError('invalid text/blob cell')
+     elif typ=='integer' and (isinstance(v,bool) or not isinstance(v,(str,int)) or re.fullmatch(r'-?[0-9]+',str(v)) is None):raise RuntimeError('invalid integer cell')
+     elif typ=='float':
+      if isinstance(v,bool) or not isinstance(v,(str,int,float)):raise RuntimeError('invalid float cell')
+      try:valid=math.isfinite(float(v))
+      except (TypeError,ValueError):valid=False
+      if not valid:raise RuntimeError('nonfinite/invalid float cell')
    results.append([[cell.get('value') for cell in row] for row in rows])
  return results
