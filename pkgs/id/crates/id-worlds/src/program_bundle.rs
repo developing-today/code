@@ -225,6 +225,61 @@ impl BundleError {
     }
 }
 
+/// A bundle's signed statement without its payload: the exact manifest JSON
+/// and the bundle signature over it (design D6's registry record).
+///
+/// A record verifies on its own, because the bundle signature covers the
+/// manifest bytes and the payload's digest, which the manifest states as its
+/// content hash. A registry may index records but cannot alter one without
+/// breaking its signature.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BundleRecord {
+    /// The bundle's manifest, exactly as signed.
+    pub manifest: String,
+    /// The bundle signature, lower-case hex.
+    pub bundle_signature: String,
+}
+
+impl BundleRecord {
+    /// Verify the record offline and return its manifest.
+    ///
+    /// # Errors
+    ///
+    /// The manifest, abi or lineage check fails, or the bundle signature
+    /// does not verify under the manifest's author key.
+    pub fn verify(&self) -> Result<BundleManifest, BundleError> {
+        if self.manifest.len() > MAX_MANIFEST_BYTES {
+            return Err(BundleError::Manifest(format!(
+                "the manifest is {} bytes; the limit is {MAX_MANIFEST_BYTES}",
+                self.manifest.len()
+            )));
+        }
+        let manifest: BundleManifest =
+            id_core::json_unique::from_slice_without_duplicate_keys(self.manifest.as_bytes())
+                .map_err(|e| BundleError::Manifest(e.to_string()))?;
+        let author = check_manifest(&manifest)?;
+        let digest = parse_hex::<32>(&manifest.content_hash).ok_or_else(|| {
+            BundleError::Manifest("content_hash is not 32 bytes of lower-case hex".to_owned())
+        })?;
+        let signature =
+            parse_signature(&self.bundle_signature).ok_or(BundleError::BundleSignature)?;
+        author
+            .verify_strict(
+                &bundle_signing_message_for(self.manifest.as_bytes(), &digest),
+                &signature,
+            )
+            .map_err(|_| BundleError::BundleSignature)?;
+        Ok(manifest)
+    }
+
+    /// Whether `bundle` is the bundle this record describes.
+    #[must_use]
+    pub fn describes(&self, bundle: &ProgramBundle) -> bool {
+        *self == bundle.record()
+    }
+}
+
 /// Why a sideloaded bundle was not installed into a world.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum BundleInstallError {
@@ -329,6 +384,16 @@ impl ProgramBundle {
     #[must_use]
     pub fn payload(&self) -> &[u8] {
         &self.payload
+    }
+
+    /// The bundle's registry record: its manifest and signature, without the
+    /// payload.
+    #[must_use]
+    pub fn record(&self) -> BundleRecord {
+        BundleRecord {
+            manifest: String::from_utf8_lossy(&self.manifest_bytes).into_owned(),
+            bundle_signature: self.seal.bundle_signature.clone(),
+        }
     }
 
     /// The verified bundle signature, lower-case hex.
@@ -443,9 +508,16 @@ fn seal(
 }
 
 fn bundle_signing_message(manifest_bytes: &[u8], payload: &[u8]) -> Vec<u8> {
+    bundle_signing_message_for(manifest_bytes, blake3::hash(payload).as_bytes())
+}
+
+/// The bundle signature's message, given the payload's BLAKE3 digest. The
+/// digest is the manifest's content hash, so a [`BundleRecord`] verifies
+/// without its payload.
+fn bundle_signing_message_for(manifest_bytes: &[u8], payload_digest: &[u8; 32]) -> Vec<u8> {
     let mut message = BUNDLE_SIGNING_DOMAIN.to_vec();
     message.extend_from_slice(blake3::hash(manifest_bytes).as_bytes());
-    message.extend_from_slice(blake3::hash(payload).as_bytes());
+    message.extend_from_slice(payload_digest);
     message
 }
 
@@ -816,6 +888,33 @@ mod tests {
             "bundle_signature",
             "dropping attribution: {error}"
         );
+    }
+
+    #[test]
+    fn a_record_verifies_without_its_payload_and_refuses_edits() {
+        let bundle = fork(&original(), PAYLOAD.to_vec(), spec("chess", 1), &bob()).unwrap();
+        let record = bundle.record();
+        assert_eq!(record.verify().unwrap(), *bundle.manifest());
+        assert!(record.describes(&bundle));
+        assert!(!record.describes(&original()));
+
+        let edited = BundleRecord {
+            manifest: record
+                .manifest
+                .replacen(r#""version":1"#, r#""version":2"#, 1),
+            ..record.clone()
+        };
+        assert_eq!(edited.verify().unwrap_err().check(), "bundle_signature");
+        let foreign = BundleRecord {
+            bundle_signature: original().record().bundle_signature,
+            ..record.clone()
+        };
+        assert_eq!(foreign.verify().unwrap_err().check(), "bundle_signature");
+        let repeated = BundleRecord {
+            manifest: record.manifest.replacen('{', r#"{"name":"x","#, 1),
+            ..record
+        };
+        assert_eq!(repeated.verify().unwrap_err().check(), "manifest");
     }
 
     #[test]
