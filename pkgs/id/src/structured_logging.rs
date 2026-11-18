@@ -609,9 +609,13 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("create temp dir");
 
         let mut writer = SharedFileWriter::open(&path).expect("open log file");
-        writer.write_all(b"before delete\n").expect("write before delete");
+        writer
+            .write_all(b"before delete\n")
+            .expect("write before delete");
         std::fs::remove_file(&path).expect("delete log");
-        writer.write_all(b"after delete\n").expect("write after delete");
+        writer
+            .write_all(b"after delete\n")
+            .expect("write after delete");
         writer.write_all(b"no newline").expect("write partial tail");
         drop(writer);
 
