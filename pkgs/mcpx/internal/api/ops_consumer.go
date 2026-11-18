@@ -86,6 +86,20 @@ func consumerOps() []Op {
 			},
 		},
 		{
+			Name: "recipe_remove", Method: "DELETE", Path: "/v1/recipes/{name}",
+			Permission: PermissionAdmin,
+			Idempotent: true,
+			Command:    "recipes remove",
+			Summary:    "Remove a saved recipe",
+			Description: "Deletes the visible recipe file from the directory that " +
+				"defines it. If a same-name recipe is shadowed in a farther directory, " +
+				"that recipe becomes visible after removal.",
+			Admin: true, Mutating: true, Destructive: true,
+			Params: []Param{
+				{Name: "name", In: InPath, Type: "string", Required: true, Desc: "the recipe to remove"},
+			},
+		},
+		{
 			Name: "recipe_run", Method: "POST", Path: "/v1/recipes/{name}/run",
 			Permission: PermissionRun,
 			Command:    "recipes run",

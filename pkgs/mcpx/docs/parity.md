@@ -32,7 +32,7 @@ and costs an agent the ability to restart a server that has wedged. What they
 carry instead is a description that says so and MCP annotations
 (`readOnlyHint`, `destructiveHint`) for a client that wants to scope on them.
 
-## /v1 operations (93)
+## /v1 operations (94)
 
 | Operation | Route | CLI | MCP tool | Plugin | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -90,6 +90,7 @@ carry instead is a description that says so and MCP annotations
 | `prompts` | `GET /v1/prompts` | `mcpx prompts` | `mcpx_prompts` | `ops.prompts()` |  |
 | `protocol` | `GET /v1/protocol` | `mcpx protocol` *generated* | `mcpx_protocol` | `ops.protocol()` |  |
 | `recipes_list` | `GET /v1/recipes` | `mcpx recipes list` | `mcpx_recipes_list` | `ops.recipesList()` |  |
+| `recipe_remove` | `DELETE /v1/recipes/{name}` | `mcpx recipes remove` | `mcpx_recipe_remove` | `ops.recipeRemove()` | Privileged. Destructive. |
 | `recipe_get` | `GET /v1/recipes/{name}` | `mcpx recipes show` | `mcpx_recipe_get` | `ops.recipeGet()` |  |
 | `recipe_save` | `POST /v1/recipes/{name}` | `mcpx recipes save` | `mcpx_recipe_save` | `ops.recipeSave()` |  |
 | `recipe_run` | `POST /v1/recipes/{name}/run` | `mcpx recipes run` | `mcpx_recipe_run` | `ops.recipeRun()` |  |
@@ -180,7 +181,7 @@ that reaches none says why: those are decisions, not gaps.
 | `prompts` | `prompt_get`, `prompts` |  |
 | `protocol` | `protocol` | Generated from the operation table. |
 | `proxy` | `chat_completions` |  |
-| `recipes` | `recipes_list`, `recipe_get`, `recipe_save`, `recipe_run` |  |
+| `recipes` | `recipes_list`, `recipe_remove`, `recipe_get`, `recipe_save`, `recipe_run` |  |
 | `refresh` | `refresh` |  |
 | `registry` | `registry_search` |  |
 | `reload` | `reload` |  |
