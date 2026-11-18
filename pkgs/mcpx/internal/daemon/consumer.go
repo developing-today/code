@@ -556,10 +556,22 @@ func (r *Registry) confirmDestructiveFor(ctx context.Context, p *pool.Pool, serv
 		return fmt.Errorf("awaiting confirmation for %s: %w", path, aerr)
 	}
 	if v, _ := elicit.Resolve(ans, elicit.FieldConfirm, "false"); v != "true" {
-		return ErrNotConfirmed{Tool: path, Reason: "the answer was " + string(ans.Action),
+		return ErrNotConfirmed{Tool: path, Reason: refusalReason(ans, r.consumer.AskTimeout),
 			Code: elicit.RefusalCodeForAnswer(ans)}
 	}
 	return nil
+}
+
+// refusalReason says why a confirmation was not granted. A question the
+// broker expired was answered Cancel on the asker's behalf, but nobody
+// cancelled it: the question and the wait share one deadline, and when the
+// broker's expiry wins that race the refusal must still read as silence,
+// not as a person's cancel.
+func refusalReason(ans elicit.Answer, timeout time.Duration) string {
+	if ans.By == "expiry" {
+		return "nobody answered within " + timeout.String()
+	}
+	return "the answer was " + string(ans.Action)
 }
 
 // ErrWriteDenied is returned when the write policy refuses a call.
@@ -819,7 +831,7 @@ func (r *Registry) applyWritePolicyFor(ctx context.Context, p *pool.Pool, server
 			return false, fmt.Errorf("awaiting confirmation for %s: %w", path, aerr)
 		}
 		if v, _ := elicit.Resolve(ans, elicit.FieldConfirm, "false"); v != "true" {
-			return false, ErrNotConfirmed{Tool: path, Reason: "the answer was " + string(ans.Action),
+			return false, ErrNotConfirmed{Tool: path, Reason: refusalReason(ans, r.consumer.AskTimeout),
 				Code: elicit.RefusalCodeForAnswer(ans)}
 		}
 		return true, nil
