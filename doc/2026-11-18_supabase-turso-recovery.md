@@ -19,7 +19,11 @@ parent records (22,403 total across the nineteen verified runtime tables).
 Fresh-connection readback reported foreign-key checks OK, 82 pre-existing
 schema entries preserved, and per-table value matches using the recorded
 14-significant-digit normalization for REAL values. This is not a claim
-of bit-for-bit equality for every PostgreSQL floating-point value.
+of bit-for-bit equality for every PostgreSQL floating-point value. The
+production verification report records five differing REAL cells in
+`ainventory_measurement_events`, each bounded to at most one ULP; the
+other values passed the recorded normalization checks. Evidence:
+`runtime-v5/production-verification.json` in the local recovery directory.
 
 A separate AA import inserted 160 records: three source registry rows and
 157 sheet rows. New values were checked exactly. Forty-two existing source
@@ -38,8 +42,11 @@ for those same tables. After normalizing timestamps, 53 of the 54 D1 rows
 match their backup counterparts. The remaining `ainventory.sources` row
 (id 41) has the entire D1 note plus a November 12 workbook-deprecation
 addendum in the backup. The backup also contains source ids 47, 51 and 52.
-No D1-only record or newer timestamp was observed. Preserve the fuller
-backup state; D1 was not modified or removed.
+No D1-only record or newer timestamp was observed. The fuller source 41
+backup note is preserved in the recovery archive. The operational Turso
+source 41 note was not overwritten: it remains among the 79 pre-existing
+row conflicts retained pending explicit reconciliation. D1 was not modified
+or removed.
 
 ## Code and verification
 
@@ -108,3 +115,12 @@ Cold-store Supabase labels refer to copying retained R2 backup artifacts,
 not querying the deleted database; these preservation duties stay in place.
 The inventory does not establish that every remote Muse sandbox consumer
 has been discovered or migrated.
+
+A bounded live writer audit found the primary checkout orchestration and
+interpretation scripts and their shared Hrana helper identical to the
+merged migration versions. Neither packaged CLI wrapper was installed on
+PATH, and no scheduled caller for those two scripts was found in the
+inspected repo, laptop-tool scripts or user units. Source-path invocations
+therefore have migrated code, but no real writer invocation is claimed
+verified by this receipt. Separate fleet worktrees and remote producers
+require their own deployment audit.
