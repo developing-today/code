@@ -22,7 +22,6 @@ A row here records intent. It does not settle a product question and it is not a
 
 ## Next
 
-1. `id` sync protocol hardening from the Phase 3 to 5 issues (#178 to #195).
 
 ## Later
 
