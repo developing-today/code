@@ -71,6 +71,7 @@ var implementedEffectProbes = map[string]string{
 	"proto.askTTL":               "TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment",
 	"proto.askTimeout":           "TestAskTimeoutReleasesAHeldRequestFromTheEnvironment",
 	"proto.stateTTL":             "TestStateTTLExpiresAResumableRequestFromTheEnvironment",
+	"proto.sessionIdle":          "TestSessionIdleReapsAnUnusedSessionFromTheEnvironment",
 	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
 	"daemon.autostart":           "TestDaemonAutostartIsReachableFromTheEnvironment",
 	"http.bodyLimit":             "TestHTTPBodyLimitsRejectOversizedBodies",
@@ -129,6 +130,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment":  TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment,
 	"TestAskTimeoutReleasesAHeldRequestFromTheEnvironment":   TestAskTimeoutReleasesAHeldRequestFromTheEnvironment,
 	"TestStateTTLExpiresAResumableRequestFromTheEnvironment": TestStateTTLExpiresAResumableRequestFromTheEnvironment,
+	"TestSessionIdleReapsAnUnusedSessionFromTheEnvironment":  TestSessionIdleReapsAnUnusedSessionFromTheEnvironment,
 	"TestDaemonAddressIsReachableFromTheEnvironment":         TestDaemonAddressIsReachableFromTheEnvironment,
 	"TestDaemonAutostartIsReachableFromTheEnvironment":       TestDaemonAutostartIsReachableFromTheEnvironment,
 	"TestHTTPBodyLimitsRejectOversizedBodies":                TestHTTPBodyLimitsRejectOversizedBodies,
@@ -565,6 +567,44 @@ func TestStateTTLExpiresAResumableRequestFromTheEnvironment(t *testing.T) {
 	}
 	if got := resume("MCPX_PROTO_STATE_TTL=1s"); !strings.Contains(got, "requestState expired") {
 		t.Fatalf("proto.stateTTL=1s should refuse a resume after three seconds, got %s", got)
+	}
+}
+
+// proto.sessionIdle is how long an unused legacy Streamable HTTP session
+// is kept. Idle sessions are reaped when a new one is opened, so the probe
+// opens a session, leaves it alone for three seconds, opens a second one
+// and then asks to end the first.
+// Oracle: at the default (30m) the first session still exists and DELETE
+// ends it (204); with MCPX_PROTO_SESSION_IDLE=1s it was reaped and DELETE
+// answers 404.
+func TestSessionIdleReapsAnUnusedSessionFromTheEnvironment(t *testing.T) {
+	endStatus := func(env ...string) int {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		e.run("ls")
+		ep := endpointOf(t, e)
+		first := mcpInit(t, ep)
+		time.Sleep(3 * time.Second)
+		_ = mcpInit(t, ep)
+		req, err := http.NewRequest(http.MethodDelete, ep+"/mcp", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Mcp-Session-Id", first)
+		resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if got := endStatus(); got != http.StatusNoContent {
+		t.Fatalf("at the default proto.sessionIdle a session idle for three seconds should still end with 204, got %d", got)
+	}
+	if got := endStatus("MCPX_PROTO_SESSION_IDLE=1s"); got != http.StatusNotFound {
+		t.Fatalf("proto.sessionIdle=1s should reap a session idle for three seconds, so DELETE should answer 404, got %d", got)
 	}
 }
 

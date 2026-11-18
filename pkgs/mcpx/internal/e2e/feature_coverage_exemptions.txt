@@ -67,7 +67,6 @@ setting	proto.native	no integration-test exercise yet; burn-down #8473 (settings
 setting	proto.samplingPerMinute	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
 setting	proto.samplingSessionPerMinute	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
 setting	proto.serveMCP	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
-setting	proto.sessionIdle	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
 setting	protoMessages.listMaxAge	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
 setting	protoMessages.readMaxAge	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
 setting	protoMessages.taskAfter	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
