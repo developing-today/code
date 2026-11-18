@@ -101,6 +101,7 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"catalog.instructions":               "TestCatalogInstructionsShowsServerGuidance",
 	"plumbing.launcherPlaceholderRepeat": "TestPlumbingLauncherPlaceholderRepeatAllowsATwiceUsedName",
 	"plumbing.allowTsJsOverlap":          "TestPlumbingAllowTsJsOverlapPicksAmbiguousScripts",
 	"plumbing.sourceDirAllowed":          "TestPlumbingSourceDirAllowedTakesADirectoryAsSource",
@@ -239,6 +240,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":        TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                 TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                          TestEventsHistoryBoundsTheReplay,
+	"TestCatalogInstructionsShowsServerGuidance":                                TestCatalogInstructionsShowsServerGuidance,
 	"TestPlumbingLauncherPlaceholderRepeatAllowsATwiceUsedName":                 TestPlumbingLauncherPlaceholderRepeatAllowsATwiceUsedName,
 	"TestPlumbingAllowTsJsOverlapPicksAmbiguousScripts":                         TestPlumbingAllowTsJsOverlapPicksAmbiguousScripts,
 	"TestPlumbingSourceDirAllowedTakesADirectoryAsSource":                       TestPlumbingSourceDirAllowedTakesADirectoryAsSource,
@@ -2600,6 +2602,33 @@ func TestPlumbingSourceProbePathsReadsANamedFile(t *testing.T) {
 	}
 	if out, err := launcherAt(t, file, "MCPX_PLUMBING_SOURCE_PROBE_PATHS=false"); err == nil || strings.Contains(out, "dir-a") {
 		t.Errorf("plumbing.sourceProbePaths=false should take the path as source text (err %v):\n%s", err, out)
+	}
+}
+
+// instructedServer is oneServer's fake with free-text instructions, set
+// through FAKEMCP_INSTRUCTIONS (spelled with a JSON escape because newEnv
+// replaces every "FAKE" in a config with the binary's path).
+const instructedServer = `{
+  "mcpServers": {
+    "demo": {
+      "command": "FAKE",
+      "env": { "\u0046AKEMCP_INSTRUCTIONS": "probe-instructions" },
+      "mcpx": { "sharing": "shared", "scope": "global" }
+    }
+  }
+}`
+
+// TestCatalogInstructionsShowsServerGuidance is the effect probe for
+// catalog.instructions: `mcpx types` carries the server's instructions by
+// default and leaves them out once the setting is off.
+func TestCatalogInstructionsShowsServerGuidance(t *testing.T) {
+	e := newEnv(t, instructedServer)
+	if out := e.run("types", "demo"); !strings.Contains(out, "probe-instructions") {
+		t.Errorf("by default `types` should carry the server's instructions:\n%s", out)
+	}
+	e.setenv("MCPX_CATALOG_INSTRUCTIONS=false")
+	if out := e.run("types", "demo"); strings.Contains(out, "probe-instructions") {
+		t.Errorf("catalog.instructions=false should leave the instructions out:\n%s", out)
 	}
 }
 

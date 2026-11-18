@@ -180,7 +180,7 @@ func handle(r req) map[string]any {
 		if subscribeMode {
 			resources["subscribe"] = true
 		}
-		return ok(r.ID, map[string]any{
+		result := map[string]any{
 			"protocolVersion": "2025-06-18",
 			"serverInfo":      map[string]any{"name": "fakemcp", "version": "1.0.0"},
 			"capabilities": map[string]any{
@@ -188,7 +188,13 @@ func handle(r req) map[string]any {
 				"resources": resources,
 				"prompts":   map[string]any{},
 			},
-		})
+		}
+		// FAKEMCP_INSTRUCTIONS gives the server free-text instructions, so a
+		// test can see whether a surface shows or hides them.
+		if instr := os.Getenv("FAKEMCP_INSTRUCTIONS"); instr != "" {
+			result["instructions"] = instr
+		}
+		return ok(r.ID, result)
 	case "resources/subscribe", "resources/unsubscribe":
 		if !subscribeMode {
 			break
