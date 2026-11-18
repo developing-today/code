@@ -4,22 +4,21 @@
 //! Every frame or body this crate receives from a peer and then checks,
 //! stores, forwards or acts on is a gate, so a duplicated object key is a
 //! parse error rather than a last-wins collapse. The lossless form the
-//! contract prescribes: validate the original bytes with
-//! [`parse_json_without_duplicate_keys`], discard its value, and run the
-//! typed decode over the same bytes, so nothing the typed decode used to
-//! accept (full-width integers included) is lost.
+//! contract prescribes, through
+//! [`id_core::json_unique::from_slice_without_duplicate_keys`]: validate the
+//! original bytes, discard the validated value, and run the typed decode over
+//! the same bytes, so nothing the typed decode used to accept (full-width
+//! integers included) is lost.
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use serde::de::DeserializeOwned;
 
-use id_core::json_unique::parse_json_without_duplicate_keys;
+use id_core::json_unique::from_slice_without_duplicate_keys;
 
 /// Decodes peer-supplied JSON into `T`, refusing any duplicated object key at
 /// any depth. The error names the repeated key.
 pub(crate) fn from_slice_unique<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
-    let text = std::str::from_utf8(bytes).context("JSON is not valid UTF-8")?;
-    parse_json_without_duplicate_keys(text)?;
-    Ok(serde_json::from_str(text)?)
+    Ok(from_slice_without_duplicate_keys(bytes)?)
 }
 
 /// Test support: `json` (an object) with its first key written twice, and
