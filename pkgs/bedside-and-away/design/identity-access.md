@@ -30,6 +30,10 @@ The `*` policy is the store read gate. A deny there denies the entire view; use 
 
 `worker/text.mjs` defines three structural classes, checked on the server; `tests/unicode-corpus.json` is the golden corpus. An identifier is well-formed with no control or format character, so zero-width and bidirectional override characters are refused there. A name (store name, label, nickname) is cleaned: control and format characters and unpaired surrogates are dropped, except inside an emoji sequence (ZWJ families, tag flags) and a zero-width non-joiner between letters. A comment is refused only for an unpaired surrogate or a control character other than tab, line feed and carriage return. The browser's blanket zero-width-joiner removal is gone; its clean-up now keeps emoji sequences too, and is a convenience, never the check.
 
+## Invitation lifecycle (BA-W01 L3)
+
+An invitation is `pending` until it is accepted, declined or revoked, and expires 14 days after it was made (`INVITE_TTL_MS` in `worker/api.mjs`). Expiry is derived from `created_at` rather than stored, because the `invitations.status` CHECK predates `expired`; the API reports `expired` and each invitation's `expiresAt`, and an expired invitation leaves the invitee's list. The invitation ID is its single-use token: only the signed-in account whose email it names can respond, every transition is a compare-and-set on `status='pending'` and an unexpired `created_at`, and a response to an invitation that is no longer pending (a replay, or one that expired) fails closed with 409 and its status. A new invitation to the same email replaces an expired one.
+
 ## Guest/account proof design
 
 `identity.mjs` supplies random UUID installation IDs and 256-bit guest-claim token primitives. Only the SHA-256 hash is persisted; token is returned once. Claims bind guest ID and store ID, expire in at most ten minutes, and reject consumed records, changed stores, invalid tokens and absent authenticated accounts. These primitives do not create sessions or authenticate accounts.

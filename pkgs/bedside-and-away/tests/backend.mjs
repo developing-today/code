@@ -22,6 +22,7 @@ await call('stores/'+sid+'/settings',{data:{type:'shared'}});
 [code,r]=await call('stores/'+sid+'/invites',{data:{email:'bob@example.com',role:'reader'}});assert.equal(code,201);const iid=r.invitation.id;
 assert.equal((await call('invites/'+iid+'/respond',{user:'mallory',data:{action:'accept'}}))[0],404);
 assert.equal((await call('invites/'+iid+'/respond',{user:'bob',data:{action:'accept'}}))[0],200);
+for(const action of ['accept','decline']){const [replayCode,replay]=await call('invites/'+iid+'/respond',{user:'bob',data:{action}});assert.equal(replayCode,409);assert.equal(replay.status,'accepted')}
 assert.equal((await call('stores/'+sid,{user:'bob'}))[0],200);
 assert.equal((await call('stores/'+sid+'/events',{user:'bob',data:{expectedVersion:1,event:{...event,id:'ev_3'}}}))[0],403);
 assert.equal((await call('stores/'+sid+'/access',{user:'bob'}))[0],403);
@@ -156,3 +157,15 @@ console.log('PASS: scoped variant commands fail closed for administrators as wel
  const kept=(await call('stores/'+lid))[1].state.notes.find(x=>x.id==='note_l1');assert.equal(kept.actorId,'alice');assert.equal(kept.author,stored.author);assert.equal(kept.device,'');
  assert.equal((await call('stores/'+lid,{user:'bob',headers:{'x-bedaway-actor':'alice'}}))[0],404);}
 console.log('PASS: principal is the gateway account; body actor fields and non-UUID installation IDs are dropped.');
+{const xid=(await call('stores',{data:{name:'Expiry',type:'shared',initialState:state}}))[1].store.id;
+ const made=(await call('stores/'+xid+'/invites',{data:{email:'erin@example.com',role:'reader'}}))[1].invitation;
+ assert.equal(Date.parse(made.expiresAt)-Date.now()>13*86400000,true);
+ assert.equal((await call('bootstrap',{user:'erin'}))[1].invitations.length,1);
+ sql.prepare('UPDATE invitations SET created_at=? WHERE id=?').run(new Date(Date.now()-15*86400000).toISOString(),made.id);
+ assert.equal((await call('bootstrap',{user:'erin'}))[1].invitations.length,0);
+ const [expiredCode,expired]=await call('invites/'+made.id+'/respond',{user:'erin',data:{action:'accept'}});
+ assert.equal(expiredCode,409);assert.equal(expired.status,'expired');assert.equal((await call('stores/'+xid,{user:'erin'}))[0],404);
+ assert.equal((await call('stores/'+xid+'/access'))[1].invitations.find(x=>x.id===made.id).status,'expired');
+ const again=(await call('stores/'+xid+'/invites',{data:{email:'erin@example.com',role:'reader'}}))[1].invitation;assert.notEqual(again.id,made.id);
+ assert.equal((await call('invites/'+again.id+'/respond',{user:'erin',data:{action:'accept'}}))[0],200);assert.equal((await call('stores/'+xid,{user:'erin'}))[0],200);}
+console.log('PASS: invitations expire, replays of accepted or expired invitations fail closed, and a fresh invitation replaces an expired one.');
