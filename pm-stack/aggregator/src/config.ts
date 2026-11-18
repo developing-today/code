@@ -144,6 +144,8 @@ export interface Config {
   opencodeServerStateFile: string;
   /** Read-only directory containing mcpx daemon's rotated call ledger. */
   mcpxCallLedgerDir: string;
+  /** Read-only fleet CLI invocation JSONL ledger. */
+  fleetInvocationLedgerFile: string;
   kaneo: {
     baseUrl: string;
     /** Kaneo's client URL — the Origin its auth accepts (better-auth). */
@@ -300,6 +302,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     mcpxCallLedgerDir: s(
       env.PM_AGG_MCPX_CALL_LEDGER_DIR,
       join(homedir(), ".local", "state", "mcpx", "call-ledger"),
+    ),
+    fleetInvocationLedgerFile: s(
+      env.PM_AGG_FLEET_INVOCATION_LEDGER_FILE,
+      join(env.XDG_STATE_HOME?.trim() || join(homedir(), ".local", "state"), "fleet", "invocations.jsonl"),
     ),
     kaneo: {
       baseUrl: s(env.KANEO_URL, "http://127.0.0.1:5173"),
