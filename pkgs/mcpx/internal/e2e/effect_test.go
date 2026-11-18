@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -92,6 +93,8 @@ var implementedEffectProbes = map[string]string{
 	"recipes.minScore":           "TestRecipesMinScoreRefusesAWeakMatchFromTheEnvironment",
 	"recipes.matchMargin":        "TestRecipesMatchMarginSettlesATieFromTheEnvironment",
 	"recipes.limit":              "TestRecipesLimitBoundsTheRankingFromTheEnvironment",
+	"tasks.ttl":                  "TestTasksTTLSetsAnExecTasksRetentionFromTheEnvironment",
+	"tasks.resultWait":           "TestTasksResultWaitBoundsCollectingAResultFromTheEnvironment",
 	"proto.serveMCP":             "TestServeMCPUnmountsTheEndpointFromTheEnvironment",
 	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
 	"daemon.autostart":           "TestDaemonAutostartIsReachableFromTheEnvironment",
@@ -172,6 +175,8 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestRecipesMinScoreRefusesAWeakMatchFromTheEnvironment":                    TestRecipesMinScoreRefusesAWeakMatchFromTheEnvironment,
 	"TestRecipesMatchMarginSettlesATieFromTheEnvironment":                       TestRecipesMatchMarginSettlesATieFromTheEnvironment,
 	"TestRecipesLimitBoundsTheRankingFromTheEnvironment":                        TestRecipesLimitBoundsTheRankingFromTheEnvironment,
+	"TestTasksTTLSetsAnExecTasksRetentionFromTheEnvironment":                    TestTasksTTLSetsAnExecTasksRetentionFromTheEnvironment,
+	"TestTasksResultWaitBoundsCollectingAResultFromTheEnvironment":              TestTasksResultWaitBoundsCollectingAResultFromTheEnvironment,
 	"TestServeMCPUnmountsTheEndpointFromTheEnvironment":                         TestServeMCPUnmountsTheEndpointFromTheEnvironment,
 	"TestDaemonAddressIsReachableFromTheEnvironment":                            TestDaemonAddressIsReachableFromTheEnvironment,
 	"TestDaemonAutostartIsReachableFromTheEnvironment":                          TestDaemonAutostartIsReachableFromTheEnvironment,
@@ -1191,6 +1196,71 @@ func TestRecipesLimitBoundsTheRankingFromTheEnvironment(t *testing.T) {
 	}
 	if n := listed("MCPX_RECIPES_LIMIT=1"); n != 1 {
 		t.Fatalf("recipes.limit=1 should rank one recipe, got %d", n)
+	}
+}
+
+// startExecTask starts an /v1/exec script as a task on a fresh daemon
+// and returns the socket client and the task the daemon handed back.
+func startExecTask(t *testing.T, source string, env ...string) (*http.Client, map[string]any) {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(env...)
+	e.run("ls")
+	c := e.socketClient(t)
+	body, _ := json.Marshal(map[string]any{"source": source, "options": map[string]any{"task": map[string]any{}}})
+	code, doc := postJSON(t, c, "/v1/exec", string(body))
+	task, _ := doc["task"].(map[string]any)
+	if code != http.StatusAccepted || task["taskId"] == nil {
+		t.Fatalf("an exec task should be accepted with a handle, got %d %v", code, doc)
+	}
+	return c, task
+}
+
+// tasks.ttl is how long a finished task's result is kept, when the caller
+// names no retention.
+// Oracle: an /v1/exec task carries ttl 600000 (10m) at the default and
+// 7000 with MCPX_TASKS_TTL=7s.
+func TestTasksTTLSetsAnExecTasksRetentionFromTheEnvironment(t *testing.T) {
+	ttl := func(env ...string) any {
+		t.Helper()
+		_, task := startExecTask(t, `console.log("kept")`, env...)
+		return task["ttl"]
+	}
+
+	if got := ttl(); got != float64(600000) {
+		t.Fatalf("at the default tasks.ttl an exec task should carry ttl 600000, got %v", got)
+	}
+	if got := ttl("MCPX_TASKS_TTL=7s"); got != float64(7000) {
+		t.Fatalf("tasks.ttl=7s should give an exec task ttl 7000, got %v", got)
+	}
+}
+
+// tasks.resultWait is how long collecting a task's result blocks when the
+// caller names no wait. The task's script takes three seconds.
+// Oracle: at the default (2m) the result request waits and gets the
+// script's output; with MCPX_TASKS_RESULT_WAIT=500ms it gives up first
+// with 408.
+func TestTasksResultWaitBoundsCollectingAResultFromTheEnvironment(t *testing.T) {
+	collect := func(env ...string) (int, string) {
+		t.Helper()
+		c, task := startExecTask(t, `await new Promise((r) => setTimeout(r, 3000)); console.log("collected")`, env...)
+		// The socket client's own timeout is shorter than the script.
+		patient := *c
+		patient.Timeout = 30 * time.Second
+		resp, err := patient.Get("http://mcpx/v1/tasks/" + task["taskId"].(string) + "/result")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		raw, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(raw)
+	}
+
+	if code, body := collect(); code != http.StatusOK || !strings.Contains(body, "collected") {
+		t.Fatalf("at the default tasks.resultWait the result request should wait for the script, got %d:\n%s", code, body)
+	}
+	if code, body := collect("MCPX_TASKS_RESULT_WAIT=500ms"); code != http.StatusRequestTimeout {
+		t.Fatalf("tasks.resultWait=500ms should give up before a three-second script finishes with 408, got %d:\n%s", code, body)
 	}
 }
 
