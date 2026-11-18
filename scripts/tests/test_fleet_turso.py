@@ -10,7 +10,7 @@ from fleet_turso import Turso, argument
 class Response:
     def __enter__(self): return self
     def __exit__(self,*args): pass
-    def read(self): return json.dumps({'results':[{'type':'ok','response':{'result':{'step_errors':[None]*5,'step_results':[None]*5}}}]}).encode()
+    def read(self): return json.dumps({'results':[{'type':'ok','response':{'type':'batch','result':{'step_errors':[None]*5,'step_results':[{'cols':[], 'rows':[]}]*4+[None]}}}]}).encode()
 
 class Tests(unittest.TestCase):
     def test_types_and_rows(self):
@@ -41,7 +41,7 @@ class Tests(unittest.TestCase):
                 db.batch([('INSERT INTO t VALUES (?)',[1])],transaction=True)
     def test_commit_error_rollback_proof(self):
         db=Turso.__new__(Turso);db.url='https://example.invalid';db.token='test'
-        payload={'results':[{'type':'ok','response':{'result':{'step_errors':[None,None,{'message':'commit failed'},None],'step_results':[{}, {}, None, {'cols':[], 'rows':[]}]}}}]}
+        payload={'results':[{'type':'ok','response':{'type':'batch','result':{'step_errors':[None,None,{'message':'commit failed'},None],'step_results':[{'cols':[], 'rows':[]}, {'cols':[], 'rows':[]}, None, {'cols':[], 'rows':[]}]}}}]}
         class FailedCommit(Response):
             def read(self): return json.dumps(payload).encode()
         with patch('urllib.request.urlopen',return_value=FailedCommit()):
@@ -51,4 +51,13 @@ class Tests(unittest.TestCase):
         with patch('urllib.request.urlopen',return_value=FailedCommit()):
             with self.assertRaisesRegex(RuntimeError,'outcome unverified'):
                 db.batch([('INSERT INTO t VALUES (?)',[1])],transaction=True)
+    def test_missing_success_evidence_is_not_success(self):
+        db=Turso.__new__(Turso);db.url='https://example.invalid';db.token='test'
+        for results,errors in (([None]*4,[None]*4),([],[]),([{}, {}, {}, None],[None]*4),([{'cols':[],'rows':[]}]*2+[None,None],[None]*4)):
+            payload={'results':[{'type':'ok','response':{'type':'batch','result':{'step_errors':errors,'step_results':results}}}]}
+            class Incomplete(Response):
+                def read(self):return json.dumps(payload).encode()
+            with patch('urllib.request.urlopen',return_value=Incomplete()):
+                with self.assertRaisesRegex(RuntimeError,'outcome unverified'):
+                    db.batch([('INSERT INTO t VALUES (?)',[1])],transaction=True)
 if __name__=='__main__':unittest.main()

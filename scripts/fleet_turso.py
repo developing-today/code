@@ -59,15 +59,40 @@ class Turso:
                 result = json.load(response)["results"][0]
         except urllib.error.HTTPError as e:
             raise RuntimeError(f"Turso HTTP {e.code}; outcome unverified, read back before retrying") from None
-        except (OSError, ValueError, KeyError) as e:
+        except (OSError, ValueError, KeyError, IndexError, TypeError) as e:
             raise RuntimeError("Turso transport/response failure; outcome unverified, read back before retrying") from None
-        if result["type"] == "error":
-            raise RuntimeError("Turso batch rejected")
-        batch = result["response"]["result"]
-        if any(batch.get("step_errors", [])):
-            rolled_back = transaction and batch["step_results"][-1] is not None
-            raise RuntimeError("Turso statement failed; rollback confirmed" if rolled_back else "Turso statement failed; outcome unverified, read back before retrying")
-        return [self.rows(r) for r in batch["step_results"][:len(stmts)]]
+        uncertain = "Turso response incomplete or rejected; outcome unverified, read back before retrying"
+        if not isinstance(result, dict) or result.get("type") != "ok":
+            raise RuntimeError(uncertain)
+        response = result.get("response")
+        if not isinstance(response, dict) or response.get("type") != "batch":
+            raise RuntimeError(uncertain)
+        batch = response.get("result")
+        if not isinstance(batch, dict):
+            raise RuntimeError(uncertain)
+        results, errors = batch.get("step_results"), batch.get("step_errors")
+        if (not isinstance(results, list) or not isinstance(errors, list)
+                or len(results) != len(steps) or len(errors) != len(steps)):
+            raise RuntimeError(uncertain)
+        def valid(r):
+            if not isinstance(r, dict) or not isinstance(r.get("cols"), list) or not isinstance(r.get("rows"), list):
+                return False
+            if not all(isinstance(c, dict) and isinstance(c.get("name"), str) for c in r["cols"]):
+                return False
+            return all(isinstance(row, list) and len(row) == len(r["cols"])
+                       and all(isinstance(v, dict) and v.get("type") in ("null", "integer", "float", "text", "blob") for v in row)
+                       for row in r["rows"])
+        if any(e is not None for e in errors):
+            rolled_back = transaction and errors[-1] is None and valid(results[-1])
+            raise RuntimeError("Turso statement failed; rollback confirmed" if rolled_back else uncertain)
+        # Every data step (and BEGIN/COMMIT for atomic batches) must be evidenced.
+        expected = len(stmts) + (1 if transaction else 0)
+        if not all(valid(r) for r in results[:expected]) or (transaction and results[-1] is not None):
+            raise RuntimeError(uncertain)
+        try:
+            return [self.rows(r) for r in results[:len(stmts)]]
+        except (KeyError, ValueError, TypeError):
+            raise RuntimeError(uncertain) from None
 
     @staticmethod
     def rows(result):

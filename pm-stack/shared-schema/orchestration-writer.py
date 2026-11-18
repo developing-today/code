@@ -71,6 +71,15 @@ def main():
     item_count = len(items)
 
     db = Turso()
+    existing = db.query("SELECT document,item_count FROM orch_runs WHERE run_id=?", [run_id])
+    expected_document = json.dumps(doc)
+    if existing:
+        if len(existing) != 1 or json.loads(existing[0]["document"]) != doc or existing[0]["item_count"] != item_count:
+            raise SystemExit("conflicting run-id replay; no writes attempted")
+        # Compare JSON semantically in Python, then guard the exact observed text
+        # inside the transaction. This accepts restored JSONB key ordering while
+        # refusing any concurrent change between this read and the atomic write.
+        expected_document = existing[0]["document"]
     stmts = [("INSERT INTO orch_runs (run_id,generated_at,document_version,provenance,document,item_count) VALUES (?,?,?,?,?,?) ON CONFLICT(run_id) DO NOTHING", [run_id, generated_at, version, provenance, doc, item_count])]
     # Upsert before removing stale rows; preserve first_seen atomically.
     for tier, item in items:
@@ -79,7 +88,7 @@ def main():
     ids = [item["id"] for _, item in items]
     stmts.append(("DELETE FROM orch_items WHERE id NOT IN (SELECT value FROM json_each(?))", [ids]))
     # Conflicting run-id replay aborts the transaction, never changes the snapshot.
-    stmts.append(("INSERT INTO orch_runs(run_id,generated_at,document_version,provenance,document,item_count) SELECT run_id,generated_at,document_version,provenance,document,item_count FROM orch_runs WHERE run_id=? AND document != ?", [run_id, json.dumps(doc)]))
+    stmts.append(("INSERT INTO orch_runs(run_id,generated_at,document_version,provenance,document,item_count) SELECT run_id,generated_at,document_version,provenance,document,item_count FROM orch_runs WHERE run_id=? AND document != ?", [run_id, expected_document]))
     db.batch(stmts, transaction=True)
     runs = db.query("SELECT item_count,document FROM orch_runs WHERE run_id=?", [run_id])
     if len(runs) != 1 or runs[0]["item_count"] != item_count or json.loads(runs[0]["document"]) != doc:

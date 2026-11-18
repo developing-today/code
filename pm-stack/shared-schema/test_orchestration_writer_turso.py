@@ -36,15 +36,20 @@ class WriterTests(unittest.TestCase):
                 p.write_text(json.dumps(d))
                 with patch.object(sys,'argv',[str(path),str(p)]),patch.object(writer,'Turso',return_value=db):
                     writer.main()
-            run(doc); run(doc)
+            run(doc)
+            # Recovery JSONB serializes equivalent objects with a different order.
+            db.db.execute('UPDATE orch_runs SET document=? WHERE run_id=?',(json.dumps(doc,sort_keys=True,indent=2),'r1'))
+            db.db.commit()
+            run(doc)
             nextdoc={**doc,'runId':'r2'}
             run(nextdoc)
             self.assertEqual(db.query('select first_seen_run_id from orch_items')[0]['first_seen_run_id'],'r1')
-            with self.assertRaises(sqlite3.IntegrityError):
+            with self.assertRaises(SystemExit):
                 run({**nextdoc,'tiers':{}})
             self.assertEqual(db.query('select count(*) n from orch_items')[0]['n'],1)
             run({**doc,'runId':'r3','tiers':{}})
             self.assertEqual(db.query('select count(*) n from orch_items')[0]['n'],0)
             self.assertEqual(db.query('select count(*) n from orch_runs')[0]['n'],3)
+            db.db.close()
 
 if __name__=='__main__': unittest.main()
