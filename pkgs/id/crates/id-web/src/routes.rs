@@ -3347,6 +3347,104 @@ mod upload_router_tests {
         assert!(state.seitan.is_verified(&uid));
     }
 
+    /// The `arena` world's own live directory, through its actor.
+    async fn seitan_world(state: &AppState) -> id_worlds::world_hub::WorldLease {
+        state
+            .world
+            .as_ref()
+            .unwrap()
+            .lease(Some("arena"), None)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn seitan_admit_lands_in_the_live_world_directory() {
+        // #8538 (a)+(b): an account created in the world's own
+        // directory (not the server-config one) admits without
+        // `unknown_account`, and `AccountVerified` lands in the world's
+        // live directory, the one capability authorization consults.
+        let (app, state, _dir, _endpoint, _docs) =
+            seitan_app(crate::SeitanState::default(), false).await;
+        let uid = seitan_account_key();
+        {
+            let world = seitan_world(&state).await;
+            world
+                .service()
+                .world()
+                .apply_directory_entry(id_worlds::directory::DirectoryEntry::AccountKeyed {
+                    id: uid.clone(),
+                    name: "joiner".to_owned(),
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                world
+                    .service()
+                    .world()
+                    .directory_account(&uid)
+                    .await
+                    .unwrap(),
+                Some(false)
+            );
+        }
+        let token = id_directory::seitan::Token::generate();
+        let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
+        assert_eq!(registered.status(), StatusCode::OK);
+        let proof = id_directory::seitan::accept::sign(&token, &uid, 1, seitan_now_ms()).unwrap();
+        let admitted = seitan_admit(&app, &proof).await;
+        assert_eq!(admitted.status(), StatusCode::OK);
+        let world = seitan_world(&state).await;
+        assert_eq!(
+            world
+                .service()
+                .world()
+                .directory_account(&uid)
+                .await
+                .unwrap(),
+            Some(true),
+            "AccountVerified must land in the live world directory"
+        );
+        assert!(!state.seitan.is_verified(&uid));
+    }
+
+    #[tokio::test]
+    async fn seitan_admit_for_an_account_in_both_directories_verifies_only_the_world() {
+        // #8538: when both directories hold the account, the world's
+        // live directory is authoritative and the only one appended
+        // to, so the two never disagree about which one admitted it.
+        let (app, state, _dir, _endpoint, _docs) =
+            seitan_app(crate::SeitanState::default(), true).await;
+        let uid = seitan_account_key();
+        seitan_world(&state)
+            .await
+            .service()
+            .world()
+            .apply_directory_entry(id_worlds::directory::DirectoryEntry::AccountKeyed {
+                id: uid.clone(),
+                name: "joiner".to_owned(),
+            })
+            .await
+            .unwrap();
+        let token = id_directory::seitan::Token::generate();
+        let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
+        assert_eq!(registered.status(), StatusCode::OK);
+        let proof = id_directory::seitan::accept::sign(&token, &uid, 1, seitan_now_ms()).unwrap();
+        let admitted = seitan_admit(&app, &proof).await;
+        assert_eq!(admitted.status(), StatusCode::OK);
+        assert_eq!(
+            seitan_world(&state)
+                .await
+                .service()
+                .world()
+                .directory_account(&uid)
+                .await
+                .unwrap(),
+            Some(true)
+        );
+        assert!(!state.seitan.is_verified(&uid));
+    }
+
     #[tokio::test]
     async fn seitan_invite_registration_requires_the_admin_secret() {
         // Minting an invite without the admin secret (or with the
