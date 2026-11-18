@@ -25,11 +25,19 @@ class ImportTests(unittest.TestCase):
   with self.assertRaises(ValueError):list(statements('CREATE TABLE unfinished('))
  def test_baton_required(self):
   response={'results':[{'type':'ok','response':{'type':'execute','result':{'rows':[]}}}]}
-  with patch('urllib.request.urlopen',return_value=io.BytesIO(json.dumps(response).encode())):
+  with patch('import_runtime.OPEN.open',return_value=io.BytesIO(json.dumps(response).encode())):
    with self.assertRaisesRegex(RuntimeError,'baton'):Client('test').execute('BEGIN IMMEDIATE')
+ def test_lost_baton_rejected(self):
+  response={'results':[{'type':'ok','response':{'type':'execute','result':{'rows':[]}}}]}
+  c=Client('test');c.transaction=True;c.baton='before'
+  with patch('import_runtime.OPEN.open',return_value=io.BytesIO(json.dumps(response).encode())):
+   with self.assertRaisesRegex(RuntimeError,'baton'):c.execute('INSERT INTO t VALUES(1)')
+ def test_malformed_rejected(self):
+  with patch('import_runtime.OPEN.open',return_value=io.BytesIO(b'{}')):
+   with self.assertRaisesRegex(RuntimeError,'shape'):Client('test').execute('SELECT 1')
  def test_redirect_rejected(self):
   response={'base_url':'https://fleet-platform-dezren39.aws-us-east-1.turso.io@evil.example','results':[{'type':'ok','response':{'type':'execute','result':{'rows':[]}}}]}
-  with patch('urllib.request.urlopen',return_value=io.BytesIO(json.dumps(response).encode())):
+  with patch('import_runtime.OPEN.open',return_value=io.BytesIO(json.dumps(response).encode())):
    with self.assertRaisesRegex(RuntimeError,'redirect'):Client('test').execute('SELECT 1')
  def test_batch_bounds(self):
   self.assertEqual([len(x) for x in batches([(1,)]*1001)], [500,500,1])

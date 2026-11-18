@@ -5,11 +5,16 @@ The only existing writable table is ainventory_ingest_batches, missing keys only
 All other candidate tables must be absent. Uses one transaction; no automatic
 retry on uncertain writes. No secret/row values printed. Requires staged review.
 """
-import argparse,json,sqlite3,subprocess,urllib.request,urllib.error
+import argparse,json,sqlite3,subprocess,urllib.request,urllib.error,hashlib
 from pathlib import Path
 from pg_copy_archive import quote
 from prepare_runtime import NAMES,target
 PARENT='ainventory_ingest_batches'
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+ def redirect_request(self,req,fp,code,msg,headers,newurl):return None
+OPEN=urllib.request.build_opener(NoRedirect())
+def filehash(p):
+ with p.open('rb') as f:return hashlib.file_digest(f,'sha256').hexdigest()
 def arg(v):
  if v is None:return {'type':'null'}
  if isinstance(v,int):return {'type':'integer','value':str(v)}
@@ -37,7 +42,7 @@ class Client:
   if self.baton:body['baton']=self.baton
   req=urllib.request.Request(self.url,data=json.dumps(body).encode(),headers={'Authorization':'Bearer '+self.token,'Content-Type':'application/json'})
   try:
-   with urllib.request.urlopen(req,timeout=90) as r:out=json.load(r)
+   with OPEN.open(req,timeout=90) as r:out=json.load(r)
   except urllib.error.HTTPError as e:raise RuntimeError('HTTP '+str(e.code)+'; outcome may be uncertain') from None
   if not isinstance(out,dict) or not isinstance(out.get('results'),list) or len(out['results'])!=1:raise RuntimeError('invalid response shape')
   self.baton=out.get('baton');base=out.get('base_url')
@@ -59,7 +64,7 @@ class Client:
  def close(self):
   if not self.baton:return
   req=urllib.request.Request(self.url,data=json.dumps({'baton':self.baton,'requests':[{'type':'close'}]}).encode(),headers={'Authorization':'Bearer '+self.token,'Content-Type':'application/json'})
-  with urllib.request.urlopen(req,timeout=20) as r:r.read()
+  with OPEN.open(req,timeout=20) as r:r.read()
   self.baton=None
 
 def plan_import(db,client,expected):
@@ -75,8 +80,10 @@ def plan_import(db,client,expected):
  return tables,parents,len(live_ids)
 
 def main():
- p=argparse.ArgumentParser(description=__doc__);p.add_argument('candidate',type=Path);p.add_argument('--expected-missing-parents',type=int,required=True);p.add_argument('--apply',action='store_true');p.add_argument('--target',choices=['fleet-platform','fleet-supabase-runtime-tx-stage-20261118'],default='fleet-platform');a=p.parse_args()
+ p=argparse.ArgumentParser(description=__doc__);p.add_argument('candidate',type=Path);p.add_argument('--expected-missing-parents',type=int,required=True);p.add_argument('--apply',action='store_true');p.add_argument('--target',choices=['fleet-platform','fleet-supabase-runtime-tx-stage-20261118'],default='fleet-platform');p.add_argument('--expect-db-sha256');p.add_argument('--expect-schema-sha256');a=p.parse_args()
  if a.expected_missing_parents<0:p.error('expected count must be nonnegative')
+ hashes={'db':filehash(a.candidate/'runtime.db'),'schema':filehash(a.candidate/'runtime-schema.sql')}
+ if a.apply and (hashes['db']!=a.expect_db_sha256 or hashes['schema']!=a.expect_schema_sha256):p.error('reviewed candidate hashes required and must match')
  db=sqlite3.connect('file:'+str(a.candidate/'runtime.db')+'?mode=ro',uri=True)
  if db.execute('PRAGMA integrity_check').fetchone()!=('ok',):raise ValueError('candidate integrity failure')
  if db.execute('PRAGMA foreign_key_check').fetchall():raise ValueError('candidate foreign keys fail')
@@ -91,7 +98,7 @@ def main():
    c.execute('BEGIN IMMEDIATE');begun=True
   tables,parents,initial_parent_count=plan_import(db,c,a.expected_missing_parents)
   counts={t:db.execute('SELECT count(*) FROM '+quote(t)).fetchone()[0] for t in tables};counts[PARENT]=len(parents)
-  print(json.dumps({'mode':'apply' if a.apply else 'dry-run','new_tables':17,'rows_to_insert':counts,'parent_initial_count':initial_parent_count}),flush=True)
+  print(json.dumps({'mode':'apply' if a.apply else 'dry-run','new_tables':17,'rows_to_insert':counts,'parent_initial_count':initial_parent_count,'candidate_hashes':hashes}),flush=True)
   if not a.apply:return
   for st in ddl:
    # Parent already exists and is intentionally never recreated/modified.
@@ -107,6 +114,7 @@ def main():
    actual=int(c.execute('SELECT count(*) FROM '+quote(t))[0][0]);expected=initial_parent_count+len(parents) if t==PARENT else counts[t]
    if actual!=expected:raise RuntimeError('post-insert count mismatch for '+t)
   if c.execute('PRAGMA foreign_key_check'):raise RuntimeError('destination foreign keys fail')
+  if filehash(a.candidate/'runtime.db')!=hashes['db'] or filehash(a.candidate/'runtime-schema.sql')!=hashes['schema']:raise RuntimeError('candidate changed during import')
   commit_attempted=True
   c.execute('COMMIT');committed=True
   print(json.dumps({'committed':True,'inserted_rows':sum(counts.values()),'preserved_existing_parents':initial_parent_count}),flush=True)
