@@ -62,8 +62,6 @@ setting	output.color	no integration-test exercise yet; burn-down #8467 (settings
 setting	paths.config	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
 setting	elicit.disambiguate	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
 setting	elicit.disambiguateDefault	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
-setting	elicit.maxAge	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
-setting	elicit.ttl	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
 setting	embeddings.apiKey	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
 setting	embeddings.backend	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
 setting	embeddings.model	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
