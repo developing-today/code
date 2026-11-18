@@ -34,13 +34,31 @@ pub fn record(
     ]
     .iter()
     .find_map(|key| std::env::var(key).ok().filter(|s| !s.is_empty()));
+    // Only the leading positional words are recorded: the first flag
+    // ends them, so a flag's value (a token, a title, a path) never
+    // reaches the ledger.
+    let words: Vec<&str> = args
+        .iter()
+        .map(String::as_str)
+        .take_while(|arg| !arg.starts_with('-'))
+        .take(3)
+        .collect();
+    let (command, subcommand, sub_subcommand) = match invoked_as {
+        "fleet" | "fleet-serve" | "fleet-connect" => (
+            words.first().copied(),
+            words.get(1).copied(),
+            words.get(2).copied(),
+        ),
+        "repo-queue" => (Some("queue"), words.first().copied(), words.get(1).copied()),
+        other => (Some(other), words.get(1).copied(), words.get(2).copied()),
+    };
     json!({
         "schema": SCHEMA,
         "at_unix_ms": SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0),
         "invoked_as": invoked_as,
-        "command": if matches!(invoked_as, "fleet" | "fleet-serve" | "fleet-connect") { args.first().map(String::as_str) } else if invoked_as == "repo-queue" { Some("queue") } else { Some(invoked_as) },
-        "subcommand": if invoked_as == "repo-queue" { args.first().map(String::as_str) } else { args.get(1).map(String::as_str) },
-        "sub_subcommand": if invoked_as == "repo-queue" { args.get(1).map(String::as_str) } else { args.get(2).map(String::as_str) },
+        "command": command,
+        "subcommand": subcommand,
+        "sub_subcommand": sub_subcommand,
         "exit_code": code,
         "duration_ms": duration_ms,
         "host": host,
@@ -104,6 +122,15 @@ mod tests {
                 .unwrap()["schema"],
             SCHEMA
         );
+        let flagged = record(
+            "fleet",
+            &["queue".into(), "--token".into(), "secret-value".into()],
+            0,
+            1,
+        );
+        assert_eq!(flagged["command"], "queue");
+        assert!(flagged["subcommand"].is_null());
+        assert!(!flagged.to_string().contains("secret-value"));
         std::fs::write(&path, vec![b'x'; MAX_BYTES as usize]).unwrap();
         append(&path, &record("fleet", &[], 2, 1)).unwrap();
         assert!(rotated(&path, 1).exists());
