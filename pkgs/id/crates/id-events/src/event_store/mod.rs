@@ -65,6 +65,7 @@ use redb::{
 use id_store::chain::{self, Event};
 
 mod anchors;
+mod author_events;
 mod chat;
 mod claims;
 mod documents;
@@ -75,6 +76,7 @@ pub mod sync;
 mod waiting_rows;
 mod writer_set;
 
+pub use author_events::{AuthorEvent, CandidateQuery, Candidates};
 use id_core::waiting::{AuthorKey, WaitRefusal, WaitingLimits, WaitingPool};
 pub use id_store::event_types::{
     Block, BlockKind, BlockList, BlockLookup, BlockLookupFailure, Chain, FILE_NAME, StoreError,
