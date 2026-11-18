@@ -1340,6 +1340,15 @@ func runEnvelope(res *execsvc.Result, stdout string, logs []logging.Record, stre
 		for _, v := range streamed {
 			values = append(values, v.Value)
 		}
+		// The service rewrites the emits it kept once the run ends:
+		// artifacts.interceptImages swaps an image or audio body for a
+		// resource_link to the stored artifact. The values collected live
+		// predate that, so taking them put the whole base64 body in the
+		// document beside the artifact meant to replace it. The service's
+		// copy is the same values in the same order, so prefer it.
+		if len(res.Emits) == len(values) {
+			values = res.Emits
+		}
 		env["results"] = values
 	}
 	if len(logs) > 0 {
