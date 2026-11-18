@@ -140,7 +140,21 @@ pub(super) fn cmd_enqueue(rest: &[String]) -> i32 {
     let skew = 10_000_000i64; // 10 s in micros
     let mut warnings: Vec<String> = Vec::new();
     let line;
-    if let Some(pred) = resp.get("revived_from") {
+    if let Some(c) = resp.get("work_identity_collision") {
+        // #10627: the broker found a live task already holding this
+        // work identity (repo, issue, kind family) and filed nothing.
+        line = format!(
+            "work already queued: existing task {} (queue {q}, status {s}) holds {}; nothing filed \
+             (set payload.dedupe_override to file a deliberate parallel)",
+            fmt_cell(Some(&tid)),
+            fmt_cell(c.get("identity")),
+        );
+        if q != queue {
+            warnings.push(format!(
+                "the holding task is in a different queue ({q} != requested {queue})"
+            ));
+        }
+    } else if let Some(pred) = resp.get("revived_from") {
         // Broker-side revive (#6838): the key's prior task was
         // terminal, so this enqueue created a fresh task linked to
         // its predecessor.
