@@ -29,6 +29,8 @@ zeroize = "1"
 # Content address of a boundary declaration (boundary.rs, #7782).
 blake3 = "1"
 cbor-core = { version = "=0.10.1", features = ["serde"] }
+# base64url path segments for b64 namespaces (id_namespace.rs, #10981).
+base64 = "0.23"
 futures-lite = "2"
 # IDNA host normalisation for id:// URLs (id_uri.rs, #10980).
 idna = "1"
