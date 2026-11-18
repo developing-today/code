@@ -51,6 +51,30 @@ in
       Install.WantedBy = [ "default.target" ];
     };
 
+    # Periodic retry (code#11140): the .path unit fires once per
+    # change, so a rotation missed at that moment (file mid-write) used
+    # to stay missed until the next prod restart. This runs the same
+    # script in periodic mode every 15 minutes; it is a no-op when in
+    # sync and never starts an OpenChamber that is down.
+    systemd.user.services.oc-password-sync-retry = {
+      Unit.Description = "Periodic OpenChamber upstream password sync check (code#11140)";
+      Service = {
+        Type = "oneshot";
+        Environment = [ "OC_SYNC_PERIODIC=1" ];
+        ExecStart = "${home}/.local/bin/oc-password-sync.sh";
+      };
+    };
+
+    systemd.user.timers.oc-password-sync-retry = {
+      Unit.Description = "Retry a missed OpenChamber password sync every 15 minutes (code#11140)";
+      Timer = {
+        OnBootSec = "5min";
+        OnUnitActiveSec = "15min";
+        Unit = "oc-password-sync-retry.service";
+      };
+      Install.WantedBy = [ "timers.target" ];
+    };
+
     systemd.user.paths.oc-password-sync = {
       Unit.Description = "Watch prod OpenCode service file for password rotation (openchamber#894)";
       Path = {
