@@ -13,9 +13,6 @@
 # (2026-11-11, task 14824): 403 required features, 152 covered, 251
 # exempt below.
 
-cli	daemon	no integration-test exercise yet; burn-down #8461 (cli daemon group)
-cli	stdio-proxy	no integration-test exercise yet; burn-down #8461 (cli daemon group)
-cli	supervise	no integration-test exercise yet; burn-down #8461 (cli daemon group)
 setting	daemon.inlineStartPoll	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.socketProbeTimeout	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.takeoverTimeout	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
