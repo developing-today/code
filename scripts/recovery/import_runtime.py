@@ -80,7 +80,7 @@ def plan_import(db,client,expected):
  return tables,parents,len(live_ids)
 
 def main():
- p=argparse.ArgumentParser(description=__doc__);p.add_argument('candidate',type=Path);p.add_argument('--expected-missing-parents',type=int,required=True);p.add_argument('--apply',action='store_true');p.add_argument('--target',choices=['fleet-platform','fleet-supabase-runtime-tx-stage-20261118'],default='fleet-platform');p.add_argument('--expect-db-sha256');p.add_argument('--expect-schema-sha256');a=p.parse_args()
+ p=argparse.ArgumentParser(description=__doc__);p.add_argument('candidate',type=Path);p.add_argument('--expected-missing-parents',type=int,required=True);p.add_argument('--apply',action='store_true');p.add_argument('--target',choices=['fleet-platform','fleet-supabase-runtime-tx-stage-20261118','fleet-supabase-runtime-legacy-stage-20261118'],default='fleet-platform');p.add_argument('--expect-db-sha256');p.add_argument('--expect-schema-sha256');a=p.parse_args()
  if a.expected_missing_parents<0:p.error('expected count must be nonnegative')
  hashes={'db':filehash(a.candidate/'runtime.db'),'schema':filehash(a.candidate/'runtime-schema.sql')}
  if a.apply and (hashes['db']!=a.expect_db_sha256 or hashes['schema']!=a.expect_schema_sha256):p.error('reviewed candidate hashes required and must match')
@@ -98,8 +98,10 @@ def main():
    c.execute('BEGIN IMMEDIATE');begun=True
   tables,parents,initial_parent_count=plan_import(db,c,a.expected_missing_parents)
   counts={t:db.execute('SELECT count(*) FROM '+quote(t)).fetchone()[0] for t in tables};counts[PARENT]=len(parents)
-  print(json.dumps({'mode':'apply' if a.apply else 'dry-run','new_tables':17,'rows_to_insert':counts,'parent_initial_count':initial_parent_count,'candidate_hashes':hashes}),flush=True)
+  print(json.dumps({'mode':'apply' if a.apply else 'dry-run','new_tables':len(tables)-1,'rows_to_insert':counts,'parent_initial_count':initial_parent_count,'candidate_hashes':hashes}),flush=True)
   if not a.apply:return
+  if c.execute('SELECT id FROM ainventory_ingest_batches GROUP BY id HAVING id IS NULL OR count(*)>1'):raise RuntimeError('parent IDs not unique/non-null')
+  c.execute('CREATE UNIQUE INDEX recovery_ainventory_ingest_batches_id_uq ON ainventory_ingest_batches(id)')
   for st in ddl:
    # Parent already exists and is intentionally never recreated/modified.
    if st.lstrip().startswith('CREATE TABLE '+PARENT+' '):continue
@@ -110,7 +112,8 @@ def main():
    rows=parents if t==PARENT else db.execute('SELECT * FROM '+quote(t)).fetchall()
    for batch in batches(rows):
     sql='INSERT INTO '+quote(t)+' ('+','.join(quote(x) for x in cols)+') VALUES '+','.join('('+','.join('?' for _ in cols)+')' for _ in batch)
-    c.execute(sql,[v for row in batch for v in row])
+    try:c.execute(sql,[v for row in batch for v in row])
+    except Exception as e:raise RuntimeError('insert failed table='+t+' batch_rows='+str(len(batch))+' '+type(e).__name__) from e
    actual=int(c.execute('SELECT count(*) FROM '+quote(t))[0][0]);expected=initial_parent_count+len(parents) if t==PARENT else counts[t]
    if actual!=expected:raise RuntimeError('post-insert count mismatch for '+t)
   if c.execute('PRAGMA foreign_key_check'):raise RuntimeError('destination foreign keys fail')

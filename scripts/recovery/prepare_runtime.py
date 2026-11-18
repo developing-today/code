@@ -7,7 +7,7 @@ from pathlib import Path
 from pg_copy_archive import quote
 NOW="(strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
 UUID="(lower(hex(randomblob(4)))||'-'||lower(hex(randomblob(2)))||'-4'||substr(lower(hex(randomblob(2))),2)||'-'||substr('89ab',(random() & 3)+1,1)||substr(lower(hex(randomblob(2))),2)||'-'||lower(hex(randomblob(6))))"
-NAMES=['ainventory.ingest_batches','ainventory.models','ainventory.notes','ainventory.findings','ainventory.interpretation_runs','ainventory.measurement_events','ainventory.price_events','alerts.incidents','alerts.incident_events','alerts.push_subscriptions','alerts.notification_sends','public.agg_actions','public.agg_activity_gaps','public.agg_activity_ingestion','public.agg_store_documents','public.agg_usage_snapshots','public.orch_runs','public.orch_items']
+NAMES=['ainventory.ingest_batches','ainventory.models','ainventory.provider_policies','ainventory.notes','ainventory.findings','ainventory.interpretation_runs','ainventory.measurement_events','ainventory.price_events','alerts.incidents','alerts.incident_events','alerts.push_subscriptions','alerts.notification_sends','public.agg_actions','public.agg_activity_gaps','public.agg_activity_ingestion','public.agg_store_documents','public.agg_usage_snapshots','public.orch_runs','public.orch_items']
 def target(t):return t.split('.',1)[1] if t.startswith('public.') else t.replace('.','_')
 def expr(x):
  x=re.sub(r'::(?:text|jsonb|integer|double precision)', '', x)
@@ -84,7 +84,7 @@ def main():
  for match in re.finditer(r'CREATE (UNIQUE )?INDEX ([\w]+) ON ([\w.]+) USING btree ([^;]+);',source):
   if match[3] in NAMES:
    statements.append('CREATE '+(match[1] or '')+'INDEX '+match[2]+' ON '+target(match[3])+' '+expr(match[4]))
- for table in ['findings','interpretation_runs','measurement_events','price_events']:
+ for table in ['findings','interpretation_runs','measurement_events','price_events','notes','provider_policies']:
   statements.append('CREATE TRIGGER ainventory_'+table+'_no_replace BEFORE INSERT ON ainventory_'+table+' WHEN EXISTS (SELECT 1 FROM ainventory_'+table+" WHERE id=NEW.id) BEGIN SELECT RAISE(ABORT,'append-only duplicate id'); END")
   for verb in ['UPDATE','DELETE']:
    statements.append('CREATE TRIGGER ainventory_'+table+'_no_'+verb.lower()+' BEFORE '+verb+' ON ainventory_'+table+" BEGIN SELECT RAISE(ABORT,'append-only event table'); END")
