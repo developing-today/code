@@ -31,5 +31,6 @@ pub mod keyset_file;
 pub mod recovery;
 pub mod recovery_flow;
 pub mod recovery_relay;
+pub mod recovery_view;
 pub mod restored_key;
 pub mod seitan;

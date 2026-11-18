@@ -421,6 +421,12 @@ flow: `recovery_flow` builds the request, approval, cancellation and
 rotation records, and `recovery_flow::progress` says whether a request
 is waiting (approvals so far, threshold, earliest rotation time),
 cancelled, or ready, with the approval hashes the rotation should
-name. `id keyset guardians` names the guardians. Still open: serving
-the relay over the directory's network API, delivering the
-notifications, and CLI commands for the flow.
+name. `id keyset guardians` names the guardians. `recovery_view::RelayView` folds one identity
+from a relay (anchored at the genesis its own key signed, with every
+other relayed identity folded as a possible guardian) and says whether
+a request is open, moot because the keyset moved on, or complete.
+`id keyset recovery publish|request|approve|cancel|status|complete`
+runs the flow through a shared relay file and prints who must be told
+of a request. Still open: serving the relay over the directory's
+network API, and delivering the notifications rather than printing
+their targets.

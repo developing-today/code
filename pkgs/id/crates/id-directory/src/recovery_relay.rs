@@ -186,6 +186,15 @@ impl RecoveryRelay {
             .collect()
     }
 
+    /// The annex record with this hash, if the relay holds one.
+    #[must_use]
+    pub fn annex_record(&self, hash: &str) -> Option<&AnnexRecord> {
+        match &self.relayed[*self.index.get(hash)?].record {
+            RelayedRecord::Annex(record) => Some(record),
+            RelayedRecord::Keyset(_) => None,
+        }
+    }
+
     /// The first-seen time of every keyset record, by hash.
     #[must_use]
     pub fn keyset_first_seen(&self) -> BTreeMap<String, u64> {

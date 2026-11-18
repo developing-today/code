@@ -3172,3 +3172,57 @@ fn test_cli_parse_keyset_commands() {
         })
     ));
 }
+
+#[test]
+fn test_cli_parse_keyset_recovery_commands() {
+    let request = Cli::parse_from([
+        "id",
+        "keyset",
+        "recovery",
+        "request",
+        "ab12",
+        "--relay",
+        "relay.jsonl",
+    ]);
+    let Some(Command::Keyset {
+        command:
+            KeysetCommand::Recovery {
+                command:
+                    RecoveryCommand::Request {
+                        identity,
+                        reason,
+                        client: false,
+                        ..
+                    },
+            },
+    }) = request.command
+    else {
+        panic!("expected keyset recovery request");
+    };
+    assert_eq!(
+        (identity.as_str(), reason.as_str()),
+        ("ab12", "lost every key")
+    );
+    for step in ["approve", "cancel", "complete", "status"] {
+        let parsed = Cli::parse_from(["id", "keyset", "recovery", step, "cd34", "--relay", "r"]);
+        assert!(matches!(
+            parsed.command,
+            Some(Command::Keyset {
+                command: KeysetCommand::Recovery { .. }
+            })
+        ));
+    }
+    // Every step needs the relay file.
+    assert!(Cli::try_parse_from(["id", "keyset", "recovery", "status", "cd34"]).is_err());
+    let publish = Cli::parse_from([
+        "id", "keyset", "recovery", "publish", "--relay", "r", "--client",
+    ]);
+    assert!(matches!(
+        publish.command,
+        Some(Command::Keyset {
+            command: KeysetCommand::Recovery {
+                command: RecoveryCommand::Publish { client: true, .. }
+            }
+        })
+    ));
+}

@@ -65,6 +65,7 @@ pub mod group;
 pub mod id;
 pub mod key;
 pub mod keyset;
+pub mod keyset_recovery;
 pub mod list;
 #[cfg(feature = "sandbox")]
 pub mod match_audit;
