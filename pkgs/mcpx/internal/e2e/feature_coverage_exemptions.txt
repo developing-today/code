@@ -105,7 +105,6 @@ setting	prompt.sampleTimeout	no integration-test exercise yet; burn-down #8471 (
 setting	artifacts.chunkBytes	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	artifacts.gcInterval	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	artifacts.idleTtl	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
-setting	artifacts.interceptImages	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	artifacts.maxAge	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	artifacts.ttl	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	autonomy.max	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
@@ -123,7 +122,6 @@ setting	doctor.timeout	no integration-test exercise yet; burn-down #8470 (settin
 setting	events.reconnect	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	hooks.autonomy	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	plumbing.allowTsJsOverlap	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
-setting	plumbing.indexOnQuery	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	plumbing.launcherPlaceholderRepeat	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	plumbing.sourceDirAllowed	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	plumbing.sourceDirRecursive	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
