@@ -206,6 +206,7 @@ Run `repo-queue <verb> --help` for flags:\n\
   revive <task-id> [--worker <id>] [--reason <text>] [--not-before <ts>]\n\
   fail <task-id> [--worker <id>] [--error <text>] [--reason-class <c>] [--execution <id>]\n\
   complete <task-id> [--worker <id>] [--result <json>] [--result-file <f>] [--telemetry <json>] [--execution <id>] [--queue <name>]\n\
+  verify-disposition <issue> --repo <owner/name> [--pr <n,n>] [--follow-up-task <id> | --follow-up-issue <n|url> | --follow-up-pr <n>] [--reason <text>] [--staleness-seconds <n>] [--json]\n\
   timeline <task-id> [--worker <id>] [--json]\n\
   history <task-id> [--worker <id>] [--json]  (alias of timeline)\n\
   models [--days <n>] [--json]\n\
@@ -277,6 +278,9 @@ pub(crate) fn usage(verb: &str) -> &'static str {
         }
         "complete" => {
             "usage: repo-queue complete <task-id> [--worker <id>] [--result <json>] [--result-file <f>] [--telemetry <json>] [--execution <id>] [--queue <name>]\n\nCompletes a task."
+        }
+        "verify-disposition" => {
+            "usage: repo-queue verify-disposition <issue> --repo <owner/name> [--pr <n,n>] [--follow-up-task <id> | --follow-up-issue <n|url> | --follow-up-pr <n>] [--reason <text>] [--staleness-seconds <n>] [--json]\n\nReads the issue and its linked PRs back from GitHub and prints the disposition a terminal completion must carry (#10611); exits 1 when the broker's gate would reject it."
         }
         "timeline" => {
             "usage: repo-queue timeline <task-id> [--worker <id>] [--json]\n\nShows a task's event timeline."

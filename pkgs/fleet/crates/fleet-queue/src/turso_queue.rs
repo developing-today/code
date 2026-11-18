@@ -2283,64 +2283,320 @@ mod tests {
         assert_eq!(merge_obj(&json!(null), &json!({"a": 1})), json!({"a": 1}));
     }
 
+    /// Runs the gate with a queue that holds `tasks` (#10611).
+    fn gate_with(
+        class: &CompletionClass,
+        expected_issue: Option<i64>,
+        fix_follow_on: bool,
+        tasks: &[crate::disposition::SuccessorTask],
+        result: &Value,
+    ) -> Result<Option<TriageOutcome>, String> {
+        let mut lookup = |id: i64| Ok(tasks.iter().find(|t| t.id == id).cloned());
+        let mut ctx = GateContext {
+            task_id: 15345,
+            expected_issue,
+            fix_follow_on,
+            lookup: &mut lookup,
+        };
+        gate_completion(class, &mut ctx, result)
+    }
+
+    fn gate(class: &CompletionClass, result: &Value) -> Result<Option<TriageOutcome>, String> {
+        gate_with(class, None, true, &[], result)
+    }
+
+    /// A disposition that a gate accepts for "no work left": the
+    /// issue closed, the linked pull merged, readback taken now.
+    fn live_disposition(issue: i64, pulls: Value) -> Value {
+        json!({
+            "checked_at": now_iso(),
+            "source": "fleet gh readback",
+            "issue": {"number": issue, "state": "closed", "closed_at": now_iso()},
+            "pulls": pulls,
+            "verdict": "merged_verified",
+        })
+    }
+
     #[test]
     fn completion_gate_fix_class_requires_evidence() {
         let fix = CompletionClass::Fix;
-        assert!(gate_completion(&fix, &json!({})).is_err());
-        assert!(gate_completion(&fix, &json!({"note": "did stuff"})).is_err());
-        assert!(gate_completion(&fix, &json!({"evidence": ""})).is_err());
-        assert!(gate_completion(&fix, &json!({"evidence": []})).is_err());
+        let merged = live_disposition(
+            1,
+            json!([{"number": 1, "state": "closed", "merged_at": now_iso()}]),
+        );
+        assert!(gate(&fix, &json!({})).is_err());
+        assert!(gate(&fix, &json!({"note": "did stuff"})).is_err());
+        assert!(gate(&fix, &json!({"evidence": ""})).is_err());
+        assert!(gate(&fix, &json!({"evidence": []})).is_err());
+        // #10611: evidence alone is no longer a completion.
         assert!(
-            gate_completion(
+            gate(
                 &fix,
                 &json!({"pr_url": "https://github.com/developing-today/code/pull/1"})
             )
-            .is_ok()
+            .is_err()
         );
-        assert!(gate_completion(&fix, &json!({"commit": "abc123"})).is_ok());
         assert!(
-            gate_completion(
+            gate(
                 &fix,
-                &json!({"verified_closure": "closed by #1, verified on the issue"})
+                &json!({"pr_url": "https://github.com/developing-today/code/pull/1",
+                        "disposition": merged})
             )
             .is_ok()
         );
-        assert!(gate_completion(&fix, &json!({"evidence": ["artifact"]})).is_ok());
+        assert!(gate(&fix, &json!({"commit": "abc123", "disposition": merged})).is_ok());
+        assert!(
+            gate(
+                &fix,
+                &json!({"verified_closure": "closed by #1, verified on the issue",
+                        "disposition": merged})
+            )
+            .is_ok()
+        );
+        assert!(
+            gate(
+                &fix,
+                &json!({"evidence": ["artifact"], "disposition": merged})
+            )
+            .is_ok()
+        );
+        // A disposition that does not cover the claimed PR is a rejection.
+        assert!(
+            gate(
+                &fix,
+                &json!({"pr_url": "https://x/pull/2", "disposition": merged})
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn completion_gate_rejects_disposition_for_another_issue() {
+        // #10611: the readback must describe the packet's issue — a
+        // stale readback for a sibling issue is not closure evidence.
+        let merged = live_disposition(
+            1,
+            json!([{"number": 1, "state": "closed", "merged_at": now_iso()}]),
+        );
+        let err = gate_with(
+            &CompletionClass::Fix,
+            Some(10611),
+            true,
+            &[],
+            &json!({"pr_url": "https://x/pull/1", "disposition": merged}),
+        )
+        .unwrap_err();
+        assert!(err.contains("10611"), "{err}");
+    }
+
+    #[test]
+    fn completion_gate_rejects_stale_disposition() {
+        let mut stale = live_disposition(
+            1,
+            json!([{"number": 1, "state": "closed", "merged_at": now_iso()}]),
+        );
+        stale["checked_at"] = json!("2020-01-01T00:00:00Z");
+        let err = gate(
+            &CompletionClass::Fix,
+            &json!({"pr_url": "https://x/pull/1", "disposition": stale}),
+        )
+        .unwrap_err();
+        assert!(err.contains("old"), "{err}");
+    }
+
+    /// #9155 as the broker sees it after an intentional close: the
+    /// issue closed while draft #9245 is still open.
+    fn closed_9155_with_open_draft(follow_up: Value) -> Value {
+        json!({
+            "checked_at": now_iso(),
+            "source": "fleet gh readback",
+            "issue": {"number": 9155, "state": "closed", "state_reason": "completed",
+                      "closed_at": now_iso(), "closed_by": "dezren39"},
+            "pulls": [
+                {"number": 9245, "state": "open", "is_draft": true, "merged_at": null},
+                {"number": 9300, "state": "closed", "merged_at": now_iso()},
+            ],
+            "verdict": "closed_verified",
+            "follow_up": follow_up,
+        })
+    }
+
+    fn successor(id: i64, status: &str, issue: Option<i64>) -> crate::disposition::SuccessorTask {
+        crate::disposition::SuccessorTask {
+            id,
+            live: LIVE_STATUSES.contains(&status),
+            status: status.to_string(),
+            issue,
+        }
+    }
+
+    #[test]
+    fn completion_gate_closed_issue_with_unfinished_draft() {
+        // Review on #10616: the broker (not only the CLI) must hold a
+        // closed issue with an open draft to a verified follow-up.
+        let fix = CompletionClass::Fix;
+        let complete = |follow_up: Value, tasks: &[crate::disposition::SuccessorTask]| {
+            gate_with(
+                &fix,
+                Some(9155),
+                true,
+                tasks,
+                &json!({"pr_url": "https://x/pull/9300",
+                        "disposition": closed_9155_with_open_draft(follow_up)}),
+            )
+        };
+        // no follow-up
+        let err = complete(Value::Null, &[]).unwrap_err();
+        assert!(err.contains("#9245") && err.contains("follow_up"), "{err}");
+        // a follow-up task that does not exist
+        let follow = json!({"task_id": 17413, "reason": "#9245 stays with 17413"});
+        assert!(
+            complete(follow.clone(), &[])
+                .unwrap_err()
+                .contains("does not exist")
+        );
+        // a terminal one
+        assert!(
+            complete(follow.clone(), &[successor(17413, "done", Some(9155))])
+                .unwrap_err()
+                .contains("terminal")
+        );
+        // an unrelated one
+        assert!(
+            complete(follow.clone(), &[successor(17413, "queued", Some(9999))])
+                .unwrap_err()
+                .contains("unrelated")
+        );
+        // the completing task itself
+        let own = json!({"task_id": 15345, "reason": "r"});
+        assert!(
+            complete(own, &[successor(15345, "claimed", Some(9155))])
+                .unwrap_err()
+                .contains("its own successor")
+        );
+        // a real successor task
+        assert_eq!(
+            complete(follow, &[successor(17413, "queued", Some(9155))]).unwrap(),
+            None
+        );
+        // a verified merged successor PR
+        assert_eq!(
+            complete(
+                json!({"successor_pr": 9300, "reason": "#9300 replaced #9245"}),
+                &[]
+            )
+            .unwrap(),
+            None
+        );
     }
 
     #[test]
     fn completion_gate_triage_doctrine() {
         let triage = CompletionClass::Triage;
+        let merged = live_disposition(
+            1,
+            json!([{"number": 2, "state": "closed", "merged_at": now_iso()}]),
+        );
         // Default: the issue goes back in the queue as a follow-on.
         assert_eq!(
-            gate_completion(&triage, &json!({})).unwrap(),
+            gate(&triage, &json!({})).unwrap(),
             Some(TriageOutcome::FollowOn)
         );
         assert_eq!(
-            gate_completion(&triage, &json!({"triage_outcome": "follow_on"})).unwrap(),
+            gate(&triage, &json!({"triage_outcome": "follow_on"})).unwrap(),
             Some(TriageOutcome::FollowOn)
         );
         // Invalid is an exit only with the validation evidence.
-        assert!(gate_completion(&triage, &json!({"triage_outcome": "invalid"})).is_err());
+        assert!(gate(&triage, &json!({"triage_outcome": "invalid"})).is_err());
         assert_eq!(
-            gate_completion(
+            gate(
                 &triage,
                 &json!({"triage_outcome": "invalid", "triage_note": "not a real issue: duplicate of #1"})
             )
             .unwrap(),
             Some(TriageOutcome::ExitInvalid)
         );
-        // Already-solved needs a real evidence reference.
-        assert!(gate_completion(&triage, &json!({"triage_outcome": "already_solved"})).is_err());
-        assert_eq!(
-            gate_completion(
+        // Already-solved needs a real evidence reference AND the
+        // verified disposition (#10611).
+        assert!(gate(&triage, &json!({"triage_outcome": "already_solved"})).is_err());
+        assert!(
+            gate(
                 &triage,
                 &json!({"triage_outcome": "already_solved", "pr_url": "https://x/pull/2"})
+            )
+            .is_err()
+        );
+        assert_eq!(
+            gate(
+                &triage,
+                &json!({"triage_outcome": "already_solved", "pr_url": "https://x/pull/2",
+                        "disposition": merged})
             )
             .unwrap(),
             Some(TriageOutcome::ExitAlreadySolved)
         );
-        assert!(gate_completion(&triage, &json!({"triage_outcome": "done"})).is_err());
+        assert!(gate(&triage, &json!({"triage_outcome": "done"})).is_err());
+    }
+
+    /// The 15345 receipt: a triage of #9155 completed `done` with
+    /// outcome `triaged` while draft #9245 was open and #9155 was open
+    /// after its reopen. With no fix follow-on for its key, nothing
+    /// live owned the work afterwards.
+    fn open_9155_with_draft(follow_up: Value) -> Value {
+        json!({
+            "checked_at": now_iso(),
+            "source": "fleet gh readback",
+            "issue": {"number": 9155, "state": "open",
+                      "closed_at": "2026-11-13T01:45:20Z"},
+            "pulls": [{"number": 9245, "state": "open", "is_draft": true, "merged_at": null}],
+            "verdict": "open_draft_with_followup",
+            "follow_up": follow_up,
+        })
+    }
+
+    #[test]
+    fn replay_15345_triage_cannot_deliver_without_a_live_successor() {
+        let triage = CompletionClass::Triage;
+        let receipt = json!({"outcome": "triaged", "evidence": "triaged #9155"});
+        // No fix follow-on for this key and no handoff: rejected.
+        let err = gate_with(&triage, Some(9155), false, &[], &receipt).unwrap_err();
+        assert!(err.contains("disposition"), "{err}");
+        // A readback alone is not a handoff while #9155 is open.
+        let mut with_readback = receipt.clone();
+        with_readback["disposition"] = open_9155_with_draft(Value::Null);
+        assert!(gate_with(&triage, Some(9155), false, &[], &with_readback).is_err());
+        // A handoff to a task that is gone is not a successor either.
+        let follow = json!({"task_id": 17413, "reason": "#9245 still carries the #9155 work"});
+        let mut handed = receipt.clone();
+        handed["disposition"] = open_9155_with_draft(follow);
+        assert!(
+            gate_with(
+                &triage,
+                Some(9155),
+                false,
+                &[successor(17413, "cancelled", Some(9155))],
+                &handed
+            )
+            .is_err()
+        );
+        // A legitimate triage that records a live handoff passes.
+        assert_eq!(
+            gate_with(
+                &triage,
+                Some(9155),
+                false,
+                &[successor(17413, "queued", Some(9155))],
+                &handed
+            )
+            .unwrap(),
+            Some(TriageOutcome::FollowOn)
+        );
+        // With a fix-family key the broker enqueues the successor
+        // itself, so ordinary triage needs nothing more.
+        assert_eq!(
+            gate_with(&triage, Some(9155), true, &[], &receipt).unwrap(),
+            Some(TriageOutcome::FollowOn)
+        );
     }
 
     fn claimable_row(payload: Value) -> Value {
@@ -2711,10 +2967,7 @@ mod tests {
         );
         assert_eq!(completion_class(&json!({})), CompletionClass::Ungated);
         // Ungated completions never gate, whatever the result.
-        assert_eq!(
-            gate_completion(&CompletionClass::Ungated, &json!({})).unwrap(),
-            None
-        );
+        assert_eq!(gate(&CompletionClass::Ungated, &json!({})).unwrap(), None);
         assert_eq!(
             follow_on_key("repo-health:v1:triage:developing-today/code:issue:787"),
             Some("repo-health:v1:fix:developing-today/code:issue:787".to_string())

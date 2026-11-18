@@ -32,12 +32,14 @@ mod commands_query;
 mod fallback_stack;
 mod support;
 mod transport;
+mod verify_disposition;
 
 pub(crate) use self::commands_lifecycle::*;
 pub(crate) use self::commands_query::*;
 pub(crate) use self::fallback_stack::*;
 pub(crate) use self::support::*;
 pub(crate) use self::transport::*;
+pub(crate) use self::verify_disposition::*;
 
 pub fn run(args: &[String]) -> i32 {
     // Bare `repo-queue --help` prints the top-level usage (#10838).
@@ -76,6 +78,7 @@ pub fn run(args: &[String]) -> i32 {
         "revive" => cmd_revive(rest),
         "fail" => cmd_fail(rest),
         "complete" => cmd_complete(rest),
+        "verify-disposition" => cmd_verify_disposition(rest),
         "timeline" => cmd_timeline("timeline", rest),
         "history" => cmd_timeline("history", rest),
         "models" => cmd_models(rest),

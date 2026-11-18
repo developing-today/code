@@ -21,7 +21,7 @@ pub(super) struct GhRunner {
 }
 
 impl GhRunner {
-    fn system() -> Self {
+    pub(super) fn system() -> Self {
         let bin = std::env::var("FLEET_QUEUE_GH_BIN")
             .ok()
             .filter(|b| !b.trim().is_empty())
@@ -50,7 +50,7 @@ impl GhRunner {
     /// an `Err` carrying the error class derived from stderr —
     /// never a silent `None` — so callers that must distinguish
     /// "checked and absent" from "could not check" can (#8361).
-    fn json(&self, argv: &[String]) -> Result<Value, String> {
+    pub(super) fn json(&self, argv: &[String]) -> Result<Value, String> {
         let (ok, stdout, stderr) = self.run(argv);
         if !ok {
             return Err(gh_error_class(&stderr));
