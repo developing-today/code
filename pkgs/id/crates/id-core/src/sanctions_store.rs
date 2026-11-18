@@ -379,7 +379,10 @@ impl ListVersionStore {
         let signature = decode_signature(id, version, &signature_hex)?;
         let content = self
             .version(id, version)
-            .expect("version checked present above")
+            .ok_or_else(|| ListStoreError::UnknownVersion {
+                id: id.to_string(),
+                version,
+            })?
             .clone();
         supplier_key
             .verify_strict(&canonical_list_bytes(&content), &signature)
