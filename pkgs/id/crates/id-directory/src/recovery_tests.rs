@@ -444,6 +444,15 @@ fn cancellation_by_single_device_key_aborts_recovery() {
         first_seen: rotation_seen + 1,
     }];
     assert!(check(&head, &request, &approvals, &after, &rotation).is_ok());
+    // Seen in the same second as the rotation (#11773): the relay's
+    // whole-second stamp cannot order them, so the cancellation wins,
+    // whichever of the two reached the relay first.
+    let same_second = [Seen {
+        record: &by_device,
+        first_seen: rotation_seen,
+    }];
+    let error = check(&head, &request, &approvals, &same_second, &rotation).unwrap_err();
+    assert!(error.to_string().contains("cancelled"), "{error:#}");
     // A guardian cannot cancel, and the guardian-process basis is
     // reserved, not honoured.
     let by_guardian = cancellation(&head, &request, 11, CANCELLED_BY_SURVIVING_KEY);
