@@ -23,8 +23,8 @@
 - Applied expert owner/gap rulings: 157
 - Partially covered source outcomes: 120
 - Acceptance-enriched planned owner outcomes: 0
-- Concrete reviewed outcome oracles: 1543
-- Generic/unreviewed oracle mappings: 1
+- Concrete reviewed outcome oracles: 1544
+- Generic/unreviewed oracle mappings: 0
 - Member oracle mappings needing review: 2
 - Coverage complete: false
 
@@ -914,7 +914,6 @@
 
 ## Generic/unreviewed oracle mappings
 
-- SPEC-0122
 
 ## Unmapped nested member IDs
 
