@@ -84,6 +84,9 @@ func TestAdoptProtocolRefusalSurfacesInStatus(t *testing.T) {
 	stateDir := t.TempDir()
 	t.Setenv("MCPX_STATE_DIR", stateDir)
 	sock := mcpclient.SupervisorSocketPath(stateDir, "era")
+	if err := os.MkdirAll(filepath.Dir(sock), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)

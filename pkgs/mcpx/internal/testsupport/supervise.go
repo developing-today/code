@@ -36,7 +36,7 @@ func SuperviseReExec() {
 // has no successor, so its cleanup must explicitly reap them after stopping
 // the daemon.
 func StopSupervisors(stateDir string) error {
-	sockets, err := filepath.Glob(filepath.Join(stateDir, "sup-*.sock"))
+	sockets, err := filepath.Glob(filepath.Join(mcpclient.SupervisorSocketDir(stateDir), "sup-*.sock"))
 	if err != nil {
 		return err
 	}

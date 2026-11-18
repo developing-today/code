@@ -173,20 +173,35 @@ type supervisorReply struct {
 	StderrTail   string `json:"stderrTail,omitempty"`
 }
 
-// SupervisorSocketPath names the per-instance socket inside the mcpx
-// state directory. The server name is hashed so any configured name is
-// a safe, short file name; long state paths fall back the way the
-// daemon socket does (hashed name under a private temp directory).
+// SupervisorSocketPath names the per-instance socket inside the
+// directory SupervisorSocketDir picks for stateDir. The server name is
+// hashed so any configured name is a safe, short file name.
 func SupervisorSocketPath(stateDir, name string) string {
+	return filepath.Join(SupervisorSocketDir(stateDir), supervisorSocketFile(name))
+}
+
+func supervisorSocketFile(name string) string {
 	sum := sha256.Sum256([]byte(name))
-	key := hex.EncodeToString(sum[:])[:16]
-	preferred := filepath.Join(stateDir, "sup-"+key+".sock")
-	if len(preferred) <= 100 {
-		return preferred
+	return "sup-" + hex.EncodeToString(sum[:])[:16] + ".sock"
+}
+
+// SupervisorSocketDir is the one directory every supervisor socket of
+// stateDir lives in: stateDir itself, or, when a socket path there would
+// pass the unix socket limit (macOS's t.TempDir and nix build TMPDIRs
+// are long enough), a private per-stateDir directory under
+// os.TempDir()/mcpx-sup. Keeping the fallback per stateDir, with the
+// same sup-*.sock names, is what lets ScanSupervisorSockets glob one
+// directory and still see every socket: when the fallback was a flat
+// directory of hashes, the scan never found fallback sockets, so
+// orphans were never reaped (TestScanSupervisorSocketsAdoptAndReap and
+// TestDefaultConfigStdioRunsSupervised failed on every Mac and in the
+// darwin nix build).
+func SupervisorSocketDir(stateDir string) string {
+	if len(filepath.Join(stateDir, supervisorSocketFile(""))) <= 100 {
+		return stateDir
 	}
-	raw := sha256.Sum256([]byte(stateDir + "\x00" + name))
-	short := hex.EncodeToString(raw[:])[:16]
-	return filepath.Join(os.TempDir(), "mcpx-sup", short+".sock")
+	raw := sha256.Sum256([]byte(stateDir))
+	return filepath.Join(os.TempDir(), "mcpx-sup", hex.EncodeToString(raw[:])[:16])
 }
 
 // StateDir resolves the mcpx state directory from the environment the
