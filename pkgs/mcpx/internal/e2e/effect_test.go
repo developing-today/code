@@ -101,6 +101,8 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor": "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":       "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":             "TestEventsHistoryBoundsTheReplay",
+	"artifacts.interceptImages":  "TestArtifactsInterceptImagesStoresAnEmittedImage",
+	"plumbing.indexOnQuery":      "TestPlumbingIndexOnQueryIngestsBeforeALogQuery",
 	"plumbing.validatePaths":     "TestPlumbingValidatePathsChecksTheLogDirUpFront",
 	"script.language":            "TestScriptLanguageRunsPython",
 	"logging.trace":              "TestLoggingTraceLogsEachCall",
@@ -229,6 +231,8 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":        TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                 TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                          TestEventsHistoryBoundsTheReplay,
+	"TestArtifactsInterceptImagesStoresAnEmittedImage":                          TestArtifactsInterceptImagesStoresAnEmittedImage,
+	"TestPlumbingIndexOnQueryIngestsBeforeALogQuery":                            TestPlumbingIndexOnQueryIngestsBeforeALogQuery,
 	"TestPlumbingValidatePathsChecksTheLogDirUpFront":                           TestPlumbingValidatePathsChecksTheLogDirUpFront,
 	"TestScriptLanguageRunsPython":                                              TestScriptLanguageRunsPython,
 	"TestLoggingTraceLogsEachCall":                                              TestLoggingTraceLogsEachCall,
@@ -2377,6 +2381,50 @@ func TestScriptLanguageRunsPython(t *testing.T) {
 	}
 	if out, err := run("MCPX_SCRIPT_LANGUAGE=python"); err != nil || !strings.Contains(out, "ran-py") {
 		t.Errorf("script.language=python should run the script under Python: err=%v\n%s", err, out)
+	}
+}
+
+// TestArtifactsInterceptImagesStoresAnEmittedImage is the effect probe for
+// artifacts.interceptImages: an image block a script emits is captured as
+// an artifact by default, and left alone once interception is off.
+func TestArtifactsInterceptImagesStoresAnEmittedImage(t *testing.T) {
+	const script = `emit({ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" })`
+	run := func(env ...string) string {
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		out, err := e.try("exec", "--json", script)
+		if err != nil {
+			t.Fatalf("exec: %v\n%s", err, out)
+		}
+		return out
+	}
+	if out := run(); !strings.Contains(out, `"name": "image.png"`) {
+		t.Errorf("by default an emitted image should become an artifact:\n%s", out)
+	}
+	if out := run("MCPX_ARTIFACTS_INTERCEPT_IMAGES=false"); strings.Contains(out, `"name": "image.png"`) {
+		t.Errorf("with artifacts.interceptImages off the image should not be stored:\n%s", out)
+	}
+}
+
+// TestPlumbingIndexOnQueryIngestsBeforeALogQuery is the effect probe for
+// plumbing.indexOnQuery: `mcpx log` reads the daemon's records by default,
+// and answers from the empty index alone once ingest-on-query is off.
+func TestPlumbingIndexOnQueryIngestsBeforeALogQuery(t *testing.T) {
+	query := func(env ...string) string {
+		e := newEnv(t, oneServer)
+		e.setenv(append([]string{"MCPX_LOGGING_DIR=" + filepath.Join(t.TempDir(), "logs")}, env...)...)
+		e.run("ls")
+		out, se, err := e.split("log")
+		if err != nil {
+			t.Fatalf("log: %v\n%s", err, se)
+		}
+		return out
+	}
+	if out := query(); !strings.Contains(out, "daemon starting") {
+		t.Errorf("by default `mcpx log` should ingest and show the daemon's start:\n%s", out)
+	}
+	if out := query("MCPX_PLUMBING_INDEX_ON_QUERY=false"); strings.Contains(out, "daemon starting") {
+		t.Errorf("with plumbing.indexOnQuery off nothing should have been ingested:\n%s", out)
 	}
 }
 
