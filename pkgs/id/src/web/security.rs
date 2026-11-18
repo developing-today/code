@@ -153,7 +153,12 @@ fn query_param<'a>(query: &'a str, name: &str) -> Option<&'a str> {
 /// (#5746). Built only from the request URI, so the result is always a
 /// same-origin relative reference and never an open redirect.
 fn clean_bootstrap_target(uri: &axum::http::Uri) -> String {
-    let path = uri.path();
+    // A leading `//` (or `/\`, which browsers normalise to `//`) would make
+    // the Location a network-path reference to another host (#8383), so
+    // collapse any leading run of slashes/backslashes to a single `/`.
+    let raw = uri.path();
+    let rest = raw.trim_start_matches(['/', '\\']);
+    let path = format!("/{rest}");
     let kept: Vec<&str> = uri
         .query()
         .map(|q| {
@@ -581,6 +586,31 @@ mod tests {
         assert!(set.starts_with("id_token=s3cret"), "{set}");
         assert!(set.contains("HttpOnly"));
         assert!(set.contains("SameSite=Strict"));
+    }
+
+    #[tokio::test]
+    async fn query_bootstrap_redirect_never_leaves_origin_for_multi_slash_paths() {
+        for (target, want) in [
+            ("//evil.example/path?token=s3cret", "/evil.example/path"),
+            ("///evil.example?x=1&token=s3cret", "/evil.example?x=1"),
+            ("//?token=s3cret", "/"),
+            ("/\\evil.example/p?token=s3cret", "/evil.example/p"),
+        ] {
+            let r = call(
+                app(with_token()),
+                Request::builder()
+                    .uri(target)
+                    .header(header::HOST, "h")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(r.status(), StatusCode::SEE_OTHER, "{target}");
+            let loc = r.headers().get(header::LOCATION).unwrap().to_str().unwrap();
+            assert_eq!(loc, want, "{target}");
+            assert!(!loc.starts_with("//") && !loc.starts_with("/\\"), "{loc}");
+            assert!(!loc.contains("token="), "{loc}");
+        }
     }
 
     #[tokio::test]
