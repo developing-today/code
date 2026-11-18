@@ -572,7 +572,10 @@ pub fn fetch(ladder: &Arc<Ladder>, remote: &str, dest: &std::path::Path) -> i32 
             Err(e) => return fail(e),
         }
     }
-    let got = format!("{:x}", Sha256::digest(&data));
+    let got: String = Sha256::digest(&data)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     if got != want {
         eprintln!(
             "laptop-agent: sha256 mismatch for {remote}: remote {want}, received {got}; nothing written"
