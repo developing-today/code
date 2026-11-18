@@ -104,6 +104,7 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"paths.config":                       "TestPathsConfigReadsAConfigOnlyThatPathHolds",
 	"script.imports":                     "TestScriptImportsOffSkipsTheImportPipeline",
 	"script.importsOnDynamic":            "TestScriptImportsOnDynamicDecidesAComputedImport",
 	"prompt.runTimeout":                  "TestPromptRunTimeoutBoundsARecipeRun",
@@ -315,6 +316,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestPathsConfigReadsAConfigOnlyThatPathHolds":                                   TestPathsConfigReadsAConfigOnlyThatPathHolds,
 	"TestScriptImportsOffSkipsTheImportPipeline":                                     TestScriptImportsOffSkipsTheImportPipeline,
 	"TestScriptImportsOnDynamicDecidesAComputedImport":                               TestScriptImportsOnDynamicDecidesAComputedImport,
 	"TestPromptRunTimeoutBoundsARecipeRun":                                           TestPromptRunTimeoutBoundsARecipeRun,
@@ -4564,6 +4566,33 @@ func TestScriptImportsOffSkipsTheImportPipeline(t *testing.T) {
 	}
 	if out := run("MCPX_SCRIPT_IMPORTS=off"); strings.Contains(out, "computed import") || !strings.Contains(out, "ran on") {
 		t.Fatalf("with script.imports=off the pipeline should not run:\n%s", out)
+	}
+}
+
+// TestPathsConfigReadsAConfigOnlyThatPathHolds is the effect probe for
+// paths.config. A directory outside the project holds a config naming a
+// server called extra. Oracle: by default the config chain finds only the
+// project's config, so ls lists demo and no extra; with paths.config naming
+// the directory its server is listed.
+func TestPathsConfigReadsAConfigOnlyThatPathHolds(t *testing.T) {
+	elsewhere := t.TempDir()
+	cfg := fmt.Sprintf(`{"mcpServers":{"extra":{"command":%q}}}`, testsupport.FakeMCPBinary(t))
+	if err := os.WriteFile(filepath.Join(elsewhere, ".mcpx.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ls := func(env ...string) string {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		// MCPX_CONFIG names one file and bypasses the chain, so the
+		// harness's pin is lifted and the chain is searched instead.
+		e.setenv(append([]string{"MCPX_CONFIG="}, env...)...)
+		return e.run("ls")
+	}
+	if out := ls(); strings.Contains(out, "extra") || !strings.Contains(out, "demo") {
+		t.Fatalf("oracle: by default the config elsewhere should not be read:\n%s", out)
+	}
+	if out := ls("MCPX_PATHS_CONFIG=" + elsewhere); !strings.Contains(out, "extra") {
+		t.Fatalf("with paths.config=%s its server should be listed:\n%s", elsewhere, out)
 	}
 }
 
