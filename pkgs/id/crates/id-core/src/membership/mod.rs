@@ -39,7 +39,6 @@ pub use layer::{CausalEvent, Membership, MembershipError, Outcome, Refusal, Role
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, std::hash::Hash, Serialize, Deserialize,
 )]
-/// The identity an author is recorded under.
 pub enum AuthId {
     /// An author's Ed25519 verifying key.
     Key([u8; 32]),
