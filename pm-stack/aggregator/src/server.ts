@@ -2133,11 +2133,7 @@ async function handler(req: Request): Promise<Response> {
       if (req.method === "POST") {
         const parsed = validateIdentityMapping(body);
         if (!parsed.ok) return json({ error: parsed.error }, 400);
-        const result = await identityRegistryStore.set(
-          parsed.identity,
-          parsed.role,
-          auditActor,
-        );
+        const result = await identityRegistryStore.set(parsed.identity, parsed.role, auditActor);
         await eventsStore.record(
           identityMappingAuditEvent({
             identity: parsed.identity,
@@ -2149,7 +2145,8 @@ async function handler(req: Request): Promise<Response> {
         );
         return json({ registry: result.registry, previousRole: result.previousRole });
       }
-      const identity = typeof body === "object" && body !== null ? (body as { identity?: unknown }).identity : undefined;
+      const identity =
+        typeof body === "object" && body !== null ? (body as { identity?: unknown }).identity : undefined;
       if (
         typeof identity !== "string" ||
         identity.trim() === "" ||
@@ -2172,7 +2169,10 @@ async function handler(req: Request): Promise<Response> {
       }
       return json({ registry: result.registry, previousRole: result.previousRole });
     } catch (error) {
-      return json({ error: `identity registry operation failed: ${error instanceof Error ? error.message : error}` }, 500);
+      return json(
+        { error: `identity registry operation failed: ${error instanceof Error ? error.message : error}` },
+        500,
+      );
     }
   }
 
@@ -2873,7 +2873,15 @@ async function handler(req: Request): Promise<Response> {
       source.usage().catch(() => emptyUsageView()),
     ]);
     try {
-      return json(buildQuotaAnalytics({ quota, usage, quotaCurrentPath: cfg.quotaCurrentFile, mcpxCallLedgerDir: cfg.mcpxCallLedgerDir, fleetInvocationLedgerFile: cfg.fleetInvocationLedgerFile }));
+      return json(
+        buildQuotaAnalytics({
+          quota,
+          usage,
+          quotaCurrentPath: cfg.quotaCurrentFile,
+          mcpxCallLedgerDir: cfg.mcpxCallLedgerDir,
+          fleetInvocationLedgerFile: cfg.fleetInvocationLedgerFile,
+        }),
+      );
     } catch {
       return json({ error: "analytics unavailable" }, 503);
     }
@@ -2891,7 +2899,13 @@ async function handler(req: Request): Promise<Response> {
     // quota page down with it (the builder itself also degrades).
     let analytics: QuotaAnalytics | null = null;
     try {
-      analytics = buildQuotaAnalytics({ quota, usage, quotaCurrentPath: cfg.quotaCurrentFile, mcpxCallLedgerDir: cfg.mcpxCallLedgerDir, fleetInvocationLedgerFile: cfg.fleetInvocationLedgerFile });
+      analytics = buildQuotaAnalytics({
+        quota,
+        usage,
+        quotaCurrentPath: cfg.quotaCurrentFile,
+        mcpxCallLedgerDir: cfg.mcpxCallLedgerDir,
+        fleetInvocationLedgerFile: cfg.fleetInvocationLedgerFile,
+      });
     } catch {
       analytics = null;
     }
@@ -4553,9 +4567,7 @@ if (cfg.source !== "fixtures") {
       const view = await healthContext(false);
       await sloJournal.append(sampleSloFacets(view, Date.now()));
     } catch (error) {
-      console.error(
-        `[slo] WARNING: SLO sample failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      console.error(`[slo] WARNING: SLO sample failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       sloSampling = false;
     }

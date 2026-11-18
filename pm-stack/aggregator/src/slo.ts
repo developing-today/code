@@ -23,14 +23,71 @@ const MINUTE = 60_000;
 const THIRTY_DAYS = 30 * DAY;
 
 export const SLO_DEFINITIONS: readonly SloDefinition[] = [
-  { id: "feed-age", label: "Feed age", target: "p95 ≤ 10 min; none > 30 min", budgetFraction: 0.005, windowMs: 7 * DAY, missing: "unknown", doubleBadAbove: 30 * MINUTE },
-  { id: "quota-age", label: "Quota read age", target: "p99 ≤ 75 min", budgetFraction: 0.01, windowMs: THIRTY_DAYS, missing: "unknown" },
-  { id: "orchestration-age", label: "Orchestration freshness", target: "p99 ≤ 90 min", budgetFraction: 0.01, windowMs: THIRTY_DAYS, missing: "unknown" },
-  { id: "aggregator-up", label: "Aggregator", target: "99.5% of minutes", budgetFraction: 0.005, windowMs: THIRTY_DAYS, missing: "bad" },
-  { id: "intake-up", label: "Intake", target: "99.5% of minutes", budgetFraction: 0.005, windowMs: THIRTY_DAYS, missing: "bad" },
-  { id: "projector-up", label: "Projector", target: "99.5% of minutes", budgetFraction: 0.005, windowMs: THIRTY_DAYS, missing: "bad" },
-  { id: "pad-grist-up", label: "Pad / Grist", target: "99% of minutes", budgetFraction: 0.01, windowMs: THIRTY_DAYS, missing: "bad" },
-  { id: "tunnel-up", label: "Tunnel", target: "99.9% of minutes", budgetFraction: 0.001, windowMs: THIRTY_DAYS, missing: "bad" },
+  {
+    id: "feed-age",
+    label: "Feed age",
+    target: "p95 ≤ 10 min; none > 30 min",
+    budgetFraction: 0.005,
+    windowMs: 7 * DAY,
+    missing: "unknown",
+    doubleBadAbove: 30 * MINUTE,
+  },
+  {
+    id: "quota-age",
+    label: "Quota read age",
+    target: "p99 ≤ 75 min",
+    budgetFraction: 0.01,
+    windowMs: THIRTY_DAYS,
+    missing: "unknown",
+  },
+  {
+    id: "orchestration-age",
+    label: "Orchestration freshness",
+    target: "p99 ≤ 90 min",
+    budgetFraction: 0.01,
+    windowMs: THIRTY_DAYS,
+    missing: "unknown",
+  },
+  {
+    id: "aggregator-up",
+    label: "Aggregator",
+    target: "99.5% of minutes",
+    budgetFraction: 0.005,
+    windowMs: THIRTY_DAYS,
+    missing: "bad",
+  },
+  {
+    id: "intake-up",
+    label: "Intake",
+    target: "99.5% of minutes",
+    budgetFraction: 0.005,
+    windowMs: THIRTY_DAYS,
+    missing: "bad",
+  },
+  {
+    id: "projector-up",
+    label: "Projector",
+    target: "99.5% of minutes",
+    budgetFraction: 0.005,
+    windowMs: THIRTY_DAYS,
+    missing: "bad",
+  },
+  {
+    id: "pad-grist-up",
+    label: "Pad / Grist",
+    target: "99% of minutes",
+    budgetFraction: 0.01,
+    windowMs: THIRTY_DAYS,
+    missing: "bad",
+  },
+  {
+    id: "tunnel-up",
+    label: "Tunnel",
+    target: "99.9% of minutes",
+    budgetFraction: 0.001,
+    windowMs: THIRTY_DAYS,
+    missing: "bad",
+  },
 ];
 
 export type SloBudget = {
@@ -53,7 +110,10 @@ export function computeSloBudget(
   observedSinceMs?: number,
 ): SloBudget {
   const start = nowMs - definition.windowMs;
-  const inWindow = samples.filter((s) => s.atMs > start && s.atMs <= nowMs).slice().sort((a, b) => a.atMs - b.atMs);
+  const inWindow = samples
+    .filter((s) => s.atMs > start && s.atMs <= nowMs)
+    .slice()
+    .sort((a, b) => a.atMs - b.atMs);
   const windowStart = observedSinceMs === undefined ? start : Math.max(start, observedSinceMs - MINUTE);
   const firstExpected = Math.floor(windowStart / MINUTE) * MINUTE + MINUTE;
   const lastExpected = Math.floor(nowMs / MINUTE) * MINUTE;
@@ -70,7 +130,10 @@ export function computeSloBudget(
       continue;
     }
     if (!sample.bad) continue;
-    const weight = definition.doubleBadAbove !== undefined && sample.value !== null && sample.value > definition.doubleBadAbove ? 2 : 1;
+    const weight =
+      definition.doubleBadAbove !== undefined && sample.value !== null && sample.value > definition.doubleBadAbove
+        ? 2
+        : 1;
     badMinutes += weight;
     if (sample.atMs > nowMs - 60 * MINUTE) badLastHour.add(minute);
   }
@@ -83,10 +146,12 @@ export function computeSloBudget(
     unknownSamples += missing;
   }
   const budgetMinutes = Math.floor((definition.windowMs / MINUTE) * definition.budgetFraction);
-  const remaining = definition.missing === "unknown" && expected > 0 && unknownSamples / expected > 0.5
-    ? null
-    : Math.max(0, 100 * (1 - badMinutes / budgetMinutes));
-  const burnRate1h = budgetMinutes > 0 ? (badLastHour.size / 60) / (budgetMinutes / (definition.windowMs / MINUTE)) : null;
+  const remaining =
+    definition.missing === "unknown" && expected > 0 && unknownSamples / expected > 0.5
+      ? null
+      : Math.max(0, 100 * (1 - badMinutes / budgetMinutes));
+  const burnRate1h =
+    budgetMinutes > 0 ? badLastHour.size / 60 / (budgetMinutes / (definition.windowMs / MINUTE)) : null;
   return {
     currentValue: inWindow.at(-1)?.value ?? null,
     target: definition.target,
@@ -108,12 +173,22 @@ export type SloFacetSummary = SloBudget & {
   latestBad: boolean | null;
 };
 
-export function summarizeSloFacet(definition: SloDefinition, samples: readonly SloSample[], nowMs: number): SloFacetSummary {
+export function summarizeSloFacet(
+  definition: SloDefinition,
+  samples: readonly SloSample[],
+  nowMs: number,
+): SloFacetSummary {
   const inWindow = samples.filter((s) => s.atMs > nowMs - definition.windowMs && s.atMs <= nowMs);
   const sourced = inWindow.some((s) => s.bad !== null);
-  const earliest = inWindow.reduce<number | undefined>((min, s) => (min === undefined || s.atMs < min ? s.atMs : min), undefined);
+  const earliest = inWindow.reduce<number | undefined>(
+    (min, s) => (min === undefined || s.atMs < min ? s.atMs : min),
+    undefined,
+  );
   const budget = computeSloBudget(definition, inWindow, nowMs, earliest);
-  const latest = inWindow.reduce<SloSample | undefined>((last, s) => (last === undefined || s.atMs > last.atMs ? s : last), undefined);
+  const latest = inWindow.reduce<SloSample | undefined>(
+    (last, s) => (last === undefined || s.atMs > last.atMs ? s : last),
+    undefined,
+  );
   return {
     ...budget,
     id: definition.id,

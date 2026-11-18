@@ -324,8 +324,9 @@ class ReadModeLoudDefaultTests(unittest.TestCase):
             tmp = Path(td)
             self._read_with_file(tmp, None)
             fires = tmp / "fires.jsonl"
-            with patch.object(claimant, "STATE_DIR", tmp), patch.object(
-                claimant, "FIRES_FILE", fires
+            with (
+                patch.object(claimant, "STATE_DIR", tmp),
+                patch.object(claimant, "FIRES_FILE", fires),
             ):
                 claimant.log_fire("shadow", [], [], None, [{"reason": "no_candidates"}])
             entry = json.loads(fires.read_text().splitlines()[-1])

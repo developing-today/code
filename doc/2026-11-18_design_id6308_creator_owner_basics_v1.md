@@ -41,11 +41,11 @@ The owner report is a snapshot with a common `generated_at`, a `world_id`, `sche
   "schema_version": 1,
   "world_id": "…",
   "generated_at": "…",
-  "window": {"from": "…", "to": "…"},
-  "joins": {"count": 0, "available_since": "…", "complete": true},
-  "members": {"active_count": 0, "definition": "connected within window", "as_of": "…"},
-  "program_runs": {"count": null, "reason": "not recorded by this journal version"},
-  "storage": {"total_bytes": 0, "exact": false, "as_of": "…"}
+  "window": { "from": "…", "to": "…" },
+  "joins": { "count": 0, "available_since": "…", "complete": true },
+  "members": { "active_count": 0, "definition": "connected within window", "as_of": "…" },
+  "program_runs": { "count": null, "reason": "not recorded by this journal version" },
+  "storage": { "total_bytes": 0, "exact": false, "as_of": "…" }
 }
 ```
 
@@ -55,12 +55,12 @@ The initial CLI surface should follow existing `id world` command conventions: `
 
 ## 3. Fact sources and semantics
 
-| Question | Authority/source | Meaning and limits |
-| --- | --- | --- |
-| Joins | Durable join/member journal entries, replayed through the existing world model | A join is a recorded successful membership event, not an attempted connection. Deduplicate only according to the journal's stable participant identity and documented rejoin semantics. `available_since` is the earliest point from which the current format can answer completely. |
-| Active members | Current in-memory participant/session state when available; otherwise unavailable | “Active” means connected at the report snapshot, not “recently active.” If product chooses a time-window proxy, it must be a separately named metric, not this field. No last-seen profile is invented from unrelated events. |
-| Program runs | Existing durable run/start/finish/outcome records if present; otherwise runtime counters for the current process only | The design does not add a journal entry just to make historical charts. A process-local count is marked `complete: false`, scoped to process start, and disappears on restart. Durable history requires a separate, versioned journal decision and migration/compatibility plan. |
-| Storage | Walk of the selected world's data directory, including journal and content-addressed program modules | Bytes-on-disk is a point-in-time local filesystem observation, may race with writes, and may differ due to sparse/compressed files or filesystem accounting. Report logical file bytes first; optionally allocated bytes only where portable and clearly labeled. Do not traverse other worlds or symlink targets. |
+| Question       | Authority/source                                                                                                      | Meaning and limits                                                                                                                                                                                                                                                                                                 |
+| -------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Joins          | Durable join/member journal entries, replayed through the existing world model                                        | A join is a recorded successful membership event, not an attempted connection. Deduplicate only according to the journal's stable participant identity and documented rejoin semantics. `available_since` is the earliest point from which the current format can answer completely.                               |
+| Active members | Current in-memory participant/session state when available; otherwise unavailable                                     | “Active” means connected at the report snapshot, not “recently active.” If product chooses a time-window proxy, it must be a separately named metric, not this field. No last-seen profile is invented from unrelated events.                                                                                      |
+| Program runs   | Existing durable run/start/finish/outcome records if present; otherwise runtime counters for the current process only | The design does not add a journal entry just to make historical charts. A process-local count is marked `complete: false`, scoped to process start, and disappears on restart. Durable history requires a separate, versioned journal decision and migration/compatibility plan.                                   |
+| Storage        | Walk of the selected world's data directory, including journal and content-addressed program modules                  | Bytes-on-disk is a point-in-time local filesystem observation, may race with writes, and may differ due to sparse/compressed files or filesystem accounting. Report logical file bytes first; optionally allocated bytes only where portable and clearly labeled. Do not traverse other worlds or symlink targets. |
 
 The report is deliberately conservative. It shows observability gaps directly, making them actionable without fabricating certainty. A future design may add durable run provenance if the product case justifies its journal and privacy cost.
 
@@ -124,7 +124,6 @@ All follow-ups link back to #6308 and core topic #6282, and are children of #630
 - Whether program-run history is important enough to justify durable journal events. Recommendation: v1 exposes only facts already durable and labels process-local counters; defer journal growth until evidence from real use.
 - Whether the owner report is admin-only or also available to a world owner role distinct from admin. Recommendation: use the existing strongest local owner/admin authorization for v1 and do not create a new role in this issue.
 - Whether storage reports logical bytes only or allocated bytes where available. Recommendation: logical bytes as portable baseline; allocated bytes may be optional metadata.
-
 
 ## 11. References and implementation grounding
 

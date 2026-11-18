@@ -176,7 +176,7 @@ printf '{}\n' >"$tf_home/.local/state/pm-aggregator/actions.json"
 for f in actions.json comments.json fleet-feed.json quota-current.json registry.json \
   quota-gatherer-state.json quota-gatherer-heartbeat.json events.json \
   coverage-snapshot.json aa-last-good.json \
-    decisions.json decision-events.jsonl; do
+  decisions.json decision-events.jsonl; do
   printf '{}\n' >"$tf_home/.local/state/pm-aggregator/$f"
 done
 printf '{}\n' >"$tf_home/atlas/meta-quota-export/latest.json"

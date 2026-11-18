@@ -70,6 +70,8 @@ test("health page renders SLO targets, current values, budgets, burn, and unknow
   const html = renderHealth(view, {} as Parameters<typeof renderHealth>[1]);
   expect(html).toContain("SLO error budgets (#9988)");
   expect(html).toContain("Feed age</td><td>p95 ≤ 10 min</td><td>2m old</td><td>98.5%</td><td>0.25</td><td>ok");
-  expect(html).toContain("Tunnel</td><td>99.9% of minutes</td><td><span class=\"muted\">unknown / no signal source</span></td>");
+  expect(html).toContain(
+    'Tunnel</td><td>99.9% of minutes</td><td><span class="muted">unknown / no signal source</span></td>',
+  );
   expect(html).toContain("—</td><td>—</td><td>unknown");
 });

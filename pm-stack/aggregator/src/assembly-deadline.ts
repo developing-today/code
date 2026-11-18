@@ -112,10 +112,17 @@ export function createDashboardResponseDeadline(options: DeadlineOptions = {}) {
     diskChecked.add(key);
     try {
       const record = JSON.parse(await readFile(join(persistDir, persistName(key)), "utf8")) as PersistedResponse;
-      if (record.key !== key || typeof record.storedAt !== "number" || typeof record.body !== "string") return undefined;
+      if (record.key !== key || typeof record.storedAt !== "number" || typeof record.body !== "string")
+        return undefined;
       const body = new Uint8Array(Buffer.from(record.body, "base64"));
       if (body.byteLength === 0 || body.byteLength > maxCachedResponseBytes) return undefined;
-      return { body, headers: new Headers(record.headers), status: record.status, storedAt: record.storedAt, fromDisk: true };
+      return {
+        body,
+        headers: new Headers(record.headers),
+        status: record.status,
+        storedAt: record.storedAt,
+        fromDisk: true,
+      };
     } catch {
       return undefined;
     }
@@ -251,7 +258,9 @@ function staleResponse(path: string, cached: CachedResponse, timeoutMs: number, 
   headers.set("x-aggregator-stale", "true");
   headers.set("cache-control", "no-store");
   const text = new TextDecoder().decode(cached.body);
-  const age = cached.fromDisk ? ` It was saved before the dashboard restarted, ${formatAge(at - cached.storedAt)} ago.` : "";
+  const age = cached.fromDisk
+    ? ` It was saved before the dashboard restarted, ${formatAge(at - cached.storedAt)} ago.`
+    : "";
   const notice = `Showing the last successful dashboard response; the latest assembly timed out after ${formatDuration(timeoutMs)}.${age}`;
 
   if ((headers.get("content-type") ?? "").includes("application/json")) {

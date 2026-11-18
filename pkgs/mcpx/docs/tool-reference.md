@@ -11,11 +11,11 @@ does not change it.
 
 ## Surfaces
 
-| Surface | Tools | Source |
-|---------|-------|--------|
-| Hand-written | 12 | `internal/mcpserver/server.go`, `Tools()` |
-| Generated | one `mcpx_<op>` per operation | `internal/mcpserver/ops.go`, `OpTools` |
-| Dynamic | adapter, OpenAPI, recipe, reactive, passthrough, raw | `internal/cli/serve.go` |
+| Surface      | Tools                                                | Source                                    |
+| ------------ | ---------------------------------------------------- | ----------------------------------------- |
+| Hand-written | 12                                                   | `internal/mcpserver/server.go`, `Tools()` |
+| Generated    | one `mcpx_<op>` per operation                        | `internal/mcpserver/ops.go`, `OpTools`    |
+| Dynamic      | adapter, OpenAPI, recipe, reactive, passthrough, raw | `internal/cli/serve.go`                   |
 
 Dynamic tools exist only when their upstream or configuration is present.
 Their names are derived from the upstream: `<adapter>_<tool>`, OpenAPI
@@ -24,20 +24,20 @@ and `<namespace>_<tool>` on the raw surface (`?codemode=false`).
 
 ## Hand-written tools
 
-| Tool | Parameters | Purpose |
-|------|------------|---------|
-| `mcpx_namespaces` | none | List configured namespaces. |
-| `mcpx_catalog` | `budget`, `bias` | Catalog of available tools, sized to a budget. |
-| `mcpx_types` | `namespaces` | TypeScript signatures for namespaces. |
-| `mcpx_search` | `query`, `limit` | Search tools by name or description. |
-| `mcpx_call` | `namespace`, `tool`, `arguments` | Call one upstream tool. |
-| `mcpx_exec` | `source`, `timeoutSec` | Run a Code Mode script. |
-| `mcpx_log` | `since`, `level`, `event`, `limit` | Read daemon log entries. |
-| `mcpx_stats` | `dimension` (enum) | Usage and timing statistics. |
-| `mcpx_registry` | `query`, `limit` | Search the server registry. |
-| `mcpx_status` | none | Daemon status. |
-| `mcpx_batch` | `calls`, `stopOnError`, `parallel` | Run several calls in one request. |
-| `batch_call` | as `mcpx_batch` | Alias of `mcpx_batch`. The reactive-surface version has a different schema. |
+| Tool              | Parameters                         | Purpose                                                                     |
+| ----------------- | ---------------------------------- | --------------------------------------------------------------------------- |
+| `mcpx_namespaces` | none                               | List configured namespaces.                                                 |
+| `mcpx_catalog`    | `budget`, `bias`                   | Catalog of available tools, sized to a budget.                              |
+| `mcpx_types`      | `namespaces`                       | TypeScript signatures for namespaces.                                       |
+| `mcpx_search`     | `query`, `limit`                   | Search tools by name or description.                                        |
+| `mcpx_call`       | `namespace`, `tool`, `arguments`   | Call one upstream tool.                                                     |
+| `mcpx_exec`       | `source`, `timeoutSec`             | Run a Code Mode script.                                                     |
+| `mcpx_log`        | `since`, `level`, `event`, `limit` | Read daemon log entries.                                                    |
+| `mcpx_stats`      | `dimension` (enum)                 | Usage and timing statistics.                                                |
+| `mcpx_registry`   | `query`, `limit`                   | Search the server registry.                                                 |
+| `mcpx_status`     | none                               | Daemon status.                                                              |
+| `mcpx_batch`      | `calls`, `stopOnError`, `parallel` | Run several calls in one request.                                           |
+| `batch_call`      | as `mcpx_batch`                    | Alias of `mcpx_batch`. The reactive-surface version has a different schema. |
 
 ## Generated tools
 
@@ -52,12 +52,12 @@ Each operation in `internal/api/ops.go` `Ops()` produces one
 Input schemas come from each operation's `Params` through `InputSchema()`.
 Annotations are derived from the operation:
 
-| Annotation | Value |
-|------------|-------|
-| `readOnlyHint` | `!Mutating` |
-| `idempotentHint` | `!Mutating \|\| Idempotent` |
-| `destructiveHint` | from the operation |
-| `openWorldHint` | `true` |
+| Annotation        | Value                       |
+| ----------------- | --------------------------- |
+| `readOnlyHint`    | `!Mutating`                 |
+| `idempotentHint`  | `!Mutating \|\| Idempotent` |
+| `destructiveHint` | from the operation          |
+| `openWorldHint`   | `true`                      |
 
 The per-operation name, method, path and CLI mapping is in
 [Parity](parity.md). Because that table is generated from `Ops()`, prefer
@@ -73,10 +73,10 @@ it over any hand-maintained list.
 
 ## Errors
 
-| Condition | Result |
-|-----------|--------|
-| Invalid parameters | JSON-RPC error `-32602`. |
-| Upstream JSON-RPC error | Relayed as `UpstreamError`. |
+| Condition                       | Result                                                        |
+| ------------------------------- | ------------------------------------------------------------- |
+| Invalid parameters              | JSON-RPC error `-32602`.                                      |
+| Upstream JSON-RPC error         | Relayed as `UpstreamError`.                                   |
 | Unknown name on the raw surface | `no tool named "<name>" on the raw surface (codemode=false)`. |
 
 ## Known gaps
