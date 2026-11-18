@@ -55,7 +55,7 @@ def main():
   if a.apply:
    c.execute('PRAGMA foreign_keys=ON');assert c.execute('PRAGMA foreign_keys')==[['1']]
    c.execute('BEGIN IMMEDIATE');begun=True
-  initial_counts=preflight(c,data);print(json.dumps({'mode':'apply' if a.apply else 'dry-run','candidate_sha256':digest,'tables':len(data),'rows':sum(len(v['rows']) for v in data.values())}),flush=True)
+  initial_counts=preflight(c,data);print(json.dumps({'mode':'apply' if a.apply else 'dry-run','candidate_sha256':digest,'tables':len(data),'initial_counts':initial_counts,'rows':sum(len(v['rows']) for v in data.values())}),flush=True)
   if not a.apply:return
   for table,x in data.items():
    cols=x['columns']
