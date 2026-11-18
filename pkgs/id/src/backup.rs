@@ -81,8 +81,11 @@ const MAX_LANES: u32 = 4;
 /// Per-identity download budget from the #5033 decision: 10 per hour,
 /// 50 per day, per `H(pub)`.
 pub const DOWNLOAD_HOUR_LIMIT: u64 = 10;
+/// Length of the hourly backup-download window, in milliseconds.
 pub const DOWNLOAD_HOUR_WINDOW_MS: u64 = 3_600_000;
+/// Maximum backup downloads allowed per day window.
 pub const DOWNLOAD_DAY_LIMIT: u64 = 50;
+/// Length of the daily backup-download window, in milliseconds.
 pub const DOWNLOAD_DAY_WINDOW_MS: u64 = 86_400_000;
 
 /// `H(pub)`: SHA-256 of the identity public key. The only identity a

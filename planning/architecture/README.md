@@ -91,7 +91,10 @@ records.
 
 ## Package architecture docs (living, with the code)
 
-- [id — architecture](../../pkgs/id/ARCHITECTURE.md)
+- [id — architecture](../../pkgs/id/ARCHITECTURE.md) (includes the public-vs-internal crate section)
+- [mcpx — MCP tool reference](../../pkgs/mcpx/docs/tool-reference.md)
+- [fleet — verb reference](../../pkgs/fleet/docs/verbs.md)
+- [pm-stack — aggregator routes](../../pm-stack/docs/routes.md)
 - Package docs folders: `pkgs/id/docs/`, `pkgs/mcpx/docs/` (see the
   documentation map in [`doc/README.md`](../../doc/README.md)).
 
