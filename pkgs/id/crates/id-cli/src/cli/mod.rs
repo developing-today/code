@@ -472,17 +472,23 @@ pub struct ServeArgs {
     /// Browsers drop `Secure` cookies over plain HTTP, except on localhost.
     #[arg(long, env = "ID_WEB_COOKIE_SECURE")]
     pub web_cookie_secure: bool,
-    /// Serve the program gallery stored in this directory (#10003).
+    /// Serve the program gallery stored in this directory (#10003, #8281).
     ///
-    /// The web interface answers `/api/gallery/records`,
+    /// The node serves it as a program registry over Iroh
+    /// (`/id-program-registry/1`: list, fetch and author-signed unpublish),
+    /// and with `--web` also answers `/api/gallery/records`,
     /// `/api/gallery/bundles/<hash>`, `/api/gallery/search`,
     /// `/api/gallery/authors/<key>`, `/api/gallery/collections` and
-    /// `/api/gallery/transparency` from the verified bundle files
+    /// `/api/gallery/transparency`, from the verified bundle files
     /// (`<content-hash>.idpb`) in the directory and the operator's
     /// collections, tags and admission decisions under `operator/` (managed
     /// with `id gallery`). Every file is verified when the server starts.
-    #[arg(long, env = "ID_GALLERY_DIR", requires = "web")]
+    #[arg(long, env = "ID_GALLERY_DIR")]
     pub gallery_dir: Option<std::path::PathBuf>,
+    /// Accept bundle publishes from any peer over Iroh. Each is verified and
+    /// then goes through the gallery's admission like any other.
+    #[arg(long, env = "ID_GALLERY_ACCEPT_PUBLISH", requires = "gallery_dir")]
+    pub gallery_accept_publish: bool,
     /// Host a multiplayer world over Iroh (and `/ws/world` with `--web`).
     #[arg(long, requires = "world_admin_token")]
     pub world: bool,
