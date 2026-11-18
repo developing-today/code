@@ -1740,6 +1740,14 @@ pub enum KeysetCommand {
         #[arg(long)]
         client: bool,
     },
+    /// Checkpoint the current keyset head with this identity's key, which
+    /// must be an active device key. The head becomes final here: a
+    /// fork that later arrives can no longer displace it.
+    Checkpoint {
+        /// Checkpoint the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
 }
 
 #[cfg(test)]

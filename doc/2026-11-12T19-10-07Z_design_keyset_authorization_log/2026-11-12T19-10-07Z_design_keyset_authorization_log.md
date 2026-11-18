@@ -152,7 +152,11 @@ same records reaches the same state.
      revocation priority is implemented, judged over each sibling's
      whole canonical continuation, so a rotation deeper in a branch
      still wins; mutual revocations fall back to merge-key order.
-     Checkpoint finality is not yet implemented (packet 5 in §7).
+     Checkpoint finality is implemented too: `fold_with_finality`
+     takes the heads a replica verified a checkpoint against
+     (`checkpoint_final_heads`), and a branch through a final head wins
+     every fork on its way. `KeysetFile` keeps those heads beside the
+     log (`<log>.final`) and `id keyset checkpoint` writes one.
 6. **Checkpoints.** A replica may start from a `Checkpoint` whose
    `state_hash` it has verified against a full fold once, then fold
    only the suffix. A checkpoint never authorises anything by itself.
@@ -192,7 +196,8 @@ rule 5 and loses deterministically to the first folded one.
   check remains the rule only for unmigrated identities. Implemented:
   `HostedBindingService::register_keyset` records an identity's folded
   keyset, and both paths then accept only its active admin keys.
-  Checkpoint finality (Decision 4 rule 5) is not yet enforced there.
+  The hosted service does not yet require checkpoint finality for a
+  forked log (Decision 4 rule 5 makes it a SHOULD).
 - Per-device group-encryption sessions (`src/encryption/`) consume the
   folded device set; they do not define their own enrolment.
 

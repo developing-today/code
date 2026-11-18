@@ -3150,4 +3150,11 @@ fn test_cli_parse_keyset_commands() {
             command: KeysetCommand::Rotate { client: false, .. }
         })
     ));
+    let checkpoint = Cli::parse_from(["id", "keyset", "checkpoint", "--client"]);
+    assert!(matches!(
+        checkpoint.command,
+        Some(Command::Keyset {
+            command: KeysetCommand::Checkpoint { client: true }
+        })
+    ));
 }
