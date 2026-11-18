@@ -104,6 +104,7 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"sampling.answerLocally":             "TestSamplingAnswerLocallyAnswersAnUpstreamFromTheEnvironment",
 	"model.provider":                     "TestModelProviderSelectsTheBackendFromTheEnvironment",
 	"model.baseURL":                      "TestModelBaseURLPointsTheProviderAtAnEndpointFromTheEnvironment",
 	"model.default":                      "TestModelDefaultNamesTheModelFromTheEnvironment",
@@ -299,6 +300,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestSamplingAnswerLocallyAnswersAnUpstreamFromTheEnvironment":                   TestSamplingAnswerLocallyAnswersAnUpstreamFromTheEnvironment,
 	"TestModelProviderSelectsTheBackendFromTheEnvironment":                           TestModelProviderSelectsTheBackendFromTheEnvironment,
 	"TestModelBaseURLPointsTheProviderAtAnEndpointFromTheEnvironment":                TestModelBaseURLPointsTheProviderAtAnEndpointFromTheEnvironment,
 	"TestModelDefaultNamesTheModelFromTheEnvironment":                                TestModelDefaultNamesTheModelFromTheEnvironment,
@@ -4106,6 +4108,30 @@ func TestModelTimeoutBoundsAGenerationFromTheEnvironment(t *testing.T) {
 	}
 	if f := promptHookFrame(t, append(modelAt(slow), "MCPX_MODEL_TIMEOUT=100ms")...); !strings.Contains(fmt.Sprint(f["error"]), "deadline exceeded") {
 		t.Fatalf("with model.timeout=100ms the 700ms endpoint should be cut off: %v", f)
+	}
+}
+
+// TestSamplingAnswerLocallyAnswersAnUpstreamFromTheEnvironment is the
+// effect probe for sampling.answerLocally. The ask fixture's need_model
+// tool sends sampling/createMessage upstream of mcpx. By default mcpx
+// relays it to its caller, and the fake model endpoint is never asked;
+// with sampling.answerLocally=true mcpx answers from its configured
+// model, so the endpoint is asked and its text reaches the tool's result.
+func TestSamplingAnswerLocallyAnswersAnUpstreamFromTheEnvironment(t *testing.T) {
+	a := newFakeModel(t, "A", 0)
+	call := func(env ...string) string {
+		t.Helper()
+		e := askWith(t, `{"sharing":"shared","scope":"global","callTimeout":"10s"}`)
+		e.setenv(append(modelAt(a), env...)...)
+		e.run("refresh")
+		out, _ := e.try("call", "ask.need_model", "{}")
+		return out
+	}
+	if out := call(); strings.Contains(out, "advice from A") || len(a.reqs) != 0 {
+		t.Fatalf("oracle: by default the sampling request should be relayed, not answered by the model:\n%s", out)
+	}
+	if out := call("MCPX_SAMPLING_ANSWER_LOCALLY=true"); !strings.Contains(out, "advice from A") {
+		t.Fatalf("with sampling.answerLocally=true the model's answer should reach the tool:\n%s", out)
 	}
 }
 
