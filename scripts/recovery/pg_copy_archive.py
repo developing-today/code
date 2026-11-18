@@ -81,7 +81,8 @@ def convert(src,dst,report):
                         ddl_name=None
                     elif line.startswith('    ') and not line.lstrip().startswith(('CONSTRAINT ', 'PRIMARY ', 'FOREIGN ', 'CHECK ', 'UNIQUE ')):
                         col=re.match(r'    ("(?:[^"]|"")+"|[a-zA-Z_][a-zA-Z_0-9]*) ',line)
-                        if col: ddl_cols.append(col[1].strip('"'))
+                        if col and col[1].startswith(chr(34)): raise ValueError('unsupported quoted DDL column')
+                        if col: ddl_cols.append(col[1])
         if ddl_name is not None: raise ValueError('unterminated CREATE TABLE')
         if second_hash.hexdigest()!=source_hash.hexdigest(): raise ValueError('source changed between passes')
         db.commit()

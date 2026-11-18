@@ -35,7 +35,7 @@ class ArchiveTests(unittest.TestCase):
             p=Path(d)
             with self.assertRaisesRegex(ValueError,'source changed'):convert(Changing(),p/'d',p/'r')
     def test_unsupported_or_truncated_ddl_rejected(self):
-        for text in ['CREATE TABLE public."T" (\n    id text\n);\n','CREATE TABLE public.t (\n    id text\n']:
+        for text in ['CREATE TABLE public.t (\n    "a""b" text\n);\n','CREATE TABLE public."T" (\n    id text\n);\n','CREATE TABLE public.t (\n    id text\n']:
             with tempfile.TemporaryDirectory() as d:
                 p=Path(d);s=p/'s';s.write_text(text)
                 with self.assertRaises(ValueError):convert(s,p/'d',p/'r')
