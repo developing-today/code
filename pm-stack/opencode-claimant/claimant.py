@@ -1271,10 +1271,18 @@ def launch_step(
                 )
 
                 if bind_result.returncode != 0:
-                    # Bind failed - delete session and skip. Record
-                    # WHY (#8042): bind's stderr names the exact
-                    # failed precondition (lease lapsed / ledger row
-                    # missing / already bound / task gone), and a
+                    # Bind failed - delete the session and skip. The
+                    # delete is not optional: bind refused, so this
+                    # session is bound to nothing, and leaving it on
+                    # the server orphans a created-but-unowned root
+                    # (and leaks a cap slot until it ages out). #8042
+                    # added the error text below; it must not drop
+                    # this cleanup (a rewrite of this branch removed
+                    # it once already).
+                    _delete_session(session_id)
+                    # Record WHY (#8042): bind's stderr names the
+                    # exact failed precondition (lease lapsed / ledger
+                    # row missing / already bound / task gone), and a
                     # repeat bind loop is undiagnosable without it.
                     # First non-empty line only, truncated — the bind
                     # verb's precondition texts carry no credentials.

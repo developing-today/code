@@ -85,24 +85,24 @@ function front(path: string, init: RequestInit = {}): Request {
 function countingBody(chunks: Uint8Array[]) {
   const seen = { bytes: 0 };
   let i = 0;
-  const body = new ReadableStream<Uint8Array>({
-    pull(c) {
-      if (i >= chunks.length) return c.close();
-      const chunk = chunks[i++];
-      seen.bytes += chunk.byteLength;
-      c.enqueue(chunk);
+  const body = new ReadableStream<Uint8Array>(
+    {
+      pull(c) {
+        if (i >= chunks.length) return c.close();
+        const chunk = chunks[i++];
+        seen.bytes += chunk.byteLength;
+        c.enqueue(chunk);
+      },
     },
-  }, { highWaterMark: 0 });
+    { highWaterMark: 0 },
+  );
   return { body, seen };
 }
 
 test("a declared oversized body is refused at the front door without being read", async () => {
   const { env, calls } = makeEnv({ USER_CEILING_BYTES: "10" });
   const { body, seen } = countingBody([new Uint8Array(64)]);
-  const r = await worker.fetch(
-    front("/v1/blobs", { method: "PUT", body, headers: { "content-length": "64" } }),
-    env,
-  );
+  const r = await worker.fetch(front("/v1/blobs", { method: "PUT", body, headers: { "content-length": "64" } }), env);
   assert.equal(r.status, 413);
   assert.equal(((await r.json()) as { error: string }).error, "body_too_large");
   assert.equal(seen.bytes, 0, "the body was never read");

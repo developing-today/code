@@ -191,7 +191,11 @@ test("kv usage and the ceiling count UTF-8 bytes, not characters (#11349)", asyn
   // Overwriting a 20-byte value with 2 ASCII bytes frees 18 bytes of headroom.
   assert.equal((await doA.fetch(routed("/v1/kv/k0", { method: "PUT", body: "ab" }))).status, 200);
   assert.equal((await getUsage(doA)).kv_bytes, 82);
-  assert.equal((await doA.fetch(routed("/v1/kv/k1", { method: "PUT", body: "\u00e9".repeat(19) }))).status, 200, "38 bytes fits 18 freed + 20 prior");
+  assert.equal(
+    (await doA.fetch(routed("/v1/kv/k1", { method: "PUT", body: "\u00e9".repeat(19) }))).status,
+    200,
+    "38 bytes fits 18 freed + 20 prior",
+  );
   assert.equal((await getUsage(doA)).kv_bytes, 100);
 });
 

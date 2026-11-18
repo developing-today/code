@@ -1150,10 +1150,11 @@ mod tests {
             reg.lookup("unit-bad").expect("lookup").expect("unit").state,
             UnitState::Open
         );
-        assert!(reg
-            .merge_manifest("unit-bad")
-            .expect("manifest query")
-            .is_none());
+        assert!(
+            reg.merge_manifest("unit-bad")
+                .expect("manifest query")
+                .is_none()
+        );
         assert!(
             !staging_archive_path(&db.to_string_lossy()).exists(),
             "a refused promotion must not branch an archive"
@@ -1173,10 +1174,11 @@ mod tests {
                 .state,
             UnitState::Open
         );
-        assert!(reg
-            .merge_manifest("unit-unknown")
-            .expect("manifest query")
-            .is_none());
+        assert!(
+            reg.merge_manifest("unit-unknown")
+                .expect("manifest query")
+                .is_none()
+        );
         assert!(
             !staging_archive_path(&_db.to_string_lossy()).exists(),
             "an unknown-provenance refusal must not branch an archive"
@@ -1192,10 +1194,11 @@ mod tests {
                 .state,
             UnitState::Open
         );
-        assert!(reg
-            .merge_manifest("unit-empty")
-            .expect("manifest query")
-            .is_none());
+        assert!(
+            reg.merge_manifest("unit-empty")
+                .expect("manifest query")
+                .is_none()
+        );
         assert!(
             !staging_archive_path(&empty_db.to_string_lossy()).exists(),
             "an empty-unit refusal must not branch an archive"

@@ -2158,7 +2158,12 @@ async function handler(req: Request): Promise<Response> {
       // only the validation/body-parse path above earns a 400.
       let comment;
       try {
-        comment = await commentsStore.add(parsed.value, { authorVerified: authorization.authorVerified });
+        comment = await commentsStore.add(parsed.value, {
+          authorVerified: authorization.authorVerified,
+          // #1253 split 4 (#9606): "verified" only when the author came
+          // from the Access JWT above, never from the request body.
+          provenance: commentAccess.verified ? "verified" : "asserted-legacy",
+        });
       } catch (err) {
         return json({ error: `comment persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
       }
@@ -3660,9 +3665,7 @@ async function handler(req: Request): Promise<Response> {
         requestAlertTick();
       }
     } catch (err) {
-      console.error(
-        `needs-drew answer: incident close failed (${err instanceof Error ? err.message : "error"})`,
-      );
+      console.error(`needs-drew answer: incident close failed (${err instanceof Error ? err.message : "error"})`);
     }
     return json({
       ledgerId,

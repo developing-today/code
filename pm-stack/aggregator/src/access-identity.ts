@@ -196,7 +196,59 @@ export function deriveAuthorFromAccess(
   };
 }
 
-type AuthorEnforcement = { ok: true; author: DashAuthor } | { ok: false; status: 401 | 403; error: string };
+/** Where an Access denial is written (#9603); injectable for tests. */
+export type AccessDenialLog = (line: string) => void;
+
+const defaultDenialLog: AccessDenialLog = (line) => console.warn(line);
+
+function claimValue(v: unknown): string {
+  // Bounded and JSON-quoted: a claim is caller-controlled text, so it
+  // must not be able to forge or split a log line.
+  return JSON.stringify(typeof v === "string" ? v.slice(0, 120) : "");
+}
+
+/**
+ * The identity a denied caller presented, for the denial log (#9603).
+ * Never the token itself. For a token that failed verification the
+ * claims are decoded without trusting them and marked unverified.
+ */
+export function presentedAccessClaim(token: string): string {
+  if (token === "") return "none";
+  const parts = token.split(".");
+  if (parts.length !== 3) return "malformed token";
+  try {
+    const payload = JSON.parse(new TextDecoder().decode(base64UrlToBytes(parts[1]))) as Record<string, unknown>;
+    return `sub=${claimValue(payload.sub)} email=${claimValue(payload.email)} (unverified)`;
+  } catch {
+    return "malformed token";
+  }
+}
+
+function verifiedClaim(identity: VerifiedAccessIdentity): string {
+  return `sub=${claimValue(identity.sub)} email=${claimValue(identity.email)} (verified)`;
+}
+
+function denialLine(req: Request, status: number, error: string, claim: string, asserted: DashAuthor): string {
+  let path = req.url;
+  try {
+    path = new URL(req.url).pathname;
+  } catch {
+    /* keep the raw url */
+  }
+  return (
+    `[access] denied ${req.method} ${path} status=${status} reason=${JSON.stringify(error)} ` +
+    `claim=${claim} asserted=${JSON.stringify(`${asserted.kind}:${asserted.id}`.slice(0, 160))}`
+  );
+}
+
+/**
+ * verified is true only when the author was derived from a validated
+ * Access JWT; with Access unconfigured the caller's claim passes through
+ * and verified is false (#1253 split 4: the write is asserted-legacy).
+ */
+type AuthorEnforcement =
+  | { ok: true; author: DashAuthor; verified: boolean }
+  | { ok: false; status: 401 | 403; error: string };
 
 /**
  * Build the Access author enforcer for ONE HTTP request. The JWT is
@@ -213,16 +265,19 @@ export function createAccessAuthorEnforcer(
   req: Request,
   env: Record<string, string | undefined> = process.env,
   fetchImpl: typeof fetch = fetch,
+  logDenial: AccessDenialLog = defaultDenialLog,
 ): (asserted: DashAuthor) => Promise<AuthorEnforcement> {
   const config = readAccessConfig(env);
   let verification: Promise<
     { ok: true; verified: VerifiedAccessIdentity } | { ok: false; status: 401; error: string }
   > | null = null;
+  let token = "";
+  let loggedVerificationFailure = false;
   return async (asserted: DashAuthor): Promise<AuthorEnforcement> => {
-    if (!config) return { ok: true, author: asserted };
+    if (!config) return { ok: true, author: asserted, verified: false };
     if (!verification) {
       verification = (async () => {
-        const token = req.headers.get(ACCESS_JWT_HEADER) ?? "";
+        token = req.headers.get(ACCESS_JWT_HEADER) ?? "";
         if (token === "") {
           return { ok: false, status: 401, error: "missing Cf-Access-Jwt-Assertion" } as const;
         }
@@ -239,8 +294,21 @@ export function createAccessAuthorEnforcer(
       })();
     }
     const outcome = await verification;
-    if (!outcome.ok) return outcome;
-    return deriveAuthorFromAccess(outcome.verified, asserted, config.ownerIds);
+    if (!outcome.ok) {
+      // #9603: every denial is logged with the claim presented. A 401 is
+      // memoized per request, so a batch logs it once, not per entry.
+      if (!loggedVerificationFailure) {
+        loggedVerificationFailure = true;
+        logDenial(denialLine(req, outcome.status, outcome.error, presentedAccessClaim(token), asserted));
+      }
+      return outcome;
+    }
+    const decision = deriveAuthorFromAccess(outcome.verified, asserted, config.ownerIds);
+    if (!decision.ok) {
+      logDenial(denialLine(req, decision.status, decision.error, verifiedClaim(outcome.verified), asserted));
+      return decision;
+    }
+    return { ...decision, verified: true };
   };
 }
 
@@ -254,6 +322,7 @@ export async function enforceAccessAuthor(
   asserted: DashAuthor,
   env: Record<string, string | undefined> = process.env,
   fetchImpl: typeof fetch = fetch,
+  logDenial: AccessDenialLog = defaultDenialLog,
 ): Promise<AuthorEnforcement> {
-  return createAccessAuthorEnforcer(req, env, fetchImpl)(asserted);
+  return createAccessAuthorEnforcer(req, env, fetchImpl, logDenial)(asserted);
 }

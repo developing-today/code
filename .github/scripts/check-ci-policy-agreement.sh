@@ -793,8 +793,8 @@ push_targets_main() {
 
 # Narrow test seam: exercise the YAML-aware verdict parser directly, without
 # the repository-wide canonical-syntax guard obscuring its result.
-if [[ -n "${CI_POLICY_TEST_PUSH_TARGETS_FILE:-}" ]]; then
-  [[ -f "$CI_POLICY_TEST_PUSH_TARGETS_FILE" ]] || {
+if [[ -n ${CI_POLICY_TEST_PUSH_TARGETS_FILE:-} ]]; then
+  [[ -f $CI_POLICY_TEST_PUSH_TARGETS_FILE ]] || {
     echo "test fixture not found: $CI_POLICY_TEST_PUSH_TARGETS_FILE" >&2
     exit 2
   }

@@ -13,10 +13,12 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use fleet_proxy::http::{HttpConn, HttpError};
-use fleet_proxy::tunnel::{connect_cf_tunnel, connect_tunnel, egress_from_env, egress_from_env_url_port, Egress};
+use fleet_proxy::tunnel::{
+    Egress, connect_cf_tunnel, connect_tunnel, egress_from_env, egress_from_env_url_port,
+};
 
 use crate::ladder::{Ladder, Leg, LegError, Reply, Request};
-use crate::{broker_socket, read_token, token_file, CF_ACCESS_SECRET, TARGET_HOST, TARGET_PORT};
+use crate::{CF_ACCESS_SECRET, TARGET_HOST, TARGET_PORT, broker_socket, read_token, token_file};
 
 /// The proxy port the Python tailnet CONNECT dials (`PROXY_PORT`).
 pub const TAILNET_PROXY_PORT: u16 = 3130;
@@ -143,9 +145,9 @@ impl CfLeg {
             }
         }
         let resolver = fleet_secrets::Resolver::default_chain(&self.config);
-        let resolved = resolver.resolve(CF_ACCESS_SECRET).map_err(|e| {
-            LegError::Absent(format!("secret {CF_ACCESS_SECRET} unavailable: {e}"))
-        });
+        let resolved = resolver
+            .resolve(CF_ACCESS_SECRET)
+            .map_err(|e| LegError::Absent(format!("secret {CF_ACCESS_SECRET} unavailable: {e}")));
         let secret = match resolved {
             Ok(secret) => secret,
             Err(e) => {
@@ -175,11 +177,9 @@ impl Leg for CfLeg {
     }
 
     fn call(&self, req: &Request) -> Result<Reply, LegError> {
-        let egress: Egress = egress_from_env_url_port()
-            .map_err(|e| LegError::Absent(e))?;
+        let egress: Egress = egress_from_env_url_port().map_err(|e| LegError::Absent(e))?;
         let headers = self.headers()?;
-        let conn = connect_cf_tunnel(&egress, &self.cf_host)
-            .and_then(HttpConn::from_tls);
+        let conn = connect_cf_tunnel(&egress, &self.cf_host).and_then(HttpConn::from_tls);
         exchange(conn, req, &self.token, &self.cf_host, &headers)
     }
 }
@@ -263,7 +263,10 @@ mod tests {
     #[test]
     fn cf_headers_come_from_a_service_token_only() {
         let h = cf_access_headers(r#"{"client_id":"id.access","client_secret":"s"}"#).unwrap();
-        assert_eq!(h[0], ("CF-Access-Client-Id".to_string(), "id.access".to_string()));
+        assert_eq!(
+            h[0],
+            ("CF-Access-Client-Id".to_string(), "id.access".to_string())
+        );
         assert_eq!(h[1].0, "CF-Access-Client-Secret");
         assert!(cf_access_headers(r#"{"client_id":"id"}"#).is_none());
         assert!(cf_access_headers("not json").is_none());

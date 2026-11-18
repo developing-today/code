@@ -76,14 +76,19 @@ real_helper = ghb_common.run
 ghb_common.run = timed_out
 try:
     with tempfile.TemporaryDirectory() as d:
-        check("skeleton: timeout is not a skeleton", ghb_common.is_skeleton_mirror(d) is False)
+        check(
+            "skeleton: timeout is not a skeleton",
+            ghb_common.is_skeleton_mirror(d) is False,
+        )
         check("valid_mirror: timeout is not valid", ghb_common.valid_mirror(d) is False)
         check("disk_kb: -1 on timeout", ghb_common.disk_kb(d) == -1)
     try:
         ghb_common.inventory_owner("someone")
         check("inventory: timeout raises an owner error", False)
     except RuntimeError as e:
-        check("inventory: timeout raises an owner error", "failed for someone" in str(e))
+        check(
+            "inventory: timeout raises an owner error", "failed for someone" in str(e)
+        )
 finally:
     ghb_common.run = real_helper
 

@@ -178,7 +178,11 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
 /// is dead at cap (attempts exhausted — the silent-zombie state
 /// #6463 censused). Anything else is live or terminal-done work the
 /// verb must not touch.
-pub(crate) fn revive_eligible(status: &str, attempts: i64, max_attempts: i64) -> Result<(), String> {
+pub(crate) fn revive_eligible(
+    status: &str,
+    attempts: i64,
+    max_attempts: i64,
+) -> Result<(), String> {
     match status {
         "failed" => Ok(()),
         "queued" if attempts >= max_attempts => Ok(()),
@@ -718,7 +722,10 @@ pub(crate) fn sink_return_sql() -> &'static str {
 /// A claim surface that refuses a row because a live claim stands
 /// must be able to name that claim — from the row's lease fields,
 /// never from the claimer's worker identity, which all lanes share.
-pub(crate) fn live_claim_holder(row: &Value, now: &str) -> Option<(String, Option<String>, String)> {
+pub(crate) fn live_claim_holder(
+    row: &Value,
+    now: &str,
+) -> Option<(String, Option<String>, String)> {
     if row.get("status").and_then(|v| v.as_str()) != Some("claimed") {
         return None;
     }
@@ -1611,7 +1618,12 @@ pub(crate) fn text_subject_sql(field: FilterField) -> &'static str {
     }
 }
 
-pub(crate) fn cmp_sql(field: FilterField, op: CmpOp, values: &[String], args: &mut Vec<Arg>) -> String {
+pub(crate) fn cmp_sql(
+    field: FilterField,
+    op: CmpOp,
+    values: &[String],
+    args: &mut Vec<Arg>,
+) -> String {
     match field {
         FilterField::Repo => {
             let parts: Vec<String> = values.iter().map(|v| repo_eq_sql(v, args)).collect();

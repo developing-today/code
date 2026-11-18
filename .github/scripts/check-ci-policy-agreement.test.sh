@@ -28,7 +28,7 @@ fi; }
 expect_parser() {
   local want="$1" description="$2" got
   got="$(CI_POLICY_TEST_PUSH_TARGETS_FILE="$TMP/.github/workflows/fixture.yml" bash "$SCRIPT" "$TMP")"
-  if [[ "$got" != "$want" ]]; then
+  if [[ $got != "$want" ]]; then
     echo "FAIL: $description (expected $want, got $got)"
     exit 1
   fi

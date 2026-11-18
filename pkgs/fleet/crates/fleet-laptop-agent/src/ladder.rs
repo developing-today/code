@@ -156,9 +156,9 @@ impl Ladder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
 
     struct Fake {
         name: &'static str,
@@ -172,11 +172,18 @@ mod tests {
         }
         fn call(&self, _req: &Request) -> Result<Reply, LegError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            self.outcome.lock().unwrap().take().expect("one call per fake")
+            self.outcome
+                .lock()
+                .unwrap()
+                .take()
+                .expect("one call per fake")
         }
     }
 
-    fn fake(name: &'static str, outcome: Result<Reply, LegError>) -> (Box<dyn Leg>, Arc<AtomicUsize>) {
+    fn fake(
+        name: &'static str,
+        outcome: Result<Reply, LegError>,
+    ) -> (Box<dyn Leg>, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
         let leg = Fake {
             name,
@@ -207,7 +214,10 @@ mod tests {
     #[test]
     fn a_dead_leg_degrades_to_the_next_and_names_it() {
         let (a, a_calls) = fake("broker", Err(LegError::Absent("no socket".into())));
-        let (b, b_calls) = fake("cloudflare", Err(LegError::Unsent("connect refused".into())));
+        let (b, b_calls) = fake(
+            "cloudflare",
+            Err(LegError::Unsent("connect refused".into())),
+        );
         let (c, _) = fake("tailscale", ok(200));
         let ladder = Ladder::new(vec![a, b, c]);
         let answer = ladder.call(&req(false)).unwrap();
@@ -223,7 +233,10 @@ mod tests {
     #[test]
     fn total_failure_names_every_leg() {
         let (a, _) = fake("broker", Err(LegError::Absent("no socket".into())));
-        let (b, _) = fake("tailscale", Err(LegError::Unsent("HTTPS_PROXY unset".into())));
+        let (b, _) = fake(
+            "tailscale",
+            Err(LegError::Unsent("HTTPS_PROXY unset".into())),
+        );
         let err = Ladder::new(vec![a, b]).call(&req(true)).unwrap_err();
         let text = err.to_string();
         assert!(text.contains("broker: no socket"), "{text}");

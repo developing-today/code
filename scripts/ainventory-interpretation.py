@@ -129,9 +129,7 @@ def build_parser():
         metavar="PATH",
         help="file holding the batch note body (what changed, implications)",
     )
-    record.add_argument(
-        "--author", required=True, metavar="WHO", help="agent identity"
-    )
+    record.add_argument("--author", required=True, metavar="WHO", help="agent identity")
     record.add_argument(
         "--model",
         default=None,
@@ -158,7 +156,9 @@ def build_parser():
         help="subsume a structured findings export into ainventory.findings",
     )
     imp.add_argument(
-        "--file", required=True, metavar="PATH",
+        "--file",
+        required=True,
+        metavar="PATH",
         help="JSON array exported from the canonical findings store",
     )
     imp.add_argument(
@@ -269,10 +269,7 @@ def cmd_awaiting(args):
         counts = ", ".join(
             f"{k}={v}" for k, v in (row.get("inserted_counts") or {}).items()
         )
-        print(
-            f"  {row['id']}  {row['source_kind']:<12} "
-            f"{row['ran_at']}  [{counts}]"
-        )
+        print(f"  {row['id']}  {row['source_kind']:<12} {row['ran_at']}  [{counts}]")
         if row.get("source_ref"):
             print(f"      {row['source_ref']}")
     return 0
@@ -303,8 +300,7 @@ def normalise_followups(entries):
             raise SystemExit(f"followups[{i}] has no model")
         if status not in ("filed", "not_filed"):
             raise SystemExit(
-                f"followups[{i}] status must be 'filed' or 'not_filed' "
-                f"(got {status!r})"
+                f"followups[{i}] status must be 'filed' or 'not_filed' (got {status!r})"
             )
         if status == "not_filed" and not entry.get("reason"):
             raise SystemExit(
@@ -338,21 +334,23 @@ def cmd_record(args):
             raise SystemExit(
                 f"findings[{index}] requires non-empty subject and finding"
             )
-        finding_rows.append({
-            "subject": finding["subject"],
-            "finding": finding["finding"],
-            "evidence": finding.get("evidence"),
-            "significance": finding.get("significance"),
-            "action": finding.get("action"),
-            "severity": finding.get("severity"),
-            "model_name": finding.get("model_name"),
-            "provider": finding.get("provider"),
-            "ingest_batch_id": args.batch,
-            "source_kind": finding.get("source_kind", "agent"),
-            "source_ref": finding.get("source_ref"),
-            "author": args.author,
-            "raw": finding,
-        })
+        finding_rows.append(
+            {
+                "subject": finding["subject"],
+                "finding": finding["finding"],
+                "evidence": finding.get("evidence"),
+                "significance": finding.get("significance"),
+                "action": finding.get("action"),
+                "severity": finding.get("severity"),
+                "model_name": finding.get("model_name"),
+                "provider": finding.get("provider"),
+                "ingest_batch_id": args.batch,
+                "source_kind": finding.get("source_kind", "agent"),
+                "source_ref": finding.get("source_ref"),
+                "author": args.author,
+                "raw": finding,
+            }
+        )
 
     batch_path = f"/ingest_batches?id=eq.{args.batch}&select=id,inserted_counts"
     plan = {
@@ -424,11 +422,15 @@ def cmd_record(args):
         "findings": len(finding_rows),
         "followups": len(followups),
     }
-    print(json.dumps(result, indent=2) if getattr(args, "json", False) else (
-        f"recorded interpretation run {result['interpretation_run_id']} for "
-        f"batch {args.batch}: note {note_id}, {len(finding_rows)} finding(s), "
-        f"{len(followups)} follow-up(s)"
-    ))
+    print(
+        json.dumps(result, indent=2)
+        if getattr(args, "json", False)
+        else (
+            f"recorded interpretation run {result['interpretation_run_id']} for "
+            f"batch {args.batch}: note {note_id}, {len(finding_rows)} finding(s), "
+            f"{len(followups)} follow-up(s)"
+        )
+    )
     return 0
 
 
