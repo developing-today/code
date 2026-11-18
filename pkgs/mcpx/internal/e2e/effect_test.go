@@ -98,6 +98,7 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxTTL":          "TestProtoTasksMaxTTLClampsATasksRetentionFromTheEnvironment",
 	"protoTasks.maxPerRequestor": "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":       "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
+	"events.history":             "TestEventsHistoryBoundsTheReplay",
 	"proto.serveMCP":             "TestServeMCPUnmountsTheEndpointFromTheEnvironment",
 	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
 	"daemon.autostart":           "TestDaemonAutostartIsReachableFromTheEnvironment",
@@ -183,6 +184,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxTTLClampsATasksRetentionFromTheEnvironment":               TestProtoTasksMaxTTLClampsATasksRetentionFromTheEnvironment,
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":        TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                 TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
+	"TestEventsHistoryBoundsTheReplay":                                          TestEventsHistoryBoundsTheReplay,
 	"TestServeMCPUnmountsTheEndpointFromTheEnvironment":                         TestServeMCPUnmountsTheEndpointFromTheEnvironment,
 	"TestDaemonAddressIsReachableFromTheEnvironment":                            TestDaemonAddressIsReachableFromTheEnvironment,
 	"TestDaemonAutostartIsReachableFromTheEnvironment":                          TestDaemonAutostartIsReachableFromTheEnvironment,
@@ -1365,6 +1367,55 @@ func TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment(t *testing.T) {
 	}
 	if got := secondRead("MCPX_PROTO_TASKS_PER_MINUTE=1"); !strings.Contains(got, "admission window") {
 		t.Fatalf("protoTasks.perMinute=1 should refuse a second tasks/get:\n%s", got)
+	}
+}
+
+// replayFromStart reads what /v1/events replays from sequence zero. The
+// stream stays open for live events, so it reads until the client's short
+// deadline and keeps whatever arrived.
+func replayFromStart(t *testing.T, e *env) string {
+	t.Helper()
+	c := *e.socketClient(t)
+	c.Timeout = 1500 * time.Millisecond
+	resp, err := c.Get("http://mcpx/v1/events?kinds=call&since=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	return string(body)
+}
+
+// TestEventsHistoryBoundsTheReplay is the effect probe for events.history:
+// the bus keeps that many events for reconnecting subscribers. At the
+// default a from-the-start replay is whole; kept to one event, the same
+// replay starts past what was trimmed and says so with a gap notice.
+func TestEventsHistoryBoundsTheReplay(t *testing.T) {
+	calls := func(e *env) {
+		for _, m := range []string{"a", "b", "c"} {
+			e.run("call", "demo.echo", `{"message":"`+m+`"}`)
+		}
+	}
+
+	whole := newEnv(t, oneServer)
+	calls(whole)
+	body := replayFromStart(t, whole)
+	if strings.Contains(body, "event: gap") {
+		t.Errorf("the default history should replay from the start without a gap:\n%s", body)
+	}
+	if n := strings.Count(body, "event: call.finished"); n < 3 {
+		t.Errorf("the default history should replay all 3 calls, got %d:\n%s", n, body)
+	}
+
+	short := newEnv(t, oneServer)
+	short.setenv("MCPX_EVENTS_HISTORY=1")
+	calls(short)
+	body = replayFromStart(t, short)
+	if !strings.Contains(body, "event: gap") {
+		t.Errorf("events.history=1 should trim the replay and report the gap:\n%s", body)
+	}
+	if n := strings.Count(body, "event: call.finished"); n > 1 {
+		t.Errorf("events.history=1 should keep at most one event, replayed %d calls:\n%s", n, body)
 	}
 }
 
