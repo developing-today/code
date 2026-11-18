@@ -49,6 +49,17 @@ pub enum KeysetEntry {
         guardians: Vec<String>,
         threshold: u32,
     },
+    /// The terminal record of a guardian recovery (guardian recovery
+    /// design, Decision 3), signed by the successor admin key. Plain
+    /// [`fold`] never accepts it: it folds only under Rule R, which
+    /// [`crate::recovery::check_rotation`] evaluates, and joins the fold
+    /// once checkpoint finality lands (that design's split, item 2).
+    RecoveryRotation {
+        request_id: String,
+        approval_hashes: Vec<String>,
+        successor_admin_key: String,
+        successor_device_key: String,
+    },
     Checkpoint {
         state_hash: String,
         record_count: u64,
@@ -113,12 +124,7 @@ impl KeysetRecord {
             (None, Some(_)) => anyhow::bail!("this entry does not accept a countersigner"),
             (None, None) => {}
         }
-        if let KeysetEntry::Genesis { admin_key, .. } = &entry {
-            ensure!(
-                author == *admin_key,
-                "genesis must be signed by its admin key"
-            );
-        }
+        validate_author(&author, &entry)?;
         let body = body_bytes(&author, lamport, &prev_hash, &entry)?;
         let hash = hex_encode(&Sha256::digest(&body));
         let signature = hex_encode(&key.sign(&body).to_bytes());
@@ -151,12 +157,7 @@ impl KeysetRecord {
             "prev_hash",
         )?;
         let author = verifying_key(&self.author).context("malformed author key")?;
-        if let KeysetEntry::Genesis { admin_key, .. } = &self.entry {
-            ensure!(
-                self.author == *admin_key,
-                "genesis must be signed by its admin key"
-            );
-        }
+        validate_author(&self.author, &self.entry)?;
         let body = body_bytes(&self.author, self.lamport, &self.prev_hash, &self.entry)?;
         ensure!(
             hex_encode(&Sha256::digest(&body)) == self.hash,
@@ -179,7 +180,26 @@ impl KeysetRecord {
     }
 }
 
-fn verify_signature(key: &VerifyingKey, body: &[u8], encoded: &str) -> Result<()> {
+/// Entries whose signer is fixed by their own content.
+fn validate_author(author: &str, entry: &KeysetEntry) -> Result<()> {
+    match entry {
+        KeysetEntry::Genesis { admin_key, .. } => ensure!(
+            author == admin_key,
+            "genesis must be signed by its admin key"
+        ),
+        KeysetEntry::RecoveryRotation {
+            successor_admin_key,
+            ..
+        } => ensure!(
+            author == successor_admin_key,
+            "a recovery rotation must be signed by its successor admin key"
+        ),
+        _ => {}
+    }
+    Ok(())
+}
+
+pub(crate) fn verify_signature(key: &VerifyingKey, body: &[u8], encoded: &str) -> Result<()> {
     let bytes = hex_to_array::<64>(encoded).context("malformed signature")?;
     ensure!(
         hex_encode(&bytes) == encoded,
@@ -189,7 +209,7 @@ fn verify_signature(key: &VerifyingKey, body: &[u8], encoded: &str) -> Result<()
         .context("signature does not verify")
 }
 
-fn verifying_key(encoded: &str) -> Result<VerifyingKey> {
+pub(crate) fn verifying_key(encoded: &str) -> Result<VerifyingKey> {
     let bytes = hex_to_array::<32>(encoded).context("malformed Ed25519 public key")?;
     ensure!(
         hex_encode(&bytes) == encoded,
@@ -198,7 +218,7 @@ fn verifying_key(encoded: &str) -> Result<VerifyingKey> {
     VerifyingKey::from_bytes(&bytes).context("invalid Ed25519 public key")
 }
 
-fn validate_hash_or_empty(value: &str, allow_empty: bool, field: &str) -> Result<()> {
+pub(crate) fn validate_hash_or_empty(value: &str, allow_empty: bool, field: &str) -> Result<()> {
     if allow_empty && value.is_empty() {
         return Ok(());
     }
@@ -251,16 +271,37 @@ fn validate_entry(entry: &KeysetEntry) -> Result<()> {
                 usize::try_from(*threshold).unwrap_or(usize::MAX) <= guardians.len(),
                 "guardian threshold exceeds guardian count"
             );
-            let mut unique = guardians.clone();
-            unique.sort();
-            unique.dedup();
+            // Canonical order (guardian recovery design, Decision 2):
+            // strictly ascending, so equal sets hash equally and no
+            // identity appears twice.
             ensure!(
-                unique.len() == guardians.len(),
-                "guardian identities must be unique"
+                guardians.windows(2).all(|pair| pair[0] < pair[1]),
+                "guardian identities must be unique and sorted"
             );
             for guardian in guardians {
                 verifying_key(guardian).context("guardian identity")?;
             }
+        }
+        KeysetEntry::RecoveryRotation {
+            request_id,
+            approval_hashes,
+            successor_admin_key,
+            successor_device_key,
+        } => {
+            validate_hash_or_empty(request_id, false, "request_id")?;
+            ensure!(
+                !approval_hashes.is_empty(),
+                "a recovery rotation names its approvals"
+            );
+            ensure!(
+                approval_hashes.windows(2).all(|pair| pair[0] < pair[1]),
+                "approval hashes must be unique and sorted"
+            );
+            for hash in approval_hashes {
+                validate_hash_or_empty(hash, false, "approval hash")?;
+            }
+            verifying_key(successor_admin_key).context("successor admin key")?;
+            verifying_key(successor_device_key).context("successor device key")?;
         }
         KeysetEntry::Checkpoint { state_hash, .. } => {
             validate_hash_or_empty(state_hash, false, "state_hash")?;
@@ -620,6 +661,9 @@ fn apply_entry(state: &mut KeysetState, record: &KeysetRecord) -> Result<()> {
                 guardians: guardians.clone(),
                 threshold: *threshold,
             });
+        }
+        KeysetEntry::RecoveryRotation { .. } => {
+            anyhow::bail!("a recovery rotation folds only under the recovery rule")
         }
         KeysetEntry::Checkpoint {
             state_hash,
