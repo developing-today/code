@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"github.com/developing-today/code/pkgs/mcpx/internal/elicit"
@@ -223,6 +222,44 @@ func brokerRowID(server, elicitationID string) string {
 	return strconv.Itoa(len(server)) + ":" + server + ":" + elicitationID
 }
 
+// noAudience is the ask seam's truthful refusal (#2438, Phase 3 of #2434):
+// the audience a question routes to has no answerer polling, so the
+// request cannot be served and the server is told at once -- a -32021
+// naming the capability -- instead of waiting out the broker TTL for an
+// answer nobody will give. Presence is recorded only by answerer-facing
+// surfaces (the elicit CLI's list/watch, the daemon's answerer
+// endpoints); absence inside that window is observed, not guessed, and
+// a store error reports presence rather than inventing an absence.
+func noAudience(method string, req elicit.Request) error {
+	aud, _ := elicit.Route(req)
+	capability := "elicitation"
+	if method == "sampling/createMessage" {
+		capability = "sampling"
+	}
+	return mcpclient.MissingCapabilityError(
+		fmt.Sprintf("Missing required client capability: no %s answerer is present for %s", aud, method),
+		map[string]any{capability: map[string]any{}})
+}
+
+// hasAnswerer reports whether anyone can answer req, so the ask seam
+// refuses with -32021 only when truly nobody can (#2438). Two kinds of
+// answerer exist. The call that provoked the question is one: when the
+// question can be attributed to an interruptible call (req.Trace names
+// it, the same correlation attach uses), it is surfaced to that call's
+// caller -- inline to a modern MCP client as input_required, on the wire
+// to a legacy client that declared the capability, or as an
+// input-required report (exit 75, MCPX_INPUT=report) to a CLI call or
+// script -- and none of those polls the broker, so broker presence
+// would wrongly read as absent. Otherwise the question can only be
+// answered from the broker, and recorded presence for its audience
+// decides.
+func (r *Registry) hasAnswerer(req elicit.Request) bool {
+	if req.Trace != "" {
+		return true
+	}
+	return r.broker.HasAudience(req, elicit.DefaultAudienceWindow)
+}
+
 func (r *Registry) elicitViaBroker(ctx context.Context, server, key string, params json.RawMessage) (any, error) {
 	var p struct {
 		Mode            string          `json:"mode"`
@@ -247,16 +284,19 @@ func (r *Registry) elicitViaBroker(ctx context.Context, server, key string, para
 	// stay bare. Rows opened under a bare ID before this fix are not
 	// migrated; they expire by TTL.
 	brokerID := brokerRowID(server, p.ElicitationID)
-	req, err := r.broker.OpenRequest(elicit.Request{
-		ID:        brokerID,
-		Server:    server,
-		Mode:      mode,
-		Message:   p.Message,
-		Schema:    p.RequestedSchema,
-		URL:       p.URL,
-		Trace:     r.askIDFor(ctx, server, key),
-		ExpiresAt: time.Now().Add(defaults.ElicitTTL),
-	})
+	req := elicit.Request{
+		ID:      brokerID,
+		Server:  server,
+		Mode:    mode,
+		Message: p.Message,
+		Schema:  p.RequestedSchema,
+		URL:     p.URL,
+		Trace:   r.askIDFor(ctx, server, key),
+	}
+	if !r.hasAnswerer(req) {
+		return nil, noAudience("elicitation/create", req)
+	}
+	req, err := r.broker.OpenRequest(req)
 	if err != nil {
 		return nil, err
 	}
@@ -339,19 +379,22 @@ func (r *Registry) sampleViaBroker(ctx context.Context, server, key string, para
 		return nil, &elicit.SamplingInvalidParams{Err: err}
 	}
 
-	req, err := r.broker.OpenRequest(elicit.Request{
+	req := elicit.Request{
 		Server: server,
 		Trace:  r.askIDFor(ctx, server, key),
 		Mode:   elicit.Sample,
 		// A sampling request has no question as such. The system prompt is
 		// the closest thing to one, and it is what a human reading the
 		// queue needs to see first.
-		Message:   firstNonEmptyStr(p.SystemPrompt, server+" asks for a model completion"),
-		Schema:    params,
-		Audience:  elicit.ToAgent,
-		Reason:    "sampling asks a model, and the agent driving mcpx has one",
-		ExpiresAt: time.Now().Add(defaults.ElicitTTL),
-	})
+		Message:  firstNonEmptyStr(p.SystemPrompt, server+" asks for a model completion"),
+		Schema:   params,
+		Audience: elicit.ToAgent,
+		Reason:   "sampling asks a model, and the agent driving mcpx has one",
+	}
+	if !r.hasAnswerer(req) {
+		return nil, noAudience("sampling/createMessage", req)
+	}
+	req, err := r.broker.OpenRequest(req)
 	if err != nil {
 		return nil, err
 	}
@@ -415,13 +458,12 @@ func (r *Registry) rootsViaBroker(ctx context.Context, server, key string, param
 		return nil, mcpclient.ErrNotRelayed
 	}
 	req, err := r.broker.OpenRequest(elicit.Request{
-		Server:    server,
-		Trace:     r.askIDFor(ctx, server, key),
-		Mode:      elicit.Roots,
-		Message:   server + " asks for the client's roots",
-		Audience:  elicit.ToAgent,
-		Reason:    "roots are the client's own, and only it can list them",
-		ExpiresAt: time.Now().Add(defaults.ElicitTTL),
+		Server:   server,
+		Trace:    r.askIDFor(ctx, server, key),
+		Mode:     elicit.Roots,
+		Message:  server + " asks for the client's roots",
+		Audience: elicit.ToAgent,
+		Reason:   "roots are the client's own, and only it can list them",
 	})
 	if err != nil {
 		return nil, err

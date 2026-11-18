@@ -188,6 +188,20 @@ impl WorldService {
         self
     }
 
+    /// A snapshot of the world's retained audit records (F12.6),
+    /// oldest first.
+    #[must_use]
+    pub fn audit_records(&self) -> Vec<crate::world::AuditRecord> {
+        self.world.audit_records()
+    }
+
+    /// The world's retained audit records as an OpenTelemetry
+    /// OTLP/JSON logs payload (F12.6).
+    #[must_use]
+    pub fn audit_otlp_json(&self) -> serde_json::Value {
+        crate::world::export_otlp_json(&self.world.audit_records())
+    }
+
     /// Replace the world's capability ceiling, admin only. Unlike a profile,
     /// the ceiling applies at once: the next use or subscription sees it.
     ///
@@ -521,6 +535,51 @@ impl WorldService {
             signature,
         )
         .await
+    }
+
+    /// Sideload a program bundle file (#8280, design D2/D4), fully offline.
+    ///
+    /// The bundle is verified first (framing, manifest, ABI, lineage,
+    /// content hash and both signatures), then its payload installs through
+    /// the same path as a signed upload: the admin check, the source-only
+    /// policy and the module trust list apply unchanged, with the bundle's
+    /// F12.17 module signature presented to the trust gate. The install
+    /// event records the bundle's identity, lineage, signature and pinned
+    /// policy as [`crate::world::ModuleProvenance::Bundle`].
+    ///
+    /// # Errors
+    ///
+    /// [`BundleInstallError::Bundle`] naming the failed check when the file
+    /// does not verify, or [`BundleInstallError::Install`] when the world
+    /// refuses the verified payload.
+    #[cfg(feature = "sandbox")]
+    pub async fn install_bundle(
+        &self,
+        supplied_admin: Option<&str>,
+        bundle: &[u8],
+        seed: u64,
+    ) -> Result<(String, u64), crate::program_bundle::BundleInstallError> {
+        use crate::program_bundle::{BundleInstallError, ProgramBundle};
+
+        let bundle = ProgramBundle::decode(bundle).map_err(BundleInstallError::Bundle)?;
+        let signature = bundle.module_signature();
+        let provenance = crate::world::ModuleProvenance::Bundle(bundle.provenance());
+        let hash = bundle.manifest().content_hash.clone();
+        let permit = self
+            .try_reserve_module_upload()
+            .map_err(BundleInstallError::Install)?;
+        self.install_wasm_reserved(
+            supplied_admin,
+            bundle.payload().to_vec(),
+            seed,
+            &hash,
+            permit,
+            false,
+            Some(provenance),
+            Some(&signature),
+        )
+        .await
+        .map_err(BundleInstallError::Install)
     }
 
     #[cfg(feature = "sandbox")]

@@ -65,6 +65,13 @@ SET config = jsonb_set(config::jsonb,
 WHERE type = 'github';
 ```
 
+**Caution (2026-11-14, #10140):** the `jsonb_set` write above leaves
+`integration.config` in jsonb text form (spaces after `:` and `,`),
+which silently disables Kaneo's outbound state/title/description sync
+— see "Outbound sync depends on the config text format" below. After
+using it, rewrite the config in compact `JSON.stringify` form (the
+sync guard now does this automatically when it heals drift).
+
 Do **not** simply delete the `pr_merged` workflow rule in the UI:
 in v2.47.0 deleting the rule falls back to
 `statusTransitions.onPRMerge || "done"`, which restores the bug.
@@ -114,15 +121,47 @@ remains the outer safety net for any close path the guard cannot see.
 
 All on developing-today/code, verified from issue timelines + Kaneo DB:
 
-| #   | Case                                                                                                          | Result                                                                                                                                                                                                                                                               |
-| --- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | Refs-only PR (body `Refs #n`) on a plain issue (#10197 ← PR #10216, merged)                                   | Issue stayed OPEN, no `status:done`, no close events. Note: a body-only `Refs` created no Kaneo link at all (no `external_link` row) in this configuration.                                                                                                          |
-| 2   | Refs-only PR on an epic with an open child (#10199 ← PR #10218, merged; child #10205 open)                    | Stayed OPEN, no `status:done`, no close events.                                                                                                                                                                                                                      |
-| 3   | Title-ref-only PR (#10201 ← PR #10220, title `(#10201)`)                                                      | Link formed — bot applied `status:in-review` at PR open (17:01:50Z) — merged 17:02:35Z; issue stayed OPEN, no `status:done`. Loose linking is live but contained by the `onPRMerge → in-review` rule.                                                                |
-| 4   | `Closes #n` PR (#10137 ← PR #10190, merged 17:04:11Z)                                                         | Closed natively by the merger 17:04:13Z; bot applied `status:done` 17:04:17Z (the `issue_closed → done` fallback). Legit path intact.                                                                                                                                |
-| 5a  | Human close on GitHub (#10197, closed 17:06:26Z)                                                              | Linked Kaneo task completed (`task.status = done` in DB read-back).                                                                                                                                                                                                  |
-| 5b  | Human Done move inside Kaneo → issue closes                                                                   | NOT RUN in this pass: no Kaneo API key exists (`apikey` table empty) and creating one is a UI action. Covered by design (#10136 note, P2(iii)) and the 2026-10-24 setup proof (close-from-Kaneo was one of the four original sync proofs). Re-run when a key exists. |
-| —   | Branch-named PRs (`fixture/refs-epic-10199` → PR #10258, `fixture/refs-plain-10197` → PR #10259, both merged) | No link formed (the `{slug}-{number}` branch pattern keys on Kaneo task slugs, not GitHub issue numbers); targets stayed OPEN.                                                                                                                                       |
+| #   | Case                                                                                                          | Result                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| --- | ------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Refs-only PR (body `Refs #n`) on a plain issue (#10197 ← PR #10216, merged)                                   | Issue stayed OPEN, no `status:done`, no close events. Note: a body-only `Refs` created no Kaneo link at all (no `external_link` row) in this configuration.                                                                                                                                                                                                                                                                                                            |
+| 2   | Refs-only PR on an epic with an open child (#10199 ← PR #10218, merged; child #10205 open)                    | Stayed OPEN, no `status:done`, no close events.                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| 3   | Title-ref-only PR (#10201 ← PR #10220, title `(#10201)`)                                                      | Link formed — bot applied `status:in-review` at PR open (17:01:50Z) — merged 17:02:35Z; issue stayed OPEN, no `status:done`. Loose linking is live but contained by the `onPRMerge → in-review` rule.                                                                                                                                                                                                                                                                  |
+| 4   | `Closes #n` PR (#10137 ← PR #10190, merged 17:04:11Z)                                                         | Closed natively by the merger 17:04:13Z; bot applied `status:done` 17:04:17Z (the `issue_closed → done` fallback). Legit path intact.                                                                                                                                                                                                                                                                                                                                  |
+| 5a  | Human close on GitHub (#10197, closed 17:06:26Z)                                                              | Linked Kaneo task completed (`task.status = done` in DB read-back).                                                                                                                                                                                                                                                                                                                                                                                                    |
+| 5b  | Human Done move inside Kaneo → issue closes                                                                   | **PASS 2026-11-14 (second run)**: fixture #10308 ← task CODE-3715 moved to Done via the Kaneo API (dedicated automation account + API key, below). First run failed — bot applied `status:done` but never closed; root cause was the config text format (next section) plus the closure watchdog stripping the orphaned label. After the config fix: bot `status:done` 17:51:20Z, issue **closed by developing-today[bot] 17:51:21Z**, stable across a watchdog sweep. |
+| —   | Branch-named PRs (`fixture/refs-epic-10199` → PR #10258, `fixture/refs-plain-10197` → PR #10259, both merged) | No link formed (the `{slug}-{number}` branch pattern keys on Kaneo task slugs, not GitHub issue numbers); targets stayed OPEN.                                                                                                                                                                                                                                                                                                                                         |
 
 Fixtures #10106/#10107 from the original fix (2026-11-14 earlier) cover the
 title-ref-to-main and closes-to-main paths as well.
+
+## Outbound sync depends on the config text format (2026-11-14, #10140)
+
+Kaneo v2.47.0's outbound field sync (`syncLatestTaskValue`, used for
+issue **state**, title and description) string-compares the stored
+`integration.config` text against `JSON.stringify(JSON.parse(config))`
+and silently aborts on any byte difference. Postgres `jsonb` text
+output inserts spaces after `:` and `,`, so **any** write of the
+config through `jsonb_set(...)::text` — including the re-apply SQL
+above and the sync guard's original heal — disables Kaneo→GitHub
+closing while leaving label sync (which compares parsed JSON) working.
+Symptom: a task moved to Done applies `status:done` to the linked
+issue but the issue never closes (and the closure watchdog then strips
+the orphaned label as contradictory state).
+
+Fix applied 2026-11-14: all four GitHub integrations' configs were
+rewritten byte-identical in meaning, in compact `JSON.stringify`
+form. The sync guard now also treats non-compact config text as drift
+and rewrites it compactly after healing. After any manual config
+write, verify: `JSON.stringify(JSON.parse(config)) === config`.
+
+## Kaneo automation account (2026-11-14, #10140)
+
+A dedicated account exists for API automation so fixtures and sync
+work never need a human's session:
+
+- User: **Muse Automation** (`claude-automation@developing-today.local`),
+  workspace role `owner` in Developing Today.
+- API key: `muse-pm-automation` (created via the better-auth api-key
+  endpoint; verified with authenticated reads and the 5b fixture).
+- Credentials live only in fleet secrets, by name:
+  `kaneo.muse-automation-password` and `kaneo.api-key-muse-automation`.

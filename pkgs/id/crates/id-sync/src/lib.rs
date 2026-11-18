@@ -21,11 +21,15 @@
 //! between a running server and the in-process local node is defined
 //! there, over this crate's [`meta_client`] plumbing.
 
+pub mod announcement;
 pub mod artifact;
+pub mod chained_message;
+mod checked_json;
 pub mod dht;
 pub mod envelope;
 pub mod envelope_net;
 pub mod envelope_outbox;
+pub mod fanout_answer;
 pub mod federation;
 pub mod fileops;
 pub(crate) mod hex;
@@ -33,4 +37,6 @@ pub mod host;
 pub mod log_sync;
 pub mod meta_client;
 pub mod protocol;
+pub mod registry;
+pub mod relay_gate;
 pub mod transfer;

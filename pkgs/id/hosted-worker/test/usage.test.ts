@@ -141,6 +141,64 @@ test("at cap: writes fail closed, reads and export succeed, delete recovers head
   assert.equal(put3.status, 200, "headroom recovered after delete");
 });
 
+test("kv PUT over headroom is refused early on declared length, and by a capped read when chunked", async () => {
+  const { doA } = makeDO({ USER_CEILING_BYTES: "10" });
+  const declared = await doA.fetch(routed("/v1/kv/big", { method: "PUT", body: "12345678901" }));
+  assert.equal(declared.status, 413);
+  assert.equal(((await declared.json()) as { error: string }).error, "ceiling_exceeded");
+
+  const chunkedBody = new ReadableStream({
+    start(c) {
+      c.enqueue(new TextEncoder().encode("12345"));
+      c.enqueue(new TextEncoder().encode("678901"));
+      c.close();
+    },
+  });
+  const chunked = await doA.fetch(
+    routed("/v1/kv/big", { method: "PUT", body: chunkedBody, duplex: "half" } as RequestInit),
+  );
+  assert.equal(chunked.status, 413);
+  assert.equal(((await chunked.json()) as { error: string }).error, "ceiling_exceeded");
+  assert.equal((await getUsage(doA)).storage_bytes, 0, "no refused write is stored");
+});
+
+test("kv overwrite headroom counts the prior value", async () => {
+  const { doA } = makeDO({ USER_CEILING_BYTES: "10" });
+  assert.equal((await doA.fetch(routed("/v1/kv/k1", { method: "PUT", body: "123456" }))).status, 200);
+  assert.equal((await doA.fetch(routed("/v1/kv/k1", { method: "PUT", body: "1234567890" }))).status, 200);
+  assert.equal((await doA.fetch(routed("/v1/kv/k1", { method: "PUT", body: "12345678901" }))).status, 413);
+  assert.equal((await getUsage(doA)).storage_bytes, 10);
+});
+
+test("kv usage and the ceiling count UTF-8 bytes, not characters (#11349)", async () => {
+  const { doA } = makeDO({ USER_CEILING_BYTES: "100" });
+  // 5 astral characters = 20 UTF-8 bytes; SQLite LENGTH on TEXT says 5.
+  const value = "\u{1F600}".repeat(5);
+  assert.equal(new TextEncoder().encode(value).byteLength, 20);
+  let accepted = 0;
+  for (let i = 0; i < 17; i++) {
+    const r = await doA.fetch(routed(`/v1/kv/k${i}`, { method: "PUT", body: value }));
+    if (r.status === 200) accepted++;
+    else assert.equal(r.status, 413);
+  }
+  assert.equal(accepted, 5, "only 100 bytes of 20-byte values fit");
+  const u = await getUsage(doA);
+  assert.equal(u.kv_bytes, 100);
+  assert.equal(u.storage_bytes, 100);
+  assert.equal(u.at_cap, true);
+  const read = await doA.fetch(routed("/v1/kv/k0"));
+  assert.equal(((await read.json()) as { value: string }).value, value, "multibyte values round-trip");
+  // Overwriting a 20-byte value with 2 ASCII bytes frees 18 bytes of headroom.
+  assert.equal((await doA.fetch(routed("/v1/kv/k0", { method: "PUT", body: "ab" }))).status, 200);
+  assert.equal((await getUsage(doA)).kv_bytes, 82);
+  assert.equal(
+    (await doA.fetch(routed("/v1/kv/k1", { method: "PUT", body: "\u00e9".repeat(19) }))).status,
+    200,
+    "38 bytes fits 18 freed + 20 prior",
+  );
+  assert.equal((await getUsage(doA)).kv_bytes, 100);
+});
+
 test("a deduped re-PUT of the same blob does not double-charge", async () => {
   const { doA } = makeDO({ USER_CEILING_BYTES: "10" });
   const blob = new TextEncoder().encode("0123456789");

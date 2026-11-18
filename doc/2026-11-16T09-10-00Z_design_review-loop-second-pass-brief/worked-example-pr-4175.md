@@ -8,7 +8,7 @@ pr-review.log, 2026-11-13 05:24 CST) through
 `second-pass-session-brief-template.md`.
 
 > NOTE: this is a worked example of the template shape, not a live
-> commission. The verdict below was a *shadow* verdict (PoC): no packet was
+> commission. The verdict below was a _shadow_ verdict (PoC): no packet was
 > enqueued and PR #4175's gaps were later fixed on main.
 
 ---
@@ -34,11 +34,11 @@ pr-review.log, 2026-11-13 05:24 CST) through
   because the shadow verdict records the as-merged artifact only).
 - Pass-0 rulings (from the gap list, per-gap):
   - [ ] Branch-switch revalidation is exercised by running tests — **unmet**
-    (gap 1: test functions defined but never executed).
+        (gap 1: test functions defined but never executed).
   - [ ] Claim reads page through the full claim set — **unmet**
-    (gap 2: silent truncation past 1000).
+        (gap 2: silent truncation past 1000).
   - [ ] Open-PR branch reads page through the full set — **unmet**
-    (gap 3: silent truncation past 500).
+        (gap 3: silent truncation past 500).
 
 ## 3. Goal context refs
 
@@ -63,8 +63,8 @@ pr-review.log, 2026-11-13 05:24 CST) through
   (pass-0 list; no earlier passes).
 - Fresh vs iterating: `fresh session` (default).
 - Exception or explicit none: `none applies — fresh session per the default;
-  the gaps span test layout and two fleet-queue read paths, i.e. wider than
-  the producing diff`.
+the gaps span test layout and two fleet-queue read paths, i.e. wider than
+the producing diff`.
 
 ## 6. Route floor from the verdict + pool measurement gate
 

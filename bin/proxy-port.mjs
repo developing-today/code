@@ -11,6 +11,14 @@
 // `node ${../../bin}/<name>.mjs` (the whole bin/ directory is copied to
 // the store), so this sibling import resolves both from a checkout and
 // from the store path. Do not inline-copy this helper into a proxy.
+//
+// The environment-number contract (design #2835, Phase 3 of code#2837):
+// numeric env vars are boot-time arguments, so every one in this family
+// is decimal digits only (no '12abc', '1.5', '0x10', '+7', whitespace or
+// 'NaN'), each kind has a range (port 1-65535, milliseconds
+// 1-2147483647, count >= 1), and a bad value fails at startup naming the
+// variable and the value. Exempt and named: test-only inputs and
+// incident-replay hooks, never deployed configuration.
 
 export const parseProxyPortValue = (name, raw, fallback) => {
   if (raw === undefined || raw === '') return fallback;

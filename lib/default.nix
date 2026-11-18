@@ -251,20 +251,25 @@ let
     lib.mapAttrs' (
       name: config:
       lib.nameValuePair "unattended-installer_offline_${name}" (
-        inputs.unattended-installer.lib.diskoInstallerWrapper config {
-          # https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/installer/cd-dvd/iso-image.nix
-          config = {
-            # isoImage.squashfsCompression = "gzip -Xcompression-level 1";
-            isoImage.squashfsCompression = "zstd -Xcompression-level 6"; # no longer needed? https://github.com/chrillefkr/nixos-unattended-installer/issues/3  https://www.reddit.com/r/NixOS/s/xvUTQmq1NN
-            unattendedInstaller = {
-              successAction = builtins.readFile (from-root "lib/unattended-installer_successAction.sh");
-              preDisko = builtins.readFile (from-root "lib/unattended-installer_preDisko.sh");
-              postDisko = builtins.readFile (from-root "lib/unattended-installer_postDisko.sh");
-              preInstall = builtins.readFile (from-root "lib/unattended-installer_preInstall.sh");
-              postInstall = builtins.readFile (from-root "lib/unattended-installer_postInstall.sh");
+        inputs.unattended-installer.lib.diskoInstallerWrapper
+          {
+            lib = inputs.nixpkgs.lib;
+            inherit (config) pkgs config;
+          }
+          {
+            # https://github.com/NixOS/nixpkgs/blob/master/nixos/modules/installer/cd-dvd/iso-image.nix
+            config = {
+              # isoImage.squashfsCompression = "gzip -Xcompression-level 1";
+              isoImage.squashfsCompression = "zstd -Xcompression-level 6"; # no longer needed? https://github.com/chrillefkr/nixos-unattended-installer/issues/3  https://www.reddit.com/r/NixOS/s/xvUTQmq1NN
+              unattendedInstaller = {
+                successAction = builtins.readFile (from-root "lib/unattended-installer_successAction.sh");
+                preDisko = builtins.readFile (from-root "lib/unattended-installer_preDisko.sh");
+                postDisko = builtins.readFile (from-root "lib/unattended-installer_postDisko.sh");
+                preInstall = builtins.readFile (from-root "lib/unattended-installer_preInstall.sh");
+                postInstall = builtins.readFile (from-root "lib/unattended-installer_postInstall.sh");
+              };
             };
-          };
-        }
+          }
       )
     ) configurations;
 
@@ -681,6 +686,19 @@ let
         cf = pkgs.callPackage ../pkgs/cf { };
       };
       developingTodayBackupDeploy = pkgs.callPackage ../infra/github-backup/deploy.nix { };
+      # Issue #5767, phase 2: Worker flake packages + their deploy apps.
+      coldStoreRehydrator = pkgs.callPackage ../pkgs/cold-store-reaper/worker/package.nix { };
+      coldStoreRehydratorDeploy = pkgs.callPackage ../pkgs/cold-store-reaper/worker/deploy.nix {
+        coldStoreRehydratorBundle = coldStoreRehydrator;
+      };
+      labOpsHub = pkgs.callPackage ../pkgs/lab-ops-hub/package.nix { };
+      labOpsHubDeploy = pkgs.callPackage ../pkgs/lab-ops-hub/deploy.nix {
+        inherit labOpsHub;
+      };
+      cfContainerHello = pkgs.callPackage ../pkgs/cf-container-hello/package.nix { };
+      cfContainerHelloDeploy = pkgs.callPackage ../pkgs/cf-container-hello/deploy.nix {
+        inherit cfContainerHello;
+      };
     in
     {
       packages = {
@@ -690,6 +708,12 @@ let
           idMailDeploy
           pkarrDeploy
           developingTodayBackupDeploy
+          coldStoreRehydrator
+          coldStoreRehydratorDeploy
+          labOpsHub
+          labOpsHubDeploy
+          cfContainerHello
+          cfContainerHelloDeploy
           ;
         mcpx-docs = mcpxDocs;
         mcpx-real-servers = mcpxRealServers;
@@ -720,11 +744,46 @@ let
               bash ${../pkgs/mcpx/packaging-test.sh} ${mcpx}
               touch $out
             '';
+
+        # Drift guard for the generated root just-recipes.json (#8029):
+        # fails when the checked-in JSON disagrees with the root justfile
+        # on the semantic recipe fields — the root counterpart of the
+        # pkgs/id just-recipes-drift guard (#2729). The script projects
+        # out generation noise (absolute source path, body
+        # serialisation), so this is green on any correctly regenerated
+        # file. Runs in a copied tree: `just --dump` at the root needs
+        # the root justfile, root.just, and the pkgs/id module file.
+        just-recipes-root-drift =
+          pkgs.runCommand "just-recipes-root-drift-test"
+            {
+              nativeBuildInputs = [
+                pkgs.bash
+                pkgs.jq
+                pkgs.just
+              ];
+            }
+            ''
+              tree=$PWD/tree
+              mkdir -p $tree/pkgs/id $tree/scripts
+              cp ${../justfile} $tree/justfile
+              cp ${../root.just} $tree/root.just
+              cp ${../just-recipes.json} $tree/just-recipes.json
+              cp ${../pkgs/id/justfile} $tree/pkgs/id/justfile
+              cp ${../scripts/just-recipes-root-check.sh} $tree/scripts/just-recipes-root-check.sh
+              cp ${../scripts/just-recipes-root-check-test.sh} $tree/scripts/just-recipes-root-check-test.sh
+              cd $tree
+              bash scripts/just-recipes-root-check.sh
+              bash scripts/just-recipes-root-check-test.sh
+              touch $out
+            '';
       };
       apps = (pkgs.lib.mapAttrs mkRecipeApp publicRecipes) // {
         id-mail-deploy = mkApp idMailDeploy "Deploy the mail Worker from this checkout (needs Bitwarden and sops access)";
         pkarr-deploy = mkApp pkarrDeploy "Deploy the pkarr Worker via the cf versions flow (needs Bitwarden and sops access)";
         developing-today-backup-deploy = mkApp developingTodayBackupDeploy "Deploy the developing-today-backup Worker (github-backup webhook receiver) via the wrangler versions flow (needs Bitwarden and sops access)";
+        cold-store-rehydrator-deploy = mkApp coldStoreRehydratorDeploy "Deploy the cold-store-rehydrator Worker from its flake bundle via the wrangler versions flow (needs Bitwarden and sops access)";
+        lab-ops-hub-deploy = mkApp labOpsHubDeploy "Deploy the lab-ops-hub Worker and push its crawler container image as one command (needs Bitwarden and sops access)";
+        cf-container-hello-deploy = mkApp cfContainerHelloDeploy "Deploy the cf-container-hello Worker from its flake package (needs Bitwarden and sops access)";
         mcpx = {
           type = "app";
           program = "${mcpx}/bin/mcpx";
@@ -1182,11 +1241,13 @@ let
         "atlas-backup"
         "laptop-autocommit-in-progress"
         "laptop-autocommit-merge-abort"
+        "laptop-autocommit-oversized"
         "laptop-backups-watchdog"
         "laptop-state-backup"
         "laptop-repo-keeper"
         "laptop-untracked-review"
         "openclaw-backup"
+        "oc-password-sync"
         "pm-dashboard-backup"
         "pm-dashboard-backup-copy"
         "pm-dashboard-backup-date"
@@ -1430,6 +1491,9 @@ let
               ${deployPkgs.deploy}/bin/deploy list > list.txt
               cat list.txt
               grep -q "queue-broker" list.txt
+              grep -q "cold-store-rehydrator" list.txt
+              grep -q "lab-ops-hub" list.txt
+              grep -q "cf-container-hello" list.txt
               grep -q "secrets-broker" list.txt
               grep -q "session-proxy" list.txt
               grep -q "mcpx" list.txt

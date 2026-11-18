@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -52,6 +53,12 @@ type HTTPTransport struct {
 	closeOnce sync.Once
 	closed    chan struct{}
 	wg        sync.WaitGroup
+
+	// restartIntent records that Close is part of a restart-intent
+	// graceful daemon shutdown rather than an explicit session end
+	// (#1414). The upstream session is then left alive so the record
+	// persisted for it still resumes after a cold restart.
+	restartIntent atomic.Bool
 }
 
 // HTTPOptions configure a remote MCP server.
@@ -708,9 +715,21 @@ func (t *HTTPTransport) Close() error {
 	return nil
 }
 
+// MarkRestartIntent records that the coming Close is part of a restart-intent
+// graceful daemon shutdown, not an explicit session end (#1414, ruling
+// shutdown-delete-1414). Close then keeps the upstream session alive and the
+// persisted session record resumable by the next daemon process; an explicit
+// end still sends the DELETE. Call before Close; safe from any goroutine.
+func (t *HTTPTransport) MarkRestartIntent() { t.restartIntent.Store(true) }
+
 // closeSession ends the upstream session with a DELETE and reports whether
 // that succeeded. A 404 means the upstream has already forgotten the
 // session, which is the state the DELETE was for, so it is not a failure.
+//
+// A transport marked with MarkRestartIntent skips the DELETE entirely: the
+// daemon is restarting, and the persisted session record is only useful if the
+// upstream session behind it is still alive for the next process to resume
+// (#1414).
 //
 // The DELETE is retried once when the transport cancels it before it is
 // written. http.Do reports such a cancellation as context.Canceled even
@@ -727,7 +746,7 @@ func (t *HTTPTransport) closeSession() error {
 		t.sessionMu.RLock()
 		sid := t.sessionID
 		t.sessionMu.RUnlock()
-		if sid == "" {
+		if sid == "" || t.restartIntent.Load() {
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), defaults.UpstreamSessionDeleteTimeout)

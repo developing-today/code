@@ -92,6 +92,19 @@ func main() {
 			time.Sleep(dur)
 		}
 	}
+
+	// The script file can declare the same two start behaviours
+	// (#1980 stage 4): a test that already writes a script need not
+	// also thread env knobs through the harness.
+	if s := loadScript(); s != nil {
+		if s.FailStart {
+			fmt.Fprintln(os.Stderr, "fakemcp: refusing to start (script failStart)")
+			os.Exit(3)
+		}
+		if s.StartDelayMs > 0 {
+			time.Sleep(time.Duration(s.StartDelayMs) * time.Millisecond)
+		}
+	}
 	// Servers commonly print a banner on stdout; mcpx must skip it.
 	fmt.Println("fakemcp banner line, not JSON")
 
@@ -167,7 +180,7 @@ func handle(r req) map[string]any {
 		if subscribeMode {
 			resources["subscribe"] = true
 		}
-		return ok(r.ID, map[string]any{
+		result := map[string]any{
 			"protocolVersion": "2025-06-18",
 			"serverInfo":      map[string]any{"name": "fakemcp", "version": "1.0.0"},
 			"capabilities": map[string]any{
@@ -175,7 +188,18 @@ func handle(r req) map[string]any {
 				"resources": resources,
 				"prompts":   map[string]any{},
 			},
-		})
+		}
+		// FAKEMCP_COMPLETIONS makes the server answer completion/complete
+		// with that comma-separated list, so a test can see a cap applied.
+		if completionValues() != nil {
+			result["capabilities"].(map[string]any)["completions"] = map[string]any{}
+		}
+		// FAKEMCP_INSTRUCTIONS gives the server free-text instructions, so a
+		// test can see whether a surface shows or hides them.
+		if instr := os.Getenv("FAKEMCP_INSTRUCTIONS"); instr != "" {
+			result["instructions"] = instr
+		}
+		return ok(r.ID, result)
 	case "resources/subscribe", "resources/unsubscribe":
 		if !subscribeMode {
 			break
@@ -241,6 +265,13 @@ func handle(r req) map[string]any {
 		return ok(r.ID, map[string]any{"contents": []any{
 			map[string]any{"uri": p.URI, "mimeType": "text/plain", "text": "hello from a resource"},
 		}})
+	case "completion/complete":
+		values := completionValues()
+		if values == nil {
+			break
+		}
+		return ok(r.ID, map[string]any{"completion": map[string]any{
+			"values": values, "total": len(values), "hasMore": false}})
 	case "prompts/list":
 		return ok(r.ID, map[string]any{"prompts": []any{
 			map[string]any{
@@ -291,7 +322,25 @@ func handle(r req) map[string]any {
 }
 
 func toolDefs() []map[string]any {
-	return append(baseTools(), schemaTools()...)
+	defs := append(baseTools(), schemaTools()...)
+	s := loadScript()
+	if s == nil {
+		return defs
+	}
+	for _, def := range scriptedToolDefs(s) {
+		replaced := false
+		for i, d := range defs {
+			if d["name"] == def["name"] {
+				defs[i] = def
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			defs = append(defs, def)
+		}
+	}
+	return defs
 }
 
 // schemaVersion is the contents of FAKEMCP_SCHEMA_FILE, read on every request
@@ -465,6 +514,16 @@ func callTool(r req) map[string]any {
 	if err := json.Unmarshal(r.Params, &p); err != nil {
 		return fail(r.ID, -32602, "bad params")
 	}
+
+	// Scripted tools dispatch before the compiled-in ones, so a
+	// script can override a built-in's behaviour for one test.
+	if s := loadScript(); s != nil {
+		for _, t := range s.Tools {
+			if t.Name == p.Name {
+				return scriptCall(r.ID, t, p.Arguments)
+			}
+		}
+	}
 	switch p.Name {
 	case "echo":
 		msg, _ := p.Arguments["message"].(string)
@@ -576,4 +635,14 @@ func callTool(r req) map[string]any {
 		}
 	}
 	return fail(r.ID, -32602, "unknown tool "+p.Name)
+}
+
+// completionValues is FAKEMCP_COMPLETIONS split on commas, or nil when it
+// is unset and the server offers no completions.
+func completionValues() []string {
+	v := os.Getenv("FAKEMCP_COMPLETIONS")
+	if v == "" {
+		return nil
+	}
+	return strings.Split(v, ",")
 }

@@ -32,7 +32,7 @@
 //! wire shape beyond the flag.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use iroh_base::EndpointId;
@@ -116,6 +116,9 @@ impl HolderAnnouncement {
     }
 }
 
+/// world (Option) -> hash -> endpoint -> entry.
+type WorldTable = HashMap<Option<String>, HashMap<Hash, HashMap<EndpointId, HolderEntry>>>;
+
 /// Thread-safe in-memory provider table: hash -> (endpoint -> holder entry).
 ///
 /// Cheaply cloneable (backed by `Arc`), safe to share across async tasks.
@@ -125,7 +128,7 @@ impl HolderAnnouncement {
 pub struct ProviderTable {
     /// world (Option) -> hash -> endpoint -> entry. `None` world is the
     /// global bucket.
-    entries: Arc<RwLock<HashMap<Option<String>, HashMap<Hash, HashMap<EndpointId, HolderEntry>>>>>,
+    entries: Arc<RwLock<WorldTable>>,
 }
 
 impl ProviderTable {
@@ -134,6 +137,18 @@ impl ProviderTable {
         Self {
             entries: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Read access to the table. The table is a plain cache with no
+    /// cross-entry invariant, so a writer that panicked mid-update cannot
+    /// leave it inconsistent: recover the guard instead of panicking.
+    fn read_entries(&self) -> RwLockReadGuard<'_, WorldTable> {
+        self.entries.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Write access to the table; poison is recovered as in [`Self::read_entries`].
+    fn write_entries(&self) -> RwLockWriteGuard<'_, WorldTable> {
+        self.entries.write().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Record (or refresh) a holder for `(world, hash)`.
@@ -145,7 +160,7 @@ impl ProviderTable {
         ranges: HeldRanges,
         now: Instant,
     ) {
-        let mut guard = self.entries.write().expect("provider table lock poisoned");
+        let mut guard = self.write_entries();
         let world_map = guard.entry(world.clone()).or_default();
         let hash_map = world_map.entry(hash).or_default();
         hash_map.insert(
@@ -161,14 +176,37 @@ impl ProviderTable {
 
     /// Record a whole announcement into the table.
     pub fn apply_announcement(&self, ann: &HolderAnnouncement, now: Instant) {
-        for h in &ann.hashes {
-            self.record(ann.world.clone(), *h, ann.node_id, HeldRanges::Unknown, now);
+        let mut guard = self.write_entries();
+        let world_map = guard.entry(ann.world.clone()).or_default();
+
+        // A complete announcement replaces this endpoint's holdings for the
+        // world. A truncated announcement is only a prefix, so omitted hashes
+        // must remain until a complete snapshot or stale cleanup removes them.
+        if !ann.truncated {
+            for hash_map in world_map.values_mut() {
+                hash_map.remove(&ann.node_id);
+            }
+            world_map.retain(|_, hash_map| !hash_map.is_empty());
         }
+
+        for h in &ann.hashes {
+            let hash_map = world_map.entry(*h).or_default();
+            hash_map.insert(
+                ann.node_id,
+                HolderEntry {
+                    endpoint: ann.node_id,
+                    ranges: HeldRanges::Unknown,
+                    last_seen: now,
+                    world: ann.world.clone(),
+                },
+            );
+        }
+        guard.retain(|_, world_map| !world_map.is_empty());
     }
 
     /// Snapshot of holders for `(world, hash)`, freshest first.
     pub fn holders(&self, world: Option<&str>, hash: &Hash) -> Vec<HolderEntry> {
-        let guard = self.entries.read().expect("provider table lock poisoned");
+        let guard = self.read_entries();
         let world_key = world.map(|s| s.to_string());
         guard
             .get(&world_key)
@@ -183,14 +221,14 @@ impl ProviderTable {
 
     /// Number of distinct hashes tracked for a world.
     pub fn hash_count(&self, world: Option<&str>) -> usize {
-        let guard = self.entries.read().expect("provider table lock poisoned");
+        let guard = self.read_entries();
         let world_key = world.map(|s| s.to_string());
         guard.get(&world_key).map(|m| m.len()).unwrap_or(0)
     }
 
     /// Remove entries older than `max_age`. Returns the number removed.
     pub fn remove_stale(&self, max_age: Duration) -> usize {
-        let mut guard = self.entries.write().expect("provider table lock poisoned");
+        let mut guard = self.write_entries();
         let mut removed = 0usize;
         for world_map in guard.values_mut() {
             for hash_map in world_map.values_mut() {
@@ -207,13 +245,14 @@ impl ProviderTable {
 
     /// Total number of (world, hash, holder) rows.
     pub fn len(&self) -> usize {
-        let guard = self.entries.read().expect("provider table lock poisoned");
+        let guard = self.read_entries();
         guard
             .values()
             .map(|wm| wm.values().map(|hm| hm.len()).sum::<usize>())
             .sum()
     }
 
+    /// Whether no holder rows are currently tracked.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -282,7 +321,13 @@ mod tests {
     fn world_scoping() {
         let t = ProviderTable::new();
         let n = node(2);
-        t.record(Some("w1".into()), h(1), n, HeldRanges::Complete, Instant::now());
+        t.record(
+            Some("w1".into()),
+            h(1),
+            n,
+            HeldRanges::Complete,
+            Instant::now(),
+        );
         // different world bucket -> not found
         assert!(t.holders(Some("w2"), &h(1)).is_empty());
         assert_eq!(t.holders(Some("w1"), &h(1)).len(), 1);
@@ -296,6 +341,77 @@ mod tests {
         t.apply_announcement(&ann, Instant::now());
         assert_eq!(t.holders(Some("public"), &h(1)).len(), 1);
         assert_eq!(t.holders(Some("public"), &h(2)).len(), 1);
+    }
+
+    #[test]
+    fn complete_announcement_replaces_only_that_endpoint_in_that_world() {
+        let t = ProviderTable::new();
+        let endpoint = node(30);
+        let other_endpoint = node(31);
+        let now = Instant::now();
+        t.apply_announcement(
+            &HolderAnnouncement::new(endpoint, Some("public:a".into()), vec![h(1), h(2)], 1),
+            now,
+        );
+        t.record(
+            Some("public:a".into()),
+            h(2),
+            other_endpoint,
+            HeldRanges::Complete,
+            now,
+        );
+        t.apply_announcement(
+            &HolderAnnouncement::new(endpoint, Some("public:b".into()), vec![h(2)], 2),
+            now,
+        );
+
+        t.apply_announcement(
+            &HolderAnnouncement::new(endpoint, Some("public:a".into()), vec![h(1)], 3),
+            now,
+        );
+
+        assert!(
+            t.holders(Some("public:a"), &h(2))
+                .iter()
+                .all(|e| e.endpoint != endpoint)
+        );
+        assert_eq!(t.holders(Some("public:a"), &h(2)).len(), 1);
+        assert_eq!(t.holders(Some("public:a"), &h(1)).len(), 1);
+        assert_eq!(t.holders(Some("public:b"), &h(2)).len(), 1);
+    }
+
+    #[test]
+    fn truncated_announcement_retains_omitted_hashes() {
+        let t = ProviderTable::new();
+        let endpoint = node(32);
+        let now = Instant::now();
+        t.apply_announcement(
+            &HolderAnnouncement::new(endpoint, Some("public".into()), vec![h(1), h(2)], 1),
+            now,
+        );
+        let mut truncated = HolderAnnouncement::new(endpoint, Some("public".into()), vec![h(1)], 2);
+        truncated.truncated = true;
+        t.apply_announcement(&truncated, now);
+
+        assert_eq!(t.holders(Some("public"), &h(2)).len(), 1);
+    }
+
+    #[test]
+    fn empty_complete_announcement_clears_endpoint_holdings() {
+        let t = ProviderTable::new();
+        let endpoint = node(33);
+        let now = Instant::now();
+        t.apply_announcement(
+            &HolderAnnouncement::new(endpoint, Some("public".into()), vec![h(1)], 1),
+            now,
+        );
+        t.apply_announcement(
+            &HolderAnnouncement::new(endpoint, Some("public".into()), Vec::new(), 2),
+            now,
+        );
+
+        assert!(t.holders(Some("public"), &h(1)).is_empty());
+        assert!(t.is_empty());
     }
 
     #[test]
@@ -329,7 +445,13 @@ mod tests {
         let now = Instant::now();
         t.record(None, h(3), a, HeldRanges::Complete, now);
         // b recorded slightly later
-        t.record(None, h(3), b, HeldRanges::Complete, now + Duration::from_secs(1));
+        t.record(
+            None,
+            h(3),
+            b,
+            HeldRanges::Complete,
+            now + Duration::from_secs(1),
+        );
         let hs = t.holders(None, &h(3));
         assert_eq!(hs[0].endpoint, b);
     }

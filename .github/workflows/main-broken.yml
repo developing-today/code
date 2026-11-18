@@ -151,17 +151,26 @@ jobs:
           first_job=$(head -n1 <<<"$failing")
           bid=$(printf '%s|%s|%s' "$GH_REPO" "$wf" "$failing_csv" | sha256sum | cut -c1-12)
           echo "workflow=$wf run=$run_url failing=[$failing_csv] Breakage-ID=$bid"
-          # Dedup: an OPEN main-broken issue already carrying this ID?
-          existing=$(gh issue list --repo "$GH_REPO" --state open --label main-broken \
-            --search "$bid" --json number --jq '.[0].number // empty')
+          # Dedup (#9546): search OPEN AND CLOSED main-broken issues for
+          # this run id and this Breakage-ID before filing anything. The
+          # helper lists issues and matches bodies locally -- the search
+          # index lags a just-filed issue, which is how one run produced
+          # #9523/#9528/#9531. Priority: open by Breakage-ID, open by
+          # run id, closed by run id (comment there, file nothing).
+          existing_line=$(GH_REPO="$GH_REPO" BID="$bid" RUN_ID="$RUN_ID" \
+            bash .github/scripts/main-broken-find-existing.sh)
+          existing=$(printf '%s' "$existing_line" | cut -f1)
+          existing_state=$(printf '%s' "$existing_line" | cut -f2)
           ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           title="main-broken: $GH_REPO $wf @$short_sha — $first_job"
           # shellcheck disable=SC2016
           body=$(printf 'Main-tier workflow `%s` failed on main.\n\n- Run: %s\n- Head commit: `%s`\n- Failing jobs: %s\n- Breakage-ID: %s\n\nFiled by the main-breakage chain (.github/workflows/main-broken.yml, #1782). Exactly one holder owns this breakage at a time; every transition is an agent-note:v1 comment on this issue.\n' \
             "$wf" "$run_url" "$head_sha" "$failing_csv" "$bid")
           if [ "$DRY_RUN" = "true" ]; then
-            echo "DRY-RUN: would search open main-broken issues for Breakage-ID $bid (found: ${existing:-none})"
-            if [ -n "$existing" ]; then
+            echo "DRY-RUN: would search open and closed main-broken issues for run $RUN_ID and Breakage-ID $bid (found: ${existing:-none}${existing_state:+/$existing_state})"
+            if [ -n "$existing" ] && [ "$existing_state" = "closed" ]; then
+              echo "DRY-RUN: would comment on closed issue #$existing with run $run_url instead of filing a duplicate (#9546); no fix task queued."
+            elif [ -n "$existing" ]; then
               echo "DRY-RUN: would append a comment with run $run_url to issue #$existing and queue a fresh fix task on it via the pm-dispatch queuer."
             else
               echo "DRY-RUN: would run the scout classifier first; on a fix route it would queue '$title' via the pm-dispatch queuer (which creates the issue) with Breakage-ID: $bid, on a rerun/escalate route it would file the issue directly with NO fix task queued; then apply labels kind/ci, priority/critical, main-broken, status/needs-triage (queue/queued only when a fix task was queued); agent-note holder: chain (filing); then dispatch/remediate label if <3 open main-broken issues carry it and the scout route is fix."
@@ -169,7 +178,12 @@ jobs:
             echo "action=dry" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if [ -n "$existing" ]; then
+          if [ -n "$existing" ] && [ "$existing_state" = "closed" ]; then
+            # #9546: this run was already filed and its issue is closed --
+            # comment there instead of filing a duplicate; no dispatch.
+            action=comment
+            prompt=""
+          elif [ -n "$existing" ]; then
             action=append
             # shellcheck disable=SC2016
             prompt=$(printf 'Fix GitHub issue #%s in %s: main-tier workflow `%s` failed on main again.\n\n- Run: %s\n- Head commit: `%s`\n- Failing jobs: %s\n- Breakage-ID: %s\n\nThis is a recurrence of the breakage tracked by that issue. Diagnose the failure, fix the root cause, and deliver the fix as a pull request whose description contains "Fixes #%s", so the issue closes when the fix lands.\n' \
@@ -186,6 +200,8 @@ jobs:
           {
             echo "action=${action}"
             echo "existing_number=${existing}"
+            echo "existing_state=${existing_state}"
+            echo "run_id=${RUN_ID}"
             echo "bid=${bid}"
             echo "ts=${ts}"
             echo "run_url=${run_url}"
@@ -265,6 +281,7 @@ jobs:
           title: ${{ steps.identify.outputs.title }}
           prompt: ${{ steps.identify.outputs.prompt }}
           issue: "true"
+          dedupe_key: main-broken-run-${{ steps.identify.outputs.run_id }}-dispatch-create
 
       # Create path, non-fix scout routes: file the breakage issue
       # directly WITHOUT queueing a fix task. pm-dispatch has no
@@ -441,7 +458,7 @@ jobs:
           title: ${{ steps.identify.outputs.title }}
           prompt: ${{ steps.identify.outputs.prompt }}
           issue_number: ${{ steps.identify.outputs.existing_number }}
-          dedupe_key: main-broken-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}-dispatch-append
+          dedupe_key: main-broken-run-${{ steps.identify.outputs.run_id }}-dispatch-append
 
       - name: Append a recurrence comment to the existing issue
         if: steps.identify.outputs.action == 'append' && (steps.scout.outputs.route == '' || steps.scout.outputs.route == 'fix')
@@ -456,6 +473,23 @@ jobs:
           gh issue comment "$EXISTING" --repo "$GH_REPO" \
             --body "Main is still red for this breakage: $RUN_URL_OUT (workflow \`$WF\`, head \`$SHORT_SHA\`). Breakage-ID: $BID — appending per the chain dedup rule; no duplicate issue. A fresh fix task has been queued on this issue via pm-dispatch."
           echo "Appended to existing issue #$EXISTING and queued a fresh fix task."
+
+      # Comment path (#9546): this run's breakage was already filed and
+      # its issue is closed -- record the firing there; file nothing,
+      # dispatch nothing.
+      - name: Comment on the closed issue instead of filing a duplicate
+        if: steps.identify.outputs.action == 'comment'
+        env:
+          EXISTING: ${{ steps.identify.outputs.existing_number }}
+          RUN_URL_OUT: ${{ steps.identify.outputs.run_url }}
+          WF: ${{ steps.identify.outputs.wf }}
+          SHORT_SHA: ${{ steps.identify.outputs.short_sha }}
+          BID: ${{ steps.identify.outputs.bid }}
+        run: |
+          set -euo pipefail
+          gh issue comment "$EXISTING" --repo "$GH_REPO" \
+            --body "Duplicate filing suppressed (#9546): run $RUN_URL_OUT (workflow \`$WF\`, head \`$SHORT_SHA\`, Breakage-ID: $BID) matches this closed issue, so no new issue was filed and no fix task was dispatched for it. A genuinely new run of the same breakage files fresh, because closed issues are matched by run id only."
+          echo "Commented on closed issue #$EXISTING; filed nothing, dispatched nothing."
 
   release-check:
     name: release stale remediation holds (daily)

@@ -51,3 +51,25 @@ blocked pending Drew authorization).
   internal routing context directly because workerd cannot produce a
   restricted stub. The harness is never an application entry point.
 - `npm run typecheck` — `tsc --noEmit`.
+
+## Currency gateway PoC (#2298)
+
+`src/currency/` is the gated #2298 proof of concept (gates cleared
+2026-11-12/13; Drew ruling `hosted-boundary-2298`), flagged for a
+review round — not the permanent currency service:
+
+- `ledger.ts` — in-process ledger stub behind the gateway interface
+  (TigerBeetle-shaped semantics: unique request IDs,
+  `exists_with_different_fields`, two-phase holds, watermarks).
+- `gateway.ts` — single-process stub gateway, the only ledger
+  client: transfers, holds + post/void, gateway-signed balance
+  snapshots (server-scoped, token admin key), request-ID lookup,
+  bilateral signed double-entry for cross-server transfers.
+- `relay.ts` — the hosted-edition UserDO relay: persists
+  {request ID, intent hash, state} before the gateway fetch, caches
+  signed snapshots only, reconciles by request-ID lookup on wake.
+- `crypto.ts` — Ed25519 (WebCrypto) + canonical signing payloads.
+
+Proofs: `test/currency.test.ts` (run by `npm test`). Results +
+the explicit simplification list:
+`doc/2026-11-14T06-22-00Z_poc_currency_gateway_boundary_results/`.

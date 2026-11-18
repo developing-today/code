@@ -106,9 +106,10 @@ impl GenesisAgreement {
     ///
     /// # Errors
     ///
-    /// Returns a JSON error if the bytes are not an agreement object.
+    /// Returns a JSON error if the bytes are not an agreement object, or if
+    /// they repeat an object key (#8794).
     pub fn from_body(bytes: &[u8]) -> Result<Self, serde_json::Error> {
-        serde_json::from_slice(bytes)
+        id_core::json_unique::from_slice_without_duplicate_keys(bytes)
     }
 }
 
@@ -141,9 +142,10 @@ impl ResultClaim {
     ///
     /// # Errors
     ///
-    /// Returns a JSON error if the bytes are not a claim object.
+    /// Returns a JSON error if the bytes are not a claim object, or if they
+    /// repeat an object key (#8794).
     pub fn from_body(bytes: &[u8]) -> Result<Self, serde_json::Error> {
-        serde_json::from_slice(bytes)
+        id_core::json_unique::from_slice_without_duplicate_keys(bytes)
     }
 }
 
@@ -206,6 +208,7 @@ pub fn sign_genesis(
             checkpoint: None,
             rotation: None,
             chat: None,
+            anchor: None,
         },
     )?)
 }
@@ -284,6 +287,7 @@ pub(crate) fn sign_claim_unchecked(
             checkpoint: None,
             rotation: None,
             chat: None,
+            anchor: None,
         },
     )?)
 }
@@ -429,3 +433,48 @@ impl std::fmt::Display for SignError {
 }
 
 impl std::error::Error for SignError {}
+
+/// Versioned match-attestation objects and reducer policy.
+pub mod v1;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::{GenesisAgreement, ResultClaim};
+    use p2panda_core::Hash;
+
+    fn repeated(prefix: &[u8], body: &[u8]) -> Vec<u8> {
+        let mut out = prefix.to_vec();
+        out.extend_from_slice(&body[1..]);
+        out
+    }
+
+    /// #8794: a signed agreement or claim body with a repeated key is refused
+    /// by name instead of collapsing to its last value.
+    #[test]
+    fn bodies_with_a_repeated_key_are_refused_by_name() {
+        let agreement = GenesisAgreement {
+            game_id: "ttt".to_owned(),
+            logic_hash: Hash::digest(b"logic"),
+            players: [[1; 32], [2; 32]],
+            witness: None,
+            objection_window_secs: 60,
+        };
+        let body = agreement.body().unwrap();
+        assert_eq!(GenesisAgreement::from_body(&body).unwrap(), agreement);
+        let error =
+            GenesisAgreement::from_body(&repeated(br#"{"game_id":"other","#, &body)).unwrap_err();
+        assert!(error.to_string().contains(r#""game_id""#), "{error}");
+
+        let claim = ResultClaim {
+            agreement: Hash::digest(b"agreement"),
+            outcome: "draw".to_owned(),
+            final_state_hash: Hash::digest(b"state"),
+            frontiers: Vec::new(),
+        };
+        let body = claim.body().unwrap();
+        assert_eq!(ResultClaim::from_body(&body).unwrap(), claim);
+        let error = ResultClaim::from_body(&repeated(br#"{"outcome":"win","#, &body)).unwrap_err();
+        assert!(error.to_string().contains(r#""outcome""#), "{error}");
+    }
+}

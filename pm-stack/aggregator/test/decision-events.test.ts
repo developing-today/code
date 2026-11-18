@@ -285,3 +285,50 @@ describe("Track A outbox format (reconciliation with PR #9343)", () => {
     if (v.ok) expect(v.value.questionRef).toBe("ledger-1#2");
   });
 });
+
+describe("Worker contract alignment (#9613)", () => {
+  test("validateDecisionEvent rejects date-only timestamps without T", () => {
+    const v = validateDecisionEvent({
+      eventId: "e-date-only",
+      setId: "s1",
+      type: "answer",
+      ts: "2026-11-14",
+      payload: {},
+    });
+    expect(v.ok).toBe(false);
+  });
+
+  test("syncDecisionEvents does not ack events rejected per-event by webhook", async () => {
+    const state = emptySyncState();
+    const events = [
+      { eventId: "e1", setId: "s1", questionRef: null, type: "answer", payload: {}, ts: "2026-11-14T00:00:00Z" },
+      { eventId: "e2", setId: "s1", questionRef: null, type: "answer", payload: {}, ts: "2026-11-14T00:00:01Z" },
+      { eventId: "e3", setId: "s1", questionRef: null, type: "answer", payload: {}, ts: "2026-11-14T00:00:02Z" },
+    ];
+    const fetchFn = (async () =>
+      new Response(
+        JSON.stringify({
+          accepted: 2,
+          inserted: 2,
+          duplicates: 0,
+          errors: [{ index: 1, error: "event.ts must be an ISO timestamp string" }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )) as unknown as typeof fetch;
+
+    const reports = await syncDecisionEvents({
+      events,
+      state,
+      legs: ["webhook"],
+      webhookUrl: "https://example.invalid/webhook",
+      webhookSecret: "test-secret",
+      fetchFn,
+    });
+
+    expect(reports).toHaveLength(1);
+    expect(reports[0]?.inserted).toBe(2);
+    expect(reports[0]?.error).toContain("webhook rejected 1 event(s)");
+    expect(reports[0]?.error).toContain("e2");
+    expect(state.acked.webhook).toEqual(["e1", "e3"]);
+  });
+});

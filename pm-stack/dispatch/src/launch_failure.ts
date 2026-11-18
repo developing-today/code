@@ -23,6 +23,7 @@
 // note + close for the issue they created. Only issues dispatch
 // created in the same request are ever closed here; attach targets
 // (caller-supplied issue numbers) are never compensated.
+import { ClaimLostError } from "./queue.ts";
 
 /** The slice of the queue client launch-failure handling needs. */
 export interface LaunchFailureQueue {
@@ -99,6 +100,19 @@ export async function handleLaunchFailure(
   deleteSession?: (sessionId: string) => Promise<void>,
 ): Promise<string> {
   const msg = e instanceof Error ? e.message : String(e);
+  if (e instanceof ClaimLostError) {
+    // Lost the claim race (#10737): the task and its issue now belong
+    // to the worker that claimed it, so neither is cancelled, noted or
+    // closed. Only this launch's own session is cleaned up.
+    if (sessionId != null && deleteSession) {
+      try {
+        await deleteSession(sessionId);
+      } catch {
+        /* best-effort: the session never received the task's claim */
+      }
+    }
+    return msg;
+  }
   const sessionContext = sessionId == null ? "" : `; OpenCode session ${sessionId} may still be live`;
   let cancelError: string | null = null;
   try {

@@ -185,7 +185,9 @@ impl Scheduler {
 
     /// Availability of group `g`: how many holders claim it.
     fn availability(&self, g: u64) -> usize {
-        (0..self.holders.len()).filter(|&h| self.claims(h, g)).count()
+        (0..self.holders.len())
+            .filter(|&h| self.claims(h, g))
+            .count()
     }
 
     /// Byte range of wanted groups no holder can serve, if any — the
@@ -218,7 +220,10 @@ impl Scheduler {
         // Endgame: every wanted group is already in flight — duplicate
         // the trailing ranges onto a second holder.
         let any_wanted = self.state.iter().any(|s| *s == GroupState::Wanted);
-        let any_in_flight = self.state.iter().any(|s| matches!(s, GroupState::InFlight(_)));
+        let any_in_flight = self
+            .state
+            .iter()
+            .any(|s| matches!(s, GroupState::InFlight(_)));
         if !any_wanted && any_in_flight {
             return self.endgame_assignments();
         }
@@ -443,9 +448,8 @@ mod tests {
 
     #[test]
     fn source_cap_is_respected() {
-        let holders: Vec<(String, HeldRanges)> = (0..8)
-            .map(|i| complete(&format!("h{i}")))
-            .collect();
+        let holders: Vec<(String, HeldRanges)> =
+            (0..8).map(|i| complete(&format!("h{i}"))).collect();
         let mut s = Scheduler::new(blob(16), holders);
         let a = s.assignments();
         assert!(a.len() <= MAX_SOURCES, "active holders {} > cap", a.len());
@@ -487,7 +491,10 @@ mod tests {
             vec![ranges("a", vec![(0, blob(2))]), complete("b")],
         );
         let r = ByteRange::new(0, blob(1));
-        s.apply(SchedEvent::Missing { holder: 0, range: r });
+        s.apply(SchedEvent::Missing {
+            holder: 0,
+            range: r,
+        });
         // Holder 0 no longer claims group 0.
         assert!(!s.claims(0, 0));
         assert!(s.claims(0, 1));
@@ -532,10 +539,7 @@ mod tests {
     fn optimistic_unknown_learns_from_missing() {
         let mut s = Scheduler::new(
             blob(1),
-            vec![
-                ("u".to_string(), HeldRanges::Unknown),
-                complete("b"),
-            ],
+            vec![("u".to_string(), HeldRanges::Unknown), complete("b")],
         );
         // Unknown counts as coverage: no nobody-home report.
         assert!(s.uncovered().is_none());

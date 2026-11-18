@@ -1348,3 +1348,86 @@ Theme counts: edge/cache 18 · storage 19 · observability 17 · security 29 · 
 - **Slice 2026-10-22_31 (34 items):** all 10 day-files combed (headers + keyword grep + full-section reads) plus memory-search passes. Borderline exclusion flagged and placed by synthesis: the Tailscale Serve ↔ CF Tunnel dual-exposure design (confirmed 2026-10-21) → C9. One record conflict flagged in place and resolved by synthesis: #3125 (see A1.13).
 - **Slice 2026-11-01_11 (38 items):** all 11 day-files read via targeted extraction; they quote Drew verbatim and are the primary source (the main chat was not separately paged message-by-message). Over-inclusive by design; engine-generated ideas Drew never asked for are excluded except where Drew ruled on them.
 - **Records pass:** workspace design docs (§1a/1b), the code repo doc/ corpus (392 entries; 335 in-window; 236 design-kind listed in its appendix), the idea register + 131-entry ideas log, the decisions ledger (150 items: 84 answered / 34 asked / 20 pending / 12 dropped), 52 goal directories (in-scope ones tabled), and an open-issue census of developing-today/code that is **title-keyword only and capped at 30 per term** — a baseline, not a complete tracked-set; absence from the census is not proof an issue was never filed. Per-entry doc/ issue states were not checked.
+
+---
+
+## Addendum — weekly monitor 2026-11-16 (window 2026-11-11 → 2026-11-16)
+
+First weekly-monitor pass (watermark: the register date 2026-11-11; setup baseline 2026-11-12). Method: main + side chats for the window, design-labelled issues created/updated in the six register repos, the idea-engine log since the watermark, diffed against this register, the tracking manifest, and both boards read from the wire (Project #4: 1,594 items; Project #5: 131 items, all Status = Idea, theme counts 18/19/17/29/48 — matching Appendix A exactly). Gaps found: 4 Drew program asks with tracking issues but no register entry (three of them also missing from the master board), and 27 idea-engine entries in neither Appendix A nor the ideas board. All 31 are registered below and placed. Checked and NOT gaps: code#8869–#8873 (the P4/P6/P7/P8/P9 draft programs — drafts for Drew's ratification, not Drew asks; already on Project #4 with Areas and their own milestones #11–#15), code#8838 (already F4.18), and Drew's 2026-11-16 "ssh fallback should be automatic" order (the fallback design is already tracked as code#5972, cited in X20; the order was actioned the same morning).
+
+### M1. PM-stack prompt & chat surface — scoped prompt widgets + session interface (PM stack)
+
+- first_asked: 2026-11-13 05:54 CST — Drew's program starter, via the design mill.
+- his ask: prompt widgets on all appropriate PM-stack pages — scoped to a section, a page, the PM stack generically, generic agent access (chat + task delegation queued at a priority), and specialized task variants (reprioritization, detail gathering, comparing new options, integrating insights since last review); a decision-model variant that generates a question series for a decision API / LLM / hybrid with effort steering, default fallbacks, "not confident" answers, and speed-optimized answer generation; async (checkable ID, optional completion notification) and sync (block, or WebSocket) modes; plus a chat surface — review all messages, new session per message unless replying in context, open/close/archive/reply/cross-reference, notification count + push.
+- design_artifact: `doc/2026-11-13T11-54-00Z_design_pm_stack_prompt_surface/brief.md` on main (PR #9535, merged).
+- tracking: developing-today/code#9539 (label `design`) — added by this monitor to Project #4, Status = Registered, Area = PM stack. No milestone: the PM stack coherence milestone mirrors epic #1184's own checklist (setup precedent); this is a new standalone program starter.
+- status: registered; program starter open, brief merged.
+
+### M2. Nix cache as the content store — derivations + flakes per item (Cloudflare / nix-cache)
+
+- first_asked: 2026-11-13 05:42 CST — Drew's program starter, via the design mill; Drew flagged it as separate from the pool/effort mill (M3) — it belongs to the Nix program.
+- his ask: can the Nix cache be the content store directly — every file and file-set as a content-addressed derivation, a flake per item (sharded by CA prefix), date.increment versioning with fork lineage, constraint-based resolution; the gate is measurement (benchmark space / eval overhead / complex-flake behavior across Nix, Lix, Tvix, Trust Nix and mixed pairings before committing); Drew's rule: if it's a wash with no significant downside, keep it for the option value.
+- design_artifact: `doc/2026-11-13T11-42-00Z_design_nix_content_store/brief.md` on main (PR #9520, merged).
+- tracking: developing-today/code#9521 (label `design`) — added by this monitor to Project #4, Status = Registered, Area = Cloudflare. No milestone assigned: the nix-cache program milestone lives in developing-today/nix-cache and cannot be assigned to a code-repo issue.
+- status: registered; program starter open, brief merged.
+
+### M3. Pool & effort system — effort tiers per pool, OpenChamber category pools, granular stats store (ID & fleet)
+
+- first_asked: 2026-11-13 — Drew's program, via the design mill.
+- his ask: rebuild the fleet's pool and effort system as one coherent design — every pool gets working low/medium/high effort tiers with per-model equivalence mapping, OpenChamber categories get appropriate pools with a working auto, models can self-switch within bounds, and a granular stats store keeps the evidence the tiers are tuned from.
+- design_artifact: `doc/2026-11-13T09-26-00Z_design_pool_effort_system/brief.md` on main (PR #9398, merged).
+- tracking: developing-today/code#9399 (label `design`) — added by this monitor to Project #4, Status = In progress (the issue is claimed and assigned to the mill), Area = ID & fleet. No milestone: a new standalone program, not a member of the bounded Pool & routing intelligence milestone set.
+- status: registered; design mill in progress.
+
+### M4. fleet orgs — Turso-backed org/App registry + `fleet orgs` list subcommand (Adjacent infra)
+
+- first_asked: 2026-11-12 ~01:43 CST, main chat.
+- his ask (verbatim, as recorded on the issue): "keep a list of all orgs in hatch personal and the permissions and apps each that you can refer back to, or maybe a table in turso and wire a fleet subcommand to list whatever"
+- tracking: developing-today/code#8884 (labels `design`, `epic/fleet-apps`) — already on Project #4 from the setup pass; this monitor set Status = Registered and Area = Adjacent infra. The document-form registry (first deliverable) lives in dezren39/hatch-personal (`library/github-orgs-apps-registry.md`); this issue is the durable Turso + subcommand upgrade.
+- status: registered; draft design filed for Drew's ratification under the design-protection rule.
+
+### M5. Idea-engine additions — 27 entries, 2026-11-11 → 2026-11-16 (Appendix A extension, entry T3)
+
+The idea engine kept running after the register's 2026-11-11 cutoff: 27 new dated ideas in the log (`cloud-ideas-log.md`, lab-cluster goal), none in Appendix A and none on the ideas board. All 27 were added by this monitor to org Project #5 as draft items, Status = Idea, Theme set as grouped below. Running totals: edge/cache 25 · storage 20 · observability 19 · security 41 · agents/compute 53 = **158**. (The 2026-11-11 20:25 R2 placement plane post-dates the register synthesis cutoff the same day and is included here.) Pickup status: not recorded for any of them, except Rocket Loader (noted in place).
+
+### Edge / cache (+7)
+
+- Static-assets co-deploy plane (every static property ships as Workers Static Assets attached to its dynamic Worker, `run_worker_first` declared per path class, routing ledger in Turso) — 2026-11-12
+- Cache-policy plane (Cache Rules declare eligibility, Edge/Browser TTL, and cache key per path class, wire-verified nightly, policy ledger in Turso) — 2026-11-12
+- Canonical redirect plane (Single Redirects declare every deliberate public URL move, wire-verified nightly, redirect ledger in Turso) — 2026-11-12
+- Build-room broadcast window (one Stream Live Input takes a single RTMPS/SRT push from the basement, LL-HLS serves every viewer, session ledger in Turso) — 2026-11-14
+- Wire-protocol plane (HTTP/3 + TLS 1.3 declared in git, 0-RTT gated by an Early-Data audit — every one-time GET gets a 425 guard before the toggle, protocol ledger in Turso) — 2026-11-15
+- Canonical-path plane (URL Normalization in `http_request_sanitize` declared in git — one canonical path spelling for every rule that matches on one, wire-proven per class, normalization ledger in Turso) — 2026-11-15
+- Rocket Loader trial plane (script deferral declared in git — zone baseline stays off, one page class at a time earns it after a script inventory, exclusion ledger in Turso) — 2026-11-15 — **picked up: Drew approved the trial 2026-11-15; log records it implemented the same day**
+
+### Storage (+1)
+
+- R2 placement plane (every bucket's location declared in git before creation — Location Hint for performance, jurisdiction only where a guarantee is needed, placement ledger in Turso) — 2026-11-11
+
+### Observability (+2)
+
+- Vendor-signal inbox (Cloudflare Platform Notifications delivered by generic webhook to one receiver Worker, alert ledger in Turso) — 2026-11-14
+- Rendered-truth plane (Browser Run Quick Actions screenshot/snapshot every public property on a schedule, captures in R2, render ledger in Turso) — 2026-11-15
+
+### Security (+12)
+
+- Origin request-header plane (Request Header Transform Rules declare exactly what headers each origin class receives, origin-echo-verified nightly, header ledger in Turso) — 2026-11-12
+- DDoS posture plane (the HTTP DDoS managed ruleset's ONE Free override declared in git, spike-correlated ledger in Turso) — 2026-11-12
+- Canary credential plane (unique honeytokens per placement — Worker-checked decoy keys, canary hostnames, canary inbox addresses — trip ledger in Turso) — 2026-11-12
+- Prompt-injection screen plane (AI Gateway Guardrails evaluate agent prompts + non-streaming responses, verdict ledger in Turso) — 2026-11-13
+- One front door (Access App Launcher as the program's declared portal, portal registry in Turso) — 2026-11-13
+- SaaS posture sentinel (CASB's two included read-only integrations watch the GitHub org + one more SaaS, findings ledger in Turso via CASB webhooks) — 2026-11-13
+- Bot Fight Mode trial plane (the Free zone's built-in known-bot challenge, enabled as a measured reversible trial, collateral ledger in Turso) — 2026-11-14
+- Managed-ruleset posture plane (the Free Managed Ruleset's deployment declared in git, rule-hit ledger in Turso, read-back-verified nightly) — 2026-11-14
+- Under-Attack escalation plane (Security Level declared in git — declared baseline, path-scoped I'm Under Attack drills, machine paths pinned low, activation ledger in Turso) — 2026-11-14
+- TLS floor plane (Minimum TLS Version declared in git — zone floor raised 1.0 → 1.2 only after a client census, floor ledger in Turso) — 2026-11-15
+- Scrape Shield baseline plane (the zone-level content-protection defaults declared in git — Email Obfuscation kept deliberate, Hotlink Protection flipped only after an image inventory, Server-Side Excludes recorded as dead, baseline ledger in Turso) — 2026-11-15
+- Edge certificate lifecycle plane (Universal SSL certificate packs + backup certificate declared in git, renewal / CA-change ledger in Turso) — 2026-11-16
+
+### Agents / compute (+5)
+
+- Edge-resident resumable coding agent (Nanocode harness in a Durable Object, remote hands on the fleet, session index in Turso) — 2026-11-13
+- Cancellation-aware edge plane (Request.signal threaded through every expensive Worker route, compat-date bump declared per Worker, cancellation ledger in Turso) — 2026-11-13
+- Hands-free basement voice line (push-to-talk WebSocket in a Durable Object, Whisper in / MeloTTS out, read-only status intents, session ledger in Turso) — 2026-11-13
+- Dead-letter quarantine plane (a declared DLQ on every Queue consumer, inspector copies failures to R2 before the 4-day expiry, failure ledger in Turso, replay only after a recorded fix) — 2026-11-14
+- Basement workerd twin plane (the program's Workers run a second time on workerd inside the cluster, placement declared per Worker in git, conformance ledger in Turso) — 2026-11-16

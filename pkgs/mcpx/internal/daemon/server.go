@@ -144,8 +144,13 @@ type Server struct {
 
 	// sink is the durable log POST /v1/log appends to. Nil when the log
 	// could not be opened, which the daemon survives and the route reports.
-	sink    *logging.FileSink
-	lastReq atomic.Int64
+	sink *logging.FileSink
+	// callLedger is the dedicated, payload-free execution ledger. It is
+	// separate from the mixed diagnostic log so analytics can read it safely.
+	callLedger      *logging.FileSink
+	callLedgerDir   string
+	lastLedgerPrune atomic.Int64
+	lastReq         atomic.Int64
 
 	// cfgMu guards cfg, contentHash and stamp. The daemon re-reads its
 	// configuration from a request goroutine now, so what used to be
@@ -241,24 +246,43 @@ func NewServer(opts Options) (*Server, error) {
 	if err := ValidateBearerToken(opts.Settings); err != nil {
 		return nil, err
 	}
+	// This dedicated, payload-free JSONL surface has an explicit rotation
+	// contract independent of general logging defaults: 16 MiB, 200k records,
+	// or 24 hours per file, retaining eight rotated files. FileSink names the
+	// active file mcpx-YYYY-MM-DD.jsonl and rotated files with a time suffix.
+	callLedger, ledgerErr := logging.NewFileSink(logging.FileOptions{
+		Dir:      filepath.Join(opts.Paths.State, "call-ledger"),
+		MaxBytes: 16 * 1024 * 1024,
+		MaxLines: 200_000,
+		MaxAge:   24 * time.Hour,
+		Keep:     8,
+	})
+	if ledgerErr == nil {
+		pruneCallLedger(filepath.Join(opts.Paths.State, "call-ledger"), time.Now())
+	}
+	if ledgerErr != nil {
+		opts.Logger.Printf("call ledger unavailable: %v", ledgerErr)
+	}
 	// logging.trace, which is MCPX_TRACE. It was read here by name, so a
 	// configuration file or `mcpx daemon --logging-trace` could not turn it on.
 	if opts.Settings.Bool("logging.trace") {
 		pool.Trace = func(f string, a ...any) { opts.Logger.Printf(f, a...) }
 	}
 	srv := &Server{
-		set:       opts.Settings,
-		reg:       reg,
-		paths:     opts.Paths,
-		cfg:       opts.Config,
-		logger:    opts.Logger,
-		version:   opts.Version,
-		idleExit:  opts.IdleExit,
-		sink:      opts.Sink,
-		augment:   opts.Augment,
-		Events:    events.New(opts.Settings.Int("events.history")),
-		httpErr:   make(chan error, 4),
-		handedOff: make(chan struct{}),
+		set:           opts.Settings,
+		reg:           reg,
+		paths:         opts.Paths,
+		cfg:           opts.Config,
+		logger:        opts.Logger,
+		version:       opts.Version,
+		idleExit:      opts.IdleExit,
+		sink:          opts.Sink,
+		callLedger:    callLedger,
+		callLedgerDir: filepath.Join(opts.Paths.State, "call-ledger"),
+		augment:       opts.Augment,
+		Events:        events.New(opts.Settings.Int("events.history")),
+		httpErr:       make(chan error, 4),
+		handedOff:     make(chan struct{}),
 	}
 	// The broker is optional: a daemon whose state directory cannot hold a
 	// database still serves tools, and answers every server question with
@@ -394,6 +418,12 @@ func (s *Server) Listen(tcpPort int) error {
 	}
 	s.endpoint = "http://" + tcpLn.Addr().String()
 	s.started = time.Now()
+	// Adopt supervised instances a previous daemon left running
+	// (#9962): their supervisors outlive the daemon by design.
+	s.reg.AdoptSupervised(context.Background())
+	// Reap the supervisors no configured server claims anymore
+	// (#9963, the other half of the adopt-or-reap scan).
+	s.reg.ReapOrphanedSupervisors()
 	return s.publish()
 }
 
@@ -408,9 +438,10 @@ func (s *Server) listenTSNet() error {
 		return nil
 	}
 	tsLn, err := tsnetTransport{
-		hostname: hostname,
-		stateDir: s.tsnetStateDir(),
-		authKey:  envTSNetAuthKey(),
+		hostname:  hostname,
+		stateDir:  s.tsnetStateDir(),
+		authKey:   envTSNetAuthKey(),
+		upTimeout: s.set.Duration("daemon.tsnetUpTimeout"),
 	}.Listen()
 	if err != nil {
 		return err
@@ -470,7 +501,7 @@ func (s *Server) startHTTP() {
 	mux := http.NewServeMux()
 	s.routes(mux)
 	srv := &http.Server{
-		Handler:           s.refuseBrowserPages(s.trackActivity(s.authorize(s.requireBearer(mux)))),
+		Handler:           s.corsForAllowedOrigins(s.refuseBrowserPages(s.trackActivity(s.authorize(s.requireBearer(mux))))),
 		ReadHeaderTimeout: s.set.Duration("http.readHeaderTimeout"),
 		ConnState:         s.observeConn,
 		ConnContext:       connPrincipal,
@@ -554,7 +585,7 @@ func (s *Server) ServeInline(ctx context.Context, socket string) error {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	s.routes(mux)
-	return s.refuseBrowserPages(s.authorize(s.requireBearer(mux)))
+	return s.corsForAllowedOrigins(s.refuseBrowserPages(s.authorize(s.requireBearer(mux))))
 }
 
 // InProcessHandler returns Handler with the daemon's lifetime tied to
@@ -755,6 +786,9 @@ func (s *Server) shutdown() error {
 	if s.tokenStore != nil {
 		_ = s.tokenStore.Close()
 	}
+	if s.callLedger != nil {
+		_ = s.callLedger.Close()
+	}
 	_ = os.Remove(s.paths.Socket)
 	s.paths.RemoveInfo()
 	s.logger.Printf("stopped")
@@ -767,7 +801,18 @@ func (s *Server) shutdown() error {
 // the whole stop is bounded by pool.ExecDrainTimeout, the same window a reload
 // gives a replaced pool. The HTTP grace is capped to that window too, so a
 // long http.shutdownGrace cannot stretch the stop past it.
-func (s *Server) stopServing() {
+func (s *Server) stopServing() { s.stopServingForRestart(false) }
+
+// stopServingForRestart stops the front door and then the pools. restart marks
+// a restart-intent graceful shutdown (#1414): each pool then keeps its upstream
+// HTTP sessions alive for the successor process instead of ending them with an
+// upstream DELETE. The HTTP server goes first, so calls already running can
+// finish and take the leases they still need. The pools are then drained with
+// what is left of the drain window, so the whole stop is bounded by
+// pool.ExecDrainTimeout, the same window a reload gives a replaced pool. The
+// HTTP grace is capped to that window too, so a long http.shutdownGrace cannot
+// stretch the stop past it.
+func (s *Server) stopServingForRestart(restart bool) {
 	window := pool.ExecDrainTimeout
 	start := time.Now()
 	if s.httpSrv != nil {
@@ -780,6 +825,10 @@ func (s *Server) stopServing() {
 		cancel()
 	}
 	if s.reg != nil {
+		if restart {
+			s.reg.CloseWithinForRestart(window - time.Since(start))
+			return
+		}
 		s.reg.CloseWithin(window - time.Since(start))
 	}
 }
@@ -1232,7 +1281,7 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 		res, err = s.reg.Call(ctx, req.Server, req.Tool, cc, args)
 	}
 	dur := time.Since(start).Truncate(time.Millisecond)
-	s.reportCallFrame(ctx, req.Server, req.Tool, args, start, res, err)
+	s.reportCallFrame(ctx, req.Server, req.Tool, cc.SessionID, args, start, res, err)
 
 	toolKey := req.Server + ":" + req.Tool
 	var inBytes, outBytes []byte
@@ -1384,7 +1433,7 @@ func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
 		// Batch items bypass the single-call handlers, so report each
 		// completed one here: a script's batch(...) calls belong in
 		// its exec stream like any other call.
-		s.reportCallFrame(ctx, server, tool, args, start, res, err)
+		s.reportCallFrame(ctx, server, tool, cc.SessionID, args, start, res, err)
 
 		if err != nil {
 			return map[string]any{
@@ -1589,10 +1638,20 @@ func (s *Server) handleDaemonRestart(w http.ResponseWriter, _ *http.Request) {
 			if err := s.reg.SaveCache(); err != nil && s.logger != nil {
 				s.logger.Printf("save cache before restart: %v", err)
 			}
+			// The restart keeps upstream sessions alive instead of
+			// DELETING them (#1414), so the persisted session table is
+			// what the successor resumes from: flush it before the
+			// exec, the same way a final stop does.
+			if err := s.reg.SaveSessions(); err != nil && s.logger != nil {
+				s.logger.Printf("save sessions before restart: %v", err)
+			}
 		}
 		execPath, err := os.Executable()
 		if err == nil {
-			s.stopServing()
+			// Restart intent, not a final stop: pools close without an
+			// upstream DELETE so the next daemon process can resume the
+			// sessions recorded here (#1414).
+			s.stopServingForRestart(true)
 			if s.paths.Socket != "" {
 				_ = os.Remove(s.paths.Socket)
 			}
@@ -1780,6 +1839,10 @@ func (s *Server) handleElicitList(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	// This list is the answerer-facing surface: whatever polls it is
+	// looking for questions to answer, so it heartbeats answerer
+	// presence for the broker's no-audience signal (#2438).
+	_ = s.reg.broker.NoteAnswerer(elicit.Audience(r.URL.Query().Get("audience")))
 	if pending == nil {
 		pending = []elicit.Request{}
 	}
@@ -1879,17 +1942,40 @@ func (s *Server) callRegistry() *execsvc.CallRegistry {
 // reportCallFrame tells the exec stream that is running this call, if
 // any, that the call happened: a call frame with the tool's resolved
 // destructiveHint. A call with no run id, or a run this daemon is not
-// executing, has no stream to join and is not reported.
-func (s *Server) reportCallFrame(ctx context.Context, server, tool string, args any, start time.Time, res json.RawMessage, callErr error) {
+// executing, has no stream to join but still belongs in the call ledger.
+func (s *Server) reportCallFrame(ctx context.Context, server, tool, callerSession string, args any, start time.Time, res json.RawMessage, callErr error) {
 	run := runFrom(ctx)
-	if run == "" {
-		return
-	}
 	// A tool that ran and returned isError failed, even though the
 	// transport call itself succeeded: the frame must say so, the way
 	// the path-per-tool handler already does with resultFailed.
 	if callErr == nil && resultFailed(res) {
 		callErr = errors.New("tool returned an error result (isError)")
+	}
+	if s.callLedger != nil {
+		attrs := map[string]any{
+			"server":      server,
+			"tool":        tool,
+			"outcome":     "success",
+			"duration_ms": time.Since(start).Milliseconds(),
+		}
+		if callErr != nil {
+			attrs["outcome"] = "error"
+		}
+		if run != "" {
+			attrs["caller_run"] = run
+		}
+		if callerSession != "" {
+			attrs["caller_session"] = callerSession
+		}
+		s.callLedger.Write(logging.Record{Time: time.Now(), Msg: "tool_call", Attrs: attrs}, nil)
+		now := time.Now()
+		last := s.lastLedgerPrune.Load()
+		if now.Unix()-last >= 3600 && s.lastLedgerPrune.CompareAndSwap(last, now.Unix()) {
+			pruneCallLedger(s.callLedgerDir, now)
+		}
+	}
+	if run == "" {
+		return
 	}
 	var dh *bool
 	if picked := s.pickTool(server, tool); picked != nil {

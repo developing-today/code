@@ -115,12 +115,47 @@ def load_matrix(vecdb, table, trunc):
     return ids, M
 
 
-def embed_queries(framework, model, texts, qcache):
+def _qcache_meta_path(qcache):
+    return Path(str(qcache) + ".meta.json")
+
+
+def _truncate_normalized(Q, trunc):
+    # The query-side twin of load_matrix's truncation: --trunc cuts
+    # document embeddings there, so it must cut query embeddings here
+    # (then renormalize), or M @ Q[qi] is a dimension mismatch for any
+    # model wider than the truncation (#8738 bug 1).
+    if trunc:
+        Q = Q[:, :trunc]
+    return Q / np.linalg.norm(Q, axis=1, keepdims=True)
+
+
+def embed_queries(framework, model, texts, qcache, trunc=0):
+    # The cache stores full-dimensional, L2-normalized query
+    # embeddings, and truncation is applied after load / compute,
+    # identically on both paths, so one cache serves any --trunc and
+    # a cached run scores exactly the vectors a fresh run would.
+    # Reuse is valid only for the exact identity the cache was
+    # written under — framework + model + the ordered query texts,
+    # recorded in the sidecar meta file. Row count alone is NOT
+    # identity: changing the model, or changing / reordering the
+    # queries at the same count, must not silently score the wrong
+    # vectors under the new model's name (#8738 bug 2). A cache with
+    # no matching sidecar — including every cache written before
+    # identity validation existed — is not trusted and is recomputed.
+    identity = {"framework": framework, "model": model, "texts": list(texts)}
     if qcache and Path(qcache).exists():
+        cached_identity = None
+        meta = _qcache_meta_path(qcache)
+        if meta.exists():
+            try:
+                cached_identity = json.loads(meta.read_text())
+            except (OSError, ValueError):
+                cached_identity = None
         Q = np.load(qcache)
-        if Q.shape[0] == len(texts):
+        if cached_identity == identity and Q.shape[0] == len(texts):
             print(f"[eval3] query embeddings from cache {qcache} shape={Q.shape}")
-            return Q
+            return _truncate_normalized(Q, trunc)
+        print(f"[eval3] query cache {qcache} identity mismatch; recomputing")
     if framework == "fastembed":
         from fastembed import TextEmbedding
 
@@ -143,7 +178,8 @@ def embed_queries(framework, model, texts, qcache):
     Q = Q / np.linalg.norm(Q, axis=1, keepdims=True)
     if qcache:
         np.save(qcache, Q)
-    return Q
+        _qcache_meta_path(qcache).write_text(json.dumps(identity))
+    return _truncate_normalized(Q, trunc)
 
 
 def main():
@@ -172,7 +208,11 @@ def main():
     if args.mode in ("vector", "hybrid"):
         ids, M = load_matrix(args.vecdb, args.table, args.trunc)
         Q = embed_queries(
-            args.framework, args.model, [q["query"] for q in queries], args.qcache
+            args.framework,
+            args.model,
+            [q["query"] for q in queries],
+            args.qcache,
+            args.trunc,
         )
         print(f"[eval3] matrix {M.shape} queries {Q.shape}")
 
@@ -221,7 +261,11 @@ def main():
                 hits10 += 1
         c = per_cat.setdefault(q["category"], [0, 0, 0.0])
         c[1] += 1
-        c[0] += 1 if rank else 0
+        # Per-category recall@10 gets the same ten-rank cutoff as the
+        # overall counter: with --k > 10, `rank` can exceed 10, and
+        # counting it here would overstate the category's recall@10
+        # (#8738 bug 3).
+        c[0] += 1 if (rank and rank <= 10) else 0
         c[2] += (1.0 / rank) if rank else 0.0
         per_q.append({"id": q["id"], "category": q["category"], "rank": rank})
         print(

@@ -34,8 +34,11 @@ const stamps = { ts: '2026-10-28T00:00:00.000Z', pwd: '/somewhere' };
 
 test('resolveTarget honours AI_RECORDINGS_FILE and falls back to the default', () => {
   assert.equal(resolveTarget({ AI_RECORDINGS_FILE: '/x/y.jsonl' }), '/x/y.jsonl');
-  assert.equal(resolveTarget({ AI_RECORDINGS_FILE: '  ' }), resolveTarget({}));
-  assert.ok(resolveTarget({}).endsWith(path.join('git', 'ai_recordings.jsonl')));
+  assert.equal(resolveTarget({ AI_RECORDINGS_FILE: '  ', HOME: '/h' }), resolveTarget({ HOME: '/h' }));
+  assert.equal(resolveTarget({ HOME: '/h' }), path.join('/h', 'git', 'ai_recordings.jsonl'));
+  for (const env of [{}, { HOME: '' }]) {
+    assert.throws(() => resolveTarget(env), /HOME is not set or is empty: record/);
+  }
 });
 
 test('round-trip: agent-supplied fields read back byte-identical', () => {

@@ -73,7 +73,10 @@ fn sha256_file(path: &Path) -> Result<String, String> {
         }
         h.update(&buf[..n]);
     }
-    Ok(format!("{:x}", h.finalize()))
+    Ok(h.finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>())
 }
 
 /// Every file in `files` present in `dir` with a matching hash.
@@ -129,7 +132,11 @@ fn download(url: &str, dest: &Path, want: &str, rel: &str) -> Result<(), String>
     }
     out.flush()
         .map_err(|e| format!("cannot write {}: {e}", dest.display()))?;
-    let got = format!("{:x}", h.finalize());
+    let got = h
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
     if got != want {
         return Err(format!(
             "sha256 mismatch for {rel}: downloaded {got}, pinned {want} — refusing to install"

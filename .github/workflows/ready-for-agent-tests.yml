@@ -7,11 +7,10 @@ name: ready-for-agent tests
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - "pm-stack/ready-for-agent/**"
-      - ".github/workflows/ready-for-agent-tests.yml"
+  schedule:
+    # Nightly instead of on every push to main (Drew, 2026-11-16; see
+    # .github/ci-policy.md "Nightly main CI").
+    - cron: "17 7 * * *"
 
 permissions:
   contents: read

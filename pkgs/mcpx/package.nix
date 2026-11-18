@@ -2,7 +2,11 @@
   lib,
   # Built with the highest released Go toolchain (1.27.x); go.mod's `go`
   # directive tracks it, so buildGo127Module rather than plain buildGoModule.
+  # go-toolchain.nix lifts it to go.mod's patch release when the pinned
+  # nixpkgs is a release behind.
   buildGo127Module,
+  go_1_27,
+  fetchurl,
   # Runtimes mcpx can use for `mcpx run` / `mcpx exec`. It picks the first one
   # present on PATH in this order, so the wrapper below pins a known-good set
   # rather than depending on whatever the calling shell happens to have.
@@ -37,8 +41,16 @@ let
   # scope for interpolation inside it. internal/buildcheck guards
   # the scheme.
   version = lib.removeSuffix "\n" (builtins.readFile ./VERSION);
+  buildMcpxGoModule = import ./go-toolchain.nix {
+    inherit
+      lib
+      fetchurl
+      go_1_27
+      buildGo127Module
+      ;
+  };
 in
-buildGo127Module {
+buildMcpxGoModule {
   pname = "mcpx";
   inherit version;
 
@@ -89,7 +101,7 @@ buildGo127Module {
   #
   # Everything else -- the MCP client, the process pools, the JSON Schema to
   # TypeScript compiler, the CLI -- is standard library.
-  vendorHash = "sha256-S5qXMMhYBghhjqQvzMARYliC9Dtvu+QJBTUsgpLl2TA=";
+  vendorHash = "sha256-xif8jcKtFei4vd7bh8way+KnHS6O0I/JFxrTMyVlTKo=";
 
   subPackages = [ "cmd/mcpx" ];
 

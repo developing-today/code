@@ -970,6 +970,33 @@ fn test_cli_parse_put_hash() {
 }
 
 #[test]
+fn test_cli_parse_doc_content() {
+    let cli = Cli::parse_from(["id", "doc", "content", "abc123"]);
+    match cli.command {
+        Some(Command::Doc {
+            command: DocCommand::Content { document, output },
+            ..
+        }) => {
+            assert_eq!(document, "abc123");
+            assert_eq!(output, "-");
+        }
+        _ => panic!("Expected Doc::Content command"),
+    }
+
+    let cli = Cli::parse_from(["id", "doc", "content", "abc123", "out.txt"]);
+    match cli.command {
+        Some(Command::Doc {
+            command: DocCommand::Content { document, output },
+            ..
+        }) => {
+            assert_eq!(document, "abc123");
+            assert_eq!(output, "out.txt");
+        }
+        _ => panic!("Expected Doc::Content command"),
+    }
+}
+
+#[test]
 fn test_cli_verify() {
     // Verify CLI structure is valid
     Cli::command().debug_assert();
@@ -2039,6 +2066,40 @@ fn test_cli_parse_web_cookie_secure() {
 }
 
 #[test]
+fn test_cli_parse_gallery_dir_and_publish() {
+    match Cli::parse_from(["id", "serve", "--web", "--gallery-dir", "/srv/gallery"]).command {
+        Some(Command::Serve(args)) => assert_eq!(
+            args.gallery_dir.as_deref(),
+            Some(std::path::Path::new("/srv/gallery"))
+        ),
+        _ => panic!("Expected Serve command"),
+    }
+    match Cli::parse_from(["id", "serve", "--web"]).command {
+        Some(Command::Serve(args)) => assert!(args.gallery_dir.is_none()),
+        _ => panic!("Expected Serve command"),
+    }
+    match Cli::parse_from([
+        "id",
+        "serve",
+        "--gallery-dir",
+        "/srv/gallery",
+        "--gallery-accept-publish",
+    ])
+    .command
+    {
+        Some(Command::Serve(args)) => {
+            assert!(
+                args.gallery_dir.is_some(),
+                "the Iroh registry needs no --web"
+            );
+            assert!(args.gallery_accept_publish);
+        }
+        _ => panic!("Expected Serve command"),
+    }
+    assert!(Cli::try_parse_from(["id", "serve", "--gallery-accept-publish"]).is_err());
+}
+
+#[test]
 fn test_cli_parse_world_boot_window() {
     let cli = Cli::parse_from([
         "id",
@@ -2866,4 +2927,302 @@ fn test_cli_parse_world_dev_watch() {
         },
         other => panic!("unexpected: {other:?}"),
     }
+}
+
+/// F11.12: `id world journal check|backup` parse through the CLI
+/// surface — the format-management commands the packet adds.
+#[test]
+fn world_journal_subcommands_parse() {
+    let cli = Cli::parse_from(["id", "world", "journal", "check", "/tmp/w", "--json"]);
+    match cli.command {
+        Some(Command::World(cmd)) => match *cmd {
+            WorldCommand::Journal(args) => match args.action {
+                JournalCommand::Check { dir, json } => {
+                    assert_eq!(dir, std::path::PathBuf::from("/tmp/w"));
+                    assert!(json);
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        },
+        other => panic!("unexpected: {other:?}"),
+    }
+    let cli = Cli::parse_from(["id", "world", "journal", "backup", "/tmp/w", "/tmp/b.jsonl"]);
+    match cli.command {
+        Some(Command::World(cmd)) => match *cmd {
+            WorldCommand::Journal(args) => match args.action {
+                JournalCommand::Backup { dir, out } => {
+                    assert_eq!(dir, std::path::PathBuf::from("/tmp/w"));
+                    assert_eq!(out, std::path::PathBuf::from("/tmp/b.jsonl"));
+                }
+                other => panic!("unexpected: {other:?}"),
+            },
+            other => panic!("unexpected: {other:?}"),
+        },
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+/// #8341 (proving #796 item 9-8): full verb coverage. The existing
+/// guard above proves the TOP-LEVEL verbs match the hand-maintained
+/// command lists; this test proves the whole verb TREE: every verb
+/// path, enumerated from the clap definition itself (never a
+/// hand-maintained list), is documented (carries help text) and is
+/// exercised at the dispatch level — clap routing must reach it and
+/// answer . A verb that cannot meet either bar appears in
+/// EXEMPTIONS with its reason, in this test, never as a silent gap;
+/// a stale exemption (one naming a verb that no longer needs it, or
+/// no longer exists) also fails, so the list cannot rot.
+///
+/// Oracle: the CLI's own clap definition (Cli::command()).
+#[test]
+fn test_every_verb_is_documented_and_dispatchable() {
+    // The parse probes below recurse through the whole command
+    // tree; run on a big stack like the other parse tests (#3059).
+    std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || {
+            let cmd = Cli::command();
+            let mut paths: Vec<Vec<String>> = Vec::new();
+            fn walk(cmd: &clap::Command, prefix: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
+                for sub in cmd.get_subcommands() {
+                    if sub.get_name() == "help" {
+                        continue;
+                    }
+                    prefix.push(sub.get_name().to_owned());
+                    out.push(prefix.clone());
+                    walk(sub, prefix, out);
+                    prefix.pop();
+                }
+            }
+            walk(&cmd, &mut Vec::new(), &mut paths);
+            assert!(
+                paths.len() >= 40,
+                "expected the full verb tree, got {} paths",
+                paths.len()
+            );
+
+            // Named exemptions: verb path -> why it is not required
+            // to be documented and dispatchable. Empty today: every
+            // verb meets both bars.
+            const EXEMPTIONS: &[(&str, &str)] = &[];
+            let exempt = |path: &[String]| {
+                EXEMPTIONS
+                    .iter()
+                    .find(|(p, _)| *p == path.join(" "))
+                    .map(|(_, why)| *why)
+            };
+
+            let mut failures: Vec<String> = Vec::new();
+            for path in &paths {
+                if exempt(path).is_some() {
+                    continue;
+                }
+                // Documented: the verb carries help text of its own.
+                let mut node = &cmd;
+                for seg in path {
+                    node = node
+                        .get_subcommands()
+                        .find(|s| s.get_name() == seg)
+                        .expect("path from the same tree");
+                }
+                if node.get_about().is_none() && node.get_long_about().is_none() {
+                    failures.push(format!("{}: no help text", path.join(" ")));
+                }
+                // Dispatchable: clap routing reaches the verb and
+                // answers --help (DisplayHelp), rather than rejecting
+                // the path as an unknown subcommand.
+                let mut argv: Vec<String> = vec!["id".to_owned()];
+                argv.extend(path.iter().cloned());
+                argv.push("--help".to_owned());
+                match Cli::try_parse_from(&argv) {
+                    Err(e) if e.kind() == clap::error::ErrorKind::DisplayHelp => {}
+                    Err(e) => failures.push(format!(
+                        "{}: --help dispatch gave {} ({}) instead of DisplayHelp",
+                        path.join(" "),
+                        e.kind(),
+                        e
+                    )),
+                    Ok(_) => failures.push(format!(
+                        "{}: --help parsed as a run instead of displaying help",
+                        path.join(" ")
+                    )),
+                }
+            }
+            // Exemptions must not outlive their reason: each one has
+            // to name a verb that still exists in the tree.
+            for (p, _) in EXEMPTIONS {
+                assert!(
+                    paths.iter().any(|path| path.join(" ") == *p),
+                    "stale exemption: no such verb in the tree: {}", p
+                );
+            }
+            assert!(
+                failures.is_empty(),
+                "verb coverage failures (add the verb's help/dispatch, or a named exemption with its reason):\n{}",
+                failures.join("\n")
+            );
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn test_cli_parse_gallery_admin() {
+    use id_worlds::program_gallery_admission::{AdmissionPosture, ReasonClass};
+
+    let hash = "a".repeat(64);
+    match Cli::parse_from([
+        "id",
+        "gallery",
+        "--dir",
+        "/srv/gallery",
+        "remove",
+        &hash,
+        "--reason",
+        "malware",
+        "--note",
+        "reported",
+    ])
+    .command
+    {
+        Some(Command::Gallery(GalleryArgs {
+            dir,
+            command:
+                GalleryCommand::Remove {
+                    content_hash,
+                    reason,
+                    note,
+                },
+        })) => {
+            assert_eq!(dir, std::path::Path::new("/srv/gallery"));
+            assert_eq!(content_hash, hash);
+            assert_eq!(reason, ReasonClass::Malware);
+            assert_eq!(note.as_deref(), Some("reported"));
+        }
+        _ => panic!("Expected gallery remove"),
+    }
+    match Cli::parse_from(["id", "gallery", "--dir", "/g", "posture", "reviewed"]).command {
+        Some(Command::Gallery(GalleryArgs {
+            command: GalleryCommand::Posture { posture },
+            ..
+        })) => assert_eq!(posture, AdmissionPosture::Reviewed),
+        _ => panic!("Expected gallery posture"),
+    }
+    assert!(
+        Cli::try_parse_from([
+            "id", "gallery", "--dir", "/g", "remove", &hash, "--reason", "rude"
+        ])
+        .is_err()
+    );
+    assert!(Cli::try_parse_from(["id", "gallery", "--dir", "/g", "tag", "board"]).is_err());
+}
+
+#[test]
+fn test_cli_parse_keyset_commands() {
+    let show = Cli::parse_from(["id", "keyset", "show", "--client"]);
+    assert!(matches!(
+        show.command,
+        Some(Command::Keyset {
+            command: KeysetCommand::Show { client: true }
+        })
+    ));
+    let enrol = Cli::parse_from(["id", "keyset", "enrol", "laptop.key", "--label", "laptop"]);
+    assert!(matches!(
+        enrol.command,
+        Some(Command::Keyset {
+            command: KeysetCommand::Enrol { client: false, .. }
+        })
+    ));
+    let revoke = Cli::parse_from(["id", "keyset", "revoke", "ab12"]);
+    let Some(Command::Keyset {
+        command: KeysetCommand::Revoke { reason, .. },
+    }) = revoke.command
+    else {
+        panic!("expected keyset revoke");
+    };
+    assert_eq!(reason, "revoked");
+    let rotate = Cli::parse_from(["id", "keyset", "rotate", "new-admin.key"]);
+    assert!(matches!(
+        rotate.command,
+        Some(Command::Keyset {
+            command: KeysetCommand::Rotate { client: false, .. }
+        })
+    ));
+    let guardians = Cli::parse_from(["id", "keyset", "guardians", "aa", "bb", "--threshold", "2"]);
+    let Some(Command::Keyset {
+        command:
+            KeysetCommand::Guardians {
+                guardians,
+                threshold,
+                client: false,
+            },
+    }) = guardians.command
+    else {
+        panic!("expected keyset guardians");
+    };
+    assert_eq!((guardians.len(), threshold), (2, 2));
+    assert!(Cli::try_parse_from(["id", "keyset", "guardians", "--threshold", "1"]).is_err());
+    let checkpoint = Cli::parse_from(["id", "keyset", "checkpoint", "--client"]);
+    assert!(matches!(
+        checkpoint.command,
+        Some(Command::Keyset {
+            command: KeysetCommand::Checkpoint { client: true }
+        })
+    ));
+}
+
+#[test]
+fn test_cli_parse_keyset_recovery_commands() {
+    let request = Cli::parse_from([
+        "id",
+        "keyset",
+        "recovery",
+        "request",
+        "ab12",
+        "--relay",
+        "relay.jsonl",
+    ]);
+    let Some(Command::Keyset {
+        command:
+            KeysetCommand::Recovery {
+                command:
+                    RecoveryCommand::Request {
+                        identity,
+                        reason,
+                        client: false,
+                        ..
+                    },
+            },
+    }) = request.command
+    else {
+        panic!("expected keyset recovery request");
+    };
+    assert_eq!(
+        (identity.as_str(), reason.as_str()),
+        ("ab12", "lost every key")
+    );
+    for step in ["approve", "cancel", "complete", "status"] {
+        let parsed = Cli::parse_from(["id", "keyset", "recovery", step, "cd34", "--relay", "r"]);
+        assert!(matches!(
+            parsed.command,
+            Some(Command::Keyset {
+                command: KeysetCommand::Recovery { .. }
+            })
+        ));
+    }
+    // Every step needs the relay file.
+    assert!(Cli::try_parse_from(["id", "keyset", "recovery", "status", "cd34"]).is_err());
+    let publish = Cli::parse_from([
+        "id", "keyset", "recovery", "publish", "--relay", "r", "--client",
+    ]);
+    assert!(matches!(
+        publish.command,
+        Some(Command::Keyset {
+            command: KeysetCommand::Recovery {
+                command: RecoveryCommand::Publish { client: true, .. }
+            }
+        })
+    ));
 }

@@ -7,6 +7,7 @@ import {
   deriveAuthorFromAccess,
   createAccessAuthorEnforcer,
   enforceAccessAuthor,
+  presentedAccessClaim,
   readAccessConfig,
   verifyAccessJwt,
 } from "../src/access-identity.ts";
@@ -67,7 +68,8 @@ describe("config-gated Access author derivation (#1253)", () => {
       {},
       fakeFetch(),
     );
-    expect(result).toEqual({ ok: true, author: assertedAgent });
+    // #9606: the passed-through claim is never reported as verified.
+    expect(result).toEqual({ ok: true, author: assertedAgent, verified: false });
   });
 
   test("valid JWT verifies against team JWKS and derives non-owner identity", async () => {
@@ -94,7 +96,12 @@ describe("config-gated Access author derivation (#1253)", () => {
       accessEnv(),
       fakeFetch(),
     );
-    expect(result).toEqual({ ok: true, author: { kind: "drew", id: "drew", label: "Drew" } });
+    expect(result).toEqual({
+      ok: true,
+      author: { kind: "drew", id: "drew", label: "Drew" },
+      verified: true,
+      identity: { sub: "owner-sub", email: OWNER },
+    });
   });
 
   test("asserted drew by a non-owner is forbidden", () => {
@@ -217,7 +224,7 @@ describe("config-gated Access author derivation (#1253)", () => {
     for (let index = 0; index < 100; index += 1) {
       const result = await enforce(index % 2 === 0 ? assertedAgent : assertedDrew);
       if (index % 2 === 0) {
-        expect(result).toMatchObject({ ok: true, author: { kind: "agent", id: NON_OWNER_SUB } });
+        expect(result).toMatchObject({ ok: true, author: { kind: "agent", id: NON_OWNER_SUB }, verified: true });
       } else {
         expect(result).toMatchObject({ ok: false, status: 403 });
       }
@@ -233,5 +240,115 @@ describe("config-gated Access author derivation (#1253)", () => {
     await expect(
       verifyAccessJwt(parts.join("."), { teamDomain: TEAM, aud: AUD, ownerIds: [OWNER] }, fakeFetch()),
     ).rejects.toThrow("JWT signature invalid");
+  });
+});
+
+describe("Access denials are logged with the presented claim (#9603)", () => {
+  const post = (headers: Record<string, string> = {}) =>
+    new Request("https://aggregator/api/comments?x=1", { method: "POST", headers });
+
+  function recorder(): { lines: string[]; log: (line: string) => void } {
+    const lines: string[] = [];
+    return { lines, log: (line) => lines.push(line) };
+  }
+
+  test("a missing assertion logs route, status, reason and no claim", async () => {
+    const r = recorder();
+    const result = await enforceAccessAuthor(post(), assertedAgent, accessEnv(), fakeFetch(), r.log);
+    expect(result).toMatchObject({ ok: false, status: 401 });
+    expect(r.lines).toHaveLength(1);
+    expect(r.lines[0]).toContain("[access] denied POST /api/comments ");
+    expect(r.lines[0]).toContain("status=401");
+    expect(r.lines[0]).toContain('reason="missing Cf-Access-Jwt-Assertion"');
+    expect(r.lines[0]).toContain("claim=none");
+    expect(r.lines[0]).toContain('asserted="agent:forged-agent"');
+  });
+
+  test("a token that fails verification logs its claims as unverified, never the token", async () => {
+    const r = recorder();
+    const wrongAud = token({
+      iss: `https://${TEAM}`,
+      aud: "another-app",
+      exp: Math.floor(Date.now() / 1000) + 300,
+      sub: NON_OWNER_SUB,
+      email: "member@example.com",
+    });
+    const result = await enforceAccessAuthor(
+      post({ [ACCESS_JWT_HEADER]: wrongAud }),
+      assertedAgent,
+      accessEnv(),
+      fakeFetch(),
+      r.log,
+    );
+    expect(result).toMatchObject({ ok: false, status: 401 });
+    expect(r.lines).toHaveLength(1);
+    expect(r.lines[0]).toContain("JWT audience mismatch");
+    expect(r.lines[0]).toContain(`sub="${NON_OWNER_SUB}" email="member@example.com" (unverified)`);
+    for (const part of wrongAud.split(".")) expect(r.lines[0]).not.toContain(part);
+  });
+
+  test("a verified non-owner claiming drew logs the 403 with the verified claim", async () => {
+    const r = recorder();
+    const result = await enforceAccessAuthor(
+      post({ [ACCESS_JWT_HEADER]: token() }),
+      assertedDrew,
+      accessEnv(),
+      fakeFetch(),
+      r.log,
+    );
+    expect(result).toMatchObject({ ok: false, status: 403 });
+    expect(r.lines).toHaveLength(1);
+    expect(r.lines[0]).toContain("status=403");
+    expect(r.lines[0]).toContain(`sub="${NON_OWNER_SUB}" email="member@example.com" (verified)`);
+    expect(r.lines[0]).toContain('asserted="drew:drew"');
+  });
+
+  test("allowed writes and unconfigured Access log nothing", async () => {
+    const r = recorder();
+    expect(
+      await enforceAccessAuthor(post({ [ACCESS_JWT_HEADER]: token() }), assertedAgent, accessEnv(), fakeFetch(), r.log),
+    ).toMatchObject({ ok: true, verified: true });
+    expect(await enforceAccessAuthor(post(), assertedDrew, {}, fakeFetch(), r.log)).toMatchObject({
+      ok: true,
+      verified: false,
+    });
+    expect(r.lines).toEqual([]);
+  });
+
+  test("a batch logs a shared 401 once and each per-entry 403", async () => {
+    const down = recorder();
+    const downFetch = (async () => {
+      throw new Error("certs endpoint unreachable");
+    }) as unknown as typeof fetch;
+    const failing = createAccessAuthorEnforcer(
+      post({ [ACCESS_JWT_HEADER]: token() }),
+      accessEnv(),
+      downFetch,
+      down.log,
+    );
+    for (let index = 0; index < 20; index += 1) await failing(assertedAgent);
+    expect(down.lines).toHaveLength(1);
+
+    const mixed = recorder();
+    const enforce = createAccessAuthorEnforcer(
+      post({ [ACCESS_JWT_HEADER]: token() }),
+      accessEnv(),
+      fakeFetch(),
+      mixed.log,
+    );
+    for (let index = 0; index < 20; index += 1) await enforce(index % 2 === 0 ? assertedAgent : assertedDrew);
+    expect(mixed.lines).toHaveLength(10);
+    expect(mixed.lines.every((line) => line.includes("status=403"))).toBe(true);
+  });
+
+  test("caller-controlled claims cannot split or forge a log line", () => {
+    const forged = `${b64url("{}")}.${b64url(JSON.stringify({ sub: "x\n[access] allowed POST /api/comments", email: 7 }))}.sig`;
+    const claim = presentedAccessClaim(forged);
+    expect(claim).not.toContain("\n");
+    expect(claim).toContain('sub="x\\n[access] allowed POST /api/comments"');
+    expect(claim).toContain('email="" (unverified)');
+    expect(presentedAccessClaim("not-a-jwt")).toBe("malformed token");
+    expect(presentedAccessClaim("a.%%%.c")).toBe("malformed token");
+    expect(presentedAccessClaim("")).toBe("none");
   });
 });

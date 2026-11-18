@@ -90,7 +90,7 @@ the writer-set layer on every invocation.
   the tmux control-mode class of interface (documented, line-based,
   scriptable: `capture-pane`, `send-keys`, `pipe-pane`, formats; #5931
   §1.1) because it is the deepest and most stable programmatic surface in
-  the class. The design binds to the *shape* (a session substrate with
+  the class. The design binds to the _shape_ (a session substrate with
   pane/command introspection), not to tmux the binary: WezTerm domains
   and Zellij expose the same shape. Zellij's WASI-plugin panes (#5931
   §1.1) are noted as the field's proof that terminal capabilities can be
@@ -111,9 +111,9 @@ the writer-set layer on every invocation.
      it, declared as its own capability at a higher sensitivity class
      under #5900: actuation-side, per-use approval, never bundled with
      the block surface's grants.
-  A shell without integration offers only the raw surface, and its
-  manifest says so — absence of structure is declared, not discovered
-  at call time.
+     A shell without integration offers only the raw surface, and its
+     manifest says so — absence of structure is declared, not discovered
+     at call time.
 - **Client mode and server mode are one provider shape with two
   identities** (D5): client mode is a terminal on the user's own machine,
   held by their shell (the F13.7 `side: client` case); server mode is a
@@ -159,8 +159,8 @@ of pretending a stronger one:
   survey's §3.1 direction: a page offers capabilities to authorised
   consumers, executed in the page, in the user's session, visibly. The
   inverse direction (§3.4 — browser-automation servers exposing the
-  browser itself to an external agent) is a provider *of the browser
-  application*, a host-application class; it is not a website provider
+  browser itself to an external agent) is a provider _of the browser
+  application_, a host-application class; it is not a website provider
   and is not decided here.
 - **Execution context is the tab, and the grant check is `id`'s.** The
   page's tool callback does not execute on its own authority: calls
@@ -179,7 +179,7 @@ of pretending a stronger one:
   must also be invocable through `id`'s own channel — the browser
   extension / native-messaging seam of #5931 §3.2, which is also where
   a browser provider meets a local `id` node. Same manifest, same
-  grants; WebMCP widens discovery, never authority. Consuming *other*
+  grants; WebMCP widens discovery, never authority. Consuming _other_
   sites' WebMCP tools makes them foreign providers under the same rule:
   ingested declarations are validated, and authority comes only from
   an `id` grant (answers survey §3's second decider question).
@@ -307,15 +307,15 @@ of pretending a stronger one:
 
 ## Alternatives rejected — summary
 
-| Alternative | Why not |
-| --- | --- |
-| Emulator as the terminal provider | Binds grants to the most transient object in the stack; the session holds the capabilities and outlives every surface (D2) |
-| Raw PTY as the only terminal surface | Bytes carry no structure to audit or bound; OSC 133 command blocks are the typed surface, raw PTY a separate higher-class capability (D2) |
-| Binding the design to Zellij's plugin API | One product's internal API; its WASI shape is evidence for #5898/#1061's component question, not this class's substrate (D2) |
-| Coder AgentAPI as substrate | Archived 2026-09-13 — dead (#5931 §1.3) |
+| Alternative                                          | Why not                                                                                                                                    |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Emulator as the terminal provider                    | Binds grants to the most transient object in the stack; the session holds the capabilities and outlives every surface (D2)                 |
+| Raw PTY as the only terminal surface                 | Bytes carry no structure to audit or bound; OSC 133 command blocks are the typed surface, raw PTY a separate higher-class capability (D2)  |
+| Binding the design to Zellij's plugin API            | One product's internal API; its WASI shape is evidence for #5898/#1061's component question, not this class's substrate (D2)               |
+| Coder AgentAPI as substrate                          | Archived 2026-09-13 — dead (#5931 §1.3)                                                                                                    |
 | WebMCP registration as the authoritative declaration | Draft CG report, WebKit oppose, hints-not-enforcement, page-owned authority — layer 4 would belong to the platform (#5931 §3.1, §6.7) (D1) |
-| Ignoring WebMCP entirely | Loses the first platform-native page-as-provider discovery surface, which the projection gets almost free (D1) |
-| WebMCP-only website provider (no `id` channel) | A draft API with an oppose on record cannot be the only path; the extension/native-messaging channel works in every browser today (D4) |
-| Browser-automation servers as "website providers" | The inverse direction — a provider of the browser application, not of the page; a different class (D4) |
-| Standing grants surviving tab/session death | Breaks instance binding; replays authority into a context nobody granted (D5) |
-| Grant-on-use for client-mode terminal providers | A shell is actuation-capable by nature; first use is exactly the use that must be opted into (D3, F13.7) |
+| Ignoring WebMCP entirely                             | Loses the first platform-native page-as-provider discovery surface, which the projection gets almost free (D1)                             |
+| WebMCP-only website provider (no `id` channel)       | A draft API with an oppose on record cannot be the only path; the extension/native-messaging channel works in every browser today (D4)     |
+| Browser-automation servers as "website providers"    | The inverse direction — a provider of the browser application, not of the page; a different class (D4)                                     |
+| Standing grants surviving tab/session death          | Breaks instance binding; replays authority into a context nobody granted (D5)                                                              |
+| Grant-on-use for client-mode terminal providers      | A shell is actuation-capable by nature; first use is exactly the use that must be opted into (D3, F13.7)                                   |

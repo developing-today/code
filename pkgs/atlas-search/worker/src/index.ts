@@ -15,6 +15,7 @@
  *   POST /v1/search  {query, k?}    (gated) -> miss or hit envelope
  *   GET  /v1/cache/inspect?query=&k= (gated) -> DO metadata readback
  */
+import { readTextUpTo } from "./body";
 import { QueryCache } from "./cache_do";
 import { normalizeQuery, queryKey } from "./key";
 
@@ -70,11 +71,23 @@ export default {
       if (!(await gateOk(env, req))) {
         return errorJson(401, "unauthorized", "missing or invalid gate token");
       }
+      // #11331: bounded read; the route only needs { query, k }.
+      const raw = await readTextUpTo(req);
+      if (raw === null) {
+        return errorJson(413, "payload_too_large", "body is larger than the 64 KiB limit");
+      }
       let body: { query?: unknown; k?: unknown };
       try {
-        body = (await req.json()) as typeof body;
+        body = JSON.parse(raw) as typeof body;
       } catch {
         return errorJson(400, "bad_request", "body must be JSON");
+      }
+      // `null` is valid JSON, so the parse guard above lets it through;
+      // every property read below would throw out of the handler and
+      // surface as a platform 500 instead of this route's envelope
+      // (#6879). Reject non-object bodies before dereferencing.
+      if (typeof body !== "object" || body === null) {
+        return errorJson(400, "bad_request", "body must be a JSON object");
       }
       if (typeof body.query !== "string") {
         return errorJson(400, "bad_request", "query must be a string");

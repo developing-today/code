@@ -228,6 +228,22 @@ describe("initCollab protocol handling (#1463, #2824)", () => {
     conn.disconnect();
   });
 
+  it("desync error reconnects and accepts a fresh Init", () => {
+    const onEditorReady = vi.fn();
+    const { conn, socket: first } = openCollab(onEditorReady);
+    first.deliver([5, "Session desynchronized: 1 messages lost"]);
+
+    expect(first.readyState).toBe(FakeWebSocket.CLOSED);
+    vi.advanceTimersByTime(1_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+
+    const second = FakeWebSocket.instances[1];
+    second.open();
+    second.deliver(validInit());
+    expect(onEditorReady).toHaveBeenCalled();
+    conn.disconnect();
+  });
+
   it("anonymous connect sends no AUTH frame, before or after reconnect", () => {
     const conn = track(initCollab("ws://example.test/collab", makeContainer(), "doc-1", "notes.md", null, undefined));
 

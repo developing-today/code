@@ -46,6 +46,49 @@ pub(super) struct FeedTag {
     occurrences: usize,
 }
 
+/// A tag's identity in the home feed: the (key, value) pair itself,
+/// never its rendered label (#8495). The value is the rendered value
+/// component — a non-empty string value, else None (bare-key tag).
+type TagIdentity = (String, Option<String>);
+
+/// The ordinary rendered label for a tag identity: `key:value`, or
+/// the bare key for a valueless tag.
+fn plain_tag_label(identity: &TagIdentity) -> String {
+    match &identity.1 {
+        Some(value) => format!("{}:{}", identity.0, value),
+        None => identity.0.clone(),
+    }
+}
+
+/// Assign the display label for every identity in the feed. Ordinary
+/// labels are used as-is — colon-free labels never change — except
+/// when two distinct identities render to the same label (key `a:b`
+/// value `c` and key `a` value `b:c` both render `a:b:c`): every
+/// identity sharing that label is shown in the unambiguous pair
+/// form `["a:b","c"]` / `["a","b:c"]` instead, so colliding
+/// distinct tags stay distinguishable (#8495).
+fn tag_labels<'a>(
+    identities: impl Iterator<Item = &'a TagIdentity>,
+) -> std::collections::BTreeMap<TagIdentity, String> {
+    let identities: Vec<&TagIdentity> = identities.collect();
+    let mut plain_counts = std::collections::BTreeMap::<String, usize>::new();
+    for identity in &identities {
+        *plain_counts.entry(plain_tag_label(identity)).or_insert(0) += 1;
+    }
+    identities
+        .iter()
+        .map(|identity| {
+            let plain = plain_tag_label(identity);
+            let label = if plain_counts.get(&plain).copied().unwrap_or(0) > 1 {
+                serde_json::to_string(&serde_json::json!([identity.0, identity.1])).unwrap_or(plain)
+            } else {
+                plain
+            };
+            ((*identity).clone(), label)
+        })
+        .collect()
+}
+
 /// Return only globally tagged documents whose blobs are present on this node.
 pub(super) async fn feed_handler(State(state): State<AppState>) -> axum::response::Response {
     let tags = match state.tag_store.list_all(&state.tag_store.global).await {
@@ -65,9 +108,11 @@ pub(super) async fn feed_handler(State(state): State<AppState>) -> axum::respons
         }
     }
 
-    let mut documents = Vec::new();
-    let mut recent_tags = Vec::new();
-    let mut tag_occurrences = std::collections::BTreeMap::<String, (usize, u64)>::new();
+    // #8495: aggregation and dedup key on the (key, value) identity
+    // in both the per-document map and tag_occurrences — never the
+    // rendered label, which merges distinct colon-containing tags.
+    let mut documents_raw: Vec<(String, String, u64, Vec<(TagIdentity, u64)>)> = Vec::new();
+    let mut tag_occurrences = std::collections::BTreeMap::<TagIdentity, (usize, u64)>::new();
     for (name, tags) in by_subject {
         if tags.iter().any(|tag| tag.key.as_bytes() == b"deleted") {
             continue;
@@ -76,7 +121,7 @@ pub(super) async fn feed_handler(State(state): State<AppState>) -> axum::respons
             continue;
         };
         let mut updated_at = 0;
-        let mut subject_tag_times = std::collections::BTreeMap::<String, u64>::new();
+        let mut subject_tag_times = std::collections::BTreeMap::<TagIdentity, u64>::new();
         for tag in &tags {
             let key = tag.key.display_lossy();
             if key == "created" || key == "modified" {
@@ -88,12 +133,16 @@ pub(super) async fn feed_handler(State(state): State<AppState>) -> axum::respons
                 );
             }
             if !SYSTEM_KEYS.contains(&key.as_str()) && !key.starts_with("archive.") {
-                let label = match tag.value.as_ref().and_then(|value| value.as_str()) {
-                    Some(value) if !value.is_empty() => format!("{key}:{value}"),
-                    _ => key,
-                };
+                let identity: TagIdentity = (
+                    key,
+                    tag.value
+                        .as_ref()
+                        .and_then(|value| value.as_str())
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_owned),
+                );
                 subject_tag_times
-                    .entry(label)
+                    .entry(identity)
                     .and_modify(|timestamp| *timestamp = (*timestamp).max(tag.timestamp))
                     .or_insert(tag.timestamp);
             }
@@ -105,18 +154,30 @@ pub(super) async fn feed_handler(State(state): State<AppState>) -> axum::respons
                 .max()
                 .unwrap_or(0);
         }
-        let mut visible_tags = Vec::with_capacity(subject_tag_times.len());
-        for (label, timestamp) in subject_tag_times {
+        let visible: Vec<(TagIdentity, u64)> = subject_tag_times.into_iter().collect();
+        for (identity, timestamp) in &visible {
+            let occurrence = tag_occurrences.entry(identity.clone()).or_insert((0, 0));
+            occurrence.0 += 1;
+            occurrence.1 = occurrence.1.max(*timestamp);
+        }
+        documents_raw.push((name, hash, updated_at, visible));
+    }
+    // Labels are assigned once, with the whole feed in view, so a
+    // label that collides anywhere is disambiguated everywhere.
+    let labels = tag_labels(tag_occurrences.keys());
+    let mut documents = Vec::with_capacity(documents_raw.len());
+    let mut recent_tags = Vec::new();
+    for (name, hash, updated_at, visible) in documents_raw {
+        let mut visible_tags = Vec::with_capacity(visible.len());
+        for (identity, timestamp) in visible {
+            let label = labels.get(&identity).cloned().unwrap_or_default();
             visible_tags.push(label.clone());
             recent_tags.push(FeedTag {
-                label: label.clone(),
+                label,
                 subject: Some(name.clone()),
                 timestamp,
                 occurrences: 1,
             });
-            let occurrence = tag_occurrences.entry(label).or_insert((0, 0));
-            occurrence.0 += 1;
-            occurrence.1 = occurrence.1.max(timestamp);
         }
         documents.push(FeedDocument {
             name,
@@ -126,6 +187,10 @@ pub(super) async fn feed_handler(State(state): State<AppState>) -> axum::respons
             tags: visible_tags,
         });
     }
+    let tag_occurrences: std::collections::BTreeMap<String, (usize, u64)> = tag_occurrences
+        .into_iter()
+        .map(|(identity, counts)| (labels.get(&identity).cloned().unwrap_or_default(), counts))
+        .collect();
 
     let mut recent = documents.clone();
     recent.sort_by_key(|doc| std::cmp::Reverse(doc.updated_at));
@@ -432,8 +497,10 @@ mod tests {
         tags.set_tag(&tags.global, b"public.md", b"label", Some(b"public"), b"")
             .await
             .unwrap();
-        // A distinct key rendering the same label must not inflate popularity
-        // for this subject.
+        // #8495: a distinct key rendering the same label is a distinct
+        // tag — it counts separately in the per-document map and in
+        // tag occurrences, and the colliding pair displays in the
+        // unambiguous pair form.
         tags.set_tag(&tags.global, b"public.md", b"label:public", None, b"")
             .await
             .unwrap();
@@ -480,10 +547,10 @@ mod tests {
         assert_eq!(feed.recent.len(), 2);
         assert_eq!(feed.recent[0].name, "recent.md");
         assert_eq!(feed.popular[0].name, "public.md");
-        assert_eq!(feed.popular[0].tag_count, 2);
-        assert_eq!(feed.recent_tags.len(), 3);
+        assert_eq!(feed.popular[0].tag_count, 3);
+        assert_eq!(feed.recent_tags.len(), 4);
         assert!(feed.recent_tags[0].timestamp >= feed.recent_tags[1].timestamp);
-        assert_eq!(feed.popular_tags[0].label, "label:public");
+        assert_eq!(feed.popular_tags[0].label, "[\"label\",\"public\"]");
         assert_eq!(feed.popular_tags[0].occurrences, 2);
         assert_eq!(
             feed.scope,
@@ -510,6 +577,88 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(files.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn home_feed_keys_tag_aggregation_on_identity_not_label_8495() {
+        let (router, store, tags, _temp, _endpoint, _docs, _world) = test_router().await;
+        // one.md carries both colliding tags: (a:b, c) and (a, b:c)
+        // render to the same label "a:b:c" but are distinct tags.
+        let one_blob = store.blobs().add_bytes(b"one".to_vec()).await.unwrap();
+        store.tags().set("one.md", one_blob.hash).await.unwrap();
+        tags.set_tag(&tags.global, b"one.md", b"a:b", Some(b"c"), b"")
+            .await
+            .unwrap();
+        tags.set_tag(&tags.global, b"one.md", b"a", Some(b"b:c"), b"")
+            .await
+            .unwrap();
+        // two.md and three.md carry only (a, b:c): its occurrence
+        // count is the number of documents carrying that exact tag.
+        for name in ["two.md", "three.md"] {
+            let blob = store
+                .blobs()
+                .add_bytes(name.as_bytes().to_vec())
+                .await
+                .unwrap();
+            store.tags().set(name, blob.hash).await.unwrap();
+            tags.set_tag(&tags.global, name.as_bytes(), b"a", Some(b"b:c"), b"")
+                .await
+                .unwrap();
+        }
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/home/feed")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 100_000).await.unwrap();
+        let feed: FeedResponse = serde_json::from_slice(&body).unwrap();
+        // Within-document: both colliding tags count and are listed,
+        // displayed unambiguously in pair form.
+        let one = feed
+            .recent
+            .iter()
+            .find(|doc| doc.name == "one.md")
+            .expect("one.md in feed");
+        assert_eq!(one.tag_count, 2);
+        assert!(
+            one.tags.contains(&"[\"a:b\",\"c\"]".to_string()),
+            "{:?}",
+            one.tags
+        );
+        assert!(
+            one.tags.contains(&"[\"a\",\"b:c\"]".to_string()),
+            "{:?}",
+            one.tags
+        );
+        // Across documents: exact-tag occurrence counts drive the
+        // ranking — (a, b:c) on 3 documents outranks (a:b, c) on 1.
+        assert_eq!(feed.popular_tags[0].label, "[\"a\",\"b:c\"]");
+        assert_eq!(feed.popular_tags[0].occurrences, 3);
+        let other = feed
+            .popular_tags
+            .iter()
+            .find(|tag| tag.label == "[\"a:b\",\"c\"]")
+            .expect("colliding tag listed separately");
+        assert_eq!(other.occurrences, 1);
+    }
+
+    #[test]
+    fn tag_labels_disambiguate_only_colliding_labels_8495() {
+        let colliding_a: TagIdentity = ("a:b".to_string(), Some("c".to_string()));
+        let colliding_b: TagIdentity = ("a".to_string(), Some("b:c".to_string()));
+        let plain: TagIdentity = ("topic".to_string(), Some("notes".to_string()));
+        let bare: TagIdentity = ("solo".to_string(), None);
+        let labels = tag_labels([&colliding_a, &colliding_b, &plain, &bare].into_iter());
+        assert_eq!(labels[&colliding_a], "[\"a:b\",\"c\"]");
+        assert_eq!(labels[&colliding_b], "[\"a\",\"b:c\"]");
+        // Ordinary colon-free labels are unchanged.
+        assert_eq!(labels[&plain], "topic:notes");
+        assert_eq!(labels[&bare], "solo");
     }
 
     #[test]

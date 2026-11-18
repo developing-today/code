@@ -39,6 +39,7 @@
   rustPlatform,
   pkgsStatic,
   binutils,
+  python3,
   callPackage,
   craneLib ? null,
   sourceRev ? "unknown",
@@ -196,8 +197,21 @@ let
           # Override the check command to keep the workspace-wide
           # run; the build keeps the -p fleet scope via
           # cargoExtraArgs.
+          # SQLite concurrency regressions use Python's stdlib sqlite3.
+          nativeCheckInputs = [ python3 ];
           doCheck = true;
           checkPhaseCargoCommand = "cargoWithProfile test --locked";
+
+          # The atlas-search server tests (#9973) write trace and
+          # feedback records under $HOME/.local/state/atlas-search;
+          # the build sandbox's HOME (/homeless-shelter) is not
+          # writable, which failed every variant's check phase in
+          # any sandboxed build. Point HOME at a build temp dir for
+          # the check phase (#6400).
+          preCheck = ''
+            export HOME="$TMPDIR/fleet-check-home"
+            mkdir -p "$HOME"
+          '';
 
           inherit postInstall postFixup;
           meta = metaAttrs;
@@ -211,7 +225,14 @@ let
         sourceRoot = "${fleetSrc.name}/fleet";
         cargoLock.lockFile = ./Cargo.lock;
 
+        nativeCheckInputs = [ python3 ];
         cargoBuildFlags = cargoFlags;
+
+        # Same check-phase HOME fix as the crane path above (#6400).
+        preCheck = ''
+          export HOME="$TMPDIR/fleet-check-home"
+          mkdir -p "$HOME"
+        '';
 
         env = envAttrs;
 
@@ -250,6 +271,7 @@ in
   # one of these; they retire only at the epic's close, not before.
   fleet-brokers = rustPlatform.buildRustPackage {
     pname = "fleet-brokers";
+    nativeCheckInputs = [ python3 ];
     version = "0.1.0";
     src = fleetSrc;
     sourceRoot = "${fleetSrc.name}/fleet";

@@ -20,9 +20,10 @@ The deterministic implementation of these steps is
 (`python3 pm-stack/opencode-claimant/claimant.py`, run from the
 primary clone) and reports from its fire-log line; it does not
 improvise the steps by hand. Inside a fire, claimant.py launches
-distinct candidates in parallel under a bounded pool and a
-single-instance lock; exactly-once stays anchored on the atomic DB
-bind. (History: the cap was 12 until 2026-11-05, when the
+distinct candidates one at a time, under a single-instance lock
+(an exclusive flock on ~/.local/state/opencode-claimant/claimant.lock;
+a second fire exits with fire-log reason `already_running`);
+exactly-once stays anchored on the atomic DB bind. (History: the cap was 12 until 2026-11-05, when the
 binding-rate fix raised it first to 20, then to 36 the same day (at 20, scheduled lane-runner waves of ~39 roots at load ~4/16 cores still left the claimant cap_room 0; 36 sits above the observed wave size while keeping total roots within ~2x the census-proven level);
 claimant.py itself was committed the same day - before that it
 existed only as an untracked file in the laptop primary checkout,
@@ -109,12 +110,17 @@ outage is recoverable, a double-launch's damage is not.
   it.)
   Retain the candidate list from the start of each fire; a task recovered
   during supervision is eligible on the next fire, not this one.
-- Concurrency cap: **36** active root sessions across the fleet. Count
-  with poll.py (OpenCode server `GET /api/session` on
-  http://127.0.0.1:13420, root sessions only; poll.py counts a root as
+- Concurrency cap: **36** active CLAIMANT root sessions — the
+  claimant's launch budget (ruling `session-cap-5016`, #5016).
+  Scheduled fleet sessions — lane runners, this fire's own session,
+  sweeps, the conductor — are infrastructure and are OUTSIDE the cap.
+  Count with poll.py (OpenCode server `GET /api/session` on
+  http://127.0.0.1:13420, root sessions that are not
+  `metadata.openchamber.kind == "scheduled"`; poll.py counts a root as
   active only with no terminal marker — `time.idle`/`outcome` — and
-  activity in the last 30 min, and reports it as `cap_room`). If
-  `cap_room` is 0 or null, launch nothing this fire.
+  activity in the last 30 min, and a server-active root silent past 2 h
+  is a zombie that releases its slot; poll.py reports the free slots as
+  `cap_room`). If `cap_room` is 0 or null, launch nothing this fire.
 - Route: the task packet's route when it names one, else the
   Workhorse default — scheduled-task execution route
   `providerID: "opencode-route"`, `modelID: "workhorse"`, agent
@@ -198,7 +204,7 @@ exhausted" --reason-class deterministic` with `--execution
 2. GATE: run the CLI `health` for the four queues. If every queue
    shows 0 claimed-with-lane-opencode unbound candidates (poll.py
    returns an empty candidate list), end the fire quietly.
-3. CAP: if poll.py reports `cap_room` 0 (active root sessions at the
+3. CAP: if poll.py reports `cap_room` 0 (claimant root sessions at the
    36 cap) or null (server unreadable), end the fire; record the
    saturation in the fire log (step 6).
 4. For each candidate, highest queue priority first, while cap room
@@ -302,7 +308,8 @@ queue task and issue>, "model": {"id": <route model>,
 - Never work a task yourself; you claim/bind/launch/record only.
 - Never launch for a task whose issue carries `held`, `user/owned`,
   `do-not-merge`, or `do-not-auto-edit` — skip and log it.
-- Never exceed the 36-session cap, never double-bind a task, never
+- Never exceed the 36-slot claimant cap (claimant roots only; scheduled
+  fleet sessions do not count), never double-bind a task, never
   bind a session id you did not just create.
 - No credential value ever enters a prompt, log, or task record; the queue
   CLI and poll.py reach the queue-broker with the broker's client

@@ -8,6 +8,12 @@
 # The API key is read from SOPS (grist_api_key) — it is the Grist
 # admin account's API key, also filed in Bitwarden + 1Password.
 set -euo pipefail
+# Argument contract (#3352): this script takes no command-line
+# arguments; anything given is a usage error before any work runs.
+if [ "$#" -gt 0 ]; then
+  echo "seed.sh: unexpected argument '$1'; usage: ./seed.sh" >&2
+  exit 2
+fi
 
 cd "$(dirname "$0")"
 if ! command -v bun >/dev/null 2>&1; then

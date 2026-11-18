@@ -24,6 +24,8 @@ blake3 = "1"
 cbor-core = { version = "=0.10.1", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 ed25519-dalek = { version = "3", features = ["rand_core"] }
+hex = { version = "0.4", features = ["serde"] }
+serde_bytes = "0.11"
 futures-lite = "2"
 id-core = { path = "../id-core", default-features = false }
 iroh = "1"
@@ -34,7 +36,7 @@ p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b9526
 # Store traits only. The default features would pull in SQLite.
 p2panda-store = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", default-features = false }
 postcard = { version = "1", features = ["alloc"] }
-redb = "=4.3.0"
+redb = "=4.6.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -49,6 +51,9 @@ unicode-normalization = "0.1"
 dcbor = "=0.25.2"
 id = { path = "../.." }
 iroh-gossip = { version = "0.101", features = ["net"] }
+# Property tests for the chat-anchor fold (#5872): permutation invariance and
+# duplicate-delivery idempotence over generated event logs.
+proptest = "1.12"
 tempfile = "3"
 
 [lints.rust]

@@ -24,6 +24,12 @@
 #   this service never stashes, commits, or discards anything.
 # - Otherwise git fetch + git pull --ff-only.
 set -uo pipefail
+# Argument contract (#3352): this script takes no command-line
+# arguments; anything given is a usage error before any work runs.
+if [ "$#" -gt 0 ]; then
+  echo "pm-git-sync: unexpected argument '$1'; usage: pm-git-sync (set the clone with PM_GIT_SYNC_REPO)" >&2
+  exit 2
+fi
 REPO="${PM_GIT_SYNC_REPO:-$HOME/git/code}"
 cd "$REPO" || {
   echo "pm-git-sync: FAIL cannot cd $REPO"

@@ -21,11 +21,10 @@ name: github-ci worker tests
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/github-ci/**"
-      - ".github/workflows/github-ci-worker-tests.yml"
+  schedule:
+    # Nightly instead of on every push to main (Drew, 2026-11-16; see
+    # .github/ci-policy.md "Nightly main CI").
+    - cron: "17 7 * * *"
 
 permissions:
   contents: read

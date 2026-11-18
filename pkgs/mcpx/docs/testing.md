@@ -98,6 +98,12 @@ off the critical path, never by retrying a failure away:
   `-race -shuffle=<seed> -count=3` on `ubuntu-latest` **and** `macos-latest`.
   On failure it opens or updates the single "mcpx nightly stress failure"
   issue; it never blocks a PR.
+- **Explicit timeouts.** `-count=3` runs every pass of a package inside one
+  test binary, and one `internal/e2e` pass is about five minutes of
+  real-time waits, so go test's default 10m timeout cannot hold it (#10489).
+  The e2e stress run passes `-timeout 25m` and the nightly passes
+  `-timeout 50m`, each under its job's own limit, so a real hang still
+  panics with goroutine dumps instead of being killed by the runner.
 - **Fix first.** A flake the stress jobs surface is a bug: fix it. Only when
   a fix genuinely cannot land yet, quarantine the test with
   `testsupport.Quarantine(t, "<issue URL>", "YYYY-MM-DD")` from

@@ -107,9 +107,7 @@ export const MAX_CONSUMER_CHARS = 256;
 
 /** Read a JSON write body through the shared bounded-body discipline:
  *  413 on overflow, then JSON.parse with the caller's 400 on failure. */
-async function readBoundedJson(
-  req: Request,
-): Promise<{ ok: true; value: any } | { ok: false; response: Response }> {
+async function readBoundedJson(req: Request): Promise<{ ok: true; value: any } | { ok: false; response: Response }> {
   let raw: Uint8Array;
   try {
     raw = await readBoundedBody(req.body, MAX_WRITE_BODY_BYTES);
@@ -245,12 +243,36 @@ async function withTimeout<T>(work: Promise<T>, ms: number, label: string): Prom
   }
 }
 
+/**
+ * The service's error boundary (#10540): every route answers JSON. A
+ * store, git or reconcile failure a route does not handle itself would
+ * otherwise escape as Bun's default non-JSON 500, which clients and
+ * monitors cannot read. Routes that already answer a specific status
+ * keep it; only an escaped exception becomes this 500.
+ */
 export async function handleRequest(
   req: Request,
   db: Client,
   env: ServerEnv,
   deps: ServerDeps = {},
 ): Promise<Response> {
+  try {
+    return await routeRequest(req, db, env, deps);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    const path = (() => {
+      try {
+        return new URL(req.url).pathname;
+      } catch {
+        return "?";
+      }
+    })();
+    console.error(`projector: ${req.method} ${path} failed: ${message}`);
+    return jsonResponse(500, { error: "internal_error", message });
+  }
+}
+
+async function routeRequest(req: Request, db: Client, env: ServerEnv, deps: ServerDeps = {}): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
   const method = req.method;

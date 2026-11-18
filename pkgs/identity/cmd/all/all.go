@@ -104,11 +104,19 @@ func StartServices(ctx context.Context, config *configuration.SshServerConfigura
 		log.Info("Creating injector")
 
 		i := do.NewWithOpts(&do.InjectorOpts{
-			HookAfterRegistration: func(scope *do.Scope, serviceName string) {
-				log.Warn("Registered service", "serviceName", serviceName)
+			HookAfterRegistration: []func(scope *do.Scope, serviceName string){
+				func(scope *do.Scope, serviceName string) {
+					log.Warn("Registered service", "serviceName", serviceName)
+				},
 			},
-			HookAfterShutdown: func(scope *do.Scope, serviceName string) {
-				log.Warn("Shutdown service", "serviceName", serviceName)
+			HookAfterShutdown: []func(scope *do.Scope, serviceName string, err error){
+				func(scope *do.Scope, serviceName string, err error) {
+					if err != nil {
+						log.Error("Shutdown service failed", "serviceName", serviceName, "error", err)
+						return
+					}
+					log.Warn("Shutdown service", "serviceName", serviceName)
+				},
 			},
 			Logf: func(format string, args ...interface{}) {
 				if format == "DI <scope=[root]>: requested healthcheck" ||
@@ -128,12 +136,12 @@ func StartServices(ctx context.Context, config *configuration.SshServerConfigura
 			case <-ctx.Done():
 				log.Info("Context done, shutting down")
 
-				errors := i.Shutdown()
+				report := i.Shutdown()
 				log.Info("Shutdown complete")
 
-				if errors != nil {
-					for _, err := range *errors {
-						log.Error("Error shutting down", "error", err)
+				if report != nil && len(report.Errors) > 0 {
+					for service, err := range report.Errors {
+						log.Error("Error shutting down", "service", service.Service, "error", err)
 					}
 				} else {
 					log.Info("All services have been shut down")
@@ -143,11 +151,11 @@ func StartServices(ctx context.Context, config *configuration.SshServerConfigura
 		}()
 		go func() {
 			log.Info("Waiting for signals to shutdown injector")
-			signal, errors := i.ShutdownOnSignals(doneSignals...)
-			log.Info("Signals received, injector was shutdown", "signal", signal, "errors", errors)
-			if errors != nil {
-				for _, err := range *errors {
-					log.Error("Error shutting down", "error", err)
+			signal, report := i.ShutdownOnSignals(doneSignals...)
+			log.Info("Signals received, injector was shutdown", "signal", signal)
+			if report != nil {
+				for service, err := range report.Errors {
+					log.Error("Error shutting down", "service", service.Service, "error", err)
 				}
 			}
 			log.Info("Signals received, shutdown")

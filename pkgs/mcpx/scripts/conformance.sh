@@ -117,7 +117,14 @@ start_daemon() { # era port dir [mcp-spec]
   [ "$era" = legacy ] && protocol=force-initialize
   [ -n "${FIXTURE_PID:-}" ] || start_fixture
   mkdir -p "$WORK/$dir"
-  printf '{"mcpServers":{"demo":{"url":"http://127.0.0.1:%s/mcp","protocol":"%s","mcpx":{"sharing":"shared","scope":"global"}},"tasks":{"command":"%s","mcpx":{"sharing":"shared","scope":"global"}}}}\n' \
+  # writePolicy allow on both servers: the daemon's write-policy gate (policy.write=ask)
+  # asks a human to confirm every write-classified call, and a conformance run has no
+  # human -- in server legs the suite client cannot answer a broker question at all, so
+  # every tools/call waited out the ask and died as a scenario timeout, and in client
+  # legs the adapter's empty answers read as refusals (#8922). The gate is product
+  # behaviour for interactive use and is covered by the daemon's unit tests; this
+  # harness measures protocol conformance, so its daemons do not ask.
+  printf '{"mcpServers":{"demo":{"url":"http://127.0.0.1:%s/mcp","protocol":"%s","mcpx":{"sharing":"shared","scope":"global","writePolicy":"allow"}},"tasks":{"command":"%s","mcpx":{"sharing":"shared","scope":"global","writePolicy":"allow"}}}}\n' \
     "$FIXTURE_PORT" "$protocol" "$WORK/taskmcp" >"$WORK/$dir/.mcpx.json"
   MCPX_CONFIG=$WORK/$dir/.mcpx.json MCPX_STATE_DIR=$WORK/$dir/state MCPX_CACHE_DIR=$WORK/$dir/cache \
     MCPX_REGISTRY_URL=http://127.0.0.1:1/ \
@@ -130,10 +137,16 @@ start_daemon() { # era port dir [mcp-spec]
       exit 1
     fi
     # Ours, not whatever else is listening: the health answer carries the pid.
-    got=$(curl -sf "http://127.0.0.1:$port/v1/health" 2>/dev/null) || { sleep 0.1; continue; }
+    got=$(curl -sf "http://127.0.0.1:$port/v1/health" 2>/dev/null) || {
+      sleep 0.1
+      continue
+    }
     case $got in
     *"\"pid\":$pid"*) return 0 ;;
-    *) echo "port $port answers, but not our daemon (pid $pid): $got" >&2; exit 1 ;;
+    *)
+      echo "port $port answers, but not our daemon (pid $pid): $got" >&2
+      exit 1
+      ;;
     esac
   done
   echo "daemon did not come up; see $OUT/daemon-$dir.log" >&2
@@ -155,7 +168,8 @@ stop_daemon() {
 }
 
 run_leg() { # name, suite args...
-  local name=$1; shift
+  local name=$1
+  shift
   rm -rf "${OUT:?}/$name"
   mkdir -p "$OUT/$name"
   echo "== $name"
@@ -177,13 +191,15 @@ for leg in $LEGS; do
   # The suite has no frozen requirement set for these two, only the scenarios
   # tagged for each version, which is what --spec-version selects.
   server-2025-06-18 | server-2025-03-26)
-    run_leg "$leg" server --url "http://127.0.0.1:$LEGACY_PORT/mcp" --spec-version "$rev" ;;
+    run_leg "$leg" server --url "http://127.0.0.1:$LEGACY_PORT/mcp" --spec-version "$rev"
+    ;;
   server-*) run_leg "$leg" server --url "http://127.0.0.1:$PORT/mcp" --requirements "$rev" ;;
   # As on the server side, the suite has frozen requirement sets only for
   # 2025-11-25 and 2026-07-28; the two older revisions run their tagged
   # scenarios.
   client-2025-06-18 | client-2025-03-26)
-    MCPX_MCP_SPEC=$rev run_leg "$leg" client --command "$CLIENT" --suite all --spec-version "$rev" ;;
+    MCPX_MCP_SPEC=$rev run_leg "$leg" client --command "$CLIENT" --suite all --spec-version "$rev"
+    ;;
   client-*) MCPX_MCP_SPEC=$rev run_leg "$leg" client --command "$CLIENT" --requirements "$rev" ;;
   *) echo "unknown leg $leg" >&2 ;;
   esac

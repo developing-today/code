@@ -778,6 +778,9 @@ let proc: Subprocess<"ignore", "pipe", "inherit"> | null = null;
 let port = 0;
 const tmp = mkdtempSync(join(tmpdir(), "agg-aa-"));
 
+// #10467: starting the aggregator subprocess can take longer than bun's
+// default 5 s hook budget on a loaded machine; give the hook room to
+// reach its own readiness deadline and fail with that message instead.
 beforeAll(async () => {
   port = 6100 + Math.floor(Math.random() * 700);
   const commentsFile = join(tmp, "comments.json");
@@ -810,7 +813,7 @@ beforeAll(async () => {
     await Bun.sleep(120);
   }
   expect(ready).toBe(true);
-});
+}, 60_000);
 
 afterAll(() => {
   proc?.kill();

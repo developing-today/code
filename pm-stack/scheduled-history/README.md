@@ -75,3 +75,29 @@ it only reads scheduled-task records (#2174 acceptance constraint).
   run's session outlives the scheduler's status transition, the
   session timestamps and token totals in the row are the deeper
   evidence (that layering is deliberate — see #2174 Gap 3).
+
+## Gap 3 — watchdog over the run history
+
+`watchdog.py check` consumes this store and flags, per scheduled
+task: `missing_run` (no run scheduled within the expected cadence
+window), `stale` (newest run older than the stale threshold,
+default 2x the window, with nothing in flight), and
+`failed_latest` (most recent terminal outcome is an error class).
+The expected window is a declared per-task window (`--windows`
+JSON, task id -> seconds) when one exists, otherwise the observed
+schedule — the minimum interval between consecutive
+`scheduled_for` instants in the task's own history; the source is
+stated in every alert's evidence. A task whose history is younger
+than one window is in its first window and cannot alert for
+missing/stale. Output is one JSON document
+(`scheduled-history-watchdog/v1`) on stdout — task, condition, and
+evidence timestamps per alert — with exit 1 when any alert fires:
+the alert path is the fleet-watchdog cron, which consumes that
+document. Known limit: a task whose observed history mixes a burst
+of test runs with its real cadence derives a too-tight window from
+the burst; declare its window in `--windows` instead.
+
+```
+python3 watchdog.py check [--store PATH] [--windows FILE] [--stale-multiplier N]
+python3 test_watchdog.py   # 13 checks
+```

@@ -57,8 +57,14 @@ use crate::directory_view::{
 use crate::frames::{Decoded, FrameBuffer, encode_frame};
 use crate::world::hex_encode;
 use crate::world_hub::{ResolveError, WorldHub};
-use crate::world_session::{Inbound, SessionIo, encode_hex, run_session};
-use crate::world_terminal::{PROBE_QUERIES, PROBE_TIMEOUT, ProbeDemux};
+#[cfg(test)]
+use crate::world_session::{
+    DocumentError, MAX_DOCUMENT_BYTES, list_public_documents, read_public_document,
+};
+use crate::world_session::{
+    Inbound, SessionConfig, SessionIo, encode_hex, run_session, run_session_with,
+};
+use crate::world_terminal::{PROBE_QUERIES, PROBE_TIMEOUT, ProbeDemux, TierPresenter};
 
 /// File, beside the other server keys, that holds the SSH host key.
 pub const SSH_HOST_KEY_FILE: &str = ".ssh-host-key";
@@ -433,8 +439,13 @@ impl Handler for SshClient {
             backlog: Arc::clone(&self.exec_backlog),
         };
         let hub = self.hub.clone();
+        let documents_store = self.blobs.clone();
         tokio::spawn(async move {
-            run_session(&hub, &mut io).await;
+            let config = SessionConfig {
+                documents_store: Some(documents_store),
+                ..SessionConfig::default()
+            };
+            run_session_with(&hub, &mut io, config).await;
             let _ = io.handle.eof(channel).await;
             let _ = io.handle.close(channel).await;
         });
@@ -553,10 +564,15 @@ impl Handler for SshClient {
             records_prefix: None,
             records_drained: 0,
             records_after: None,
+            documents_prefix: None,
+            documents_names: Vec::new(),
+            documents_drained: 0,
+            documents_after: None,
             errored: false,
             previous_screen: None,
             probe_tty,
             probe: None,
+            presenter: None,
             active_form: None,
             form_line: Vec::new(),
             form_backlog: VecDeque::new(),
@@ -569,9 +585,13 @@ impl Handler for SshClient {
         };
         let hub = self.hub.clone();
         tokio::spawn(async move {
+            let config = SessionConfig {
+                documents_store: Some(io.blobs.clone()),
+                ..SessionConfig::default()
+            };
             io.enter_alt_screen().await;
             io.start_terminal_probe().await;
-            run_session(&hub, &mut io).await;
+            run_session_with(&hub, &mut io, config).await;
             if io.errored {
                 tokio::time::sleep(REFUSED_SHELL_DELAY).await;
             }
@@ -673,11 +693,26 @@ fn command_frame(command: &WorldCommand, capability: &str) -> Option<String> {
         WorldCommand::RecordsContinue { prefix, after } => json!({
             "type": "records", "capability": capability, "prefix": prefix, "after": after
         }),
+        WorldCommand::Documents { prefix } => json!({
+            "type": "documents", "capability": capability, "prefix": prefix, "after": null
+        }),
+        WorldCommand::DocumentsContinue { prefix, after } => json!({
+            "type": "documents", "capability": capability, "prefix": prefix, "after": after
+        }),
+        WorldCommand::Document(name) => json!({
+            "type": "document", "capability": capability, "name": name
+        }),
         WorldCommand::Stats => json!({ "type": "info", "capability": capability }),
         WorldCommand::Caps => json!({ "type": "caps", "capability": capability }),
-        WorldCommand::Documents { .. }
-        | WorldCommand::Document(_)
-        | WorldCommand::Logs { .. }
+        WorldCommand::Logs { .. }
+        | WorldCommand::Anchor { .. }
+        | WorldCommand::AnchorConfirm { .. }
+        | WorldCommand::AnchorList
+        | WorldCommand::Talk { .. }
+        | WorldCommand::Anchors { .. }
+        | WorldCommand::Resolve { .. }
+        | WorldCommand::Queue
+        | WorldCommand::Flush
         | WorldCommand::Help
         | WorldCommand::Message(_)
         | WorldCommand::Quit => return None,
@@ -764,6 +799,14 @@ struct SshIo {
     /// first page, whose request sends `after: null`); the page's
     /// `next_after` must strictly advance past it (#6615).
     records_after: Option<String>,
+    /// `Some(prefix)` while draining documents pages from a `/documents` command.
+    documents_prefix: Option<Option<String>>,
+    /// Names accumulated across the pages of the current `/documents` drain.
+    documents_names: Vec<String>,
+    /// Cumulative name bytes for the current drain, against the list caps.
+    documents_drained: usize,
+    /// Cursor that produced the in-flight documents page.
+    documents_after: Option<String>,
     errored: bool,
     /// Last screen successfully written to this shell's terminal. A missing
     /// value forces the next screen view to repaint the whole terminal.
@@ -773,6 +816,10 @@ struct SshIo {
     probe_tty: bool,
     /// Bounded startup probe state while the reply window is open.
     probe: Option<SshProbe>,
+    /// Tier presenter selected when the startup probe closed (F13.4).
+    /// Absent until then, and for callers that never probed: those keep
+    /// the pre-F13.4 rendering path exactly.
+    presenter: Option<TierPresenter>,
     /// Form view the terminal is currently collecting a response for.
     active_form: Option<crate::world_presentation::FormSurface>,
     /// Bounded line being entered for the active form.
@@ -843,11 +890,13 @@ fn prepend_dropped_input_notice(counter: &AtomicUsize, out: &mut Vec<u8>) -> Opt
 }
 
 mod form_io;
+mod form_prompt;
 use form_io::{
     FormBytes, FormInputProgress, consume_form_input, discard_form_input_line,
     discard_form_lf_after_cr, form_closed_aliases, form_retry_alias, form_view_is_unchanged,
     recv_bytes_through_probe, take_pending_form_answer,
 };
+use form_prompt::{terminal_form_answer_frame, terminal_form_input_manifest, terminal_form_prompt};
 
 impl SshIo {
     /// Remember every token that may still appear in a guest's stale view.
@@ -1013,13 +1062,22 @@ impl SshIo {
     /// Leave the alternate screen and re-send the last error after the leave
     /// sequence, so a refused join stays readable in the restored scrollback.
     async fn leave_alt_screen(&mut self) {
+        // Restore presenter modes (synchronized output) on every exit
+        // path, before the alternate screen itself is left (F13.4).
+        let restore = self
+            .presenter
+            .as_mut()
+            .map_or_else(String::new, TierPresenter::finish);
         if !self.alt_screen_entered {
+            if !restore.is_empty() {
+                let _ = self.handle.data(self.channel, restore).await;
+            }
             return;
         }
         self.alt_screen_entered = false;
         let text = match self.last_error.take() {
-            Some(error) => format!("{ALT_SCREEN_LEAVE}\r\n{error}\r\n"),
-            None => ALT_SCREEN_LEAVE.to_owned(),
+            Some(error) => format!("{restore}{ALT_SCREEN_LEAVE}\r\n{error}\r\n"),
+            None => format!("{restore}{ALT_SCREEN_LEAVE}"),
         };
         let _ = self.handle.data(self.channel, text).await;
     }
@@ -1044,17 +1102,21 @@ impl SshIo {
 
     /// Close the probe window, returning any held bytes for replay.
     ///
-    /// The selected tier is logged only: this slice enables the Tier 3 safe
-    /// fallback and leaves every richer presenter unreachable.
+    /// The outcome selects this session's tier presenter (F13.4 phases
+    /// 3-4): Tier 1 and Tier 2 render the cell grid (Tier 1 bracketed in
+    /// synchronized output), Tier 3 renders text deltas. A conflicted or
+    /// empty outcome is the conservative Tier 3, per the classifier.
     fn close_terminal_probe(&mut self) -> Vec<u8> {
         let Some(mut probe) = self.probe.take() else {
             return Vec::new();
         };
-        let tier = probe.demux.tier();
+        let outcome = probe.demux.outcome();
+        let tier = outcome.tier();
         tracing::debug!(
             ?tier,
-            "terminal capability probe closed; Tier 3 fallback stays active"
+            "terminal capability probe closed; tier presenter selected"
         );
+        self.presenter = Some(TierPresenter::from_outcome(&outcome));
         probe.demux.expire()
     }
 }
@@ -1137,44 +1199,18 @@ impl SessionIo for SshIo {
                             self.records_drained = 0;
                             self.records_after = None;
                         }
+                        if let WorldCommand::Documents { prefix } = &command {
+                            self.documents_prefix = Some(prefix.clone());
+                            self.documents_names = Vec::new();
+                            self.documents_drained = 0;
+                            self.documents_after = None;
+                        }
                         return Inbound::Text(frame);
                     }
                     // Everything else is answered by the shell itself.
                     match command {
-                        WorldCommand::Documents { prefix } => {
-                            let text =
-                                match list_public_documents(&self.blobs, prefix.as_deref()).await {
-                                    Ok(text) => text,
-                                    Err(_) => "documents unavailable".to_owned(),
-                                };
-                            if self
-                                .handle
-                                .data(
-                                    self.channel,
-                                    terminal_text(&format!("\r\n{text}\r\nworld> ")),
-                                )
-                                .await
-                                .is_err()
-                            {
-                                return Inbound::Closed;
-                            }
-                        }
-                        WorldCommand::Document(name) => {
-                            let text = match read_public_document(&self.blobs, &name).await {
-                                Ok(text) => format!("\r\n{text}\r\nworld> "),
-                                Err(error) => format!("\r\n{}\r\nworld> ", error.message()),
-                            };
-                            if self
-                                .handle
-                                .data(self.channel, terminal_text(&text))
-                                .await
-                                .is_err()
-                            {
-                                return Inbound::Closed;
-                            }
-                        }
                         WorldCommand::Help => {
-                            let help = "World chat: type a line to chat. Commands: /input <hex>, /records [prefix], /stats, /logs, /caps, /documents [prefix], /document <name>, /help, /quit\r\nworld> ";
+                            let help = "World chat: type a line to chat. Commands: /input <hex>, /records [prefix], /stats, /logs, /caps, /documents [prefix], /document <name>, /anchor <target> [type], /anchor confirm <n>, /anchor list, /talk <target>, /anchors <target>, /resolve <thread> [into <target>], /queue, /flush, /help, /quit\r\nworld> ";
                             if self.handle.data(self.channel, help).await.is_err() {
                                 return Inbound::Closed;
                             }
@@ -1205,11 +1241,33 @@ impl SessionIo for SshIo {
                                 return Inbound::Closed;
                             }
                         }
+                        WorldCommand::Anchor { .. }
+                        | WorldCommand::AnchorConfirm { .. }
+                        | WorldCommand::AnchorList
+                        | WorldCommand::Talk { .. }
+                        | WorldCommand::Anchors { .. }
+                        | WorldCommand::Resolve { .. }
+                        | WorldCommand::Queue
+                        | WorldCommand::Flush => {
+                            // The flow verbs parse identically on every
+                            // surface (#5873 section 3), but their
+                            // operations (chat.anchor.v1, talk bindings,
+                            // the outbox) are not wired into the SSH
+                            // session yet; say so rather than forwarding
+                            // a frame the world program cannot mean.
+                            let text = "that command is recognised, but its operation is not available in this session yet\r\nworld> ";
+                            if self.handle.data(self.channel, text).await.is_err() {
+                                return Inbound::Closed;
+                            }
+                        }
                         WorldCommand::Quit => return Inbound::Closed,
                         WorldCommand::Chat(_)
                         | WorldCommand::Input(_)
                         | WorldCommand::Records { .. }
                         | WorldCommand::RecordsContinue { .. }
+                        | WorldCommand::Documents { .. }
+                        | WorldCommand::DocumentsContinue { .. }
+                        | WorldCommand::Document(_)
                         | WorldCommand::Stats
                         | WorldCommand::Caps => {}
                     }
@@ -1240,7 +1298,7 @@ impl SessionIo for SshIo {
             }
             self.previous_screen = None;
         }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&frame) else {
+        let Ok(value) = id_core::json_unique::parse_json_without_duplicate_keys(&frame) else {
             return true;
         };
         if value["type"] == "form_result_status" {
@@ -1375,10 +1433,14 @@ impl SessionIo for SshIo {
                     {
                         let raw_mode = matches!(self.mode, ShellMode::Raw);
                         let rendered = if raw_mode {
-                            self.previous_screen
-                                .as_ref()
-                                .and_then(|previous| screen.render_ansi_diff(previous))
-                                .or_else(|| screen.render_ansi())
+                            if let Some(presenter) = self.presenter.as_mut() {
+                                Some(presenter.render_screen(&screen))
+                            } else {
+                                self.previous_screen
+                                    .as_ref()
+                                    .and_then(|previous| screen.render_ansi_diff(previous))
+                                    .or_else(|| screen.render_ansi())
+                            }
                         } else {
                             screen.render_ansi()
                         };
@@ -1416,6 +1478,9 @@ impl SessionIo for SshIo {
                 self.errored = true;
                 self.records_prefix = None;
                 self.records_after = None;
+                self.documents_prefix = None;
+                self.documents_names = Vec::new();
+                self.documents_after = None;
                 let message = value["message"].as_str().unwrap_or("error");
                 self.last_error = Some(format!("\r\n{}\r\n", terminal_text(message)));
                 self.last_error.clone().unwrap_or_default()
@@ -1480,6 +1545,61 @@ impl SessionIo for SshIo {
                 } else {
                     format!("\r\n{}", terminal_text(&text))
                 }
+            }
+            Some("documents") => {
+                // Drain pages like records: validate the cursor, accumulate
+                // names under the list caps (512 items / 32 KiB of name
+                // lines — the caps the shell-local listing enforced), and
+                // render only the final page, in the shell-local format.
+                let produced_by = self.documents_after.clone().unwrap_or_default();
+                let (after, malformed) = match records_cursor(value.get("next_after"), &produced_by)
+                {
+                    RecordsCursor::Advance(next) => (Some(next), false),
+                    RecordsCursor::End => (None, false),
+                    RecordsCursor::Malformed | RecordsCursor::Stalled => (None, true),
+                };
+                let mut truncated = malformed;
+                if let Some(names) = value["names"].as_array() {
+                    for name in names.iter().filter_map(serde_json::Value::as_str) {
+                        if self.documents_names.len() >= MAX_DOCUMENT_LIST_ITEMS
+                            || self.documents_drained + name.len() + 1 > MAX_DOCUMENT_LIST_BYTES
+                        {
+                            truncated = true;
+                            break;
+                        }
+                        self.documents_drained += name.len() + 1;
+                        self.documents_names.push(name.to_owned());
+                    }
+                }
+                let next = match (&self.documents_prefix, &after) {
+                    (Some(prefix), Some(after)) if !truncated => {
+                        Some((prefix.clone(), after.clone()))
+                    }
+                    _ => None,
+                };
+                if after.is_some() && next.is_none() {
+                    truncated = true;
+                }
+                if let Some((prefix, after)) = next {
+                    self.documents_after = Some(after.clone());
+                    self.commands
+                        .push_back(WorldCommand::DocumentsContinue { prefix, after });
+                    String::new()
+                } else {
+                    let names = std::mem::take(&mut self.documents_names);
+                    self.documents_prefix = None;
+                    self.documents_after = None;
+                    self.documents_drained = 0;
+                    let text = render_documents_listing(&names, truncated);
+                    format!("\r\n{}\r\nworld> ", terminal_text(&text))
+                }
+            }
+            Some("document") => {
+                let name = value["name"].as_str().unwrap_or_default();
+                let size = value["size"].as_u64().unwrap_or_default();
+                let text = value["text"].as_str().unwrap_or_default();
+                let rendered = format!("--- {name} ({size} bytes; read-only) ---\n{text}");
+                format!("\r\n{}\r\nworld> ", terminal_text(&rendered))
             }
             Some("caps") => {
                 let report = value
@@ -1714,7 +1834,6 @@ const MAX_RECORDS_TERMINAL_BYTES: usize = 384 * 1024;
 /// Total rendered bytes a single `/records` drain may produce across all its
 /// pages. Each page is additionally bounded by [`MAX_RECORDS_TERMINAL_BYTES`].
 const MAX_RECORDS_TOTAL_BYTES: usize = 1024 * 1024;
-const MAX_DOCUMENT_BYTES: usize = 64 * 1024;
 const MAX_DOCUMENT_LIST_BYTES: usize = 32 * 1024;
 const MAX_DOCUMENT_LIST_ITEMS: usize = 512;
 
@@ -1732,12 +1851,36 @@ enum WorldCommand {
     Documents {
         prefix: Option<String>,
     },
+    DocumentsContinue {
+        prefix: Option<String>,
+        after: String,
+    },
     Document(String),
     Stats,
     Logs {
         seconds: Option<u64>,
     },
     Caps,
+    Anchor {
+        target: String,
+        relation: Option<String>,
+    },
+    AnchorConfirm {
+        proposal: u64,
+    },
+    AnchorList,
+    Talk {
+        target: String,
+    },
+    Anchors {
+        target: String,
+    },
+    Resolve {
+        thread: String,
+        into: Option<String>,
+    },
+    Queue,
+    Flush,
     Help,
     Message(String),
     Quit,
@@ -1754,6 +1897,14 @@ fn world_command(line: &str) -> Option<WorldCommand> {
         WorldLine::Stats => WorldCommand::Stats,
         WorldLine::Logs { seconds } => WorldCommand::Logs { seconds },
         WorldLine::Caps => WorldCommand::Caps,
+        WorldLine::Anchor { target, relation } => WorldCommand::Anchor { target, relation },
+        WorldLine::AnchorConfirm { proposal } => WorldCommand::AnchorConfirm { proposal },
+        WorldLine::AnchorList => WorldCommand::AnchorList,
+        WorldLine::Talk { target } => WorldCommand::Talk { target },
+        WorldLine::Anchors { target } => WorldCommand::Anchors { target },
+        WorldLine::Resolve { thread, into } => WorldCommand::Resolve { thread, into },
+        WorldLine::Queue => WorldCommand::Queue,
+        WorldLine::Flush => WorldCommand::Flush,
         WorldLine::Help => WorldCommand::Help,
         WorldLine::Quit => WorldCommand::Quit,
         WorldLine::Message(message) => WorldCommand::Message(message),
@@ -1871,6 +2022,26 @@ impl WorldLineBuffer {
     }
 }
 
+/// Render a drained documents listing exactly as the shell-local
+/// `list_public_documents` did: header, one name per line (or `(none)`),
+/// the truncation marker when the drain stopped early, and the footer.
+fn render_documents_listing(names: &[String], truncated: bool) -> String {
+    let mut output = String::from("public named files:\n");
+    if names.is_empty() {
+        output.push_str("(none)\n");
+    } else {
+        for name in names {
+            output.push_str(name);
+            output.push('\n');
+        }
+    }
+    if truncated {
+        output.push_str("[listing truncated]\n");
+    }
+    output.push_str("View UTF-8 .txt/.md/.markdown files with /document <name>.\n");
+    output
+}
+
 fn render_records_value(
     records: Option<&serde_json::Map<String, serde_json::Value>>,
     sequence: u64,
@@ -1938,118 +2109,6 @@ fn render_records(
         sequence,
         next_after,
     )
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DocumentError {
-    InvalidName,
-    Missing,
-    TooLarge,
-    Binary,
-    Unavailable,
-}
-
-impl DocumentError {
-    const fn message(self) -> &'static str {
-        match self {
-            Self::InvalidName => "document name must be a public .txt, .md, or .markdown tag",
-            Self::Missing => "document not found",
-            Self::TooLarge => "document exceeds the 64 KiB SSH viewing limit",
-            Self::Binary => "document is not valid UTF-8 text",
-            Self::Unavailable => "document unavailable",
-        }
-    }
-}
-
-fn is_viewable_document_name(name: &str) -> bool {
-    if !is_public_document_name(name) {
-        return false;
-    }
-    let lower = name.to_ascii_lowercase();
-    lower.ends_with(".md") || lower.ends_with(".markdown") || lower.ends_with(".txt")
-}
-
-async fn list_public_documents(
-    store: &iroh_blobs::api::Store,
-    prefix: Option<&str>,
-) -> anyhow::Result<String> {
-    let mut tags = store.tags().list().await?;
-    let mut names = Vec::new();
-    let mut total_bytes = 0usize;
-    let mut truncated = false;
-    while let Some(item) = tags.next().await {
-        let item = item?;
-        let Ok(name) = std::str::from_utf8(item.name.as_ref()) else {
-            continue;
-        };
-        if !is_public_document_name(name) || prefix.is_some_and(|p| !name.starts_with(p)) {
-            continue;
-        }
-        let line = format!("{name}\n");
-        if names.len() >= MAX_DOCUMENT_LIST_ITEMS
-            || total_bytes + line.len() > MAX_DOCUMENT_LIST_BYTES
-        {
-            truncated = true;
-            break;
-        }
-        total_bytes += line.len();
-        names.push(name.to_owned());
-    }
-    names.sort();
-    let mut output = String::from("public named files:\n");
-    if names.is_empty() {
-        output.push_str("(none)\n");
-    } else {
-        for name in names {
-            output.push_str(&name);
-            output.push('\n');
-        }
-    }
-    if truncated {
-        output.push_str("[listing truncated]\n");
-    }
-    output.push_str("View UTF-8 .txt/.md/.markdown files with /document <name>.\n");
-    Ok(output)
-}
-
-fn is_public_document_name(name: &str) -> bool {
-    !name.is_empty()
-        && !crate::tags::is_internal_tag(name)
-        && !name.contains('/')
-        && !name.contains('\\')
-        && !name.chars().any(char::is_control)
-}
-
-async fn read_public_document(
-    store: &iroh_blobs::api::Store,
-    name: &str,
-) -> Result<String, DocumentError> {
-    if !is_viewable_document_name(name) {
-        return Err(DocumentError::InvalidName);
-    }
-    let tag = store
-        .tags()
-        .get(name)
-        .await
-        .map_err(|_| DocumentError::Unavailable)?
-        .ok_or(DocumentError::Missing)?;
-    let size = match store.blobs().status(tag.hash).await {
-        Ok(iroh_blobs::api::blobs::BlobStatus::Complete { size }) => size,
-        _ => return Err(DocumentError::Unavailable),
-    };
-    if size > MAX_DOCUMENT_BYTES as u64 {
-        return Err(DocumentError::TooLarge);
-    }
-    let bytes = store
-        .blobs()
-        .get_bytes(tag.hash)
-        .await
-        .map_err(|_| DocumentError::Unavailable)?;
-    if bytes.len() > MAX_DOCUMENT_BYTES {
-        return Err(DocumentError::TooLarge);
-    }
-    let text = std::str::from_utf8(&bytes).map_err(|_| DocumentError::Binary)?;
-    Ok(format!("--- {name} ({size} bytes; read-only) ---\n{text}"))
 }
 
 /// One explorer login: the world, the caller it acts as, and the secret it
@@ -2322,180 +2381,6 @@ fn terminal_text(data: &str) -> String {
         .filter(|ch| (!ch.is_control() || matches!(ch, '\n' | '\t')) && !crate::is_format_char(*ch))
         .collect::<String>()
         .replace('\n', "\r\n")
-}
-
-/// Local input affordances of the SSH terminal presenter. This is deliberately
-/// distinct from the headless server's `device.info` manifest.
-fn terminal_form_input_manifest() -> serde_json::Value {
-    json!({
-        "keys": 128,
-        "encoder": false,
-        "pointer": false,
-        "text_entry": "keyboard",
-    })
-}
-
-/// Safe, line-oriented prompt for the SSH presenter. The user's response is
-/// parsed as JSON data and sent in a typed session frame; it is never shell or
-/// markup input.
-fn terminal_form_prompt(form: &crate::world_presentation::FormSurface) -> String {
-    use crate::world_presentation::FormActionKind;
-    use crate::world_presentation::FormField;
-
-    let actions = form
-        .actions
-        .iter()
-        .map(|action| {
-            let kind = match action.kind {
-                FormActionKind::Submit => "submit",
-                FormActionKind::Cancel => "cancel",
-            };
-            format!("{} — {} ({kind})", action.id, action.label)
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let fields = form
-        .fields
-        .iter()
-        .map(|field| {
-            let (id, label, details) = match field {
-                FormField::Text {
-                    id,
-                    label,
-                    required,
-                    max_length,
-                } => (
-                    id,
-                    label,
-                    format!("text; required={required}; max_length={max_length}"),
-                ),
-                FormField::Choice {
-                    id,
-                    label,
-                    required,
-                    options,
-                } => {
-                    let options = options
-                        .iter()
-                        .map(|option| terminal_json_string(option))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    (
-                        id,
-                        label,
-                        format!("choice; required={required}; options=[{options}]"),
-                    )
-                }
-                FormField::Number {
-                    id,
-                    label,
-                    required,
-                    min,
-                    max,
-                } => (
-                    id,
-                    label,
-                    format!("number; required={required}; min={min}; max={max}"),
-                ),
-                FormField::Date {
-                    id,
-                    label,
-                    required,
-                    min,
-                    max,
-                } => (
-                    id,
-                    label,
-                    format!("date; required={required}; min={min:?}; max={max:?}"),
-                ),
-                FormField::Confirm {
-                    id,
-                    label,
-                    required,
-                } => (id, label, format!("confirm; required={required}")),
-            };
-            format!(
-                "{} — {} [{}]",
-                terminal_text(label),
-                terminal_text(id),
-                terminal_text(&details)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!(
-        "{}\nFields (values are keyed by field ID):\n{}\nActions:\n{}\nEnter {{\"action\":\"<id>\",\"values\":{{...}}}} or /cancel.\nform> ",
-        terminal_text(&form.title),
-        fields,
-        actions
-    )
-}
-
-/// JSON-quote an option while escaping terminal-invisible format characters,
-/// so the displayed value remains copyable and compares exactly on submit.
-fn terminal_json_string(value: &str) -> String {
-    let quoted = serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_owned());
-    let mut escaped = String::with_capacity(quoted.len());
-    for ch in quoted.chars() {
-        if crate::is_format_char(ch) {
-            let mut units = [0; 2];
-            for unit in ch.encode_utf16(&mut units).iter() {
-                use std::fmt::Write as _;
-                let _ = write!(escaped, "\\u{unit:04x}");
-            }
-        } else {
-            escaped.push(ch);
-        }
-    }
-    escaped
-}
-
-/// Validate one complete JSON response line and encode it as a typed session frame.
-fn terminal_form_answer_frame(
-    form: &crate::world_presentation::FormSurface,
-    line: &str,
-) -> Result<String, String> {
-    let (action, values) = if line.trim() == "/cancel" {
-        let action = form
-            .actions
-            .iter()
-            .find(|action| action.kind == crate::world_presentation::FormActionKind::Cancel)
-            .ok_or_else(|| "this form has no cancel action".to_owned())?;
-        (action.id.clone(), serde_json::Map::new())
-    } else {
-        let value: serde_json::Value = serde_json::from_str(line)
-            .map_err(|_| "enter a JSON object with action and values".to_owned())?;
-        let object = value
-            .as_object()
-            .ok_or_else(|| "form response must be a JSON object".to_owned())?;
-        if object.len() != 2 || !object.contains_key("action") || !object.contains_key("values") {
-            return Err("form response requires exactly action and values".to_owned());
-        }
-        let action = object["action"]
-            .as_str()
-            .ok_or_else(|| "form response action must be a string".to_owned())?;
-        let values = object["values"]
-            .as_object()
-            .cloned()
-            .ok_or_else(|| "form response values must be an object".to_owned())?;
-        (action.to_owned(), values)
-    };
-    let token = form
-        .presentation_token
-        .as_deref()
-        .ok_or_else(|| "form has no active presentation token".to_owned())?;
-    let frame = serde_json::json!({
-        "type": "form_result",
-        "form_id": form.form_id,
-        "presentation_token": token,
-        "action": action,
-        "values": values,
-    })
-    .to_string();
-    if frame.len() > crate::frames::MAX_FRAME_BYTES {
-        return Err("form response exceeds the frame size limit".to_owned());
-    }
-    Ok(frame)
 }
 
 #[cfg(test)]
@@ -3267,7 +3152,7 @@ mod tests {
 
         let session = connect(port, &"0".repeat(64)).await;
         let mut channel = shell(&session).await;
-        let mut terminal = vt100::Parser::new(24, 80, 0);
+        let mut terminal = vt100::Parser::default();
         read_until(&mut channel, &mut terminal, "join denied").await;
         server.abort();
     }
@@ -3298,7 +3183,7 @@ mod tests {
         let (port, server) = start(hub).await;
         let session = connect_as(port, "cmd:", &capability).await;
         let mut channel = shell(&session).await;
-        let mut terminal = vt100::Parser::new(24, 80, 0);
+        let mut terminal = vt100::Parser::default();
         read_until(&mut channel, &mut terminal, "world>").await;
 
         channel.data(&b"hello from SSH\r"[..]).await.unwrap();
@@ -3841,6 +3726,14 @@ mod tests {
             .to_string(),
             Phase::Joined,
         ));
+        let more_documents = WorldCommand::DocumentsContinue {
+            prefix: None,
+            after: "a.md".to_owned(),
+        };
+        sent.push(check(
+            &command_frame(&more_documents, "cap").unwrap(),
+            Phase::Joined,
+        ));
         assert_eq!(
             sent,
             [
@@ -3850,8 +3743,11 @@ mod tests {
                 "records",
                 "info",
                 "caps",
+                "documents",
+                "document",
                 "records",
-                "form_result"
+                "form_result",
+                "documents"
             ]
         );
         let status = serde_json::json!({
@@ -4221,6 +4117,52 @@ mod tests {
         );
     }
 
+    /// #5873 section 3 / #7616 acceptance: the flow verbs reach every surface
+    /// through the same shared parser, so the SSH command mode sees exactly
+    /// the actions the parser produced — and none of them is emitted as a
+    /// chat message or a shell frame the world program cannot mean.
+    #[test]
+    fn the_flow_verbs_map_identically_on_the_ssh_surface() {
+        use crate::world_line::parse_line;
+        for line in [
+            "/anchor id://abc",
+            "/anchor id://abc anchored-to-part",
+            "/anchor confirm 2",
+            "/anchor list",
+            "/talk id://abc",
+            "/anchors the design doc",
+            "/resolve thread-9",
+            "/resolve thread-9 into id://abc",
+            "/queue",
+            "/flush",
+        ] {
+            let command = world_command(line).unwrap_or_else(|| panic!("{line}: no command"));
+            // The surface is a faithful mirror of the shared parse.
+            let expected = match parse_line(line).unwrap() {
+                crate::world_line::WorldLine::Anchor { target, relation } => {
+                    WorldCommand::Anchor { target, relation }
+                }
+                crate::world_line::WorldLine::AnchorConfirm { proposal } => {
+                    WorldCommand::AnchorConfirm { proposal }
+                }
+                crate::world_line::WorldLine::AnchorList => WorldCommand::AnchorList,
+                crate::world_line::WorldLine::Talk { target } => WorldCommand::Talk { target },
+                crate::world_line::WorldLine::Anchors { target } => {
+                    WorldCommand::Anchors { target }
+                }
+                crate::world_line::WorldLine::Resolve { thread, into } => {
+                    WorldCommand::Resolve { thread, into }
+                }
+                crate::world_line::WorldLine::Queue => WorldCommand::Queue,
+                crate::world_line::WorldLine::Flush => WorldCommand::Flush,
+                other => panic!("{line}: parser produced {other:?}"),
+            };
+            assert_eq!(command, expected, "{line}");
+            // And no flow verb is forwarded to the world program as a frame.
+            assert_eq!(command_frame(&command, "cap"), None, "{line}");
+        }
+    }
+
     #[test]
     fn world_line_buffer_discards_overlong_line_until_newline() {
         let mut input = WorldLineBuffer::default();
@@ -4429,7 +4371,7 @@ mod tests {
         let (port, server) = start_with_store(hub, store).await;
         let session = connect_as(port, "cmd:", &capability).await;
         let mut channel = shell(&session).await;
-        let mut terminal = vt100::Parser::new(24, 80, 0);
+        let mut terminal = vt100::Parser::default();
         read_until(&mut channel, &mut terminal, "world>").await;
         channel.data(&b"/documents guide\r"[..]).await.unwrap();
         read_until(&mut channel, &mut terminal, "guide.md").await;
@@ -4471,7 +4413,7 @@ mod tests {
 
         let session = connect(port, &capability).await;
         let mut channel = shell(&session).await;
-        let mut terminal = vt100::Parser::new(24, 80, 0);
+        let mut terminal = vt100::Parser::default();
         let initial = read_until_bytes(&mut channel, &mut terminal, "count=0").await;
         assert!(initial.windows(3).any(|window| window == b"[2J"));
         channel.data(&b"inc"[..]).await.unwrap();
@@ -4527,7 +4469,7 @@ mod tests {
         let (port, server) = start(hub).await;
         let session = connect(port, capability.expose()).await;
         let mut channel = shell(&session).await;
-        let mut terminal = vt100::Parser::new(24, 80, 0);
+        let mut terminal = vt100::Parser::default();
         // The pty opens at 80x24, so the whole 4x2 screen is shown first.
         read_until(&mut channel, &mut terminal, "wxyz").await;
         assert!(terminal.screen().contents().contains("abcd"));
@@ -4587,7 +4529,7 @@ mod tests {
 
         let session = connect_as(port, "cmd:", &capability).await;
         let mut channel = shell(&session).await;
-        let mut terminal = vt100::Parser::new(24, 80, 0);
+        let mut terminal = vt100::Parser::default();
         read_until(&mut channel, &mut terminal, "count=0").await;
         channel.data(&b"/input 696e63\r"[..]).await.unwrap();
         read_until(&mut channel, &mut terminal, "count=1").await;

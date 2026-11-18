@@ -24,6 +24,12 @@
 # ran this script every ~5 min is deleted. Kept for manual/emergency use
 # only -- running it overwrites the laptop feed with this host's collection.
 set -euo pipefail
+# Argument contract (#3352): this script takes no command-line
+# arguments; anything given is a usage error before any work runs.
+if [ "$#" -gt 0 ]; then
+  echo "push-fleet-feed.sh: unexpected argument '$1'; usage: bash scripts/push-fleet-feed.sh" >&2
+  exit 2
+fi
 
 # Systemd system services get a minimal PATH (and no HOME); bun lives
 # in the image bin.

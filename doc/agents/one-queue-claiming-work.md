@@ -40,3 +40,42 @@ queues. The matching model (Drew, 2026-11-10; #8097):
   item names a platform beyond the optional coarse family mark; Muse
   lanes work their own fixes and triage is a separate step; lanes do
   the work rather than handing off, and a handoff records its reason.
+
+## Decision records bind this file
+
+Every durable ruling behind the rules above lives in the fleet decision
+records index, [`doc/decisions/README.md`](../decisions/README.md) —
+resume-by-session (FDR-0001), the manual-claim override (FDR-0002),
+multi-task claim and take-over (FDR-0003), manual-only items (FDR-0004),
+run identity and attribution (FDR-0005), the park remediation ladder
+(FDR-0006), justified count caps (FDR-0007), parks with a term and an
+owner release (FDR-0008), the park reboot test (FDR-0009), and
+completion evidence (FDR-0010).
+
+**A change to claim, park, resume, take-over, stop-authority, cap, or
+attribution semantics requires a decision record in the same body of
+work** — the same PR, or the same run for non-PR work. Editing this
+file without that record is an incomplete change, and a change that
+contradicts an accepted record must supersede it rather than diverge
+from it in silence.
+
+## Implementation target and usable work window (2026-11-18)
+
+`payload.repo` identifies the tracking issue's repository. When implementation
+belongs elsewhere, producers set `payload.implementation_repo` to its explicit
+`owner/name`. `--filter 'repo = code'` and `repo != code` select that implementation
+target first, falling back to the tracking repo for ordinary legacy packets.
+Issue references and duplicate-work identity continue to use the tracking repo.
+A packet explicitly flagged `cross-repo-change` without this target is quarantined
+at claim time with a repair reason, not handed to another mismatched worker.
+Never infer the target from a title, or use an enqueue dedupe hit as a packet edit.
+
+For a bounded session, pass `--remaining-budget-minutes <usable-minutes>` on EACH
+claim, recomputing the remaining usable work window rather than passing the whole
+initial window repeatedly. Producers declare `required_budget_minutes` for the
+minimum uninterrupted time to the next safe checkpoint. Existing broker matching
+excludes requirement-bearing tasks unless the declared remaining window fits;
+a fitting worker can bypass a capacity park's timer. `timebox_minutes` is NOT an
+estimate or a requirement. Do not invent an hours requirement from `effort/l`.
+Ownership/handoff holds remain independent: a longer budget is not authorization.
+See [FDR-0011](../decisions/FDR-0011-implementation-target-and-work-window.md).

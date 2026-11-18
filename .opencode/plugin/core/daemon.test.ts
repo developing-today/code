@@ -24,7 +24,9 @@ import {
   rank,
   readInfoFiles,
   runBin,
+  socketDirs,
   splitArgs,
+  stateDir,
   targetKey,
   writeRemembered,
   readRemembered,
@@ -87,13 +89,17 @@ const serveFake = (socket: string, opts: FakeOptions = {}): Fake => {
           status: "ok",
           version: opts.version ?? "test",
           pid: 1,
-          ...(opts.missingOperationFingerprint ? {} : { operationFingerprint: opts.operationFingerprint ?? OPERATION_FINGERPRINT }),
+          ...(opts.missingOperationFingerprint
+            ? {}
+            : { operationFingerprint: opts.operationFingerprint ?? OPERATION_FINGERPRINT }),
         });
       }
       if (url.pathname === "/v1/status") {
         return Response.json({
           version: opts.version ?? "test",
-          ...(opts.missingOperationFingerprint ? {} : { operationFingerprint: opts.operationFingerprint ?? OPERATION_FINGERPRINT }),
+          ...(opts.missingOperationFingerprint
+            ? {}
+            : { operationFingerprint: opts.operationFingerprint ?? OPERATION_FINGERPRINT }),
           pid: 1,
           socket,
           config: opts.config,
@@ -571,5 +577,30 @@ describe("runBin abort signal (PLG-38, #1940)", () => {
     chmodSync(bin, 0o755);
     const out = await runBin({ bin, env: envFor(dir) }, []);
     expect(out).toBe("hello-from-bin");
+  });
+});
+
+describe("stateDir home resolution (#11205, contract #5762)", () => {
+  test("HOME set gives exactly today's path", () => {
+    expect(stateDir({ HOME: "/home/a" })).toBe("/home/a/.local/state/mcpx");
+  });
+
+  test("an absolute XDG_STATE_HOME wins; MCPX_STATE_DIR wins over both", () => {
+    expect(stateDir({ HOME: "/home/a", XDG_STATE_HOME: "/xdg" })).toBe("/xdg/mcpx");
+    expect(stateDir({ XDG_STATE_HOME: "/xdg" })).toBe("/xdg/mcpx");
+    expect(stateDir({ HOME: "/home/a", XDG_STATE_HOME: "/xdg", MCPX_STATE_DIR: "/s" })).toBe("/s");
+  });
+
+  test("a relative or empty XDG_STATE_HOME is ignored", () => {
+    for (const XDG_STATE_HOME of ["", "relative", "./state"]) {
+      expect(stateDir({ HOME: "/home/a", XDG_STATE_HOME })).toBe("/home/a/.local/state/mcpx");
+    }
+  });
+
+  test("HOME unset or empty is a named error, not a CWD-relative path", () => {
+    for (const env of [{}, { HOME: "" }, { HOME: "", XDG_STATE_HOME: "relative" }]) {
+      expect(() => stateDir(env)).toThrow(/HOME is not set or is empty: mcpx requires a non-empty HOME/);
+      expect(() => socketDirs(env)).toThrow(/HOME is not set or is empty/);
+    }
   });
 });

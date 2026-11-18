@@ -101,6 +101,61 @@ pub enum ServerUpdate {
     /// The host replaced the world's program mid-session (a live install
     /// sends snapshot, then this notification, then a replacement view).
     ProgramChanged,
+    /// The host sent an F13.7 `provider_request` (step 2 frame, step 4
+    /// local handling): the validated frame is queued on the state for
+    /// the session's provider adapter to answer; session state itself
+    /// does not interpret it.
+    ProviderRequest,
+    /// The host sent an agent-profile `semantic_diff` (contract revision
+    /// 11, #6300 section 4.2): what changed, in world terms, scoped to
+    /// this session's subscription. Render it with [`semantic_diff_text`].
+    SemanticDiff,
+    /// The host answered a `screen_subscribe` with the now-active
+    /// subscription (`screen_subscription`, contract revision 11).
+    ScreenSubscription,
+    /// The host answered a `form_result` with `form_result_status`
+    /// (#8938): the reply is kept for the presenter to fold through
+    /// [`crate::form::FormPresenter::settle`], which rotates the
+    /// presentation token on a rejection exactly as the SSH presenter
+    /// does.
+    FormResultStatus,
+}
+
+/// Render one `semantic_diff` frame as plain text: one line per change,
+/// in world terms — a chat message, a changed screen row inside the
+/// subscribed region, an object change — never repaint instructions.
+/// Unknown change kinds render as a named line rather than vanishing,
+/// so a newer host's diffs stay legible to this shell.
+#[must_use]
+pub fn semantic_diff_text(diff: &Value) -> String {
+    let Some(changes) = diff["changes"].as_array() else {
+        return String::new();
+    };
+    changes
+        .iter()
+        .map(|change| {
+            let kind = change["kind"].as_str().unwrap_or_default();
+            match kind {
+                "chat_posted" => {
+                    format!("chat: {}", change["text"].as_str().unwrap_or_default())
+                }
+                "region_changed" => format!(
+                    "row {}: {}",
+                    change["row"].as_u64().unwrap_or_default(),
+                    change["text"].as_str().unwrap_or_default()
+                ),
+                "object_changed" => format!(
+                    "object {} changed",
+                    change["entity_ref"].as_str().unwrap_or_default()
+                ),
+                "input_applied" => "input applied".to_owned(),
+                "program_changed" => "program changed".to_owned(),
+                "system_event" => "system event".to_owned(),
+                other => format!("change: {other}"),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Accumulated host state for a single session stream.
@@ -110,6 +165,10 @@ pub struct SessionState {
     events: Vec<Value>,
     view: Option<SessionView>,
     program_module_hash: Option<String>,
+    provider_requests: Vec<Value>,
+    semantic_diffs: Vec<Value>,
+    screen_subscription: Option<Value>,
+    form_result_status: Option<Value>,
 }
 
 /// Maximum durable events retained since the most recent snapshot.
@@ -154,6 +213,43 @@ impl SessionState {
             "view" => {
                 self.view = Some(SessionView::from_frame(&frame)?);
                 Ok(ServerUpdate::View)
+            }
+            "provider_request" => {
+                // F13.7 step 4: a provider request is validated by the
+                // contract check above and queued for the provider
+                // adapter, which applies the local grant/bounds check
+                // and builds the reply. The frame must name its nonce
+                // and provider to be answerable at all.
+                if frame["nonce"].as_str().is_none_or(str::is_empty)
+                    || frame["provider"].as_str().is_none_or(str::is_empty)
+                {
+                    bail!("provider_request frame has no nonce or provider");
+                }
+                self.provider_requests.push(frame);
+                Ok(ServerUpdate::ProviderRequest)
+            }
+            "semantic_diff" => {
+                // Agent profile (contract revision 11): retained like
+                // events, as a bounded tail — a diff is derived
+                // presentation, so dropping the oldest loses nothing
+                // durable.
+                self.semantic_diffs.push(frame);
+                if self.semantic_diffs.len() > MAX_RETAINED_EVENTS {
+                    let excess = self.semantic_diffs.len() - MAX_RETAINED_EVENTS;
+                    self.semantic_diffs.drain(..excess);
+                }
+                Ok(ServerUpdate::SemanticDiff)
+            }
+            "screen_subscription" => {
+                self.screen_subscription = Some(frame);
+                Ok(ServerUpdate::ScreenSubscription)
+            }
+            "form_result_status" => {
+                // #8938: the answer to one `form_result`. Retained for the
+                // presenter's `settle`; a form the shell is not rendering
+                // is simply ignored there, so this is never a failure.
+                self.form_result_status = Some(frame);
+                Ok(ServerUpdate::FormResultStatus)
             }
             "program_changed" => {
                 // A live program install is a normal point in a session
@@ -201,6 +297,42 @@ impl SessionState {
     pub fn program_module_hash(&self) -> Option<&str> {
         self.program_module_hash.as_deref()
     }
+
+    /// The most recent `form_result_status` reply, if any (#8938).
+    ///
+    /// A reply is presentation input, not durable state: the presenter
+    /// consumes it once with [`SessionState::take_form_result_status`].
+    #[must_use]
+    pub fn form_result_status(&self) -> Option<&Value> {
+        self.form_result_status.as_ref()
+    }
+
+    /// Take the pending `form_result_status` reply, if one arrived.
+    pub fn take_form_result_status(&mut self) -> Option<Value> {
+        self.form_result_status.take()
+    }
+
+    /// Drain the queued F13.7 `provider_request` frames, oldest
+    /// first. The session's provider adapter answers each one with a
+    /// `provider_reply`; an undrained request is never answered
+    /// implicitly.
+    pub fn take_provider_requests(&mut self) -> Vec<Value> {
+        std::mem::take(&mut self.provider_requests)
+    }
+
+    /// Agent-profile semantic diffs received on this stream, newest
+    /// last. Bounded tail like [`SessionState::events`].
+    #[must_use]
+    pub fn semantic_diffs(&self) -> &[Value] {
+        &self.semantic_diffs
+    }
+
+    /// The active screen subscription the host last acknowledged with a
+    /// `screen_subscription` frame, if any.
+    #[must_use]
+    pub fn screen_subscription(&self) -> Option<&Value> {
+        self.screen_subscription.as_ref()
+    }
 }
 
 /// Lock the shared session state, mapping a poisoned lock to an error
@@ -241,14 +373,78 @@ pub async fn run_session(
     world: Option<&str>,
     capability: &str,
     after: Option<u64>,
+    outbound: mpsc::Receiver<Value>,
+    views: mpsc::UnboundedSender<SessionView>,
+) -> Result<SessionState> {
+    let (provider_requests, _dropped) = mpsc::unbounded_channel();
+    run_session_inner(
+        client,
+        world,
+        capability,
+        after,
+        outbound,
+        views,
+        provider_requests,
+        None,
+    )
+    .await
+}
+
+/// [`run_session`] with F13.7 step-4 provider handling: validated
+/// `provider_request` frames are forwarded on `provider_requests`
+/// for the caller's [`crate::ProviderAdapter`] to answer through the
+/// ordinary outbound channel, and `provider_offer` (the adapter's
+/// offer frame for this world, when it has one) is sent immediately
+/// after the join frame.
+///
+/// # Errors
+///
+/// Same failures as [`run_session`], plus a failure to send the
+/// offer frame.
+pub async fn run_session_with_providers(
+    client: WorldClient,
+    world: Option<&str>,
+    capability: &str,
+    after: Option<u64>,
+    outbound: mpsc::Receiver<Value>,
+    views: mpsc::UnboundedSender<SessionView>,
+    provider_requests: mpsc::UnboundedSender<Value>,
+    provider_offer: Option<Value>,
+) -> Result<SessionState> {
+    run_session_inner(
+        client,
+        world,
+        capability,
+        after,
+        outbound,
+        views,
+        provider_requests,
+        provider_offer,
+    )
+    .await
+}
+
+async fn run_session_inner(
+    client: WorldClient,
+    world: Option<&str>,
+    capability: &str,
+    after: Option<u64>,
     mut outbound: mpsc::Receiver<Value>,
     views: mpsc::UnboundedSender<SessionView>,
+    provider_requests: mpsc::UnboundedSender<Value>,
+    provider_offer: Option<Value>,
 ) -> Result<SessionState> {
     let (conn, mut send, mut recv) = client.into_parts();
     let join = route_frame(&join_frame(capability, after), world);
     write_frame(&mut send, join.as_bytes())
         .await
         .context("send join frame")?;
+    if let Some(offer) = provider_offer {
+        let routed = route_frame(&offer, world);
+        write_frame(&mut send, routed.as_bytes())
+            .await
+            .context("send provider offer frame")?;
+    }
 
     let shared = Arc::new(Mutex::new(SessionState::default()));
     let reader_state = Arc::clone(&shared);
@@ -261,6 +457,15 @@ pub async fn run_session(
             let view = {
                 let mut state = lock_state(&reader_state)?;
                 let update = state.apply_server_frame(frame)?;
+                if update == ServerUpdate::ProviderRequest {
+                    for request in state.take_provider_requests() {
+                        // A dropped receiver means the shell is not
+                        // answering provider requests this session;
+                        // the host broker times the request out and
+                        // the local refusal stays the default.
+                        let _ = provider_requests.send(request);
+                    }
+                }
                 if update == ServerUpdate::View {
                     state.view().cloned()
                 } else {
@@ -438,6 +643,31 @@ mod tests {
             ServerUpdate::View
         );
         assert_eq!(state.view().unwrap().text_projection(), "new program");
+    }
+
+    #[test]
+    fn provider_requests_are_queued_for_the_adapter_not_folded_into_state() {
+        let mut state = SessionState::default();
+        let frame = json!({
+            "type": "provider_request", "nonce": "ab12",
+            "provider": "client.file.read", "args": {"path": "notes.txt"},
+            "deadline_ms": 5000
+        });
+        assert_eq!(
+            state.apply_server_frame(frame.clone()).unwrap(),
+            ServerUpdate::ProviderRequest
+        );
+        assert_eq!(state.take_provider_requests(), vec![frame]);
+        assert!(state.take_provider_requests().is_empty());
+        // A request that cannot be answered (no nonce) is rejected.
+        assert!(
+            state
+                .apply_server_frame(json!({
+                    "type": "provider_request", "provider": "client.file.read",
+                    "args": {}, "deadline_ms": 5000
+                }))
+                .is_err()
+        );
     }
 
     #[test]

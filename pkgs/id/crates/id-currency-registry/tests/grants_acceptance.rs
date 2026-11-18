@@ -1,0 +1,228 @@
+//! Acceptance tests for the grant service (slice G1, issue
+//! #2294), against the design
+//! `doc/2026-10-29T12-10-00Z_design_refundable_grants_pending_transfers`.
+//!
+//! Every test names its oracle: the grant row's state (the
+//! control-plane projection) and the stub ledger's balances (the
+//! money truth — pending is held and unspendable, posted is
+//! spendable). The brief's named cases are register-vest,
+//! register-void, double-resolution 409, and partial refund
+//! leaving no posted credit.
+
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+use id_currency_registry::grants::{
+    GrantConfig, GrantError, GrantService, GrantState, InMemoryGrantStore, RegisterGrant,
+    StubLedger, steam_key_hash,
+};
+
+const POOL: u128 = 1001;
+const HOLDER: u128 = 2002;
+const LEDGER: u32 = 7;
+const WINDOW_SECONDS: u64 = 14 * 24 * 60 * 60;
+const NOW: u64 = 1_000_000;
+
+fn service() -> GrantService<InMemoryGrantStore, StubLedger> {
+    GrantService::new(
+        InMemoryGrantStore::new(),
+        StubLedger::new(),
+        GrantConfig::new(WINDOW_SECONDS),
+    )
+}
+
+fn request(key: &str, user: &str, amount: u128) -> RegisterGrant {
+    RegisterGrant {
+        steam_key: key.to_string(),
+        user_id: user.to_string(),
+        ledger: LEDGER,
+        amount,
+        grant_pool_account_id: POOL,
+        holder_account_id: HOLDER,
+    }
+}
+
+#[test]
+fn register_then_vest_posts_full_amount() {
+    // Oracle: the stub ledger's balances + the grant row's state.
+    let mut svc = service();
+    let grant = svc
+        .register(&request("key-vest", "user-1", 500), NOW)
+        .expect("register");
+    assert_eq!(grant.state, GrantState::Pending);
+    assert_eq!(grant.window_ends_at, NOW + WINDOW_SECONDS);
+    assert_eq!(svc.ledger().credits_pending(HOLDER), 500);
+    assert_eq!(svc.ledger().credits_posted(HOLDER), 0);
+
+    let vested = svc.vest(grant.id, NOW + 60).expect("vest");
+    assert_eq!(vested.state, GrantState::Posted);
+    assert!(vested.resolution_transfer_id.is_some());
+    assert_eq!(svc.ledger().credits_pending(HOLDER), 0);
+    assert_eq!(svc.ledger().credits_posted(HOLDER), 500);
+}
+
+#[test]
+fn register_then_void_releases_hold_and_posts_nothing() {
+    // Oracle: after a void, the holder has no posted credit and
+    // no pending hold — the refund path of design section 2.1.
+    let mut svc = service();
+    let grant = svc
+        .register(&request("key-void", "user-1", 500), NOW)
+        .expect("register");
+    let voided = svc.void(grant.id, NOW + 60).expect("void");
+    assert_eq!(voided.state, GrantState::Voided);
+    assert_eq!(svc.ledger().credits_pending(HOLDER), 0);
+    assert_eq!(svc.ledger().credits_posted(HOLDER), 0);
+}
+
+#[test]
+fn double_resolution_is_already_resolved() {
+    // Oracle: the GrantError::AlreadyResolved verdict (the API's
+    // 409) carrying the state the grant actually reached, for
+    // every second resolution attempt.
+    let mut svc = service();
+    let voided = svc
+        .register(&request("key-dr-void", "user-1", 10), NOW)
+        .expect("register");
+    svc.void(voided.id, NOW).expect("void");
+    assert_eq!(
+        svc.vest(voided.id, NOW),
+        Err(GrantError::AlreadyResolved {
+            grant_id: voided.id,
+            state: GrantState::Voided,
+        })
+    );
+
+    let posted = svc
+        .register(&request("key-dr-vest", "user-1", 10), NOW)
+        .expect("register");
+    svc.vest(posted.id, NOW).expect("vest");
+    assert_eq!(
+        svc.void(posted.id, NOW),
+        Err(GrantError::AlreadyResolved {
+            grant_id: posted.id,
+            state: GrantState::Posted,
+        })
+    );
+    assert_eq!(
+        svc.vest(posted.id, NOW),
+        Err(GrantError::AlreadyResolved {
+            grant_id: posted.id,
+            state: GrantState::Posted,
+        })
+    );
+}
+
+#[test]
+fn partial_refund_leaves_no_posted_credit() {
+    // Oracle: design section 4 — void-and-reissue. After a
+    // partial refund of a pending grant, posted credit is zero,
+    // the original is voided, and the remainder rides a new
+    // pending grant linked by correction_of, in the same window.
+    let mut svc = service();
+    let grant = svc
+        .register(&request("key-partial", "user-1", 100), NOW)
+        .expect("register");
+    let (voided, reissue) = svc
+        .refund_partial(grant.id, 30, POOL, HOLDER, NOW + 60)
+        .expect("partial refund");
+    assert_eq!(voided.state, GrantState::Voided);
+    assert_eq!(reissue.state, GrantState::Pending);
+    assert_eq!(reissue.amount, 70);
+    assert_eq!(reissue.correction_of, Some(grant.id));
+    assert_eq!(reissue.window_ends_at, grant.window_ends_at);
+    assert_eq!(svc.ledger().credits_posted(HOLDER), 0);
+    assert_eq!(svc.ledger().credits_pending(HOLDER), 70);
+
+    // The reissue still vests normally at window close.
+    let vested = svc.vest(reissue.id, NOW + 120).expect("vest reissue");
+    assert_eq!(vested.state, GrantState::Posted);
+    assert_eq!(svc.ledger().credits_posted(HOLDER), 70);
+    assert_eq!(svc.ledger().credits_pending(HOLDER), 0);
+}
+
+#[test]
+fn register_is_idempotent_on_steam_key() {
+    // Oracle: one key, one grant, one hold — a repeat
+    // registration returns the existing grant and the pending
+    // balance is the grant amount once, not twice.
+    let mut svc = service();
+    let first = svc
+        .register(&request("key-same", "user-1", 250), NOW)
+        .expect("register");
+    let second = svc
+        .register(&request("key-same", "user-1", 250), NOW + 10)
+        .expect("re-register");
+    assert_eq!(first.id, second.id);
+    assert_eq!(svc.ledger().credits_pending(HOLDER), 250);
+    assert_eq!(svc.grants_for_user("user-1").len(), 1);
+
+    let other = svc
+        .register(&request("key-other", "user-1", 5), NOW)
+        .expect("other key");
+    assert_ne!(other.id, first.id);
+    assert_eq!(svc.grants_for_user("user-1").len(), 2);
+}
+
+#[test]
+fn refund_amount_must_be_a_proper_partial() {
+    // Oracle: InvalidAmount for a zero refund and for a full
+    // refund (a full refund is a plain void, not a reissue).
+    let mut svc = service();
+    let grant = svc
+        .register(&request("key-bounds", "user-1", 100), NOW)
+        .expect("register");
+    assert_eq!(
+        svc.refund_partial(grant.id, 0, POOL, HOLDER, NOW),
+        Err(GrantError::InvalidAmount {
+            attempted: 0,
+            grant_amount: 100,
+        })
+    );
+    assert_eq!(
+        svc.refund_partial(grant.id, 100, POOL, HOLDER, NOW),
+        Err(GrantError::InvalidAmount {
+            attempted: 100,
+            grant_amount: 100,
+        })
+    );
+    // Neither attempt resolved or reissued anything.
+    assert_eq!(svc.get(grant.id).expect("grant").state, GrantState::Pending);
+    assert_eq!(svc.ledger().credits_pending(HOLDER), 100);
+}
+
+#[test]
+fn expired_hold_syncs_row_and_reports_already_resolved() {
+    // Oracle: when the ledger's timeout fires first (section
+    // 6.3), a vest attempt syncs the row to the ledger's truth
+    // (Expired) and answers AlreadyResolved — never a late post.
+    let mut svc = service();
+    let grant = svc
+        .register(&request("key-expire", "user-1", 40), NOW)
+        .expect("register");
+    svc.ledger_mut().expire_pending(grant.pending_transfer_id);
+    assert_eq!(
+        svc.vest(grant.id, NOW + WINDOW_SECONDS + 1),
+        Err(GrantError::AlreadyResolved {
+            grant_id: grant.id,
+            state: GrantState::Expired,
+        })
+    );
+    assert_eq!(svc.get(grant.id).expect("grant").state, GrantState::Expired);
+    assert_eq!(svc.ledger().credits_posted(HOLDER), 0);
+    assert_eq!(svc.ledger().credits_pending(HOLDER), 0);
+}
+
+#[test]
+fn unknown_grant_is_unknown() {
+    let mut svc = service();
+    assert_eq!(svc.vest(999, NOW), Err(GrantError::UnknownGrant(999)));
+    assert_eq!(svc.void(999, NOW), Err(GrantError::UnknownGrant(999)));
+}
+
+#[test]
+fn key_hash_is_sha256() {
+    // Oracle: the published sha256 test vector for "test".
+    let hash = steam_key_hash("test");
+    let expected_prefix: [u8; 8] = [0x9f, 0x86, 0xd0, 0x81, 0x88, 0x4c, 0x7d, 0x65];
+    assert_eq!(hash[..8], expected_prefix);
+}

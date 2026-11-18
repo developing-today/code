@@ -64,6 +64,8 @@ use redb::{
 
 use id_store::chain::{self, Event};
 
+mod anchors;
+mod author_events;
 mod chat;
 mod claims;
 mod documents;
@@ -71,15 +73,18 @@ mod ingest;
 pub mod range;
 mod resolve;
 pub mod sync;
+mod validity;
 mod waiting_rows;
 mod writer_set;
 
+pub use author_events::{AuthorEvent, CandidateQuery, Candidates};
 use id_core::waiting::{AuthorKey, WaitRefusal, WaitingLimits, WaitingPool};
 pub use id_store::event_types::{
     Block, BlockKind, BlockList, BlockLookup, BlockLookupFailure, Chain, FILE_NAME, StoreError,
 };
 pub use id_store::event_types::{Ingest, Refusal};
 use ingest::{is_present, is_proof_header, present_in};
+pub use validity::Validity;
 use waiting_rows::{Mirror, Row};
 pub use writer_set::{DiscoveredWriterSet, WriterSetStoreError};
 
@@ -183,6 +188,8 @@ pub const TEMP_NAME: &str = "events.redb.tmp";
 /// The format row in `meta`. A store with another format is refused.
 const FORMAT: &[u8] = b"id.events.store.v9";
 const FORMAT_KEY: &[u8] = b"format";
+/// A one-time pass over retained event and waiting bodies rebuilds legacy device-op rows.
+const DEVICE_OPS_RECOVERED_KEY: &[u8] = b"device_ops_recovered";
 
 const EVENTS: TableDefinition<'static, &'static [u8], &'static [u8]> =
     TableDefinition::new("events");
@@ -441,15 +448,22 @@ impl EventStore {
             create_fresh(storage)?
         };
         verify_schema(&db)?;
-        // The blocks, writer-set-bodies and device-ops tables are additive:
-        // stores created before them gain them here, on the write every open
-        // already performs, instead of a format change that would refuse them.
-        {
+        // The additive tables are opened without a format change. Recover device operations
+        // from bodies retained by older sync/import paths where possible.
+        let (recovered, recovery_incomplete) = {
             let txn = db.begin_write()?;
             txn.open_table(BLOCKS)?;
             txn.open_table(WRITER_SET_BODIES)?;
             txn.open_table(DEVICE_OPS)?;
+            let recovery = Self::recover_device_ops(&txn)?;
             txn.commit()?;
+            recovery
+        };
+        if recovery_incomplete {
+            tracing::warn!(
+                recovered,
+                "device-operation recovery may be incomplete: some stored or held group-event bodies were unavailable"
+            );
         }
         let mut store = Self {
             db,
@@ -1141,7 +1155,7 @@ impl EventStore {
         for row in waiting_rows::all(&txn)? {
             next_arrival = next_arrival.max(row.arrival.saturating_add(1));
             if self.limits.is_due(row.arrived_at, now_ms) {
-                waiting_rows::delete(&txn, &row.id)?;
+                waiting_rows::drop_held(&txn, &row.id)?;
                 dropped = true;
                 continue;
             }
@@ -1161,7 +1175,7 @@ impl EventStore {
                         }
                     }
                     Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
-                        waiting_rows::delete(&txn, &row.id)?;
+                        waiting_rows::drop_held(&txn, &row.id)?;
                         dropped = true;
                     }
                 }
@@ -1169,7 +1183,9 @@ impl EventStore {
             }
             if is_present(&txn, &row.id)? {
                 // The event is already stored, applied, or voided: the row is stale, so it
-                // goes rather than holding an already-decided event again.
+                // goes rather than holding an already-decided event again. Its device
+                // operation stays: a stored event's operation is kept, only a held one's is
+                // dropped with its row (#8160).
                 waiting_rows::delete(&txn, &row.id)?;
                 dropped = true;
                 continue;
@@ -1186,11 +1202,11 @@ impl EventStore {
                 Ok(()) => {
                     // Skipped by an arrived, ready, or duplicate guard: the row names an
                     // event the rebuilt pool does not hold, so the row goes with the rebuild.
-                    waiting_rows::delete(&txn, &row.id)?;
+                    waiting_rows::drop_held(&txn, &row.id)?;
                     dropped = true;
                 }
                 Err(WaitRefusal::AuthorFull | WaitRefusal::PoolFull) => {
-                    waiting_rows::delete(&txn, &row.id)?;
+                    waiting_rows::drop_held(&txn, &row.id)?;
                     dropped = true;
                 }
             }
@@ -1523,6 +1539,7 @@ mod tests {
             checkpoint: None,
             rotation: None,
             chat: None,
+            anchor: None,
         }
     }
 

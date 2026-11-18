@@ -110,6 +110,36 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
             python_repr(get("repo"))
         ));
     }
+    // Do not accept a cross-repo task whose only identity is its issue host.
+    // Keep enqueue, claim quarantine and quarantine-recheck on one contract.
+    if get("implementation_repo").is_none()
+        && p.pointer("/risk/flags")
+            .and_then(Value::as_array)
+            .is_some_and(|flags| {
+                flags
+                    .iter()
+                    .any(|f| f.as_str() == Some("cross-repo-change"))
+            })
+    {
+        errs.push("payload.implementation_repo: required for cross-repo-change; repair the explicit implementation target before claiming".to_string());
+    }
+    if let Some(target) = get("implementation_repo") {
+        let valid = target.as_str().is_some_and(|s| {
+            let parts: Vec<_> = s.split('/').collect();
+            parts.len() == 2
+                && parts.iter().all(|part| {
+                    !part.is_empty()
+                        && *part != "."
+                        && *part != ".."
+                        && part
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+                })
+        });
+        if !valid {
+            errs.push("payload.implementation_repo: must be an owner/name repository".to_string());
+        }
+    }
     for f in ["problem", "priority_reason"] {
         match get(f) {
             Some(Value::String(s)) if !s.is_empty() => {}
@@ -184,6 +214,16 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
         if !ok {
             errs.push(format!("payload.{f}: must be a positive integer"));
         }
+    }
+    // #3418: optional minimum uninterrupted budget to reach the next
+    // safe checkpoint. Absent/null means no requirement (legacy rows
+    // stay claimable as today); when present it must be a positive
+    // integer. No upper bound: a 5256-class 120-minute requirement
+    // (and larger future ones) must be declarable.
+    match get("required_budget_minutes") {
+        None | Some(Value::Null) => {}
+        Some(Value::Number(n)) if n.as_i64().map(|v| v >= 1).unwrap_or(false) => {}
+        _ => errs.push("payload.required_budget_minutes: must be a positive integer".to_string()),
     }
     if let Some(value) = get("max_attempts") {
         if !valid_max_attempts(value) {
@@ -489,14 +529,20 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
                         // Shape YYYY-Www plus a real ISO week (01..=53):
                         // W00/W99 name no week, so a key spelled with one can
                         // never dedupe against a real week's key (#5482).
-                        let week_ok = week.len() == 8
-                            && all_digits(&week[..4])
-                            && week.as_bytes()[4] == b'-'
+                        //
+                        // Every positional check reads raw bytes rather than
+                        // string slices: a length of 8 can be reached with a
+                        // multibyte character straddling offset 4, and slicing
+                        // a `str` there panics the calling thread (#10760).
+                        let week_ok = wb.len() == 8
+                            && wb[..4].iter().all(u8::is_ascii_digit)
+                            && wb[4] == b'-'
                             && wb[5] == b'W'
-                            && all_digits(&week[6..])
-                            && week[6..]
-                                .parse::<u32>()
-                                .is_ok_and(|w| (1..=53).contains(&w));
+                            && wb[6..].iter().all(u8::is_ascii_digit)
+                            && std::str::from_utf8(&wb[6..])
+                                .ok()
+                                .and_then(|digits| digits.parse::<u32>().ok())
+                                .is_some_and(|w| (1..=53).contains(&w));
                         if slug_ok && week_ok {
                             return Some(DedupeMatch {
                                 family: fam.into(),
@@ -947,6 +993,16 @@ pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
         // old rule a bulk row update split the copies and the claim
         // guard quarantined 449 tasks for it (2026-11-14..16).
     }
+    // #3418: top-level required_budget_minutes is the packet copy
+    // (task_from_packet normalizes it into the payload mirror at
+    // enqueue, same #10648 shape as max_attempts). Absent/null
+    // means no requirement; a present value must be a positive
+    // integer.
+    if let Some(value) = obj.get("required_budget_minutes").filter(|v| !v.is_null()) {
+        if !matches!(value, Value::Number(n) if n.as_i64().map(|v| v >= 1).unwrap_or(false)) {
+            errors.push("packet.required_budget_minutes: must be a positive integer".to_string());
+        }
+    }
 
     match obj.get("title") {
         Some(Value::String(t)) if !t.trim().is_empty() => {}
@@ -1065,6 +1121,33 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
             }
         }
     }
+    // #3418: the packet-level required_budget_minutes (when present
+    // and valid) is the selected requirement; otherwise the payload
+    // copy stands. Mirror the selected value into the payload so the
+    // column stamp and the JSONB copy are born aligned (#10648
+    // shape). Absent in both places: no requirement (NULL downstream,
+    // legacy claim behavior). NO default from timebox_minutes here:
+    // stamping a default would make every new task requirement-
+    // bearing while deployed helpers predate --remaining-budget-
+    // minutes and could then claim nothing (#4712 deployment lag).
+    let required_budget = packet
+        .get("required_budget_minutes")
+        .filter(|v| !v.is_null())
+        .or_else(|| {
+            payload
+                .get("required_budget_minutes")
+                .filter(|v| !v.is_null())
+        })
+        .cloned()
+        .unwrap_or(Value::Null);
+    if !required_budget.is_null() {
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert(
+                "required_budget_minutes".to_string(),
+                required_budget.clone(),
+            );
+        }
+    }
     json!({
         "queue": queue,
         "title": packet.get("title").cloned().unwrap_or(Value::Null),
@@ -1074,6 +1157,7 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
         "priority": packet.get("priority").cloned().unwrap_or(Value::Null),
         "not_before": packet.get("not_before").cloned().unwrap_or(Value::Null),
         "max_attempts": max_attempts,
+        "required_budget_minutes": required_budget,
     })
 }
 
@@ -1161,6 +1245,158 @@ mod tests {
         assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 1000);
         packet["payload"]["max_attempts"] = json!(7);
         assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 7);
+    }
+
+    #[test]
+    fn implementation_repo_validates_explicit_target() {
+        // Oracle: an optional owner/name target, not an issue-repo allowlist.
+        let payload = payload_with(
+            json!({"issue":{"number":10415}, "risk":{"level":"low","flags":["cross-repo-change"]}}),
+        );
+        let mut packet = json!({"title":"replicate workflow", "priority":30, "payload":payload, "dedupe_key":"repo-health:v1:fix:developing-today/code:issue:10415"});
+        assert!(
+            validate_packet(&packet)
+                .0
+                .iter()
+                .any(|e| e.contains("implementation_repo"))
+        );
+        packet["payload"]["implementation_repo"] = json!("developing-today/kaneo");
+        assert!(
+            validate_packet(&packet).0.is_empty(),
+            "{:?}",
+            validate_packet(&packet).0
+        );
+        let row = task_from_packet(&packet, "repo-health-code-pilot");
+        assert!(
+            validate_packet(&row).0.is_empty(),
+            "{:?}",
+            validate_packet(&row).0
+        );
+
+        let unknown = payload_with(json!({"risk":{"level":"low","flags":["cross-repo-change"]}}));
+        assert!(
+            manual_schema_errors(&unknown)
+                .iter()
+                .any(|e| e.contains("implementation_repo"))
+        );
+
+        for target in [json!("developing-today/kaneo"), json!("owner/repo.name-1")] {
+            let payload = payload_with(json!({"implementation_repo":target}));
+            assert!(
+                !manual_schema_errors(&payload)
+                    .iter()
+                    .any(|e| e.contains("implementation_repo"))
+            );
+        }
+        for target in [
+            json!(null),
+            json!(""),
+            json!("kaneo"),
+            json!("o/r/extra"),
+            json!(" o/r"),
+            json!(3),
+        ] {
+            let payload = payload_with(json!({"implementation_repo":target}));
+            assert!(
+                manual_schema_errors(&payload)
+                    .iter()
+                    .any(|e| e.contains("implementation_repo")),
+                "{target}"
+            );
+        }
+    }
+
+    #[test]
+    fn required_budget_minutes_validation_and_selection_3418() {
+        // #3418 (#4712): optional at both levels; absent/null in both
+        // means no requirement (NULL downstream, legacy claim
+        // behavior). Present values must be positive integers; the
+        // packet copy wins and the payload mirror is normalized.
+        let payload = payload_with(json!({"issue": {"number": 4712}}));
+        let base = json!({"title": "test", "priority": 30, "payload": payload});
+        // Absent everywhere validates clean and selects NULL.
+        assert!(
+            !validate_packet(&base)
+                .0
+                .iter()
+                .any(|e| e.contains("required_budget")),
+            "{}",
+            validate_packet(&base).0.join("; ")
+        );
+        let row = task_from_packet(&base, "q");
+        assert_eq!(row["required_budget_minutes"], Value::Null);
+        assert!(row["payload"].get("required_budget_minutes").is_none());
+        // Explicit null at either level is also "no requirement".
+        for top in [true, false] {
+            let mut packet = base.clone();
+            if top {
+                packet["required_budget_minutes"] = Value::Null;
+            } else {
+                packet["payload"]["required_budget_minutes"] = Value::Null;
+            }
+            assert!(
+                !validate_packet(&packet)
+                    .0
+                    .iter()
+                    .any(|e| e.contains("required_budget")),
+                "{packet}"
+            );
+            assert_eq!(
+                task_from_packet(&packet, "q")["required_budget_minutes"],
+                Value::Null
+            );
+        }
+        // Bad values fail at their own level.
+        for bad in [json!(0), json!(-5), json!(1.5), json!("120"), json!(-1)] {
+            for top in [true, false] {
+                let mut packet = base.clone();
+                if top {
+                    packet["required_budget_minutes"] = bad.clone();
+                } else {
+                    packet["payload"]["required_budget_minutes"] = bad.clone();
+                }
+                let field = if top {
+                    "packet.required_budget_minutes"
+                } else {
+                    "payload.required_budget_minutes"
+                };
+                assert!(
+                    validate_packet(&packet).0.iter().any(|e| e.contains(field)),
+                    "{packet}"
+                );
+            }
+        }
+        // 5256-class 120-minute requirement (above the 45-min
+        // standard timebox) validates clean — no upper bound.
+        for good in [1, 10, 45, 120, 1000] {
+            let mut packet = base.clone();
+            packet["payload"]["required_budget_minutes"] = json!(good);
+            assert!(
+                !validate_packet(&packet)
+                    .0
+                    .iter()
+                    .any(|e| e.contains("required_budget")),
+                "{packet}"
+            );
+            let row = task_from_packet(&packet, "q");
+            assert_eq!(row["required_budget_minutes"], good);
+            assert_eq!(row["payload"]["required_budget_minutes"], good);
+        }
+        // Packet copy wins; payload mirror normalized to it.
+        let mut packet = base.clone();
+        packet["required_budget_minutes"] = json!(120);
+        packet["payload"]["required_budget_minutes"] = json!(10);
+        assert!(
+            !validate_packet(&packet)
+                .0
+                .iter()
+                .any(|e| e.contains("required_budget")),
+            "{}",
+            validate_packet(&packet).0.join("; ")
+        );
+        let row = task_from_packet(&packet, "q");
+        assert_eq!(row["required_budget_minutes"], 120);
+        assert_eq!(row["payload"]["required_budget_minutes"], 120);
     }
 
     #[test]
@@ -1393,6 +1629,26 @@ mod tests {
                 .is_none()
         );
     }
+    // A week field whose multibyte character straddles a fixed offset used
+    // to reach `&week[4..]` on a non-char boundary and panic (#10760). It must
+    // simply fail the shape check.
+    #[test]
+    fn maintenance_week_with_multibyte_bytes_does_not_panic() {
+        assert!(
+            match_dedupe("repo-health:v1:maintenance:developing-today/code:weekly:202\u{e9}W01")
+                .is_none()
+        );
+        assert!(
+            match_dedupe("repo-health:v1:maintenance:developing-today/code:weekly:202\u{e9}W0")
+                .is_none()
+        );
+        // Controls: the ASCII neighbours still classify as before.
+        assert!(
+            match_dedupe("repo-health:v1:maintenance:developing-today/code:weekly:2026-W01")
+                .is_some()
+        );
+    }
+
     fn valid_packet() -> Value {
         json!({
             "title": "t",

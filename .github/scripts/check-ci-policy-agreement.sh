@@ -24,13 +24,13 @@ REGISTRY=(
   "workflow-lint.yml|workflow-lint|manual"
   "proxy-port-fallbacks.yml|proxy-port-fallbacks|manual"
   "fleet-search-parity-guard.yml|fleet-search-parity-guard|manual"
-  "opencode-config-guard.yml|opencode-config-guard|main"
-  "mcpx-fix-test-guard.yml|mcpx fix-test guard|main"
-  "production-line-guard.yml|production-line guard|main"
-  "go-modules-build.yml|go modules build|main"
-  "identity-build.yml|identity build|main"
-  "map-build.yml|map build|main"
-  "mcpx-nixbuild.yml|mcpx nix build|main"
+  "opencode-config-guard.yml|opencode-config-guard|nightly"
+  "mcpx-fix-test-guard.yml|mcpx fix-test guard|nightly"
+  "production-line-guard.yml|production-line guard|nightly"
+  "go-modules-build.yml|go modules build|nightly"
+  "identity-build.yml|identity build|nightly"
+  "map-build.yml|map build|nightly"
+  "mcpx-nixbuild.yml|mcpx nix build|nightly"
 )
 
 # Waivers: workflow-file|tier-leg|phase issue. Each waiver records a
@@ -171,6 +171,21 @@ push_targets_main() {
       }
       return tok
     }
+    function flush_block_scalar(   value) {
+      value = clean(block_scalar_value)
+      if (value != "") {
+        if (block_scalar_key == "branches") {
+          seen_branches = 1
+          seen_branch_filter = 1
+          branches_list = branches_list " " value
+        } else if (block_scalar_key == "branches-ignore") {
+          seen_branch_filter = 1
+          ignore_list = ignore_list " " value
+        }
+      }
+      block_scalar_key = ""
+      block_scalar_value = ""
+    }
     function add_tokens(str,   i, c, q, tok, seg, out) {
       sub(/^[[:space:]]*\[/, "", str)
       sub(/\][[:space:]]*$/, "", str)
@@ -192,15 +207,16 @@ push_targets_main() {
           else if (c == q) q = ""
           else tok = tok c
         } else if (c == "\047" || c == "\"") {
-          q = c
+          if (tok == "") q = c
+          else tok = tok c
         } else if (c ~ /[[:space:],]/) {
-          if (tok != "") { out = out " " tok; tok = "" }
+          if (tok != "") { gsub(/[[:space:]]/, sprintf("%c", 31), tok); out = out " " tok; tok = "" }
         } else {
           tok = tok c
         }
       }
       if (q == "\"") tok = tok decode_dq(seg)
-      if (tok != "") out = out " " tok
+      if (tok != "") { gsub(/[[:space:]]/, sprintf("%c", 31), tok); out = out " " tok }
       return out
     }
     # Quote discipline for the structural scanners (Codex P2, PR
@@ -356,8 +372,9 @@ push_targets_main() {
     function resolve_sequence_value(val,   name) {
       sub(/^[[:space:]]+/, "", val)
       sub(/[[:space:]]+$/, "", val)
-      if (val !~ /^\*[A-Za-z0-9_-]+$/) return val
+      if (val !~ /^\*[A-Za-z0-9_-]+([[:space:],}]|$)/) return val
       name = substr(val, 2)
+      sub(/[^A-Za-z0-9_-].*/, "", name)
       if (name in sequence_anchor) return sequence_anchor[name]
       alias_unknown = 1
       return ""
@@ -391,6 +408,7 @@ push_targets_main() {
       # verdict never certifies it as an unfiltered push.
       if (name in anchor_body) {
         apply_inline_filters(anchor_body[name])
+        if (!seen_branch_filter && !seen_tags) alias_unknown = 1
       } else if ((name in anchor_mapping_seen) || (name in anchor_seen_branches) || (name in anchor_seen_ignore) || (name in anchor_seen_tags)) {
         if (name in anchor_seen_ignore) {
           seen_branch_filter = 1
@@ -402,6 +420,7 @@ push_targets_main() {
           branches_list = branches_list anchor_branches[name]
         }
         if (name in anchor_seen_tags) seen_tags = 1
+        if (!(name in anchor_seen_ignore) && !(name in anchor_seen_branches) && !(name in anchor_seen_tags)) alias_unknown = 1
       } else {
         alias_unknown = 1
       }
@@ -440,6 +459,7 @@ push_targets_main() {
       n = split(list, parts, /[[:space:]]+/)
       for (i = 1; i <= n; i++) {
         tok = parts[i]
+        gsub(sprintf("%c", 31), " ", tok)
         if (tok != "" && ("main" ~ glob_regex(tok))) return 1
       }
       return 0
@@ -449,6 +469,7 @@ push_targets_main() {
       n = split(list, parts, /[[:space:]]+/)
       for (i = 1; i <= n; i++) {
         tok = parts[i]
+        gsub(sprintf("%c", 31), " ", tok)
         if (tok == "") continue
         if (substr(tok, 1, 1) == "!") {
           if ("main" ~ glob_regex(substr(tok, 2))) allow = 0
@@ -491,12 +512,22 @@ push_targets_main() {
       # Record anchored bodies so an aliased push resolves to
       # its filters instead of looking like an unfiltered push.
       anchor_here = ""
+      anchor_collect = 0
       if (rest ~ /^&[A-Za-z0-9_-]+([[:space:]]|$)/) {
         anchor_here = rest
         sub(/^&/, "", anchor_here)
         sub(/[[:space:]].*/, "", anchor_here)
         sub(/^&[A-Za-z0-9_-]+[[:space:]]*/, "", rest)
-        if (rest ~ /^\{/) anchor_body[anchor_here] = rest
+        if (rest ~ /^\{/) {
+          anchor_body[anchor_here] = rest
+          if (!has_unquoted_brace(rest)) anchor_collect = 1
+        } else if (rest ~ /^\[/) {
+          # A sequence anchor declared on a non-push event
+          # (`workflow_dispatch: &m [main]`) is referenced later as
+          # `branches: *m` or `{branches: *m}` (#9090 construct 3/4):
+          # record its tokens so the alias resolves before matching.
+          sequence_anchor[anchor_here] = add_tokens(rest)
+        }
       }
       cur_anchor = anchor_here
       anchor_child_indent = 0
@@ -566,6 +597,13 @@ push_targets_main() {
       }
     }
 
+    !inpush && cur_anchor != "" && anchor_collect {
+      inline_line = strip_comment($0)
+      anchor_body[cur_anchor] = anchor_body[cur_anchor] " " inline_line
+      if (has_unquoted_brace(inline_line)) anchor_collect = 0
+      next
+    }
+
     !inpush && cur_anchor != "" && /^ +["\047]?[a-z-]+["\047]?[[:space:]]*:/ {
       line = $0
       match(line, /^ +/)
@@ -631,6 +669,17 @@ push_targets_main() {
       }
       next
     }
+    inpush && block_scalar_key != "" {
+      match($0, /^ */)
+      block_content_indent = RLENGTH
+      if ($0 ~ /^[[:space:]]*$/ || block_content_indent > seq_indent) {
+        block_content = $0
+        sub(/^[[:space:]]*/, "", block_content)
+        if (block_content != "") block_scalar_value = block_scalar_value " " block_content
+        next
+      }
+      flush_block_scalar()
+    }
     inpush && /^ +["\047]?[a-z-]+["\047]?[[:space:]]*:/ {
       line = $0
       match(line, /^ +/)
@@ -646,6 +695,17 @@ push_targets_main() {
       val = substr(line, ind + 1)
       sub(/^[^:]*:[[:space:]]*/, "", val)
       if (subkey == "branches" || subkey == "branches-ignore" || subkey == "tags" || subkey == "tags-ignore") val = strip_comment(val)
+      # A filter key may itself declare the anchor (#9090 construct 3):
+      # `branches: &m [main]` followed by `branches-ignore: *m`. Record
+      # the anchored sequence so the later alias resolves to its tokens
+      # instead of being glob-parsed as a literal `&m [main]` pattern.
+      if (val ~ /^&[A-Za-z0-9_-]+([[:space:]]|$)/) {
+        seq_anchor_name = val
+        sub(/^&/, "", seq_anchor_name)
+        sub(/[[:space:]].*/, "", seq_anchor_name)
+        sub(/^&[A-Za-z0-9_-]+[[:space:]]*/, "", val)
+        if (val ~ /^\[/) sequence_anchor[seq_anchor_name] = add_tokens(val)
+      }
       if ((subkey == "branches" || subkey == "branches-ignore") && flow_unclosed(val)) flow_key = subkey
       if (subkey == "branches" || subkey == "branches-ignore") val = resolve_sequence_value(val)
       if (subkey == "branches") {
@@ -686,6 +746,11 @@ push_targets_main() {
       if (ind != seq_indent) next
       sub(/^ +-[[:space:]]*/, "", item)
       if (subkey == "branches" || subkey == "branches-ignore" || subkey == "tags" || subkey == "tags-ignore") item = strip_comment(item)
+      if ((subkey == "branches" || subkey == "branches-ignore") && item ~ /^[|>][+-]?[0-9]*$/) {
+        block_scalar_key = subkey
+        block_scalar_value = ""
+        next
+      }
       if (subkey == "branches") {
         seen_branches = 1
         seen_branch_filter = 1
@@ -699,6 +764,7 @@ push_targets_main() {
       next
     }
     END {
+      if (block_scalar_key != "") flush_block_scalar()
       if (done) {
         print verdict
         exit
@@ -724,6 +790,17 @@ push_targets_main() {
     }
   ' "$file"
 }
+
+# Narrow test seam: exercise the YAML-aware verdict parser directly, without
+# the repository-wide canonical-syntax guard obscuring its result.
+if [[ -n ${CI_POLICY_TEST_PUSH_TARGETS_FILE:-} ]]; then
+  [[ -f $CI_POLICY_TEST_PUSH_TARGETS_FILE ]] || {
+    echo "test fixture not found: $CI_POLICY_TEST_PUSH_TARGETS_FILE" >&2
+    exit 2
+  }
+  push_targets_main "$CI_POLICY_TEST_PUSH_TARGETS_FILE"
+  exit 0
+fi
 
 waiver_for() { # waiver_for <file> <leg> -> issue or empty
   local entry

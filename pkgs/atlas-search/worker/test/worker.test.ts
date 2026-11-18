@@ -1,4 +1,5 @@
-import { fetchMock, SELF } from "cloudflare:test";
+import { SELF } from "cloudflare:test";
+import { fetchMock } from "./fetch-mock";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { EMBED_DIMS, EMBED_MODEL } from "../src/space";
 
@@ -158,6 +159,38 @@ describe("atlas-search worker", () => {
     // write, so a bad-space vector cannot enter the cache.
     expect(meta.has_result ?? false).toBe(false);
     expect(meta.has_embedding ?? false).toBe(false);
+  });
+
+  it("returns the 400 envelope for a JSON null body, not a thrown TypeError (#6879)", async () => {
+    const e0 = counts.embed;
+    const s0 = counts.search;
+    // `null` is valid JSON, so req.json() resolves to null and the
+    // query check must not dereference it. Oracle: the route's own
+    // error envelope plus untouched upstream counters.
+    const resp = await search(null);
+    expect(resp.status).toBe(400);
+    const body = (await resp.json()) as {
+      error?: { code?: string; message?: string };
+    };
+    expect(body.error?.code).toBe("bad_request");
+    expect(body.error?.message).toBe("body must be a JSON object");
+    expect(counts.embed).toBe(e0);
+    expect(counts.search).toBe(s0);
+  });
+
+  it("refuses an oversized body with the 413 envelope before parsing it (#11331)", async () => {
+    const e0 = counts.embed;
+    const s0 = counts.search;
+    const resp = await SELF.fetch("https://worker.test/v1/search", {
+      method: "POST",
+      headers: { ...GATE, "Content-Type": "application/json" },
+      body: JSON.stringify({ query: "x".repeat(70 * 1024) }),
+    });
+    expect(resp.status).toBe(413);
+    const body = (await resp.json()) as { error?: { code?: string } };
+    expect(body.error?.code).toBe("payload_too_large");
+    expect(counts.embed).toBe(e0);
+    expect(counts.search).toBe(s0);
   });
 
   it("reports a null search-service response as a 502, not a raw TypeError (#6982)", async () => {

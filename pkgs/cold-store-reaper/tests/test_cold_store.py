@@ -843,6 +843,26 @@ class TestAtomicPrivateJson(ColdStoreTestBase):
         self.assertNotIsInstance(ctx.exception, json.JSONDecodeError)
         self.assertIn("credentials.json", str(ctx.exception))
 
+    def test_non_utf8_state_raises_cold_store_error(self):
+        # #10820: Path.read_text() decodes before json.loads runs, so
+        # non-UTF-8 bytes raised a raw UnicodeDecodeError, never the
+        # ColdStoreError contract PR #4361 established.
+        self.store.state_path.write_bytes(b"{\xff\xfe not utf-8 \x80\x81")
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.load_state()
+        self.assertNotIsInstance(ctx.exception, UnicodeDecodeError)
+        self.assertIn("state.json", str(ctx.exception))
+        self.assertIn("repair", str(ctx.exception))
+
+    def test_non_utf8_credentials_raises_cold_store_error(self):
+        # #10820: same decode-before-parse gap as state.json.
+        self.store.credentials_path.write_bytes(b"{\xff\xfe not utf-8 \x80\x81")
+        with self.assertRaises(cold_store.ColdStoreError) as ctx:
+            self.store.load_credentials()
+        self.assertNotIsInstance(ctx.exception, UnicodeDecodeError)
+        self.assertIn("credentials.json", str(ctx.exception))
+        self.assertIn("repair", str(ctx.exception))
+
 
 class TestWrongShapePrivateJson(ColdStoreTestBase):
     """#6845: valid JSON of the wrong shape in credentials.json /
@@ -1867,6 +1887,60 @@ class TestPruneBackups(ColdStoreTestBase):
             self.assertIn(f"d1-{d:%Y%m%d}T020000Z-export.sql", keep)
         # the union can never exceed 30 daily + 12 weekly + 12 monthly
         self.assertLessEqual(len(keep), 30 + 12 + 12)
+
+    def _seed_turso_nights(self, nights, databases, end=date(2026, 3, 31)):
+        folder = self.store.ensure_folders()["db-backups/turso"]
+        names = []
+        for i in range(nights):
+            d = end - timedelta(days=i)
+            for j, db in enumerate(databases):
+                # one export per database per night, minutes apart
+                name = f"turso-{d:%Y%m%d}T09{j:02d}00Z-{db}.db.gz"
+                self.seed_drive_file(name, folder, data=b"db")
+                names.append(name)
+        return folder, names
+
+    def test_turso_retention_is_per_database_not_per_family(self):
+        # 2026-11-17: export-turso files every Turso database each
+        # night; read as one series, "newest per day" kept one export
+        # per night and trashed the rest. Each database must keep its
+        # own newest-per-day, so a few nights of exports prune nothing.
+        databases = ["atlas", "atlas-ask-ledger", "fleet-queue", "voice-line-ledger"]
+        _folder, names = self._seed_turso_nights(3, databases)
+        plan = self.store.prune_backups("turso")[0]
+        self.assertEqual({f["name"] for f in plan["keep"]}, set(names))
+        self.assertEqual(plan["prune"], [])
+        self.assertEqual(plan["unparseable"], [])
+
+    def test_turso_retention_prunes_within_each_database(self):
+        databases = ["atlas", "fleet-queue"]
+        folder, _names = self._seed_turso_nights(1, databases)
+        # an earlier same-day export of atlas is the only excess file
+        dupe = "turso-20260331T080000Z-atlas.db.gz"
+        self.seed_drive_file(dupe, folder, data=b"db")
+        self.seed_drive_file("turso-notes.txt", folder, data=b"?")
+        plan = self.store.prune_backups("turso", apply=True)[0]
+        self.assertEqual([f["name"] for f in plan["prune"]], [dupe])
+        self.assertEqual(
+            {f["name"] for f in plan["keep"]},
+            {
+                "turso-20260331T090000Z-atlas.db.gz",
+                "turso-20260331T090100Z-fleet-queue.db.gz",
+            },
+        )
+        self.assertEqual({f["name"] for f in plan["unparseable"]}, {"turso-notes.txt"})
+        self.assertEqual(len(self.fake.trashed_calls), 1)
+
+    def test_turso_long_history_is_bounded_per_database(self):
+        databases = ["atlas", "fleet-queue"]
+        _folder, _names = self._seed_turso_nights(60, databases)
+        plan = self.store.prune_backups("turso")[0]
+        for db in databases:
+            kept = [f for f in plan["keep"] if f["name"].endswith(f"-{db}.db.gz")]
+            # 30 daily + the older weekly/monthly keepers, per database
+            self.assertGreaterEqual(len(kept), 30)
+            self.assertLessEqual(len(kept), 30 + 12 + 12)
+        self.assertEqual(len(plan["keep"]) + len(plan["prune"]), 120)
 
     def test_prune_all_dbs_and_unknown_db(self):
         plans = self.store.prune_backups()
@@ -3300,6 +3374,10 @@ class TestTursoExportScript(unittest.TestCase):
                 "TURSO_API_BASE": self.base,
                 "TURSO_DUMP_BASE": self.base,
                 "COLD_STORE_BIN": str(self.stub),
+                # keep failing-dump scenarios fast: 1 s between curl
+                # retries, no pause before the second pass
+                "TURSO_DUMP_RETRY_DELAY_SECONDS": "1",
+                "TURSO_DUMP_RETRY_PASS_DELAY_SECONDS": "0",
                 "NO_PROXY": "127.0.0.1,localhost",
                 "no_proxy": "127.0.0.1,localhost",
             }

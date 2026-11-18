@@ -24,6 +24,7 @@ members = [
   "crates/fleet-dispatch",
   "crates/fleet-dispatch-test",
   "crates/fleet-proxy",
+  "crates/fleet-laptop-agent",
   "crates/fleet-search",
   "crates/fleet",
 ]
@@ -44,10 +45,12 @@ fleet-queue = { path = "crates/fleet-queue" }
 fleet-dispatch = { path = "crates/fleet-dispatch" }
 fleet-dispatch-test = { path = "crates/fleet-dispatch-test" }
 fleet-proxy = { path = "crates/fleet-proxy" }
+fleet-laptop-agent = { path = "crates/fleet-laptop-agent" }
 fleet-search = { path = "crates/fleet-search", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.9"
+sha2 = "0.11"
+toml = "1.2"
 
 [profile.release]
 # Small artifacts are a build contract for the connect variant (§2 of the

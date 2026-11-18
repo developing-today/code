@@ -4,6 +4,7 @@
 // stored in this service's own state.
 import { readFile } from "node:fs/promises";
 import type { ModelRef } from "./validate.ts";
+import { outboundTimeout } from "./fetchTimeout.ts";
 
 export class OpenCodeError extends Error {
   status = 502;
@@ -59,6 +60,7 @@ export class OpenCodeClient {
           "Content-Type": "application/json",
         },
         body: body === undefined ? undefined : JSON.stringify(body),
+        signal: outboundTimeout(),
       });
     } catch (e) {
       // A connection failure (server down, refused) is an upstream

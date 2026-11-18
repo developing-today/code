@@ -91,9 +91,16 @@ const (
 
 // Request is a question awaiting an answer.
 type Request struct {
-	ID        string          `json:"id"`
-	Trace     string          `json:"trace,omitempty"`
-	Parent    string          `json:"parent,omitempty"`
+	ID     string `json:"id"`
+	Trace  string `json:"trace,omitempty"`
+	Parent string `json:"parent,omitempty"`
+	// Session is a correlation label, never an identity
+	// (docs/decisions/0007-elicitation-identity.md, rule 2). It is the
+	// session string the caller sent, stored, logged and searchable as
+	// supplied, and nothing verifies it. No code may branch
+	// authorization, visibility or answer acceptance on it: a question
+	// is addressed by its ID, and whoever can drive the daemon as its
+	// OS owner may see and answer it (rule 3).
 	Session   string          `json:"session,omitempty"`
 	Server    string          `json:"server,omitempty"`
 	Tool      string          `json:"tool,omitempty"`
@@ -161,6 +168,15 @@ type Answer struct {
 	By      string          `json:"by,omitempty"`
 	At      time.Time       `json:"at"`
 	PID     int             `json:"pid,omitempty"`
+	// Relayed marks an answer the downstream MCP client itself gave to
+	// the upstream server's question, carried through mcpx unchanged
+	// (the daemon ask-answers route is the only source). A relayed
+	// answer is judged by the upstream, the way a direct connection
+	// behaves: mcpx cannot correct it, so the requestedSchema gate in
+	// Respond -- which exists for answers entered on mcpx's own
+	// surfaces, where the answerer can be shown the failing paths and
+	// try again -- does not apply to it (#8922).
+	Relayed bool `json:"relayed,omitempty"`
 }
 
 // Broker stores questions and hands back answers.
@@ -328,6 +344,9 @@ func (b *Broker) Close() error { return b.db.Close() }
 const schema = `
 CREATE TABLE IF NOT EXISTS elicitations (
   id         TEXT PRIMARY KEY,
+  -- session is a correlation label as the caller sent it, never an
+  -- identity: it is indexed for listing and log search only, and keys
+  -- no answer or visibility decision (decision 0007, rule 2).
   trace      TEXT, parent TEXT, session TEXT,
   server     TEXT, tool   TEXT,
   mode       TEXT NOT NULL,
@@ -345,6 +364,12 @@ CREATE TABLE IF NOT EXISTS elicitations (
 CREATE INDEX IF NOT EXISTS elicit_state   ON elicitations(state, expires_ms);
 CREATE INDEX IF NOT EXISTS elicit_session ON elicitations(session);
 CREATE INDEX IF NOT EXISTS elicit_trace   ON elicitations(trace);
+
+CREATE TABLE IF NOT EXISTS elicitation_answerers (
+  audience     TEXT PRIMARY KEY,
+  last_seen_ms INTEGER NOT NULL,
+  pid          INTEGER
+);
 
 CREATE TABLE IF NOT EXISTS elicitation_answers (
   id          TEXT PRIMARY KEY REFERENCES elicitations(id),
@@ -563,7 +588,17 @@ func (b *Broker) Respond(a Answer) error {
 	// that does not compile is the asker's defect, not the answerer's:
 	// the answer is recorded unvalidated rather than wedging on a
 	// schema the answerer never wrote (the mcpclient rule).
-	if a.Action == Accept && r.Mode == Form && len(r.Schema) > 0 {
+	//
+	// A relayed answer (Answer.Relayed) skips this gate: it is the
+	// downstream client's own answer to the upstream's question, and
+	// the upstream is its judge, as on a direct connection. Refusing
+	// it here could never produce a corrected answer -- the client
+	// already answered -- and left the question pending, so the
+	// relay loop re-pushed the same question until its rounds ran
+	// out and the call failed (#8922). The refusals above (null
+	// content, sampling shape) still apply to relayed answers: they
+	// protect the plumbing, not the content.
+	if a.Action == Accept && r.Mode == Form && len(r.Schema) > 0 && !a.Relayed {
 		if schema, err := schemaval.Compile(r.Schema); err == nil {
 			if err := schema.ValidateJSON(withSchemaDefaults(r.Schema, a.Content)); err != nil {
 				return fmt.Errorf("accepted content does not match the requested schema: %w", err)
@@ -620,6 +655,13 @@ func (b *Broker) Respond(a Answer) error {
 	}
 	if err := tx.Commit(); err != nil {
 		return err
+	}
+	// A recorded answer is proof an answerer for this audience exists:
+	// heartbeat presence from it (#2438). Best-effort -- the answer
+	// stands even if the heartbeat write fails. Expiry is not an
+	// answerer and proves nothing.
+	if a.By != "expiry" {
+		_ = b.NoteAnswerer(r.Audience)
 	}
 
 	b.mu.Lock()
@@ -778,6 +820,11 @@ func (b *Broker) Lookup(id string) (Answer, bool, error) {
 
 // Filter narrows a listing.
 type Filter struct {
+	// Session narrows a listing to questions carrying that label, as a
+	// convenience for a caller that wants its own. It is not an access
+	// boundary: an empty Session lists every question, and Get,
+	// Respond and Lookup take an ID and ignore the label entirely
+	// (docs/decisions/0007-elicitation-identity.md).
 	Session  string
 	Audience Audience
 	State    State

@@ -25,6 +25,7 @@
  *     agent-note pointer.
  * - ping: pong. Everything else: 202 ignored.
  */
+import { readBodyUpTo } from "./body";
 import { Turso, iArg, tArg } from "./turso";
 import { FLEET_REPOS, buildRunRow, skipReason } from "./policy";
 import { advanceSnapshot, appendAgentEvent, queueNow, stampDirtyWatermark, type SinkEnv } from "./sink";
@@ -73,7 +74,10 @@ export default {
       return new Response("webhook secret not configured", { status: 503 });
     }
 
-    const raw = await req.text();
+    // #11335: bounded read, so an unauthenticated oversized body is
+    // refused before it is buffered; the HMAC below stays the gate.
+    const raw = await readBodyUpTo(req);
+    if (raw === null) return new Response("payload too large", { status: 413 });
     const given = (req.headers.get("x-hub-signature-256") ?? "").replace("sha256=", "");
     const expected = await hmacHex(secret, raw);
     if (!timingSafeEqual(given, expected)) {

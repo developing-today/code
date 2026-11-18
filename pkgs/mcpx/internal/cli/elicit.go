@@ -78,12 +78,18 @@ func (a *App) CmdElicit(ctx context.Context, args []string) error {
 
 	switch sub {
 	case "", "list":
+		// The daemon's /v1/elicit listing honours elicit.pendingLimit;
+		// this one read the store with no limit and so always got the
+		// built-in default, whatever the setting said.
 		pending, err := b.Pending(elicit.Filter{
 			Session: *session, Audience: elicit.Audience(*audience),
+			Limit: a.Settings().Int("elicit.pendingLimit"),
 		})
 		if err != nil {
 			return err
 		}
+		// Listing as an answerer is presence: heartbeat it (#2438).
+		_ = b.NoteAnswerer(elicit.Audience(*audience))
 		if a.JSON {
 			return a.out(pending)
 		}
@@ -225,6 +231,7 @@ func (a *App) watchElicit(ctx context.Context, b *elicit.Broker, session string)
 		if err != nil {
 			return err
 		}
+		_ = b.NoteAnswerer("")
 		for _, r := range pending {
 			if seen[r.ID] {
 				continue

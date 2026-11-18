@@ -22,6 +22,7 @@ import { poolState } from "./derive.ts";
 import { isProviderAuthAlert, reevaluateProviderAuth } from "./provider-auth-alerts.ts";
 import { lifecycleForEntry, safeProviderReason } from "./credential-lifecycle.ts";
 import { computeChoices } from "./quota-guidance.ts";
+import { resolveTursoLimits, type TursoLimits } from "./quota-gather-map.ts";
 import type {
   GathererSummary,
   PoolFreshness,
@@ -262,6 +263,20 @@ function baseWindowsExpired(pool: QuotaPool, entry: QuotaCurrentEntry): boolean 
   });
 }
 
+/**
+ * #10684: pools whose extraction is intentionally uninstrumented
+ * (opendesign, deepseek, mistral, openrouter — no dated-read
+ * extractor by design) carry no extractor samples, so a failed or
+ * stale gatherer tick must not relabel them "error"/"stale" over
+ * their real window state. Their pool state recomputes from the
+ * standing (or adopted) windows via poolState; the gatherer
+ * failure still rides honestly on freshness. Instrumented pools
+ * keep the error/stale surfacing below.
+ */
+function isIntentionallyUninstrumented(pool: QuotaPool): boolean {
+  return pool.extractionHealth?.status === "intentional" && pool.extractionHealth?.reason === "uninstrumented";
+}
+
 function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState, legError?: string): boolean {
   // Returns true when the pool's windows were replaced by a fresh read.
   const freshness: PoolFreshness = {
@@ -281,8 +296,8 @@ function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState
   // the honest state until the next collector derivation.
   delete pool.exhaustion;
   if (state === "error") {
-    pool.state = "error";
     adoptEntryWindows(pool, entry);
+    pool.state = isIntentionallyUninstrumented(pool) ? poolState(pool) : "error";
     return false;
   }
   if (state === "lapsed") {
@@ -295,6 +310,15 @@ function applyEntry(pool: QuotaPool, entry: QuotaCurrentEntry, state: FreshState
     return true;
   }
   if (state === "stale") {
+    // #10684: an uninstrumented pool never takes the error/stale
+    // label — its state recomputes from the standing (or adopted)
+    // windows while freshness keeps the stale stamp. The #6942 /
+    // #7033 leg-error conversions below stay for instrumented pools.
+    if (isIntentionallyUninstrumented(pool)) {
+      adoptEntryWindows(pool, entry);
+      pool.state = poolState(pool);
+      return false;
+    }
     // #6942: a retained entry whose gatherer leg errored is that
     // read error surfacing, not mere staleness — but only a pool
     // with no dated windows of its own changes rendering for it.
@@ -460,7 +484,15 @@ const NON_POOL_SERVICE_IDS: ReadonlySet<string> = new Set([
   "antigravity",
   "_antigravity",
   "opencode-go",
+  // These providers publish no API-readable quota surface; their error rows
+  // are attribution records, not standalone pools.
   "groq",
+  "exaone",
+  "google.muse",
+  "google.gen-lang",
+  "google.personal",
+  "google.drew",
+  "google.developing-today",
 ]);
 
 /**
@@ -551,6 +583,28 @@ const TURSO_WINDOW_META: Record<string, { label: string; unit: UsageUnit; limit:
   sync: { label: "Sync / month", unit: "gb", limit: 3 },
 };
 
+/** The card limit for a Turso window under the read's plan (#10436),
+ * in the card's units (storage and sync in decimal GB, as billed). */
+function tursoCardLimit(name: string, limits: TursoLimits, fallback: number): number {
+  switch (name) {
+    case "databases":
+      return limits.databases;
+    case "storage":
+      return limits.storageBytes / 1e9;
+    case "rows-read":
+      return limits.rowsRead;
+    case "rows-written":
+      return limits.rowsWritten;
+    case "sync":
+      return limits.bytesSynced / 1e9;
+    default:
+      return fallback;
+  }
+}
+
+/** "scaler" -> "Scaler": the API's plan name, as a card label. */
+const titleCase = (plan: string): string => plan.charAt(0).toUpperCase() + plan.slice(1);
+
 /**
  * Apply the gatherer's Turso entry (#1049) to the SaaS services —
  * the usage() counterpart of overlayQuotaCurrent, with the same
@@ -575,6 +629,13 @@ export function overlayTursoUsage(services: SaasService[], file: QuotaCurrentFil
   if (freshOk.length > 0) {
     const entry = freshOk[0];
     const prev = new Map(svc.metrics.map((m) => [m.id, m]));
+    // The plan is part of the read (#10436): the card's label and the
+    // limits it shows follow the read's plan, as the metrics do, rather
+    // than the dated local record (which said Starter Free while the
+    // org read Scaler). A read with no plan keeps the record's label
+    // and the Starter limits the windows were divided by.
+    const livePlan = entry.planLabel?.trim() || undefined;
+    const planLimits = livePlan ? resolveTursoLimits(livePlan, null) : null;
     const metrics: UsageMetric[] = [];
     for (const w of entry.windows) {
       const meta = Object.hasOwn(TURSO_WINDOW_META, w.name) ? TURSO_WINDOW_META[w.name] : undefined;
@@ -583,7 +644,7 @@ export function overlayTursoUsage(services: SaasService[], file: QuotaCurrentFil
         id: w.name,
         label: prev.get(w.name)?.label ?? meta.label,
         used: w.value,
-        limit: meta.limit,
+        limit: planLimits ? tursoCardLimit(w.name, planLimits, meta.limit) : meta.limit,
         unit: meta.unit,
         ...(usablePct(w.pctOfLimit) ? { percent: w.pctOfLimit } : {}),
         highlight: prev.get(w.name)?.highlight ?? true,
@@ -609,7 +670,10 @@ export function overlayTursoUsage(services: SaasService[], file: QuotaCurrentFil
       metrics,
       measuredAt: entry.measuredAt,
       sourceClass: "api",
-      sourceNote: `${svc.sourceNote} · live gatherer read (turso-api) at ${entry.measuredAt}`,
+      ...(livePlan ? { plan: `${titleCase(livePlan)} (live read)` } : {}),
+      sourceNote: livePlan
+        ? `${svc.sourceNote} · live gatherer read (turso-api) at ${entry.measuredAt}; plan and limits from the read (${livePlan})`
+        : `${svc.sourceNote} · live gatherer read (turso-api) at ${entry.measuredAt}`,
       ...(resetsAt ? { nextDate: `cycle ends ${resetsAt.slice(0, 10)}` } : {}),
     };
     return out;
@@ -619,4 +683,85 @@ export function overlayTursoUsage(services: SaasService[], file: QuotaCurrentFil
   if (svc.conflicts.includes(flag)) return services;
   out[idx] = { ...svc, conflicts: [...svc.conflicts, flag] };
   return out;
+}
+
+/**
+ * Pause between the two quota-current reads (#10816).
+ */
+export const QUOTA_CURRENT_RETRY_PAUSE_MS = 250;
+
+/** How a quota-current.json read resolved (#10816). */
+export type QuotaCurrentReadVerdict = "ok" | "missing" | "unparseable" | "transport";
+
+export interface QuotaCurrentReadResult {
+  verdict: QuotaCurrentReadVerdict;
+  file: QuotaCurrentFile | null;
+  /** Human-readable detail for the transport/unparseable warnings. */
+  error?: string;
+}
+
+const isEnoent = (err: unknown): boolean =>
+  typeof err === "object" && err !== null && (err as { code?: unknown }).code === "ENOENT";
+
+/**
+ * Read + parse quota-current.json with one retry (#10816): a single
+ * failed read is retried once after QUOTA_CURRENT_RETRY_PAUSE_MS, so a
+ * transient sandbox→laptop transport stall does not collapse into a
+ * "file missing" verdict. Verdicts:
+ * - ok: parsed file attached.
+ * - missing: ENOENT on BOTH attempts (the path never goes absent on
+ *   the writer side — gather-quota.ts writes tmp + rename — so this
+ *   means the gatherer genuinely never wrote).
+ * - transport: the read failed non-ENOENT at least once and never
+ *   succeeded (wait/retry, not a gatherer investigation).
+ * - unparseable: the bytes landed but JSON.parse or parseQuotaCurrent
+ *   rejected them (gatherer investigation).
+ */
+export async function readQuotaCurrentFile(
+  path: string,
+  deps?: {
+    readFile?: (path: string, encoding: "utf8") => Promise<string>;
+    sleep?: (ms: number) => Promise<void>;
+  },
+): Promise<QuotaCurrentReadResult> {
+  const read =
+    deps?.readFile ?? ((await import("node:fs/promises")).readFile as typeof import("node:fs/promises").readFile);
+  const sleep = deps?.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let raw: string | null = null;
+  let firstErr: unknown = null;
+  let lastErr: unknown = null;
+  try {
+    raw = await read(path, "utf8");
+  } catch (err) {
+    firstErr = err;
+    await sleep(QUOTA_CURRENT_RETRY_PAUSE_MS);
+    try {
+      raw = await read(path, "utf8");
+    } catch (err2) {
+      lastErr = err2;
+    }
+  }
+  if (raw === null) {
+    const first = firstErr ?? lastErr;
+    if (first !== null && lastErr !== null && isEnoent(first) && isEnoent(lastErr)) {
+      return { verdict: "missing", file: null };
+    }
+    const detail = lastErr ?? firstErr;
+    return {
+      verdict: "transport",
+      file: null,
+      error: detail instanceof Error ? detail.message : String(detail),
+    };
+  }
+  try {
+    const file = parseQuotaCurrent(JSON.parse(raw));
+    if (file) return { verdict: "ok", file };
+    return { verdict: "unparseable", file: null, error: "parseQuotaCurrent rejected the document" };
+  } catch (err) {
+    return {
+      verdict: "unparseable",
+      file: null,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
 }

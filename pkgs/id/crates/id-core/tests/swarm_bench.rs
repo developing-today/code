@@ -297,7 +297,9 @@ fn run_matrix() -> Vec<(&'static str, Run)> {
 fn swarm_bench_matrix() {
     let results = run_matrix();
     let baseline = results[0].1.simulated_ms;
-    println!("\n| scenario | waves | simulated ms | vs baseline | duplicated bytes | holders used |");
+    println!(
+        "\n| scenario | waves | simulated ms | vs baseline | duplicated bytes | holders used |"
+    );
     println!("|---|---|---|---|---|---|");
     for (name, run) in &results {
         assert!(run.complete, "{name} did not complete");

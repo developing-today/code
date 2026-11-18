@@ -306,6 +306,8 @@ async fn main() -> Result<()> {
                 web_listen,
                 web_token,
                 web_cookie_secure,
+                gallery_dir,
+                gallery_accept_publish,
                 world,
                 world_admin_token,
                 world_module,
@@ -356,6 +358,8 @@ async fn main() -> Result<()> {
                 port_explicit,
                 web_token,
                 web_cookie_secure,
+                gallery_dir,
+                gallery_accept_publish,
                 world,
                 world_admin_token,
                 world_module,
@@ -386,6 +390,7 @@ async fn main() -> Result<()> {
         }
         Some(Command::Id { client }) => cmd_id(client).await,
         Some(Command::Key { command }) => id::commands::cmd_key(command).await,
+        Some(Command::Keyset { command }) => id::commands::cmd_keyset(command).await,
         Some(Command::Peers {
             gossip,
             rpc,
@@ -455,6 +460,7 @@ async fn main() -> Result<()> {
             id::commands::cmd_unpublish(listen.as_deref(), path.as_deref()).await
         }
         Some(Command::Publications) => id::commands::cmd_publications().await,
+        Some(Command::Gallery(args)) => id::commands::cmd_gallery(args),
         #[cfg(feature = "sandbox")]
         Some(Command::MatchAudit(command)) => id::commands::cmd_match_audit(command),
         #[cfg(feature = "world")]

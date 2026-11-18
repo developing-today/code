@@ -403,7 +403,11 @@ setTimeout(function () {
     if (!skel) return;
     var p = document.createElement("p");
     p.className = "frag-failed";
-    p.innerHTML = "the live view did not arrive &mdash; <a href="" + location.pathname + "?full=1">load the full page</a>";
+    p.textContent = "the live view did not arrive — ";
+    var a = document.createElement("a");
+    a.setAttribute("href", "?full=1");
+    a.textContent = "load the full page";
+    p.appendChild(a);
     skel.replaceWith(p);
   });
 }, ${FRAG_WATCHDOG_MS});
@@ -2068,6 +2072,23 @@ export function eventTableHtml(events: readonly AuditEvent[]): string {
   return `<div class="tblwrap"><table class="activity-events"><caption>Shared activity events</caption><thead><tr><th scope="col">When</th><th scope="col">Actor</th><th scope="col">Kind</th><th scope="col">Ref</th><th scope="col">Summary</th><th scope="col">Source</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="muted">No matching events; this does not establish complete coverage.</td></tr>'}</tbody></table></div>`;
 }
 
+/** #1500: the honest empty-section wording, keyed off the provenance
+ * strings the renderers already receive — no new data plumbing. The
+ * comment stream is fixture-sourced while the projector is off (#1199),
+ * so a bare "no comments" would claim a fact about the work when it is
+ * really a fact about the dashboard's resolution path. */
+export const FIXTURE_COMMENTS_CAUSE = "the comment stream is fixture-sourced while the projector is off (#1199)";
+
+export function commentsFixtureSourced(provenance: Provenance): boolean {
+  return provenance.comments.startsWith("fixtures");
+}
+
+export function fixtureCommentsBannerHtml(provenance: Provenance): string {
+  return commentsFixtureSourced(provenance)
+    ? `<div class="banner">The comment stream is fixture-sourced while the projector is off (#1199) — GitHub comments may be missing or stale, and an empty stream does not mean the work has no discussion.</div>`
+    : "";
+}
+
 export function renderItem(
   title: string,
   subject: string,
@@ -2092,6 +2113,25 @@ export function renderItem(
         `<tr><td class="muted">${fmtDate(c.createdAt)}</td><td><span class="badge ${esc(c.kind)}">${esc(c.kind)}</span></td><td>${esc(c.author)}</td><td>${esc(c.body)}${c.path ? ` <span class="muted">(${esc(c.path)}${c.line ? `:${c.line}` : ""})</span>` : ""}</td></tr>`,
     )
     .join("");
+  // #1500: when some linked refs did not resolve, the Linked header
+  // carries the tally and the cause; when every ref resolves it stays
+  // plain. The fixture cause is keyed off the items provenance string
+  // only (the partial-fixtures shape from sources/live.ts, or a fully
+  // fixture-sourced items facet).
+  const linkedResolved = all.length;
+  const linkedHeader =
+    links.length > 0 && linkedResolved < links.length
+      ? `Linked issues / PRs — ${links.length} linked · ${linkedResolved} resolved — ${
+          /\+ fixtures for \d+ ref\(s\) outside the pool/.test(provenance.items) ||
+          provenance.items.startsWith("fixtures")
+            ? "resolution fell back to fixtures (projector off, #1199)"
+            : "some linked refs could not be resolved from the current sources"
+        }`
+      : "Linked issues / PRs";
+  const commentsBanner = fixtureCommentsBannerHtml(provenance);
+  const emptyCommentRow = commentsFixtureSourced(provenance)
+    ? `<tr><td colspan="4" class="muted">no comments loaded — ${FIXTURE_COMMENTS_CAUSE}</td></tr>`
+    : '<tr><td colspan="4" class="muted">no comments</td></tr>';
   const dashSection = extras
     ? `<h2>Dashboard comments</h2>${
         extras.dashComments.length
@@ -2137,8 +2177,8 @@ ${
       )
     : ""
 }
-<h2>Linked issues / PRs</h2><div class="tblwrap"><table class="table table-zebra"><caption>Linked issues and pull requests</caption><tr><th scope="col">Ref</th><th scope="col">Title</th><th scope="col">Labels</th><th scope="col">Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
- <h2>Activity stream comments</h2><div class="tblwrap"><table class="table table-zebra"><caption>Comments</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || '<tr><td colspan="4" class="muted">no comments</td></tr>'}</table></div>
+<h2>${linkedHeader}</h2><div class="tblwrap"><table class="table table-zebra"><caption>Linked issues and pull requests</caption><tr><th scope="col">Ref</th><th scope="col">Title</th><th scope="col">Labels</th><th scope="col">Updated</th></tr>${refRows || '<tr><td colspan="4" class="muted">none resolved</td></tr>'}</table></div>
+ <h2>Activity stream comments</h2>${commentsBanner}<div class="tblwrap"><table class="table table-zebra"><caption>Comments</caption><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Author</th><th scope="col">Body</th></tr>${commentRows || emptyCommentRow}</table></div>
  ${activitySection}${sessionSection}${statusSection}${roadmapAnnotationSection}${dashSection}`,
     provenance,
     "/board",
@@ -6468,6 +6508,27 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
 <div class="card"><span class="dot ${push.state === "up" ? "up" : push.state === "down" ? "down" : "stale"}"></span><strong>${esc(push.state)}</strong> \u2014 ${esc(push.detail)}<br>last event ${push.lastEventAt ? esc(ageMsText(Math.max(0, nowMs - Date.parse(push.lastEventAt)))) : "none recorded"} \u00b7 last successful reconcile ${push.lastSuccessfulReconcileAt ? esc(ageMsText(Math.max(0, nowMs - Date.parse(push.lastSuccessfulReconcileAt)))) : "never in this process"} \u00b7 journal cursor <code>${push.cursor ?? "unknown"}</code> \u00b7 gaps: <strong>${push.gaps.open} open</strong> \u00b7 ${push.gaps.repairedTotal} repaired by reconciliation \u00b7 ${push.gaps.resetsTotal} journal reset(s)${push.gaps.lastResetAt ? ` (last ${esc(push.gaps.lastResetAt)})` : ""}</div>
 <div class="tblwrap"><table class="table table-zebra"><caption>Push sources \u2014 freshness is per source; a quiet source is silent, not an outage</caption><tr><th scope="col">Source</th><th scope="col">State</th><th scope="col">Last event</th><th scope="col">Age</th><th scope="col">Lag</th><th scope="col">Notices</th></tr>${push.sources.map((s) => `<tr><td><code>${esc(s.source)}</code></td><td>${esc(s.state)}${s.missingNotice ? ' \u00b7 <span class="badge stale">notice missing \u2014 gap open</span>' : ""}</td><td>${s.lastEventAt ? esc(s.lastEventAt) : "\u2014"}</td><td>${s.ageMs !== null ? esc(ageMsText(s.ageMs)) : "\u2014"}</td><td>${s.lagMs !== null ? esc(ageMsText(s.lagMs)) : "\u2014"}</td><td>${s.notices}</td></tr>`).join("")}</table></div>`
     : `<h2 id="push-health">Push health \u2014 event-driven freshness (#3976)</h2>\n<p class="muted">Push health is not assembled in this mode \u2014 no state is invented for it.</p>`;
+  const sloRows = (view.slo ?? [])
+    .map((s) => {
+      const current = !s.sourced
+        ? `<span class="muted">unknown / no signal source</span>`
+        : s.currentValue !== null
+          ? esc(ageMsText(s.currentValue))
+          : s.latestBad === null
+            ? `<span class="muted">\u2014</span>`
+            : s.latestBad
+              ? "down"
+              : "up";
+      const remaining = s.budgetRemainingPercent === null ? "\u2014" : `${s.budgetRemainingPercent.toFixed(1)}%`;
+      const burn = s.burnRate1h === null ? "\u2014" : s.burnRate1h.toFixed(2);
+      return `<tr><td>${esc(s.label)}</td><td>${esc(s.target)}</td><td>${current}</td><td>${remaining}</td><td>${burn}</td><td>${esc(s.state)}</td></tr>`;
+    })
+    .join("");
+  const sloSection = view.slo
+    ? `<h2 id="slo-budget">SLO error budgets (#9988)</h2>
+<p class="muted">Each minute the health view is sampled into an append-only journal. Budgets are computed over each facet's rolling window; a facet with no signal source is shown as unknown, never as good.</p>
+<div class="tblwrap"><table class="table table-zebra"><caption>SLO error budgets \u2014 remaining budget and 1-hour burn rate per facet</caption><tr><th scope="col">Facet</th><th scope="col">Target</th><th scope="col">Current</th><th scope="col">Budget remaining</th><th scope="col">1h burn</th><th scope="col">State</th></tr>${sloRows}</table></div>`
+    : "";
   const cov = view.itemsCoverage;
   const coverageLine =
     cov && cov.total > 0
@@ -6503,6 +6564,7 @@ ${degraded}${modeNote}
 <div class="tblwrap"><table class="table table-zebra"><caption>Services, ports, and topology</caption><tr><th scope="col">Service</th><th scope="col">Port</th><th scope="col">Bind</th><th scope="col">Runs as</th><th scope="col">State</th><th scope="col">Consumed by</th><th scope="col">If it is down</th></tr>${serviceRows}</table></div>
 ${rfaSection}
 ${pushSection}
+${sloSection}
 <h2>Feed sections</h2>
 <div class="tblwrap"><table><caption>Feed sections — presence, age, lag, and last sync</caption><tr><th scope="col">Section</th><th scope="col">Present</th><th scope="col">Age</th><th scope="col">Behind by</th><th scope="col">Last sync</th><th scope="col">Lag note</th><th scope="col">Note</th></tr>${sectionRows}</table></div>
 <h2>Quota gatherer sources</h2>
@@ -6548,7 +6610,14 @@ export function renderDiscuss(
       : objectRef.startsWith("session:")
         ? `<p class="muted"><a href="/sessions">← the session registry</a> · <a href="/attention">Needs you</a></p>`
         : `<p class="muted"><a href="/attention">← Needs you</a></p>`;
-  const body = `<h1>${esc(title)}</h1><p class="muted">object: <code>${esc(objectRef)}</code></p>${back}
+  // #1500: the same fixture banner + honest empty wording as the item
+  // page, keyed off the comments provenance this page already receives.
+  const discussFixtureBanner = fixtureCommentsBannerHtml(provenance);
+  const discussEmptyWording =
+    commentsFixtureSourced(provenance) && comments.length === 0
+      ? `<p class="muted">no comments loaded — ${FIXTURE_COMMENTS_CAUSE}</p>`
+      : "";
+  const body = `<h1>${esc(title)}</h1><p class="muted">object: <code>${esc(objectRef)}</code></p>${back}${discussFixtureBanner}${discussEmptyWording}
 <p class="muted">Two kinds, visibly distinct: a <strong>note</strong> is read when this is next picked up and triggers nothing; a <strong>message to Muse</strong> is triaged by the orchestrator on its next pass and may create work.${
     opts.githubRefs?.length
       ? ` This item is GitHub-backed, so a comment can also be posted as a <strong>GitHub comment</strong> on an explicit target.`
@@ -7106,7 +7175,18 @@ function epicGraphAnchor(ref: RefKey): string {
   return `epic-graph-${ref.replace(/[^a-zA-Z0-9]+/g, "-")}`;
 }
 
-function epicGraphSectionHtml(items: ProjectPoolItem[], selectorItems: ProjectPoolItem[] = items): string {
+interface EpicGraphActionContext {
+  orchestration?: OrchestrationSection | null;
+  actionsByObject?: Map<string, DashAction[]>;
+  identities?: AuthorIdentity[];
+  orchestrationState?: string;
+}
+
+function epicGraphSectionHtml(
+  items: ProjectPoolItem[],
+  selectorItems: ProjectPoolItem[] = items,
+  actionContext?: EpicGraphActionContext,
+): string {
   // Selector entries and rendered sections are scoped to the project's
   // own pool (selectorItems = detail.poolItems): on a normal project
   // request the caller passes the entire org pool as `items` for
@@ -7131,11 +7211,65 @@ function epicGraphSectionHtml(items: ProjectPoolItem[], selectorItems: ProjectPo
         `<li><a href="#${epicGraphAnchor(e.ref)}">${esc(e.title)}</a> <span class="muted">${esc(e.ref)} · ${e.itemCount} item${e.itemCount === 1 ? "" : "s"} · ${e.blockedCount} blocked · ${e.doneCount} done</span></li>`,
     )
     .join("")}</ul></nav>`;
-  const sections = selector.map((entry) => epicGraphOneHtml(items, entry)).join("");
+  const sections = selector.map((entry) => epicGraphOneHtml(items, entry, actionContext)).join("");
   return `<h3>Per-epic dependency graph</h3>${selectorHtml}${sections}`;
 }
 
-function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epicSelector>[number]): string {
+function graphNodeActionsHtml(nodeRef: RefKey, context?: EpicGraphActionContext): string {
+  const section = context?.orchestration;
+  const drewItem = section?.tiers.needsDrew.find((item) => item.ref === nodeRef);
+  const orchestratorItem = section?.tiers.needsOrchestrator.find((item) => item.ref === nodeRef);
+  const item = drewItem ?? orchestratorItem;
+  if (!item) {
+    return `<p class="muted epic-graph-actions">No inline action: this item is not in the currently published Needs User or Needs Orchestrator tier.</p>`;
+  }
+
+  const tier = drewItem ? "needs-drew" : "needs-orchestrator";
+  const objectRef = tierItemObjectRef(item);
+  const actions = context?.actionsByObject?.get(objectRef);
+  const state = cardState(actions);
+  const disabledReason =
+    item.source === "watchdog" || context?.orchestrationState === "live"
+      ? undefined
+      : `the tier source is ${context?.orchestrationState ?? "unavailable"}, so this item cannot be confirmed against the orchestrator's current published queues`;
+  const controls = context?.identities
+    ? triageActionsHtml(
+        objectRef,
+        tier,
+        { identities: context.identities, ...(disabledReason ? { disabledReason } : {}) },
+        tier === "needs-drew" ? needsUserFormsHtml(item, objectRef, Date.now(), state) : "",
+        state,
+      )
+    : `<p class="muted">Inline actions unavailable: no dashboard author identity is configured.</p>`;
+  const needsUserBody = tier === "needs-drew" ? needsUserBodyHtml(item, actions) : "";
+  const history = `${actionBadgesHtml(actions)}<details class="carddetail"><summary>Action history</summary>${actionHistoryHtml(actions)}</details>`;
+
+  let sessionControls = "";
+  if (item.sessionId) {
+    const sessionSource = item.source === "claude" ? "claude-code" : item.source;
+    const support = sessionVerbSupport(sessionSource);
+    if (!context?.identities) {
+      sessionControls = `<p class="muted">Session action unavailable: no dashboard author identity is configured.</p>`;
+    } else if (support.some((entry) => !entry.reason)) {
+      const sessionRef = sessionObjectRef(item.sessionId);
+      const sessionActions = context?.actionsByObject?.get(sessionRef);
+      sessionControls = `${actionBadgesHtml(sessionActions)}${sessionActionsHtml(item.sessionId, sessionSource, { identities: context.identities })}<details class="carddetail"><summary>Session action history</summary>${actionHistoryHtml(sessionActions)}</details>`;
+    } else {
+      const reason =
+        support.find((entry) => entry.reason)?.reason ??
+        "this published item has no supported live session control channel";
+      sessionControls = `<p class="muted">Session action unavailable: ${esc(reason)}.</p>`;
+    }
+  }
+
+  return `<div class="epic-graph-actions"><span class="badge ${tier === "needs-drew" ? "drew" : "orch"}">${tier === "needs-drew" ? "Needs User" : "Needs Orchestrator"}</span>${needsUserBody}${history}${controls}${sessionControls}</div>`;
+}
+
+function epicGraphOneHtml(
+  items: ProjectPoolItem[],
+  entry: ReturnType<typeof epicSelector>[number],
+  actionContext?: EpicGraphActionContext,
+): string {
   const g = epicGraph(items, entry.ref);
   const heading = `<h4 id="${epicGraphAnchor(entry.ref)}">${esc(entry.title)} <span class="muted">(${esc(entry.ref)})</span></h4>`;
   if (g.status === "unavailable" || !g.epic) {
@@ -7147,6 +7281,37 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
     return held === undefined || held.state === "open";
   };
   const summary = `<p class="muted"><strong>${g.memberCount} item${g.memberCount === 1 ? "" : "s"} in this epic</strong> · ${g.blockedCount} blocked on an unresolved blocker · ${g.externalCount} one-hop reference${g.externalCount === 1 ? "" : "s"} outside this pool (unresolved — status unknown, never counted as resolved).</p>`;
+  const cycleGroupsHtml = g.cycleGroups.length
+    ? `<div class="epic-graph-cycle-groups">${g.cycleGroups
+        .map((group) => {
+          const members = group.members
+            .map((ref) => {
+              const member = poolByRef.get(ref);
+              return `<li>${poolRefLink(ref)}${member?.title ? ` — ${esc(member.title)}` : ""}</li>`;
+            })
+            .join("");
+          const explanation =
+            group.kind === "dependency"
+              ? "The dependency data is contradictory. Resolving one member alone does not clear this cycle; correct the cycle edges."
+              : "The parent links are cyclic. These members are one hierarchy warning group, not independent roots; correct the parent edges.";
+          return `<section class="banner" role="alert"><strong>⚠ ${esc(group.name)}</strong><p>${explanation}</p><ul>${members}</ul></section>`;
+        })
+        .join("")}</div>`
+    : "";
+  const edgeDiagnosticsHtml = g.edgeDiagnostics.length
+    ? `<section class="banner" role="status"><strong>⚠ Relation edge data needs review</strong><ul>${g.edgeDiagnostics
+        .map((diagnostic) => {
+          const relation =
+            diagnostic.relation === "parent" ? "parent" : diagnostic.relation === "blockedBy" ? "blocked-by" : "blocks";
+          const issue =
+            diagnostic.target === null
+              ? "endpoint unavailable"
+              : `malformed endpoint <code>${esc(diagnostic.target)}</code>`;
+          const state = diagnostic.state === "unavailable" ? "Unavailable edge data" : "Malformed relation reference";
+          return `<li>${state}: ${poolRefLink(diagnostic.sourceRef)} ${relation} edge — ${issue}; it was not treated as an external issue.</li>`;
+        })
+        .join("")}</ul></section>`
+    : "";
   const truncatedHtml = g.truncated
     ? `<p class="muted">Truncated: this graph shows ${g.nodes.length} of ${g.totalNodes} nodes (cap ${EPIC_GRAPH_DEFAULT_CAP}). The counts above cover the full set; a capped graph is not complete.</p>`
     : "";
@@ -7167,7 +7332,9 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
           return `<li><a href="${esc(r.issueUrl)}">${esc(r.ref)}</a> — waiting on ${r.downstreamCount} distinct downstream open epic item${r.downstreamCount === 1 ? "" : "s"} via ${r.blockers.length} unresolved blocker${r.blockers.length === 1 ? "" : "s"}: ${blockerItems.join(", ")}${contributingItems}</li>`;
         })
         .join("")}</ul>`
-    : `<p class="muted">No open item in this epic is waiting on an unresolved blocker.</p>`;
+    : g.blockedCount > 0
+      ? `<p class="muted">${g.blockedCount} open item${g.blockedCount === 1 ? " is" : "s are"} waiting on an unresolved blocker, but none can be ranked here — members of a dependency cycle are excluded from the unblock ranking until the cycle is broken.</p>`
+      : `<p class="muted">No open item in this epic is waiting on an unresolved blocker.</p>`;
 
   const rankedBlockersHtml = g.rankedBlockers.length
     ? `<ol class="epic-graph-list">${g.rankedBlockers
@@ -7246,11 +7413,12 @@ function epicGraphOneHtml(items: ProjectPoolItem[], entry: ReturnType<typeof epi
         : "blocks: none observed";
       const name = n.title ? `${esc(n.title)}` : "(outside this pool — no title in this feed)";
       const nodeRef = isValidRef(n.ref) ? `<a href="${esc(n.issueUrl)}">${esc(n.ref)}</a>` : esc(n.ref);
-      return `<li>${nodeRef} ${name} — ${stateText}; ${blockedBy}; ${blocks}</li>`;
+      const actions = isValidRef(n.ref) ? graphNodeActionsHtml(n.ref, actionContext) : "";
+      return `<li>${nodeRef} ${name} — ${stateText}; ${blockedBy}; ${blocks}${actions}</li>`;
     })
     .join("")}</ul>`;
 
-  return `<section>${heading}${summary}${truncatedHtml}<div class="epic-graph-flex">${svg}<div class="epic-graph-side"><h5>Primary ranking — blockers by downstream open work</h5><p class="muted">Each open epic item is counted once per blocker across its transitive blockedBy ancestry. This measures downstream reach, not a promise that every item is immediately unblocked. Current additional unresolved blockers are listed per item; unsized contributors count separately from known effort weight. The longest dependency chain remains a separate diagnostic.</p>${rankedBlockersHtml}<h5>Open items by their worst blocker's downstream reach</h5>${rankedHtml}<h5>All items — dependency list</h5>${listHtml}</div></div></section>`;
+  return `<section>${heading}${summary}${cycleGroupsHtml}${edgeDiagnosticsHtml}${truncatedHtml}<div class="epic-graph-flex">${svg}<div class="epic-graph-side"><h5>Primary ranking — blockers by downstream open work</h5><p class="muted">Each open epic item is counted once per blocker across its transitive blockedBy ancestry. This measures downstream reach, not a promise that every item is immediately unblocked. Current additional unresolved blockers are listed per item; unsized contributors count separately from known effort weight. The longest dependency chain remains a separate diagnostic.</p>${rankedBlockersHtml}<h5>Open items by their worst blocker's downstream reach</h5>${rankedHtml}<h5>All items — dependency list</h5>${listHtml}</div></div></section>`;
 }
 
 /** The Path to Phase 12 panel (#9922): #1235's ordered steps, parsed
@@ -7542,6 +7710,7 @@ export function renderProgramProject(
   f12?: { design: Phase12Snapshot | null; prRefs: Map<number, F12PrRef[]> | null } | null,
   queueSnap?: QueueSnapshot | null,
   phaseMapping?: PhaseMappingSnapshot | null,
+  graphActions?: EpicGraphActionContext,
 ): string {
   const { config } = detail;
   const linkBits: string[] = [];
@@ -7552,10 +7721,28 @@ export function renderProgramProject(
   } else {
     linkBits.push(`<span class="muted">No home doc configured for this project yet.</span>`);
   }
-  if (config.statusReport) {
+  if (detail.doc?.latestStatus) {
+    const status = detail.doc.latestStatus;
+    linkBits.push(
+      `Latest status: <a href="${esc(status.url)}">${esc(status.title ?? status.dir)}</a> <span class="muted">(${esc(status.timestamp)} \u2014 newest <code>doc/</code> status record, derived at request time)</span>`,
+    );
+  } else if (detail.doc) {
+    linkBits.push(
+      `<span class="muted">No status record under <code>doc/</code> for this project yet \u2014 checked the code checkout at ${esc(detail.doc.fetchedAt)}.</span>`,
+    );
+  } else if (config.statusReport) {
     linkBits.push(`Status report: <a href="${esc(config.statusReport.url)}">${esc(config.statusReport.label)}</a>`);
   } else {
     linkBits.push(`<span class="muted">No status report yet for this project.</span>`);
+  }
+  if (detail.doc?.description) {
+    linkBits.push(
+      `Description derived from <a href="${esc(detail.doc.roadmapUrl)}">${esc(detail.doc.roadmapPath)}</a> <span class="muted">(read at request time)</span>`,
+    );
+  } else if (detail.doc) {
+    linkBits.push(
+      `<span class="muted">No prose description found in ${esc(detail.doc.roadmapPath)} \u2014 the registry intro is shown instead.</span>`,
+    );
   }
   for (const l of config.dashboardLinks ?? []) {
     linkBits.push(
@@ -7607,7 +7794,7 @@ export function renderProgramProject(
     const epicHtml = epics.length
       ? `<h3>Epics — weighted progress</h3><p class="muted"><strong>${esc(weightedLine(epicW))}</strong></p>${epicRows}`
       : "";
-    poolHtml = `<p class="muted"><strong>${esc(weightedLine(allW))}</strong><br>${esc(handsLine(allW))}<br><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${epicHtml}${poolGraphHtml(detail.poolItems, allW)}${epicGraphSectionHtml(epicPool, detail.poolItems)}${cards}${more}`;
+    poolHtml = `<p class="muted"><strong>${esc(weightedLine(allW))}</strong><br>${esc(handsLine(allW))}<br><strong>${detail.poolItems.length} items</strong> with Area <code>${esc(config.poolArea)}</code> — by status: ${countList(detail.poolByStatus)}. Full pool view: <a href="/projects?area=${encodeURIComponent(config.poolArea)}">/projects?area=${esc(config.poolArea)}</a>.</p>${epicHtml}${poolGraphHtml(detail.poolItems, allW)}${epicGraphSectionHtml(epicPool, detail.poolItems, graphActions)}${cards}${more}`;
   }
 
   let roadmapHtml: string;
@@ -7664,7 +7851,7 @@ export function renderProgramProject(
     : "";
 
   const body = `<h1>${esc(config.title)}</h1>
-<p class="muted">${esc(config.intro)}</p>
+<p class="muted">${esc(detail.doc?.description ?? config.intro)}</p>
 <p class="muted">${linkBits.join(" · ")}</p>
 <p class="muted"><a href="/program">← all projects</a></p>
 ${archHtml}
@@ -7683,7 +7870,7 @@ ${phaseTrackerHtml}${phase12Html}${buildHealthHtml}${f12Html}${queueHtml}${edito
     body,
     provenance,
     "/program",
-    "",
+    graphActions?.identities ? ACTION_SCRIPT : "",
     provDetail ? freshnessChips(provDetail, ["orchestration", "items", "roadmap"]) : "",
   );
 }

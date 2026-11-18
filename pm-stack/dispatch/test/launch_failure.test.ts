@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { compensateOrphanedIssue, handleLaunchFailure, withCreatedSession } from "../src/launch_failure.ts";
+import { ClaimLostError } from "../src/queue.ts";
 
 // Regression tests for #2901: a wait:false launch failure used to only
 // PATCH last_error onto the task, leaving it queued forever. Both wait
@@ -137,7 +138,7 @@ describe("handleLaunchFailure", () => {
     expect(calls.closes).toEqual([["developing-today/code", 2901, "not_planned"]]);
   });
 
-  async function assertCreatedSessionFailure(stage: "sendPrompt" | "claim patch") {
+  async function assertCreatedSessionFailure(stage: "sendPrompt" | "claim") {
     const sessionId = "session/created-42";
     const launchError = new Error(`${stage} failed`);
     const context = { sessionId: null as string | null };
@@ -163,8 +164,8 @@ describe("handleLaunchFailure", () => {
     };
     const queue = {
       async ensureWorker(): Promise<void> {},
-      async patchTask(): Promise<void> {
-        if (stage === "claim patch") throw launchError;
+      async claimTask(): Promise<void> {
+        if (stage === "claim") throw launchError;
       },
       async cancelTask(id: number, reason: string): Promise<void> {
         calls.events.push("cancel");
@@ -190,7 +191,7 @@ describe("handleLaunchFailure", () => {
       await withCreatedSession(session.id, context, async () => {
         await opencode.sendPrompt();
         await queue.ensureWorker();
-        await queue.patchTask();
+        await queue.claimTask();
       });
     } catch (e) {
       thrown = e;
@@ -227,8 +228,8 @@ describe("handleLaunchFailure", () => {
     await assertCreatedSessionFailure("sendPrompt");
   });
 
-  test("created session is cleaned up and reported after claim patch fails", async () => {
-    await assertCreatedSessionFailure("claim patch");
+  test("created session is cleaned up and reported after the claim fails", async () => {
+    await assertCreatedSessionFailure("claim");
   });
 });
 
@@ -282,5 +283,32 @@ describe("compensateOrphanedIssue (#4917)", () => {
     await expect(compensateOrphanedIssue(broken, "developing-today/code", 6, "enqueue", new Error("x"))).resolves.toBe(
       "x",
     );
+  });
+});
+
+// #10737: a launch that lost the claim race must leave the task and its
+// issue to the worker that claimed them, and only clean up its own
+// session.
+describe("handleLaunchFailure on a lost claim (#10737)", () => {
+  test("does not cancel, note or close; deletes only the launch's session", async () => {
+    const { calls, queue, github } = stubs();
+    const deleted: string[] = [];
+    const msg = await handleLaunchFailure(
+      queue,
+      github,
+      "developing-today/code",
+      4135,
+      2901,
+      new ClaimLostError(4135, "queued"),
+      "ses_lost",
+      async (id) => {
+        deleted.push(id);
+      },
+    );
+    expect(msg).toContain("no longer queued");
+    expect(calls.cancels).toEqual([]);
+    expect(calls.comments).toEqual([]);
+    expect(calls.closes).toEqual([]);
+    expect(deleted).toEqual(["ses_lost"]);
   });
 });

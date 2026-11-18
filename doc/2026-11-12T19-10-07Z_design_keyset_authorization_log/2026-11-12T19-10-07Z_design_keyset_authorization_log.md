@@ -148,10 +148,15 @@ same records reaches the same state.
      A fork created by a key that the canonical branch later revokes
      still cannot resurrect itself: its records fold only if authorised
      at their position on the canonical chain — and they are not on it.
-     Note the packet-1 implementation (`pkgs/id/src/keyset.rs`) folds
-     by merge key with anchored genesis and checkpoint records that
-     cannot displace admin records; revocation priority and checkpoint
-     finality are follow-up packet 5 in §7, not yet implemented.
+     Implementation status (`pkgs/id/crates/id-directory/src/keyset.rs`):
+     revocation priority is implemented, judged over each sibling's
+     whole canonical continuation, so a rotation deeper in a branch
+     still wins; mutual revocations fall back to merge-key order.
+     Checkpoint finality is implemented too: `fold_with_finality`
+     takes the heads a replica verified a checkpoint against
+     (`checkpoint_final_heads`), and a branch through a final head wins
+     every fork on its way. `KeysetFile` keeps those heads beside the
+     log (`<log>.final`) and `id keyset checkpoint` writes one.
 6. **Checkpoints.** A replica may start from a `Checkpoint` whose
    `state_hash` it has verified against a full fold once, then fold
    only the suffix. A checkpoint never authorises anything by itself.
@@ -188,8 +193,11 @@ rule 5 and loses deterministically to the first folded one.
   Active admin key in the identity's current fold (checkpoint-final
   where Decision 4 rule 5 requires it); the immutable identity
   identifier (Decision 1) does not change. The legacy `iroh_id`
-  check remains the rule only for unmigrated identities. This is
-  follow-up packet 5 in §7, not yet implemented.
+  check remains the rule only for unmigrated identities. Implemented:
+  `HostedBindingService::register_keyset` records an identity's folded
+  keyset, and both paths then accept only its active admin keys.
+  The hosted service does not yet require checkpoint finality for a
+  forked log (Decision 4 rule 5 makes it a SHOULD).
 - Per-device group-encryption sessions (`src/encryption/`) consume the
   folded device set; they do not define their own enrolment.
 

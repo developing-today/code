@@ -183,6 +183,9 @@ describe("board variants derive from one shared assembly (#5082)", () => {
 let proc: Subprocess | undefined;
 let base = "";
 
+// #10467: starting the aggregator subprocess can take longer than bun's
+// default 5 s hook budget on a loaded machine; give the hook room to
+// reach its own readiness deadline and fail with that message instead.
 beforeAll(async () => {
   const dir = await mkdtemp(join(tmpdir(), "pm-board-cache-5082-"));
   const port = 7000 + Math.floor(Math.random() * 800);
@@ -223,7 +226,7 @@ beforeAll(async () => {
     if (!up) await Bun.sleep(150);
   }
   expect(up).toBe(true);
-});
+}, 60_000);
 
 afterAll(() => {
   proc?.kill();

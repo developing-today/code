@@ -34,6 +34,9 @@ describe("decodePathSegment", () => {
 let proc: Subprocess<"ignore", "pipe", "inherit"> | null = null;
 let port = 0;
 
+// #10467: starting the aggregator subprocess can take longer than bun's
+// default 5 s hook budget on a loaded machine; give the hook room to
+// reach its own readiness deadline and fail with that message instead.
 beforeAll(async () => {
   port = 5100 + Math.floor(Math.random() * 1000);
   proc = spawn({
@@ -58,7 +61,7 @@ beforeAll(async () => {
     await Bun.sleep(120);
   }
   expect(ready).toBe(true);
-});
+}, 60_000);
 
 afterAll(() => {
   proc?.kill();
@@ -84,9 +87,9 @@ describe("malformed percent-encoding is a JSON 400 on both routes (#2747 matrix)
   }
 
   test("/item/<known board id> still resolves 200", async () => {
-    const board = (await (
-      await fetch(`http://127.0.0.1:${port}/api/board.json`)
-    ).json()) as { board: { id: string }[] };
+    const board = (await (await fetch(`http://127.0.0.1:${port}/api/board.json`)).json()) as {
+      board: { id: string }[];
+    };
     const id = encodeURIComponent(board.board[0].id);
     const res = await fetch(`http://127.0.0.1:${port}/item/${id}`);
     expect(res.status).toBe(200);

@@ -211,6 +211,16 @@ export function nextPageFromLink(linkHeader: string | null): string | null {
   return null;
 }
 
+/// Volume bound for listResource (#6622 pagination contract, rule 2;
+/// #9010): every other page loop in the pm-stack carries a named bound.
+/// Sized generously above the largest legitimate reconcile listing
+/// across the four repos at per_page=100 (200 pages = 20,000 rows).
+/// Breach is an error naming the listing (rule 3: truncation is never
+/// silent) — a stream that keeps minting next links (misbehaving
+/// proxy, GitHub pagination defect, redirect loop) fails closed
+/// instead of growing memory without limit.
+export const MAX_LIST_PAGES = 200;
+
 export async function listResource<T>(
   auth: GitHubAuth,
   initialPath: string,
@@ -219,7 +229,9 @@ export async function listResource<T>(
 ): Promise<T[]> {
   const out: T[] = [];
   let path: string | null = initialPath;
+  let pages = 0;
   while (path) {
+    pages += 1;
     // nextPageFromLink returns the Link header's absolute URL — use it
     // as-is. Prefixing it again produced api.github.com/https://... 404s,
     // which discarded every multi-page stream (written=0 everywhere).
@@ -249,6 +261,9 @@ export async function listResource<T>(
     // of fetching every page of history on every pass.
     if (opts.stopAfterPage?.(page as T[])) break;
     path = nextPageFromLink(res.headers.get("link"));
+    if (path && pages >= MAX_LIST_PAGES) {
+      throw new Error("github_api_pagination_bound: " + initialPath + " exceeded " + MAX_LIST_PAGES + " pages");
+    }
   }
   return out;
 }

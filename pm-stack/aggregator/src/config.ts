@@ -4,6 +4,7 @@
 // explicit PM_AGG_DEV=1 switch (#1195).
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { parseStoreBackend, type StoreBackendKind } from "./store-backend.ts";
 
 const s = (v: string | undefined, d: string): string => (v && v.trim() !== "" ? v.trim() : d);
 
@@ -14,6 +15,15 @@ function parseAggregatorPort(value: string | undefined, name = "PM_AGG_PORT", de
     throw new Error(`Invalid ${name}=${JSON.stringify(value)}; expected a decimal integer in range 1-65535`);
   }
   return port;
+}
+
+function parseAggregatorCount(value: string | undefined, name: string, defaultValue: string): number {
+  const normalized = s(value, defaultValue);
+  const count = Number(normalized);
+  if (!/^\d+$/.test(normalized) || !Number.isSafeInteger(count) || count < 1) {
+    throw new Error(`Invalid ${name}=${JSON.stringify(value)}; expected a decimal integer >= 1`);
+  }
+  return count;
 }
 
 function parseAggregatorHosts(value: string | undefined): string[] {
@@ -28,6 +38,10 @@ function parseAggregatorHosts(value: string | undefined): string[] {
 }
 
 export interface Config {
+  /** #6815: where the four Supabase-migrated stores live. "file" is the
+   *  dev/test path and rollback target; "supabase" is the deployed
+   *  canonical backend. Exactly one is active — never both. */
+  storeBackend: StoreBackendKind;
   /** Default Source: "live" when PM_AGG_SOURCE=live; "fixtures" when
    * explicitly requested, or when PM_AGG_DEV=1 allows the implicit
    * (unset/invalid PM_AGG_SOURCE) fixture default. Anything else
@@ -54,6 +68,8 @@ export interface Config {
   viewsFile: string;
   /** Cross-stack event log store (#1739) — one chronological stream. */
   eventsFile: string;
+  /** Identity-to-role registry (#9604), separate from the session registry. */
+  identityRegistryFile: string;
   /** Source freshness invalidation journal, separate from #1739/#3321. */
   freshnessFile: string;
   /** Loopback-only publisher listener; never included in PM_AGG_HOSTS. */
@@ -90,10 +106,16 @@ export interface Config {
    * (#10141): claimant mode + PM unit states the watchdog derives
    * silent-failure tier items from. Read-only for the aggregator. */
   hostHealthFile: string;
+  /** #10383: where the bounded dashboard routes keep their last good
+   *  response, so the first request after a restart can serve it. */
+  lastGoodDir: string;
   /** Versioned item-history JSONL (#3981) the forecast contract
    * (#3984) derives from: one cutoff per line, read via
    * ItemHistoryStore. */
   itemHistoryFile: string;
+  /** Append-only SLO sample journal (#9988): one facet sample per minute,
+   * read back for the error-budget display on /health. */
+  sloJournalFile: string;
   /** The stewardship quota view; the hub's live fallback source when the
    * fleet feed carries no saas/payg sections yet (hub §2.3). */
   quotaViewFile: string;
@@ -123,6 +145,10 @@ export interface Config {
    * 2026-10-29, which left attention single-legged on the collector
    * feed until the 2026-11-10 fixture incident. */
   opencodeServerStateFile: string;
+  /** Read-only directory containing mcpx daemon's rotated call ledger. */
+  mcpxCallLedgerDir: string;
+  /** Read-only fleet CLI invocation JSONL ledger. */
+  fleetInvocationLedgerFile: string;
   kaneo: {
     baseUrl: string;
     /** Kaneo's client URL — the Origin its auth accepts (better-auth). */
@@ -182,6 +208,7 @@ function parseAggregatorSource(env: Record<string, string | undefined>): "fixtur
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
   return {
+    storeBackend: parseStoreBackend(env),
     source: parseAggregatorSource(env),
     port: parseAggregatorPort(env.PM_AGG_PORT),
     hosts: parseAggregatorHosts(env.PM_AGG_HOSTS),
@@ -193,6 +220,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     actionsFile: s(env.PM_AGG_ACTIONS_FILE, join(process.cwd(), "actions.json")),
     viewsFile: s(env.PM_AGG_VIEWS_FILE, join(process.cwd(), "views.json")),
     eventsFile: s(env.PM_AGG_EVENTS_FILE, join(process.cwd(), "events.json")),
+    identityRegistryFile: s(
+      env.PM_AGG_IDENTITY_REGISTRY_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "identity-registry.json"),
+    ),
     freshnessFile: s(env.PM_AGG_FRESHNESS_FILE, join(homedir(), ".local", "state", "pm-aggregator", "freshness.json")),
     freshnessPort: parseAggregatorPort(env.PM_AGG_FRESHNESS_PORT, "PM_AGG_FRESHNESS_PORT", "4871"),
     queueBrokerUrl: s(env.PM_AGG_QUEUE_BROKER_URL, "http://100.99.113.103:4801"),
@@ -235,6 +266,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       env.PM_AGG_HOST_HEALTH_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "host-health.json"),
     ),
+    lastGoodDir: s(env.PM_AGG_LAST_GOOD_DIR, join(homedir(), ".local", "state", "pm-aggregator", "last-good-pages")),
     quotaViewFile: s(
       env.PM_AGG_QUOTA_VIEW,
       join(
@@ -261,6 +293,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       env.PM_AGG_ITEM_HISTORY_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "item-history.jsonl"),
     ),
+    sloJournalFile: s(
+      env.PM_AGG_SLO_JOURNAL_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "slo-journal.jsonl"),
+    ),
     coverageSnapshotFile: s(env.PM_AGG_COVERAGE_SNAPSHOT_FILE, join(process.cwd(), "coverage-snapshot.json")),
     openchamberStateFile: s(
       env.PM_AGG_OPENCHAMBER_STATE,
@@ -269,6 +305,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     opencodeServerStateFile: s(
       env.PM_AGG_OPENCODE_SERVER_STATE,
       join(homedir(), ".local", "state", "opencode", "service-prod.json"),
+    ),
+    mcpxCallLedgerDir: s(env.PM_AGG_MCPX_CALL_LEDGER_DIR, join(homedir(), ".local", "state", "mcpx", "call-ledger")),
+    fleetInvocationLedgerFile: s(
+      env.PM_AGG_FLEET_INVOCATION_LEDGER_FILE,
+      join(env.XDG_STATE_HOME?.trim() || join(homedir(), ".local", "state"), "fleet", "invocations.jsonl"),
     ),
     kaneo: {
       baseUrl: s(env.KANEO_URL, "http://127.0.0.1:5173"),
@@ -303,7 +344,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     },
     publicOrigin: s(env.PM_AGG_PUBLIC_ORIGIN, "https://amd-6.raptor-pumpkinseed.ts.net").replace(/\/+$/, ""),
     alerts: {
-      ackWindowMin: Math.max(1, Math.floor(Number(s(env.ALERT_ACK_WINDOW_MIN, "15"))) || 15),
+      ackWindowMin: parseAggregatorCount(env.ALERT_ACK_WINDOW_MIN, "ALERT_ACK_WINDOW_MIN", "15"),
       tickMs: 60_000,
     },
   };

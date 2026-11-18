@@ -354,6 +354,20 @@ pub enum JournalEntry {
         /// `peer` may deliver schedule fires to this world.
         receive: bool,
     },
+    /// The admin set this world's F12.14 portal grant for one peer
+    /// world (code#1068 wiring slice): `granted: true` records the
+    /// grant, `granted: false` records its revocation. Written only
+    /// when the recorded state actually changes (a grant, or the
+    /// revocation of a live grant), so replaying it restores the
+    /// peer's exact `PortalGrantState` — a revoked peer replays as
+    /// revoked, never as never-granted, keeping the two refusal
+    /// codes distinct across restarts.
+    PortalGrantSet {
+        /// The peer world's name.
+        peer: String,
+        /// Whether the portal to `peer` is granted after this entry.
+        granted: bool,
+    },
     /// This world durably accepted a cross-world schedule fire from
     /// `source` (#1355 part 2): the receipt, keyed by source world,
     /// schedule id, and the fire's planned time (its occurrence). Written
@@ -706,10 +720,25 @@ pub const JOURNAL_VERSION_SCHEDULE_RECURRENCE: u32 = 8;
 /// bump renumbered it to 9.)
 pub const JOURNAL_VERSION_SIGNED_PLAY: u32 = 9;
 
+/// Header version of a journal that contains a portal-grant entry
+/// ([`JournalEntry::PortalGrantSet`], F12.14 wiring, code#1068).
+/// Version-9 binaries cannot read these entries and would restore a
+/// world whose portal grants were silently lost, so they must refuse
+/// the journal at the header check.
+pub const JOURNAL_VERSION_PORTALS: u32 = 10;
+
+/// Header version of a journal that records a program-bundle install.
+///
+/// That is a `ProgramInstalled` event, or a checkpoint, whose provenance is
+/// [`ModuleProvenance::Bundle`] (#8280). Version-10 binaries cannot parse
+/// that provenance and would fail mid-replay, so they must refuse the
+/// journal at the header check.
+pub const JOURNAL_VERSION_PROGRAM_BUNDLE: u32 = 11;
+
 /// Newest journal version this binary can read. Journals with a higher
 /// header version are refused at the header check, before any entry is
 /// applied.
-pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_SIGNED_PLAY;
+pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_PROGRAM_BUNDLE;
 
 /// The header version a journal must carry once it contains `entry`: version 2
 /// for execution-profile entries, version 3 for region-handoff entries,
@@ -717,8 +746,60 @@ pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_SIGNED_PLAY;
 /// for checkpoints with open-presence metadata, and version 6 for checkpoint
 /// part entries. Checkpoints combine the requirements of their transfers,
 /// retained events, profile and presence field.
+///
+/// Any entry that records a program-bundle install additionally requires
+/// [`JOURNAL_VERSION_PROGRAM_BUNDLE`].
 #[must_use]
 pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
+    let kind = entry_kind_version(entry);
+    if records_bundle_install(entry) {
+        kind.max(JOURNAL_VERSION_PROGRAM_BUNDLE)
+    } else {
+        kind
+    }
+}
+
+/// Whether `event` installs a program from a bundle.
+const fn is_bundle_install(event: &WorldEvent) -> bool {
+    matches!(
+        &event.kind,
+        WorldEventKind::ProgramInstalled {
+            provenance: Some(provenance),
+            ..
+        } if provenance.is_bundle()
+    )
+}
+
+/// Whether `entry` carries bundle provenance anywhere a reader must parse it.
+fn records_bundle_install(entry: &JournalEntry) -> bool {
+    match entry {
+        JournalEntry::Committed { event } | JournalEntry::System { event } => {
+            is_bundle_install(event)
+        }
+        JournalEntry::EntityExported { source_event, .. } => is_bundle_install(source_event),
+        JournalEntry::EntityImported {
+            destination_event, ..
+        } => is_bundle_install(destination_event),
+        JournalEntry::CheckpointEventsPart { events, .. }
+        | JournalEntry::CheckpointAdminPart { events, .. } => events.iter().any(is_bundle_install),
+        JournalEntry::Checkpoint {
+            provenance,
+            events,
+            admin_history,
+            ..
+        } => {
+            provenance.as_ref().is_some_and(ModuleProvenance::is_bundle)
+                || events.iter().any(is_bundle_install)
+                || admin_history
+                    .as_ref()
+                    .is_some_and(|history| history.events.iter().any(is_bundle_install))
+        }
+        _ => false,
+    }
+}
+
+/// The version `entry`'s own kind and fields require, before provenance.
+fn entry_kind_version(entry: &JournalEntry) -> u32 {
     // A persisted budget always requires the budget version, on top of any
     // version the entry kind itself already requires.
     let budget_version = |profile: Option<&crate::world_limits::WorldExecutionProfile>| {
@@ -763,6 +844,7 @@ pub fn journal_version_required_by(entry: &JournalEntry) -> u32 {
         JournalEntry::ScheduleGrantSet { .. } | JournalEntry::ScheduleReceived { .. } => {
             JOURNAL_VERSION_SCHEDULE_RECURRENCE
         }
+        JournalEntry::PortalGrantSet { .. } => JOURNAL_VERSION_PORTALS,
         JournalEntry::Checkpoint {
             transfers,
             lease,
@@ -813,6 +895,23 @@ pub trait WorldJournal: Send + 'static {
     ///
     /// Any I/O failure; the actor then refuses further mutations.
     fn append(&mut self, entry: &JournalEntry) -> Result<()>;
+
+    /// Durably append a batch of entries in order (group commit, #8239):
+    /// where the journal can, the batch lands with a single sync, and
+    /// durability-before-ack applies to the batch as a whole - either
+    /// every entry is durable or the batch has failed and none may be
+    /// acknowledged. The default is the per-entry append loop, which is
+    /// always correct, just slower.
+    ///
+    /// # Errors
+    ///
+    /// Any I/O failure; the actor then refuses further mutations.
+    fn append_batch(&mut self, entries: &[JournalEntry]) -> Result<()> {
+        for entry in entries {
+            self.append(entry)?;
+        }
+        Ok(())
+    }
 
     /// Capture the exact durable journal bytes and their header version.
     /// Implementations that do not own a readable journal may leave this

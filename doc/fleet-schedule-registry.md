@@ -1,6 +1,6 @@
 # Fleet schedule registry
 
-One record for every recurring schedule the fleet runs, across all three
+One record for every recurring schedule the fleet runs, across every
 schedule surfaces — the unified registry required by #4988, from the
 placement-framework v1 synthesis on #2024 (registry requirement first
 specified in the #2020 Jules investigation).
@@ -17,6 +17,10 @@ specified in the #2020 Jules investigation).
   section lists the units as they exist today.
 - **Surface 3 — Jules schedules:** web-UI CRUD on the one collected
   Jules account (pilot #2265).
+- **Surface 5 — Mac launchd jobs:** timed launchd daemons and agents
+  defined in `dezren39/darwin-nix` and deployed to the Mac (#11805).
+- **Surface 6 — PM-stack process intervals:** timers inside the
+  PM-stack aggregator process, live only while it runs (#9988).
 
 **This registry is an input to the placement audit** proposed in the
 #2024 framework doc
@@ -74,7 +78,20 @@ marked disabled per the inclusion policy now stated in the Surface
 2b intro, and the section count was corrected to 39 rows
 (38 enabled + 1 disabled) for issue #5661.
 
-## Surface 1 — Muse cron (131 jobs)
+Surface 5 added 2026-11-18 for issue #11805 from `dezren39/darwin-nix`
+main at `6af58a6`: every `StartCalendarInterval` / `StartInterval` in
+the repo's Nix files (three jobs). Read from the Nix definitions, not
+from `launchctl` on the Mac, so the rows say what is configured, not
+what is loaded. Long-running launchd services with no timer
+(`openchamber`, the mcpx daemon) are not schedules and are not listed.
+
+Surface 1 amended 2026-11-16 by queue task 17512 (lane any-n) for
+issue #10748: `closure-watchdog` and `id-atlas-refresh` rows added.
+Both are Muse-cron jobs created after the 2026-11-03 full count, so
+the Surface 1 header count is stale until the next full recount —
+the two rows below are the amendment, not a recount.
+
+## Surface 1 — Muse cron (131 jobs at 2026-11-03 full count; +2 rows since — see Verification)
 
 | id                                        | title                                                                                             | cadence                       | state    | owner / scope                                                              | prompt/brief pointer                                                                                                                                                               | budget       | kill criteria | created      | last review |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------- | ----------------------------- | -------- | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ | ------------- | ------------ | ----------- |
@@ -91,6 +108,7 @@ marked disabled per the inclusion policy now stated in the Surface
 | `chatgpt-student-cancel-cleanup`          | ChatGPT Plus student reminders cleanup + outcome check                                            | `runonce@2027-02-24T10:00:00` | enabled  | goal:chatgpt-plus-student-popesdrew-cancel-before-feb-23-2027              | `/home/hatch/workspace/goals/chatgpt-plus-student-popesdrew-cancel-before-feb-23-2027/crons/runonce/chatgpt-student-cancel-cleanup__runonce@2027-02-24T10:00:00.md`                | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `chatgpt-student-cancel-final-week`       | ChatGPT Plus student cancel reminder (final week, daily)                                          | `daily@09:12:00`              | enabled  | goal:chatgpt-plus-student-popesdrew-cancel-before-feb-23-2027              | `/home/hatch/workspace/goals/chatgpt-plus-student-popesdrew-cancel-before-feb-23-2027/crons/daily/chatgpt-student-cancel-final-week__daily@09:12:00_user_current.md`               | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `chatgpt-student-cancel-last-month`       | ChatGPT Plus student cancel reminder (last month, 3×/week)                                        | `weekly@Mon,Wed,Fri-09:12:00` | enabled  | goal:chatgpt-plus-student-popesdrew-cancel-before-feb-23-2027              | `/home/hatch/workspace/goals/chatgpt-plus-student-popesdrew-cancel-before-feb-23-2027/crons/weekly/chatgpt-student-cancel-last-month__weekly@Mon,Wed,Fri-09:12:00_user_current.md` | not recorded | not recorded  | not recorded | 2026-11-03  |
+| `closure-watchdog`                        | watchdog: reopen issues the bot wrongly closes on merges                                          | `interval@15m`                | enabled  | not recorded                                                               | issue #10105; script `~/workspace/closure-watchdog/closure_watchdog.py` (Muse sandbox)                                                                                             | not recorded | not recorded  | 2026-11-14   | 2026-11-16  |
 | `coding-plan-watch-daily`                 | Coding AI plan watch (migrated from ChatGPT)                                                      | `daily@08:00:00`              | enabled  | goal:supabase-muse-dev-platform-backups                                    | `/home/hatch/workspace/goals/supabase-muse-dev-platform-backups/crons/daily/coding-plan-watch-daily__daily@08:00:00_user_current.md`                                               | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `cold-store-eviction-scan`                | Cold store: weekly R2 eviction scan (report only)                                                 | `weekly@Mon-06:12:00`         | enabled  | —                                                                          | `/home/hatch/workspace/cron.d/weekly/cold-store-eviction-scan__weekly@Mon-06:12:00.md`                                                                                             | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `coverage-audit`                          | Coverage audit — weekly full + daily delta issue-quality pass                                     | `daily@06:12:00`              | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/daily/coverage-audit__daily@06:12:00_user_current.md`                                                               | not recorded | not recorded  | not recorded | 2026-11-03  |
@@ -136,6 +154,7 @@ marked disabled per the inclusion policy now stated in the Surface
 | `hatch-untracked-review`                  | Sandbox files — daily review and safe routing                                                     | `daily@08:12:00`              | enabled  | —                                                                          | `/home/hatch/workspace/cron.d/daily/hatch-untracked-review__daily@08:12:00_user_current.md`                                                                                        | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `heartbeat`                               |                                                                                                   | `interval@1h`                 | enabled  | —                                                                          | `/home/hatch/workspace/cron.d/hourly/heartbeat__interval@1h.md`                                                                                                                    | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `home-projects-weekly`                    | Home projects weekly brief (migrated from Gemini)                                                 | `weekly@Sun-18:00:00`         | enabled  | goal:supabase-muse-dev-platform-backups                                    | `/home/hatch/workspace/goals/supabase-muse-dev-platform-backups/crons/weekly/home-projects-weekly__weekly@Sun-18:00:00_user_current.md`                                            | not recorded | not recorded  | not recorded | 2026-11-03  |
+| `id-atlas-refresh`                        | ID & Atlas refresh — every 6 hours                                                                | `interval@6h`                 | enabled  | `space:id-atlas`                                                           | `/home/hatch/workspace/cron.d/hourly/id-atlas-refresh__interval@6h.md`                                                                                                             | not recorded | not recorded  | not recorded | 2026-11-16  |
 | `id-design-session-monitor`               | Monitor the 40 ID design sessions to completion                                                   | `interval@20m`                | enabled  | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/minutely/id-design-session-monitor__interval@20m.md`                                                                | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `id-horizons-resurface`                   | Resurface id next-horizons discussion (#1240) to Drew on triggers                                 | `interval@72h`                | enabled  | goal:resurface-id-next-horizons-discussion-1240-to-drew-on-triggers        | `/home/hatch/workspace/goals/resurface-id-next-horizons-discussion-1240-to-drew-on-triggers/crons/hourly/id-horizons-resurface__interval@72h.md`                                   | not recorded | not recorded  | not recorded | 2026-11-03  |
 | `issue-sweep-devtoday-code`               | Issue sweep: developing-today/code — up to 5 items per run                                        | `interval@2h`                 | disabled | goal:keep-the-four-repos-healthy                                           | `/home/hatch/workspace/goals/keep-the-four-repos-healthy/crons/hourly/issue-sweep-devtoday-code__interval@2h.md`                                                                   | not recorded | not recorded  | not recorded | 2026-11-03  |
@@ -241,8 +260,10 @@ The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitAc
 
 | timer unit                                                           | cadence spec                                              | activates                                  | owner / scope                                                     | budget       | kill criteria | created      | last review |
 | -------------------------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------ | ----------------------------------------------------------------- | ------------ | ------------- | ------------ | ----------- |
+| `ainventory-gatherer.timer`                                          | `OnCalendar=*-*-* 06:20:00`                               | `ainventory-gatherer.service`              | laptop (user systemd; code#9999)                                  | not recorded | not recorded  | 2026-11-16   | 2026-11-16  |
 | `atlas-backup.timer`                                                 | `OnCalendar=*-*-* 04:47:00`                               | `atlas-backup.service`                     | laptop (user systemd)                                             | not recorded | not recorded  | not recorded | 2026-11-04  |
 | `cargo-target-janitor.timer`                                         | `OnCalendar=*-*-* *:00:00`                                | `cargo-target-janitor.service`             | laptop (user systemd)                                             | not recorded | not recorded  | not recorded | 2026-11-04  |
+| `worktree-janitor.timer`                                             | `OnCalendar=*-*-* 01,07,13,19:23:00`                      | `worktree-janitor.service`                 | laptop (user systemd; code#6884)                                  | not recorded | not recorded  | 2026-11-17   | 2026-11-17  |
 | `charge-producer.timer`                                              | `OnCalendar=*-*-* *:18,48:00`                             | `charge-producer.service`                  | laptop (user systemd)                                             | not recorded | not recorded  | not recorded | 2026-11-04  |
 | `cloudflare-quota-export.timer`                                      | `OnCalendar=*-*-* *:00/15:00`                             | `cloudflare-quota-export.service`          | laptop (user systemd)                                             | not recorded | not recorded  | not recorded | 2026-11-04  |
 | `codex-remote-control-watchdog.timer`                                | `OnUnitActiveUSec=5min,OnBootUSec=2min`                   | `codex-remote-control-watchdog.service`    | laptop (user systemd)                                             | not recorded | not recorded  | not recorded | 2026-11-04  |
@@ -322,3 +343,33 @@ review, not silently normalised.
 | ----------------------------------------------------------------------- | --------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- | ---------------------------------------------------------------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------- | ---------- | ----------- |
 | `bws-freshness` (`.github/workflows/bws-freshness.yml`)                 | developing-today/code | `23 6 * * *` (daily 06:23 UTC) + `workflow_dispatch`    | enabled (fixture tests); live check gated off pending a secure credentialed runner (`BWS_FRESHNESS_ENABLED`)                                       | issue #5451   | `.github/workflows/bws-freshness.yml`; check implementation `lib/bws-to-sops.sh --check` | not recorded | Disable the schedule if the fixture tests fail on main repeatedly or the drift-issue automation misfires | 2026-11-05 | 2026-11-05  |
 | `dispatch-health-probe` (`.github/workflows/dispatch-health-probe.yml`) | developing-today/code | `*/30 * * * *` (every 30 min UTC) + `workflow_dispatch` | enabled; outside probe of dispatch.security.cab — opens/updates one `meta/dispatch-probe` alert issue on failure, comments + closes it on recovery | issue #6992   | `.github/workflows/dispatch-health-probe.yml`                                            | not recorded | Disable the schedule if the probe misfires (repeated false alerts) or dispatch.security.cab is retired   | 2026-11-11 | 2026-11-11  |
+
+## Surface 5 — Mac launchd jobs (3 entries)
+
+Timed launchd jobs from `dezren39/darwin-nix`, deployed to the Mac by
+`darwin-rebuild`. Cadence is the job's own `StartCalendarInterval`
+(local time) or `StartInterval` (seconds). The prompt/brief pointer is
+the Nix file that defines the job. Rows were read from the repo at
+`6af58a6`, not from `launchctl list` on the Mac (#11805).
+
+| job                                         | kind          | cadence                             | runs                                                                                           | owner / scope                                   | prompt/brief pointer                    | budget       | kill criteria | created                 | last review |
+| ------------------------------------------- | ------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------- | --------------------------------------- | ------------ | ------------- | ----------------------- | ----------- |
+| `launchd.daemons.git-maintenance`           | daemon (root) | `StartCalendarInterval` daily 03:30 | `git for-each-repo --keep-going --config=maintenance.repo maintenance run --schedule=daily`    | Mac (darwin-nix); root's repo list, empty today | `configuration.nix` (`git-maintenance`) | not recorded | not recorded  | not recorded            | 2026-11-18  |
+| `launchd.user.agents.opencode-prune-report` | user agent    | `StartCalendarInterval` daily 04:15 | dry-run report of both opencode pruners; log `~/Library/Logs/opencode-prune-report.log`        | Mac (darwin-nix); darwin-nix #659               | `opencode-prune-report.nix`             | not recorded | not recorded  | not recorded (PR #1419) | 2026-11-18  |
+| `launchd.user.agents.opencode-tmp-guard`    | user agent    | `StartInterval = 21600` (every 6 h) | sweeps `~/.local/share/opencode/tmp` past its TTL; log `~/Library/Logs/opencode-tmp-guard.log` | Mac (darwin-nix)                                | `opencode-tmp-guard.nix`                | not recorded | not recorded  | not recorded            | 2026-11-18  |
+
+The root `git-maintenance` daemon iterates root's `maintenance.repo`
+list, which its own comment says is empty unless root-owned repos are
+registered. The primary user's repos are maintained by git's own
+per-user launchd agents, which `git maintenance start` installs outside
+Nix; they are not recorded here until a review reads them on the Mac.
+
+## Surface 6 — PM-stack process intervals (1 entry)
+
+Recurring loops owned by the PM-stack aggregator process. These are not
+external scheduler surfaces; this inventory records timers that run only
+while the service is alive.
+
+| name/id                     | repo/scope            | cadence          | state                        | owner / scope | prompt/brief pointer                                           | budget       | kill criteria                                                                                                                        | created    | last review |
+| --------------------------- | --------------------- | ---------------- | ---------------------------- | ------------- | -------------------------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------ | ---------- | ----------- |
+| SLO journal sampler (#9988) | developing-today/code | every 60 seconds | live aggregator process only | issue #9988   | `pm-stack/aggregator/src/server.ts` (`SLO_SAMPLE_INTERVAL_MS`) | not recorded | Remove/disable if the health view or append-only journal becomes unavailable; sampler is unref'd and does not keep the process alive | 2026-11-18 | 2026-11-18  |

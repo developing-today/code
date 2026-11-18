@@ -1057,8 +1057,10 @@ pub fn action_from_fields(fields: &BTreeMap<String, String>) -> Result<Directory
         },
         "publish_document" => DirectoryAction::PublishDocument {
             media_type: field(fields, "media_type")?.to_owned(),
-            content: serde_json::from_str(field(fields, "content")?)
-                .context("content is not valid JSON")?,
+            content: id_core::json_unique::from_slice_without_duplicate_keys(
+                field(fields, "content")?.as_bytes(),
+            )
+            .context("content is not valid JSON")?,
             after: after_of(fields),
         },
         "publish_tag" => DirectoryAction::PublishTag {
@@ -1068,8 +1070,10 @@ pub fn action_from_fields(fields: &BTreeMap<String, String>) -> Result<Directory
             after: after_of(fields),
         },
         "receive" => DirectoryAction::Receive {
-            envelope: serde_json::from_str(field(fields, "envelope")?)
-                .context("envelope is not valid JSON")?,
+            envelope: id_core::json_unique::from_slice_without_duplicate_keys(
+                field(fields, "envelope")?.as_bytes(),
+            )
+            .context("envelope is not valid JSON")?,
         },
         "verify" => DirectoryAction::Verify {
             account: field(fields, "account")?.to_owned(),
@@ -1198,7 +1202,7 @@ pub fn run(
                 Viewer::Account(id) => Principal::Account(id.clone()),
                 Viewer::Anonymous => return Err(unauthenticated("sign in first")),
             };
-            session = Some(auth.open_session(principal, now));
+            session = Some(auth.open_session(principal, now)?);
         }
         DirectoryAction::SignOut => {
             if let Some(token) = &caller.session {
@@ -1281,7 +1285,7 @@ pub fn run(
             let address = normalize_email(&address)?;
             match auth.check_code(&address, PurposeKind::SignIn, &code, now)? {
                 Purpose::SignIn { account } => {
-                    session = Some(auth.open_session(Principal::Account(account.clone()), now));
+                    session = Some(auth.open_session(Principal::Account(account.clone()), now)?);
                     viewer = Viewer::Account(account);
                 }
                 Purpose::Confirm { .. } => return Err(unauthenticated("no matching code")),
@@ -2533,6 +2537,27 @@ mod tests {
         );
         assert!(action_from_fields(&fields(&[("action", "explode")])).is_err());
         assert!(action_from_fields(&fields(&[("name", "Cy")])).is_err());
+    }
+
+    #[test]
+    fn form_fields_refuse_a_duplicated_key_in_json_content() {
+        let publish = |content: &str| {
+            action_from_fields(&fields(&[
+                ("action", "publish_document"),
+                ("media_type", "application/json"),
+                ("content", content),
+            ]))
+        };
+        assert!(publish(r#"{"title":"a"}"#).is_ok());
+        // A lenient parse would publish {"title":"b"} (#8794).
+        assert!(publish(r#"{"title":"a","title":"b"}"#).is_err());
+        assert!(
+            action_from_fields(&fields(&[
+                ("action", "receive"),
+                ("envelope", r#"{"x":1,"x":2}"#)
+            ]))
+            .is_err()
+        );
     }
 
     fn keyed(directory: &mut Directory, seed: u8, name: &str) -> String {

@@ -26,6 +26,7 @@ func TestElicitEventsAreSummaryOnly(t *testing.T) {
 	defer func() { _ = broker.Close() }()
 	r := &Registry{asks: newAskTable()}
 	r.InstallHooks(bus, broker, nil)
+	noteAnswerer(t, broker)
 	sub, _ := bus.Subscribe(events.Filter{Kinds: []string{"elicit"}}, 0)
 	defer sub.Close()
 

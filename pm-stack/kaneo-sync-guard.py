@@ -80,6 +80,15 @@ def main():
         for key, val in st.items():
             if val in FORBIDDEN_TARGETS and key not in EXPECTED:
                 problems.append(f"{key} targets forbidden state {val!r}")
+        format_bad = raw.strip() != json.dumps(
+            cfg, separators=(",", ":"), ensure_ascii=False
+        )
+        if format_bad:
+            problems.append(
+                "config text is not in JSON.stringify "
+                "compact form (breaks outbound state sync; "
+                "see KANEO-GITHUB-SYNC.md)"
+            )
         if not problems:
             print(f"OK {repo}: statusTransitions conform")
             continue
@@ -106,6 +115,15 @@ def main():
         after = json.loads(
             psql(f"SELECT config FROM integration WHERE id='{integ_id}'")
         )
+        # jsonb text form (spaces after ':' and ',') silently breaks
+        # Kaneo's outbound state/title/description sync:
+        # syncLatestTaskValue string-compares the stored config against
+        # JSON.stringify(JSON.parse(config)) and aborts on any byte
+        # difference (#10140, 2026-11-14). Always leave the config in
+        # that exact compact form.
+        compact = json.dumps(after, separators=(",", ":"), ensure_ascii=False)
+        if "'" not in compact:
+            psql(f"UPDATE integration SET config = '{compact}' WHERE id='{integ_id}'")
         after_st = after.get("statusTransitions") or {}
         bad = [k for k, v in EXPECTED.items() if after_st.get(k) != v]
         bad += [
@@ -125,4 +143,12 @@ def main():
 
 
 if __name__ == "__main__":
+    # Argument contract (#3352): no command-line arguments; anything given
+    # is a usage error before any work runs.
+    if len(sys.argv) > 1:
+        print(
+            f"kaneo-sync-guard.py: unexpected argument {sys.argv[1]!r}; usage: python3 kaneo-sync-guard.py",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     sys.exit(main())

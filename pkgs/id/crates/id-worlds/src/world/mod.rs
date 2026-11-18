@@ -32,6 +32,7 @@ pub use crate::groups::worlds::Isolation;
 pub(crate) use crate::time::unix_ms;
 mod actor;
 mod admission_lease;
+pub(crate) mod audit;
 mod clock;
 mod coordinator;
 mod core;
@@ -40,21 +41,27 @@ mod handoff_operations;
 pub mod hotness;
 mod journal;
 mod metrics;
+mod provider_broker;
 mod replica;
 mod replication;
 mod replication_receiver;
 pub mod signed;
+pub mod spill_gate;
 mod upgrade;
 mod util;
 
 #[cfg(test)]
 mod tests;
 
-pub(crate) use actor::{WorldActor, WorldCommand};
+pub(crate) use actor::{
+    AUDIT_TRACE_TARGET, AuditRecord, WorldActor, WorldCommand, emit_audit_record,
+    next_audit_correlation_id,
+};
 pub use admission_lease::{
     ADMISSION_LEASE_DOMAIN, ADMISSION_LEASE_VERSION, AdmissionLease, AdmissionLeaseError,
     MAX_ADMISSION_LEASE_DURATION_MS, ReplicaAdmissionGate, SignedAdmissionLease,
 };
+pub use audit::{GrantsState, WorldAuditLog, export_otlp_json, replay_grants};
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use coordinator::{
     ActiveHandoff, Coordinator, CoordinatorError, EntityInTransit, EntityOwner, ExportReceipt,
@@ -69,18 +76,23 @@ pub use handoff_operations::{
     RouteDecision, StaleRoute,
 };
 pub use hotness::{FiredSignal, HotnessBand, HotnessReport, HotnessSignal};
+/// The F12.14 portal policy types (code#1068), re-exported so the
+/// handle/hub portal surface names the same types the kernel checks.
+pub use id_caps::portal::{PortalGrantState, PortalGrants, PortalRefusal};
 pub(crate) use journal::JournalAdminHistory;
 pub use journal::{
     CoordinatorJournalEntry, JOURNAL_VERSION, JOURNAL_VERSION_CHECKPOINT_PARTS,
-    JOURNAL_VERSION_EXECUTION_PROFILE, JOURNAL_VERSION_OPEN_PRESENCE,
-    JOURNAL_VERSION_REGION_HANDOFF, JOURNAL_VERSION_SCHEDULE_RECURRENCE,
-    JOURNAL_VERSION_SIGNED_PLAY, JOURNAL_VERSION_WORLD_BUDGET, JOURNAL_VERSION_WRITE_LEASE,
-    JournalEntry, JournalSignedMove, JournalSnapshot, JournalSnapshotSource, MAX_JOURNAL_VERSION,
-    TrustBasis, TrustDecision, WorldJournal, journal_version_required_by,
+    JOURNAL_VERSION_EXECUTION_PROFILE, JOURNAL_VERSION_OPEN_PRESENCE, JOURNAL_VERSION_PORTALS,
+    JOURNAL_VERSION_PROGRAM_BUNDLE, JOURNAL_VERSION_REGION_HANDOFF,
+    JOURNAL_VERSION_SCHEDULE_RECURRENCE, JOURNAL_VERSION_SIGNED_PLAY, JOURNAL_VERSION_WORLD_BUDGET,
+    JOURNAL_VERSION_WRITE_LEASE, JournalEntry, JournalSignedMove, JournalSnapshot,
+    JournalSnapshotSource, MAX_JOURNAL_VERSION, TrustBasis, TrustDecision, WorldJournal,
+    journal_version_required_by,
 };
 pub use metrics::{
     HistogramSnapshot, MetricsSnapshot, RegionWrites, WorldMetrics, WriteLocalitySnapshot,
 };
+pub(crate) use provider_broker::{BeginRequest, ProviderBroker};
 pub use replica::{
     ReplicaCursor, ReplicaRestore, parse_replica_journal, restore_replica_entries,
     restore_replica_entries_with_runtime, restore_replica_journal,
@@ -110,7 +122,7 @@ pub(crate) use util::{
 
 /// Identity of one live connection. It stays in memory only and is never part
 /// of a world event or journal entry.
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct SessionId(u64);
 
 impl SessionId {
@@ -328,6 +340,79 @@ pub enum ModuleProvenance {
     /// The module was forked from another world: the world's state and module
     /// were copied at the fork point, with the origin recorded.
     Fork(ForkProvenance),
+    /// The module was sideloaded from a verified program bundle (#8280,
+    /// design D4): the install record names the bundle's identity, ABI,
+    /// lineage and signature. Journals carrying it need
+    /// [`JOURNAL_VERSION_PROGRAM_BUNDLE`].
+    Bundle(BundleProvenance),
+}
+
+impl ModuleProvenance {
+    /// Whether this provenance is a program-bundle install, which an older
+    /// binary cannot read.
+    #[must_use]
+    pub const fn is_bundle(&self) -> bool {
+        matches!(self, Self::Bundle(_))
+    }
+}
+
+/// How a bundle install follows later versions of its program (D4).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallPolicy {
+    /// Exactly this content hash; nothing changes without a new install.
+    #[default]
+    Pinned,
+    /// Discover later versions on this install's exact (author, name) line.
+    Tracking,
+}
+
+impl InstallPolicy {
+    /// Whether this install opts into update discovery for `candidate`.
+    /// This does not authorize applying an update; that remains a separate
+    /// owner decision/flow.
+    #[must_use]
+    pub fn tracks(
+        self,
+        installed: &crate::program_bundle::ProgramIdentity,
+        candidate: &crate::program_bundle::ProgramIdentity,
+    ) -> bool {
+        self == Self::Tracking && installed.same_channel(candidate)
+    }
+}
+
+/// The install record of a sideloaded program bundle (#8280).
+///
+/// It keeps what the verified bundle stated with the install event, so the
+/// world's history says which program, by whom, forked from what, is
+/// running.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundleProvenance {
+    /// Provenance record schema, independent of the world journal version.
+    pub schema_version: u8,
+    /// The program's D1 identity; its content hash is the module hash.
+    pub program: crate::program_bundle::ProgramIdentity,
+    /// The guest ABI the bundle declared.
+    pub abi: crate::program_bundle::AbiDescriptor,
+    /// Ancestors, oldest first; empty for an original.
+    pub lineage: Vec<crate::program_bundle::ProgramIdentity>,
+    /// The author's licence statement, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub licence: Option<String>,
+    /// The verified bundle signature, lower-case hex.
+    pub bundle_signature: String,
+    /// How this install follows later versions.
+    #[serde(default)]
+    pub policy: InstallPolicy,
+}
+
+impl BundleProvenance {
+    /// Whether a candidate belongs to this install's opted-in update channel.
+    /// Fork lineage is deliberately not part of channel identity.
+    #[must_use]
+    pub fn tracks(&self, candidate: &crate::program_bundle::ProgramIdentity) -> bool {
+        self.policy.tracks(&self.program, candidate)
+    }
 }
 
 /// Provenance recorded when one world is forked from another (F12.2). It
@@ -1125,7 +1210,7 @@ pub(crate) fn presence_event(participant: u64, name: &str, joined: bool) -> Stri
 }
 
 pub(crate) fn presence_change(text: &str) -> Option<(u64, bool)> {
-    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let value = id_core::json_unique::parse_json_without_duplicate_keys(text).ok()?;
     if value.get("cap")?.as_str()? != "players" {
         return None;
     }
@@ -1304,6 +1389,120 @@ pub(crate) type ScheduleDeliveryFuture<'a> =
 /// like a target that refuses. `true` means the target durably accepted
 /// the fire (its receipt is journaled), so the source may consume the
 /// occurrence.
+/// Why a portal send or delivery did not happen (F12.14 wiring,
+/// code#1068). A policy refusal is the kernel's own verdict and is
+/// audit-recorded by the refusing side; `Unavailable` is a transport
+/// failure (no sink installed, unknown peer world, closed actor,
+/// target program did not accept) — no policy decision was made, so
+/// no portal audit entry is written for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PortalSendError {
+    /// The mutual-grant/bounds/rate check refused the message.
+    Refused(id_caps::portal::PortalRefusal),
+    /// The transport could not carry the message at all.
+    Unavailable(String),
+}
+
+impl std::fmt::Display for PortalSendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(refusal) => write!(f, "portal refused: {}", refusal.code()),
+            Self::Unavailable(reason) => write!(f, "portal transport unavailable: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for PortalSendError {}
+
+/// A boxed future, so [`PortalDelivery`] stays object-safe (the
+/// [`ScheduleDelivery`] pattern).
+pub(crate) type PortalDeliveryFuture<'a, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
+
+/// Carries F12.14 portal messages between world actors (code#1068
+/// wiring slice). Installed on a world's handle by the composition
+/// layer (the hub installs its sink on every lease; see
+/// `WorldHub::lease_with`); a handle with no sink cannot evidence
+/// a peer's grant, so its sends fail as `Unavailable` — a
+/// transport failure, never a policy refusal, because no peer book
+/// was ever read. The sink is the transport only: policy lives in
+/// the actors, which run `id_caps::portal::check_portal_message`
+/// against both worlds' books and record the audit shapes on
+/// their own sides.
+/// Shared storage for a world's installed [`PortalDelivery`] sink:
+/// one slot per world, shared by every clone of its handle, so the
+/// composition layer installs once and every handle clone sends
+/// through the same sink.
+#[derive(Clone, Default)]
+pub(crate) struct PortalDeliverySlot {
+    inner: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<dyn PortalDelivery>>>>,
+}
+
+impl std::fmt::Debug for PortalDeliverySlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PortalDeliverySlot(..)")
+    }
+}
+
+impl PortalDeliverySlot {
+    /// The installed sink, if any.
+    pub(crate) fn get(&self) -> Option<std::sync::Arc<dyn PortalDelivery>> {
+        self.inner.lock().ok().and_then(|slot| slot.clone())
+    }
+
+    /// Install `delivery`, replacing any sink already installed.
+    pub(crate) fn set(&self, delivery: std::sync::Arc<dyn PortalDelivery>) {
+        if let Ok(mut slot) = self.inner.lock() {
+            *slot = Some(delivery);
+        }
+    }
+
+    /// Install `delivery` only when no sink is installed yet (the
+    /// hub's lease path: a world's own explicitly installed sink
+    /// is never displaced). Returns whether it installed.
+    pub(crate) fn install(&self, delivery: std::sync::Arc<dyn PortalDelivery>) -> bool {
+        if let Ok(mut slot) = self.inner.lock() {
+            if slot.is_none() {
+                *slot = Some(delivery);
+                return true;
+            }
+        }
+        false
+    }
+}
+
+pub(crate) trait PortalDelivery: Send + Sync {
+    /// The named world's current portal grant book, or `None` when
+    /// the world cannot be reached (unknown, busy, closed).
+    fn peer_portal_grants<'a>(
+        &'a self,
+        world: &'a str,
+    ) -> PortalDeliveryFuture<'a, Option<id_caps::portal::PortalGrants>>;
+
+    /// Deliver one already-checked message to `target`'s actor,
+    /// which re-checks its own book before accepting.
+    fn deliver_portal<'a>(
+        &'a self,
+        source: &'a str,
+        target: &'a str,
+        message: &'a str,
+    ) -> PortalDeliveryFuture<'a, Result<(), PortalSendError>>;
+}
+
+/// The host event a program receives when a portal message from
+/// `source` is delivered here: it names its source world as `from`
+/// and carries the message text (bounded by the portal check to
+/// `MAX_PORTAL_MESSAGE_BYTES` before delivery).
+pub(crate) fn portal_message_event(source: &str, message: &str) -> String {
+    serde_json::json!({
+        "cap": "portal",
+        "event": "message",
+        "from": source,
+        "message": message,
+    })
+    .to_string()
+}
+
 pub(crate) trait ScheduleDelivery: Send + Sync {
     /// Deliver the fire of schedule `id`, planned for `at_ms`, from
     /// `source` to `target`.
@@ -1598,6 +1797,10 @@ pub(crate) struct CapabilityRecord {
     scopes: WorldScopes,
     parent: Option<u64>,
     revoked: bool,
+    /// The moderator participant who revoked this capability directly, so a
+    /// checkpoint keeps the audit actor (#11778). `None` for an admin revoke,
+    /// for one inherited from a revoked ancestor, and while active.
+    revoked_by: Option<u64>,
     bounds: CapabilityBounds,
     used: u32,
     subject: Option<String>,

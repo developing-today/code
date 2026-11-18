@@ -16,6 +16,16 @@
 # offsite legs. That date is pruned by a later run, once it is no
 # longer the run date.
 #
+# Monthly tier (#10299, Drew's 2026-11-03 ruling on #1258 Q3/Q6 —
+# daily 30 days PLUS monthly generations kept 12 months off-machine):
+# each offsite leg pins the month's first uploaded archive under
+# <prefix>/monthly/<YYYY-MM>/ and prunes monthly generations older
+# than 12 months (never the run's own month, the #982 rule at month
+# granularity). The daily 30-day prune never touches monthly/: its
+# listing only matches dated day dirs. The #1218 Project #4 export
+# rides inside this archive's aggregator state, so the monthly tier
+# is also its off-machine 1-year home.
+#
 # Every run also writes a durable JSON run record at
 # ~/backups/dashboard/.last-run.json (#1026), read by the
 # laptop-backups watchdog (modules/laptop-backups-watchdog.sh).
@@ -26,6 +36,15 @@
 # required whenever a projector DB is present at the configured path —
 # while the rest of projector.db (a rebuildable projection) is never
 # archived.
+#
+# The archive also carries the canonical copy of the four aggregator
+# stores that #6815 moved to Supabase muse-dev2 (actions, activity
+# ingestion, usage snapshots, aa-last-good). When the deployed backend
+# is supabase the local files are only a rebuildable cache, so the
+# archive exports the five tables as JSON (supabase/agg_*.json) and
+# records them as conditionally-required manifest members — required
+# whenever the export ran. This is the RPO path recorded on code#6815
+# for #1514: without it a restore would have no store to restore from.
 #
 # Credentials come from Bitwarden Secrets Manager at runtime, referenced
 # by key name only and never logged (the repo-archive-backup pattern):
@@ -324,8 +343,9 @@ mkdir -p "$STAGE/aggregator" "$STAGE/meta-quota-export" "$STAGE/journals" "$OUTD
 # are required (their WARN-for-missing becomes a failed run at verify);
 # retired meta-quota-export files, the snapshots tree and active journal
 # logs are optional; journals keep their tolerated-unavailable
-# placeholder, but are now recorded; db-dumps is CONDITIONALLY required
-# — required when the DB dump step ran (DUMP_RAN=1), optional otherwise.
+# placeholder, but are now recorded; db-dumps and the supabase/ table
+# exports are CONDITIONALLY required — required when their step ran
+# (DUMP_RAN=1 / SUPA_RAN=1), optional otherwise.
 EXPECTED_SET="required file aggregator/actions.json
 required file aggregator/comments.json
 required file aggregator/fleet-feed.json
@@ -341,13 +361,36 @@ required file aggregator/coverage-snapshot.json
 required file aggregator/aa-last-good.json
 optional file aggregator/views.json
 optional tree aggregator/charge-inputs
+required file aggregator/decisions.json
+required file aggregator/decision-events.jsonl
+optional file aggregator/decision-events-outbox.jsonl.sync-state.json
+optional file aggregator/decision-events-outbox.jsonl
+optional file aggregator/needs-drew.json
+optional file aggregator/notifications.jsonl
+optional file aggregator/issue_pr_links.json
+optional file aggregator/prefix-program.json
+optional tree aggregator/digests
 optional file meta-quota-export/latest.json
 optional file meta-quota-export/history.jsonl
+conditional file supabase/agg_actions.json
+conditional file supabase/agg_activity_ingestion.json
+conditional file supabase/agg_activity_gaps.json
+conditional file supabase/agg_usage_snapshots.json
+conditional file supabase/agg_store_documents.json
 conditional tree db-dumps
 conditional file projector/pmp_links.sql
 optional tree aggregator/snapshots
 optional file journals/pm-aggregator.log
 optional file journals/quota-gatherer.log"
+
+# Derived state (#10293): files in the aggregator state directory that
+# are rebuilt from canonical sources on the next refresh, so they are
+# deliberately NOT archived. Named here so the drift check in the
+# manifest step can tell them from a state file nobody classified.
+#   board.json, attention-last-good.json — rendered board/attention caches
+#   stack-health.json, host-health.json  — re-observed health readings
+#   last-good-pages/                     — dashboard fallback copies (#10383)
+AGG_DERIVED="board.json attention-last-good.json stack-health.json host-health.json last-good-pages"
 
 # --- data set (explicit list only; the aggregator .env is deliberately NOT
 # --- included — no config/secret files belong in this archive) ---
@@ -384,6 +427,27 @@ for f in actions.json comments.json fleet-feed.json quota-current.json \
       fail "dataset copy failed: $AGG/$f"
   else echo "pm-dashboard-backup: WARN missing $AGG/$f" >&2; fi
 done
+# Decisions ledger (#10293): decisions.json is the ledger state and
+# decision-events.jsonl its event journal; both are canonical and
+# REQUIRED (a missing one fails the run at verify). The outbox's sync
+# cursor is copied BEFORE the outbox, so a restored cursor can lag the
+# restored outbox (records re-sent, which the sync dedupes by event id)
+# but never run ahead of it (records skipped). needs-drew.json holds
+# Drew's answers, notifications.jsonl the notification history (its
+# dedupe memory), issue_pr_links.json and prefix-program.json hand-kept
+# state, digests/ the daily digest archive: none can be rebuilt from
+# GitHub or the projector, so all ride the archive. They are optional:
+# each appears only once its feature has written to it.
+for f in decisions.json decision-events.jsonl \
+  decision-events-outbox.jsonl.sync-state.json decision-events-outbox.jsonl \
+  needs-drew.json notifications.jsonl issue_pr_links.json prefix-program.json; do
+  if [ -f "$AGG/$f" ]; then
+    cp -a "$AGG/$f" "$STAGE/aggregator/$f" ||
+      fail "dataset copy failed: $AGG/$f"
+  else echo "pm-dashboard-backup: WARN missing $AGG/$f" >&2; fi
+done
+if [ -d "$AGG/digests" ]; then cp -a "$AGG/digests" "$STAGE/aggregator/digests" ||
+  fail "dataset copy failed: $AGG/digests"; fi
 if [ -d "$AGG/snapshots" ]; then cp -a "$AGG/snapshots" "$STAGE/aggregator/snapshots" ||
   fail "dataset copy failed: $AGG/snapshots"; fi
 if [ -d "$AGG/charge-inputs" ]; then cp -a "$AGG/charge-inputs" "$STAGE/aggregator/charge-inputs" ||
@@ -529,6 +593,83 @@ else
   log "no projector DB at $PMP_DB — pmp_links export not applicable"
 fi
 
+# --- canonical remote stores (#6815, the #1514 RPO path) -----------------
+# While the deployed backend is PM_AGG_STORE_BACKEND=file the four stores
+# live in $AGG as files and the copies above are the backup. Once it is
+# supabase they are canonical in muse-dev2 and a restore can only come
+# from an export of those tables — the local files may be absent (fresh
+# state dir) or stale. Read the backend from the aggregator .env the unit
+# actually loads (LAST assignment wins, same rule as the pmp_links
+# DATABASE_URL read) and export the five tables as JSON when it is
+# supabase. PM_AGG_SUPABASE_EXPORT=off opts out (tests, deliberate
+# file-only hosts); the default is auto.
+#
+# Transport is psql through the project's pooler host: the direct
+# db.<ref>.supabase.co hostname is IPv6-only on this network, the pooler
+# is dual-stack. User/host/port are muse-dev2 facts, overridable for a
+# relocated project; the password and project ref come from Bitwarden by
+# key name only and are never logged.
+SUPA_RAN=0
+SUPA_MODE="${PM_AGG_SUPABASE_EXPORT:-auto}"
+case "$SUPA_MODE" in
+auto | off) ;;
+*) fail "PM_AGG_SUPABASE_EXPORT must be auto or off, got '$SUPA_MODE'" ;;
+esac
+SUPA_BACKEND=""
+if [ -f "$AGG/.env" ]; then
+  SUPA_BACKEND="$(grep -E '^[[:space:]]*(export[[:space:]]+)?PM_AGG_STORE_BACKEND[[:space:]]*=' "$AGG/.env" 2>/dev/null |
+    tail -n 1 | sed -E 's/^[[:space:]]*(export[[:space:]]+)?PM_AGG_STORE_BACKEND[[:space:]]*=[[:space:]]*//')"
+  SUPA_BACKEND="$(pmp_trim_value "$SUPA_BACKEND")"
+fi
+if [ "$SUPA_MODE" = "auto" ] && [ "$SUPA_BACKEND" = "supabase" ]; then
+  command -v psql >/dev/null 2>&1 ||
+    fail "psql not found — cannot export the canonical aggregator stores from Supabase"
+  SUPA_HOST="${PM_AGG_SUPABASE_POOLER_HOST:-aws-0-us-east-2.pooler.supabase.com}"
+  SUPA_PORT="${PM_AGG_SUPABASE_POOLER_PORT:-6543}"
+  SUPA_PASSWORD="$(bws_get supabase.muse-dev2.db-password)"
+  SUPA_REF="$(bws_get supabase.muse-dev2.project-ref)"
+  [ -n "$SUPA_PASSWORD" ] && [ -n "$SUPA_REF" ] ||
+    fail "Supabase credentials incomplete in Bitwarden (supabase.muse-dev2.db-password / .project-ref)"
+  mkdir -p "$STAGE/supabase"
+  # Ordered so a restore can replay rows in FK-safe order; agg_actions has
+  # a self-FK (supersedes/duplicate_of), so it is ordered by creation.
+  supa_export() { # <table> <order-by>
+    PGSSLMODE=require PGPASSWORD="$SUPA_PASSWORD" \
+      psql -X -q -h "$SUPA_HOST" -p "$SUPA_PORT" -U "postgres.$SUPA_REF" -d postgres \
+      -v ON_ERROR_STOP=1 -tA \
+      -c "select coalesce(jsonb_agg(t), '[]'::jsonb)::text from (select * from public.$1 order by $2) t" \
+      >"$STAGE/supabase/$1.json" ||
+      fail "Supabase export failed: $1"
+  }
+  supa_export agg_actions "created_at, id"
+  supa_export agg_activity_ingestion "source"
+  supa_export agg_activity_gaps "id"
+  supa_export agg_usage_snapshots "snapshot_key"
+  supa_export agg_store_documents "store"
+  # An export that wrote something psql did not print as a JSON array is
+  # a failed export, not a backup of zero rows.
+  SUPA_COUNTS="$(
+    python3 - "$STAGE/supabase" <<'PYEOF'
+import json, os, sys
+d = sys.argv[1]
+out = []
+for name in sorted(os.listdir(d)):
+    if not name.endswith(".json"):
+        continue
+    with open(os.path.join(d, name)) as fh:
+        rows = json.load(fh)
+    if not isinstance(rows, list):
+        sys.exit(f"{name}: not a JSON array")
+    out.append(f"{name[:-5]}={len(rows)}")
+print(" ".join(out))
+PYEOF
+  )" || fail "Supabase export produced unreadable JSON"
+  SUPA_RAN=1
+  log "canonical aggregator stores exported from Supabase: $SUPA_COUNTS"
+else
+  log "aggregator store backend is '${SUPA_BACKEND:-file}' — Supabase store export not applicable"
+fi
+
 # --- journals: window start = min(last successful run, 24h ago) ---
 NOW_EPOCH="$(date +%s)"
 LAST=0
@@ -544,7 +685,9 @@ for svc in pm-aggregator quota-gatherer; do
 done
 
 # --- manifest (files as staged + the expected set's per-member status) ---
-EXPECTED_SET="$EXPECTED_SET" DUMP_RAN="$DUMP_RAN" PMP_RAN="$PMP_RAN" \
+AGG_DIR="$AGG" AGG_DERIVED="$AGG_DERIVED" \
+  EXPECTED_SET="$EXPECTED_SET" DUMP_RAN="$DUMP_RAN" PMP_RAN="$PMP_RAN" \
+  SUPA_RAN="$SUPA_RAN" \
   python3 - "$STAGE" "$DATE" "$CREATED_AT" <<'PYEOF'
 import hashlib, json, os, sys
 stage, date, created = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -571,8 +714,12 @@ for line in os.environ.get("EXPECTED_SET", "").splitlines():
         continue
     cls, kind, rel = parts
     if cls == "conditional":
-        ran = os.environ.get("PMP_RAN") if rel.startswith("projector/") \
-            else os.environ.get("DUMP_RAN")
+        if rel.startswith("supabase/"):
+            ran = os.environ.get("SUPA_RAN")
+        elif rel.startswith("projector/"):
+            ran = os.environ.get("PMP_RAN")
+        else:
+            ran = os.environ.get("DUMP_RAN")
         cls = "required" if ran == "1" else "optional"
     member = {"path": rel, "class": cls, "kind": kind}
     if kind == "tree":
@@ -590,10 +737,33 @@ for line in os.environ.get("EXPECTED_SET", "").splitlines():
     else:
         member["status"] = "missing"
     expected.append(member)
+# Drift (#10293): every top-level entry of the live aggregator state
+# directory must be either an expected member or named derived in
+# AGG_DERIVED. Anything else is a state file no backup class covers,
+# the way decisions.json went unbacked for weeks: it is named in the
+# log and recorded in the manifest's "unclassified" list. Write temps
+# (.tmp-), quarantined originals (.corrupt-) and dotfiles are skipped.
+agg = os.environ.get("AGG_DIR", "")
+classified = {m["path"].split("/", 1)[1] for m in expected
+              if m["path"].startswith("aggregator/")}
+derived = set(os.environ.get("AGG_DERIVED", "").split())
+unclassified = []
+if agg and os.path.isdir(agg):
+    for name in sorted(os.listdir(agg)):
+        if name in classified or name in derived or name.startswith("."):
+            continue
+        if ".tmp-" in name or ".corrupt-" in name:
+            continue
+        unclassified.append(name)
+for name in unclassified:
+    print(f"pm-dashboard-backup: WARN unclassified state file {agg}/{name}: "
+          "in no backup class; add it to EXPECTED_SET or AGG_DERIVED (#10293)",
+          file=sys.stderr)
 with open(os.path.join(stage, "manifest.json"), "w") as fh:
     json.dump({"archive": f"dashboard-{date}", "created_at": created,
                "host": os.uname().nodename, "scope": "laptop",
-               "files": files, "expected": expected}, fh, indent=2)
+               "files": files, "expected": expected,
+               "unclassified": unclassified}, fh, indent=2)
 missing_req = [m["path"] for m in expected
                if m["status"] == "missing" and m["class"] == "required"]
 print(f"pm-dashboard-backup: manifest covers {len(files)} files, "
@@ -667,6 +837,39 @@ verify_remote() { # $1 rclone path, $2 label
   [ "$got" = "$ARC_SHA" ] || fail "$2 copy sha256 mismatch (got $got)"
   log "$2 OK sha256 verified ($1)"
 }
+# --- monthly tier (#10299) ---------------------------------------------------
+MONTH="${DATE:0:7}"
+MONTH_CUTOFF="$(date -d "$DATE -12 months" +%Y-%m)"
+pin_monthly() { # $1 rclone dir holding the daily <date> subdirs, $2 label
+  local dest="$1/monthly/$MONTH/dashboard-$DATE.tar.zst" existing
+  # First-of-month pin: a month that already has a generation keeps it.
+  # A listing failure here degrades to a pin attempt, not silence: the
+  # copyto + sha256 verify below fail the run loudly if the remote is
+  # actually broken, so no monthly generation is ever silently lost.
+  existing="$(rclone lsf "$1/monthly/$MONTH/" 2>/dev/null || true)"
+  if [ -n "$existing" ]; then
+    log "monthly $2 $MONTH already pinned, keeping first generation"
+    return 0
+  fi
+  rclone copyto "$ARCHIVE" "$dest" || fail "monthly pin failed on $2 ($MONTH)"
+  verify_remote "$dest" "$2 monthly"
+  log "monthly $2 $MONTH pinned from $DATE"
+}
+prune_monthly() { # $1 rclone dir holding the daily <date> subdirs, $2 label
+  local subs mon
+  # Same #1021 discipline as prune_remote: a failed listing fails the
+  # run. This runs after pin_monthly, so the monthly/ prefix exists.
+  subs="$(rclone lsf --dirs-only "$1/monthly/")" ||
+    fail "monthly prune listing failed on $2 ($1/monthly/)"
+  for mon in $subs; do
+    mon="${mon%/}"
+    if [[ $mon =~ ^20[0-9]{2}-[0-9]{2}$ ]] && [[ $mon != "$MONTH" && $mon < $MONTH_CUTOFF ]]; then
+      rclone purge "$1/monthly/$mon" >/dev/null 2>&1 || fail "monthly prune failed on $2 ($mon)"
+      log "pruned monthly $2 $mon"
+    fi
+  done
+}
+
 prune_remote() { # $1 rclone dir holding <date> subdirs, $2 label
   local subs day
   # A failed listing fails the run, like a failed purge below (#1021):
@@ -694,6 +897,8 @@ R2_DEST="r2bak:$R2_BUCKET/$R2_PREFIX/$DATE/dashboard-$DATE.tar.zst"
 rclone copyto "$ARCHIVE" "$R2_DEST" || fail "R2 upload failed"
 verify_remote "$R2_DEST" "R2"
 prune_remote "r2bak:$R2_BUCKET/$R2_PREFIX" "R2"
+pin_monthly "r2bak:$R2_BUCKET/$R2_PREFIX" "R2"
+prune_monthly "r2bak:$R2_BUCKET/$R2_PREFIX" "R2"
 DEST_R2="ok"
 ledger_set r2-upload ok
 
@@ -703,6 +908,8 @@ DRIVE_DEST="drive:$DRIVE_DIR/$DATE/dashboard-$DATE.tar.zst"
 rclone copyto "$ARCHIVE" "$DRIVE_DEST" || fail "Drive upload failed"
 verify_remote "$DRIVE_DEST" "Drive"
 prune_remote "drive:$DRIVE_DIR" "Drive"
+pin_monthly "drive:$DRIVE_DIR" "Drive"
+prune_monthly "drive:$DRIVE_DIR" "Drive"
 DEST_DRIVE="ok"
 ledger_set drive-upload ok
 STEP="complete"

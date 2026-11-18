@@ -43,8 +43,14 @@
 //! leaves the last-good program running, with the diagnostic in
 //! the session's last-good record (invariant 3).
 //!
-//! Later phases (latency benchmark + authoring docs) build on
-//! [`DevSession`] and [`run_dev_watch`].
+//! Phase 5 (this module): the save-to-active latency benchmark
+//! (`bench_phase5_save_to_active_p95_on_roc_counter`, ignored by
+//! default) and the authoring guide
+//! `doc/2026-11-16_id_world_dev_authoring.md`. The recorded
+//! 2026-11-16 run MISSES the design p95 target (5366ms against
+//! 3000ms; compile and gate+migrate stages measured separately
+//! in the guide) — the benchmark assertion stays at the target
+//! as the oracle for the optimization follow-up on #5541.
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
@@ -1731,8 +1737,8 @@ pub fn parse_fuzz_decl(text: &str) -> Result<FuzzDecl> {
         text.len() <= MAX_FUZZ_DECL_BYTES,
         "fuzz declaration exceeds {MAX_FUZZ_DECL_BYTES} bytes"
     );
-    let decl: FuzzDecl =
-        serde_json::from_str(text).context("parse the fuzz declaration as version-1 JSON")?;
+    let decl: FuzzDecl = id_core::json_unique::from_slice_without_duplicate_keys(text.as_bytes())
+        .context("parse the fuzz declaration as version-1 JSON")?;
     ensure!(
         decl.version == 1,
         "unsupported fuzz declaration version {}",
@@ -2231,6 +2237,18 @@ mod fuzz_tests {
             inputs: vec!["inc".to_owned(), "dec".to_owned(), "bogus".to_owned()],
             invariants,
         }
+    }
+
+    #[test]
+    fn parse_fuzz_decl_refuses_a_duplicated_key() {
+        // A lenient parse keeps the last "version" and accepts it (#8794).
+        let err =
+            parse_fuzz_decl(r#"{"version": 2, "version": 1, "inputs": ["inc"], "invariants": []}"#)
+                .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("duplicate JSON object key"),
+            "{err:#}"
+        );
     }
 
     #[test]
@@ -3170,5 +3188,148 @@ mod watch_tests {
         assert_eq!(session.snapshot_id(), "snap-a");
         assert_eq!(session.version(), 1);
         assert!(session.records().is_empty());
+    }
+    /// Phase 5 latency benchmark (design invariant 8 and the
+    /// implementation acceptance criteria): on the checked-in small
+    /// Roc example (`examples/roc-counter`), after warm-up, the p95
+    /// of 20 save-to-active edits must be under 3 seconds, with
+    /// compile, fixture replay and F12.9 migration all included in
+    /// every sample. Cold start (initial compile + launch) is
+    /// measured and reported separately, per the design. Ignored by
+    /// default: it drives the real Roc toolchain and takes minutes.
+    /// Run it with:
+    /// `cargo test -p id-worlds bench_phase5 -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "latency benchmark: drives the real Roc toolchain"]
+    async fn bench_phase5_save_to_active_p95_on_roc_counter() {
+        use std::time::Instant;
+
+        fn copy_tree(src: &Path, dst: &Path) {
+            std::fs::create_dir_all(dst).unwrap();
+            for entry in std::fs::read_dir(src).unwrap() {
+                let entry = entry.unwrap();
+                let target = dst.join(entry.file_name());
+                if entry.file_type().unwrap().is_dir() {
+                    copy_tree(&entry.path(), &target);
+                } else {
+                    std::fs::copy(entry.path(), &target).unwrap();
+                }
+            }
+        }
+
+        // Stage the example exactly as a user app dir: main.roc
+        // declares platform "../roc-world/platform.roc", so the
+        // platform directory must sit beside the app directory.
+        let root = tempfile::tempdir().unwrap();
+        let bench_root = root.path().join("bench");
+        let app_dir = bench_root.join("roc-counter");
+        let examples = Path::new("../../examples");
+        copy_tree(&examples.join("roc-counter"), &app_dir);
+        copy_tree(&examples.join("roc-world"), &bench_root.join("roc-world"));
+        let seed = 7u64;
+
+        // Cold start: discovery + first compile + session launch.
+        let cold_start = Instant::now();
+        let sources = discover_sources(&app_dir).unwrap();
+        let (module, _, _) = compile_sources(&sources, None, None, seed).await.unwrap();
+        let mut session = DevSession::launch(&module, seed, sources.snapshot_id())
+            .await
+            .unwrap();
+        let cold_ms = cold_start.elapsed().as_millis();
+
+        // Session history the migration must preserve and replay.
+        session.input(b"inc").await.unwrap();
+        session.input(b"inc").await.unwrap();
+        // The Phase 3 fixture the promotion gate runs every cycle.
+        let fixture = {
+            let world = DevScratchWorld::launch(&module, seed).await.unwrap();
+            world.input(b"inc").await.unwrap();
+            world.input(b"inc").await.unwrap();
+            let records = world.records();
+            drop(world);
+            Fixture {
+                header: crate::world_fixture::FixtureHeader {
+                    world_id: DEV_WORLD_ID.to_owned(),
+                    module_hash: Some(crate::world_session::module_hash(&module)),
+                    current_sequence: 2,
+                    complete: true,
+                    records: Some(records),
+                },
+                events: vec![
+                    crate::world_fixture::FixtureEvent::Input {
+                        sequence: 1,
+                        participant_id: 1,
+                        bytes: b"inc".to_vec(),
+                    },
+                    crate::world_fixture::FixtureEvent::Input {
+                        sequence: 2,
+                        participant_id: 1,
+                        bytes: b"inc".to_vec(),
+                    },
+                ],
+            }
+        };
+        let fixtures = vec![("counter".to_string(), fixture)];
+        let base_source = std::fs::read_to_string(app_dir.join("main.roc")).unwrap();
+
+        // Edit cycles: change the rendered box title (changes the
+        // module, not the records, so the fixture gate passes),
+        // rescan, compile once, promote through the fixture gate and
+        // the F12.9 migration. The timer starts at the edit — the
+        // debounced-change point of invariant 8's definition — and
+        // stops when the candidate is active.
+        let mut known = sources.snapshot_id();
+        let mut samples: Vec<u128> = Vec::new();
+        let mut compile_samples: Vec<u128> = Vec::new();
+        let mut promote_samples: Vec<u128> = Vec::new();
+        for n in 0..22u32 {
+            let edited = base_source.replace("\"counter\"", &format!("\"counter-{n}\""));
+            assert_ne!(edited, base_source);
+            let started = Instant::now();
+            std::fs::write(app_dir.join("main.roc"), &edited).unwrap();
+            let changed = rescan_changed(&app_dir, &known)
+                .unwrap()
+                .expect("an edit must rescan as a change");
+            let candidate_snapshot = changed.snapshot_id();
+            let compile_start = Instant::now();
+            let (candidate, _, _) = compile_sources(&changed, None, None, seed).await.unwrap();
+            let compile_ms = compile_start.elapsed().as_millis();
+            let report = session
+                .promote(
+                    &candidate,
+                    &candidate_snapshot,
+                    &candidate_snapshot,
+                    &fixtures,
+                )
+                .await;
+            assert_eq!(
+                report.outcome,
+                PromotionOutcome::Promoted,
+                "cycle {n}: {:?}",
+                report.detail
+            );
+            let elapsed = started.elapsed().as_millis();
+            known = candidate_snapshot;
+            if n >= 2 {
+                samples.push(elapsed);
+                compile_samples.push(compile_ms);
+                promote_samples.push(elapsed - compile_ms);
+            }
+        }
+        samples.sort_unstable();
+        let rank = (samples.len() * 95).div_ceil(100);
+        let p95 = samples[rank - 1];
+        compile_samples.sort_unstable();
+        promote_samples.sort_unstable();
+        let median = |v: &Vec<u128>| v[v.len() / 2];
+        eprintln!(
+            "phase5 bench: cold_start_ms={cold_ms} samples_ms={samples:?} p95_ms={p95} compile_median_ms={} promote_median_ms={}",
+            median(&compile_samples),
+            median(&promote_samples)
+        );
+        assert!(
+            p95 < 3_000,
+            "p95 save-to-active {p95}ms exceeds the 3000ms design target"
+        );
     }
 }

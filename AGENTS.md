@@ -112,6 +112,15 @@ Pick the skill by situation ([stages](planning/workflow/stages.md)):
 
 Orchestrators do not implement: they merge, keep state and issues current, and start workers.
 
+## Routing policy
+
+Full text: [`.opencode/instructions/routing-policy.md`](.opencode/instructions/routing-policy.md)
+(loaded via `instructions` in `.opencode/opencode.jsonc`).
+In short: workhorse is the default route; there is **no in-session model
+switch** — escalation is a fresh launch on a higher route with the reason
+recorded; subsessions dispatch on the `workhorse` pool route and the route owns
+pool selection; managed pool routes are preferred over model pins.
+
 ### Parallel writers and subsessions
 
 Full text: [`doc/agents/parallel-writers-and-subsessions.md`](doc/agents/parallel-writers-and-subsessions.md);

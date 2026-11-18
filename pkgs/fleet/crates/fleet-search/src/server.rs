@@ -29,10 +29,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use atlas_core::types::BranchPools;
 use atlas_core::{
-    BranchPoolExecutor, BranchQuery, Error as CoreError, Filters, JsonlFeedbackSink, QueryEmbedder,
-    SearchBackend, SearchMode as CoreSearchMode, SearchOptions, Sensitivity as CoreSensitivity,
-    VectorBackend as CoreVectorBackend, feedback_for, load_feedback_dir, record_feedback,
-    run_get_chunk, run_search_with_executor,
+    BranchPoolExecutor, BranchQuery, Error as CoreError, Filters, JsonlFeedbackSink,
+    JsonlTraceSink, QueryEmbedder, SearchBackend, SearchMode as CoreSearchMode, SearchOptions,
+    Sensitivity as CoreSensitivity, TraceContext, VectorBackend as CoreVectorBackend, feedback_for,
+    load_feedback_dir, record_feedback, run_get_chunk, run_search_with_executor_traced,
 };
 use atlas_proto::{
     BranchState, BranchStates, EmbedRequest, EmbedResponse, ErrorResponse, HealthResponse,
@@ -205,6 +205,13 @@ struct RawClientConfig {
 struct ServiceConfigFile {
     listen: Option<String>,
     vec_table: Option<String>,
+    /// Shard spec for serve-mode fan-out (#6666 slice 1): the
+    /// standalone `--shards` grammar (`dir:<path>` or
+    /// `turso[:<org>]`). Absent = monolith only, as before.
+    shards: Option<String>,
+    /// Seconds between shard re-discoveries in serve mode
+    /// (#6666 slice 1). Default 60; ignored without `shards`.
+    shard_refresh_seconds: Option<u64>,
     limits: Option<RuntimeLimitsFile>,
     clients: Vec<RawClientConfig>,
 }
@@ -215,7 +222,18 @@ pub struct ServeSettings {
     pub clients: Vec<ClientConfig>,
     pub vec_table: String,
     pub limits: RuntimeLimits,
+    /// Shard spec for serve-mode fan-out (#6666 slice 1), in the
+    /// standalone `--shards` grammar. `None` = monolith only.
+    pub shards: Option<String>,
+    /// Interval between shard re-discoveries when `shards` is
+    /// set; a changed shard set is swapped in atomically and the
+    /// snapshot-bound result cache invalidates on the new
+    /// snapshot id.
+    pub shard_refresh: Duration,
 }
+
+/// Default shard re-discovery interval for serve mode (#6666).
+pub const DEFAULT_SHARD_REFRESH_SECONDS: u64 = 60;
 
 fn home_dir() -> PathBuf {
     // Home-resolution contract (issues #5640 / #5762): a missing or
@@ -324,6 +342,19 @@ pub fn load_service_settings(
         limits.hard_ttl = Duration::from_millis(ms);
     }
     validate_limits(&limits)?;
+    let shards = match raw.shards {
+        Some(spec) if !spec.trim().is_empty() => Some(spec),
+        Some(_) => {
+            return Err("service config shards spec must not be empty".to_string());
+        }
+        None => None,
+    };
+    let shard_refresh_seconds = raw
+        .shard_refresh_seconds
+        .unwrap_or(DEFAULT_SHARD_REFRESH_SECONDS);
+    if shard_refresh_seconds == 0 {
+        return Err("service config shard_refresh_seconds must be at least 1".to_string());
+    }
     Ok(ServeSettings {
         listen,
         clients,
@@ -331,6 +362,8 @@ pub fn load_service_settings(
             .vec_table
             .unwrap_or_else(|| atlas_core::DEFAULT_VEC_TABLE.to_string()),
         limits,
+        shards,
+        shard_refresh: Duration::from_secs(shard_refresh_seconds),
     })
 }
 
@@ -669,12 +702,19 @@ where
             backend: self.backend.as_ref(),
             branch_states: branch_states.clone(),
         };
-        run_search_with_executor(
+        // Trace capture (issue #9973): fail-closed — a trace
+        // write failure fails the search. The service surface
+        // does not retain raw query text (hash only).
+        let trace_sink = JsonlTraceSink::new(JsonlTraceSink::default_dir());
+        let trace_ctx = TraceContext::new("service-api", "agent", "atlas-service");
+        run_search_with_executor_traced(
             self.backend.as_ref(),
             self.embedder.as_ref(),
             filters,
             &opts,
             &executor,
+            &trace_sink,
+            trace_ctx,
         )
         .map_err(|e| ServerError::from_core(&e))
     }
@@ -2639,6 +2679,8 @@ mod tests {
             ],
             vec_table: atlas_core::DEFAULT_VEC_TABLE.to_string(),
             limits,
+            shards: None,
+            shard_refresh: Duration::from_secs(DEFAULT_SHARD_REFRESH_SECONDS),
         }
     }
 
@@ -2666,6 +2708,47 @@ mod tests {
             .unwrap_err(),
             "max_queued_jobs_per_client must be at least 1"
         );
+    }
+
+    #[test]
+    fn service_config_shards_spec_round_trips() {
+        // #6666 slice 1: `shards` + `shard_refresh_seconds` in the
+        // service config land on ServeSettings; without `shards`
+        // the settings keep the monolith default (None).
+        use std::os::unix::fs::PermissionsExt;
+        let dir =
+            std::env::temp_dir().join(format!("atlas-service-shards-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, body: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            path
+        };
+        let client = r#"{"name": "probe", "token": "tok", "ceiling_cap": "personal"}"#;
+        let sharded = write(
+            "sharded.json",
+            &format!(
+                r#"{{"shards": "dir:/tmp/shards", "shard_refresh_seconds": 5, "clients": [{client}]}}"#
+            ),
+        );
+        let settings = load_service_settings(&sharded, ServeOverrides::default()).unwrap();
+        assert_eq!(settings.shards.as_deref(), Some("dir:/tmp/shards"));
+        assert_eq!(settings.shard_refresh, Duration::from_secs(5));
+        let plain = write("plain.json", &format!(r#"{{"clients": [{client}]}}"#));
+        let settings = load_service_settings(&plain, ServeOverrides::default()).unwrap();
+        assert_eq!(settings.shards, None);
+        assert_eq!(
+            settings.shard_refresh,
+            Duration::from_secs(DEFAULT_SHARD_REFRESH_SECONDS)
+        );
+        let empty = write(
+            "empty.json",
+            &format!(r#"{{"shards": "  ", "clients": [{client}]}}"#),
+        );
+        let err = load_service_settings(&empty, ServeOverrides::default()).unwrap_err();
+        assert!(err.contains("shards spec must not be empty"), "got: {err}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

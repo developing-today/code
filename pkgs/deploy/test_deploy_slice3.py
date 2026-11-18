@@ -45,6 +45,30 @@ DEFN = {
 }
 
 
+class FakeClock:
+    """Stands in for deploy's clock and sleep: sleeping advances time
+    instantly, so a 120-second health window costs no real time."""
+
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+CLOCK = FakeClock()
+
+
+def setUpModule():
+    deploy._monotonic = CLOCK.monotonic
+    deploy._sleep = CLOCK.sleep
+
+
 class FakeEffects:
     def __init__(self, health_ok=True):
         self.commands = []
@@ -255,6 +279,119 @@ class ActivationTests(unittest.TestCase):
             )
         self.assertEqual(code, 1)
         self.assertIn("only one generation", lines[0])
+
+
+class HealthWindowTests(unittest.TestCase):
+    """#11170: activation keeps probing a not-ready service for the
+    whole health window, and the window is configurable per service."""
+
+    def setUp(self):
+        self.clock = FakeClock()
+        deploy._monotonic = self.clock.monotonic
+        deploy._sleep = self.clock.sleep
+        self.real_probe = deploy.probe_health
+        self.probes = []
+
+    def tearDown(self):
+        deploy.probe_health = self.real_probe
+        deploy._monotonic = CLOCK.monotonic
+        deploy._sleep = CLOCK.sleep
+
+    def script(self, ready_at):
+        """503 until the fake clock reaches ready_at, then 200."""
+
+        def probe(url, timeout=2.0):
+            self.probes.append(self.clock.now)
+            if self.clock.now >= ready_at:
+                return True, "HTTP 200"
+            return False, "HTTP 503"
+
+        deploy.probe_health = probe
+
+    def test_a_forty_second_cold_start_passes_the_default_window(self):
+        # The secrets-broker shape: 503 while its first refresh runs.
+        self.script(ready_at=40)
+        ok, detail = deploy.wait_health("http://127.0.0.1:4800/health")
+        self.assertTrue(ok)
+        self.assertEqual(detail, "HTTP 200")
+        self.assertGreaterEqual(self.clock.now, 40)
+
+    def test_a_sixty_second_readiness_gate_passes_the_default_window(self):
+        self.script(ready_at=60)
+        ok, _ = deploy.wait_health("http://127.0.0.1:4800/health")
+        self.assertTrue(ok)
+
+    def test_a_service_that_never_gets_ready_fails_when_the_window_closes(self):
+        self.script(ready_at=float("inf"))
+        ok, detail = deploy.wait_health("http://127.0.0.1:4800/health", 30)
+        self.assertFalse(ok)
+        self.assertEqual(detail, "HTTP 503 (still failing after 30s)")
+        self.assertEqual(self.clock.now, 30)
+        # Probed every half second, and once more as the window closed.
+        self.assertEqual(len(self.probes), 61)
+
+    def test_an_unreachable_endpoint_is_retried_like_not_ready(self):
+        calls = {"n": 0}
+
+        def probe(url, timeout=2.0):
+            calls["n"] += 1
+            if calls["n"] < 5:
+                return False, "URLError: connection refused"
+            return True, "HTTP 200"
+
+        deploy.probe_health = probe
+        ok, _ = deploy.wait_health("http://127.0.0.1:4800/health")
+        self.assertTrue(ok)
+        self.assertEqual(calls["n"], 5)
+
+    def test_health_timeout_defaults_and_honours_the_definition(self):
+        self.assertEqual(
+            deploy.health_timeout(DEFN), deploy.DEFAULT_HEALTH_TIMEOUT_SECONDS
+        )
+        self.assertEqual(
+            deploy.health_timeout(dict(DEFN, healthTimeoutSeconds=300)), 300
+        )
+
+    def test_activation_uses_the_definitions_window(self):
+        self.script(ready_at=float("inf"))
+        with tempfile.TemporaryDirectory() as root:
+            art = os.path.join(root, "artifact")
+            os.makedirs(os.path.join(art, "bin"))
+            real_run = deploy.run_cmd
+            deploy.run_cmd = lambda argv: (0, "", "")
+            try:
+                code, lines = deploy.execute_deploy(
+                    "svc",
+                    dict(DEFN, package=art, healthTimeoutSeconds=7),
+                    [],
+                    base=os.path.join(root, "profiles"),
+                    state=os.path.join(root, "state"),
+                    scope="user",
+                    units=os.path.join(root, "units"),
+                    actor="test",
+                )
+            finally:
+                deploy.run_cmd = real_run
+        self.assertEqual(code, 1)
+        self.assertTrue(any("still failing after 7s" in line for line in lines))
+        self.assertEqual(self.clock.now, 7)
+
+    def test_validation_accepts_and_bounds_the_window(self):
+        def errors(value):
+            return deploy.validate({"svc": dict(DEFN, healthTimeoutSeconds=value)})
+
+        self.assertEqual(errors(1), [])
+        self.assertEqual(errors(deploy.MAX_HEALTH_TIMEOUT_SECONDS), [])
+        for bad in (0, -5, deploy.MAX_HEALTH_TIMEOUT_SECONDS + 1, True, "60", 1.5):
+            with self.subTest(value=bad):
+                self.assertEqual(len(errors(bad)), 1)
+                self.assertIn("healthTimeoutSeconds", errors(bad)[0])
+        # Still optional: a definition without it stays valid.
+        self.assertEqual(deploy.validate({"svc": dict(DEFN)}), [])
+
+    def test_the_plan_names_the_window(self):
+        step = deploy._health_step(dict(DEFN, healthTimeoutSeconds=90))
+        self.assertIn("retried for up to 90s", step)
 
 
 if __name__ == "__main__":

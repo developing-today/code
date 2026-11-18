@@ -93,6 +93,16 @@ npm run deploy         # deploys the Worker; build/push the Nix image below firs
 npm run dev            # local dev (containers run via workerd locally too)
 ```
 
+**Preferred (issue #5767 phase 2):** `nix run .#lab-ops-hub-deploy`
+does the whole deploy as one command — builds + pushes the Nix
+container image below, then deploys the Worker from the flake package
+(`package.nix`, lockfile-pinned deps incl. the pinned wrangler; no
+deploy-time `npm install`). It is registered as the `lab-ops-hub`
+target of the `deploy` CLI. `-- --dry-run` validates the Worker
+config only. The manual sequence below remains the reference for how
+the image push works (registry credentials need the account-wide
+token — see the known-behaviour notes).
+
 Deploy auth: set `CLOUDFLARE_API_TOKEN` (scoped day-to-day token from
 Bitwarden) or use the repo-standard wrapper — never commit a token.
 Runtime API auth is separate: the `API_TOKEN` Worker secret above gates

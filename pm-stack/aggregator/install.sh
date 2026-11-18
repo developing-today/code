@@ -18,6 +18,12 @@
 # the laptop's tailnet address (Drew, 2026-10-25: LAN/tailnet fine,
 # public only behind a password — no public route here).
 set -euo pipefail
+# Argument contract (#3352): this script takes no command-line
+# arguments; anything given is a usage error before any work runs.
+if [ "$#" -gt 0 ]; then
+  echo "install.sh: unexpected argument '$1'; usage: bash install.sh" >&2
+  exit 2
+fi
 cd "$(dirname "$0")"
 SRC="$PWD"
 EXPECTED_SRC="$HOME/git/code/pm-stack/aggregator"
@@ -177,6 +183,14 @@ if [ "$CHANGED" -eq 1 ]; then
     echo "PM_AGG_QUOTA_CURRENT_FILE=${STATE_DIR}/quota-current.json"
     echo "PM_AGG_COVERAGE_SNAPSHOT_FILE=${STATE_DIR}/coverage-snapshot.json"
     echo "PM_AGG_ROADMAP_ANNOTATIONS_FILE=${STATE_DIR}/roadmap-annotations.json"
+    # #6815: the four stores that used to be laptop-local files
+    # (actions, activity-ingestion, usage snapshots, aa-last-good) are
+    # canonical in Supabase muse-dev2; the local files remain a
+    # rebuildable cache. PM_AGG_STORE_BACKEND=file is the rollback.
+    echo "PM_AGG_STORE_BACKEND=supabase"
+    echo "PM_AGG_STORE_WRITER=pm-aggregator.service"
+    echo "BWS_BIN=/run/current-system/sw/bin/bws"
+    echo "BWS_ACCESS_TOKEN_FILE=${HOME}/.config/bws/access-token"
     echo "PM_PROJECTOR_URL=http://127.0.0.1:7801"
     # The hot-list consumer shares only the projector's checkpoint-ack
     # credential, not its webhook secret or GitHub App private key.
@@ -248,8 +262,23 @@ systemctl --user is-active pm-aggregator.service
 GATHERER_SVC_SRC="$SRC/systemd/quota-gatherer.service"
 GATHERER_TMR_SRC="$SRC/systemd/quota-gatherer.timer"
 if [ -f "$GATHERER_SVC_SRC" ] && [ -f "$GATHERER_TMR_SRC" ]; then
-  cp "$GATHERER_SVC_SRC" "$HOME/.config/systemd/user/quota-gatherer.service"
-  cp "$GATHERER_TMR_SRC" "$HOME/.config/systemd/user/quota-gatherer.timer"
+  # Home-manager hosts manage these units as symlinks into /nix/store
+  # (#9586): a plain cp over the symlink aborts the install on the
+  # read-only store. Mirror the pm-aggregator unit guard above: skip
+  # the copy for symlink-managed destinations and leave those units
+  # to the NixOS/home-manager switch.
+  GATHERER_SVC_DST="$HOME/.config/systemd/user/quota-gatherer.service"
+  GATHERER_TMR_DST="$HOME/.config/systemd/user/quota-gatherer.timer"
+  if [ -L "$GATHERER_SVC_DST" ]; then
+    echo "quota-gatherer.service is symlink-managed at $GATHERER_SVC_DST; skipping unit copy"
+  else
+    cp "$GATHERER_SVC_SRC" "$GATHERER_SVC_DST"
+  fi
+  if [ -L "$GATHERER_TMR_DST" ]; then
+    echo "quota-gatherer.timer is symlink-managed at $GATHERER_TMR_DST; skipping unit copy"
+  else
+    cp "$GATHERER_TMR_SRC" "$GATHERER_TMR_DST"
+  fi
   systemctl --user daemon-reload
   systemctl --user enable --now quota-gatherer.timer
   echo "quota-gatherer.timer: $(systemctl --user is-active quota-gatherer.timer)"

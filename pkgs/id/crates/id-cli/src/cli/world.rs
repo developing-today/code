@@ -1097,4 +1097,58 @@ pub enum WorldCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Print a durable world's owner report (#6308): joins, on-disk
+    /// storage, and which facts are unavailable and why. Local only: it
+    /// reads the world directory, contacts no host, never wakes a world
+    /// and writes nothing, so live-only facts (connected members,
+    /// program runs) are reported unavailable. Only the user who owns the
+    /// world directory, or root, may read it.
+    Owner {
+        /// Directory of the world to report on (the one holding
+        /// `journal.jsonl`).
+        dir: PathBuf,
+        /// The window the report covers, ending now, such as 12h or 7d.
+        #[arg(long, default_value = "7d", value_parser = crate::helpers::parse_duration_secs)]
+        since: u64,
+        /// Print one JSON object (schema version 1) instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect or copy a durable world's journal file (F11.12 journal
+    /// format management). Local only; no host is contacted.
+    Journal(WorldJournalArgs),
+}
+
+/// The arguments of `id world journal`: a subcommand over a world
+/// directory's `journal.jsonl` (F11.12).
+#[derive(Args, Debug)]
+pub struct WorldJournalArgs {
+    #[command(subcommand)]
+    pub action: JournalCommand,
+}
+
+/// What `id world journal` does to a world directory's journal.
+#[derive(Subcommand, Debug)]
+pub enum JournalCommand {
+    /// Check a world directory's journal: report its format version and
+    /// validity, flagging a journal written in a newer format than this
+    /// binary can read. Exits nonzero when the journal is not valid.
+    Check {
+        /// Directory of the world to check (the one holding
+        /// `journal.jsonl`).
+        dir: PathBuf,
+        /// Print one JSON object instead of text lines.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Copy a world directory's journal to a backup file, byte for byte,
+    /// so the copy restores the world exactly. The journal must check
+    /// valid first, and the output file must not already exist.
+    Backup {
+        /// Directory of the world to back up (the one holding
+        /// `journal.jsonl`).
+        dir: PathBuf,
+        /// The backup file to write.
+        out: PathBuf,
+    },
 }

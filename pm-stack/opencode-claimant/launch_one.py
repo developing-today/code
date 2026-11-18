@@ -83,6 +83,25 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+
+def _required_home() -> Path:
+    """Home per the #5762 home-resolution contract (code#8221): a
+    non-empty HOME, or a named error -- never the passwd fallback
+    Path.home() applies when HOME is unset. The claimant is fired
+    programmatically (OpenChamber cron), a context with no HOME
+    guarantee, and every path anchored below is fleet state."""
+    home = os.environ.get("HOME")
+    if not home:
+        raise RuntimeError(
+            "HOME is unset or empty: opencode-claimant cannot resolve "
+            "its state paths (#5762 home-resolution contract)"
+        )
+    return Path(home)
+
+
+HOME_DIR = _required_home()
+
+
 HERE = Path(__file__).resolve().parent
 
 
@@ -130,7 +149,7 @@ def repo_queue_cmd():
     override = os.environ.get("REPO_QUEUE_BIN") or os.environ.get("REPO_QUEUE_CMD")
     if override:
         return override
-    return str(Path.home() / ".local" / "bin" / "repo-queue")
+    return str(HOME_DIR / ".local" / "bin" / "repo-queue")
 
 
 def log(rec):

@@ -458,10 +458,11 @@ async fn directory_write_handler(
     uri: Uri,
     body: Bytes,
 ) -> Response {
-    let request: DirectoryRequest = match serde_json::from_slice(&body) {
-        Ok(request) => request,
-        Err(error) => return bad_request(&error.to_string()),
-    };
+    let request: DirectoryRequest =
+        match id_core::json_unique::from_slice_without_duplicate_keys(&body) {
+            Ok(request) => request,
+            Err(error) => return bad_request(&error.to_string()),
+        };
     directory_respond(
         state,
         Asked {
@@ -1151,6 +1152,22 @@ mod tests {
             .header("x-id-signature", signed.signature)
             .body(Body::from(body.to_owned()))
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_directory_request_with_a_duplicated_key_is_refused() {
+        // A lenient decode would act on the key's last value (#8794).
+        let router = app(Some(lobby()), None);
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let response = router
+            .oneshot(signed_directory_request(
+                &key,
+                "n-dup",
+                r#"{"action":"view","x":1,"x":2}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
