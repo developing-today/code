@@ -699,6 +699,7 @@ let
           User = "0:0";
           WorkingDir = "/workspace";
           Env = [
+            "GOFLAGS=-buildvcs=false"
             "HOME=/tmp"
             "MCPX_TEST_BINARY=${mcpxContainerBinary}/bin/mcpx"
             "MCPX_TEST_REQUIRE=deno,bun,node,python3"
