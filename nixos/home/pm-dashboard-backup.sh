@@ -389,7 +389,8 @@ optional file journals/quota-gatherer.log"
 # manifest step can tell them from a state file nobody classified.
 #   board.json, attention-last-good.json — rendered board/attention caches
 #   stack-health.json, host-health.json  — re-observed health readings
-AGG_DERIVED="board.json attention-last-good.json stack-health.json host-health.json"
+#   last-good-pages/                     — dashboard fallback copies (#10383)
+AGG_DERIVED="board.json attention-last-good.json stack-health.json host-health.json last-good-pages"
 
 # --- data set (explicit list only; the aggregator .env is deliberately NOT
 # --- included — no config/secret files belong in this archive) ---

@@ -225,7 +225,7 @@ import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
 import { liveSource } from "./sources/live.ts";
 import { buildQueueView, queueInputsStale } from "./queue-view.ts";
-import { dashboardResponseWithinDeadline } from "./assembly-deadline.ts";
+import { createDashboardResponseDeadline } from "./assembly-deadline.ts";
 import { dispatchStateFor, fetchRfaState, RFA_NOT_PICKED_UP } from "./sources/ready-for-agent.ts";
 import { TodayCache, TODAY_CACHE_TTL_MS } from "./today-cache.ts";
 import { boardJsonBody, boardJsonViewBody } from "./board-json.ts";
@@ -252,6 +252,9 @@ function capUnits(t: string, max: number): string {
 }
 
 const cfg = loadConfig();
+// #10383: the bounded routes' last-good survives a restart on disk, so
+// the first request after a deploy serves it instead of a 503.
+const dashboardResponseWithinDeadline = createDashboardResponseDeadline({ persistDir: cfg.lastGoodDir });
 const commentsStore = new CommentsStore(cfg.commentsFile);
 const roadmapAnnotationsStore = new RoadmapAnnotationsStore(cfg.roadmapAnnotationsFile);
 const coverageStore = new CoverageSnapshotStore(cfg.coverageSnapshotFile);

@@ -106,6 +106,9 @@ export interface Config {
    * (#10141): claimant mode + PM unit states the watchdog derives
    * silent-failure tier items from. Read-only for the aggregator. */
   hostHealthFile: string;
+  /** #10383: where the bounded dashboard routes keep their last good
+   *  response, so the first request after a restart can serve it. */
+  lastGoodDir: string;
   /** Versioned item-history JSONL (#3981) the forecast contract
    * (#3984) derives from: one cutoff per line, read via
    * ItemHistoryStore. */
@@ -256,6 +259,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       env.PM_AGG_HOST_HEALTH_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "host-health.json"),
     ),
+    lastGoodDir: s(env.PM_AGG_LAST_GOOD_DIR, join(homedir(), ".local", "state", "pm-aggregator", "last-good-pages")),
     quotaViewFile: s(
       env.PM_AGG_QUOTA_VIEW,
       join(
