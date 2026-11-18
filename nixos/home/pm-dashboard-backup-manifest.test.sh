@@ -6,7 +6,8 @@
 #   whatever staging produced — a dataset member deleted/renamed at
 #   the source silently shrank the backup set with every check green.
 #   The script now declares the expected set once (EXPECTED_SET):
-#   10 aggregator state files are REQUIRED, meta-quota-export files are
+#   12 aggregator state files are REQUIRED (decisions.json and
+#   decision-events.jsonl since #10293), meta-quota-export files are
 #   OPTIONAL, db-dumps and the five #6815 Supabase store exports are
 #   required when their step ran (optional when it did not). The
 #   snapshots tree + 2 journal logs are OPTIONAL.
@@ -134,7 +135,8 @@ setup_home() {
   local f
   for f in actions.json comments.json fleet-feed.json quota-current.json \
     registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json \
-    events.json coverage-snapshot.json aa-last-good.json; do
+    events.json coverage-snapshot.json aa-last-good.json \
+    decisions.json decision-events.jsonl; do
     printf '{}\n' >"$RUN_HOME/.local/state/pm-aggregator/$f"
   done
   printf '{}\n' >"$RUN_HOME/atlas/meta-quota-export/latest.json"
@@ -248,11 +250,66 @@ fi
 if manifest_json missing-optional | python3 -c '
 import json, sys
 m = json.load(sys.stdin)
-sys.exit(0 if len(m.get("expected", [])) == 27 else 1)
+sys.exit(0 if len(m.get("expected", [])) == 36 else 1)
 '; then
-  ok "missing-optional: manifest lists all 27 expected members"
+  ok "missing-optional: manifest lists all 36 expected members"
 else
-  fail "missing-optional: manifest expected list is not the full 27-member set"
+  fail "missing-optional: manifest expected list is not the full 36-member set"
+fi
+
+# --- decisions ledger is required (#10293) -----------------------------------
+setup_home decisions-deleted
+rm "$RUN_HOME/.local/state/pm-aggregator/decisions.json"
+run_backup decisions-deleted
+if [[ $RC -ne 0 ]] && grep -q 'FAILED required dataset member missing: aggregator/decisions.json' "$TMP_ROOT/decisions-deleted.log"; then
+  ok "decisions-deleted: run fails naming aggregator/decisions.json"
+else
+  fail "decisions-deleted: expected a failed run naming decisions.json, rc=$RC; log: $(cat "$TMP_ROOT/decisions-deleted.log")"
+fi
+if [[ $MARKER_AFTER == "$PRESET" ]]; then
+  ok "decisions-deleted: journal marker unchanged"
+else
+  fail "decisions-deleted: marker advanced — was $PRESET, now $MARKER_AFTER"
+fi
+assert_member decisions-deleted aggregator/decisions.json required missing
+
+# --- ledger companions staged; unclassified state named (#10293) ---------------
+setup_home ledger-staged
+agg="$RUN_HOME/.local/state/pm-aggregator"
+printf '{"id":"e1"}\n' >"$agg/decision-events-outbox.jsonl"
+printf '{"offset":1}\n' >"$agg/decision-events-outbox.jsonl.sync-state.json"
+printf '{}\n' >"$agg/needs-drew.json"
+mkdir -p "$agg/digests"
+printf '{}\n' >"$agg/digests/daily-2026-10-27.json"
+printf '{}\n' >"$agg/board.json"          # derived: not archived, not flagged
+printf '{}\n' >"$agg/events.json.tmp-1-2" # write temp: skipped
+printf '{}\n' >"$agg/mystery-state.json"  # nobody classified this one
+run_backup ledger-staged
+if [[ $RC -eq 0 ]]; then
+  ok "ledger-staged: script exited 0"
+else
+  fail "ledger-staged: expected exit 0, got $RC; log: $(cat "$TMP_ROOT/ledger-staged.log")"
+fi
+assert_member ledger-staged aggregator/decisions.json required present
+assert_member ledger-staged aggregator/decision-events.jsonl required present
+assert_member ledger-staged aggregator/decision-events-outbox.jsonl optional present
+assert_member ledger-staged aggregator/decision-events-outbox.jsonl.sync-state.json optional present
+assert_member ledger-staged aggregator/needs-drew.json optional present
+assert_member ledger-staged aggregator/notifications.jsonl optional missing
+assert_member ledger-staged aggregator/digests optional present
+if manifest_json ledger-staged | python3 -c '
+import json, sys
+m = json.load(sys.stdin)
+sys.exit(0 if m.get("unclassified") == ["mystery-state.json"] else 1)
+'; then
+  ok "ledger-staged: manifest names only the unclassified state file"
+else
+  fail "ledger-staged: manifest unclassified list is wrong: $(manifest_json ledger-staged)"
+fi
+if grep -q 'WARN unclassified state file .*/mystery-state.json' "$TMP_ROOT/ledger-staged.log"; then
+  ok "ledger-staged: log names the unclassified state file"
+else
+  fail "ledger-staged: no WARN naming the unclassified file: $(cat "$TMP_ROOT/ledger-staged.log")"
 fi
 
 # --- dump step ran but produced no dir: conditionally required ----------------
