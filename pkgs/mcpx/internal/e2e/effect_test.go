@@ -104,6 +104,7 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"daemon.socketProbeTimeout":          "TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale",
 	"logging.maxAge":                     "TestLoggingMaxAgeRotatesAnAgedFile",
 	"logstore.followBacklog":             "TestFollowBacklogCapsWhatOneFollowPollEmits",
 	"paths.config":                       "TestPathsConfigReadsAConfigOnlyThatPathHolds",
@@ -318,6 +319,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale":                   TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale,
 	"TestLoggingMaxAgeRotatesAnAgedFile":                                             TestLoggingMaxAgeRotatesAnAgedFile,
 	"TestFollowBacklogCapsWhatOneFollowPollEmits":                                    TestFollowBacklogCapsWhatOneFollowPollEmits,
 	"TestPathsConfigReadsAConfigOnlyThatPathHolds":                                   TestPathsConfigReadsAConfigOnlyThatPathHolds,
@@ -4625,6 +4627,78 @@ func TestLoggingMaxAgeRotatesAnAgedFile(t *testing.T) {
 	}
 	if got := files("MCPX_LOGGING_MAX_AGE=1h"); len(got) < 2 {
 		t.Errorf("logging.maxAge=1h should rotate the two-hour-old file aside: %v", got)
+	}
+}
+
+// TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale is the effect
+// probe for daemon.socketProbeTimeout. A daemon is running, and a second
+// `mcpx daemon` starts for the same configuration. Before binding, the
+// second one dials the socket within daemon.socketProbeTimeout to tell a
+// live daemon from a crashed one's leftover file. Oracle: by default the
+// dial answers, so it refuses to start; with a 1ns bound no dial can
+// finish, so it takes the live socket for stale, removes it and listens.
+func TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale(t *testing.T) {
+	second := func(extra ...string) string {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		e.run("ls")
+		state := e.daemonState(t)
+		t.Cleanup(func() {
+			// A first daemon whose socket was taken is unreachable, and so
+			// is the server child it started; the test that orphaned them
+			// retires them.
+			for _, pid := range []int{state.PID, state.childOf("demo")} {
+				if pid > 0 && processExists(pid) {
+					if proc, err := os.FindProcess(pid); err == nil {
+						_ = proc.Kill()
+					}
+				}
+			}
+		})
+		var out syncBuffer
+		cmd := exec.Command(e.mcpx, "daemon")
+		cmd.Dir = e.dir
+		cmd.Env = append(append([]string{}, e.envVars...), extra...)
+		cmd.Stdout, cmd.Stderr = &out, &out
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan struct{})
+		go func() { _ = cmd.Wait(); close(done) }()
+		defer func() {
+			select {
+			case <-done:
+			default:
+				_ = cmd.Process.Signal(os.Interrupt)
+				select {
+				case <-done:
+				case <-time.After(10 * time.Second):
+					_ = cmd.Process.Kill()
+					<-done
+				}
+			}
+		}()
+		deadline := time.After(20 * time.Second)
+		for {
+			select {
+			case <-done:
+				return out.String()
+			case <-deadline:
+				t.Fatalf("the second daemon neither refused nor listened:\n%s", out.String())
+			case <-time.After(50 * time.Millisecond):
+			}
+			if strings.Contains(out.String(), " listening on ") {
+				return out.String()
+			}
+		}
+	}
+
+	if out := second(); !strings.Contains(out, "a daemon is already listening") {
+		t.Fatalf("at the default daemon.socketProbeTimeout a second daemon should find the live one and refuse:\n%s", out)
+	}
+	out := second("MCPX_DAEMON_SOCKET_PROBE_TIMEOUT=1ns")
+	if !strings.Contains(out, "removing stale socket") || !strings.Contains(out, " listening on ") {
+		t.Fatalf("daemon.socketProbeTimeout=1ns should take the live socket for stale and listen on it:\n%s", out)
 	}
 }
 
