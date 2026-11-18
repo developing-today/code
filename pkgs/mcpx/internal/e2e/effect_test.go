@@ -39,132 +39,137 @@ import (
 // in the surface group that observes them, next to their neighbours.
 
 var implementedEffectProbes = map[string]string{
-	"pool.max":                   "TestPoolDefaultsAreReachableFromTheEnvironment",
-	"pool.sharing":               "TestPoolDefaultsAreReachableFromTheEnvironment",
-	"pool.scope":                 "TestPoolDefaultsAreReachableFromTheEnvironment",
-	"output.json":                "TestOutputJSONIsReachableFromTheEnvironment",
-	"script.prefix":              "TestScriptPrefixIsReachableFromTheEnvironment",
-	"script.cwd":                 "TestScriptCwdIsReachableFromTheEnvironment",
-	"script.interpreter":         "TestScriptInterpreterIsReachableFromTheEnvironment",
-	"script.env":                 "TestScriptEnvIsReachableFromTheEnvironment",
-	"script.devshell":            "TestScriptDevshellIsReachableFromTheEnvironment",
-	"script.captureConsole":      "TestScriptCaptureConsoleOffDropsConsoleOutput",
-	"script.check":               "TestScriptTypecheckOnRefusesATypeError",
-	"logging.file":               "TestLoggingFileOffWritesNoDurableLog",
-	"plumbing.strictUnknownKeys": "TestStrictUnknownKeysRefusesATypo",
-	"paths.state":                "TestStateDirectoryIsReachableAsASetting",
-	"paths.configFile":           "TestPathsConfigFileChangesWhichConfigLoads",
-	"paths.scripts":              "TestPathsScriptsFindsRecipesThatLiveOnlyThere",
-	"paths.cache":                "TestPathsCacheChangesTheDoctorDirectory",
-	"paths.plugins":              "TestPathsPluginsDiscoversAPluginThatLivesOnlyThere",
-	"search.limit":               "TestSearchLimitCapsTheResults",
-	"registry.pageSize":          "TestRegistryPageSizeChangesWhatTheCLIAsksFor",
-	"registry.limit":             "TestRegistryLimitReachesTheCLI",
-	"registry.maxPages":          "TestTheRegistryPageCapSaysItStoppedEarly",
-	"registry.url":               "TestRegistryPageSizeChangesWhatTheCLIAsksFor",
-	"deps.source":                "TestDepsSourceNoneDropsTheManifestLayer",
-	"deps.manifest":              "TestDepsManifestNamesTheManifestResolutionReads",
-	"deps.packages":              "TestDepsPackagesPinContradictingTheManifestFailsTheRun",
-	"paths.deps":                 "TestPathsDepsExtendsManifestDiscovery",
-	"proxy.timeout":              "TestProxyUpstreamTimeoutIsReachableFromTheEnvironment",
-	"tasks.maxAge":               "TestTasksMaxAgeIsReachableFromEnvironment",
-	"stats.top":                  "TestStatsTopLimitsTheRowsTheStatsAPIReports",
-	"proto.askPoll":              "TestAskPollCeilingIsReachableFromTheEnvironment",
-	"proto.askRounds":            "TestAskRoundsLimitIsReachableFromTheEnvironment",
-	"proto.askTTL":               "TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment",
-	"proto.askTimeout":           "TestAskTimeoutReleasesAHeldRequestFromTheEnvironment",
-	"proto.stateTTL":             "TestStateTTLExpiresAResumableRequestFromTheEnvironment",
-	"proto.sessionIdle":          "TestSessionIdleReapsAnUnusedSessionFromTheEnvironment",
-	"proto.mcpPath":              "TestMCPPathMovesTheEndpointFromTheEnvironment",
-	"proto.native":               "TestNativeAsksTheCallingClientFromTheEnvironment",
-	"protoMessages.listMaxAge":   "TestListMaxAgeSetsTheListCacheHintFromTheEnvironment",
-	"protoMessages.readMaxAge":   "TestReadMaxAgeSetsTheReadCacheHintFromTheEnvironment",
-	"protoMessages.taskAfter":    "TestTaskAfterHandsASlowCallATaskFromTheEnvironment",
-	"protoTasks.pollInterval":    "TestTaskPollIntervalSetsTheTaskPollHintFromTheEnvironment",
-	"spec.first":                 "TestTheRevisionPolicyDecidesWhetherProgressKeepsItsMessage",
-	"spec.lenient":               "TestTheRevisionPolicyDecidesWhetherAServerInitiatedRequestIsAnswered",
-	"spec.precedence":            "TestSpecPrecedenceDecidesWhetherProgressKeepsItsMessageFromTheEnvironment",
-	"exec.maxOutputBytes":        "TestExecMaxOutputBytesCapsStdoutFromTheEnvironment",
-	"exec.timeout":               "TestExecTimeoutStopsALongScriptFromTheEnvironment",
-	"exec.output":                "TestExecOutputShapesTheResultFromTheEnvironment",
-	"mcp.pageSize":               "TestMCPPageSizePagesToolsListFromTheEnvironment",
-	"mcp.passthrough":            "TestMCPPassthroughServesANamespaceDirectlyFromTheEnvironment",
-	"completion.perMinute":       "TestCompletionPerMinuteLimitsOneCallerFromTheEnvironment",
-	"completion.serverPerMinute": "TestCompletionServerPerMinuteLimitsAllCallersFromTheEnvironment",
-	"logstore.queryLimit":        "TestLogstoreQueryLimitBoundsALogQueryFromTheEnvironment",
-	"recipes.minScore":           "TestRecipesMinScoreRefusesAWeakMatchFromTheEnvironment",
-	"recipes.matchMargin":        "TestRecipesMatchMarginSettlesATieFromTheEnvironment",
-	"recipes.limit":              "TestRecipesLimitBoundsTheRankingFromTheEnvironment",
-	"tasks.ttl":                  "TestTasksTTLSetsAnExecTasksRetentionFromTheEnvironment",
-	"tasks.resultWait":           "TestTasksResultWaitBoundsCollectingAResultFromTheEnvironment",
-	"protoTasks.maxTTL":          "TestProtoTasksMaxTTLClampsATasksRetentionFromTheEnvironment",
-	"protoTasks.maxPerRequestor": "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
-	"protoTasks.perMinute":       "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
-	"events.history":             "TestEventsHistoryBoundsTheReplay",
-	"artifacts.chunkBytes":       "TestArtifactsChunkBytesSplitsAStreamedBody",
-	"script.launcher":            "TestScriptLauncherReplacesTheLauncher",
-	"paths.placeholders":         "TestPathsPlaceholdersDeclaresALauncherPlaceholder",
-	"artifacts.interceptImages":  "TestArtifactsInterceptImagesStoresAnEmittedImage",
-	"plumbing.indexOnQuery":      "TestPlumbingIndexOnQueryIngestsBeforeALogQuery",
-	"plumbing.validatePaths":     "TestPlumbingValidatePathsChecksTheLogDirUpFront",
-	"script.language":            "TestScriptLanguageRunsPython",
-	"logging.trace":              "TestLoggingTraceLogsEachCall",
-	"exec.where":                 "TestExecWhereRemoteRunsOnTheDaemon",
-	"paths.adapters":             "TestPathsAdaptersFindsADeclarationFile",
-	"paths.apis":                 "TestPathsAPIsFindsADeclarationFile",
-	"script.runtime":             "TestScriptRuntimeSelectsTheRuntime",
-	"script.runtimeOrder":        "TestScriptRuntimeOrderRanksTheAutoPick",
-	"script.permissions":         "TestScriptPermissionsSandboxesNode",
-	"script.profiles":            "TestScriptProfilesDefinesAProfile",
-	"script.runtimes":            "TestScriptRuntimesDeclaresARuntime",
-	"script.before":              "TestScriptPhasesRunFromTheEnvironment",
-	"script.onSuccess":           "TestScriptPhasesRunFromTheEnvironment",
-	"script.onError":             "TestScriptPhasesRunFromTheEnvironment",
-	"script.suffix":              "TestScriptPhasesRunFromTheEnvironment",
-	"hooks":                      "TestHooksRunOnTheirEvent",
-	"hooks.timeout":              "TestHooksTimeoutStopsASlowHook",
-	"daemon.ui":                  "TestDaemonUITurnsTheDashboardOff",
-	"daemon.uiDir":               "TestDaemonUIDirOverridesTheDashboard",
-	"logging.level":              "TestLoggingLevelShowsDebugRecords",
-	"logging.format":             "TestLoggingFormatRendersJSON",
-	"logging.source":             "TestLoggingSourceAddsTheCallSite",
-	"logging.dir":                "TestLoggingDirHoldsTheDurableLog",
-	"logging.include":            "TestLoggingIncludeChoosesTheAmbientBlocks",
-	"logging.maxLines":           "TestLoggingMaxLinesRotatesTheFile",
-	"logging.maxBytes":           "TestLoggingMaxBytesRotatesTheFile",
-	"logging.keep":               "TestLoggingKeepPrunesRotatedFiles",
-	"artifacts.enabled":          "TestArtifactsEnabledGatesTheStore",
-	"artifacts.maxBytes":         "TestArtifactsMaxBytesRefusesALargeArtifact",
-	"artifacts.quota":            "TestArtifactsQuotaBoundsTheStore",
-	"artifacts.delivery":         "TestArtifactsDeliveryInlinesTheBody",
-	"artifacts.inlineMaxBytes":   "TestArtifactsInlineMaxBytesBoundsAnInlinedBody",
-	"artifacts.dir":              "TestArtifactsDirReceivesTheRunsArtifacts",
-	"preset":                     "TestPresetSelectsADefinedBundle",
-	"serve.mode":                 "TestServeModeSelectsTheServedSurface",
-	"presets":                    "TestPresetsDefinesNamedFlagBundles",
-	"catalog.budget":             "TestCatalogBudgetFitsTheSignatures",
-	"catalog.bias":               "TestCatalogBiasPicksWhatATightBudgetShows",
-	"catalog.pinnedTools":        "TestCatalogPinnedToolsAlwaysListInReactiveMode",
-	"retention.maxTools":         "TestRetentionMaxToolsCapsTheReactiveWorkingSet",
-	"diagnose.history":           "TestDiagnoseHistoryCapsRecordedSchemaChanges",
-	"diagnose.preflight":         "TestDiagnosePreflightStopsAMismatchedScript",
-	"proto.serveMCP":             "TestServeMCPUnmountsTheEndpointFromTheEnvironment",
-	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
-	"daemon.autostart":           "TestDaemonAutostartIsReachableFromTheEnvironment",
-	"http.bodyLimit":             "TestHTTPBodyLimitsRejectOversizedBodies",
-	"http.callBodyLimit":         "TestHTTPBodyLimitsRejectOversizedBodies",
-	"http.controlBodyLimit":      "TestHTTPBodyLimitsRejectOversizedBodies",
-	"http.ssePing":               "TestHTTPEventStreamSettingsChangeTheStream",
-	"http.sseRetry":              "TestHTTPEventStreamSettingsChangeTheStream",
-	"http.readHeaderTimeout":     "TestHTTPReadHeaderTimeoutClosesSlowClients",
-	"http.shutdownGrace":         "TestHTTPShutdownGraceBoundsHowLongAStopWaits",
-	"http.requestTimeout":        "TestHTTPRequestTimeoutBoundsAClientCall",
-	"http.streamBufferMax":       "TestHTTPStreamBufferMaxEndsAnOversizedEventLine",
-	"transport.bearerToken":      "TestTransportBearerTokenGatesTheDaemon",
-	"transport.allowedOrigins":   "TestTransportAllowedOriginsAreServed",
-	"transport.sessionMetaKeys":  "TestTransportSessionMetaKeysNameTheSession",
-	"transport.sseKeepAlive":     "TestTransportSSEKeepAliveCommentsOnAQuietStream",
-	"transport.stdioDrain":       "TestTransportStdioDrainBoundsServeShutdown",
+	"pool.max":                           "TestPoolDefaultsAreReachableFromTheEnvironment",
+	"pool.sharing":                       "TestPoolDefaultsAreReachableFromTheEnvironment",
+	"pool.scope":                         "TestPoolDefaultsAreReachableFromTheEnvironment",
+	"output.json":                        "TestOutputJSONIsReachableFromTheEnvironment",
+	"script.prefix":                      "TestScriptPrefixIsReachableFromTheEnvironment",
+	"script.cwd":                         "TestScriptCwdIsReachableFromTheEnvironment",
+	"script.interpreter":                 "TestScriptInterpreterIsReachableFromTheEnvironment",
+	"script.env":                         "TestScriptEnvIsReachableFromTheEnvironment",
+	"script.devshell":                    "TestScriptDevshellIsReachableFromTheEnvironment",
+	"script.captureConsole":              "TestScriptCaptureConsoleOffDropsConsoleOutput",
+	"script.check":                       "TestScriptTypecheckOnRefusesATypeError",
+	"logging.file":                       "TestLoggingFileOffWritesNoDurableLog",
+	"plumbing.strictUnknownKeys":         "TestStrictUnknownKeysRefusesATypo",
+	"paths.state":                        "TestStateDirectoryIsReachableAsASetting",
+	"paths.configFile":                   "TestPathsConfigFileChangesWhichConfigLoads",
+	"paths.scripts":                      "TestPathsScriptsFindsRecipesThatLiveOnlyThere",
+	"paths.cache":                        "TestPathsCacheChangesTheDoctorDirectory",
+	"paths.plugins":                      "TestPathsPluginsDiscoversAPluginThatLivesOnlyThere",
+	"search.limit":                       "TestSearchLimitCapsTheResults",
+	"registry.pageSize":                  "TestRegistryPageSizeChangesWhatTheCLIAsksFor",
+	"registry.limit":                     "TestRegistryLimitReachesTheCLI",
+	"registry.maxPages":                  "TestTheRegistryPageCapSaysItStoppedEarly",
+	"registry.url":                       "TestRegistryPageSizeChangesWhatTheCLIAsksFor",
+	"deps.source":                        "TestDepsSourceNoneDropsTheManifestLayer",
+	"deps.manifest":                      "TestDepsManifestNamesTheManifestResolutionReads",
+	"deps.packages":                      "TestDepsPackagesPinContradictingTheManifestFailsTheRun",
+	"paths.deps":                         "TestPathsDepsExtendsManifestDiscovery",
+	"proxy.timeout":                      "TestProxyUpstreamTimeoutIsReachableFromTheEnvironment",
+	"tasks.maxAge":                       "TestTasksMaxAgeIsReachableFromEnvironment",
+	"stats.top":                          "TestStatsTopLimitsTheRowsTheStatsAPIReports",
+	"proto.askPoll":                      "TestAskPollCeilingIsReachableFromTheEnvironment",
+	"proto.askRounds":                    "TestAskRoundsLimitIsReachableFromTheEnvironment",
+	"proto.askTTL":                       "TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment",
+	"proto.askTimeout":                   "TestAskTimeoutReleasesAHeldRequestFromTheEnvironment",
+	"proto.stateTTL":                     "TestStateTTLExpiresAResumableRequestFromTheEnvironment",
+	"proto.sessionIdle":                  "TestSessionIdleReapsAnUnusedSessionFromTheEnvironment",
+	"proto.mcpPath":                      "TestMCPPathMovesTheEndpointFromTheEnvironment",
+	"proto.native":                       "TestNativeAsksTheCallingClientFromTheEnvironment",
+	"protoMessages.listMaxAge":           "TestListMaxAgeSetsTheListCacheHintFromTheEnvironment",
+	"protoMessages.readMaxAge":           "TestReadMaxAgeSetsTheReadCacheHintFromTheEnvironment",
+	"protoMessages.taskAfter":            "TestTaskAfterHandsASlowCallATaskFromTheEnvironment",
+	"protoTasks.pollInterval":            "TestTaskPollIntervalSetsTheTaskPollHintFromTheEnvironment",
+	"spec.first":                         "TestTheRevisionPolicyDecidesWhetherProgressKeepsItsMessage",
+	"spec.lenient":                       "TestTheRevisionPolicyDecidesWhetherAServerInitiatedRequestIsAnswered",
+	"spec.precedence":                    "TestSpecPrecedenceDecidesWhetherProgressKeepsItsMessageFromTheEnvironment",
+	"exec.maxOutputBytes":                "TestExecMaxOutputBytesCapsStdoutFromTheEnvironment",
+	"exec.timeout":                       "TestExecTimeoutStopsALongScriptFromTheEnvironment",
+	"exec.output":                        "TestExecOutputShapesTheResultFromTheEnvironment",
+	"mcp.pageSize":                       "TestMCPPageSizePagesToolsListFromTheEnvironment",
+	"mcp.passthrough":                    "TestMCPPassthroughServesANamespaceDirectlyFromTheEnvironment",
+	"completion.perMinute":               "TestCompletionPerMinuteLimitsOneCallerFromTheEnvironment",
+	"completion.serverPerMinute":         "TestCompletionServerPerMinuteLimitsAllCallersFromTheEnvironment",
+	"logstore.queryLimit":                "TestLogstoreQueryLimitBoundsALogQueryFromTheEnvironment",
+	"recipes.minScore":                   "TestRecipesMinScoreRefusesAWeakMatchFromTheEnvironment",
+	"recipes.matchMargin":                "TestRecipesMatchMarginSettlesATieFromTheEnvironment",
+	"recipes.limit":                      "TestRecipesLimitBoundsTheRankingFromTheEnvironment",
+	"tasks.ttl":                          "TestTasksTTLSetsAnExecTasksRetentionFromTheEnvironment",
+	"tasks.resultWait":                   "TestTasksResultWaitBoundsCollectingAResultFromTheEnvironment",
+	"protoTasks.maxTTL":                  "TestProtoTasksMaxTTLClampsATasksRetentionFromTheEnvironment",
+	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
+	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
+	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"plumbing.launcherPlaceholderRepeat": "TestPlumbingLauncherPlaceholderRepeatAllowsATwiceUsedName",
+	"plumbing.allowTsJsOverlap":          "TestPlumbingAllowTsJsOverlapPicksAmbiguousScripts",
+	"plumbing.sourceDirAllowed":          "TestPlumbingSourceDirAllowedTakesADirectoryAsSource",
+	"plumbing.sourceDirRecursive":        "TestPlumbingSourceDirRecursiveReadsSubdirectories",
+	"plumbing.sourceProbePaths":          "TestPlumbingSourceProbePathsReadsANamedFile",
+	"artifacts.chunkBytes":               "TestArtifactsChunkBytesSplitsAStreamedBody",
+	"script.launcher":                    "TestScriptLauncherReplacesTheLauncher",
+	"paths.placeholders":                 "TestPathsPlaceholdersDeclaresALauncherPlaceholder",
+	"artifacts.interceptImages":          "TestArtifactsInterceptImagesStoresAnEmittedImage",
+	"plumbing.indexOnQuery":              "TestPlumbingIndexOnQueryIngestsBeforeALogQuery",
+	"plumbing.validatePaths":             "TestPlumbingValidatePathsChecksTheLogDirUpFront",
+	"script.language":                    "TestScriptLanguageRunsPython",
+	"logging.trace":                      "TestLoggingTraceLogsEachCall",
+	"exec.where":                         "TestExecWhereRemoteRunsOnTheDaemon",
+	"paths.adapters":                     "TestPathsAdaptersFindsADeclarationFile",
+	"paths.apis":                         "TestPathsAPIsFindsADeclarationFile",
+	"script.runtime":                     "TestScriptRuntimeSelectsTheRuntime",
+	"script.runtimeOrder":                "TestScriptRuntimeOrderRanksTheAutoPick",
+	"script.permissions":                 "TestScriptPermissionsSandboxesNode",
+	"script.profiles":                    "TestScriptProfilesDefinesAProfile",
+	"script.runtimes":                    "TestScriptRuntimesDeclaresARuntime",
+	"script.before":                      "TestScriptPhasesRunFromTheEnvironment",
+	"script.onSuccess":                   "TestScriptPhasesRunFromTheEnvironment",
+	"script.onError":                     "TestScriptPhasesRunFromTheEnvironment",
+	"script.suffix":                      "TestScriptPhasesRunFromTheEnvironment",
+	"hooks":                              "TestHooksRunOnTheirEvent",
+	"hooks.timeout":                      "TestHooksTimeoutStopsASlowHook",
+	"daemon.ui":                          "TestDaemonUITurnsTheDashboardOff",
+	"daemon.uiDir":                       "TestDaemonUIDirOverridesTheDashboard",
+	"logging.level":                      "TestLoggingLevelShowsDebugRecords",
+	"logging.format":                     "TestLoggingFormatRendersJSON",
+	"logging.source":                     "TestLoggingSourceAddsTheCallSite",
+	"logging.dir":                        "TestLoggingDirHoldsTheDurableLog",
+	"logging.include":                    "TestLoggingIncludeChoosesTheAmbientBlocks",
+	"logging.maxLines":                   "TestLoggingMaxLinesRotatesTheFile",
+	"logging.maxBytes":                   "TestLoggingMaxBytesRotatesTheFile",
+	"logging.keep":                       "TestLoggingKeepPrunesRotatedFiles",
+	"artifacts.enabled":                  "TestArtifactsEnabledGatesTheStore",
+	"artifacts.maxBytes":                 "TestArtifactsMaxBytesRefusesALargeArtifact",
+	"artifacts.quota":                    "TestArtifactsQuotaBoundsTheStore",
+	"artifacts.delivery":                 "TestArtifactsDeliveryInlinesTheBody",
+	"artifacts.inlineMaxBytes":           "TestArtifactsInlineMaxBytesBoundsAnInlinedBody",
+	"artifacts.dir":                      "TestArtifactsDirReceivesTheRunsArtifacts",
+	"preset":                             "TestPresetSelectsADefinedBundle",
+	"serve.mode":                         "TestServeModeSelectsTheServedSurface",
+	"presets":                            "TestPresetsDefinesNamedFlagBundles",
+	"catalog.budget":                     "TestCatalogBudgetFitsTheSignatures",
+	"catalog.bias":                       "TestCatalogBiasPicksWhatATightBudgetShows",
+	"catalog.pinnedTools":                "TestCatalogPinnedToolsAlwaysListInReactiveMode",
+	"retention.maxTools":                 "TestRetentionMaxToolsCapsTheReactiveWorkingSet",
+	"diagnose.history":                   "TestDiagnoseHistoryCapsRecordedSchemaChanges",
+	"diagnose.preflight":                 "TestDiagnosePreflightStopsAMismatchedScript",
+	"proto.serveMCP":                     "TestServeMCPUnmountsTheEndpointFromTheEnvironment",
+	"daemon.address":                     "TestDaemonAddressIsReachableFromTheEnvironment",
+	"daemon.autostart":                   "TestDaemonAutostartIsReachableFromTheEnvironment",
+	"http.bodyLimit":                     "TestHTTPBodyLimitsRejectOversizedBodies",
+	"http.callBodyLimit":                 "TestHTTPBodyLimitsRejectOversizedBodies",
+	"http.controlBodyLimit":              "TestHTTPBodyLimitsRejectOversizedBodies",
+	"http.ssePing":                       "TestHTTPEventStreamSettingsChangeTheStream",
+	"http.sseRetry":                      "TestHTTPEventStreamSettingsChangeTheStream",
+	"http.readHeaderTimeout":             "TestHTTPReadHeaderTimeoutClosesSlowClients",
+	"http.shutdownGrace":                 "TestHTTPShutdownGraceBoundsHowLongAStopWaits",
+	"http.requestTimeout":                "TestHTTPRequestTimeoutBoundsAClientCall",
+	"http.streamBufferMax":               "TestHTTPStreamBufferMaxEndsAnOversizedEventLine",
+	"transport.bearerToken":              "TestTransportBearerTokenGatesTheDaemon",
+	"transport.allowedOrigins":           "TestTransportAllowedOriginsAreServed",
+	"transport.sessionMetaKeys":          "TestTransportSessionMetaKeysNameTheSession",
+	"transport.sseKeepAlive":             "TestTransportSSEKeepAliveCommentsOnAQuietStream",
+	"transport.stdioDrain":               "TestTransportStdioDrainBoundsServeShutdown",
 }
 
 // effectProbeFuncs anchors every declared probe name to the actual
@@ -234,6 +239,11 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":        TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                 TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                          TestEventsHistoryBoundsTheReplay,
+	"TestPlumbingLauncherPlaceholderRepeatAllowsATwiceUsedName":                 TestPlumbingLauncherPlaceholderRepeatAllowsATwiceUsedName,
+	"TestPlumbingAllowTsJsOverlapPicksAmbiguousScripts":                         TestPlumbingAllowTsJsOverlapPicksAmbiguousScripts,
+	"TestPlumbingSourceDirAllowedTakesADirectoryAsSource":                       TestPlumbingSourceDirAllowedTakesADirectoryAsSource,
+	"TestPlumbingSourceDirRecursiveReadsSubdirectories":                         TestPlumbingSourceDirRecursiveReadsSubdirectories,
+	"TestPlumbingSourceProbePathsReadsANamedFile":                               TestPlumbingSourceProbePathsReadsANamedFile,
 	"TestArtifactsChunkBytesSplitsAStreamedBody":                                TestArtifactsChunkBytesSplitsAStreamedBody,
 	"TestScriptLauncherReplacesTheLauncher":                                     TestScriptLauncherReplacesTheLauncher,
 	"TestPathsPlaceholdersDeclaresALauncherPlaceholder":                         TestPathsPlaceholdersDeclaresALauncherPlaceholder,
@@ -2460,10 +2470,17 @@ func TestArtifactsChunkBytesSplitsAStreamedBody(t *testing.T) {
 // environment, and returns its stdout.
 func launcherRun(t *testing.T, launcher string, env ...string) (string, error) {
 	t.Helper()
-	e := newEnv(t, oneServer)
 	file := filepath.Join(t.TempDir(), "launcher.ts")
 	mustWrite(t, file, launcher)
-	e.setenv(append([]string{"MCPX_SCRIPT_LAUNCHER=" + file}, env...)...)
+	return launcherAt(t, file, env...)
+}
+
+// launcherAt runs a one-line script with script.launcher set to source,
+// which may be a file, a directory or inline text, and returns its stdout.
+func launcherAt(t *testing.T, source string, env ...string) (string, error) {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(append([]string{"MCPX_SCRIPT_LAUNCHER=" + source}, env...)...)
 	script := filepath.Join(e.dir, "launched.ts")
 	mustWrite(t, script, `console.log("script-ran")`)
 	out, _, err := e.split("run", script)
@@ -2496,6 +2513,93 @@ func TestPathsPlaceholdersDeclaresALauncherPlaceholder(t *testing.T) {
 	mustWrite(t, filepath.Join(dir, "greet.ts"), `console.log("greeted");`)
 	if out, err := launcherRun(t, "@greet\n", "MCPX_PATHS_PLACEHOLDERS="+dir); err != nil || !strings.Contains(out, "greeted") {
 		t.Errorf("paths.placeholders should make @greet run greet.ts (err %v):\n%s", err, out)
+	}
+}
+
+// TestPlumbingLauncherPlaceholderRepeatAllowsATwiceUsedName is the effect
+// probe for plumbing.launcherPlaceholderRepeat: a launcher that uses @greet
+// twice is refused by default and runs it twice once greet is listed.
+func TestPlumbingLauncherPlaceholderRepeatAllowsATwiceUsedName(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "greet.ts"), `console.log("greeted");`)
+	if out, err := launcherRun(t, "@greet\n@greet\n", "MCPX_PATHS_PLACEHOLDERS="+dir); err == nil {
+		t.Errorf("a placeholder used twice should be refused by default:\n%s", out)
+	}
+	out, err := launcherRun(t, "@greet\n@greet\n", "MCPX_PATHS_PLACEHOLDERS="+dir, "MCPX_PLUMBING_LAUNCHER_PLACEHOLDER_REPEAT=greet")
+	if err != nil || strings.Count(out, "greeted") != 2 {
+		t.Errorf("plumbing.launcherPlaceholderRepeat=greet should run @greet twice (err %v):\n%s", err, out)
+	}
+}
+
+// TestPlumbingAllowTsJsOverlapPicksAmbiguousScripts is the effect probe for
+// plumbing.allowTsJsOverlap: a script directory holding foo.ts and foo.js
+// makes `mcpx run foo` ambiguous by default, and runs once overlap is allowed.
+func TestPlumbingAllowTsJsOverlapPicksAmbiguousScripts(t *testing.T) {
+	run := func(env ...string) (string, string, error) {
+		e := newEnv(t, oneServer)
+		dir := t.TempDir()
+		mustWrite(t, filepath.Join(dir, "foo.ts"), `console.log("ts")`)
+		mustWrite(t, filepath.Join(dir, "foo.js"), `console.log("js")`)
+		e.setenv(append([]string{"MCPX_PATHS_SCRIPTS=" + dir}, env...)...)
+		return e.split("run", "foo")
+	}
+	if _, se, err := run(); err == nil || !strings.Contains(se, "ambiguous") {
+		t.Errorf("foo.ts beside foo.js should be ambiguous by default (err %v):\n%s", err, se)
+	}
+	if out, se, err := run("MCPX_PLUMBING_ALLOW_TS_JS_OVERLAP=true"); err != nil {
+		t.Errorf("plumbing.allowTsJsOverlap should let foo run (err %v):\n%s%s", err, out, se)
+	}
+}
+
+// launcherDir is a directory of launcher fragments: a.ts at the top and
+// b.ts one level down.
+func launcherDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(dir, "a.ts"), `console.log("dir-a");`)
+	mustWrite(t, filepath.Join(dir, "sub", "b.ts"), `console.log("dir-b");`)
+	return dir
+}
+
+// TestPlumbingSourceDirAllowedTakesADirectoryAsSource is the effect probe
+// for plumbing.sourceDirAllowed: a directory given as the launcher is read
+// by default and refused once directories are not allowed.
+func TestPlumbingSourceDirAllowedTakesADirectoryAsSource(t *testing.T) {
+	dir := launcherDir(t)
+	if out, err := launcherAt(t, dir); err != nil || !strings.Contains(out, "dir-a") {
+		t.Errorf("a directory should stand in for the launcher by default (err %v):\n%s", err, out)
+	}
+	if out, err := launcherAt(t, dir, "MCPX_PLUMBING_SOURCE_DIR_ALLOWED=false"); err == nil || strings.Contains(out, "dir-a") {
+		t.Errorf("plumbing.sourceDirAllowed=false should refuse the directory (err %v):\n%s", err, out)
+	}
+}
+
+// TestPlumbingSourceDirRecursiveReadsSubdirectories is the effect probe for
+// plumbing.sourceDirRecursive: a directory launcher reads only its top level
+// by default, and its subdirectories too when recursion is on.
+func TestPlumbingSourceDirRecursiveReadsSubdirectories(t *testing.T) {
+	dir := launcherDir(t)
+	if out, err := launcherAt(t, dir); err != nil || strings.Contains(out, "dir-b") {
+		t.Errorf("by default the subdirectory should not be read (err %v):\n%s", err, out)
+	}
+	if out, err := launcherAt(t, dir, "MCPX_PLUMBING_SOURCE_DIR_RECURSIVE=true"); err != nil || !strings.Contains(out, "dir-b") {
+		t.Errorf("plumbing.sourceDirRecursive should read sub/b.ts (err %v):\n%s", err, out)
+	}
+}
+
+// TestPlumbingSourceProbePathsReadsANamedFile is the effect probe for
+// plumbing.sourceProbePaths: a launcher value naming a file is read from it
+// by default, and taken as inline source once probing is off.
+func TestPlumbingSourceProbePathsReadsANamedFile(t *testing.T) {
+	file := filepath.Join(launcherDir(t), "a.ts")
+	if out, err := launcherAt(t, file); err != nil || !strings.Contains(out, "dir-a") {
+		t.Errorf("a path should be read as a file by default (err %v):\n%s", err, out)
+	}
+	if out, err := launcherAt(t, file, "MCPX_PLUMBING_SOURCE_PROBE_PATHS=false"); err == nil || strings.Contains(out, "dir-a") {
+		t.Errorf("plumbing.sourceProbePaths=false should take the path as source text (err %v):\n%s", err, out)
 	}
 }
 
