@@ -148,7 +148,10 @@ fn content_to_document(
     let doc = match mode {
         ContentMode::Rich => {
             // Already ProseMirror JSON - parse it directly
-            serde_json::from_str(&text).unwrap_or_else(|_| {
+            // A duplicated key would collapse to its last value here and
+            // differ from the bytes stored, so it falls back like any
+            // other unparseable content (#8794).
+            id_core::json_unique::parse_json_without_duplicate_keys(&text).unwrap_or_else(|_| {
                 serde_json::json!({
                     "type": "doc",
                     "content": [{"type": "paragraph"}]
@@ -2375,6 +2378,15 @@ mod tests {
         assert_eq!(mode, ContentMode::Raw);
         assert_eq!(doc["type"], "doc");
         assert!(doc["content"].as_array().is_some());
+    }
+
+    #[test]
+    fn rich_content_with_a_duplicated_key_falls_back_to_an_empty_document() {
+        let content = br#"{"type":"doc","type":"paragraph","content":[]}"#;
+        let (doc, mode) = content_to_document(Some(content), Some("note.pm.json"));
+        assert_eq!(mode, ContentMode::Rich);
+        assert_eq!(doc["type"], "doc");
+        assert_eq!(doc["content"][0]["type"], "paragraph");
     }
 
     #[allow(clippy::unwrap_used)]
