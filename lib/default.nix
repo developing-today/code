@@ -665,12 +665,64 @@ let
       ) justRecipes.recipes;
 
       mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix { };
+      mcpxContainerBinary = pkgs.callPackage ../pkgs/mcpx/package.nix {
+        wrapWithRuntimes = false;
+        doCheck = false;
+      };
       mcpxContainer = pkgs.callPackage ../pkgs/mcpx/container-image.nix {
-        mcpx = pkgs.callPackage ../pkgs/mcpx/package.nix {
-          wrapWithRuntimes = false;
-          doCheck = false;
+        mcpx = mcpxContainerBinary;
+      };
+      mcpxTestImage = pkgs.dockerTools.buildLayeredImage {
+        name = "mcpx-e2e-test";
+        tag = "ci";
+        # This is a test harness, not the shipped image: Go builds the fake
+        # MCP server at test time, and the suite requires all wrapped runtimes.
+        # The mcpx executable is the same unwrapped artifact used by the user
+        # image; source is mounted read-only by the workflow.
+        contents = with pkgs; [
+          bash
+          bun
+          cacert
+          coreutils
+          deno
+          git
+          go_1_27
+          mcpxContainerBinary
+          nodejs
+          python3
+        ];
+        extraCommands = ''
+          mkdir -p tmp work
+          chmod 1777 tmp work
+        '';
+        config = {
+          Entrypoint = [ "${pkgs.bash}/bin/bash" ];
+          Cmd = [
+            "-lc"
+            "cd /workspace/pkgs/mcpx && go test ./internal/e2e -count=1 -timeout 30m"
+          ];
+          User = "0:0";
+          WorkingDir = "/workspace";
+          Env = [
+            "HOME=/tmp"
+            "MCPX_TEST_BINARY=${mcpxContainerBinary}/bin/mcpx"
+            "MCPX_TEST_REQUIRE=deno,bun,node,python3"
+            "PATH=${pkgs.lib.makeBinPath (with pkgs; [ bash bun coreutils deno git go_1_27 nodejs python3 ])}:${mcpxContainerBinary}/bin"
+            "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+          ];
         };
       };
+      mcpxE2ECheck = mcpx.overrideAttrs (_old: {
+        pname = "mcpx-e2e-check";
+        doCheck = true;
+        checkPhase = ''
+          runHook preCheck
+          export MCPX_TEST_BINARY=${mcpx}/bin/mcpx
+          export MCPX_TEST_REQUIRE=deno,bun,node,python3
+          go test ./internal/e2e -count=1 -timeout 30m
+          runHook postCheck
+        '';
+      });
       identity = pkgs.callPackage ../pkgs/identity/package.nix { };
       identityImage = pkgs.callPackage ../pkgs/identity/container-image.nix {
         inherit identity;
@@ -739,6 +791,8 @@ let
         generic-runtime = genericRuntime;
         generic-js-runtime = genericJsRuntime;
         generic-python-runtime = genericPythonRuntime;
+      } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+        mcpx-e2e-test-image = mcpxTestImage;
       };
       checks = {
         # The packaging test (#1981): run the built mcpx artifact --
@@ -792,6 +846,11 @@ let
               bash scripts/just-recipes-root-check-test.sh
               touch $out
             '';
+      } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+        # Run the end-to-end suite against the wrapped flake artifact. This
+        # stays separate from the package checkPhase: those tests spawn daemon
+        # and runtime subprocess trees that do not fit that build's sandbox.
+        mcpx-e2e = mcpxE2ECheck;
       };
       apps = (pkgs.lib.mapAttrs mkRecipeApp publicRecipes) // {
         id-mail-deploy = mkApp idMailDeploy "Deploy the mail Worker from this checkout (needs Bitwarden and sops access)";
