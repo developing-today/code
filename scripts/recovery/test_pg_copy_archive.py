@@ -1,4 +1,4 @@
-import unittest, random, tempfile, sqlite3
+import unittest, random, tempfile, sqlite3, io
 from pathlib import Path
 from pg_copy_archive import decode,convert
 class ArchiveTests(unittest.TestCase):
@@ -22,6 +22,18 @@ class ArchiveTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d);s=p/'s';s.write_text('CREATE TABLE realtime.messages (\n    topic text NOT NULL,\n    id uuid DEFAULT gen_random_uuid() NOT NULL\n)\nPARTITION BY RANGE (id);\n')
             m=convert(s,p/'d',p/'r');self.assertEqual(m['tables']['realtime.messages']['columns'],['topic','id']);self.assertEqual(m['total_rows'],0)
+    def test_quoted_identifier_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d);s=p/'s';s.write_text('COPY public.t ("comma,name") FROM stdin;\n1\n\\.\n')
+            with self.assertRaises(ValueError):convert(s,p/'d',p/'r')
+    def test_source_change_rejected(self):
+        class Changing:
+            def open(self,mode='r',**kw):
+                text='COPY public.t (id) FROM stdin;\n1\n\\.\n'
+                return io.BytesIO(text.encode()) if mode=='rb' else io.StringIO(text+'-- changed\n')
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d)
+            with self.assertRaisesRegex(ValueError,'source changed'):convert(Changing(),p/'d',p/'r')
     def test_truncated_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d);s=p/'s';s.write_text('COPY public.t (id) FROM stdin;\n1\n')

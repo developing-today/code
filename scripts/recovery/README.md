@@ -7,3 +7,5 @@ Run locally with private source/output paths. Output must not already exist. No 
 Verification oracle: source decoded rows versus ordered SQLite readback, per-table SHA256 and row count; SQLite integrity_check. Source SQL SHA256 also recorded. Empty COPY tables are retained; DDL-only tables (e.g. a partitioned parent) are retained as empty all-TEXT tables with columns parsed from the DDL; no production defaults or partitioning is invented.
 
 `python3 -m unittest -v test_pg_copy_archive` tests COPY escapes, 1,000 deterministic randomly generated escaping round trips, null versus literal backslash-N, large integers and truncated streams. Malformed input fails, leaving an incomplete file for diagnosis; never deploy a file without the successful report. No destination records are overwritten.
+
+Supported COPY identifiers are unquoted ASCII SQL identifiers; quoted/comma-bearing names fail closed. Both complete source passes must have identical SHA256 or no success report is written. The inspected recovery source is immutable.

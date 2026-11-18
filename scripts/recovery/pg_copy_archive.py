@@ -55,7 +55,9 @@ def convert(src,dst,report):
                 elif line.startswith('COPY '):
                     m=re.fullmatch(r'COPY ([\w]+\.[\w]+) \(([^\n]+)\) FROM stdin;',line)
                     if not m: raise ValueError('unsupported COPY header')
-                    table=m[1]; cols=[x.strip().strip('"') for x in m[2].split(',')]
+                    table=m[1]
+                    if not re.fullmatch(r'[a-zA-Z_][a-zA-Z_0-9]*(?:, [a-zA-Z_][a-zA-Z_0-9]*)*',m[2]): raise ValueError('unsupported COPY identifiers')
+                    cols=m[2].split(', ')
                     if table in manifest['tables']: raise ValueError('duplicate COPY')
                     db.execute('CREATE TABLE '+quote(table)+' ('+','.join(quote(c)+' TEXT' for c in cols)+')')
                     sql='INSERT INTO '+quote(table)+' VALUES ('+','.join('?' for c in cols)+')'
@@ -63,8 +65,10 @@ def convert(src,dst,report):
         if table: raise ValueError('unterminated COPY')
         # Preserve DDL-only empty/partition-parent tables without executing DDL.
         ddl_name=None; ddl_cols=[]
-        with src.open() as f:
+        second_hash=hashlib.sha256()
+        with src.open(newline='') as f:
             for line in f:
+                second_hash.update(line.encode('utf8'))
                 match=re.fullmatch(r'CREATE TABLE ([\w]+\.[\w]+) \(\n',line)
                 if match: ddl_name=match[1];ddl_cols=[]
                 elif ddl_name:
@@ -77,6 +81,7 @@ def convert(src,dst,report):
                     elif line.startswith('    ') and not line.lstrip().startswith(('CONSTRAINT ', 'PRIMARY ', 'FOREIGN ', 'CHECK ', 'UNIQUE ')):
                         col=re.match(r'    ("(?:[^"]|"")+"|[a-zA-Z_][a-zA-Z_0-9]*) ',line)
                         if col: ddl_cols.append(col[1].strip('"'))
+        if second_hash.hexdigest()!=source_hash.hexdigest(): raise ValueError('source changed between passes')
         db.commit()
         for name,item in manifest['tables'].items():
             h=hashlib.sha256();count=0
