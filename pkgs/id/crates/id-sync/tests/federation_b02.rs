@@ -63,9 +63,10 @@ impl RefVerdict {
 }
 
 /// Minimal independent model: revocation intervals per subject, admission
-/// instants per record, and the sticky quarantine/flag transitions (only
-/// `AcceptedValid` records transition; later revocations never escalate
-/// an already-flagged/quarantined/revalidated record).
+/// instants per record, and the sticky quarantine/flag transitions
+/// (`AcceptedValid` records are flagged or quarantined; a later revocation
+/// covering a flagged record's admission escalates it to quarantined;
+/// quarantined and revalidated records never change on a revocation).
 #[derive(Debug, Default)]
 struct RefModel {
     /// key tag -> list of (from, until-or-None) intervals.
@@ -93,7 +94,8 @@ impl RefModel {
     fn sweep(&mut self, tag: &str, by_key: bool, from: u64) {
         for (ktag, ptag, admitted_at, verdict) in self.records.values_mut() {
             let hit = if by_key { ktag == tag } else { ptag == tag };
-            if hit && *verdict == RefVerdict::AcceptedValid {
+            let escalate = *verdict == RefVerdict::FlaggedIndeterminate && *admitted_at >= from;
+            if hit && (*verdict == RefVerdict::AcceptedValid || escalate) {
                 *verdict = if *admitted_at >= from {
                     RefVerdict::QuarantinedIndeterminate
                 } else {
@@ -866,4 +868,37 @@ fn differential_against_reference_model() {
             check_against_reference(&reg, &model, &id_refs, &key_of, &peer_of, probe);
         }
     }
+}
+
+#[test]
+fn a_wider_revocation_escalates_a_flagged_record_to_quarantine() {
+    let (_ska, key_a) = keypair([3u8; 32]);
+    let mut reg = RevocationRegistry::new();
+    admit(&mut reg, "mid", key_a, "peer-1", 150, None);
+
+    // Suspected from 200: the record predates it and is only flagged.
+    reg.apply_revocation(key_revocation("narrow", key_a, 200, 210))
+        .expect("revocation must apply");
+    assert!(matches!(
+        status_of(&reg, "mid"),
+        RecordStatus::Flagged { .. }
+    ));
+
+    // Suspected from 100 after all: the record is now suspect.
+    assert_eq!(
+        reg.apply_revocation(key_revocation("wide", key_a, 100, 220)),
+        Ok(vec!["mid".to_string()])
+    );
+    assert!(matches!(
+        status_of(&reg, "mid"),
+        RecordStatus::Quarantined { .. }
+    ));
+
+    // Nothing de-escalates.
+    reg.apply_revocation(key_revocation("late", key_a, 300, 310))
+        .expect("revocation must apply");
+    assert!(matches!(
+        status_of(&reg, "mid"),
+        RecordStatus::Quarantined { .. }
+    ));
 }
