@@ -3150,6 +3150,20 @@ fn test_cli_parse_keyset_commands() {
             command: KeysetCommand::Rotate { client: false, .. }
         })
     ));
+    let guardians = Cli::parse_from(["id", "keyset", "guardians", "aa", "bb", "--threshold", "2"]);
+    let Some(Command::Keyset {
+        command:
+            KeysetCommand::Guardians {
+                guardians,
+                threshold,
+                client: false,
+            },
+    }) = guardians.command
+    else {
+        panic!("expected keyset guardians");
+    };
+    assert_eq!((guardians.len(), threshold), (2, 2));
+    assert!(Cli::try_parse_from(["id", "keyset", "guardians", "--threshold", "1"]).is_err());
     let checkpoint = Cli::parse_from(["id", "keyset", "checkpoint", "--client"]);
     assert!(matches!(
         checkpoint.command,

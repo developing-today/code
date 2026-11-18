@@ -1740,6 +1740,22 @@ pub enum KeysetCommand {
         #[arg(long)]
         client: bool,
     },
+    /// Name the guardians who can approve a recovery of this identity,
+    /// and how many must approve. Adding guardians or raising the
+    /// threshold takes effect at once; removing one or lowering the
+    /// threshold waits out the recovery delay, so a stolen admin key
+    /// cannot swap in guardians of its own.
+    Guardians {
+        /// Each guardian's identity ID (hex public key).
+        #[arg(required = true)]
+        guardians: Vec<String>,
+        /// How many of the guardians must approve a recovery.
+        #[arg(long)]
+        threshold: u32,
+        /// Change the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
     /// Checkpoint the current keyset head with this identity's key, which
     /// must be an active device key. The head becomes final here: a
     /// fork that later arrives can no longer displace it.
