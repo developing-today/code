@@ -944,6 +944,9 @@
         "deepseek-v4.1-flash": {
           "name": "DeepSeek V4.1 Flash"
         },
+        "deepseek-v4.1-flash-eco": {
+          "name": "DeepSeek V4.1 Flash Eco"
+        },
         "glm-5.3-flash": {
           "name": "GLM-5.3 Flash"
         },
@@ -2868,8 +2871,10 @@
                   // (~2026-12-06, 22d from 2026-11-14) or a fresh quota read shows
                   // monthly <100%, AND a live completion through the door proves
                   // it answers again.
+          // Drew, 2026-11-18: use OpenDesign Flash Eco (live /v1/models verified).
+          // Same plan/seat/tier; no paid fallback. Eco can be slower for batch work.
           {
-            "model": "opendesign/deepseek-v4.1-flash",
+            "model": "opendesign/deepseek-v4.1-flash-eco",
             "variants": { "xhigh": "high", "max": "high" }
           },
           "_commandcode/deepseek/deepseek-v4.1-flash"
@@ -2882,7 +2887,7 @@
         "weights": {
           "opencode-go-plans/glm-5.3": 4,
           "opencode-go-plans/deepseek-v4.1-flash": 2,
-          "opendesign/deepseek-v4.1-flash": 1,
+          "opendesign/deepseek-v4.1-flash-eco": 1,
           "_commandcode/deepseek/deepseek-v4.1-flash": 1
         },
         // #7927 (task 14574): the 10s default first-output deadline mass-killed
