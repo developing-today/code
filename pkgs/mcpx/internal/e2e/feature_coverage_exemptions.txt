@@ -19,7 +19,6 @@ cli	stdio-proxy	no integration-test exercise yet; burn-down #8461 (cli daemon gr
 cli	supervise	no integration-test exercise yet; burn-down #8461 (cli daemon group)
 cli	upgrade	no integration-test exercise yet; burn-down #8461 (cli daemon group)
 setting	daemon.inlineStartPoll	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
-setting	daemon.roots	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.socketProbeTimeout	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.takeoverTimeout	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.tsnet.hostname	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test

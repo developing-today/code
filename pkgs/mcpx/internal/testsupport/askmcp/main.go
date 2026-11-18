@@ -173,6 +173,11 @@ func (s *server) handle(f frame) map[string]any {
 				"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
 			},
 			{
+				"name":        "need_roots",
+				"description": "Asks the client for its roots, then reports them.",
+				"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
+			},
+			{
 				"name":        "declared",
 				"description": "Reports the capabilities the client declared.",
 				"inputSchema": map[string]any{"type": "object", "properties": map[string]any{}},
@@ -299,6 +304,12 @@ func (s *server) callTool(f frame) map[string]any {
 			return fail(f.ID, -32603, err.Error())
 		}
 		return ok(f.ID, text("model said "+string(res)))
+	case "need_roots":
+		res, err := s.ask("roots/list", map[string]any{})
+		if err != nil {
+			return fail(f.ID, -32603, err.Error())
+		}
+		return ok(f.ID, text("roots "+string(res)))
 	case "declared":
 		s.mu.Lock()
 		b, _ := json.Marshal(s.clientCaps)

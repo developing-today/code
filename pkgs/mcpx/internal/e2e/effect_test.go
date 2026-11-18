@@ -104,6 +104,7 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"daemon.roots":                       "TestDaemonRootsAnswersAnUpstreamRootsRequest",
 	"prompt.sampleTimeout":               "TestPromptSampleTimeoutBoundsASamplingQuestion",
 	"prompt.sample":                      "TestPromptSampleAskLetsAnUnmatchedPromptSeekAModel",
 	"prompt.catalogBudget":               "TestPromptCatalogBudgetBoundsTheCatalogSentToTheModel",
@@ -311,6 +312,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestDaemonRootsAnswersAnUpstreamRootsRequest":                                   TestDaemonRootsAnswersAnUpstreamRootsRequest,
 	"TestPromptSampleTimeoutBoundsASamplingQuestion":                                 TestPromptSampleTimeoutBoundsASamplingQuestion,
 	"TestPromptSampleAskLetsAnUnmatchedPromptSeekAModel":                             TestPromptSampleAskLetsAnUnmatchedPromptSeekAModel,
 	"TestPromptCatalogBudgetBoundsTheCatalogSentToTheModel":                          TestPromptCatalogBudgetBoundsTheCatalogSentToTheModel,
@@ -4459,6 +4461,29 @@ func TestPromptSampleTimeoutBoundsASamplingQuestion(t *testing.T) {
 	got := samplingQuestionLife(t, "MCPX_PROMPT_SAMPLE_TIMEOUT=1h")
 	if got < 59*time.Minute || got > 61*time.Minute {
 		t.Fatalf("with prompt.sampleTimeout=1h the question should live an hour, lived %v (default %v)", got, def)
+	}
+}
+
+// TestDaemonRootsAnswersAnUpstreamRootsRequest is the effect probe for
+// daemon.roots. The ask fixture's need_roots tool sends roots/list; a plain
+// call has no host to relay it to, so mcpx answers from its own configured
+// roots. Oracle: by default no roots are exposed; with daemon.roots set the
+// configured directory comes back as a file:// URI.
+func TestDaemonRootsAnswersAnUpstreamRootsRequest(t *testing.T) {
+	root := t.TempDir()
+	call := func(env ...string) string {
+		t.Helper()
+		e := askWith(t, `{"sharing":"shared","scope":"global","callTimeout":"10s"}`)
+		e.setenv(env...)
+		e.run("refresh")
+		out, _ := e.try("call", "ask.need_roots", "{}")
+		return out
+	}
+	if out := call(); !strings.Contains(out, "roots") || strings.Contains(out, "file://") {
+		t.Fatalf("oracle: by default the roots answer should list no roots:\n%s", out)
+	}
+	if out := call("MCPX_DAEMON_ROOTS=" + root); !strings.Contains(out, "file://"+root) {
+		t.Fatalf("with daemon.roots=%s the roots answer should list it:\n%s", root, out)
 	}
 }
 
