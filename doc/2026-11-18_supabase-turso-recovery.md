@@ -82,10 +82,21 @@ active timer listing. A second read independently confirmed those states.
 Scripts, dumps, mirror data and checkpoints remain intact. The schedule
 registry records their retirement in this same change.
 
-Collector and backup verification jobs are still running as of this
-receipt. Scheduled PM timers are temporarily paused pending verification;
-this is not their permanent retirement. Do not call the complete cutover
-verified until those jobs and timer resumption have their own receipts.
+The collector completed at **21:47:52 UTC**, exit 0. The generated feed
+(21:46:58 UTC) reported AA status OK: 325 rankings, 122 configurations,
+274 test runs and 110 prices. The dashboard backup completed at
+**21:48:54 UTC**, exit 0, with zero missing required members. Local, R2 and
+Drive copies were SHA-256 verified:
+`18cbcdc35b04d1eebc8fbcf512062e87b16db5faeb74464f0ed642f82a29a8f7`.
+Seven pre-existing optional members were missing and existing unclassified
+scratch-file warnings remained; these are not concealed as a warning-free run.
+
+The four previously active timers (`fleet-feed-collector`,
+`pm-dashboard-backup`, `pm-digest-daily`, `pm-digest-weekly`) were restored
+around **21:48 UTC** after health verification, retaining their existing
+schedules. No digest was forced and no test push was sent. Normal scheduled
+execution, phone registration and end-to-end notification acknowledgment
+are separate from the completed collector/backup checks.
 
 The backup has zero `alerts.push_subscriptions` rows. Alert history being
 recovered is not evidence that phone delivery is restored. Delivery and

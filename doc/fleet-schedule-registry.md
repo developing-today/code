@@ -313,6 +313,14 @@ The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitAc
 | `tldr-update.timer`                                                  | `OnCalendar=Mon *-*-* 00:00:00`                           | `tldr-update.service`                      | laptop (user systemd)                                             | not recorded | not recorded  | not recorded | 2026-11-04  |
 | `worktree-reaper.timer`                                              | `OnCalendar=*-*-* *:00:00`                                | `worktree-reaper.service`                  | laptop (user systemd)                                             | not recorded | not recorded  | not recorded | 2026-11-04  |
 
+2026-11-18 Turso cutover: `fleet-feed-collector.timer`,
+`pm-dashboard-backup.timer`, `pm-digest-daily.timer` and
+`pm-digest-weekly.timer` were briefly paused for targeted activation, then
+restored around 21:48 UTC to their existing schedules. Collector exit 0 at
+21:47:52 UTC and backup exit 0 at 21:48:54 UTC were verified; no digest or
+test push was forced. The obsolete Supabase timers above remain retired.
+See [recovery receipt](2026-11-18_supabase-turso-recovery.md).
+
 Retired repository timer: `pm-stack/aggregator/systemd/kill-collector-drill.timer`
 (weekly Sunday 04:17, sandbox system unit) was removed on 2026-11-04 because
 it targeted the retired sandbox collector. The drill script is laptop-only
