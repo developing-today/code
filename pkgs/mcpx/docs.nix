@@ -16,13 +16,23 @@
   runCommand,
   mdbook,
   buildGo127Module,
+  go_1_27,
+  fetchurl,
   siteUrl ? "/",
 }:
 let
+  buildMcpxGoModule = import ./go-toolchain.nix {
+    inherit
+      lib
+      fetchurl
+      go_1_27
+      buildGo127Module
+      ;
+  };
   # The renderer only uses the Go standard library. Build the small tool
   # independently of mcpx's runtime dependencies so the book build stays
   # offline and does not pull the full application into its closure.
-  docsHistory = buildGo127Module {
+  docsHistory = buildMcpxGoModule {
     pname = "docs-history";
     version = "0.0.0";
     src = lib.fileset.toSource {
@@ -47,7 +57,7 @@ let
   # docsHistory above. Runs after mdbook build to write the per-page
   # .html.md twins + llms files into the site tree, then gates the
   # build on every page having a current twin.
-  docsTwins = buildGo127Module {
+  docsTwins = buildMcpxGoModule {
     pname = "docs-twins";
     version = "0.0.0";
     src = lib.fileset.toSource {
