@@ -118,9 +118,15 @@ func writeFeatureCoverageLedger(path string, rows []featureCoverageRow) error {
 	return nil
 }
 
+// recordSettingProbes records the settings whose effect probe is the
+// running test. A probe is registered under its top-level test name, and
+// a probe that runs its with/without cases as subtests builds each env
+// from the subtest's t, so the match is on the top-level name: matching
+// t.Name() whole left spec.first and spec.lenient unrecorded.
 func recordSettingProbes(t *testing.T) {
+	name, _, _ := strings.Cut(t.Name(), "/")
 	for path, test := range settings.EffectProbes {
-		if test == t.Name() {
+		if test == name {
 			recordFeature(t, "setting", path)
 		}
 	}
