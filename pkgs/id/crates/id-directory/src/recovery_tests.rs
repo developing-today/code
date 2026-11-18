@@ -999,3 +999,156 @@ mod relay {
         assert_eq!(early, head);
     }
 }
+
+// The client flow: request, approve, cancel, wait, rotate.
+
+mod flow {
+    use super::*;
+    use crate::recovery_flow::{self, Progress};
+    use crate::recovery_relay::{RecoveryRelay, RelayedRecord};
+
+    struct Run {
+        _dir: tempfile::TempDir,
+        relay: RecoveryRelay,
+        log: Log,
+        genesis: String,
+        head: KeysetState,
+        request: AnnexRecord,
+    }
+
+    /// The owner's identity with a flow-built request relayed at
+    /// `CREATED_AT`.
+    fn started() -> Run {
+        let (log, head) = owner_identity();
+        let genesis = log
+            .records()
+            .find(|record| record.prev_hash.is_empty())
+            .unwrap()
+            .hash
+            .clone();
+        let request = recovery_flow::request(
+            &key(SUCCESSOR),
+            &public(SUCCESSOR_DEVICE),
+            &head,
+            CREATED_AT,
+            "lost every device",
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut relay = RecoveryRelay::open(dir.path().join("relay.jsonl")).unwrap();
+        relay
+            .relay(RelayedRecord::Annex(request.clone()), CREATED_AT)
+            .unwrap();
+        Run {
+            _dir: dir,
+            relay,
+            log,
+            genesis,
+            head,
+            request,
+        }
+    }
+
+    impl Run {
+        fn approve(&mut self, guardian: u8) {
+            let approval =
+                recovery_flow::approve(&key(guardian), &public(guardian), &self.request, 2_000)
+                    .unwrap();
+            self.relay
+                .relay(RelayedRecord::Annex(approval), CREATED_AT + 1)
+                .unwrap();
+        }
+
+        fn progress(&self, now: u64) -> Progress {
+            let annex = self.relay.annex(&public(OWNER));
+            let first_seen = self.relay.keyset_first_seen();
+            let folds = guardian_folds();
+            let evidence = RecoveryEvidence {
+                annex: &annex,
+                guardian_folds: &folds,
+                keyset_first_seen: &first_seen,
+            };
+            recovery_flow::progress(&evidence, &self.head, &self.request.hash, now).unwrap()
+        }
+    }
+
+    #[test]
+    fn a_flow_built_recovery_waits_for_approvals_and_the_delay_then_folds() {
+        let mut run = started();
+        assert_eq!(
+            run.progress(CREATED_AT),
+            Progress::Waiting {
+                approvals: 0,
+                threshold: 2,
+                ready_at: AFTER_DELAY,
+            }
+        );
+        run.approve(11);
+        run.approve(11);
+        // A non-guardian's approval never counts.
+        run.approve(21);
+        assert!(matches!(
+            run.progress(AFTER_DELAY),
+            Progress::Waiting { approvals: 1, .. }
+        ));
+        run.approve(12);
+        assert!(matches!(
+            run.progress(AFTER_DELAY - 1),
+            Progress::Waiting { approvals: 2, .. }
+        ));
+        let approval_hashes = match run.progress(AFTER_DELAY) {
+            Progress::Ready { approval_hashes } => Some(approval_hashes),
+            _ => None,
+        }
+        .expect("the recovery is ready");
+        assert_eq!(approval_hashes.len(), 2);
+        // Only the successor can complete it.
+        assert!(
+            recovery_flow::rotate(&key(OWNER), &run.request, approval_hashes.clone(), 99).is_err()
+        );
+        let rotation = recovery_flow::rotate(
+            &key(SUCCESSOR),
+            &run.request,
+            approval_hashes,
+            run.head.records_folded + 10,
+        )
+        .unwrap();
+        run.relay
+            .relay(RelayedRecord::Keyset(rotation.clone()), AFTER_DELAY)
+            .unwrap();
+        run.log.insert(rotation).unwrap();
+        let annex = run.relay.annex(&public(OWNER));
+        let first_seen = run.relay.keyset_first_seen();
+        let folds = guardian_folds();
+        let evidence = RecoveryEvidence {
+            annex: &annex,
+            guardian_folds: &folds,
+            keyset_first_seen: &first_seen,
+        };
+        let folded =
+            fold_with_recovery(&run.log, &run.genesis, &BTreeSet::new(), &evidence).unwrap();
+        assert!(folded.is_admin(&public(SUCCESSOR)));
+        assert!(!folded.is_admin(&public(OWNER)));
+    }
+
+    #[test]
+    fn a_surviving_device_cancels_a_flow_built_request() {
+        let mut run = started();
+        run.approve(11);
+        run.approve(12);
+        let cancel = recovery_flow::cancel(&key(OWNER_DEVICE), &run.request).unwrap();
+        run.relay
+            .relay(RelayedRecord::Annex(cancel), CREATED_AT + 10)
+            .unwrap();
+        assert!(matches!(
+            run.progress(CREATED_AT + 9),
+            Progress::Waiting { .. }
+        ));
+        assert_eq!(
+            run.progress(AFTER_DELAY),
+            Progress::Cancelled {
+                by: public(OWNER_DEVICE)
+            }
+        );
+    }
+}

@@ -416,6 +416,11 @@ annex and keyset records and attests each one's first-seen time once,
 in an append-only JSONL file. It refuses any record that does not
 verify, never moves a time it attested, and never attests a request
 before its `created_at`, so it can only lengthen a delay. Its `annex`
-and `keyset_first_seen` feed `RecoveryEvidence` directly. Still open:
-serving the relay over the directory's network API, delivering the
-notifications, and the client flow.
+and `keyset_first_seen` feed `RecoveryEvidence` directly. Client
+flow: `recovery_flow` builds the request, approval, cancellation and
+rotation records, and `recovery_flow::progress` says whether a request
+is waiting (approvals so far, threshold, earliest rotation time),
+cancelled, or ready, with the approval hashes the rotation should
+name. `id keyset guardians` names the guardians. Still open: serving
+the relay over the directory's network API, delivering the
+notifications, and CLI commands for the flow.
