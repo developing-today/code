@@ -34,6 +34,10 @@ iroh = "1"
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Linux `openat2(2)` with RESOLVE_BENEATH for the file-read open (#11420).
+libc = "0.2"
+
 [dev-dependencies]
 # The live-session tests serve a real host in-process, the same way
 # id-web tests do: id-worlds with the sandbox feature, plus the

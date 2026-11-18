@@ -191,12 +191,9 @@ impl FileReadExecutor {
         &self.root
     }
 
-    /// Resolve a request path against the root, enforcing the
-    /// design's path rules. The request path must be relative, must
-    /// contain no parent or root components, and its canonical form
-    /// must stay beneath the canonical root (which is what refuses
-    /// symlink escapes).
-    fn resolve(&self, requested: &str) -> Result<PathBuf, String> {
+    /// Check a request path's shape: it must be non-empty, relative,
+    /// and free of parent or root components.
+    fn relative_path(requested: &str) -> Result<&Path, String> {
         if requested.is_empty() {
             return Err(REFUSAL_INVALID_PATH.to_owned());
         }
@@ -212,15 +209,108 @@ impl FileReadExecutor {
                 }
             }
         }
-        let candidate = self.root.join(relative);
-        let canonical = candidate
+        Ok(relative)
+    }
+
+    /// Open `relative` beneath the root and return the open handle.
+    ///
+    /// On Linux the open is `openat2` with `RESOLVE_BENEATH`, relative
+    /// to a handle on the root directory, so the kernel refuses any
+    /// symlink or component that leaves the root at the moment of the
+    /// open. There is no check-then-open window to race. The returned
+    /// handle is the one that is validated and read.
+    ///
+    /// Fallback, used where `openat2` is unavailable (`ENOSYS`), where
+    /// a symlink targets an absolute path that `RESOLVE_BENEATH`
+    /// refuses (`EXDEV`, which in-root aliases may use and are still
+    /// served), or on non-Linux targets: canonicalize, require the
+    /// canonical path to stay beneath the root, then reopen the
+    /// canonical suffix with symlinks refused, or open the canonical
+    /// path directly where `openat2` does not exist.
+    fn open_within_root(&self, relative: &Path) -> Result<File, String> {
+        #[cfg(target_os = "linux")]
+        {
+            let root_dir = File::open(&self.root).map_err(|_| REFUSAL_IO.to_owned())?;
+            match open_beneath(
+                &root_dir,
+                relative,
+                libc::RESOLVE_BENEATH | libc::RESOLVE_NO_MAGICLINKS,
+            ) {
+                Ok(file) => return Ok(file),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(REFUSAL_NOT_FOUND.to_owned());
+                }
+                Err(error)
+                    if matches!(
+                        error.raw_os_error(),
+                        Some(libc::EXDEV | libc::ELOOP | libc::ENOSYS | libc::EPERM | libc::EAGAIN)
+                    ) => {}
+                Err(_) => return Err(REFUSAL_IO.to_owned()),
+            }
+        }
+        let canonical = self
+            .root
+            .join(relative)
             .canonicalize()
             .map_err(|_| REFUSAL_NOT_FOUND.to_owned())?;
-        if !canonical.starts_with(&self.root) {
-            return Err(REFUSAL_INVALID_PATH.to_owned());
-        }
-        Ok(canonical)
+        let suffix = canonical
+            .strip_prefix(&self.root)
+            .map_err(|_| REFUSAL_INVALID_PATH.to_owned())?;
+        #[cfg(target_os = "linux")]
+        let opened = File::open(&self.root)
+            .and_then(|root_dir| {
+                open_beneath(
+                    &root_dir,
+                    suffix,
+                    libc::RESOLVE_BENEATH | libc::RESOLVE_NO_MAGICLINKS | libc::RESOLVE_NO_SYMLINKS,
+                )
+            })
+            .or_else(|error| {
+                // A kernel without openat2 (before 5.6), or a seccomp
+                // filter that refuses it, gets the canonical open the
+                // non-Linux targets use, rather than refusing every read.
+                if matches!(error.raw_os_error(), Some(libc::ENOSYS | libc::EPERM)) {
+                    File::open(&canonical)
+                } else {
+                    Err(error)
+                }
+            });
+        #[cfg(not(target_os = "linux"))]
+        let opened = File::open(&canonical);
+        opened.map_err(|_| REFUSAL_IO.to_owned())
     }
+}
+
+/// Open `relative` beneath the directory handle `root_dir` with
+/// `openat2(2)`, using the given `RESOLVE_*` flags.
+#[cfg(target_os = "linux")]
+fn open_beneath(root_dir: &File, relative: &Path, resolve: u64) -> std::io::Result<File> {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let path = std::ffi::CString::new(relative.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    // SAFETY: `open_how` is plain integers; all-zero is a valid value
+    // and every field the kernel reads is set below.
+    let mut how: libc::open_how = unsafe { std::mem::zeroed() };
+    how.flags = (libc::O_RDONLY | libc::O_CLOEXEC) as u64;
+    how.resolve = resolve;
+    // SAFETY: `path` is a valid NUL-terminated string, `how` outlives
+    // the call, and the size passed is exactly `size_of::<open_how>()`.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            root_dir.as_raw_fd(),
+            path.as_ptr(),
+            std::ptr::from_ref(&how),
+            std::mem::size_of::<libc::open_how>(),
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: a non-negative return from `openat2` is a new, owned fd.
+    Ok(unsafe { File::from_raw_fd(fd as libc::c_int) })
 }
 
 impl ClientProviderExecutor for FileReadExecutor {
@@ -231,14 +321,15 @@ impl ClientProviderExecutor for FileReadExecutor {
         let Some(requested) = args["path"].as_str() else {
             return Err(REFUSAL_INVALID_PATH.to_owned());
         };
-        let path = self.resolve(requested)?;
-        let metadata = std::fs::metadata(&path).map_err(|_| REFUSAL_IO.to_owned())?;
+        let relative = Self::relative_path(requested)?;
+        let file = self.open_within_root(relative)?;
+        let metadata = file.metadata().map_err(|_| REFUSAL_IO.to_owned())?;
         if !metadata.is_file() {
             return Err(REFUSAL_NOT_A_FILE.to_owned());
         }
         // Read at most one byte past the bound: an over-bound file
-        // is refused whole, never silently truncated.
-        let file = File::open(&path).map_err(|_| REFUSAL_IO.to_owned())?;
+        // is refused whole, never silently truncated. The bytes come
+        // from the same handle that was validated above.
         let mut bytes = Vec::new();
         file.take(u64::from(max_bytes) + 1)
             .read_to_end(&mut bytes)
@@ -743,6 +834,24 @@ mod file_read_tests {
 
     fn executor(root: &Path) -> FileReadExecutor {
         FileReadExecutor::new(root.to_path_buf(), true).unwrap()
+    }
+
+    #[test]
+    fn replacement_after_shape_check_never_serves_outside_bytes() {
+        let (base, root) = temp_tree();
+        std::fs::write(root.join("swap.txt"), b"inside").unwrap();
+        let ex = executor(&root);
+        let relative = FileReadExecutor::relative_path("swap.txt").unwrap();
+
+        // Between the shape check and the open, the in-root name is
+        // replaced by a symlink to a file outside the root.
+        std::fs::remove_file(root.join("swap.txt")).unwrap();
+        std::os::unix::fs::symlink(base.join("outside.txt"), root.join("swap.txt")).unwrap();
+
+        assert_eq!(
+            ex.open_within_root(relative).err().as_deref(),
+            Some(REFUSAL_INVALID_PATH)
+        );
     }
 
     #[test]
