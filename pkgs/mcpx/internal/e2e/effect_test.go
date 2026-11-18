@@ -74,6 +74,8 @@ var implementedEffectProbes = map[string]string{
 	"proto.sessionIdle":          "TestSessionIdleReapsAnUnusedSessionFromTheEnvironment",
 	"proto.mcpPath":              "TestMCPPathMovesTheEndpointFromTheEnvironment",
 	"proto.native":               "TestNativeAsksTheCallingClientFromTheEnvironment",
+	"protoMessages.listMaxAge":   "TestListMaxAgeSetsTheListCacheHintFromTheEnvironment",
+	"protoMessages.readMaxAge":   "TestReadMaxAgeSetsTheReadCacheHintFromTheEnvironment",
 	"proto.serveMCP":             "TestServeMCPUnmountsTheEndpointFromTheEnvironment",
 	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
 	"daemon.autostart":           "TestDaemonAutostartIsReachableFromTheEnvironment",
@@ -136,6 +138,8 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestSessionIdleReapsAnUnusedSessionFromTheEnvironment":  TestSessionIdleReapsAnUnusedSessionFromTheEnvironment,
 	"TestMCPPathMovesTheEndpointFromTheEnvironment":          TestMCPPathMovesTheEndpointFromTheEnvironment,
 	"TestNativeAsksTheCallingClientFromTheEnvironment":       TestNativeAsksTheCallingClientFromTheEnvironment,
+	"TestListMaxAgeSetsTheListCacheHintFromTheEnvironment":   TestListMaxAgeSetsTheListCacheHintFromTheEnvironment,
+	"TestReadMaxAgeSetsTheReadCacheHintFromTheEnvironment":   TestReadMaxAgeSetsTheReadCacheHintFromTheEnvironment,
 	"TestServeMCPUnmountsTheEndpointFromTheEnvironment":      TestServeMCPUnmountsTheEndpointFromTheEnvironment,
 	"TestDaemonAddressIsReachableFromTheEnvironment":         TestDaemonAddressIsReachableFromTheEnvironment,
 	"TestDaemonAutostartIsReachableFromTheEnvironment":       TestDaemonAutostartIsReachableFromTheEnvironment,
@@ -715,6 +719,55 @@ func TestNativeAsksTheCallingClientFromTheEnvironment(t *testing.T) {
 	}
 	if got := first("MCPX_PROTO_NATIVE=false"); strings.Contains(got, `"resultType":"input_required"`) || !strings.Contains(got, "no agent answerer") {
 		t.Fatalf("proto.native=false should send the question to the broker, not the client, got %s", got)
+	}
+}
+
+// modernTTL sends one 2026-07-28 request to the daemon and returns the
+// ttlMs cache hint on its result.
+func modernTTL(t *testing.T, method string, params map[string]any, env ...string) any {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(env...)
+	e.run("refresh")
+	ep := e.endpoint(t)
+	p := map[string]any{"_meta": modernMeta()}
+	for k, v := range params {
+		p[k] = v
+	}
+	r := mcpPost(t, ep, "", map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": p})
+	doc := decodeJSON(t, r.Body)
+	_ = r.Body.Close()
+	res, _ := doc["result"].(map[string]any)
+	if res == nil {
+		t.Fatalf("%s returned no result:\n%s", method, dumpJSON(t, doc))
+	}
+	return res["ttlMs"]
+}
+
+// protoMessages.listMaxAge is the ttlMs on list results sent to a
+// 2026-07-28 client.
+// Oracle: resources/list carries ttlMs 60000 at the default (1m) and 7000
+// with MCPX_PROTO_MESSAGES_LIST_MAX_AGE=7s.
+func TestListMaxAgeSetsTheListCacheHintFromTheEnvironment(t *testing.T) {
+	if got := modernTTL(t, "resources/list", nil); got != float64(60000) {
+		t.Fatalf("at the default protoMessages.listMaxAge resources/list should carry ttlMs 60000, got %v", got)
+	}
+	if got := modernTTL(t, "resources/list", nil, "MCPX_PROTO_MESSAGES_LIST_MAX_AGE=7s"); got != float64(7000) {
+		t.Fatalf("protoMessages.listMaxAge=7s should carry ttlMs 7000, got %v", got)
+	}
+}
+
+// protoMessages.readMaxAge is the ttlMs on resources/read results sent to
+// a 2026-07-28 client.
+// Oracle: reading one of mcpx's own skill resources carries ttlMs 0 at the
+// default and 9000 with MCPX_PROTO_MESSAGES_READ_MAX_AGE=9s.
+func TestReadMaxAgeSetsTheReadCacheHintFromTheEnvironment(t *testing.T) {
+	read := map[string]any{"uri": "skill://mcpx/mcpx-basics/SKILL.md"}
+	if got := modernTTL(t, "resources/read", read); got != float64(0) {
+		t.Fatalf("at the default protoMessages.readMaxAge resources/read should carry ttlMs 0, got %v", got)
+	}
+	if got := modernTTL(t, "resources/read", read, "MCPX_PROTO_MESSAGES_READ_MAX_AGE=9s"); got != float64(9000) {
+		t.Fatalf("protoMessages.readMaxAge=9s should carry ttlMs 9000, got %v", got)
 	}
 }
 
