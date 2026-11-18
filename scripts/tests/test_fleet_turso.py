@@ -20,7 +20,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(Turso.rows({'cols':[{'name':'n'}],'rows':[[{'type':'integer','value':'5'}]]}),[{'n':5}])
     def test_atomic_batch(self):
         db=Turso.__new__(Turso);db.url='https://example.invalid';db.token='test'
-        with patch('urllib.request.urlopen',return_value=Response()) as request:
+        with patch('fleet_turso.open_request',return_value=Response()) as request:
             db.batch([('INSERT INTO t VALUES (?)',[1]),('INSERT INTO t VALUES (?)',[2])],transaction=True)
         steps=json.loads(request.call_args.args[0].data)['requests'][0]['batch']['steps']
         self.assertEqual(steps[0]['stmt']['sql'],'BEGIN IMMEDIATE')
@@ -36,7 +36,7 @@ class Tests(unittest.TestCase):
                 fetch.assert_not_called()
     def test_ambiguous_transport_does_not_claim_rollback(self):
         db=Turso.__new__(Turso);db.url='https://example.invalid';db.token='test'
-        with patch('urllib.request.urlopen',side_effect=TimeoutError()):
+        with patch('fleet_turso.open_request',side_effect=TimeoutError()):
             with self.assertRaisesRegex(RuntimeError,'outcome unverified'):
                 db.batch([('INSERT INTO t VALUES (?)',[1])],transaction=True)
     def test_commit_error_rollback_proof(self):
@@ -44,11 +44,11 @@ class Tests(unittest.TestCase):
         payload={'results':[{'type':'ok','response':{'type':'batch','result':{'step_errors':[None,None,{'message':'commit failed'},None],'step_results':[{'cols':[], 'rows':[]}, {'cols':[], 'rows':[]}, None, {'cols':[], 'rows':[]}]}}}]}
         class FailedCommit(Response):
             def read(self): return json.dumps(payload).encode()
-        with patch('urllib.request.urlopen',return_value=FailedCommit()):
+        with patch('fleet_turso.open_request',return_value=FailedCommit()):
             with self.assertRaisesRegex(RuntimeError,'rollback confirmed'):
                 db.batch([('INSERT INTO t VALUES (?)',[1])],transaction=True)
         payload['results'][0]['response']['result']['step_results'][-1]=None
-        with patch('urllib.request.urlopen',return_value=FailedCommit()):
+        with patch('fleet_turso.open_request',return_value=FailedCommit()):
             with self.assertRaisesRegex(RuntimeError,'outcome unverified'):
                 db.batch([('INSERT INTO t VALUES (?)',[1])],transaction=True)
     def test_missing_success_evidence_is_not_success(self):
@@ -57,7 +57,31 @@ class Tests(unittest.TestCase):
             payload={'results':[{'type':'ok','response':{'type':'batch','result':{'step_errors':errors,'step_results':results}}}]}
             class Incomplete(Response):
                 def read(self):return json.dumps(payload).encode()
-            with patch('urllib.request.urlopen',return_value=Incomplete()):
+            with patch('fleet_turso.open_request',return_value=Incomplete()):
                 with self.assertRaisesRegex(RuntimeError,'outcome unverified'):
                     db.batch([('INSERT INTO t VALUES (?)',[1])],transaction=True)
+    def test_redirect_does_not_forward_bearer(self):
+        import http.server
+        import threading
+        import urllib.request
+        import urllib.error
+        from fleet_turso import open_request
+        received=[]
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                received.append(self.path)
+                if self.path == '/start':
+                    self.send_response(302)
+                    self.send_header('Location',f'http://127.0.0.1:{self.server.server_port}/target')
+                else:self.send_response(200)
+                self.end_headers()
+            def log_message(self,*args): pass
+        server=http.server.HTTPServer(('127.0.0.1',0),Handler)
+        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        try:
+            req=urllib.request.Request(f'http://127.0.0.1:{server.server_port}/start',headers={'Authorization':'Bearer test'})
+            with self.assertRaises(urllib.error.HTTPError) as caught:open_request(req,timeout=3)
+            self.assertEqual(caught.exception.code,302)
+            self.assertEqual(received,['/start'])
+        finally:server.shutdown();server.server_close();thread.join()
 if __name__=='__main__':unittest.main()

@@ -7,6 +7,16 @@ import urllib.error
 from urllib.parse import urlsplit
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def open_request(request, timeout):
+    # Never forward the Fleet bearer token to a redirect destination.
+    return urllib.request.build_opener(NoRedirect()).open(request, timeout=timeout)
+
+
 def argument(value):
     if value is None:
         return {"type": "null"}
@@ -55,7 +65,7 @@ class Turso:
             steps.append({"condition": {"type": "not", "cond": {"type": "ok", "step": last + 1}}, "stmt": {"sql": "ROLLBACK"}})
         request = urllib.request.Request(self.url + "/v2/pipeline", data=json.dumps({"requests": [{"type": "batch", "batch": {"steps": steps}}, {"type": "close"}]}).encode(), headers={"Authorization": "Bearer " + self.token, "Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(request, timeout=120) as response:
+            with open_request(request, timeout=120) as response:
                 result = json.load(response)["results"][0]
         except urllib.error.HTTPError as e:
             raise RuntimeError(f"Turso HTTP {e.code}; outcome unverified, read back before retrying") from None
