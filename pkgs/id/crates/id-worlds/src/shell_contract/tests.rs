@@ -776,3 +776,20 @@ fn agent_profile_frames_conform_and_are_additive() {
     let leaking = json!({"type": "semantic_diff", "sequence": 1, "view_revision": 0, "changes": [{"kind": "program_changed", "seed": 42}]});
     assert!(contract.check_server_frame(&leaking).is_err());
 }
+
+#[test]
+fn a_duplicated_key_is_refused_in_the_contract_and_the_transcript() {
+    // A lenient parse would ignore the unknown key and keep the last
+    // "from", so both would pass without the refusal (#8794).
+    let duplicated = SHELL_CONTRACT_JSON.replacen('{', r#"{"x":1,"x":2,"#, 1);
+    assert!(ShellContract::parse(SHELL_CONTRACT_JSON).is_ok());
+    assert!(
+        ShellContract::parse(&duplicated)
+            .unwrap_err()
+            .contains("duplicate JSON object key")
+    );
+    let line =
+        r#"{"from": "server", "from": "client", "frame": {"type": "info", "capability": "c"}}"#;
+    assert!(check_transcript(contract(), &line.replacen(r#""from": "server", "#, "", 1)).is_ok());
+    assert!(check_transcript(contract(), line).is_err());
+}
