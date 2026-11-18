@@ -84,6 +84,8 @@ var implementedEffectProbes = map[string]string{
 	"exec.maxOutputBytes":        "TestExecMaxOutputBytesCapsStdoutFromTheEnvironment",
 	"exec.timeout":               "TestExecTimeoutStopsALongScriptFromTheEnvironment",
 	"exec.output":                "TestExecOutputShapesTheResultFromTheEnvironment",
+	"mcp.pageSize":               "TestMCPPageSizePagesToolsListFromTheEnvironment",
+	"mcp.passthrough":            "TestMCPPassthroughServesANamespaceDirectlyFromTheEnvironment",
 	"proto.serveMCP":             "TestServeMCPUnmountsTheEndpointFromTheEnvironment",
 	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
 	"daemon.autostart":           "TestDaemonAutostartIsReachableFromTheEnvironment",
@@ -156,6 +158,8 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestExecMaxOutputBytesCapsStdoutFromTheEnvironment":                        TestExecMaxOutputBytesCapsStdoutFromTheEnvironment,
 	"TestExecTimeoutStopsALongScriptFromTheEnvironment":                         TestExecTimeoutStopsALongScriptFromTheEnvironment,
 	"TestExecOutputShapesTheResultFromTheEnvironment":                           TestExecOutputShapesTheResultFromTheEnvironment,
+	"TestMCPPageSizePagesToolsListFromTheEnvironment":                           TestMCPPageSizePagesToolsListFromTheEnvironment,
+	"TestMCPPassthroughServesANamespaceDirectlyFromTheEnvironment":              TestMCPPassthroughServesANamespaceDirectlyFromTheEnvironment,
 	"TestServeMCPUnmountsTheEndpointFromTheEnvironment":                         TestServeMCPUnmountsTheEndpointFromTheEnvironment,
 	"TestDaemonAddressIsReachableFromTheEnvironment":                            TestDaemonAddressIsReachableFromTheEnvironment,
 	"TestDaemonAutostartIsReachableFromTheEnvironment":                          TestDaemonAutostartIsReachableFromTheEnvironment,
@@ -967,6 +971,69 @@ func TestExecOutputShapesTheResultFromTheEnvironment(t *testing.T) {
 	}
 	if s, _ := doc["stdout"].(string); !strings.Contains(s, "shaped") {
 		t.Fatalf("the structured document should carry the line in stdout, got:\n%s", got)
+	}
+}
+
+// daemonToolsList returns the first tools/list page the daemon's /mcp
+// gives a 2025-11-25 session, under the given environment.
+func daemonToolsList(t *testing.T, env ...string) map[string]any {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(env...)
+	e.run("refresh")
+	ep := e.endpoint(t)
+	sid := mcpInit(t, ep)
+	frame, _ := mcpRoundTrip(t, ep, `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`, sid)
+	res, _ := frame["result"].(map[string]any)
+	if res == nil {
+		t.Fatalf("tools/list returned no result:\n%s", dumpJSON(t, frame))
+	}
+	return res
+}
+
+// mcp.pageSize is how many tools one tools/list reply carries.
+// Oracle: at the default (100) mcpx's handful of tools fit on one page
+// with no nextCursor; with MCPX_MCP_PAGE_SIZE=2 the page holds two tools
+// and a nextCursor.
+func TestMCPPageSizePagesToolsListFromTheEnvironment(t *testing.T) {
+	page := func(env ...string) (int, bool) {
+		t.Helper()
+		res := daemonToolsList(t, env...)
+		tools, _ := res["tools"].([]any)
+		cursor, _ := res["nextCursor"].(string)
+		return len(tools), cursor != ""
+	}
+
+	if n, more := page(); n <= 2 || more {
+		t.Fatalf("at the default mcp.pageSize every tool should fit on one page, got %d tools, nextCursor=%v", n, more)
+	}
+	if n, more := page("MCPX_MCP_PAGE_SIZE=2"); n != 2 || !more {
+		t.Fatalf("mcp.pageSize=2 should give a two-tool page with a nextCursor, got %d tools, nextCursor=%v", n, more)
+	}
+}
+
+// mcp.passthrough lists the namespaces whose tools mcpx serves directly
+// rather than only behind its gateway tools.
+// Oracle: at the default the fake server's echo tool is not on the
+// daemon's tools/list; with MCPX_MCP_PASSTHROUGH=demo it is.
+func TestMCPPassthroughServesANamespaceDirectlyFromTheEnvironment(t *testing.T) {
+	listsEcho := func(env ...string) bool {
+		t.Helper()
+		res := daemonToolsList(t, env...)
+		tools, _ := res["tools"].([]any)
+		for _, tool := range tools {
+			if m, _ := tool.(map[string]any); m["name"] == "echo" {
+				return true
+			}
+		}
+		return false
+	}
+
+	if listsEcho() {
+		t.Fatal("at the default mcp.passthrough the demo server's echo tool should not be listed directly")
+	}
+	if !listsEcho("MCPX_MCP_PASSTHROUGH=demo") {
+		t.Fatal("mcp.passthrough=demo should list the demo server's echo tool directly")
 	}
 }
 
