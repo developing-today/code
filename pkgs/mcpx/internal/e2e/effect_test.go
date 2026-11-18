@@ -101,6 +101,10 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"daemon.warm":                        "TestDaemonWarmReadsTheServersAtStartupFromTheEnvironment",
+	"pool.idleTimeout":                   "TestPoolIdleTimeoutReapsAnIdleInstanceFromTheEnvironment",
+	"daemon.reapInterval":                "TestDaemonReapIntervalSetsWhenIdleInstancesAreReapedFromTheEnvironment",
+	"daemon.endpoint":                    "TestDaemonEndpointNamesTheDaemonToReachFromTheEnvironment",
 	"upstream.probeTimeout":              "TestUpstreamProbeTimeoutBoundsTheDiscoverWaitFromTheEnvironment",
 	"upstream.eraCache":                  "TestTheEraIsProbedOnceAndRememberedAcrossDaemonRestarts",
 	"upstream.protocol":                  "TestTheEraIsProbedOnceAndRememberedAcrossDaemonRestarts",
@@ -265,6 +269,10 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestDaemonWarmReadsTheServersAtStartupFromTheEnvironment":                       TestDaemonWarmReadsTheServersAtStartupFromTheEnvironment,
+	"TestPoolIdleTimeoutReapsAnIdleInstanceFromTheEnvironment":                       TestPoolIdleTimeoutReapsAnIdleInstanceFromTheEnvironment,
+	"TestDaemonReapIntervalSetsWhenIdleInstancesAreReapedFromTheEnvironment":         TestDaemonReapIntervalSetsWhenIdleInstancesAreReapedFromTheEnvironment,
+	"TestDaemonEndpointNamesTheDaemonToReachFromTheEnvironment":                      TestDaemonEndpointNamesTheDaemonToReachFromTheEnvironment,
 	"TestUpstreamProbeTimeoutBoundsTheDiscoverWaitFromTheEnvironment":                TestUpstreamProbeTimeoutBoundsTheDiscoverWaitFromTheEnvironment,
 	"TestTheEraIsProbedOnceAndRememberedAcrossDaemonRestarts":                        TestTheEraIsProbedOnceAndRememberedAcrossDaemonRestarts,
 	"TestPromptAutonomyRunsTheMatchedRecipeFromTheEnvironment":                       TestPromptAutonomyRunsTheMatchedRecipeFromTheEnvironment,
@@ -3212,6 +3220,92 @@ func TestUpstreamProbeTimeoutBoundsTheDiscoverWaitFromTheEnvironment(t *testing.
 	}
 	if out, err := call("1h"); err == nil {
 		t.Fatalf("with upstream.probeTimeout=1h the start should run out before the probe gives up; got:\n%s", out)
+	}
+}
+
+// lsDemoRow returns the fields of ls's row for the demo namespace:
+// NAMESPACE TOOLS SHARING SCOPE LIVE STATE, then the description.
+func lsDemoRow(t *testing.T, out string) []string {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		if f := strings.Fields(line); len(f) >= 6 && f[0] == "demo" {
+			return f
+		}
+	}
+	t.Fatalf("no demo row in ls:\n%s", out)
+	return nil
+}
+
+// TestDaemonWarmReadsTheServersAtStartupFromTheEnvironment is the effect
+// probe for daemon.warm. The first ls auto-starts a daemon. Warming (the
+// default), it has read demo's schemas by the time ls answers: nine tools
+// and a running instance. With daemon.warm=false nothing has read the
+// server yet, so the row is unread, with no tools and nothing live.
+func TestDaemonWarmReadsTheServersAtStartupFromTheEnvironment(t *testing.T) {
+	if row := lsDemoRow(t, newEnv(t, oneServer).run("ls")); row[1] == "0" || row[5] != "running" {
+		t.Fatalf("oracle: a warmed daemon should list demo's tools and a running instance: %v", row)
+	}
+	cold := newEnv(t, oneServer)
+	cold.setenv("MCPX_DAEMON_WARM=false")
+	if row := lsDemoRow(t, cold.run("ls")); row[1] != "0" || row[4] != "0" || row[5] != "unread" {
+		t.Fatalf("with daemon.warm=false demo should be unread, with no tools and nothing live: %v", row)
+	}
+}
+
+// idleAfterACall makes one call to demo, waits past a 200ms idle bound,
+// and returns ls's LIVE column for demo.
+func idleAfterACall(t *testing.T, env ...string) string {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(env...)
+	e.run("call", "demo.echo", `{"message":"x"}`)
+	time.Sleep(1500 * time.Millisecond)
+	return lsDemoRow(t, e.run("ls"))[4]
+}
+
+// TestPoolIdleTimeoutReapsAnIdleInstanceFromTheEnvironment is the effect
+// probe for pool.idleTimeout. With the reaper ticking every 100ms, the
+// instance a call started is still live 1.5s later under the default
+// idle bound, and has been reaped under a 200ms one.
+func TestPoolIdleTimeoutReapsAnIdleInstanceFromTheEnvironment(t *testing.T) {
+	if live := idleAfterACall(t, "MCPX_DAEMON_REAP_INTERVAL=100ms"); live != "1" {
+		t.Fatalf("oracle: under the default idle bound the instance should still be live, LIVE=%s", live)
+	}
+	if live := idleAfterACall(t, "MCPX_DAEMON_REAP_INTERVAL=100ms", "MCPX_POOL_IDLE_TIMEOUT=200ms"); live != "0" {
+		t.Fatalf("with pool.idleTimeout=200ms the idle instance should be reaped, LIVE=%s", live)
+	}
+}
+
+// TestDaemonReapIntervalSetsWhenIdleInstancesAreReapedFromTheEnvironment
+// is the effect probe for daemon.reapInterval. With a 200ms idle bound,
+// a reaper ticking every 100ms has reaped the instance 1.5s after the
+// call; one ticking hourly has not yet looked, so it is still live.
+func TestDaemonReapIntervalSetsWhenIdleInstancesAreReapedFromTheEnvironment(t *testing.T) {
+	if live := idleAfterACall(t, "MCPX_POOL_IDLE_TIMEOUT=200ms", "MCPX_DAEMON_REAP_INTERVAL=100ms"); live != "0" {
+		t.Fatalf("oracle: a 100ms reaper should have reaped the idle instance, LIVE=%s", live)
+	}
+	if live := idleAfterACall(t, "MCPX_POOL_IDLE_TIMEOUT=200ms", "MCPX_DAEMON_REAP_INTERVAL=1h"); live != "1" {
+		t.Fatalf("with daemon.reapInterval=1h the reaper should not have run yet, LIVE=%s", live)
+	}
+}
+
+// TestDaemonEndpointNamesTheDaemonToReachFromTheEnvironment is the effect
+// probe for daemon.endpoint. By default the client finds or starts a
+// local daemon and ls answers. A named endpoint short-circuits the
+// ladder: when nothing answers there, ls fails and says it will not
+// start a local daemon in its place.
+func TestDaemonEndpointNamesTheDaemonToReachFromTheEnvironment(t *testing.T) {
+	if out := newEnv(t, oneServer).run("ls"); !strings.Contains(out, "demo") {
+		t.Fatalf("oracle: by default ls should list demo:\n%s", out)
+	}
+	e := newEnv(t, oneServer)
+	e.setenv("MCPX_DAEMON_ENDPOINT=http://127.0.0.1:1")
+	out, err := e.try("ls")
+	if err == nil {
+		t.Fatalf("with an unreachable daemon.endpoint ls should fail; got:\n%s", out)
+	}
+	if !strings.Contains(out, "will not start a local one") {
+		t.Fatalf("the failure should say no local daemon is started instead, got:\n%s", out)
 	}
 }
 
