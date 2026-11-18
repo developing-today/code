@@ -1525,6 +1525,14 @@ pub enum Command {
         #[command(subcommand)]
         command: KeyCommand,
     },
+    /// Show or change this identity's keyset: its admin key and the
+    /// device keys allowed to act for it (#2380). The first use migrates
+    /// a single-key account by writing a genesis record signed by the
+    /// existing key; the identity ID does not change.
+    Keyset {
+        #[command(subcommand)]
+        command: KeysetCommand,
+    },
     /// Discover and list known peers.
     ///
     /// Discovers other `id` servers via gossip-based networking, RPC
@@ -1684,6 +1692,53 @@ pub enum KeyCommand {
         /// Replace an existing identity key file atomically.
         #[arg(long)]
         replace: bool,
+    },
+}
+
+/// Subcommands for `id keyset`. Each acts on the server identity, or
+/// the client identity with `--client`, and signs with that identity's
+/// key, which must be an active admin key of the keyset to change it.
+#[derive(Subcommand, Debug)]
+pub enum KeysetCommand {
+    /// Print the identity ID, admin keys and device keys.
+    Show {
+        /// Show the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Enrol another device key. The device's 32-byte key file is read
+    /// to countersign the enrolment, proving the device holds the key.
+    Enrol {
+        /// The new device's key file (the `.iroh-key` it was created with).
+        device_key_file: PathBuf,
+        /// A name for the device, shown by `id keyset show`.
+        #[arg(long)]
+        label: String,
+        /// Change the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Revoke a device key, given as its hex public key. Records it signed
+    /// before the revocation stay valid history.
+    Revoke {
+        /// The device's hex public key, as `id keyset show` prints it.
+        device_key: String,
+        /// Why it was revoked, kept in the record.
+        #[arg(long, default_value = "revoked")]
+        reason: String,
+        /// Change the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Hand admin power to another key. The new key's 32-byte key file is
+    /// read to countersign the rotation; afterwards this key can no
+    /// longer change the keyset.
+    Rotate {
+        /// The new admin key's key file.
+        new_admin_key_file: PathBuf,
+        /// Change the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
     },
 }
 

@@ -390,6 +390,7 @@ async fn main() -> Result<()> {
         }
         Some(Command::Id { client }) => cmd_id(client).await,
         Some(Command::Key { command }) => id::commands::cmd_key(command).await,
+        Some(Command::Keyset { command }) => id::commands::cmd_keyset(command).await,
         Some(Command::Peers {
             gossip,
             rpc,

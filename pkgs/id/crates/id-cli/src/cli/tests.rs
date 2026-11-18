@@ -3118,3 +3118,36 @@ fn test_cli_parse_gallery_admin() {
     );
     assert!(Cli::try_parse_from(["id", "gallery", "--dir", "/g", "tag", "board"]).is_err());
 }
+
+#[test]
+fn test_cli_parse_keyset_commands() {
+    let show = Cli::parse_from(["id", "keyset", "show", "--client"]);
+    assert!(matches!(
+        show.command,
+        Some(Command::Keyset {
+            command: KeysetCommand::Show { client: true }
+        })
+    ));
+    let enrol = Cli::parse_from(["id", "keyset", "enrol", "laptop.key", "--label", "laptop"]);
+    assert!(matches!(
+        enrol.command,
+        Some(Command::Keyset {
+            command: KeysetCommand::Enrol { client: false, .. }
+        })
+    ));
+    let revoke = Cli::parse_from(["id", "keyset", "revoke", "ab12"]);
+    let Some(Command::Keyset {
+        command: KeysetCommand::Revoke { reason, .. },
+    }) = revoke.command
+    else {
+        panic!("expected keyset revoke");
+    };
+    assert_eq!(reason, "revoked");
+    let rotate = Cli::parse_from(["id", "keyset", "rotate", "new-admin.key"]);
+    assert!(matches!(
+        rotate.command,
+        Some(Command::Keyset {
+            command: KeysetCommand::Rotate { client: false, .. }
+        })
+    ));
+}

@@ -13,7 +13,8 @@ use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{directory::hex_to_array, world::hex_encode};
+use crate::directory::hex_to_array;
+use id_core::hex::hex_encode;
 
 /// Deterministic order for concurrent records extending one chain head.
 pub type MergeKey = (u64, String, String);
