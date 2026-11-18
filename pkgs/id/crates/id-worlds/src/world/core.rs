@@ -295,7 +295,7 @@ fn validate_import_envelope(event: &WorldEvent, payload_digest: &str) -> Result<
             ));
         }
     };
-    let envelope: serde_json::Value = serde_json::from_str(text)
+    let envelope = id_core::json_unique::parse_json_without_duplicate_keys(text)
         .map_err(|_| anyhow::anyhow!("journal import event is not a transfer envelope"))?;
     ensure!(
         envelope["protocol"] == "world.entity-transfer.v1" && envelope["direction"] == "import",
@@ -1842,5 +1842,33 @@ impl WorldCore {
             *version = required;
         }
         Ok(entries)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod duplicate_key_tests {
+    use super::*;
+
+    fn import_event(envelope: String) -> WorldEvent {
+        WorldEvent {
+            sequence: 1,
+            participant_id: 0,
+            kind: WorldEventKind::System { event: envelope },
+        }
+    }
+
+    #[test]
+    fn an_import_envelope_with_a_duplicated_key_is_refused() {
+        let payload = b"entity";
+        let digest = hex_encode(blake3::hash(payload).as_bytes());
+        let body = format!(
+            r#""protocol":"world.entity-transfer.v1","direction":"import","payload_digest":"{digest}","payload_hex":"{}"}}"#,
+            hex_encode(payload)
+        );
+        validate_import_envelope(&import_event(format!("{{{body}")), &digest).unwrap();
+        // A lenient parse keeps the last "direction" and passes the check.
+        let duplicated = format!(r#"{{"direction":"export",{body}"#);
+        assert!(validate_import_envelope(&import_event(duplicated), &digest).is_err());
     }
 }
