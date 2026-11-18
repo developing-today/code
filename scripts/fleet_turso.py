@@ -4,6 +4,7 @@ import os
 import subprocess
 import urllib.request
 import urllib.error
+from urllib.parse import urlsplit
 
 
 def argument(value):
@@ -23,8 +24,11 @@ def argument(value):
 class Turso:
     def __init__(self):
         self.url = os.environ.get("FLEET_TURSO_URL", "https://fleet-platform-dezren39.aws-us-east-1.turso.io").replace("libsql://", "https://").rstrip("/")
-        if not self.url.startswith("https://"):
-            raise ValueError("FLEET_TURSO_URL must use HTTPS")
+        parsed = urlsplit(self.url)
+        if (parsed.scheme != "https" or parsed.hostname != "fleet-platform-dezren39.aws-us-east-1.turso.io"
+                or parsed.username or parsed.password or parsed.port not in (None, 443)
+                or parsed.path or parsed.query or parsed.fragment):
+            raise ValueError("FLEET_TURSO_URL must identify the fleet-platform HTTPS origin")
         self.token = os.environ.get("FLEET_TURSO_TOKEN")
         if not self.token:
             result = subprocess.run(["fleet", "secrets", "get", "turso.fleet-platform-rw-token"], capture_output=True, text=True, timeout=60)
@@ -48,18 +52,21 @@ class Turso:
         if transaction:
             last = len(steps)-1
             steps.append({"condition": {"type": "ok", "step": last}, "stmt": {"sql": "COMMIT"}})
-            steps.append({"condition": {"type": "not", "cond": {"type": "ok", "step": last}}, "stmt": {"sql": "ROLLBACK"}})
+            steps.append({"condition": {"type": "not", "cond": {"type": "ok", "step": last + 1}}, "stmt": {"sql": "ROLLBACK"}})
         request = urllib.request.Request(self.url + "/v2/pipeline", data=json.dumps({"requests": [{"type": "batch", "batch": {"steps": steps}}, {"type": "close"}]}).encode(), headers={"Authorization": "Bearer " + self.token, "Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(request, timeout=120) as response:
                 result = json.load(response)["results"][0]
         except urllib.error.HTTPError as e:
-            raise RuntimeError(f"Turso HTTP {e.code}") from None
+            raise RuntimeError(f"Turso HTTP {e.code}; outcome unverified, read back before retrying") from None
+        except (OSError, ValueError, KeyError) as e:
+            raise RuntimeError("Turso transport/response failure; outcome unverified, read back before retrying") from None
         if result["type"] == "error":
             raise RuntimeError("Turso batch rejected")
         batch = result["response"]["result"]
         if any(batch.get("step_errors", [])):
-            raise RuntimeError("Turso statement failed; transaction rolled back" if transaction else "Turso statement failed")
+            rolled_back = transaction and batch["step_results"][-1] is not None
+            raise RuntimeError("Turso statement failed; rollback confirmed" if rolled_back else "Turso statement failed; outcome unverified, read back before retrying")
         return [self.rows(r) for r in batch["step_results"][:len(stmts)]]
 
     @staticmethod
