@@ -104,6 +104,8 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"prompt.sample":                      "TestPromptSampleAskLetsAnUnmatchedPromptSeekAModel",
+	"prompt.catalogBudget":               "TestPromptCatalogBudgetBoundsTheCatalogSentToTheModel",
 	"search.semantic":                    "TestSearchSemanticRanksWithTheConfiguredEmbedder",
 	"embeddings.url":                     "TestEmbeddingsURLSendsSemanticSearchToTheEndpoint",
 	"embeddings.apiKey":                  "TestEmbeddingsAPIKeyIsSentAsABearerToken",
@@ -308,6 +310,8 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestPromptSampleAskLetsAnUnmatchedPromptSeekAModel":                             TestPromptSampleAskLetsAnUnmatchedPromptSeekAModel,
+	"TestPromptCatalogBudgetBoundsTheCatalogSentToTheModel":                          TestPromptCatalogBudgetBoundsTheCatalogSentToTheModel,
 	"TestSearchSemanticRanksWithTheConfiguredEmbedder":                               TestSearchSemanticRanksWithTheConfiguredEmbedder,
 	"TestEmbeddingsURLSendsSemanticSearchToTheEndpoint":                              TestEmbeddingsURLSendsSemanticSearchToTheEndpoint,
 	"TestEmbeddingsAPIKeyIsSentAsABearerToken":                                       TestEmbeddingsAPIKeyIsSentAsABearerToken,
@@ -3942,6 +3946,7 @@ type fakeModel struct {
 
 type fakeModelRequest struct {
 	Auth      string
+	Size      int    // bytes in the request body
 	Model     string `json:"model"`
 	MaxTokens int    `json:"max_tokens"`
 }
@@ -3951,8 +3956,10 @@ func newFakeModel(t *testing.T, tag string, delay time.Duration) *fakeModel {
 	m := &fakeModel{tag: tag}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req fakeModelRequest
-		_ = json.NewDecoder(r.Body).Decode(&req)
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &req)
 		req.Auth = r.Header.Get("Authorization")
+		req.Size = len(raw)
 		m.mu.Lock()
 		m.reqs = append(m.reqs, req)
 		m.mu.Unlock()
@@ -4359,6 +4366,51 @@ func TestEmbeddingsBackendLocalSkipsTheRemoteEndpoint(t *testing.T) {
 	before, _, _ := f.seen()
 	if n, _, _ := embeddingsSearch(t, f, []string{"--semantic", "echo"}, "MCPX_EMBEDDINGS_URL="+f.URL, "MCPX_EMBEDDINGS_BACKEND=local"); n != before {
 		t.Fatalf("with embeddings.backend=local the remote endpoint should not be asked (%d -> %d)", before, n)
+	}
+}
+
+// unmatchedPrompt asks the daemon to resolve a prompt no recipe matches,
+// with env on top, and returns the resolution's JSON.
+func unmatchedPrompt(t *testing.T, env ...string) string {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(env...)
+	e.run("ls")
+	out, _ := e.try("--json", "prompt", "compose a haiku about the moon")
+	return out
+}
+
+// TestPromptSampleAskLetsAnUnmatchedPromptSeekAModel is the effect probe for
+// prompt.sample. Oracle: by default (never) an unmatched prompt says
+// generating is off and names the setting; with prompt.sample=ask it goes
+// on to look for a model provider instead.
+func TestPromptSampleAskLetsAnUnmatchedPromptSeekAModel(t *testing.T) {
+	if out := unmatchedPrompt(t); !strings.Contains(out, "prompt.sample is never") {
+		t.Fatalf("oracle: by default generating should be off by prompt.sample:\n%s", out)
+	}
+	if out := unmatchedPrompt(t, "MCPX_PROMPT_SAMPLE=ask"); strings.Contains(out, "prompt.sample is never") || strings.Contains(out, "generating one is off") {
+		t.Fatalf("with prompt.sample=ask generating should no longer be off:\n%s", out)
+	}
+}
+
+// TestPromptCatalogBudgetBoundsTheCatalogSentToTheModel is the effect probe
+// for prompt.catalogBudget. An unmatched prompt with a model configured
+// sends the model a slice of the catalog; a budget of one token sends a
+// smaller request than the default.
+func TestPromptCatalogBudgetBoundsTheCatalogSentToTheModel(t *testing.T) {
+	size := func(env ...string) int {
+		t.Helper()
+		m := newFakeModel(t, "A", 0)
+		unmatchedPrompt(t, append(modelAt(m), env...)...)
+		n := m.last().Size
+		if n == 0 {
+			t.Fatal("the unmatched prompt should have asked the model")
+		}
+		return n
+	}
+	def, tiny := size(), size("MCPX_PROMPT_CATALOG_BUDGET=1")
+	if tiny >= def {
+		t.Fatalf("prompt.catalogBudget=1 should send the model less than the default (%d bytes vs %d)", tiny, def)
 	}
 }
 
