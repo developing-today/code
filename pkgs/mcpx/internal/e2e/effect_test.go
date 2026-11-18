@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -99,6 +100,8 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor": "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":       "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":             "TestEventsHistoryBoundsTheReplay",
+	"catalog.pinnedTools":        "TestCatalogPinnedToolsAlwaysListInReactiveMode",
+	"retention.maxTools":         "TestRetentionMaxToolsCapsTheReactiveWorkingSet",
 	"diagnose.history":           "TestDiagnoseHistoryCapsRecordedSchemaChanges",
 	"diagnose.preflight":         "TestDiagnosePreflightStopsAMismatchedScript",
 	"proto.serveMCP":             "TestServeMCPUnmountsTheEndpointFromTheEnvironment",
@@ -187,6 +190,8 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":        TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                 TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                          TestEventsHistoryBoundsTheReplay,
+	"TestCatalogPinnedToolsAlwaysListInReactiveMode":                            TestCatalogPinnedToolsAlwaysListInReactiveMode,
+	"TestRetentionMaxToolsCapsTheReactiveWorkingSet":                            TestRetentionMaxToolsCapsTheReactiveWorkingSet,
 	"TestDiagnoseHistoryCapsRecordedSchemaChanges":                              TestDiagnoseHistoryCapsRecordedSchemaChanges,
 	"TestDiagnosePreflightStopsAMismatchedScript":                               TestDiagnosePreflightStopsAMismatchedScript,
 	"TestServeMCPUnmountsTheEndpointFromTheEnvironment":                         TestServeMCPUnmountsTheEndpointFromTheEnvironment,
@@ -1487,6 +1492,113 @@ console.log("script ran");`
 	out, err = e.try("exec", script)
 	if err != nil || !strings.Contains(out, "script ran") {
 		t.Errorf("diagnose.preflight=false should let the script run (err %v):\n%s", err, out)
+	}
+}
+
+// reactiveTools opens one `mcpx serve --mode reactive` stdio session,
+// optionally asks request_tools for query first, and returns the names the
+// session then lists. Frames go one at a time and each waits for its own
+// answer: the server handles requests concurrently, so a pipelined
+// tools/list could be answered before the request_tools it follows.
+func reactiveTools(t *testing.T, e *env, query string) map[string]bool {
+	t.Helper()
+	cmd := exec.Command(e.mcpx, "serve", "--mode", "reactive")
+	cmd.Dir = e.dir
+	cmd.Env = e.envVars
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	dec := json.NewDecoder(bufio.NewReaderSize(stdout, 1<<20))
+	id := 0
+	rpc := func(method string, params any) json.RawMessage {
+		t.Helper()
+		id++
+		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+		if _, err := stdin.Write(append(b, '\n')); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			var f struct {
+				ID     *int            `json:"id"`
+				Result json.RawMessage `json:"result"`
+				Error  json.RawMessage `json:"error"`
+			}
+			if err := dec.Decode(&f); err != nil {
+				t.Fatalf("read %s: %v", method, err)
+			}
+			if f.ID != nil && *f.ID == id {
+				if len(f.Error) > 0 {
+					t.Fatalf("%s failed: %s", method, f.Error)
+				}
+				return f.Result
+			}
+		}
+	}
+	rpc("initialize", map[string]any{})
+	if query != "" {
+		rpc("tools/call", map[string]any{"name": "request_tools",
+			"arguments": map[string]any{"query": query, "limit": 5}})
+	}
+	var list struct {
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(rpc("tools/list", map[string]any{}), &list); err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, tool := range list.Tools {
+		names[tool.Name] = true
+	}
+	return names
+}
+
+// TestCatalogPinnedToolsAlwaysListInReactiveMode is the effect probe for
+// catalog.pinnedTools: a fresh reactive session lists only its meta tools,
+// and a tool pinned from the environment is listed from the start.
+func TestCatalogPinnedToolsAlwaysListInReactiveMode(t *testing.T) {
+	e := newEnv(t, oneServer)
+	e.run("ls")
+	if got := reactiveTools(t, e, ""); got["mcpx_status"] {
+		t.Errorf("a fresh reactive session should not list mcpx_status unpinned: %v", got)
+	}
+	e.setenv("MCPX_CATALOG_PINNED_TOOLS=mcpx_status")
+	if got := reactiveTools(t, e, ""); !got["mcpx_status"] {
+		t.Errorf("catalog.pinnedTools=mcpx_status should list it from the start: %v", got)
+	}
+}
+
+// TestRetentionMaxToolsCapsTheReactiveWorkingSet is the effect probe for
+// retention.maxTools: request_tools activates five tools, all of which the
+// default working set keeps; capped at two, only two stay listed.
+func TestRetentionMaxToolsCapsTheReactiveWorkingSet(t *testing.T) {
+	retained := func(names map[string]bool) int {
+		n := 0
+		for name := range names {
+			if name != "request_tools" && name != "batch_call" {
+				n++
+			}
+		}
+		return n
+	}
+	e := newEnv(t, oneServer)
+	e.run("ls")
+	if n := retained(reactiveTools(t, e, "echo")); n != 5 {
+		t.Errorf("the default retention.maxTools should keep all 5 activated tools, kept %d", n)
+	}
+	e.setenv("MCPX_RETENTION_MAX_TOOLS=2")
+	if n := retained(reactiveTools(t, e, "echo")); n != 2 {
+		t.Errorf("retention.maxTools=2 should keep 2 activated tools, kept %d", n)
 	}
 }
 
