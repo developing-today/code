@@ -492,7 +492,7 @@ pub(super) fn claim_batch_output(resp: &Value, worker: &str, requested: i64) -> 
 /// the pool in the same touch instead of sitting claimed and idle
 /// until its lease expires.
 pub(super) fn cmd_release(rest: &[String]) -> i32 {
-    let args = parse_verb_args("release", rest, &["worker", "reason"], &[]);
+    let args = parse_verb_args("release", rest, &["worker", "lane", "reason"], &[]);
     reject_extra_pos("release", &args, 1);
     let Some(reason) = args.get("reason") else {
         die(
@@ -508,6 +508,7 @@ pub(super) fn cmd_release(rest: &[String]) -> i32 {
         &json!({
             "task_id": args.pos_i64(0, "task_id"),
             "worker": opt_worker(&args),
+            "lane": lane_arg(&args),
             "reason": reason,
         }),
     ));
@@ -750,7 +751,13 @@ pub(super) fn cmd_heartbeat(rest: &[String]) -> i32 {
     let args = parse_verb_args(
         "heartbeat",
         rest,
-        &["worker", "extend-seconds", "progress", "progress-file"],
+        &[
+            "worker",
+            "lane",
+            "extend-seconds",
+            "progress",
+            "progress-file",
+        ],
         &[],
     );
     reject_extra_pos("heartbeat", &args, 1);
@@ -764,6 +771,7 @@ pub(super) fn cmd_heartbeat(rest: &[String]) -> i32 {
             &json!({
                 "task_id": args.pos_i64(0, "task_id"),
                 "worker": opt_worker(&args),
+                "lane": lane_arg(&args),
                 "extend_seconds": extend_seconds,
                 "progress": progress_arg(&args),
             }),
@@ -778,7 +786,7 @@ pub(super) fn cmd_checkpoint(rest: &[String]) -> i32 {
     let args = parse_verb_args(
         "checkpoint",
         rest,
-        &["worker", "stage", "progress", "progress-file"],
+        &["worker", "lane", "stage", "progress", "progress-file"],
         &[],
     );
     reject_extra_pos("checkpoint", &args, 1);
@@ -791,6 +799,7 @@ pub(super) fn cmd_checkpoint(rest: &[String]) -> i32 {
             &json!({
                 "task_id": args.pos_i64(0, "task_id"),
                 "worker": opt_worker(&args),
+                "lane": lane_arg(&args),
                 "stage": stage,
                 "progress": progress_arg(&args).unwrap_or(json!({})),
             }),
@@ -807,6 +816,7 @@ pub(super) fn cmd_park(rest: &[String]) -> i32 {
         rest,
         &[
             "worker",
+            "lane",
             "reason",
             "delay-seconds",
             "not-before",
@@ -831,6 +841,7 @@ pub(super) fn cmd_park(rest: &[String]) -> i32 {
     let mut body = json!({
         "task_id": args.pos_i64(0, "task_id"),
         "worker": opt_worker(&args),
+        "lane": lane_arg(&args),
         "reason": reason,
         "progress": progress_arg(&args).unwrap_or(json!({})),
     });
@@ -969,6 +980,7 @@ pub(super) fn cmd_block(rest: &[String]) -> i32 {
         rest,
         &[
             "worker",
+            "lane",
             "reason-class",
             "blocker",
             "progress",
@@ -1040,6 +1052,7 @@ pub(super) fn cmd_block(rest: &[String]) -> i32 {
     let mut body = json!({
         "task_id": args.pos_i64(0, "task_id"),
         "worker": opt_worker(&args),
+        "lane": lane_arg(&args),
         "reason_class": rc,
         "blocker": blocker,
         "progress": progress,
@@ -1256,7 +1269,7 @@ pub(super) fn cmd_fail(rest: &[String]) -> i32 {
     let args = parse_verb_args(
         "fail",
         rest,
-        &["worker", "error", "reason-class", "execution"],
+        &["worker", "lane", "error", "reason-class", "execution"],
         &[],
     );
     reject_extra_pos("fail", &args, 1);
@@ -1275,6 +1288,7 @@ pub(super) fn cmd_fail(rest: &[String]) -> i32 {
     let mut body = json!({
         "task_id": args.pos_i64(0, "task_id"),
         "worker": opt_worker(&args),
+        "lane": lane_arg(&args),
         "error": error,
         "reason_class": reason_class,
     });
@@ -1296,6 +1310,7 @@ pub(super) fn cmd_complete(rest: &[String]) -> i32 {
         rest,
         &[
             "worker",
+            "lane",
             "result",
             "result-file",
             "telemetry",
@@ -1409,6 +1424,7 @@ pub(super) fn cmd_complete(rest: &[String]) -> i32 {
     let mut body = json!({
         "task_id": args.pos_i64(0, "task_id"),
         "worker": opt_worker(&args),
+        "lane": lane_arg(&args),
         "result": result_obj,
     });
     if let Some(ex) = ex {
