@@ -101,6 +101,11 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"daemon.inline":                      "TestDaemonInlineAlwaysAnswersWithoutASocketFromTheEnvironment",
+	"autostart.bin":                      "TestAutostartBinChoosesTheDaemonExecutableFromTheEnvironment",
+	"autostart.args":                     "TestAutostartArgsReplaceTheDaemonCommandLineFromTheEnvironment",
+	"autostart.logTail":                  "TestAutostartLogTailBoundsTheFailureExcerptFromTheEnvironment",
+	"daemon.watchConfig":                 "TestDaemonWatchConfigPicksUpAHandEditFromTheEnvironment",
 	"daemon.inlineStartTimeout":          "TestDaemonInlineStartTimeoutBoundsTheInProcessStartFromTheEnvironment",
 	"daemon.probeTimeout":                "TestDaemonProbeTimeoutDecidesWhetherASiblingDaemonIsReportedFromTheEnvironment",
 	"daemon.warmTimeout":                 "TestDaemonWarmTimeoutBoundsTheStartupWarm",
@@ -251,6 +256,11 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestDaemonInlineAlwaysAnswersWithoutASocketFromTheEnvironment":                  TestDaemonInlineAlwaysAnswersWithoutASocketFromTheEnvironment,
+	"TestAutostartBinChoosesTheDaemonExecutableFromTheEnvironment":                   TestAutostartBinChoosesTheDaemonExecutableFromTheEnvironment,
+	"TestAutostartArgsReplaceTheDaemonCommandLineFromTheEnvironment":                 TestAutostartArgsReplaceTheDaemonCommandLineFromTheEnvironment,
+	"TestAutostartLogTailBoundsTheFailureExcerptFromTheEnvironment":                  TestAutostartLogTailBoundsTheFailureExcerptFromTheEnvironment,
+	"TestDaemonWatchConfigPicksUpAHandEditFromTheEnvironment":                        TestDaemonWatchConfigPicksUpAHandEditFromTheEnvironment,
 	"TestDaemonInlineStartTimeoutBoundsTheInProcessStartFromTheEnvironment":          TestDaemonInlineStartTimeoutBoundsTheInProcessStartFromTheEnvironment,
 	"TestDaemonProbeTimeoutDecidesWhetherASiblingDaemonIsReportedFromTheEnvironment": TestDaemonProbeTimeoutDecidesWhetherASiblingDaemonIsReportedFromTheEnvironment,
 	"TestDaemonWarmTimeoutBoundsTheStartupWarm":                                      TestDaemonWarmTimeoutBoundsTheStartupWarm,
@@ -2899,6 +2909,117 @@ func TestDaemonProbeTimeoutDecidesWhetherASiblingDaemonIsReportedFromTheEnvironm
 	}
 	if out := ladder("MCPX_DAEMON_PROBE_TIMEOUT=1ns"); strings.Contains(out, "sibling-socket") {
 		t.Fatalf("with daemon.probeTimeout=1ns no sibling dial can finish, so none should be reported, got:\n%s", out)
+	}
+}
+
+// TestDaemonInlineAlwaysAnswersWithoutASocketFromTheEnvironment is the
+// effect probe for daemon.inline. By default ls auto-starts a daemon that
+// outlives the command, so a later ls with autostart off still answers.
+// With daemon.inline=always the client skips the socket and spawn rungs
+// and answers from an in-process daemon: the ls lists demo, and nothing
+// is left running for the later ls to reach.
+func TestDaemonInlineAlwaysAnswersWithoutASocketFromTheEnvironment(t *testing.T) {
+	leftRunning := func(inline bool) bool {
+		e := newEnv(t, oneServer)
+		if inline {
+			e.setenv("MCPX_DAEMON_INLINE=always")
+		}
+		if out := e.run("ls"); !strings.Contains(out, "demo") {
+			t.Fatalf("ls should list demo (inline %v):\n%s", inline, out)
+		}
+		e.unsetenv("MCPX_DAEMON_INLINE")
+		e.setenv("MCPX_DAEMON_AUTOSTART=false")
+		_, err := e.try("ls")
+		return err == nil
+	}
+	if !leftRunning(false) {
+		t.Fatalf("oracle: by default ls should leave a daemon that a later ls reaches with autostart off")
+	}
+	if leftRunning(true) {
+		t.Fatalf("with daemon.inline=always the ls should leave no daemon behind")
+	}
+}
+
+// autostartFailure runs ls with autostart settings that keep the daemon
+// from coming up and returns the failure the client prints.
+func autostartFailure(t *testing.T, env ...string) string {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(append([]string{"MCPX_AUTOSTART_CONNECT_TIMEOUT=2s"}, env...)...)
+	out, err := e.try("ls")
+	if err == nil {
+		t.Fatalf("ls should fail to start a daemon with %v; got:\n%s", env, out)
+	}
+	return out
+}
+
+// TestAutostartBinChoosesTheDaemonExecutableFromTheEnvironment is the
+// effect probe for autostart.bin. The default starts this binary as the
+// daemon and ls answers; naming an executable that does not exist makes
+// the spawn rung fail on exec of that path.
+func TestAutostartBinChoosesTheDaemonExecutableFromTheEnvironment(t *testing.T) {
+	if out := newEnv(t, oneServer).run("ls"); !strings.Contains(out, "demo") {
+		t.Fatalf("oracle: with the default autostart.bin ls should list demo:\n%s", out)
+	}
+	missing := filepath.Join(t.TempDir(), "no-such-mcpx")
+	out := autostartFailure(t, "MCPX_AUTOSTART_BIN="+missing)
+	if !strings.Contains(out, "fork/exec "+missing) {
+		t.Fatalf("the spawn rung should fail on exec of autostart.bin, got:\n%s", out)
+	}
+}
+
+// TestAutostartArgsReplaceTheDaemonCommandLineFromTheEnvironment is the
+// effect probe for autostart.args. The default arguments start a daemon;
+// replacing them with a flag the daemon command does not define makes
+// the spawned process exit, and its own complaint about the flag is in
+// the log excerpt the client prints.
+func TestAutostartArgsReplaceTheDaemonCommandLineFromTheEnvironment(t *testing.T) {
+	if out := newEnv(t, oneServer).run("ls"); !strings.Contains(out, "demo") {
+		t.Fatalf("oracle: with the default autostart.args ls should list demo:\n%s", out)
+	}
+	out := autostartFailure(t, "MCPX_AUTOSTART_ARGS=daemon,--no-such-flag")
+	if !strings.Contains(out, "flag provided but not defined: -no-such-flag") {
+		t.Fatalf("the daemon started with the replaced arguments should refuse the flag, got:\n%s", out)
+	}
+}
+
+// TestAutostartLogTailBoundsTheFailureExcerptFromTheEnvironment is the
+// effect probe for autostart.logTail. A daemon that will not start has
+// the end of its log shown; by default the excerpt holds the daemon's
+// whole complaint, and with an 8-byte tail only the last 8 bytes of it.
+func TestAutostartLogTailBoundsTheFailureExcerptFromTheEnvironment(t *testing.T) {
+	bad := "MCPX_AUTOSTART_ARGS=daemon,--no-such-flag"
+	if out := autostartFailure(t, bad); !strings.Contains(out, "flag provided but not defined") {
+		t.Fatalf("oracle: the default excerpt should hold the daemon's complaint, got:\n%s", out)
+	}
+	out := autostartFailure(t, bad, "MCPX_AUTOSTART_LOG_TAIL=8")
+	if strings.Contains(out, "flag provided but not defined") {
+		t.Fatalf("with autostart.logTail=8 the excerpt should be cut to its last 8 bytes, got:\n%s", out)
+	}
+	if !strings.Contains(out, "ch-flag") {
+		t.Fatalf("the 8-byte excerpt should be the end of the complaint, got:\n%s", out)
+	}
+}
+
+// TestDaemonWatchConfigPicksUpAHandEditFromTheEnvironment is the effect
+// probe for daemon.watchConfig. A running daemon serving demo has its
+// configuration rewritten by hand to alpha and beta. Watching (the
+// default), the next ls lists the new servers without a refresh; with
+// watching off, it still lists demo.
+func TestDaemonWatchConfigPicksUpAHandEditFromTheEnvironment(t *testing.T) {
+	edited := func(extra ...string) string {
+		e := newEnv(t, oneServer)
+		e.setenv(append([]string{"MCPX_DAEMON_REAP_INTERVAL=100ms"}, extra...)...)
+		e.run("ls")
+		mustWrite(t, filepath.Join(e.dir, ".mcpx.json"), strings.ReplaceAll(twoVisibleServers, "FAKE", e.fake))
+		time.Sleep(1200 * time.Millisecond) // past the edit's mtime second and a few reap ticks
+		return e.run("ls")
+	}
+	if out := edited(); !strings.Contains(out, "beta") {
+		t.Fatalf("oracle: watching, the hand edit should be picked up, got:\n%s", out)
+	}
+	if out := edited("MCPX_DAEMON_WATCH_CONFIG=false"); strings.Contains(out, "beta") || !strings.Contains(out, "demo") {
+		t.Fatalf("with daemon.watchConfig=false the hand edit should not be picked up, got:\n%s", out)
 	}
 }
 

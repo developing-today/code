@@ -20,7 +20,6 @@ cli	supervise	no integration-test exercise yet; burn-down #8461 (cli daemon grou
 cli	upgrade	no integration-test exercise yet; burn-down #8461 (cli daemon group)
 setting	daemon.endpoint	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.idleExit	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
-setting	daemon.inline	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.inlineStartPoll	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.leaseTTL	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.port	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
@@ -32,7 +31,6 @@ setting	daemon.takeoverTimeout	no integration-test exercise yet; burn-down #8468
 setting	daemon.tsnet.hostname	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.tsnetUpTimeout	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.warm	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
-setting	daemon.watchConfig	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	http.idleConnTimeout	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
 setting	http.idleConns	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
 setting	http.remoteIdleConns	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
@@ -98,10 +96,7 @@ setting	artifacts.idleTtl	no integration-test exercise yet; burn-down #8470 (set
 setting	artifacts.maxAge	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	artifacts.ttl	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	autonomy.max	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
-setting	autostart.args	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
-setting	autostart.bin	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	autostart.idleExit	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
-setting	autostart.logTail	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	autostart.pollInterval	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	deps.autoInstall	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	events.reconnect	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
