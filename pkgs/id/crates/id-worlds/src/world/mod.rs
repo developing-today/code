@@ -1797,6 +1797,10 @@ pub(crate) struct CapabilityRecord {
     scopes: WorldScopes,
     parent: Option<u64>,
     revoked: bool,
+    /// The moderator participant who revoked this capability directly, so a
+    /// checkpoint keeps the audit actor (#11778). `None` for an admin revoke,
+    /// for one inherited from a revoked ancestor, and while active.
+    revoked_by: Option<u64>,
     bounds: CapabilityBounds,
     used: u32,
     subject: Option<String>,

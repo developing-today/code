@@ -6534,6 +6534,50 @@ mod tests {
         assert_eq!(snapshot.events.len(), 2);
     }
 
+    /// #11778: a checkpoint keeps who revoked a capability. It wrote
+    /// `by: None` for every revocation, so after compaction a moderator's
+    /// revoke replayed as the admin's and the audit actor was lost.
+    #[test]
+    fn checkpoint_keeps_the_revoking_moderator_11778() {
+        fn revocations(entries: &[JournalEntry]) -> Vec<(u64, Option<u64>)> {
+            entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    JournalEntry::Revoked { participant_id, by } => Some((*participant_id, *by)),
+                    _ => None,
+                })
+                .collect()
+        }
+        let mut core = world(8);
+        core.active_module_hash = Some("module".to_owned());
+        let (moderated, _) = join(&mut core, "Ada");
+        let (by_admin, _) = join(&mut core, "Bo");
+        let (moderator, _) = join(&mut core, "Cy");
+        assert_eq!(
+            core.revoke_tree_by(moderated.id, Some(moderator.id)),
+            vec![moderated.id]
+        );
+        assert_eq!(core.revoke_tree_by(by_admin.id, None), vec![by_admin.id]);
+        // A second revoke of a revoked capability changes nothing, the
+        // recorded actor included.
+        assert!(
+            core.revoke_tree_by(moderated.id, Some(by_admin.id))
+                .is_empty()
+        );
+
+        let compacted = core.checkpoint_entries("{}".to_owned()).unwrap();
+        let expected = vec![(moderated.id, Some(moderator.id)), (by_admin.id, None)];
+        assert_eq!(revocations(&compacted), expected);
+
+        // Replaying the checkpoint and compacting again keeps the actor.
+        let mut restored = WorldCore::restore("test-world", WorldLimits::default(), compacted)
+            .unwrap()
+            .core;
+        restored.active_module_hash = Some("module".to_owned());
+        let again = restored.checkpoint_entries("{}".to_owned()).unwrap();
+        assert_eq!(revocations(&again), expected);
+    }
+
     #[test]
     fn revoked_capabilities_cannot_read_or_write() {
         let mut core = world(8);
