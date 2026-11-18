@@ -101,6 +101,7 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"elicit.pendingLimit":                "TestElicitPendingLimitBoundsTheListingFromTheEnvironment",
 	"elicit.askTimeout":                  "TestElicitAskTimeoutBoundsTheWaitForAnAnswerFromTheEnvironment",
 	"artifacts.idleTtl":                  "TestArtifactsIdleTTLRenewsAReadArtifactFromTheEnvironment",
 	"artifacts.maxAge":                   "TestArtifactsMaxAgeCapsARenewedArtifactFromTheEnvironment",
@@ -276,6 +277,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestElicitPendingLimitBoundsTheListingFromTheEnvironment":                       TestElicitPendingLimitBoundsTheListingFromTheEnvironment,
 	"TestElicitAskTimeoutBoundsTheWaitForAnAnswerFromTheEnvironment":                 TestElicitAskTimeoutBoundsTheWaitForAnAnswerFromTheEnvironment,
 	"TestArtifactsIdleTTLRenewsAReadArtifactFromTheEnvironment":                      TestArtifactsIdleTTLRenewsAReadArtifactFromTheEnvironment,
 	"TestArtifactsMaxAgeCapsARenewedArtifactFromTheEnvironment":                      TestArtifactsMaxAgeCapsARenewedArtifactFromTheEnvironment,
@@ -3515,6 +3517,43 @@ func TestElicitAskTimeoutBoundsTheWaitForAnAnswerFromTheEnvironment(t *testing.T
 	}
 	if !strings.Contains(out, "nobody answered within 1s") {
 		t.Fatalf("the refusal should name the 1s deadline, got:\n%s", out)
+	}
+}
+
+// TestElicitPendingLimitBoundsTheListingFromTheEnvironment is the effect
+// probe for elicit.pendingLimit. Under policy.write=ask, two unannotated
+// calls each raise a confirmation that waits up to 5s. While both wait,
+// `mcpx elicit list` shows both under the default limit and one under
+// elicit.pendingLimit=1.
+func TestElicitPendingLimitBoundsTheListingFromTheEnvironment(t *testing.T) {
+	listed := func(extra ...string) int {
+		e := newEnv(t, oneServer)
+		e.setenv(append([]string{"MCPX_POLICY_WRITE=ask", "MCPX_ELICIT_ASK_TIMEOUT=5s"}, extra...)...)
+		e.run("ls")
+		beAnswerer(t, e)
+		done := make(chan struct{}, 2)
+		for i := 0; i < 2; i++ {
+			go func() {
+				_, _ = e.try("call", "demo.structured", `{}`)
+				done <- struct{}{}
+			}()
+		}
+		time.Sleep(2 * time.Second)
+		n := len(pendingQuestions(t, e))
+		for i := 0; i < 2; i++ {
+			select {
+			case <-done:
+			case <-time.After(30 * time.Second):
+				t.Fatal("a held call never finished")
+			}
+		}
+		return n
+	}
+	if n := listed(); n != 2 {
+		t.Fatalf("oracle: both waiting confirmations should be listed under the default limit, got %d", n)
+	}
+	if n := listed("MCPX_ELICIT_PENDING_LIMIT=1"); n != 1 {
+		t.Fatalf("with elicit.pendingLimit=1 the listing should hold one question, got %d", n)
 	}
 }
 
