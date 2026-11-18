@@ -295,6 +295,44 @@ class ReadModeLoudDefaultTests(unittest.TestCase):
                 self.assertEqual(result, want)
                 self.assertNotIn("CLAIMANT-MODE-WARNING", err)
 
+    def test_every_read_records_where_the_mode_came_from(self):
+        # #10332: a flip must be attributable from the fires log alone.
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            for content, state in (
+                ("live\n", "ok"),
+                ("banana", "invalid"),
+                (None, "missing"),
+            ):
+                (tmp / "mode").unlink(missing_ok=True)
+                self._read_with_file(tmp, content)
+                source = claimant._mode_source
+                self.assertEqual(source["path"], str(tmp / "mode"))
+                self.assertEqual(source["state"], state)
+                self.assertIsNotNone(source["dir_mtime"])
+                if content is None:
+                    self.assertIsNone(source["file_mtime"])
+                else:
+                    self.assertIsNotNone(source["file_mtime"])
+
+    def test_fire_log_entries_carry_the_mode_source(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            self._read_with_file(tmp, None)
+            fires = tmp / "fires.jsonl"
+            with patch.object(claimant, "STATE_DIR", tmp), patch.object(
+                claimant, "FIRES_FILE", fires
+            ):
+                claimant.log_fire("shadow", [], [], None, [{"reason": "no_candidates"}])
+            entry = json.loads(fires.read_text().splitlines()[-1])
+        self.assertEqual(entry["mode"], "shadow")
+        self.assertEqual(entry["mode_source"]["state"], "missing")
+        self.assertEqual(entry["mode_source"]["path"], str(tmp / "mode"))
+
 
 if __name__ == "__main__":
     unittest.main()
