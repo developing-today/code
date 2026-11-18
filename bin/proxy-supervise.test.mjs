@@ -127,8 +127,15 @@ const makeWorld = async (t, { strategy = 'ab', script = FAKE('v1') } = {}) => {
 test('expandPath expands $VAR, ${VAR} and ~', () => {
   assert.equal(expandPath('$FOO/bar', { FOO: '/x' }), '/x/bar');
   assert.equal(expandPath('${FOO}bar', { FOO: '/x' }), '/xbar');
-  assert.equal(expandPath('~/a', {}), path.join(os.homedir(), 'a'));
+  assert.equal(expandPath('~/a', { HOME: '/h' }), '/h/a');
+  assert.equal(expandPath('~', { HOME: '/h' }), '/h');
   assert.equal(expandPath('/plain', {}), '/plain');
+});
+
+test('expandPath refuses ~ when HOME is unset or empty (home-resolution contract)', () => {
+  for (const env of [{}, { HOME: '' }]) {
+    assert.throws(() => expandPath('~/a', env), (err) => err.name === 'HomeUnsetError' && /HOME is not set or is empty: proxy-supervise/.test(err.message));
+  }
 });
 
 test('otherPort flips between canonical and alternate', () => {

@@ -55,11 +55,11 @@
 
 import { existsSync, realpathSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 
+import { expandTilde } from './home-dir.mjs';
 import { parseJsonc } from './provider-catalog-sync.mjs';
 
 export const DEFAULT_CONFIG = '.opencode/opencode.jsonc';
@@ -70,7 +70,7 @@ export const LEAF_PREFIX = 'opencode-go.';
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 
 function expandHome(path) {
-  return path.startsWith('~') ? resolve(homedir(), `.${path.slice(1)}`) : path;
+  return expandTilde(path, process.env, 'check-opencode-go-seating (--db under ~)');
 }
 
 /** Collect `provider/model` strings from a route definition's selections.

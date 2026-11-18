@@ -53,11 +53,11 @@
 //                                    incident replay; unset = wall clock
 import { createServer } from "node:http";
 import { readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
+import { homePath } from "./home-dir.mjs";
 import { parseProxyMillis, parseProxyPort } from "./proxy-port.mjs";
 import { createRequestBodyCollector } from "./request-body.mjs";
 
@@ -71,14 +71,14 @@ const LEAF_TIMEOUT_MS = parseProxyMillis(
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH =
   process.env.OPENCODE_ROUTE_PROXY_CONFIG ||
-  join(homedir(), ".local/share/opencode/opencode.jsonc");
+  homePath(process.env, "opencode-route-proxy (default OPENCODE_ROUTE_PROXY_CONFIG)", ".local/share/opencode/opencode.jsonc");
 const CONFIG_FALLBACK = join(HERE, "..", ".opencode", "opencode.jsonc");
 const RUNTIME_CONFIG_PATH =
   process.env.OPENCODE_ROUTE_PROXY_RUNTIME_CONFIG ||
-  join(homedir(), ".local/state/opencode/opencode-runtime.jsonc");
+  homePath(process.env, "opencode-route-proxy (default OPENCODE_ROUTE_PROXY_RUNTIME_CONFIG)", ".local/state/opencode/opencode-runtime.jsonc");
 const DB_PATH =
   process.env.OPENCODE_ROUTE_PROXY_DB ||
-  join(homedir(), ".local/share/opencode/opencode.db");
+  homePath(process.env, "opencode-route-proxy (default OPENCODE_ROUTE_PROXY_DB)", ".local/share/opencode/opencode.db");
 
 // Providers built into OpenCode itself (no block in opencode.jsonc):
 // instanceOf targets resolve here when the config has no block either.

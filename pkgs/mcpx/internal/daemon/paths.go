@@ -519,8 +519,14 @@ func (p Paths) ListDaemons() []Info {
 	return out
 }
 
+// envJoin is sub under the XDG base directory env names, or "" when the
+// variable is unset, empty or relative. The XDG base-directory spec says a
+// relative value is invalid and must be ignored, and the home-resolution
+// contract (#5762, #11205) agrees: a relative override would put state
+// under whatever directory the process happens to run in. The plugin's
+// stateDir (plugin/core/daemon.ts) mirrors this.
 func envJoin(env, sub string) string {
-	if v := os.Getenv(env); v != "" {
+	if v := os.Getenv(env); v != "" && filepath.IsAbs(v) {
 		return filepath.Join(v, sub)
 	}
 	return ""
