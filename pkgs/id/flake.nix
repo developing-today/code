@@ -30,6 +30,13 @@
         systems.follows = "systems";
       };
     };
+    # Crane: splits dependency compilation out of the standalone
+    # package build (pkgs/id/default.nix) so workspace-source changes
+    # reuse the dependency layer (code#8392, #8574). Pinned to the
+    # rev the code repo's root lock already carries.
+    crane = {
+      url = "github:ipetkov/crane/01bc1d404a51a0a07e9d8759cd50a7903e218c82";
+    };
   };
 
   outputs =
@@ -39,6 +46,7 @@
       rust-overlay,
       flake-utils,
       bun2nix,
+      crane,
       # TODO: consider use systems here?
       ...
     }:
@@ -64,6 +72,11 @@
           buildWasmHost
           ;
         inherit (nixCommon) nativeBuildInputs;
+
+        # Crane library for the dependency-split standalone build
+        # (pkgs/id/default.nix), on the flake's pinned toolchain —
+        # the pkgs/atlas-search wiring.
+        craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
         # Pre-fetch cargo dependencies for sandbox builds (no network access)
         cargoDeps = pkgs.rustPlatform.importCargoLock {
@@ -804,6 +817,13 @@
         # Packages: nix build
         # =======================================================================
         packages = {
+          # The standalone package (./default.nix) built through
+          # crane's dependency split (#8574): registry/git deps are a
+          # separate derivation, so a workspace-source change rebuilds
+          # only this package derivation. Features sandbox,world (the
+          # standalone build's set — no web UI, no bun required).
+          id-crane = (import ./default.nix { inherit pkgs craneLib; }).default;
+
           # Web-enabled package (primary product)
           id-web = pkgs.rustPlatform.buildRustPackage {
             pname = "id";
