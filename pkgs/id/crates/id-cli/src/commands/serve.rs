@@ -1987,26 +1987,26 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 });
                 minter
             };
-            // #10003: the program gallery's read surface, from verified
-            // bundle files in --gallery-dir. A file that no longer verifies
-            // stops the start rather than being served or skipped.
+            // #10003/#10004: the program gallery's read surface, from
+            // verified bundle files and operator data in --gallery-dir. A
+            // file that no longer verifies stops the start rather than
+            // being served or skipped.
             let gallery = match &gallery_dir {
                 Some(dir) => {
-                    let registry = id_worlds::program_registry::Registry::open_dir(
+                    let gallery = id_worlds::program_gallery::Gallery::open_dir(
                         dir,
                         id_worlds::program_registry::AdmitAll,
                     )
                     .map_err(|error| {
-                        anyhow::anyhow!("open the gallery in {}: {error}", dir.display())
+                        anyhow::anyhow!("open the gallery in {}: {error:#}", dir.display())
                     })?;
                     status!(
-                        "gallery: {} program bundles from {}",
-                        registry.len(),
+                        "gallery: {} program bundles and {} featured collections from {}",
+                        gallery.registry().len(),
+                        gallery.collections().count(),
                         dir.display()
                     );
-                    Some(std::sync::Arc::new(std::sync::RwLock::new(
-                        id_worlds::program_gallery::Gallery::new(registry),
-                    )))
+                    Some(std::sync::Arc::new(std::sync::RwLock::new(gallery)))
                 }
                 None => None,
             };
