@@ -61,7 +61,13 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
         .get("dedupe_key")
         .and_then(|v| v.as_str())
         .map(str::to_string);
-    let work = (|| -> Result<(Value, Option<Value>), TErr> {
+    // #10627: the packet's work identity and any deliberate-parallel
+    // override, computed once from the row this enqueue would insert.
+    let identity = work_identity(
+        &json!({"queue": queue, "payload": task.get("payload").cloned().unwrap_or(json!({}))}),
+    );
+    let override_reason = dedupe_override(&packet);
+    let work = (|| -> Result<(Value, Option<Value>, Option<Value>), TErr> {
         let mut predecessor: Option<Value> = None;
         if let Some(dk) = &dedupe {
             let existing = t.query_objs(
@@ -74,9 +80,24 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
             )?;
             let (live, terminal) = dedupe_partition(&existing);
             if let Some(row) = live {
-                return Ok((row, None));
+                return Ok((row, None, None));
             }
             predecessor = terminal;
+        }
+        // #10627: open-collision rule. A live task in any queue that
+        // already holds this work identity absorbs the filing: no new
+        // row, and the reply names the holder so the filer can route
+        // its follow-up onto it. An override files anyway.
+        if let (Some(ident), None) = (&identity, &override_reason) {
+            let kind = task
+                .get("payload")
+                .and_then(|p| p.get("kind"))
+                .and_then(|k| k.as_str())
+                .unwrap_or("");
+            if let Some(holder) = live_identity_holder(t, ident, kind)? {
+                let detail = collision_detail(&holder, ident);
+                return Ok((holder, None, Some(detail)));
+            }
         }
         let ins = t.exec(
             "INSERT INTO tasks (queue, title, body, payload, dedupe_key, priority, \
@@ -152,14 +173,29 @@ pub(crate) fn verb_enqueue(t: &TursoBackend, req: &Value) -> Value {
                 &json!({"successor_task_id": id, "dedupe_key": dedupe}),
             )?;
         }
+        if let Some(reason) = &override_reason {
+            event(
+                t,
+                Some("enqueue_repo_task"),
+                Some(id),
+                "dedupe_override",
+                &json!({
+                    "reason": reason,
+                    "identity": identity.as_ref().map(WorkIdentity::key),
+                }),
+            )?;
+        }
         let row = get_task(t, id).map(|r| r.unwrap_or(Value::Null))?;
-        Ok((row, predecessor))
+        Ok((row, predecessor, None))
     })();
     match work {
-        Ok((row, predecessor)) if !row.is_null() => {
+        Ok((row, predecessor, collision)) if !row.is_null() => {
             let mut envelope = json!({
                 "row": row, "rpc": "enqueue_repo_task_turso", "warnings": warnings
             });
+            if let Some(c) = collision {
+                envelope["work_identity_collision"] = c;
+            }
             if let Some(pred) = &predecessor {
                 envelope["revived_from"] = json!({
                     "task_id": pred.get("id").cloned().unwrap_or(Value::Null),

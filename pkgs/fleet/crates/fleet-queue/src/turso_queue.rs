@@ -61,6 +61,7 @@ mod core;
 mod lifecycle;
 mod stacks_outbox;
 mod staleness;
+mod work_identity;
 
 pub use admin::*;
 pub use claim::*;
@@ -68,6 +69,7 @@ pub use core::*;
 pub use lifecycle::*;
 pub use stacks_outbox::*;
 pub use staleness::*;
+pub use work_identity::*;
 
 #[cfg(test)]
 mod tests {
@@ -83,6 +85,7 @@ mod tests {
             include_str!("turso_queue/admin.rs"),
             include_str!("turso_queue/stacks_outbox.rs"),
             include_str!("turso_queue/staleness.rs"),
+            include_str!("turso_queue/work_identity.rs"),
             include_str!("turso_queue.rs"),
         ]
         .concat()
