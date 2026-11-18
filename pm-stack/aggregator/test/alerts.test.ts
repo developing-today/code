@@ -1133,9 +1133,7 @@ describe("closeOpenIncidentByKey — the needs-drew answer close (#8605)", () =>
         if (sql.startsWith("select * from alerts.incidents where source =")) {
           const source = /source = '([^']*)'/.exec(sql)?.[1];
           const key = /incident_key = '([^']*)'/.exec(sql)?.[1];
-          return rows.filter(
-            (r) => r.source === source && r.incident_key === key && r.status !== "closed",
-          ) as T[];
+          return rows.filter((r) => r.source === source && r.incident_key === key && r.status !== "closed") as T[];
         }
         if (sql.startsWith("update alerts.incidents set status = 'closed'")) {
           const id = /where id = '([^']*)'/.exec(sql)?.[1];

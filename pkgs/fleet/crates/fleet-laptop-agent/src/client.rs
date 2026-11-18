@@ -17,7 +17,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::ladder::{Answer, CallError, Failure, Ladder, Request};
-use crate::{CANCEL_BUDGET_S, FILE_CHUNK_MAX, TIMEOUT_EXIT, TRANSPORT_GRACE_S, log_trip, offset_dir};
+use crate::{
+    CANCEL_BUDGET_S, FILE_CHUNK_MAX, TIMEOUT_EXIT, TRANSPORT_GRACE_S, log_trip, offset_dir,
+};
 
 /// The wait for a reply when the verb has no deadline of its own: the
 /// Python's 660 s socket timeout, which covers daemon-side exec time.
@@ -81,7 +83,9 @@ fn send(
     idempotent: bool,
     deadline: Duration,
 ) -> Result<Answer, CallFailure> {
-    send_ex(ladder, trip, method, path, body, idempotent, deadline, false)
+    send_ex(
+        ladder, trip, method, path, body, idempotent, deadline, false,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -96,7 +100,9 @@ fn send_ex(
     direct_only: bool,
 ) -> Result<Answer, CallFailure> {
     let body = match body {
-        Some(Value::Object(mut map)) if method == "POST" && (path == "/exec" || path == "/jobs") => {
+        Some(Value::Object(mut map))
+            if method == "POST" && (path == "/exec" || path == "/jobs") =>
+        {
             map.insert("trip".to_string(), json!(trip));
             Some(Value::Object(map))
         }
@@ -224,7 +230,15 @@ fn default_deadline() -> Duration {
 
 pub fn health(ladder: &Arc<Ladder>) -> i32 {
     let trip = crate::new_trip();
-    match call(ladder, &trip, "GET", "/health", None, true, default_deadline()) {
+    match call(
+        ladder,
+        &trip,
+        "GET",
+        "/health",
+        None,
+        true,
+        default_deadline(),
+    ) {
         Ok(reply) => {
             note_fallbacks(&reply);
             println!("{}", reply.body);
@@ -236,10 +250,21 @@ pub fn health(ladder: &Arc<Ladder>) -> i32 {
 
 pub fn jobs(ladder: &Arc<Ladder>) -> i32 {
     let trip = crate::new_trip();
-    match call(ladder, &trip, "GET", "/jobs", None, true, default_deadline()) {
+    match call(
+        ladder,
+        &trip,
+        "GET",
+        "/jobs",
+        None,
+        true,
+        default_deadline(),
+    ) {
         Ok(reply) => {
             note_fallbacks(&reply);
-            println!("{}", serde_json::to_string_pretty(&reply.body).unwrap_or_default());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&reply.body).unwrap_or_default()
+            );
             0
         }
         Err(e) => fail(e),
@@ -249,7 +274,15 @@ pub fn jobs(ladder: &Arc<Ladder>) -> i32 {
 pub fn kill(ladder: &Arc<Ladder>, job: &str) -> i32 {
     let trip = crate::new_trip();
     let path = format!("/jobs/{job}/kill");
-    match call(ladder, &trip, "POST", &path, Some(json!({})), true, default_deadline()) {
+    match call(
+        ladder,
+        &trip,
+        "POST",
+        &path,
+        Some(json!({})),
+        true,
+        default_deadline(),
+    ) {
         Ok(reply) => {
             note_fallbacks(&reply);
             println!("{}", reply.body);
@@ -268,11 +301,7 @@ pub fn command_spec(cwd: Option<&str>, shell: bool, cmd: &[String]) -> Value {
     }
 }
 
-pub fn exec(
-    ladder: &Arc<Ladder>,
-    spec: Value,
-    timeout_s: u64,
-) -> i32 {
+pub fn exec(ladder: &Arc<Ladder>, spec: Value, timeout_s: u64) -> i32 {
     let trip = crate::new_trip();
     let deadline = Duration::from_secs(timeout_s + TRANSPORT_GRACE_S);
     let body = json!({ "cmds": [spec], "timeout_s": timeout_s });
@@ -296,13 +325,30 @@ fn print_exec(body: &Value) -> i32 {
     };
     let mut out = std::io::stdout();
     let mut err = std::io::stderr();
-    let _ = out.write_all(r.get("stdout").and_then(Value::as_str).unwrap_or("").as_bytes());
-    let _ = err.write_all(r.get("stderr").and_then(Value::as_str).unwrap_or("").as_bytes());
+    let _ = out.write_all(
+        r.get("stdout")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .as_bytes(),
+    );
+    let _ = err.write_all(
+        r.get("stderr")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .as_bytes(),
+    );
     if r.get("truncated").and_then(Value::as_bool).unwrap_or(false) {
-        eprintln!("laptop-agent: warning: output truncated at the 1 MiB/stream capture cap (tail kept)");
+        eprintln!(
+            "laptop-agent: warning: output truncated at the 1 MiB/stream capture cap (tail kept)"
+        );
     }
     if let Some(e) = r.get("error").filter(|v| !v.is_null()) {
-        eprintln!("laptop-agent: {}", e.as_str().map(str::to_string).unwrap_or_else(|| e.to_string()));
+        eprintln!(
+            "laptop-agent: {}",
+            e.as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| e.to_string())
+        );
     }
     if r.get("timeout").and_then(Value::as_bool).unwrap_or(false) {
         eprintln!("laptop-agent: command timed out");
@@ -354,7 +400,10 @@ fn load_offsets(job: &str) -> Offsets {
 
 fn save_offsets(job: &str, offs: &Offsets) {
     let _ = std::fs::create_dir_all(offset_dir());
-    let _ = std::fs::write(offsets_file(job), serde_json::to_string(offs).unwrap_or_default());
+    let _ = std::fs::write(
+        offsets_file(job),
+        serde_json::to_string(offs).unwrap_or_default(),
+    );
 }
 
 /// Python's rendering of an optional value in the done line (`None`).
@@ -378,9 +427,19 @@ pub fn poll(ladder: &Arc<Ladder>, job: &str, wait_s: u64) -> i32 {
         let body = &reply.body;
         let mut out = std::io::stdout();
         let mut err = std::io::stderr();
-        let _ = out.write_all(body.get("stdout").and_then(Value::as_str).unwrap_or("").as_bytes());
+        let _ = out.write_all(
+            body.get("stdout")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .as_bytes(),
+        );
         let _ = out.flush();
-        let _ = err.write_all(body.get("stderr").and_then(Value::as_str).unwrap_or("").as_bytes());
+        let _ = err.write_all(
+            body.get("stderr")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .as_bytes(),
+        );
         let _ = err.flush();
         let (Some(out_next), Some(err_next)) = (
             body.get("out_next").and_then(Value::as_u64),
@@ -416,15 +475,37 @@ pub fn poll(ladder: &Arc<Ladder>, job: &str, wait_s: u64) -> i32 {
 /// The sha256 of the remote file, computed on the laptop by `shasum`
 /// (present on macOS, where the daemon runs) through `/exec`.
 fn remote_sha256(ladder: &Arc<Ladder>, remote: &str) -> Result<String, String> {
-    let cmd = vec!["shasum".to_string(), "-a".to_string(), "256".to_string(), remote.to_string()];
+    let cmd = vec![
+        "shasum".to_string(),
+        "-a".to_string(),
+        "256".to_string(),
+        remote.to_string(),
+    ];
     let spec = command_spec(None, false, &cmd);
     let trip = crate::new_trip();
     let body = json!({ "cmds": [spec], "timeout_s": 60 });
-    let reply = call(ladder, &trip, "POST", "/exec", Some(body), false, Duration::from_secs(60 + TRANSPORT_GRACE_S))
-        .map_err(|e| e.to_string())?;
-    let r = reply.body.get("results").and_then(|v| v.get(0)).ok_or("reply has no result")?;
+    let reply = call(
+        ladder,
+        &trip,
+        "POST",
+        "/exec",
+        Some(body),
+        false,
+        Duration::from_secs(60 + TRANSPORT_GRACE_S),
+    )
+    .map_err(|e| e.to_string())?;
+    let r = reply
+        .body
+        .get("results")
+        .and_then(|v| v.get(0))
+        .ok_or("reply has no result")?;
     if r.get("exit").and_then(Value::as_i64) != Some(0) {
-        let err = r.get("stderr").and_then(Value::as_str).unwrap_or("").trim().to_string();
+        let err = r
+            .get("stderr")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
         return Err(format!("cannot hash {remote}: {err}"));
     }
     let out = r.get("stdout").and_then(Value::as_str).unwrap_or("");
@@ -442,10 +523,22 @@ fn fetch_chunk(ladder: &Arc<Ladder>, remote: &str, off: u64) -> Result<Vec<u8>, 
         "/file?path={}&off={off}&len={FILE_CHUNK_MAX}",
         percent_encode(remote)
     );
-    let answer = send_ex(ladder, &trip, "GET", &path, None, true, default_deadline(), true)?;
+    let answer = send_ex(
+        ladder,
+        &trip,
+        "GET",
+        &path,
+        None,
+        true,
+        default_deadline(),
+        true,
+    )?;
     if answer.reply.status >= 400 {
         let message = String::from_utf8_lossy(&answer.reply.body).into_owned();
-        return Err(CallFailure::Http { status: answer.reply.status, message });
+        return Err(CallFailure::Http {
+            status: answer.reply.status,
+            message,
+        });
     }
     Ok(answer.reply.body)
 }
@@ -481,13 +574,19 @@ pub fn fetch(ladder: &Arc<Ladder>, remote: &str, dest: &std::path::Path) -> i32 
     }
     let got = format!("{:x}", Sha256::digest(&data));
     if got != want {
-        eprintln!("laptop-agent: sha256 mismatch for {remote}: remote {want}, received {got}; nothing written");
+        eprintln!(
+            "laptop-agent: sha256 mismatch for {remote}: remote {want}, received {got}; nothing written"
+        );
         return 1;
     }
     if let Err(e) = std::fs::write(dest, &data) {
         eprintln!("laptop-agent: cannot write {}: {e}", dest.display());
         return 1;
     }
-    eprintln!("[laptop-agent] fetched {remote} -> {} ({} bytes, sha256 {got})", dest.display(), data.len());
+    eprintln!(
+        "[laptop-agent] fetched {remote} -> {} ({} bytes, sha256 {got})",
+        dest.display(),
+        data.len()
+    );
     0
 }

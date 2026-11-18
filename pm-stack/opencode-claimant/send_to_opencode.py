@@ -70,6 +70,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -95,6 +96,13 @@ CLAIMANT_WORKER = launch_one.CLAIMANT_WORKER
 REPOS = launch_one.REPOS
 NOTES_FILE_NAME = "SEND_NOTES.md"
 WORKTREE_ROOT = Path.home() / ".local" / "share" / "opencode" / "tmp" / "opencode"
+
+# #11287: a prompt POST to a cold session can time out on the
+# client (499 at ~15s) while the server still lands it a few seconds
+# later, so a failed prompt is re-read for this long before the send
+# decides it never landed.
+PROMPT_SETTLE_READS = 4
+PROMPT_SETTLE_INTERVAL_S = 10.0
 
 
 def log(rec):
@@ -281,6 +289,37 @@ def sender_checkpoint(task_id, worker, stage, progress):
         json.dumps(progress),
     )
     return rc == 0, (None if rc == 0 else err.strip()[:300])
+
+
+def settle_failed_prompt(sid, reads=None, interval=None, sleep=time.sleep):
+    """Re-read a fresh session's messages after its prompt failed
+    (#11287). Returns "delivered" when any read shows a message (the
+    prompt landed after the client gave up), "empty" when every read
+    is a verified empty list, and "unknown" otherwise: an unreadable
+    session is never empty (#3026), so it never authorizes a
+    rollback."""
+    reads = PROMPT_SETTLE_READS if reads is None else reads
+    interval = PROMPT_SETTLE_INTERVAL_S if interval is None else interval
+    unknown = False
+    for i in range(reads):
+        if i:
+            sleep(interval)
+        messages = claimant._get_messages(sid)
+        if messages is None:
+            unknown = True
+            continue
+        if len(messages) > 0:
+            return "delivered"
+    return "unknown" if unknown else "empty"
+
+
+def release_task(task_id, worker, reason):
+    """Release a claim back to the queue (the broker clears the
+    session binding on release). Returns (ok, error)."""
+    rc, _data, err = queue_json(
+        "release", str(task_id), "--worker", worker, "--reason", reason
+    )
+    return rc == 0, (None if rc == 0 else (err.strip()[:300] or f"rc={rc}"))
 
 
 def transfer_claim(queue_name, task_id, from_session, sid, prov, mdl):
@@ -593,8 +632,34 @@ def send(
     )
     prompt_ok = claimant._send_prompt(sid, prompt)
 
+    # #11287: a failed prompt on this fresh session is settled before
+    # the send gives up on it. A late-landing prompt counts as
+    # delivered; a session that stays verifiably empty is deleted and
+    # the task released, so it never sits bound to an empty session
+    # until its lease runs out. An unreadable session keeps the
+    # binding (supervision owns it).
+    settled = None
+    session_deleted = None
+    released = None
+    release_err = None
+    if not prompt_ok:
+        settled = settle_failed_prompt(sid)
+        if settled == "delivered":
+            prompt_ok = True
+        elif settled == "empty":
+            session_deleted = claimant._delete_session(sid)
+            if session_deleted:
+                released, release_err = release_task(
+                    task_id,
+                    CLAIMANT_WORKER,
+                    f"send_to_opencode: the prompt never landed on fresh "
+                    f"session {sid}; session deleted and task released "
+                    f"(#11287)",
+                )
+    rolled_back = bool(released)
+
     note_ok, note_err = (None, None)
-    if ref:
+    if ref and not rolled_back:
         note_ok, note_err = launch_one.post_agent_note(trow, ref, repo, sid)
 
     rec = {
@@ -611,6 +676,7 @@ def send(
         "checkpoint_rc": rc2,
         "checkpoint_err": err2.strip()[:200] if rc2 != 0 else None,
         "prompt_ok": prompt_ok,
+        "prompt_settled": settled,
         "note_ok": note_ok,
         "note_error": note_err,
         "ok": prompt_ok,
@@ -626,13 +692,33 @@ def send(
             "via": "send_to_opencode",
         }
     )
-    if not prompt_ok:
+    if not prompt_ok and rolled_back:
+        rec = {
+            **rec,
+            "ok": False,
+            "rolled_back": True,
+            "session_deleted": True,
+            "released": True,
+            "reason": "prompt_failed: the fresh session stayed empty, "
+            "so it was deleted and the task released to the queue "
+            "(#11287)",
+        }
+        print(json.dumps(rec, indent=1))
+    elif not prompt_ok:
+        if settled == "empty" and not session_deleted:
+            why = "the session stayed empty but its delete was not verified"
+        elif settled == "empty":
+            why = f"the session was deleted but the release failed: {release_err}"
+        else:
+            why = "the session's messages could not be read"
         rec = {
             **rec,
             "ok": False,
             "rolled_back": False,
-            "reason": "prompt_failed: the session is bound and the "
-            "transfer stands; supervision owns the bound "
+            "session_deleted": session_deleted,
+            "released": released,
+            "reason": f"prompt_failed: {why}; the session is bound and "
+            "the transfer stands; supervision owns the bound "
             "session (claimant rule) — the send did NOT "
             "roll back",
         }

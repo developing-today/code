@@ -30,33 +30,33 @@ SCRIPT = ROOT / "scripts" / "ainventory-interpretation.py"
 
 
 def load_module():
-    spec = importlib.util.spec_from_file_location(
-        "ainventory_interpretation", SCRIPT
-    )
+    spec = importlib.util.spec_from_file_location("ainventory_interpretation", SCRIPT)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-STORE = json.dumps([
-    {
-        "heading": "GPT-6 Luna max — context band edge",
-        "subject": "GPT-6 Luna max — context band edge",
-        "finding": "Luna charges double above the 200k context band.",
-        "evidence": "provider pricing page, 2026-10-27; price_events split at 200000 tokens.",
-        "significance": "seat valuation assumes one band.",
-        "action": "record the band edge in data, not code.",
-        "severity": "watch",
-        "model": "GPT-6 Luna",
-    },
-    {
-        "heading": "Claude Haiku 5.5 — latency",
-        "finding": "Haiku 5.5 TTFT regressed after the 2026-10-16 checkpoint.",
-        "evidence": "three AA snapshots in a row.",
-        "action": "re-measure next week.",
-    },
-    {"heading": "Entry with no finding field", "evidence": "unstructured"},
-])
+STORE = json.dumps(
+    [
+        {
+            "heading": "GPT-6 Luna max — context band edge",
+            "subject": "GPT-6 Luna max — context band edge",
+            "finding": "Luna charges double above the 200k context band.",
+            "evidence": "provider pricing page, 2026-10-27; price_events split at 200000 tokens.",
+            "significance": "seat valuation assumes one band.",
+            "action": "record the band edge in data, not code.",
+            "severity": "watch",
+            "model": "GPT-6 Luna",
+        },
+        {
+            "heading": "Claude Haiku 5.5 — latency",
+            "finding": "Haiku 5.5 TTFT regressed after the 2026-10-16 checkpoint.",
+            "evidence": "three AA snapshots in a row.",
+            "action": "re-measure next week.",
+        },
+        {"heading": "Entry with no finding field", "evidence": "unstructured"},
+    ]
+)
 
 
 class ParserCases(unittest.TestCase):
@@ -148,9 +148,7 @@ class FindingsStoreCases(unittest.TestCase):
             store = Path(tmp) / "empty.json"
             store.write_text("[]\n")
             with self.assertRaises(SystemExit) as ctx:
-                self.module.main(
-                    ["import-findings", "--file", str(store), "--dry-run"]
-                )
+                self.module.main(["import-findings", "--file", str(store), "--dry-run"])
             self.assertNotEqual(ctx.exception.code, 0)
             self.assertIn("no findings entries", str(ctx.exception.code))
 
@@ -159,9 +157,7 @@ class FindingsStoreCases(unittest.TestCase):
             store = Path(tmp) / "findings-event-store.md"
             store.write_text("# Findings event store\n\n## Entry\n- finding: x\n")
             with self.assertRaises(SystemExit) as ctx:
-                self.module.main(
-                    ["import-findings", "--file", str(store), "--dry-run"]
-                )
+                self.module.main(["import-findings", "--file", str(store), "--dry-run"])
             self.assertNotEqual(ctx.exception.code, 0)
             self.assertIn("canonical store", str(ctx.exception.code))
 
@@ -170,18 +166,33 @@ class FindingsStoreCases(unittest.TestCase):
             note = Path(tmp) / "note.md"
             note.write_text("Batch note: 5 measurements, 1 price, no new models.")
             followups = Path(tmp) / "followups.json"
-            followups.write_text(json.dumps([
-                {"model": "Qwen4 Max", "status": "not_filed",
-                 "reason": "already covered by #1249"}
-            ]))
+            followups.write_text(
+                json.dumps(
+                    [
+                        {
+                            "model": "Qwen4 Max",
+                            "status": "not_filed",
+                            "reason": "already covered by #1249",
+                        }
+                    ]
+                )
+            )
             buf = io.StringIO()
             with redirect_stdout(buf):
-                code = self.module.main([
-                    "record", "--batch",
-                    "00000000-0000-0000-0000-000000000000",
-                    "--note-file", str(note), "--author", "test",
-                    "--followups", str(followups), "--dry-run",
-                ])
+                code = self.module.main(
+                    [
+                        "record",
+                        "--batch",
+                        "00000000-0000-0000-0000-000000000000",
+                        "--note-file",
+                        str(note),
+                        "--author",
+                        "test",
+                        "--followups",
+                        str(followups),
+                        "--dry-run",
+                    ]
+                )
             self.assertEqual(code, 0)
             plan = json.loads(buf.getvalue())
             self.assertTrue(plan["dry_run"])
@@ -193,16 +204,24 @@ class FindingsStoreCases(unittest.TestCase):
             note = Path(tmp) / "note.md"
             note.write_text("Batch note.")
             followups = Path(tmp) / "followups.json"
-            followups.write_text(json.dumps([
-                {"model": "Qwen4 Max", "status": "not_filed"}
-            ]))
+            followups.write_text(
+                json.dumps([{"model": "Qwen4 Max", "status": "not_filed"}])
+            )
             with self.assertRaises(SystemExit) as ctx:
-                self.module.main([
-                    "record", "--batch",
-                    "00000000-0000-0000-0000-000000000000",
-                    "--note-file", str(note), "--author", "test",
-                    "--followups", str(followups), "--dry-run",
-                ])
+                self.module.main(
+                    [
+                        "record",
+                        "--batch",
+                        "00000000-0000-0000-0000-000000000000",
+                        "--note-file",
+                        str(note),
+                        "--author",
+                        "test",
+                        "--followups",
+                        str(followups),
+                        "--dry-run",
+                    ]
+                )
             self.assertNotEqual(ctx.exception.code, 0)
             self.assertIn("without a reason", str(ctx.exception.code))
 

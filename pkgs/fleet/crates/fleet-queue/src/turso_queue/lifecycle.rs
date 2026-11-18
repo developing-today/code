@@ -1413,7 +1413,12 @@ pub(crate) fn verb_claim_flow(t: &TursoBackend, req: &Value) -> Value {
 
 /// Shared guard for the claimed-by verbs: returns the task row or
 /// the PG-shaped refusal.
-pub(crate) fn claimed_by(t: &TursoBackend, task_id: i64, worker: &str, verb: &str) -> Result<Value, Value> {
+pub(crate) fn claimed_by(
+    t: &TursoBackend,
+    task_id: i64,
+    worker: &str,
+    verb: &str,
+) -> Result<Value, Value> {
     match get_task(t, task_id) {
         Ok(Some(row))
             if row.get("status").and_then(|v| v.as_str()) == Some("claimed")
@@ -1592,7 +1597,11 @@ pub(crate) fn apply_wait_floor(
 /// the packet's number. Any other park records no requirement and
 /// keeps behaving exactly as before. Non-positive values record
 /// no requirement.
-pub(crate) fn park_required_budget(explicit: Option<i64>, condition: &Value, payload: &Value) -> Option<i64> {
+pub(crate) fn park_required_budget(
+    explicit: Option<i64>,
+    condition: &Value,
+    payload: &Value,
+) -> Option<i64> {
     if let Some(v) = explicit {
         return (v > 0).then_some(v);
     }

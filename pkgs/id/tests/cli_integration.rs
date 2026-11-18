@@ -696,8 +696,14 @@ mod cli_tests {
         let platform_copy = temp.path().join("roc-world");
         copy_dir_tree(&platform, &platform_copy).unwrap();
         let wasm = app.join("scaffold_check.wasm");
+        // Roc writes its cache under XDG_CACHE_HOME, else $HOME/.cache.
+        // The nix check sandbox's HOME (/homeless-shelter) cannot be
+        // created, so the compiler stopped with a bare AccessDenied
+        // (#11163). Point the cache at the test's own temp dir, the
+        // way world_compile.rs does for every real compile.
         let compiled = Command::new(&roc)
             .current_dir(&app)
+            .env("XDG_CACHE_HOME", temp.path().join("roc-cache"))
             .args([
                 "build",
                 "main.roc",
@@ -2634,6 +2640,8 @@ mod serve_tests {
         std::os::unix::fs::symlink(&platform, root.path().join("roc-world")).unwrap();
         let wasm = root.path().join("scaffold-app.wasm");
         let output = StdCommand::new(&roc)
+            // A writable Roc cache, as in the scaffold test above (#11163).
+            .env("XDG_CACHE_HOME", root.path().join("roc-cache"))
             .args([
                 "build",
                 scaffold.join("main.roc").to_str().unwrap(),

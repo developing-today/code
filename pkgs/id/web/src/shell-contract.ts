@@ -57,7 +57,18 @@ type Field = {
 /** The result of checking one frame. */
 export type Check = { ok: true; type: string } | { ok: false; error: string };
 
-const FIELD_TYPES = new Set<string>(["string", "hex", "bool", "u16", "u32", "u64", "i64", "string[]", "array", "object"]);
+const FIELD_TYPES = new Set<string>([
+  "string",
+  "hex",
+  "bool",
+  "u16",
+  "u32",
+  "u64",
+  "i64",
+  "string[]",
+  "array",
+  "object",
+]);
 const PHASES = new Set<string>(["opening", "query", "install", "joined", "closed"]);
 const FRAME_CLASSES = new Set<string>([
   "event",

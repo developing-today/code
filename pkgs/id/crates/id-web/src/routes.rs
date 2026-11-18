@@ -2765,11 +2765,7 @@ mod upload_router_tests {
         // the invite through the mount-scoped API URL — the session
         // round-trip (refused anonymously, served with the secret)
         // behaves exactly as it does on the program surface itself.
-        let res = app
-            .clone()
-            .oneshot(invite(Some("s3cret")))
-            .await
-            .unwrap();
+        let res = app.clone().oneshot(invite(Some("s3cret"))).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
         assert!(!body.is_empty());
@@ -2779,8 +2775,7 @@ mod upload_router_tests {
     async fn publication_mounts_isolate_sibling_worlds_at_the_router() {
         let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
         let opener = id_worlds::world_hub::testing::MemoryOpener::new(false);
-        let dyn_opener: std::sync::Arc<dyn id_worlds::world_hub::WorldOpener> =
-            opener.clone();
+        let dyn_opener: std::sync::Arc<dyn id_worlds::world_hub::WorldOpener> = opener.clone();
         let hub = id_worlds::world_hub::WorldHub::new(
             dyn_opener,
             Some("admin".to_owned()),
@@ -2831,7 +2826,11 @@ mod upload_router_tests {
             .oneshot(invite("/prog/api/world/invite", "vault"))
             .await
             .unwrap();
-        assert_eq!(res.status(), StatusCode::NOT_FOUND, "invite vault via /prog");
+        assert_eq!(
+            res.status(),
+            StatusCode::NOT_FOUND,
+            "invite vault via /prog"
+        );
         let res = app
             .clone()
             .oneshot(invite("/vault/api/world/invite", "vault"))

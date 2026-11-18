@@ -15,9 +15,11 @@ POWER_GUARD_SLEEP_CMD hooks.
 """
 
 import importlib.util
+import json
 import math
 import os
 import random
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -49,8 +51,10 @@ BAD_VALUES = [
 
 def load_daemon():
     """Import power-guard.py with a clean, valid timing environment."""
-    env_backup = {k: os.environ.get(k) for k in TIMING_VARS}
-    for k in TIMING_VARS:
+    env_backup = {
+        k: os.environ.get(k) for k in TIMING_VARS + ("POWER_GUARD_SLEEP_CMD",)
+    }
+    for k in env_backup:
         os.environ.pop(k, None)
     try:
         spec = importlib.util.spec_from_file_location("power_guard", DAEMON)
@@ -178,7 +182,7 @@ class DaemonSubprocessTests(unittest.TestCase):
         env.update(
             POWER_GUARD_SYSFS=str(self.sysfs),
             POWER_GUARD_NO_INHIBIT="1",
-            POWER_GUARD_SLEEP_CMD=f"touch {self.marker}",
+            POWER_GUARD_SLEEP_CMD=f"touch {shlex.quote(str(self.marker))}",
         )
         env.update(timing)
         return env
@@ -445,6 +449,109 @@ class InhibitorNonBlockingReapTests(unittest.TestCase):
             any("UNCONFIRMED" in m for m in self.logs),
             f"unconfirmed release not logged loudly: {self.logs}",
         )
+
+
+class ParseSleepCmdTests(unittest.TestCase):
+    """#9602: the sleep command is argv, parsed once, never a shell line."""
+
+    def test_default_is_systemctl_hybrid_sleep(self):
+        self.assertEqual(
+            pg.parse_sleep_cmd(pg.DEFAULT_SLEEP_CMD), ["systemctl", "hybrid-sleep"]
+        )
+
+    def test_quoted_words_follow_shell_quoting(self):
+        self.assertEqual(
+            pg.parse_sleep_cmd("'/opt/my sleeper' --mode \"hybrid sleep\""),
+            ["/opt/my sleeper", "--mode", "hybrid sleep"],
+        )
+
+    def test_shell_metacharacters_stay_literal_arguments(self):
+        self.assertEqual(
+            pg.parse_sleep_cmd("systemctl hybrid-sleep; rm -rf / && $(id) | cat"),
+            ["systemctl", "hybrid-sleep;", "rm", "-rf", "/", "&&", "$(id)", "|", "cat"],
+        )
+
+    def test_empty_or_blank_is_refused(self):
+        for raw in ("", "   ", "\t\n"):
+            with (
+                self.subTest(raw=raw),
+                self.assertRaisesRegex(ValueError, "must name a command"),
+            ):
+                pg.parse_sleep_cmd(raw)
+
+    def test_unbalanced_quotes_are_refused(self):
+        for raw in ("systemctl 'hybrid-sleep", 'touch "x', "a\\"):
+            with (
+                self.subTest(raw=raw),
+                self.assertRaisesRegex(ValueError, "cannot be parsed"),
+            ):
+                pg.parse_sleep_cmd(raw)
+
+
+class SleepCmdDaemonTests(unittest.TestCase):
+    """#9602 end to end against the real daemon subprocess."""
+
+    setUp = DaemonSubprocessTests.setUp
+    daemon_env = DaemonSubprocessTests.daemon_env
+    run_daemon = DaemonSubprocessTests.run_daemon
+
+    def wait_for_marker(self, env, seconds=10):
+        deadline = time.time() + seconds
+        proc = subprocess.Popen(
+            [sys.executable, str(DAEMON)],
+            env=env,
+            cwd=self.tmp.name,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            while time.time() < deadline and not self.marker.exists():
+                if proc.poll() is not None:
+                    break
+                time.sleep(0.05)
+        finally:
+            proc.terminate()
+            proc.communicate(timeout=10)
+
+    def test_invalid_sleep_cmd_exits_named_before_polling(self):
+        for raw in ("", "   ", "systemctl 'hybrid-sleep"):
+            with self.subTest(raw=raw):
+                env = self.daemon_env(
+                    POWER_GUARD_POLL="0.05", POWER_GUARD_CONFIRM="0.3"
+                )
+                env["POWER_GUARD_SLEEP_CMD"] = raw
+                rc, out, err, exited = self.run_daemon(env, 10)
+                self.assertTrue(
+                    exited, "daemon kept polling on an invalid sleep command"
+                )
+                self.assertNotEqual(rc, 0)
+                self.assertIn("POWER_GUARD_SLEEP_CMD", err)
+                self.assertIn(repr(raw), err)
+                self.assertNotIn("Traceback", err)
+                self.assertNotIn("CRITICAL state entered", out)
+
+    def test_metacharacters_reach_the_command_as_arguments_not_a_shell(self):
+        injected = Path(self.tmp.name) / "injected"
+        recorder = (
+            "import json, sys; open(sys.argv[1], 'w').write(json.dumps(sys.argv[2:]))"
+        )
+        cmd = (
+            " ".join(
+                shlex.quote(part)
+                for part in (sys.executable, "-c", recorder, str(self.marker))
+            )
+            + f" ; touch {shlex.quote(str(injected))} && $(touch {shlex.quote(str(injected))})"
+        )
+        env = self.daemon_env(POWER_GUARD_POLL="0.05", POWER_GUARD_CONFIRM="0.3")
+        env["POWER_GUARD_SLEEP_CMD"] = cmd
+        self.wait_for_marker(env)
+        self.assertTrue(self.marker.exists(), "sleep command never fired")
+        self.assertEqual(
+            json.loads(self.marker.read_text()),
+            [";", "touch", str(injected), "&&", "$(touch", f"{injected})"],
+        )
+        self.assertFalse(injected.exists(), "sleep command was run through a shell")
 
 
 if __name__ == "__main__":

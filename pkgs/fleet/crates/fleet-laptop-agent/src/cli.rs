@@ -21,17 +21,37 @@ pub const EXIT_USAGE: i32 = 2;
 pub enum Command {
     Health,
     Jobs,
-    Kill { job: String },
-    Exec { cwd: Option<String>, timeout: u64, shell: bool, cmd: Vec<String> },
-    Run { cwd: Option<String>, shell: bool, cmd: Vec<String> },
-    Poll { job: String, wait: u64 },
-    Fetch { remote: String, dest: String },
+    Kill {
+        job: String,
+    },
+    Exec {
+        cwd: Option<String>,
+        timeout: u64,
+        shell: bool,
+        cmd: Vec<String>,
+    },
+    Run {
+        cwd: Option<String>,
+        shell: bool,
+        cmd: Vec<String>,
+    },
+    Poll {
+        job: String,
+        wait: u64,
+    },
+    Fetch {
+        remote: String,
+        dest: String,
+    },
 }
 
 /// A job id goes into a URL path, so only the characters the daemon
 /// mints are accepted.
 fn valid_job(id: &str) -> bool {
-    !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 fn number(flag: &str, raw: &str) -> Result<u64, String> {
@@ -108,10 +128,19 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
             }
             if verb == "exec" {
                 let (cwd, timeout, shell) = parse_exec_opts(opts, true)?;
-                Ok(Command::Exec { cwd, timeout, shell, cmd: cmd.to_vec() })
+                Ok(Command::Exec {
+                    cwd,
+                    timeout,
+                    shell,
+                    cmd: cmd.to_vec(),
+                })
             } else {
                 let (cwd, _, shell) = parse_exec_opts(opts, false)?;
-                Ok(Command::Run { cwd, shell, cmd: cmd.to_vec() })
+                Ok(Command::Run {
+                    cwd,
+                    shell,
+                    cmd: cmd.to_vec(),
+                })
             }
         }
         "poll" => {
@@ -120,7 +149,10 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                 _ => return Err("poll takes a job id".into()),
             };
             match opts {
-                [] => Ok(Command::Poll { job: job.clone(), wait: 0 }),
+                [] => Ok(Command::Poll {
+                    job: job.clone(),
+                    wait: 0,
+                }),
                 [flag, value] if flag == "--wait" => Ok(Command::Poll {
                     job: job.clone(),
                     wait: number("--wait", value)?,
@@ -141,7 +173,10 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
 
 fn command_words(shell: bool, cmd: &[String]) -> Vec<String> {
     if shell {
-        cmd.join(" ").split_whitespace().map(str::to_string).collect()
+        cmd.join(" ")
+            .split_whitespace()
+            .map(str::to_string)
+            .collect()
     } else {
         cmd.to_vec()
     }
@@ -167,7 +202,12 @@ pub fn run(config: &fleet_config::Config, args: &[String]) -> i32 {
         Command::Health => client::health(&ladder),
         Command::Jobs => client::jobs(&ladder),
         Command::Kill { job } => client::kill(&ladder, &job),
-        Command::Exec { cwd, timeout, shell, cmd } => {
+        Command::Exec {
+            cwd,
+            timeout,
+            shell,
+            cmd,
+        } => {
             if let Err(message) = guard::check_job(cwd.as_deref(), &command_words(shell, &cmd)) {
                 eprintln!("laptop-agent: {message}");
                 return 1;
@@ -191,7 +231,9 @@ pub fn run(config: &fleet_config::Config, args: &[String]) -> i32 {
             client::run(&ladder, spec)
         }
         Command::Poll { job, wait } => client::poll(&ladder, &job, wait),
-        Command::Fetch { remote, dest } => client::fetch(&ladder, &remote, std::path::Path::new(&dest)),
+        Command::Fetch { remote, dest } => {
+            client::fetch(&ladder, &remote, std::path::Path::new(&dest))
+        }
     }
 }
 
@@ -216,7 +258,12 @@ mod tests {
         );
         assert_eq!(
             parse(&v("exec --timeout=5 --shell -- echo hi")).unwrap(),
-            Command::Exec { cwd: None, timeout: 5, shell: true, cmd: v("echo hi") }
+            Command::Exec {
+                cwd: None,
+                timeout: 5,
+                shell: true,
+                cmd: v("echo hi")
+            }
         );
     }
 
@@ -236,7 +283,10 @@ mod tests {
         assert!(parse(&v("poll a/b")).is_err());
         assert_eq!(
             parse(&v("poll job1 --wait 30")).unwrap(),
-            Command::Poll { job: "job1".into(), wait: 30 }
+            Command::Poll {
+                job: "job1".into(),
+                wait: 30
+            }
         );
         assert!(parse(&v("poll job1 --wait")).is_err());
     }
@@ -252,7 +302,10 @@ mod tests {
     fn fetch_takes_exactly_two_paths() {
         assert_eq!(
             parse(&v("fetch /a/b.txt /tmp/b.txt")).unwrap(),
-            Command::Fetch { remote: "/a/b.txt".into(), dest: "/tmp/b.txt".into() }
+            Command::Fetch {
+                remote: "/a/b.txt".into(),
+                dest: "/tmp/b.txt".into()
+            }
         );
         assert!(parse(&v("fetch /a")).is_err());
         assert!(parse(&v("fetch /a /b /c")).is_err());
