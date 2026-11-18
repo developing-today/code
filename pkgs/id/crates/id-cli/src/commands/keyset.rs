@@ -18,6 +18,9 @@ use crate::{CLIENT_KEY_FILE, KEY_FILE};
 use id_core::hex::hex_encode;
 use id_directory::keyset::{AdminKeyState, KeysetEntry, KeysetState};
 use id_directory::keyset_file::{CLIENT_KEYSET_FILE, KEYSET_FILE, KeysetFile};
+use id_directory::restored_key::{
+    self, CLIENT_RESTORED_KEY_FILE, RESTORED_KEY_FILE, RestoreStatus,
+};
 use id_store::store::load_or_create_keypair;
 
 /// Run an `id keyset` subcommand against the local identity.
@@ -94,7 +97,22 @@ pub async fn cmd_keyset(command: KeysetCommand) -> Result<()> {
             println!("Rotated the admin key to {new_admin_key}.");
         }
     }
-    print!("{}", render_state(&file.state()?));
+    let state = file.state()?;
+    print!("{}", render_state(&state));
+    let marker = if client {
+        CLIENT_RESTORED_KEY_FILE
+    } else {
+        RESTORED_KEY_FILE
+    };
+    match restored_key::settle(marker, Some(&state))? {
+        RestoreStatus::NotRestored => {}
+        RestoreStatus::RotationPending(public) => println!("{}", restored_key::warning(&public)),
+        RestoreStatus::Retired(public) => {
+            println!(
+                "The restored key {public} is no longer an active admin key; its restore flag is cleared."
+            );
+        }
+    }
     Ok(())
 }
 

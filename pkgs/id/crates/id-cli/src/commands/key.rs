@@ -8,9 +8,11 @@ use zeroize::Zeroizing;
 
 use crate::cli::KeyCommand;
 use crate::{CLIENT_KEY_FILE, KEY_FILE};
+use id_core::hex::hex_encode;
 use id_core::key_envelope;
 use id_core::key_envelope::MIN_PASSPHRASE_BYTES;
 use id_core::seed_phrase;
+use id_directory::restored_key::{self, CLIENT_RESTORED_KEY_FILE, RESTORED_KEY_FILE};
 use id_store::store::load_or_create_keypair;
 
 /// Run a local-only identity-key export or import operation.
@@ -66,7 +68,7 @@ async fn import_key(input: &Path, client: bool, replace: bool) -> Result<()> {
         })?;
     }
     println!("Imported identity key to {}", target.display());
-    Ok(())
+    flag_restored(&key_bytes, client)
 }
 
 async fn export_seed(client: bool) -> Result<()> {
@@ -102,6 +104,24 @@ async fn import_seed(client: bool, replace: bool) -> Result<()> {
         "Imported identity key from seed phrase to {}",
         target.display()
     );
+    flag_restored(&key_bytes, client)
+}
+
+/// Marks the imported key as restored from a backup (#2381): it stays
+/// flagged until a keyset rotation retires it.
+fn flag_restored(key_bytes: &[u8; 32], client: bool) -> Result<()> {
+    let public = hex_encode(
+        &ed25519_dalek::SigningKey::from_bytes(key_bytes)
+            .verifying_key()
+            .to_bytes(),
+    );
+    let marker = if client {
+        CLIENT_RESTORED_KEY_FILE
+    } else {
+        RESTORED_KEY_FILE
+    };
+    restored_key::mark_restored(marker, &public)?;
+    println!("{}", restored_key::warning(&public));
     Ok(())
 }
 

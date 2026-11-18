@@ -95,6 +95,24 @@ impl KeysetFile {
         ))
     }
 
+    /// Opens the keyset log at `path` for the identity `identity` (its
+    /// public key, hex) without writing anything: `None` when the file
+    /// holds no genesis for that identity, missing file included.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the file cannot be read or holds a record that does not
+    /// verify.
+    pub fn open_existing(path: impl Into<PathBuf>, identity: &str) -> Result<Option<Self>> {
+        let path = path.into();
+        let log = read_log(&path)?;
+        Ok(trusted_genesis(&log, identity).map(|genesis_hash| Self {
+            path,
+            log,
+            genesis_hash,
+        }))
+    }
+
     /// The folded keyset state.
     ///
     /// # Errors
