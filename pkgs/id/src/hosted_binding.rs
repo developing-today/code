@@ -139,6 +139,7 @@ use std::collections::HashMap;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use id_directory::keyset::{self, KeysetState};
 use rand::RngExt as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -820,6 +821,11 @@ pub struct HostedBindingService {
     pairing_codes: HashMap<String, PairingCode>,
     challenge_issued_at: HashMap<String, Vec<u64>>,
     pairing_issued_at: HashMap<String, Vec<u64>>,
+    /// Folded keysets of migrated identities, by identity ID (#2380,
+    /// keyset ADR Decision 6). A binding whose key belongs to one of
+    /// these is rebound or has a rebind cancelled only on the word of
+    /// an active admin key of that keyset.
+    keysets: HashMap<String, KeysetState>,
     now_override: Option<u64>,
     #[cfg(test)]
     fail_attestation_for_test: bool,
@@ -852,6 +858,7 @@ impl HostedBindingService {
             pairing_codes: HashMap::new(),
             challenge_issued_at: HashMap::new(),
             pairing_issued_at: HashMap::new(),
+            keysets: HashMap::new(),
             now_override: None,
             #[cfg(test)]
             fail_attestation_for_test: false,
@@ -1344,6 +1351,68 @@ impl HostedBindingService {
 
     /// Verify `signature` (hex) by the key named `iroh_id_hex` over
     /// `message`, mapping failure to `error`.
+    /// Records the folded keyset of a migrated identity (#2380, keyset
+    /// ADR Decision 6), replacing any earlier state for that identity.
+    /// From then on, a rebind or rebind cancellation of a binding whose
+    /// key is the identity or one of its devices must be authorized by
+    /// an active admin key of the keyset, not by the bound key itself:
+    /// a rotated-away genesis key loses rebind power, and the new admin
+    /// key gains it.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the log does not fold from `trusted_genesis_hash`.
+    pub fn register_keyset(
+        &mut self,
+        log: &keyset::Log,
+        trusted_genesis_hash: &str,
+    ) -> anyhow::Result<()> {
+        let state = keyset::fold(log, trusted_genesis_hash)?;
+        self.keysets.insert(state.identity_id.clone(), state);
+        Ok(())
+    }
+
+    /// The keys whose signature may authorize a rebind or rebind
+    /// cancellation for a binding holding `bound_iroh_id`: the active
+    /// admin keys of the migrated identity that key belongs to, or the
+    /// bound key itself for an identity with no registered keyset.
+    fn rebind_authorizers(&self, bound_iroh_id: &str) -> Vec<String> {
+        let state = self.keysets.get(bound_iroh_id).or_else(|| {
+            self.keysets
+                .values()
+                .find(|state| state.devices.contains_key(bound_iroh_id))
+        });
+        match state {
+            Some(state) => state
+                .admin_keys
+                .keys()
+                .filter(|key| state.is_admin(key))
+                .cloned()
+                .collect(),
+            None => vec![bound_iroh_id.to_owned()],
+        }
+    }
+
+    /// [`Self::verify_hex_signature`] against every authorizer of a
+    /// rebind for `bound_iroh_id`: succeeds when any of them signed.
+    fn verify_rebind_authorizer(
+        &self,
+        bound_iroh_id: &str,
+        message: &[u8],
+        signature_hex: &[u8],
+    ) -> Result<(), RebindError> {
+        Signature::from_slice(signature_hex).map_err(|_| RebindError::MalformedSignature)?;
+        let authorized = self.rebind_authorizers(bound_iroh_id).iter().any(|key| {
+            Self::verify_hex_signature(key, message, signature_hex, RebindError::BadOldKeySignature)
+                .is_ok()
+        });
+        if authorized {
+            Ok(())
+        } else {
+            Err(RebindError::BadOldKeySignature)
+        }
+    }
+
     fn verify_hex_signature(
         iroh_id_hex: &str,
         message: &[u8],
@@ -1474,11 +1543,10 @@ impl HostedBindingService {
         if request.status != RebindRequestStatus::Pending {
             return Err(RebindError::RebindNotPending);
         }
-        Self::verify_hex_signature(
+        self.verify_rebind_authorizer(
             &request.old_iroh_id,
             &rebind_cancel_bytes(rebind_id),
             old_key_signature,
-            RebindError::BadOldKeySignature,
         )?;
         let mut binding = self
             .bindings
@@ -1569,11 +1637,10 @@ impl HostedBindingService {
         {
             return Err(RebindError::NewKeyBoundElsewhere);
         }
-        Self::verify_hex_signature(
+        self.verify_rebind_authorizer(
             &binding.iroh_id,
             &rebind_authorization_bytes(&binding.binding_id, &challenge.iroh_id, challenge_id),
             old_key_authorization,
-            RebindError::BadOldKeySignature,
         )?;
         let effective_at = unix_secs_to_rfc3339(self.now());
         let rebind_id = request
@@ -3162,6 +3229,137 @@ mod tests {
             &service.service_public_key(),
             &record
         ));
+    }
+
+    /// A migrated identity whose genesis key `seed` rotated admin power
+    /// to `new_admin`: the folded keyset the service is told about.
+    fn rotated_keyset(seed: u8, new_admin: u8) -> (keyset::Log, String) {
+        use id_directory::keyset::{KeysetEntry, KeysetRecord};
+        let genesis_key = root_key(seed);
+        let identity = hex_encode(&genesis_key.verifying_key().to_bytes());
+        let genesis = KeysetRecord::sign(
+            &genesis_key,
+            0,
+            "",
+            KeysetEntry::Genesis {
+                admin_key: identity.clone(),
+                device_key: identity,
+                label: "original device".to_owned(),
+            },
+            None,
+        )
+        .unwrap();
+        let rotation = KeysetRecord::sign(
+            &genesis_key,
+            1,
+            genesis.hash.clone(),
+            KeysetEntry::AdminKeyRotated {
+                new_admin_key: hex_encode(&root_key(new_admin).verifying_key().to_bytes()),
+            },
+            Some(&root_key(new_admin)),
+        )
+        .unwrap();
+        let mut log = keyset::Log::default();
+        log.insert(genesis.clone()).unwrap();
+        log.insert(rotation).unwrap();
+        (log, genesis.hash)
+    }
+
+    #[test]
+    fn migrated_identity_rebinds_on_the_folded_admin_key_only() {
+        let mut service = service();
+        let binding = bind(&mut service, SUB, 21);
+        let (log, genesis) = rotated_keyset(21, 23);
+        service.register_keyset(&log, &genesis).unwrap();
+        let new_key = root_key(22);
+        let counter = countersign(
+            &binding.binding_id,
+            &binding.iroh_id,
+            &new_key,
+            REBIND_VIA_OLD_KEY,
+        );
+
+        // The rotated-away genesis key no longer authorizes a rebind.
+        let (challenge_id, proof) = signed_challenge(&mut service, SUB, &new_key);
+        let stale = root_key(21).sign(&rebind_authorization_bytes(
+            &binding.binding_id,
+            &new_key.verifying_key().to_bytes(),
+            &challenge_id,
+        ));
+        assert_eq!(
+            service.rebind_with_old_key_authorization(
+                SUB,
+                None,
+                &challenge_id,
+                &proof,
+                &stale.to_bytes(),
+                &counter,
+            ),
+            Err(RebindError::BadOldKeySignature)
+        );
+        assert_eq!(
+            service.binding_for_sub(SUB).unwrap().iroh_id,
+            binding.iroh_id
+        );
+
+        // The keyset's active admin key does.
+        let (challenge_id, proof) = signed_challenge(&mut service, SUB, &new_key);
+        let authorization = root_key(23).sign(&rebind_authorization_bytes(
+            &binding.binding_id,
+            &new_key.verifying_key().to_bytes(),
+            &challenge_id,
+        ));
+        let (updated, _) = service
+            .rebind_with_old_key_authorization(
+                SUB,
+                None,
+                &challenge_id,
+                &proof,
+                &authorization.to_bytes(),
+                &counter,
+            )
+            .unwrap();
+        assert_eq!(
+            updated.iroh_id,
+            hex_encode(&new_key.verifying_key().to_bytes())
+        );
+    }
+
+    #[test]
+    fn migrated_identity_cancels_on_the_folded_admin_key_only() {
+        let mut service = service();
+        bind(&mut service, SUB, 21);
+        let (log, genesis) = rotated_keyset(21, 23);
+        service.register_keyset(&log, &genesis).unwrap();
+        let new_key = root_key(22);
+        let (challenge_id, proof) = signed_challenge(&mut service, SUB, &new_key);
+        let (request, _) = service
+            .request_delayed_rebind(SUB, &challenge_id, &proof)
+            .unwrap();
+
+        let stale = root_key(21).sign(&rebind_cancel_bytes(&request.rebind_id));
+        assert_eq!(
+            service.cancel_rebind(&request.rebind_id, &stale.to_bytes()),
+            Err(RebindError::BadOldKeySignature)
+        );
+        let admin = root_key(23).sign(&rebind_cancel_bytes(&request.rebind_id));
+        let restored = service
+            .cancel_rebind(&request.rebind_id, &admin.to_bytes())
+            .unwrap();
+        assert_eq!(restored.status, BindingStatus::Active);
+    }
+
+    #[test]
+    fn a_keyset_that_does_not_fold_is_not_registered() {
+        let mut service = service();
+        let binding = bind(&mut service, SUB, 21);
+        let (log, _) = rotated_keyset(21, 23);
+        assert!(service.register_keyset(&log, &"00".repeat(32)).is_err());
+        // The unmigrated rule still holds: the bound key authorizes.
+        assert_eq!(
+            service.rebind_authorizers(&binding.iroh_id),
+            vec![binding.iroh_id.clone()]
+        );
     }
 
     #[test]
