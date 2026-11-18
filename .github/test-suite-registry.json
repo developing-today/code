@@ -71,7 +71,7 @@
     5935, 5942, 5946, 5952, 5992, 5993, 6065, 6082, 6084, 6085, 6091, 6092, 6093, 6099, 5582, 5937, 5945, 5951, 6034,
     6081, 6090, 6094, 6095, 6178, 6179
   ],
-  "uncovered_count": 45,
+  "uncovered_count": 41,
   "uncovered_count_definition": "Number of suite rows whose status is uncovered or uncovered-in-fact; mapped rows do not assert the five-rule contract is fully proven.",
   "suites": [
     {
@@ -250,10 +250,12 @@
       "paths": [
         "pkgs/id/hosted-worker/test/routing.test.ts",
         "pkgs/id/hosted-worker/test/blobs.test.ts",
+        "pkgs/id/hosted-worker/test/canonical-cbor.test.ts",
         "pkgs/id/hosted-worker/test/usage.test.ts",
+        "pkgs/id/hosted-worker/test/currency.test.ts",
         "pkgs/id/hosted-worker/test/front-door.test.ts"
       ],
-      "invocation": "cd pkgs/id/hosted-worker && npm test (node --test test/routing.test.ts)",
+      "invocation": "cd pkgs/id/hosted-worker && npm test (node --experimental-transform-types --test test/routing.test.ts test/blobs.test.ts test/canonical-cbor.test.ts test/usage.test.ts test/currency.test.ts test/front-door.test.ts)",
       "venue": {
         "workflow": ".github/workflows/id-hosted-worker-tests.yml",
         "job_step": "hosted-worker-tests / Run the hosted-worker routing suite",
@@ -262,7 +264,7 @@
       },
       "status": "mapped",
       "related_issues": [6095],
-      "notes": "Paths trued up 2026-11-14 (#6188 ratchet): the npm test script names routing, blobs, and usage test files; all three run under this row's invocation."
+      "notes": "The registry paths match every file in npm test, including canonical-cbor and currency; path coverage trued up 2026-11-17 while restoring the #6188 ratchet (#10329)."
     },
     {
       "id": "id.hosted-worker.smoke",
@@ -279,12 +281,16 @@
     },
     {
       "id": "id.native-shell.transcript",
-      "paths": ["pkgs/id/crates/id-native-shell/tests/transcript.rs"],
-      "invocation": "cargo test -p id-native-shell (manual invocation; no workflow invocation found)",
-      "venue": null,
-      "status": "uncovered",
-      "phase2_issue": 5582,
-      "reason": "Non-default workspace member; no CI, flake, check-all, or just recipe runs the transcript suite."
+      "paths": ["pkgs/id/crates/id-native-shell/tests/*.rs"],
+      "invocation": "nix flake check ./pkgs/id (check test-native-shell runs cargo nextest -p id-native-shell)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / test-native-shell",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "The native-shell check runs every integration target in this non-default workspace member; suite paths trued up 2026-11-17 while repairing the registry ratchet (#10329)."
     },
     {
       "id": "id.bench.compare-script",
@@ -1261,6 +1267,62 @@
       "notes": "Registered 2026-11-14 (#6188 ratchet): already invoked by mcpx.yml but named by no registry row."
     },
     {
+      "id": "id.rust.other-crate-integration",
+      "paths": [
+        "pkgs/id/crates/id-core/tests/array_address.rs",
+        "pkgs/id/crates/id-core/tests/array_order_prop.rs",
+        "pkgs/id/crates/id-core/tests/canonical_cbor_vectors.rs",
+        "pkgs/id/crates/id-core/tests/id_shape.rs",
+        "pkgs/id/crates/id-core/tests/screen_parity.rs",
+        "pkgs/id/crates/id-core/tests/typed_value.rs",
+        "pkgs/id/crates/id-currency-registry/tests/acceptance.rs",
+        "pkgs/id/crates/id-currency-registry/tests/factory_acceptance.rs",
+        "pkgs/id/crates/id-currency-registry/tests/grants_acceptance.rs",
+        "pkgs/id/crates/id-render/tests/compose.rs",
+        "pkgs/id/crates/id-render/tests/lower.rs",
+        "pkgs/id/crates/id-render/tests/lower_gui.rs",
+        "pkgs/id/crates/id-render/tests/lower_native.rs",
+        "pkgs/id/crates/id-render/tests/pipeline.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b01.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b02.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b03.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b04.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b05.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b08.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b20.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b21.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b31.rs",
+        "pkgs/id/crates/id-sync/tests/federation_b32.rs"
+      ],
+      "invocation": "nix flake check ./pkgs/id (check test-sandbox runs cargo nextest --all-features for default workspace members)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "full-flake-check / Run full nix flake check",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "Existing nightly full-flake check runs test-sandbox over default workspace members; these additional integration targets are distinct from the five explicit PR targets added by #10329."
+    },
+    {
+      "id": "id.benchmarks.integration",
+      "paths": [
+        "pkgs/id/benchmarks/tests/d1_adapter.rs",
+        "pkgs/id/benchmarks/tests/r2_adapter.rs",
+        "pkgs/id/benchmarks/tests/redb_adapter.rs",
+        "pkgs/id/benchmarks/tests/workload_oracle.rs"
+      ],
+      "invocation": "nix develop ./pkgs/id --command cargo test --manifest-path ./pkgs/id/benchmarks/Cargo.toml --tests",
+      "venue": {
+        "workflow": ".github/workflows/id-bench.yml",
+        "job_step": "bench / Test benchmark adapters and workload oracle",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "Standalone benchmark-crate integration targets added to the nightly/manual benchmark workflow on 2026-11-17 while restoring the #6188 ratchet (#10329)."
+    },
+    {
       "id": "id.rust.crate-integration",
       "paths": [
         "pkgs/id/crates/id-caps/tests/roc_import_policy.rs",
@@ -1269,20 +1331,28 @@
         "pkgs/id/crates/id-store/tests/store_traits.rs",
         "pkgs/id/crates/id-web/tests/web_router_security.rs"
       ],
-      "invocation": "cargo test (workspace member integration targets; candidate venue: the id flake package check, doCheck = true)",
-      "venue": null,
-      "status": "uncovered-in-fact",
-      "phase2_issue": 10329,
-      "reason": "Named by no registry entry and no evidenced run found in the #6188 inventory (2026-11-14): the --lib unit row and the pkgs/id/tests shard row do not reach member-crate tests/ targets, and whether the flake package check's cargo test phase executes them is unproven. #10329 owns proving or wiring them."
+      "invocation": "nix flake check ./pkgs/id (check test-crate-integration runs cargo nextest --all-features for roc_import_policy, aliases, probe_petname_load, store_traits, and web_router_security)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / test-crate-integration",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "Wired by #10329: test-crate-integration is a named pkgs/id flake check included in the id PR-check list; its just recipe runs all five member-crate targets, including the four named by the issue and id-caps/roc_import_policy."
     },
     {
       "id": "id.web.build-manifest",
       "paths": ["pkgs/id/web/scripts/build-manifest.test.sh"],
-      "invocation": "bash pkgs/id/web/scripts/build-manifest.test.sh",
-      "venue": null,
-      "status": "uncovered",
-      "phase2_issue": 10329,
-      "reason": "No workflow, package script, or flake check references this suite (verified 2026-11-14, #6188 inventory). #10329 owns wiring or waiving it."
+      "invocation": "nix flake check ./pkgs/id (check test-web-unit runs bun run test and sh web/scripts/build-manifest.test.sh)",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "check_each / test-web-unit",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "notes": "Wired by #10329 into test-web-unit, which is included in the id PR-check list and runs through the id flake check."
     },
     {
       "id": "mcpx.scripts.spec-parity",
