@@ -102,6 +102,7 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"session.releaseTimeout":             "TestSessionReleaseTimeoutBoundsTheEndOfRunReleaseFromTheEnvironment",
 	"daemon.idleExit":                    "TestDaemonIdleExitStopsAnIdleDaemonFromTheEnvironment",
 	"daemon.port":                        "TestDaemonPortBindsTheChosenPortFromTheEnvironment",
 	"daemon.saveInterval":                "TestDaemonSaveIntervalWritesTheLeaseTableFromTheEnvironment",
@@ -287,6 +288,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestSessionReleaseTimeoutBoundsTheEndOfRunReleaseFromTheEnvironment":            TestSessionReleaseTimeoutBoundsTheEndOfRunReleaseFromTheEnvironment,
 	"TestDaemonIdleExitStopsAnIdleDaemonFromTheEnvironment":                          TestDaemonIdleExitStopsAnIdleDaemonFromTheEnvironment,
 	"TestDaemonPortBindsTheChosenPortFromTheEnvironment":                             TestDaemonPortBindsTheChosenPortFromTheEnvironment,
 	"TestDaemonSaveIntervalWritesTheLeaseTableFromTheEnvironment":                    TestDaemonSaveIntervalWritesTheLeaseTableFromTheEnvironment,
@@ -3863,6 +3865,31 @@ func TestDaemonIdleExitStopsAnIdleDaemonFromTheEnvironment(t *testing.T) {
 	}
 	if stillThere("MCPX_DAEMON_IDLE_EXIT=1s") {
 		t.Fatalf("with daemon.idleExit=1s the idle daemon should have exited")
+	}
+}
+
+// liveAfterAnExec runs a script that calls a session-scoped exclusive
+// demo once, then returns ls's LIVE column for demo.
+func liveAfterAnExec(t *testing.T, env ...string) string {
+	t.Helper()
+	e := newEnv(t, `{"mcpServers":{"demo":{"command":"FAKE","mcpx":{"sharing":"exclusive","scope":"session","max":4}}}}`)
+	e.setenv(append([]string{"MCPX_DAEMON_WARM=false"}, env...)...)
+	e.run("exec", `await demo.echo({ message: "x" });`)
+	return lsDemoRow(t, e.run("ls"))[4]
+}
+
+// TestSessionReleaseTimeoutBoundsTheEndOfRunReleaseFromTheEnvironment is
+// the effect probe for session.releaseTimeout. When a script ends, exec
+// asks the daemon to release the instances its ephemeral session leased.
+// Within the default bound the release lands and nothing is left live;
+// with session.releaseTimeout=1ns the request cannot complete, so the
+// script's instance is still running afterwards.
+func TestSessionReleaseTimeoutBoundsTheEndOfRunReleaseFromTheEnvironment(t *testing.T) {
+	if live := liveAfterAnExec(t); live != "0" {
+		t.Fatalf("oracle: by default the script's instance should be released when it ends, LIVE=%s", live)
+	}
+	if live := liveAfterAnExec(t, "MCPX_SESSION_RELEASE_TIMEOUT=1ns"); live != "1" {
+		t.Fatalf("with session.releaseTimeout=1ns the release should not land, leaving one instance, LIVE=%s", live)
 	}
 }
 
