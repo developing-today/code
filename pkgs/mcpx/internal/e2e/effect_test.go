@@ -101,6 +101,9 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"pool.callTimeout":                   "TestPoolCallTimeoutBoundsASlowCall",
+	"pool.startTimeout":                  "TestPoolStartTimeoutBoundsServerStart",
+	"daemon.refreshTimeout":              "TestDaemonRefreshTimeoutBoundsARefresh",
 	"doctor.timeout":                     "TestDoctorTimeoutBoundsTheDaemonCheck",
 	"registry.timeout":                   "TestRegistryTimeoutBoundsARegistryRequest",
 	"completion.maxValues":               "TestCompletionMaxValuesCapsTheValues",
@@ -243,6 +246,9 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":        TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                 TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                          TestEventsHistoryBoundsTheReplay,
+	"TestPoolCallTimeoutBoundsASlowCall":                                        TestPoolCallTimeoutBoundsASlowCall,
+	"TestPoolStartTimeoutBoundsServerStart":                                     TestPoolStartTimeoutBoundsServerStart,
+	"TestDaemonRefreshTimeoutBoundsARefresh":                                    TestDaemonRefreshTimeoutBoundsARefresh,
 	"TestDoctorTimeoutBoundsTheDaemonCheck":                                     TestDoctorTimeoutBoundsTheDaemonCheck,
 	"TestRegistryTimeoutBoundsARegistryRequest":                                 TestRegistryTimeoutBoundsARegistryRequest,
 	"TestCompletionMaxValuesCapsTheValues":                                      TestCompletionMaxValuesCapsTheValues,
@@ -2710,6 +2716,58 @@ func TestRegistryTimeoutBoundsARegistryRequest(t *testing.T) {
 	e2.setenv("MCPX_REGISTRY_TIMEOUT=1ns")
 	if out, err := e2.try("registry", "search", "demo"); err == nil || strings.Contains(out, "a stub entry") {
 		t.Errorf("registry.timeout=1ns should cut the search off (err %v):\n%s", err, out)
+	}
+}
+
+// TestPoolCallTimeoutBoundsASlowCall is the effect probe for
+// pool.callTimeout: a 600ms call finishes at the default bound and is cut
+// off at a 100ms one.
+func TestPoolCallTimeoutBoundsASlowCall(t *testing.T) {
+	call := func(env ...string) (string, error) {
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		return e.try("call", "demo.slow", `{"ms":600}`)
+	}
+	if out, err := call(); err != nil || !strings.Contains(out, "slept 600ms") {
+		t.Errorf("at the default pool.callTimeout the slow call should finish (err %v):\n%s", err, out)
+	}
+	if out, err := call("MCPX_POOL_CALL_TIMEOUT=100ms"); err == nil || strings.Contains(out, "slept 600ms") {
+		t.Errorf("pool.callTimeout=100ms should cut the 600ms call off (err %v):\n%s", err, out)
+	}
+}
+
+// TestPoolStartTimeoutBoundsServerStart is the effect probe for
+// pool.startTimeout: the fake server starts at the default bound, and a
+// one-nanosecond bound fails its start.
+func TestPoolStartTimeoutBoundsServerStart(t *testing.T) {
+	call := func(env ...string) (string, error) {
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		return e.try("call", "demo.echo", `{"message":"started"}`)
+	}
+	if out, err := call(); err != nil || !strings.Contains(out, "started") {
+		t.Errorf("at the default pool.startTimeout the server should start (err %v):\n%s", err, out)
+	}
+	if out, err := call("MCPX_POOL_START_TIMEOUT=1ns"); err == nil || !strings.Contains(out, "deadline exceeded") {
+		t.Errorf("pool.startTimeout=1ns should fail the server's start (err %v):\n%s", err, out)
+	}
+}
+
+// TestDaemonRefreshTimeoutBoundsARefresh is the effect probe for
+// daemon.refreshTimeout: `mcpx refresh` lists the server at the default
+// bound, and a one-nanosecond bound leaves it in error.
+func TestDaemonRefreshTimeoutBoundsARefresh(t *testing.T) {
+	refresh := func(env ...string) string {
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		out, _ := e.try("refresh")
+		return out
+	}
+	if out := refresh(); strings.Contains(out, "deadline exceeded") || !strings.Contains(out, "running") {
+		t.Errorf("at the default daemon.refreshTimeout the refresh should succeed:\n%s", out)
+	}
+	if out := refresh("MCPX_DAEMON_REFRESH_TIMEOUT=1ns"); !strings.Contains(out, "deadline exceeded") {
+		t.Errorf("daemon.refreshTimeout=1ns should cut the refresh off:\n%s", out)
 	}
 }
 
