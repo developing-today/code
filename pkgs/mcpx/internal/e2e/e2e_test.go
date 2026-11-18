@@ -1443,6 +1443,7 @@ func TestPermissionsDefaultWideOpen(t *testing.T) {
 }
 
 func TestPermissionsCanBeNarrowed(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
 	e := newEnv(t, oneServer)
 	out := e.run("exec", "--permissions", "strict",
 		`try { await Deno.readTextFile("/etc/hosts"); console.log("ALLOWED"); }
@@ -1730,6 +1731,7 @@ func TestConsoleTraceCapturesFrames(t *testing.T) {
 }
 
 func TestCaptureFramesIsAvailableToScripts(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
 	e := newEnv(t, oneServer)
 	out := e.run("exec", "--format", "bare",
 		`function a() { return captureFrames(0, 4); }
@@ -1741,6 +1743,7 @@ func TestCaptureFramesIsAvailableToScripts(t *testing.T) {
 }
 
 func TestEveryConsoleMethodIsCoveredAndNameIsKept(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
 	e := newEnv(t, oneServer)
 	// Deno ships 25 console members. Anything mcpx replaces must keep its
 	// name, because losing it breaks introspection for no gain, and anything
@@ -1775,6 +1778,7 @@ func TestEveryConsoleMethodIsCoveredAndNameIsKept(t *testing.T) {
 }
 
 func TestConsoleInfoFormatsLikeTheRuntimeNotLikeJSON(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
 	e := newEnv(t, oneServer)
 	// A caller who writes console.info({a:1}) expects to read what the
 	// runtime would have printed. The structured copy is already in args, so
@@ -1920,6 +1924,7 @@ func TestAPhaseCanBeAFileInsteadOfAString(t *testing.T) {
 // change what the script sees or produces? Every line is compared against the
 // same script run with no launcher at all.
 func TestCapturedConsoleMatchesTheRuntimeExactly(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
 	e := newEnv(t, oneServer)
 	dir := t.TempDir()
 	script := filepath.Join(dir, "fmt.ts")
@@ -2934,6 +2939,7 @@ func TestResolveTellsAPluginWhichDaemonServesADirectory(t *testing.T) {
 }
 
 func TestTypeCheckCatchesAnUnknownNamespaceBeforeAnythingRuns(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
 	// Three separate faults let a typo'd namespace run half a script:
 	// preflight ignores unknown namespaces on purpose, --typecheck was
 	// silently dropped on the exec path, and when it did run it failed on

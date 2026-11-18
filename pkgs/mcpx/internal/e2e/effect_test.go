@@ -375,6 +375,7 @@ func TestScriptCaptureConsoleOffDropsConsoleOutput(t *testing.T) {
 }
 
 func TestScriptTypecheckOnRefusesATypeError(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
 	e := newEnv(t, oneServer)
 	script := filepath.Join(e.dir, "bad.ts")
 	src := "const n: number = \"not a number\";\n" +
