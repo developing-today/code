@@ -104,6 +104,7 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 
 pub mod claim;
 pub mod doc;
+pub mod gallery;
 pub mod groups;
 #[cfg(feature = "sandbox")]
 pub mod match_audit;
@@ -113,6 +114,7 @@ pub mod writer_sets;
 
 pub use claim::{ClaimCommand, ClaimScope};
 pub use doc::DocCommand;
+pub use gallery::{GalleryArgs, GalleryCommand};
 pub use groups::{DelegateArgs, GroupCommand, GroupRemoveMode, GroupTemplate, RevokeArgs};
 #[cfg(feature = "sandbox")]
 pub use match_audit::MatchAuditCommand;
@@ -474,10 +476,11 @@ pub struct ServeArgs {
     ///
     /// The web interface answers `/api/gallery/records`,
     /// `/api/gallery/bundles/<hash>`, `/api/gallery/search`,
-    /// `/api/gallery/authors/<key>` and `/api/gallery/collections` from the
-    /// verified bundle files (`<content-hash>.idpb`) in the directory and
-    /// the operator's collections and tags under `operator/`. Every file is
-    /// verified when the server starts.
+    /// `/api/gallery/authors/<key>`, `/api/gallery/collections` and
+    /// `/api/gallery/transparency` from the verified bundle files
+    /// (`<content-hash>.idpb`) in the directory and the operator's
+    /// collections, tags and admission decisions under `operator/` (managed
+    /// with `id gallery`). Every file is verified when the server starts.
     #[arg(long, env = "ID_GALLERY_DIR", requires = "web")]
     pub gallery_dir: Option<std::path::PathBuf>,
     /// Host a multiplayer world over Iroh (and `/ws/world` with `--web`).
@@ -1374,6 +1377,9 @@ pub enum Command {
     /// ```
     #[command(subcommand)]
     World(Box<WorldCommand>),
+    /// Administer a program gallery directory: removals, appeals, review,
+    /// posture and operator tags, all on the public transparency list.
+    Gallery(GalleryArgs),
     /// Export and verify signed match-audit v0 logs.
     #[cfg(feature = "sandbox")]
     #[command(subcommand)]

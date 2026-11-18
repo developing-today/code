@@ -3049,3 +3049,54 @@ fn test_every_verb_is_documented_and_dispatchable() {
         .join()
         .unwrap();
 }
+
+#[test]
+fn test_cli_parse_gallery_admin() {
+    use id_worlds::program_gallery_admission::{AdmissionPosture, ReasonClass};
+
+    let hash = "a".repeat(64);
+    match Cli::parse_from([
+        "id",
+        "gallery",
+        "--dir",
+        "/srv/gallery",
+        "remove",
+        &hash,
+        "--reason",
+        "malware",
+        "--note",
+        "reported",
+    ])
+    .command
+    {
+        Some(Command::Gallery(GalleryArgs {
+            dir,
+            command:
+                GalleryCommand::Remove {
+                    content_hash,
+                    reason,
+                    note,
+                },
+        })) => {
+            assert_eq!(dir, std::path::Path::new("/srv/gallery"));
+            assert_eq!(content_hash, hash);
+            assert_eq!(reason, ReasonClass::Malware);
+            assert_eq!(note.as_deref(), Some("reported"));
+        }
+        _ => panic!("Expected gallery remove"),
+    }
+    match Cli::parse_from(["id", "gallery", "--dir", "/g", "posture", "reviewed"]).command {
+        Some(Command::Gallery(GalleryArgs {
+            command: GalleryCommand::Posture { posture },
+            ..
+        })) => assert_eq!(posture, AdmissionPosture::Reviewed),
+        _ => panic!("Expected gallery posture"),
+    }
+    assert!(
+        Cli::try_parse_from([
+            "id", "gallery", "--dir", "/g", "remove", &hash, "--reason", "rude"
+        ])
+        .is_err()
+    );
+    assert!(Cli::try_parse_from(["id", "gallery", "--dir", "/g", "tag", "board"]).is_err());
+}

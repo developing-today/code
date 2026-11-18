@@ -48,6 +48,7 @@ pub mod blob_gate;
 pub mod groups;
 pub mod program_bundle;
 pub mod program_gallery;
+pub mod program_gallery_admission;
 pub mod program_gallery_operator;
 pub mod program_registry;
 #[cfg(feature = "sandbox")]

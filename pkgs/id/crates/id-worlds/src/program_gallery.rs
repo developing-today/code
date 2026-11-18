@@ -13,12 +13,22 @@
 //! query word, then everything else; within each group the most recent
 //! version comes first, then name, author and content hash break ties.
 //! There is no engagement ranking.
+//!
+//! What the gallery lists is its operator's admission (G6,
+//! [`crate::program_gallery_admission`]): list, fetch, search and author
+//! pages show only records the admission state lists, and every removal,
+//! refusal and reinstatement goes on the public transparency list. A
+//! removed record keeps its bundle file here and keeps verifying elsewhere.
 
 use std::collections::BTreeMap;
 
 use crate::program_bundle::{BundleManifest, BundleRecord};
+use crate::program_gallery_admission::{
+    Admission, AdmissionConfig, AdmissionError, ReasonClass, TransparencyEntry,
+};
 use crate::program_gallery_operator::{
-    AuthorPage, OperatorData, OperatorError, OperatorOverlay, SignedCollection, check_author_key,
+    AuthorPage, OPERATOR_DIR, OperatorData, OperatorError, OperatorOverlay, SignedCollection,
+    check_author_key,
 };
 use crate::program_registry::{AdmissionPolicy, ListQuery, Registry, RegistryError};
 
@@ -204,6 +214,7 @@ pub struct Gallery {
     registry: Registry,
     index: SearchIndex,
     operator: OperatorData,
+    admission: Admission,
     dir: Option<std::path::PathBuf>,
 }
 
@@ -217,13 +228,15 @@ impl Gallery {
             registry,
             index,
             operator: OperatorData::default(),
+            admission: Admission::default(),
             dir: None,
         }
     }
 
     /// Open the gallery stored in `dir`: its bundles (verified as
-    /// [`Registry::open_dir`] does) and its operator data (verified as
-    /// [`OperatorData::load`] does).
+    /// [`Registry::open_dir`] does), its operator data (verified as
+    /// [`OperatorData::load`] does) and its admission state (checked as
+    /// [`Admission::load`] does).
     ///
     /// # Errors
     ///
@@ -235,10 +248,23 @@ impl Gallery {
         let dir = dir.into();
         let registry = Registry::open_dir(&dir, policy)?;
         let operator = OperatorData::load(&dir)?;
+        let admission = Admission::load(&dir.join(OPERATOR_DIR))?;
         let mut gallery = Self::new(registry);
         gallery.operator = operator;
+        gallery.admission = admission;
         gallery.dir = Some(dir);
+        gallery.rebuild_index();
         Ok(gallery)
+    }
+
+    /// Serve `registry` under this admission state, with no operator data
+    /// and nothing kept on disk beyond what the registry keeps.
+    #[must_use]
+    pub fn with_admission(registry: Registry, admission: Admission) -> Self {
+        let mut gallery = Self::new(registry);
+        gallery.admission = admission;
+        gallery.rebuild_index();
+        gallery
     }
 
     /// Every record `author` published here, addressed by the key alone
@@ -251,7 +277,7 @@ impl Gallery {
         check_author_key(author)?;
         Ok(AuthorPage {
             author: author.to_owned(),
-            records: self.registry.list(&ListQuery {
+            records: self.list(&ListQuery {
                 author: Some(author.to_owned()),
                 name: None,
             }),
@@ -325,19 +351,26 @@ impl Gallery {
         &self.index
     }
 
-    /// Throw the index away and rebuild it from the registry's records.
+    /// Throw the index away and rebuild it from the listed records.
     pub fn rebuild_index(&mut self) {
-        self.index = SearchIndex::rebuild(self.registry.list(&ListQuery::default()));
+        self.index = SearchIndex::rebuild(self.list(&ListQuery::default()));
     }
 
-    /// Publish through the registry and index the new record.
+    /// Publish through the registry, and index the new record if the
+    /// admission state lists it (under the reviewed posture it waits for
+    /// [`Self::approve`]).
     ///
     /// # Errors
     ///
     /// Whatever [`Registry::publish`] refuses.
     pub fn publish(&mut self, bytes: &[u8]) -> Result<BundleRecord, RegistryError> {
         let record = self.registry.publish(bytes)?;
-        self.index.insert(record.clone());
+        if record
+            .verify()
+            .is_ok_and(|manifest| self.admission.lists(&manifest.content_hash))
+        {
+            self.index.insert(record.clone());
+        }
         Ok(record)
     }
 
@@ -356,27 +389,153 @@ impl Gallery {
         Ok(record)
     }
 
-    /// Delist on the operator's authority and drop it from the index.
+    /// Stop listing a record here, on the operator's authority, and write
+    /// the removal to the transparency list (G6). The bundle file stays,
+    /// so [`Self::reinstate`] can reverse it.
     ///
     /// # Errors
     ///
-    /// Whatever [`Registry::remove`] refuses.
-    pub fn remove(&mut self, content_hash: &str) -> Result<BundleRecord, RegistryError> {
-        let record = self.registry.remove(content_hash)?;
+    /// No such bundle is held or listed, the note is too long, or the list
+    /// cannot be stored.
+    pub fn remove(
+        &mut self,
+        content_hash: &str,
+        reason: ReasonClass,
+        at: u64,
+        note: Option<String>,
+    ) -> Result<TransparencyEntry, AdmissionError> {
+        let (_, identity) = self.held(content_hash)?;
+        let operator_dir = self.operator_dir();
+        let entry = self
+            .admission
+            .remove(identity, reason, at, note, operator_dir.as_deref())?;
         self.index.remove(content_hash);
+        Ok(entry)
+    }
+
+    /// Refuse a record that waits for review, and write the refusal to the
+    /// transparency list.
+    ///
+    /// # Errors
+    ///
+    /// No such bundle is held or pending, the note is too long, or the list
+    /// cannot be stored.
+    pub fn refuse(
+        &mut self,
+        content_hash: &str,
+        reason: ReasonClass,
+        at: u64,
+        note: Option<String>,
+    ) -> Result<TransparencyEntry, AdmissionError> {
+        let (_, identity) = self.held(content_hash)?;
+        let operator_dir = self.operator_dir();
+        self.admission
+            .refuse(identity, reason, at, note, operator_dir.as_deref())
+    }
+
+    /// Reverse a removal or refusal (an appeal upheld, or a mistake), write
+    /// that to the transparency list, and list the record again.
+    ///
+    /// # Errors
+    ///
+    /// The record is not removed or refused, the note is too long, or the
+    /// list cannot be stored.
+    pub fn reinstate(
+        &mut self,
+        content_hash: &str,
+        at: u64,
+        note: Option<String>,
+    ) -> Result<TransparencyEntry, AdmissionError> {
+        let operator_dir = self.operator_dir();
+        let entry = self
+            .admission
+            .reinstate(content_hash, at, note, operator_dir.as_deref())?;
+        if let Some((record, _)) = self.registry.get(content_hash) {
+            self.index.insert(record);
+        }
+        Ok(entry)
+    }
+
+    /// List a record that waits for review.
+    ///
+    /// # Errors
+    ///
+    /// No such bundle is held or pending, or the approval cannot be stored.
+    pub fn approve(&mut self, content_hash: &str) -> Result<BundleRecord, AdmissionError> {
+        let (record, _) = self.held(content_hash)?;
+        let operator_dir = self.operator_dir();
+        self.admission
+            .approve(content_hash, operator_dir.as_deref())?;
+        self.index.insert(record.clone());
         Ok(record)
     }
 
-    /// The registry's list operation, unchanged.
+    /// The records waiting for review, in list order.
     #[must_use]
-    pub fn list(&self, query: &ListQuery) -> Vec<BundleRecord> {
-        self.registry.list(query)
+    pub fn pending(&self) -> Vec<BundleRecord> {
+        self.registry.list_where(&ListQuery::default(), |manifest| {
+            self.admission.is_pending(&manifest.content_hash)
+        })
     }
 
-    /// The registry's fetch operation, unchanged.
+    /// The admission state: configuration, approvals and the public list.
+    #[must_use]
+    pub const fn admission(&self) -> &Admission {
+        &self.admission
+    }
+
+    /// Change the admission configuration (posture and stated response
+    /// times), storing it when the gallery has a directory. What is listed
+    /// changes at once.
+    ///
+    /// # Errors
+    ///
+    /// The configuration cannot be stored.
+    pub fn set_admission_config(&mut self, config: AdmissionConfig) -> Result<(), AdmissionError> {
+        let operator_dir = self.operator_dir();
+        self.admission.set_config(config, operator_dir.as_deref())?;
+        self.rebuild_index();
+        Ok(())
+    }
+
+    /// The removal or refusal that keeps this record unlisted here, if any.
+    #[must_use]
+    pub fn unlisted_by(&self, content_hash: &str) -> Option<&TransparencyEntry> {
+        self.admission
+            .list()
+            .latest(content_hash)
+            .filter(|entry| entry.hides())
+    }
+
+    /// The listed records matching `query`: the registry's list operation,
+    /// narrowed to what the admission state lists.
+    #[must_use]
+    pub fn list(&self, query: &ListQuery) -> Vec<BundleRecord> {
+        self.registry.list_where(query, |manifest| {
+            self.admission.lists(&manifest.content_hash)
+        })
+    }
+
+    /// The registry's fetch operation, for listed records only.
     #[must_use]
     pub fn fetch(&self, content_hash: &str) -> Option<Vec<u8>> {
+        if !self.admission.lists(content_hash) {
+            return None;
+        }
         self.registry.fetch(content_hash)
+    }
+
+    fn held(
+        &self,
+        content_hash: &str,
+    ) -> Result<(BundleRecord, crate::program_bundle::ProgramIdentity), AdmissionError> {
+        self.registry
+            .get(content_hash)
+            .ok_or_else(|| AdmissionError::NotFound(content_hash.to_owned()))
+    }
+
+    fn operator_dir(&self) -> Option<std::path::PathBuf> {
+        self.dir.as_ref().map(|dir| dir.join(OPERATOR_DIR))
     }
 
     /// Search the index.
@@ -605,7 +764,7 @@ mod tests {
             .verify()
             .unwrap()
             .content_hash;
-        gallery.remove(&racer).unwrap();
+        gallery.remove(&racer, ReasonClass::Spam, 0, None).unwrap();
         assert!(search(&gallery, "arcade").is_empty());
         assert_eq!(gallery.index().len(), 4);
     }
@@ -698,6 +857,106 @@ mod tests {
                 chess.manifest().content_hash.clone(),
                 vec!["classic".to_owned()]
             )])
+        );
+    }
+
+    #[test]
+    fn a_removal_hides_the_record_here_only_and_reinstatement_restores_it() {
+        use crate::program_gallery_admission::{AdmissionAction, AdmissionError};
+
+        let dir = tempfile::tempdir().unwrap();
+        let chess = program(&alice(), "chess", 1, "Board game.", &["board"]);
+        let hash = chess.manifest().content_hash.clone();
+        let key = crate::world_session::encode_hex(&alice().verifying_key().to_bytes());
+        {
+            let mut gallery = Gallery::open_dir(dir.path(), AdmitAll).unwrap();
+            gallery.publish(&chess.to_bytes()).unwrap();
+            let removed = gallery
+                .remove(&hash, ReasonClass::Malware, 100, None)
+                .unwrap();
+            assert_eq!(removed.action, AdmissionAction::Removed);
+            assert_eq!(removed.record, chess.identity());
+            assert!(gallery.list(&ListQuery::default()).is_empty());
+            assert!(gallery.fetch(&hash).is_none());
+            assert!(search(&gallery, "board").is_empty());
+            assert!(gallery.author_page(&key).unwrap().records.is_empty());
+            assert_eq!(gallery.unlisted_by(&hash), Some(&removed));
+            assert_eq!(
+                gallery.registry().fetch(&hash),
+                Some(chess.to_bytes()),
+                "removal binds this endpoint only; the bundle is kept"
+            );
+            gallery.publish(&chess.to_bytes()).unwrap();
+            assert!(
+                gallery.list(&ListQuery::default()).is_empty(),
+                "republishing does not undo it"
+            );
+        }
+        let mut gallery = Gallery::open_dir(dir.path(), AdmitAll).unwrap();
+        assert!(
+            gallery.fetch(&hash).is_none(),
+            "the removal survives a restart"
+        );
+        assert_eq!(gallery.admission().list().len(), 1);
+        let back = gallery
+            .reinstate(&hash, 200, Some("appeal upheld".to_owned()))
+            .unwrap();
+        assert_eq!(back.reverses, Some(1));
+        assert_eq!(gallery.list(&ListQuery::default()), vec![chess.record()]);
+        assert_eq!(search(&gallery, "board"), vec![("chess".to_owned(), 1)]);
+        assert!(gallery.unlisted_by(&hash).is_none());
+        assert_eq!(
+            gallery.remove(&"0".repeat(64), ReasonClass::Spam, 0, None),
+            Err(AdmissionError::NotFound("0".repeat(64)))
+        );
+    }
+
+    #[test]
+    fn under_review_a_record_waits_and_the_posture_switches_by_configuration() {
+        use crate::program_gallery_admission::{AdmissionConfig, AdmissionPosture};
+
+        let dir = tempfile::tempdir().unwrap();
+        let chess = program(&alice(), "chess", 1, "Board game.", &["board"]);
+        let spam = program(&bob(), "free-coins", 1, "Click.", &[]);
+        let (chess_hash, spam_hash) = (
+            chess.manifest().content_hash.clone(),
+            spam.manifest().content_hash.clone(),
+        );
+        {
+            let mut gallery = Gallery::open_dir(dir.path(), AdmitAll).unwrap();
+            gallery
+                .set_admission_config(AdmissionConfig {
+                    posture: AdmissionPosture::Reviewed,
+                    ..AdmissionConfig::default()
+                })
+                .unwrap();
+            gallery.publish(&chess.to_bytes()).unwrap();
+            gallery.publish(&spam.to_bytes()).unwrap();
+            assert!(gallery.list(&ListQuery::default()).is_empty());
+            assert_eq!(gallery.pending().len(), 2);
+            gallery.approve(&chess_hash).unwrap();
+            gallery
+                .refuse(&spam_hash, ReasonClass::Spam, 1, None)
+                .unwrap();
+            assert!(gallery.pending().is_empty());
+            assert_eq!(gallery.list(&ListQuery::default()), vec![chess.record()]);
+            assert_eq!(search(&gallery, "board").len(), 1);
+        }
+        let mut gallery = Gallery::open_dir(dir.path(), AdmitAll).unwrap();
+        assert_eq!(gallery.list(&ListQuery::default()), vec![chess.record()]);
+        let later = program(&alice(), "go", 1, "Stones.", &[]);
+        gallery.publish(&later.to_bytes()).unwrap();
+        assert!(
+            search(&gallery, "stones").is_empty(),
+            "pending is not searchable"
+        );
+        gallery
+            .set_admission_config(AdmissionConfig::default())
+            .unwrap();
+        assert_eq!(search(&gallery, "stones").len(), 1, "open lists it at once");
+        assert!(
+            gallery.fetch(&spam_hash).is_none(),
+            "a refusal holds under any posture"
         );
     }
 }
