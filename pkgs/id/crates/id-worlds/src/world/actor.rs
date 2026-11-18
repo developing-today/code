@@ -2221,7 +2221,10 @@ impl WorldActor {
             }
             WorldCommand::Metrics { reply } => {
                 let sessions = self.presence.values().sum::<usize>() as u64;
-                let metrics = self.metrics.snapshot(sessions);
+                let participants = self.presence.values().filter(|n| **n > 0).count() as u64;
+                let metrics = self
+                    .metrics
+                    .snapshot_with_participants(sessions, participants);
                 // No audit record: metrics are readable by any joined
                 // participant holding a capability (the session layer's
                 // Metrics frame), so recording the read as admin would
