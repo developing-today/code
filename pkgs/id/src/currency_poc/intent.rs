@@ -262,7 +262,7 @@ impl FileIntentStore {
                     continue;
                 }
             };
-            match serde_json::from_slice::<IntentRecord>(&bytes) {
+            match id_core::json_unique::from_slice_without_duplicate_keys::<IntentRecord>(&bytes) {
                 Ok(record) => scanned.push(ScannedIntent { path, record }),
                 Err(error) => unreadable.push(UnreadableIntent {
                     path,
