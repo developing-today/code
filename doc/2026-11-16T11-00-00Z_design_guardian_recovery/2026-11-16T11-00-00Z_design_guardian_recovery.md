@@ -403,6 +403,13 @@ displaces a checkpoint-final head, and it takes no revocation
 priority: an ordinary continuation of the pinned head wins, which is
 Decision 3's "request is moot" case. A checkpoint taken after the
 rotation (`checkpoint_final_heads_with_recovery`) makes it final, so a
-late surviving-key sibling cannot undo it. Still open: delayed guardian
-removals (Decision 6, needs timestamps in the fold), the directory
-relay and the client flow.
+late surviving-key sibling cannot undo it. Decision 6: a
+`GuardianSetUpdated` that removes a guardian or lowers the threshold
+is held as `KeysetState::pending_guardian_set` and replaces the set
+only once the next record (or the recovery request) is first seen at
+least `RECOVERY_DELAY_SECONDS` after the change was. Widening changes
+apply at once, and a later update replaces or cancels the pending one.
+The plain `fold` has no timestamps, so there a removal stays pending
+and the old set keeps counting; `RecoveryEvidence::keyset_first_seen`
+supplies the times. Still open: the directory relay and the client
+flow.

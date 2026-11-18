@@ -375,6 +375,32 @@ pub struct GuardianSet {
     pub threshold: u32,
 }
 
+impl GuardianSet {
+    /// Does moving from `self` to `next` only add guardians or raise the
+    /// threshold? Such a change folds at once; any other is a delayed
+    /// change (guardian recovery Decision 6).
+    #[must_use]
+    pub fn widens_to(&self, next: &Self) -> bool {
+        next.threshold >= self.threshold
+            && self
+                .guardians
+                .iter()
+                .all(|guardian| next.guardians.contains(guardian))
+    }
+}
+
+/// A guardian-set change that removes a guardian or lowers the
+/// threshold.
+///
+/// It waits [`crate::recovery::RECOVERY_DELAY_SECONDS`] from
+/// the directory's first sighting of `record_hash` before it replaces
+/// the effective set (guardian recovery Decision 6).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingGuardianSet {
+    pub record_hash: String,
+    pub set: GuardianSet,
+}
+
 /// Deterministic projection of a keyset chain.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeysetState {
@@ -383,6 +409,9 @@ pub struct KeysetState {
     pub devices: BTreeMap<String, DeviceState>,
     pub idp_bindings: BTreeMap<String, BindingState>,
     pub guardian_set: Option<GuardianSet>,
+    /// A delayed guardian-set change not yet in force.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_guardian_set: Option<PendingGuardianSet>,
     pub head_hash: String,
     pub records_folded: u64,
 }
@@ -394,6 +423,8 @@ struct StateHashBody<'a> {
     devices: &'a BTreeMap<String, DeviceState>,
     idp_bindings: &'a BTreeMap<String, BindingState>,
     guardian_set: &'a Option<GuardianSet>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_guardian_set: &'a Option<PendingGuardianSet>,
 }
 
 impl KeysetState {
@@ -409,6 +440,25 @@ impl KeysetState {
         self.admin_keys.get(key) == Some(&AdminKeyState::Active)
     }
 
+    /// This state with its pending guardian-set change in force, if the
+    /// directory first saw that change (`pending_seen`) at least the
+    /// recovery delay before `at`. Unknown times never mature a change,
+    /// so without timestamps the pre-change set stays in force.
+    #[must_use]
+    pub fn matured(&self, pending_seen: Option<u64>, at: Option<u64>) -> Self {
+        let mut state = self.clone();
+        let (Some(seen), Some(at)) = (pending_seen, at) else {
+            return state;
+        };
+        let ripe = seen
+            .checked_add(crate::recovery::RECOVERY_DELAY_SECONDS)
+            .is_some_and(|due| due <= at);
+        if ripe && let Some(pending) = state.pending_guardian_set.take() {
+            state.guardian_set = Some(pending.set);
+        }
+        state
+    }
+
     /// SHA-256 of the canonical folded state (cursor metadata is excluded).
     pub fn state_hash(&self) -> Result<String> {
         let body = StateHashBody {
@@ -417,6 +467,7 @@ impl KeysetState {
             devices: &self.devices,
             idp_bindings: &self.idp_bindings,
             guardian_set: &self.guardian_set,
+            pending_guardian_set: &self.pending_guardian_set,
         };
         Ok(hex_encode(&Sha256::digest(serde_json::to_vec(&body)?)))
     }
@@ -470,8 +521,30 @@ pub fn fold_with_finality(
 pub trait RecoveryRule {
     /// The state the `RecoveryRotation` `record` installs when it
     /// continues the fold `head`, before the head advances, or `None`
-    /// when it must not fold.
+    /// when it must not fold. `head` is as folded, with any pending
+    /// guardian change not yet matured.
     fn rotate(&self, head: &KeysetState, record: &KeysetRecord) -> Option<KeysetState>;
+
+    /// When the directory first saw the keyset record with this hash,
+    /// if known. The fold uses it to mature delayed guardian-set
+    /// changes; with no times, no delayed change ever matures.
+    fn first_seen(&self, _record_hash: &str) -> Option<u64> {
+        None
+    }
+}
+
+/// `state` with its pending guardian change matured as of when the
+/// directory first saw `record`, the next record to fold onto it.
+fn matured_before(
+    rule: &dyn RecoveryRule,
+    state: &KeysetState,
+    record: &KeysetRecord,
+) -> KeysetState {
+    let pending_seen = state
+        .pending_guardian_set
+        .as_ref()
+        .and_then(|pending| rule.first_seen(&pending.record_hash));
+    state.matured(pending_seen, rule.first_seen(&record.hash))
 }
 
 /// The rule that folds no recovery rotation.
@@ -594,6 +667,7 @@ fn canonical_prefixes(
                 .rotate(&state, record)
                 .context("canonical recovery rotation no longer folds")?;
         } else {
+            state = matured_before(rule, &state, record);
             apply_entry(&mut state, record)?;
         }
         state.head_hash.clone_from(&record.hash);
@@ -651,6 +725,7 @@ fn genesis_state(log: &Log, trusted_genesis_hash: &str) -> Result<(KeysetState, 
         )]),
         idp_bindings: BTreeMap::new(),
         guardian_set: None,
+        pending_guardian_set: None,
         head_hash: genesis.hash.clone(),
         records_folded: 1,
     };
@@ -683,13 +758,15 @@ impl Fold<'_> {
     /// The state a valid continuation of `state` installs, if `record`
     /// is one.
     fn continuation(&self, state: &KeysetState, record: &KeysetRecord) -> Option<KeysetState> {
+        // A rotation is judged against the head as its request saw it,
+        // so the rule matures pending changes itself.
         if is_recovery(record) {
             return self.rule.rotate(state, record);
         }
-        if !state.is_admin(&record.author) {
+        let mut candidate = matured_before(self.rule, state, record);
+        if !candidate.is_admin(&record.author) {
             return None;
         }
-        let mut candidate = state.clone();
         apply_entry(&mut candidate, record).ok().map(|()| candidate)
     }
 
@@ -884,10 +961,26 @@ fn apply_entry(state: &mut KeysetState, record: &KeysetRecord) -> Result<()> {
             threshold,
         } => {
             ensure!(authorized_admin, "guardian update requires an active admin");
-            state.guardian_set = Some(GuardianSet {
+            let next = GuardianSet {
                 guardians: guardians.clone(),
                 threshold: *threshold,
-            });
+            };
+            // Adding or raising folds at once and clears any pending
+            // change, so restoring the current set cancels a pending
+            // removal. Removing or lowering waits (Decision 6).
+            let widens = state
+                .guardian_set
+                .as_ref()
+                .is_none_or(|current| current.widens_to(&next));
+            if widens {
+                state.guardian_set = Some(next);
+                state.pending_guardian_set = None;
+            } else {
+                state.pending_guardian_set = Some(PendingGuardianSet {
+                    record_hash: record.hash.clone(),
+                    set: next,
+                });
+            }
         }
         KeysetEntry::RecoveryRotation { .. } => {
             anyhow::bail!("a recovery rotation folds only under the recovery rule")
@@ -1578,6 +1671,7 @@ mod tests {
                 )]),
                 idp_bindings: BTreeMap::new(),
                 guardian_set: None,
+                pending_guardian_set: None,
                 head_hash: first.hash.clone(),
                 records_folded: 1,
             };

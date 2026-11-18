@@ -580,7 +580,7 @@ fn fold_recovering(
     let evidence = RecoveryEvidence {
         annex: &seen,
         guardian_folds: &folds,
-        rotation_first_seen: &first_seen,
+        keyset_first_seen: &first_seen,
     };
     fold_with_recovery(log, genesis, finals, &evidence).unwrap()
 }
@@ -703,7 +703,7 @@ fn a_checkpointed_recovery_outranks_a_late_surviving_sibling() {
     let evidence = RecoveryEvidence {
         annex: &seen,
         guardian_folds: &folds,
-        rotation_first_seen: &first_seen,
+        keyset_first_seen: &first_seen,
     };
     let finals = checkpoint_final_heads_with_recovery(&log, &genesis, &none, &evidence).unwrap();
     assert!(finals.contains(&rotation.hash));
@@ -722,4 +722,162 @@ fn a_checkpointed_recovery_outranks_a_late_surviving_sibling() {
     assert_eq!(pinned, recovered);
     let unpinned = fold_recovering(&log, &genesis, &annex, &rotation, AFTER_DELAY, &none);
     assert_eq!(unpinned.head_hash, sibling.hash);
+}
+
+// Delayed guardian removals (Decision 6).
+
+const SOCKPUPPETS: [u8; 2] = [21, 22];
+
+/// The owner's identity after an eviction: guardians 11 and 12 removed,
+/// sockpuppets 21 and 22 added, 2-of-3 kept. Returns the log, its
+/// genesis hash, the head and the eviction record's hash.
+fn evicted() -> (Log, String, KeysetState, String) {
+    let (log, head) = identity(
+        OWNER,
+        vec![
+            (
+                KeysetEntry::DeviceEnrolled {
+                    device_key: public(OWNER_DEVICE),
+                    label: "phone".to_owned(),
+                },
+                Some(key(OWNER_DEVICE)),
+            ),
+            (guardian_set(&GUARDIANS, 2), None),
+            (guardian_set(&[13, 21, 22], 2), None),
+        ],
+    );
+    let genesis = log
+        .records()
+        .find(|record| record.prev_hash.is_empty())
+        .unwrap()
+        .hash
+        .clone();
+    let eviction = head.pending_guardian_set.clone().unwrap().record_hash;
+    (log, genesis, head, eviction)
+}
+
+/// Rule R through [`RecoveryEvidence`], with the request first seen at
+/// `request_seen`, the eviction at `CREATED_AT` and the rotation once
+/// the request's delay has passed.
+fn evidence_check(
+    head: &KeysetState,
+    eviction: &str,
+    request_seen: u64,
+    signers: &[u8],
+) -> Result<Successor> {
+    let request = request(head, "lost");
+    let approvals: Vec<AnnexRecord> = signers
+        .iter()
+        .map(|seed| approval(head, &request, *seed, *seed))
+        .collect();
+    let refs: Vec<&AnnexRecord> = approvals.iter().collect();
+    let rotation = rotation(head, &request, &refs);
+    let mut annex = vec![Seen {
+        record: &request,
+        first_seen: request_seen,
+    }];
+    annex.extend(approvals.iter().map(|record| Seen {
+        record,
+        first_seen: request_seen,
+    }));
+    let mut folds = guardian_folds();
+    for seed in SOCKPUPPETS {
+        folds.insert(public(seed), identity(seed, vec![]).1);
+    }
+    let first_seen = BTreeMap::from([
+        (eviction.to_owned(), CREATED_AT),
+        (rotation.hash.clone(), request_seen + RECOVERY_DELAY_SECONDS),
+    ]);
+    RecoveryEvidence {
+        annex: &annex,
+        guardian_folds: &folds,
+        keyset_first_seen: &first_seen,
+    }
+    .check(head, &rotation)
+}
+
+#[test]
+fn guardian_eviction_attack_fails_within_delay() {
+    let (_, _, head, eviction) = evicted();
+    // The removal is pending: the honest set is still in force.
+    let honest: Vec<String> = GUARDIANS.iter().map(|seed| public(*seed)).collect();
+    assert_eq!(head.guardian_set.as_ref().unwrap().guardians.len(), 3);
+    assert!(honest.iter().all(|guardian| {
+        head.guardian_set
+            .as_ref()
+            .unwrap()
+            .guardians
+            .contains(guardian)
+    }));
+    // Sockpuppet approvals inside the window recover nothing.
+    let inside = CREATED_AT + RECOVERY_DELAY_SECONDS - 1;
+    assert!(evidence_check(&head, &eviction, inside, &SOCKPUPPETS).is_err());
+    // The removed-but-pending guardians still count.
+    assert!(evidence_check(&head, &eviction, inside, &[11, 12]).is_ok());
+}
+
+#[test]
+fn pending_guardian_removal_takes_effect_after_delay() {
+    let (mut log, genesis, head, eviction) = evicted();
+    let matured = CREATED_AT + RECOVERY_DELAY_SECONDS;
+    // Rule R: a request first seen once the delay has run counts the
+    // new set and no longer the removed guardians.
+    assert!(evidence_check(&head, &eviction, matured, &SOCKPUPPETS).is_ok());
+    assert!(evidence_check(&head, &eviction, matured, &[11, 12]).is_err());
+    // The fold: the next record, first seen after the delay, folds onto
+    // the new set; without times the change never matures.
+    let next = KeysetRecord::sign(
+        &key(OWNER),
+        head.records_folded + 1,
+        head.head_hash.clone(),
+        KeysetEntry::IdpBindingBound {
+            binding_id: "later".to_owned(),
+        },
+        None,
+    )
+    .unwrap();
+    log.insert(next.clone()).unwrap();
+    let fold_at = |seen: u64| {
+        let first_seen =
+            BTreeMap::from([(eviction.clone(), CREATED_AT), (next.hash.clone(), seen)]);
+        let folds = BTreeMap::new();
+        let evidence = RecoveryEvidence {
+            annex: &[],
+            guardian_folds: &folds,
+            keyset_first_seen: &first_seen,
+        };
+        fold_with_recovery(&log, &genesis, &BTreeSet::new(), &evidence).unwrap()
+    };
+    let early = fold_at(matured - 1);
+    assert!(early.pending_guardian_set.is_some());
+    let late = fold_at(matured);
+    assert!(late.pending_guardian_set.is_none());
+    let mut evicted_set = vec![public(13), public(21), public(22)];
+    evicted_set.sort();
+    assert_eq!(late.guardian_set.unwrap().guardians, evicted_set);
+    let untimed = fold(&log, &genesis).unwrap();
+    assert!(untimed.pending_guardian_set.is_some());
+}
+
+#[test]
+fn adding_folds_at_once_and_restoring_cancels_a_pending_removal() {
+    let (_, added) = identity(
+        OWNER,
+        vec![
+            (guardian_set(&GUARDIANS, 2), None),
+            (guardian_set(&[11, 12, 13, 14], 3), None),
+        ],
+    );
+    assert_eq!(added.guardian_set.unwrap().guardians.len(), 4);
+    assert!(added.pending_guardian_set.is_none());
+    let (_, restored) = identity(
+        OWNER,
+        vec![
+            (guardian_set(&GUARDIANS, 2), None),
+            (guardian_set(&[11], 1), None),
+            (guardian_set(&GUARDIANS, 2), None),
+        ],
+    );
+    assert!(restored.pending_guardian_set.is_none());
+    assert_eq!(restored.guardian_set, owner_head().guardian_set);
 }
