@@ -6650,6 +6650,26 @@ mod tests {
         );
     }
 
+    /// #11775: metrics count distinct connected participants as well as
+    /// sessions, so an owner report's active count is not inflated by one
+    /// participant holding several sessions.
+    #[tokio::test]
+    async fn metrics_count_connected_participants_and_sessions() {
+        let handle = WorldHandle::spawn(WorldCore::new("w", WorldLimits::default()).unwrap());
+        let (ada, _) = handle.issue("Ada", WorldScopes::GUEST).await.unwrap();
+        let (bo, _) = handle.issue("Bo", WorldScopes::GUEST).await.unwrap();
+        let idle = handle.metrics().await.unwrap();
+        assert_eq!((idle.sessions, idle.participants), (0, 0));
+        handle.presence(ada.id, true).await;
+        handle.presence(ada.id, true).await;
+        handle.presence(bo.id, true).await;
+        let busy = handle.metrics().await.unwrap();
+        assert_eq!((busy.sessions, busy.participants), (3, 2));
+        handle.presence(bo.id, false).await;
+        let after = handle.metrics().await.unwrap();
+        assert_eq!((after.sessions, after.participants), (2, 1));
+    }
+
     #[test]
     fn role_presets_grant_and_withhold_the_expected_effects() {
         let spectator = WorldScopes::from_role("spectator").unwrap();

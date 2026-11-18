@@ -20,20 +20,26 @@
 //!   join time, the earliest answerable time and any count inside a time
 //!   window are [`UnavailableReason::JoinTimeNotRecorded`], never zero.
 //!   Recording them is a journal-format change, out of this scope.
-//! - Live membership and program runs come from a running world
-//!   (#11775); this projection reports them unavailable until a caller
-//!   supplies them.
+//! - Live membership and program activity come only from a running
+//!   world: [`OwnerReport::with_live`] fills them from a [`LiveSnapshot`]
+//!   (#11775), and without one they are unavailable. Program activity is
+//!   a process-local guest call count for one program instance, never
+//!   durable history: the journal records no runs.
 //!
 //! `null` plus a reason means unavailable; `0` means measured zero.
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt;
 use std::io::{self, BufRead, Read};
 
 use serde::ser::SerializeMap;
 use serde::{Serialize, Serializer};
 
-use crate::world::{JournalEntry, MAX_JOURNAL_VERSION, journal_version_required_by};
+#[cfg(feature = "sandbox")]
+use crate::sandbox::CallMetrics;
+use crate::world::{
+    JournalEntry, MAX_JOURNAL_VERSION, MetricsSnapshot, journal_version_required_by,
+};
 use crate::world_storage::StorageInventory;
 
 /// Major version of the report's JSON shape. Consumers accept added
@@ -49,7 +55,7 @@ pub enum UnavailableReason {
     /// No live participant snapshot was supplied (the world is not
     /// running, or the caller did not ask it).
     LiveStateNotProvided,
-    /// No program-run source was supplied; the journal records no runs.
+    /// No program call counter was supplied; the journal records no runs.
     ProgramRunsNotRecorded,
     /// No storage inventory was supplied.
     StorageNotMeasured,
@@ -219,20 +225,102 @@ pub struct JoinsSection {
     pub recent: Vec<JoinSample>,
 }
 
-/// Live membership (#11775 supplies it).
+/// Live membership, from a [`LiveSnapshot`] when one is supplied.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct MembersSection {
-    /// Participants connected at the snapshot.
+    /// Distinct participants connected at the snapshot.
     pub active_count: Measured<u64>,
+    /// Live sessions at the snapshot; one participant may hold several.
+    pub sessions: Measured<u64>,
     /// What "active" means.
     pub definition: &'static str,
+    /// When the live snapshot was taken, when there is one.
+    pub as_of_unix_ms: Option<u64>,
 }
 
-/// Program runs (#11775 supplies process-local counters).
+/// Program activity, only ever from a process-local counter.
+///
+/// The journal records no program runs, so the count covers one program
+/// instance since it started in this process, resets on restart or
+/// reinstall, and is never complete.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ProgramRunsSection {
-    /// Runs counted.
+    /// Events the program processed (guest `update` calls) since
+    /// [`Self::since_unix_ms`].
     pub count: Measured<u64>,
+    /// Every guest call kind with its count, when supplied.
+    pub by_call: Option<BTreeMap<&'static str, u64>>,
+    /// What the counters cover.
+    pub scope: ProgramRunScope,
+    /// When the counted program instance started, when known.
+    pub since_unix_ms: Option<u64>,
+    /// Always false: counters are process-local and not durable history.
+    pub complete: bool,
+}
+
+/// What a program-run count covers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgramRunScope {
+    /// No counter was supplied.
+    None,
+    /// One program instance, in this process, since it started.
+    ProgramInstanceInProcess,
+}
+
+/// Guest call counts from one running program instance (#11775): the
+/// in-memory call metrics a sandboxed world instance keeps, never
+/// journaled.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProgramCallCounts {
+    /// Calls per guest call kind.
+    pub by_call: BTreeMap<&'static str, u64>,
+    /// When the instance started, when known.
+    pub since_unix_ms: Option<u64>,
+}
+
+#[cfg(feature = "sandbox")]
+impl ProgramCallCounts {
+    /// The counts from a program instance's call metrics.
+    #[must_use]
+    pub fn from_call_metrics(metrics: &CallMetrics, since_unix_ms: Option<u64>) -> Self {
+        Self {
+            by_call: metrics
+                .iter()
+                .map(|(call, stats)| (call.name(), stats.calls))
+                .collect(),
+            since_unix_ms,
+        }
+    }
+}
+
+/// What a caller holding the running world saw at one moment (#11775).
+/// Nothing in it is durable; a report built without one says so.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveSnapshot {
+    /// When it was taken, in unix milliseconds.
+    pub as_of_unix_ms: u64,
+    /// Distinct participants connected.
+    pub connected_participants: u64,
+    /// Live sessions.
+    pub sessions: u64,
+    /// Program call counts, when the caller can reach the instance.
+    pub program_calls: Option<ProgramCallCounts>,
+}
+
+impl LiveSnapshot {
+    /// The live counts in a running world's metrics snapshot (what
+    /// `WorldHandle::metrics` returns). The actor exposes no program
+    /// call counts, so `program_calls` is `None`.
+    #[must_use]
+    pub const fn from_metrics(metrics: &MetricsSnapshot, as_of_unix_ms: u64) -> Self {
+        Self {
+            as_of_unix_ms,
+            connected_participants: metrics.participants,
+            sessions: metrics.sessions,
+            program_calls: None,
+        }
+    }
 }
 
 /// The owner report for one world.
@@ -418,8 +506,8 @@ pub fn project<R: BufRead>(
             break;
         }
         let text = buf.strip_suffix(b"\n").unwrap_or(&buf);
-        let entry: JournalEntry =
-            serde_json::from_slice(text).map_err(|_parse_error| OwnerReportError::Malformed { line })?;
+        let entry: JournalEntry = serde_json::from_slice(text)
+            .map_err(|_parse_error| OwnerReportError::Malformed { line })?;
         coverage.entries += 1;
         let Some(version) = coverage.header_version else {
             let JournalEntry::Created { world_id, version } = entry else {
@@ -518,18 +606,63 @@ pub fn project<R: BufRead>(
         window,
         journal: coverage,
         joins,
-        members: MembersSection {
-            active_count: Measured::Unavailable(UnavailableReason::LiveStateNotProvided),
-            definition: "connected at the snapshot",
-        },
-        program_runs: ProgramRunsSection {
-            count: Measured::Unavailable(UnavailableReason::ProgramRunsNotRecorded),
-        },
+        members: members_section(None),
+        program_runs: program_runs_section(None),
         storage: storage.map_or(
             Measured::Unavailable(UnavailableReason::StorageNotMeasured),
             Measured::Known,
         ),
     })
+}
+
+const ACTIVE_DEFINITION: &str = "connected at the snapshot";
+
+const fn members_section(live: Option<&LiveSnapshot>) -> MembersSection {
+    match live {
+        Some(live) => MembersSection {
+            active_count: Measured::Known(live.connected_participants),
+            sessions: Measured::Known(live.sessions),
+            definition: ACTIVE_DEFINITION,
+            as_of_unix_ms: Some(live.as_of_unix_ms),
+        },
+        None => MembersSection {
+            active_count: Measured::Unavailable(UnavailableReason::LiveStateNotProvided),
+            sessions: Measured::Unavailable(UnavailableReason::LiveStateNotProvided),
+            definition: ACTIVE_DEFINITION,
+            as_of_unix_ms: None,
+        },
+    }
+}
+
+fn program_runs_section(calls: Option<&ProgramCallCounts>) -> ProgramRunsSection {
+    match calls {
+        Some(calls) => ProgramRunsSection {
+            count: Measured::Known(calls.by_call.get("update").copied().unwrap_or(0)),
+            by_call: Some(calls.by_call.clone()),
+            scope: ProgramRunScope::ProgramInstanceInProcess,
+            since_unix_ms: calls.since_unix_ms,
+            complete: false,
+        },
+        None => ProgramRunsSection {
+            count: Measured::Unavailable(UnavailableReason::ProgramRunsNotRecorded),
+            by_call: None,
+            scope: ProgramRunScope::None,
+            since_unix_ms: None,
+            complete: false,
+        },
+    }
+}
+
+impl OwnerReport {
+    /// This report with the live sections taken from `live`, or marked
+    /// unavailable when there is none. The durable sections are
+    /// unchanged, so two hosts with the same journal still agree on them.
+    #[must_use]
+    pub fn with_live(mut self, live: Option<&LiveSnapshot>) -> Self {
+        self.members = members_section(live);
+        self.program_runs = program_runs_section(live.and_then(|live| live.program_calls.as_ref()));
+        self
+    }
 }
 
 #[cfg(test)]
