@@ -113,6 +113,9 @@ export interface Config {
    * (#3984) derives from: one cutoff per line, read via
    * ItemHistoryStore. */
   itemHistoryFile: string;
+  /** Append-only SLO sample journal (#9988): one facet sample per minute,
+   * read back for the error-budget display on /health. */
+  sloJournalFile: string;
   /** The stewardship quota view; the hub's live fallback source when the
    * fleet feed carries no saas/payg sections yet (hub §2.3). */
   quotaViewFile: string;
@@ -287,6 +290,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     itemHistoryFile: s(
       env.PM_AGG_ITEM_HISTORY_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "item-history.jsonl"),
+    ),
+    sloJournalFile: s(
+      env.PM_AGG_SLO_JOURNAL_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "slo-journal.jsonl"),
     ),
     coverageSnapshotFile: s(env.PM_AGG_COVERAGE_SNAPSHOT_FILE, join(process.cwd(), "coverage-snapshot.json")),
     openchamberStateFile: s(
