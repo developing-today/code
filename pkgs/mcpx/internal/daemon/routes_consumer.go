@@ -30,6 +30,7 @@ func (s *Server) routesConsumer(mux *http.ServeMux) {
 	s.route(mux, "GET /v1/recipes", s.handleRecipesList)
 	s.route(mux, "GET /v1/recipes/{name}", s.handleRecipeGet)
 	s.route(mux, "POST /v1/recipes/{name}", s.handleRecipeSave)
+	s.route(mux, "DELETE /v1/recipes/{name}", s.handleRecipeRemove)
 	s.route(mux, "POST /v1/recipes/{name}/run", s.handleRecipeRun)
 	s.route(mux, "POST /v1/intent", s.handleIntent)
 }
@@ -211,13 +212,32 @@ func (s *Server) handleRecipeSave(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("source is required"))
 		return
 	}
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+	// A same-name recipe in any search directory shadows the write target.
+	// Refuse that ambiguity unless overwrite explicitly targets the visible
+	// defining file, matching recipe lookup's nearest-directory precedence.
+	var existing string
+	for _, recipe := range s.loadRecipes() {
+		if recipe.Name == name {
+			existing = recipe.Path
+			break
+		}
+	}
 	dir, err := recipes.SaveDir(s.consumer.dirs)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	path := filepath.Join(dir, name+recipes.Ext)
-	if _, err := os.Stat(path); err == nil && !req.Overwrite {
+	if existing != "" {
+		if !req.Overwrite {
+			writeErr(w, http.StatusConflict,
+				fmt.Errorf("recipe %q already exists at %s; pass overwrite to replace it", name, existing))
+			return
+		}
+		path = existing
+	} else if _, err := os.Stat(path); err == nil && !req.Overwrite {
 		writeErr(w, http.StatusConflict,
 			fmt.Errorf("%s already exists; pass overwrite to replace it", path))
 		return
@@ -234,6 +254,28 @@ func (s *Server) handleRecipeSave(w http.ResponseWriter, r *http.Request) {
 		"recipe": listing(recipes.Parse(name, path, body)),
 		"path":   path,
 	})
+}
+
+func (s *Server) handleRecipeRemove(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !recipeNameOK(name) {
+		writeErr(w, http.StatusBadRequest,
+			fmt.Errorf("%q is not a usable recipe name", name))
+		return
+	}
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+	recipe, ok := s.findRecipe(name)
+	if !ok {
+		writeErr(w, http.StatusNotFound,
+			fmt.Errorf("no recipe named %q; looked in %s", name, strings.Join(s.consumer.dirs, ", ")))
+		return
+	}
+	if err := os.Remove(recipe.Path); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"name": name, "path": recipe.Path})
 }
 
 // resolution is the answer shape shared by recipe_run and intent.

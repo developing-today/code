@@ -20,7 +20,7 @@ type OpSpec = {
   response: "json" | "response"
 }
 
-export const OPERATION_FINGERPRINT = "8560a42def5f8ce8a9e4c2d50d8aef3f0380caffd0b81b7f07bfac75f9a0aced"
+export const OPERATION_FINGERPRINT = "4cb2e300265729ccb26e7f9e7d3775cd10618dfb27223f89a3a3da3310d7b314"
 
 /** Every /v1 operation, by name. */
 export const OPS: Record<string, OpSpec> = {
@@ -539,6 +539,14 @@ export const OPS: Record<string, OpSpec> = {
   },
   recipe_get: {
     method: "GET",
+    path: "/v1/recipes/{name}",
+    params: {
+      name: { in: "path", required: true },
+    },
+    response: "json",
+  },
+  recipe_remove: {
+    method: "DELETE",
     path: "/v1/recipes/{name}",
     params: {
       name: { in: "path", required: true },
@@ -1366,6 +1374,15 @@ export class DaemonOps {
    */
   recipeGet(args: { name: string }, opts: CallOptions = {}): Promise<unknown> {
     return this.invoke("recipe_get", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * Remove a saved recipe. `DELETE /v1/recipes/{name}`.
+   * Privileged: it changes the daemon rather than reading it.
+   * Destructive: it cannot be undone, and other callers are affected.
+   */
+  recipeRemove(args: { name: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("recipe_remove", args, opts) as Promise<unknown>
   }
 
   /**
