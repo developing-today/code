@@ -104,6 +104,11 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"search.semantic":                    "TestSearchSemanticRanksWithTheConfiguredEmbedder",
+	"embeddings.url":                     "TestEmbeddingsURLSendsSemanticSearchToTheEndpoint",
+	"embeddings.apiKey":                  "TestEmbeddingsAPIKeyIsSentAsABearerToken",
+	"embeddings.model":                   "TestEmbeddingsModelNamesTheRequestedModel",
+	"embeddings.backend":                 "TestEmbeddingsBackendLocalSkipsTheRemoteEndpoint",
 	"proto.samplingPerMinute":            "TestSamplingPerMinuteRefusesAServersSecondSampling",
 	"proto.samplingSessionPerMinute":     "TestSamplingSessionPerMinuteRefusesASessionsSecondSampling",
 	"proto.elicitationPerMinute":         "TestElicitationPerMinuteRefusesAServersSecondQuestion",
@@ -303,6 +308,11 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestSearchSemanticRanksWithTheConfiguredEmbedder":                               TestSearchSemanticRanksWithTheConfiguredEmbedder,
+	"TestEmbeddingsURLSendsSemanticSearchToTheEndpoint":                              TestEmbeddingsURLSendsSemanticSearchToTheEndpoint,
+	"TestEmbeddingsAPIKeyIsSentAsABearerToken":                                       TestEmbeddingsAPIKeyIsSentAsABearerToken,
+	"TestEmbeddingsModelNamesTheRequestedModel":                                      TestEmbeddingsModelNamesTheRequestedModel,
+	"TestEmbeddingsBackendLocalSkipsTheRemoteEndpoint":                               TestEmbeddingsBackendLocalSkipsTheRemoteEndpoint,
 	"TestSamplingPerMinuteRefusesAServersSecondSampling":                             TestSamplingPerMinuteRefusesAServersSecondSampling,
 	"TestSamplingSessionPerMinuteRefusesASessionsSecondSampling":                     TestSamplingSessionPerMinuteRefusesASessionsSecondSampling,
 	"TestElicitationPerMinuteRefusesAServersSecondQuestion":                          TestElicitationPerMinuteRefusesAServersSecondQuestion,
@@ -4226,6 +4236,129 @@ func TestElicitationPerMinuteRefusesAServersSecondQuestion(t *testing.T) {
 	}
 	if out, asked := run("MCPX_PROTO_ELICITATION_PER_MINUTE=1"); asked || !strings.Contains(out, "proto.elicitationPerMinute") {
 		t.Fatalf("with proto.elicitationPerMinute=1 the second question should be refused by name (asked=%v):\n%s", asked, out)
+	}
+}
+
+// fakeEmbeddings is an OpenAI-compatible /embeddings endpoint that answers
+// every request with a unit vector of the index's dimension and records
+// the model and Authorization header it was sent.
+type fakeEmbeddings struct {
+	URL    string
+	mu     sync.Mutex
+	models []string
+	auths  []string
+}
+
+func newFakeEmbeddings(t *testing.T) *fakeEmbeddings {
+	t.Helper()
+	f := &fakeEmbeddings{}
+	vec := make([]string, 384)
+	for i := range vec {
+		vec[i] = "1"
+	}
+	body := `{"data":[{"embedding":[` + strings.Join(vec, ",") + `]}]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		f.mu.Lock()
+		f.models = append(f.models, req.Model)
+		f.auths = append(f.auths, r.Header.Get("Authorization"))
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	f.URL = srv.URL
+	return f
+}
+
+// seen reports how many requests the endpoint saw, and the last model and
+// Authorization header among them.
+func (f *fakeEmbeddings) seen() (n int, model, auth string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if n = len(f.models); n > 0 {
+		model, auth = f.models[n-1], f.auths[n-1]
+	}
+	return n, model, auth
+}
+
+// embeddingsSearch runs one `mcpx search` against the demo server with env
+// on top and returns what the fake embeddings endpoint saw.
+func embeddingsSearch(t *testing.T, f *fakeEmbeddings, args []string, env ...string) (int, string, string) {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(env...)
+	e.run("refresh")
+	e.run(append([]string{"search"}, args...)...)
+	return f.seen()
+}
+
+// TestSearchSemanticRanksWithTheConfiguredEmbedder is the effect probe for
+// search.semantic. Oracle: a plain search never asks the embeddings
+// endpoint; with search.semantic=true the same search does.
+func TestSearchSemanticRanksWithTheConfiguredEmbedder(t *testing.T) {
+	f := newFakeEmbeddings(t)
+	if n, _, _ := embeddingsSearch(t, f, []string{"echo"}, "MCPX_EMBEDDINGS_URL="+f.URL); n != 0 {
+		t.Fatalf("oracle: a keyword search should not ask the embeddings endpoint (asked %d times)", n)
+	}
+	if n, _, _ := embeddingsSearch(t, f, []string{"echo"}, "MCPX_EMBEDDINGS_URL="+f.URL, "MCPX_SEARCH_SEMANTIC=true"); n == 0 {
+		t.Fatal("with search.semantic=true the search should ask the embeddings endpoint")
+	}
+}
+
+// TestEmbeddingsURLSendsSemanticSearchToTheEndpoint is the effect probe for
+// embeddings.url: a semantic search asks the endpoint only when its URL is
+// configured.
+func TestEmbeddingsURLSendsSemanticSearchToTheEndpoint(t *testing.T) {
+	f := newFakeEmbeddings(t)
+	if n, _, _ := embeddingsSearch(t, f, []string{"--semantic", "echo"}); n != 0 {
+		t.Fatalf("oracle: with no embeddings.url nothing should reach the endpoint (asked %d times)", n)
+	}
+	if n, _, _ := embeddingsSearch(t, f, []string{"--semantic", "echo"}, "MCPX_EMBEDDINGS_URL="+f.URL); n == 0 {
+		t.Fatal("with embeddings.url set a semantic search should ask the endpoint")
+	}
+}
+
+// TestEmbeddingsAPIKeyIsSentAsABearerToken is the effect probe for
+// embeddings.apiKey: the endpoint sees no Authorization header by default,
+// and a bearer token carrying the key when it is set.
+func TestEmbeddingsAPIKeyIsSentAsABearerToken(t *testing.T) {
+	f := newFakeEmbeddings(t)
+	if n, _, auth := embeddingsSearch(t, f, []string{"--semantic", "echo"}, "MCPX_EMBEDDINGS_URL="+f.URL); n == 0 || auth != "" {
+		t.Fatalf("oracle: with no key the endpoint should be asked without Authorization (n=%d auth=%q)", n, auth)
+	}
+	if _, _, auth := embeddingsSearch(t, f, []string{"--semantic", "echo"}, "MCPX_EMBEDDINGS_URL="+f.URL, "MCPX_EMBEDDINGS_API_KEY=probe-key"); auth != "Bearer probe-key" {
+		t.Fatalf("with embeddings.apiKey set the endpoint should see the bearer token, saw %q", auth)
+	}
+}
+
+// TestEmbeddingsModelNamesTheRequestedModel is the effect probe for
+// embeddings.model: the request names text-embedding-3-small by default and
+// the configured model when it is set.
+func TestEmbeddingsModelNamesTheRequestedModel(t *testing.T) {
+	f := newFakeEmbeddings(t)
+	if _, model, _ := embeddingsSearch(t, f, []string{"--semantic", "echo"}, "MCPX_EMBEDDINGS_URL="+f.URL); model != "text-embedding-3-small" {
+		t.Fatalf("oracle: the default request should name text-embedding-3-small, saw %q", model)
+	}
+	if _, model, _ := embeddingsSearch(t, f, []string{"--semantic", "echo"}, "MCPX_EMBEDDINGS_URL="+f.URL, "MCPX_EMBEDDINGS_MODEL=probe-model"); model != "probe-model" {
+		t.Fatalf("with embeddings.model set the request should name it, saw %q", model)
+	}
+}
+
+// TestEmbeddingsBackendLocalSkipsTheRemoteEndpoint is the effect probe for
+// embeddings.backend. Oracle: by default (auto) a configured remote is
+// asked; with backend=local the same search never reaches it.
+func TestEmbeddingsBackendLocalSkipsTheRemoteEndpoint(t *testing.T) {
+	f := newFakeEmbeddings(t)
+	if n, _, _ := embeddingsSearch(t, f, []string{"--semantic", "echo"}, "MCPX_EMBEDDINGS_URL="+f.URL); n == 0 {
+		t.Fatal("oracle: the auto backend should ask a configured remote endpoint")
+	}
+	before, _, _ := f.seen()
+	if n, _, _ := embeddingsSearch(t, f, []string{"--semantic", "echo"}, "MCPX_EMBEDDINGS_URL="+f.URL, "MCPX_EMBEDDINGS_BACKEND=local"); n != before {
+		t.Fatalf("with embeddings.backend=local the remote endpoint should not be asked (%d -> %d)", before, n)
 	}
 }
 
