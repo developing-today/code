@@ -1,7 +1,9 @@
 'use strict';
 const $=(s)=>document.querySelector(s), app=$('#app'), modal=$('#modal'), form=$('#dialogform');
 const seed=window.SEED, uid=()=>crypto.randomUUID(), copy=x=>JSON.parse(JSON.stringify(x));
-const tidy=s=>String(s??'').replace(/[\p{Cc}\p{Cf}]/gu,'').normalize('NFC').trim();
+// Emoji sequences keep their joiners and a ZWNJ between letters stays (BA-046); the server's text classes are the check.
+const invisible=(()=>{try{return new RegExp('(\\p{RGI_Emoji})|((?<=[\\p{L}\\p{M}])\\u200C(?=[\\p{L}\\p{M}]))|[\\p{Cc}\\p{Cf}]','gv')}catch{return /()()[\p{Cc}\p{Cf}]/gu}})();
+const tidy=s=>String(s??'').replace(invisible,(m,a,b)=>a||b?m:'').normalize('NFC').trim();
 const prose=s=>String(s??'').replace(/[^\S\n\t ]/g,' ').replace(/[\u0000-\u0008\u000B-\u001F\u007F]/g,'').normalize('NFC').trim();
 const e=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const norm=s=>tidy(s).toLocaleLowerCase();

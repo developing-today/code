@@ -138,9 +138,11 @@ func init() {
 		// methods (#7844), era-split per gateEraApplies and recorded in
 		// docs/spec/revision-conflicts.md item C24.
 		S("errors-method-not-found-for-unadvertised-capability", "mcpserver.TestCapabilityGateRefusesUnadvertisedMethods@all", "mcpserver.TestCapabilityGateAdmitsAdvertisedMethods@all", "mcpserver.TestCapabilityGateReadsTheInitializeSnapshot@all", "mcpserver.TestCapabilityGateRefusesUnadvertisedSkillsExtension@all", "mcpserver.TestCapabilityGateAdmitsAdvertisedSkillsExtension@all", "mcpserver.TestCapabilityGateKeepsLegacySkillsAcceptance@all"),
-	)
-	registerGaps(
-		Gap{ID: "errors-local-errors-not-mistaken-for-peer", Side: Server, Issue: "#206",
-			Why: "an upstream server's failure reaches the client as mcpx's own isError text or -32603, indistinguishable from mcpx failing"},
+		// errors-local-errors-not-mistaken-for-peer is settled by the origin
+		// marker (#2435, #2438 phase 3): a locally minted error carries
+		// {"mcpx":{"origin":"local"}} in its data, while a peer's error is
+		// relayed untouched (code, message, data exactly as upstream sent
+		// them, never marked local). The tests below pin both halves.
+		S("errors-local-errors-not-mistaken-for-peer", "mcpserver.TestALocallyMintedErrorCarriesTheLocalOriginMarker@all", "mcpserver.TestALocallyMintedErrorWithoutDataIsMarkedToo@all", "mcpserver.TestARelayedPeerErrorIsNeverMarkedLocal@all"),
 	)
 }

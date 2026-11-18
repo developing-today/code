@@ -724,6 +724,19 @@ describe("measured-provider census (#10575)", () => {
   });
 });
 
+describe("measured-provider census (0x111dev workspace, 2026-11-18)", () => {
+  // Oracle: quota-current.json generatedAt 2026-11-18T11:15:22.460Z
+  // measured both provider doors for the same 0x111dev credential. The Go
+  // and Zen readings carry matching windows/resets and must resolve to one
+  // registered account pool, not two synthesized service ids.
+  test("Go and Zen provider ids attribute to the registered Go workspace pool", () => {
+    const registered = new Set(extractQuotaPools("", new Date("2026-11-18T11:15:22.460Z")).map((pool) => pool.id));
+    expect(serviceIdFor("opencode-go.0x111dev")).toBe("opencode-go.0x111dev");
+    expect(serviceIdFor("opencode.0x111dev")).toBe("opencode-go.0x111dev");
+    expect(registered.has("opencode-go.0x111dev")).toBe(true);
+  });
+});
+
 describe("measured-provider census (no-quota-surface providers, 2026-11-17)", () => {
   // Oracle: current quota-current.json reports these additional providers
   // as no-quota-surface; their service ids must not become synthesized pools.

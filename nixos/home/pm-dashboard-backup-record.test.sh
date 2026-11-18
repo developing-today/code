@@ -117,7 +117,8 @@ run_scenario() {
   fi
   for f in actions.json comments.json fleet-feed.json quota-current.json registry.json \
     quota-gatherer-state.json quota-gatherer-heartbeat.json events.json \
-    coverage-snapshot.json aa-last-good.json; do
+    coverage-snapshot.json aa-last-good.json \
+    decisions.json decision-events.jsonl; do
     printf '{}\n' >"$home/.local/state/pm-aggregator/$f"
   done
   HOME="$home" PATH="$BIN:$PATH" BWS_ACCESS_TOKEN="<redacted>" \
@@ -204,7 +205,8 @@ sig_home="$TMP_ROOT/sigterm/home"
 mkdir -p "$sig_home/backups/dashboard" "$sig_home/.local/state/pm-aggregator"
 for f in actions.json comments.json fleet-feed.json quota-current.json registry.json \
   quota-gatherer-state.json quota-gatherer-heartbeat.json events.json \
-  coverage-snapshot.json aa-last-good.json; do
+  coverage-snapshot.json aa-last-good.json \
+    decisions.json decision-events.jsonl; do
   printf '{}\n' >"$sig_home/.local/state/pm-aggregator/$f"
 done
 setsid env HOME="$sig_home" PATH="$BIN:$PATH" BWS_ACCESS_TOKEN="<redacted>" \

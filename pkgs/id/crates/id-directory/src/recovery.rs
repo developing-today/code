@@ -297,6 +297,10 @@ pub fn check_rotation(check: &RotationCheck<'_>) -> Result<Successor> {
         "head fold is not the one the request pins"
     );
     ensure!(
+        !check.head.admin_keys.contains_key(successor_admin_key),
+        "successor admin key was already present in the pinned head"
+    );
+    ensure!(
         rotation.prev_hash == *keyset_head_hash,
         "a rotation continues the head its request pins"
     );

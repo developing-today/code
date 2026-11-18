@@ -191,9 +191,10 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **What.** If processing needs a capability absent from this request's `clientCapabilities`, the server MUST return
   `-32021` with `data.requiredCapabilities`, a full `ClientCapabilities` object; HTTP 400.
 - **Where.** 2026-07-28 (numbered `-32003` in the pre-release draft).
-- **mcpx @ 05c78b2.** Never used, and no constant exists. When a 2026 client did not declare elicitation, `canAsk` is
-  false and the question goes to mcpx's broker, where another audience can answer it
-  (`internal/mcpserver/ask.go:66-76`; `internal/mcpserver/server.go:649-657`).
+- **mcpx @ 05c78b2.** The gateway returns `-32021` with `requiredCapabilities` when an input request has no answerer;
+  when an answerer is present, it keeps the question open for the broker instead. The ask seam's `noAudience`
+  (`internal/daemon/hooks.go`) and answerer-presence tests pin this distinction (#2438). Pass-through mode relays an
+  upstream `-32021` unchanged (`internal/mcpserver/relay_test.go`).
 - **Value to mcpx.** + low: a host that could re-send with the capability never learns it was needed; the broker is a
   deliberate alternative.
 - **Effort.** S.
@@ -201,13 +202,11 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **Detail.** MRTR forbids input requests for undeclared capabilities, so when input is truly required this is the
   only compliant answer (MRTR register). The tasks extension uses it for clients that did not declare the extension
   (tasks register).
-- **Also recorded from the elicitation register.** 2026-07-28 only (earlier drafts numbered it `-32003`). Never
-  emitted, and no constant exists. A 2026 host that did not declare elicitation gets the direct path: `canAsk` is
-  false (`internal/mcpserver/ask.go:66-76`) and the question waits in the broker for another audience. The findings
-  disagree on the label: the base-protocol axis calls `-32021` the only compliant answer when input is truly required;
-  the mcpx axis calls the broker fallback a design choice. Both hold: mcpx never *requires* the capability, because a
-  broker audience can answer. `data.requiredCapabilities` is a full `ClientCapabilities` object. The rule that mcpx
-  never puts an undeclared kind of question into `inputRequests` is in [mrtr.md](mrtr.md).
+- **Also recorded from the elicitation register.** 2026-07-28 only (earlier drafts numbered it `-32003`). The gateway
+  does not fail merely because the originating client omitted elicitation: it brokers the question if another answerer
+  is present, and returns `-32021` only when no answerer can serve it (#2438; `internal/daemon/hooks.go`).
+  `data.requiredCapabilities` is a full `ClientCapabilities` object. The rule that mcpx never puts an undeclared kind
+  of question into `inputRequests` is in [mrtr.md](mrtr.md). Pass-through relay preserves a peer's `-32021` and data.
 - **Sources.** `schema/2026-07-28/schema.ts:442` "export const MISSING_REQUIRED_CLIENT_CAPABILITY = -32021;";
   `schema/2026-07-28/schema.ts:523` "requiredCapabilities: ClientCapabilities;"; `2026-07-28/basic/index.mdx:387`;
   `internal/mcpserver/ask.go:67`.; `schema/2026-07-28/examples/MissingRequiredClientCapabilityError/missing-elicitation-capability.json:6`

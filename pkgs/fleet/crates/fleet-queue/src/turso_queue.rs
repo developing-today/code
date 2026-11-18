@@ -60,12 +60,16 @@ mod claim;
 mod core;
 mod lifecycle;
 mod stacks_outbox;
+mod staleness;
+mod work_identity;
 
 pub use admin::*;
 pub use claim::*;
 pub use core::*;
 pub use lifecycle::*;
 pub use stacks_outbox::*;
+pub use staleness::*;
+pub use work_identity::*;
 
 #[cfg(test)]
 mod tests {
@@ -80,6 +84,8 @@ mod tests {
             include_str!("turso_queue/lifecycle.rs"),
             include_str!("turso_queue/admin.rs"),
             include_str!("turso_queue/stacks_outbox.rs"),
+            include_str!("turso_queue/staleness.rs"),
+            include_str!("turso_queue/work_identity.rs"),
             include_str!("turso_queue.rs"),
         ]
         .concat()
@@ -877,6 +883,56 @@ mod tests {
             seg.contains("live_claim_holder(&row, &now)"),
             "the refusal is keyed on the row's live lease, not the claimer"
         );
+    }
+
+    #[test]
+    fn lifecycle_verbs_refuse_another_lanes_claim_6985() {
+        // #6985 (task 12453, 2026-11-08): lane B's checkpoint and
+        // complete succeeded on lane A's live claim because every
+        // lane is worker repo-worker-code. A verb that names its
+        // lane is refused on a row another lane claimed.
+        let row =
+            json!({"status": "claimed", "worker_id": "repo-worker-code", "lane_id": "code-a"});
+        assert_eq!(
+            foreign_lane_claim(&row, &json!({"lane": "code-b"})),
+            Some(("code-a".to_string(), "code-b".to_string()))
+        );
+        // The holder's own lane passes.
+        assert_eq!(foreign_lane_claim(&row, &json!({"lane": "code-a"})), None);
+        // No caller lane, a null lane, an execution mode, or a row
+        // claimed with no lane keeps the worker-only check.
+        assert_eq!(foreign_lane_claim(&row, &json!({})), None);
+        assert_eq!(foreign_lane_claim(&row, &json!({"lane": null})), None);
+        assert_eq!(foreign_lane_claim(&row, &json!({"lane": "direct"})), None);
+        let laneless =
+            json!({"status": "claimed", "worker_id": "repo-worker-code", "lane_id": null});
+        assert_eq!(
+            foreign_lane_claim(&laneless, &json!({"lane": "code-b"})),
+            None
+        );
+        // Source oracle: every holder-checked verb hands its request
+        // to the guard, and the guard records the refusal.
+        let src = &test_source();
+        for verb in [
+            "heartbeat_task",
+            "checkpoint_task",
+            "park_task",
+            "release_repo_task",
+            "block_task",
+            "fail_repo_task",
+            "complete_task",
+        ] {
+            assert!(
+                src.contains(&format!("claimed_by(t, task_id, &worker, \"{verb}\", req)")),
+                "{verb} passes its request (and lane) to claimed_by"
+            );
+        }
+        let guard = src
+            .split("pub(crate) fn claimed_by(")
+            .nth(1)
+            .and_then(|s| s.split("\npub(crate) fn ").next())
+            .unwrap_or("");
+        assert!(guard.contains("\"claimed_by_another_lane\""));
     }
 
     #[test]

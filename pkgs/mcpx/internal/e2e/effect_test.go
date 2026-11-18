@@ -68,6 +68,7 @@ var implementedEffectProbes = map[string]string{
 	"proto.askPoll":              "TestAskPollCeilingIsReachableFromTheEnvironment",
 	"proto.askRounds":            "TestAskRoundsLimitIsReachableFromTheEnvironment",
 	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
+	"daemon.autostart":           "TestDaemonAutostartIsReachableFromTheEnvironment",
 	"http.bodyLimit":             "TestHTTPBodyLimitsRejectOversizedBodies",
 	"http.callBodyLimit":         "TestHTTPBodyLimitsRejectOversizedBodies",
 	"http.controlBodyLimit":      "TestHTTPBodyLimitsRejectOversizedBodies",
@@ -122,6 +123,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestAskPollCeilingIsReachableFromTheEnvironment":        TestAskPollCeilingIsReachableFromTheEnvironment,
 	"TestAskRoundsLimitIsReachableFromTheEnvironment":        TestAskRoundsLimitIsReachableFromTheEnvironment,
 	"TestDaemonAddressIsReachableFromTheEnvironment":         TestDaemonAddressIsReachableFromTheEnvironment,
+	"TestDaemonAutostartIsReachableFromTheEnvironment":       TestDaemonAutostartIsReachableFromTheEnvironment,
 	"TestHTTPBodyLimitsRejectOversizedBodies":                TestHTTPBodyLimitsRejectOversizedBodies,
 	"TestHTTPEventStreamSettingsChangeTheStream":             TestHTTPEventStreamSettingsChangeTheStream,
 	"TestHTTPReadHeaderTimeoutClosesSlowClients":             TestHTTPReadHeaderTimeoutClosesSlowClients,
@@ -424,5 +426,40 @@ func TestDaemonAddressIsReachableFromTheEnvironment(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("oracle: the widened endpoint answered %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestDaemonAutostartIsReachableFromTheEnvironment is the effect probe
+// for daemon.autostart (#8468 chain 2). The exemption it replaced said
+// daemon lifecycle cannot be varied deterministically; it can: with no
+// daemon running, the same command either starts one and leaves its
+// socket behind, or refuses and names the disabled rung.
+//
+// Oracle: the CLI's own no-daemon diagnosis. With autostart off, `ls`
+// fails and names "disabled by daemon.autostart" and no socket
+// appears; at the default, `ls` succeeds and leaves a socket.
+func TestDaemonAutostartIsReachableFromTheEnvironment(t *testing.T) {
+	socketsIn := func(e *env) []string {
+		socks, _ := filepath.Glob(filepath.Join(e.dir, "state", "*.sock"))
+		return socks
+	}
+
+	off := newEnv(t, oneServer)
+	off.setenv("MCPX_DAEMON_AUTOSTART=false")
+	out, err := off.try("ls")
+	if err == nil {
+		t.Fatalf("oracle: with daemon.autostart=false and no daemon, ls should fail; got:\n%s", out)
+	}
+	if !strings.Contains(out, "disabled by daemon.autostart") {
+		t.Fatalf("oracle: the refusal should name the disabled autostart rung, got:\n%s", out)
+	}
+	if socks := socketsIn(off); len(socks) > 0 {
+		t.Fatalf("oracle: no daemon socket should appear with autostart off: %v", socks)
+	}
+
+	on := newEnv(t, oneServer)
+	on.run("ls")
+	if socks := socketsIn(on); len(socks) == 0 {
+		t.Fatalf("oracle: with the default daemon.autostart, ls should start a daemon and leave its socket")
 	}
 }

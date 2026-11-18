@@ -3,11 +3,13 @@ import {evaluateAccess,projectSnapshot,projectEvents,assertSnapshotMutation,vali
 import {transitionSteering,assertSteeringUnchanged} from './steering.mjs';
 import {validateVariantGraph,assertVariantMetadataUnchanged} from './variant-graph.mjs';
 import {variantPlan} from './variant-plan.mjs';
+import {principalFromGateway,continuityId} from './identity.mjs';
+import {name,isComment} from './text.mjs';
 const roles = ['reader','editor','admin'];
 const headers = {'content-type':'application/json; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff'};
 const json = (body,status=200)=>new Response(JSON.stringify(body),{status,headers});
 const fail = (status,message)=>{throw Object.assign(new Error(message),{status})};
-const clean = (x,max=200)=>String(x??'').normalize('NFC').replace(/[\p{Cc}\p{Cf}]/gu,'').trim().slice(0,max);
+const clean = (x,max=200)=>name(x,max);
 const ident = x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(x);
 const parse = x=>JSON.parse(x);
 const now = ()=>new Date().toISOString();
@@ -32,12 +34,16 @@ function validateState(s) {
  try{validateVariantGraph(s.items)}catch(e){fail(400,e.message)}
  return s;
 }
+// Who recorded a row is the server's word, fixed when the row is first written (BA-W01 L1).
+const provenance=['actorId','author','recordedAt','device'];
 function validateNewRecords(before,after,user,name){
  for(const field of ['notes','inventory']){
-  const previous=new Set(before[field].map(x=>x.id));
+  const previous=new Map(before[field].filter(x=>x?.id!=null).map(x=>[x.id,x]));
+  for(const row of after[field]){const prior=previous.get(row?.id);if(prior)for(const f of provenance){if(Object.hasOwn(prior,f))row[f]=prior[f];else delete row[f]}}
+  if(field==='notes')for(const row of after[field])if(typeof row?.text==='string'&&row.text!==previous.get(row.id)?.text&&!isComment(row.text,100000))fail(400,'Comment holds an unpaired surrogate or a control character');
   for(const row of after[field])if(!previous.has(row.id)){
    if(!ident(row.id)&&!(typeof row.id==='string'&&/^receipt:[A-Za-z0-9_:-]{1,190}$/.test(row.id)))fail(400,'Record ID required');
-   row.actorId=user.id;row.author=name;row.recordedAt=now();
+   row.actorId=user.id;row.author=name;row.recordedAt=now();if('device' in row)row.device=continuityId(row.device);
    if(field==='inventory'){
     if(!['Bought','Consumed','Stock adjustment','Expense'].includes(row.mode)||!Number.isFinite(row.qty)||(row.mode!=='Stock adjustment'&&row.qty<0))fail(400,'Invalid inventory quantity or mode');
     if(row.totalMinor!==undefined&&row.totalMinor!==null&&(!Number.isSafeInteger(row.totalMinor)||row.totalMinor<0))fail(400,'Invalid integer minor-unit total');
@@ -52,6 +58,12 @@ async function body(req){
  try{return JSON.parse(raw)}catch{fail(400,'Invalid JSON')}
 }
 function storeData(row){return {id:row.id,name:row.name,type:row.is_open?'open':row.type,ownerId:row.owner_id,archived:!!row.archived,version:row.version,role:row.role,createdAt:row.created_at,updatedAt:row.updated_at}}
+// An invitation expires this long after it was made (BA-W01 L3). Expiry is derived from created_at,
+// so 'expired' is reported, never stored: the status column keeps 'pending' (its CHECK predates it).
+export const INVITE_TTL_MS=14*24*60*60*1000;
+const inviteCutoff=(at=Date.now())=>new Date(at-INVITE_TTL_MS).toISOString();
+const inviteStatus=row=>row.status==='pending'&&!(row.created_at>inviteCutoff())?'expired':row.status;
+const inviteExpiresAt=row=>new Date(Date.parse(row.created_at)+INVITE_TTL_MS).toISOString();
 const settingsDefault={nickname:'',showHidden:false,showArchived:false,showHiddenStores:false,stores:{}};
 async function getSettings(db,user){const r=await db.prepare('SELECT settings_json FROM user_settings WHERE user_id=?').bind(user.id).first();return {...settingsDefault,...(r?parse(r.settings_json):{})}}
 async function access(db,id,user,level='reader',allowArchived=true){
@@ -80,7 +92,7 @@ async function accessible(db,user){
 }
 async function bootstrap(db,user){
  const stores=(await accessible(db,user)).map(storeData);
- const invitations=user.email?(await db.prepare("SELECT i.id,i.store_id AS storeId,i.role,i.status,i.created_at AS createdAt,s.name AS storeName FROM invitations i JOIN stores s ON s.id=i.store_id WHERE i.email=? AND i.status='pending' AND s.type='shared' AND s.archived=0 ORDER BY i.created_at").bind(user.email).all()).results:[];
+ const invitations=user.email?(await db.prepare("SELECT i.id,i.store_id AS storeId,i.role,i.status,i.created_at AS createdAt,s.name AS storeName FROM invitations i JOIN stores s ON s.id=i.store_id WHERE i.email=? AND i.status='pending' AND i.created_at>? AND s.type='shared' AND s.archived=0 ORDER BY i.created_at").bind(user.email,inviteCutoff()).all()).results.map(x=>({...x,expiresAt:new Date(Date.parse(x.createdAt)+INVITE_TTL_MS).toISOString()})):[];
  const refs=(await db.prepare("SELECT key,store_id FROM default_stores WHERE key IN (?, 'shared')").bind('personal:'+user.id).all()).results;
  const ref=k=>{const found=refs.find(r=>r.key===k)?.store_id;return stores.some(s=>s.id===found)?found:null};
  return {user,settings:await getSettings(db,user),stores,invitations,personalStoreId:ref('personal:'+user.id),defaultSharedStoreId:ref('shared')};
@@ -89,9 +101,9 @@ export async function api(request,env){
  try{
   const url=new URL(request.url),path=url.pathname.split('/').filter(Boolean),method=request.method;
   if(path[0]!=='api')return json({error:'Not found'},404);
-  const id=request.headers.get('oai-authenticated-user-id'),email=clean(request.headers.get('oai-authenticated-user-email'),320).toLowerCase();
-  if(!id)return json({error:'Sign in with ChatGPT to use your private database',signIn:'/signin-with-chatgpt?returnTo=/'},401);
-  const user={id,email};
+  const user=principalFromGateway(request.headers);
+  if(!user)return json({error:'Sign in with ChatGPT to use your private database',signIn:'/signin-with-chatgpt?returnTo=/'},401);
+  const {id,email}=user;
   if(!env.DB)fail(503,'Dedicated database binding is not available');
   const db=env.DB;
   if(!['GET','POST'].includes(method))fail(405,'Method not allowed');
@@ -158,15 +170,16 @@ export async function api(request,env){
    const b=await body(request),iid=path[2];if(!ident(iid)||!['accept','decline'].includes(b.action))fail(400,'Invalid invitation response');
    const i=await db.prepare('SELECT i.*,s.type,s.archived FROM invitations i JOIN stores s ON s.id=i.store_id WHERE i.id=? AND i.email=?').bind(iid,email).first();
    if(!email||!i)fail(404,'Invitation not found for this signed-in account');
-   if(i.status!=='pending')return json({status:i.status});
+   // Replays of an accepted, declined, revoked or expired invitation fail closed.
+   const current=inviteStatus(i);if(current!=='pending')return json({error:'This invitation is '+current,status:current,storeId:i.store_id},409);
    if(b.action==='accept'&&(i.type!=='shared'||i.archived))fail(409,'This store is not currently accepting members');
-   const at=now(),status=b.action==='accept'?'accepted':'declined';
+   const at=now(),status=b.action==='accept'?'accepted':'declined',cutoff=inviteCutoff(Date.parse(at));
    const receipt=crypto.randomUUID();
-   const stmts=[db.prepare("INSERT INTO access_events(id,store_id,actor_id,at,action,details_json) SELECT ?,i.store_id,?,?,?,? FROM invitations i JOIN stores s ON s.id=i.store_id WHERE i.id=? AND i.email=? AND i.status='pending' AND (?='decline' OR (s.type='shared' AND s.archived=0))").bind(receipt,id,at,'invite.'+status,JSON.stringify({inviteId:iid,email}),iid,email,b.action)];
+   const stmts=[db.prepare("INSERT INTO access_events(id,store_id,actor_id,at,action,details_json) SELECT ?,i.store_id,?,?,?,? FROM invitations i JOIN stores s ON s.id=i.store_id WHERE i.id=? AND i.email=? AND i.status='pending' AND i.created_at>? AND (?='decline' OR (s.type='shared' AND s.archived=0))").bind(receipt,id,at,'invite.'+status,JSON.stringify({inviteId:iid,email}),iid,email,cutoff,b.action)];
    if(b.action==='accept')stmts.push(db.prepare("INSERT INTO memberships(store_id,user_id,email,role,created_at) SELECT store_id,?,?,role,? FROM invitations WHERE id=? AND status='pending' AND EXISTS(SELECT 1 FROM access_events WHERE id=?) ON CONFLICT(store_id,user_id) DO NOTHING").bind(id,email,at,iid,receipt));
    stmts.push(db.prepare("UPDATE invitations SET status=?,responded_at=? WHERE id=? AND status='pending' AND EXISTS(SELECT 1 FROM access_events WHERE id=?)").bind(status,at,iid,receipt));
    const results=await db.batch(stmts);
-   if(!results[0]?.meta?.changes){const actual=await db.prepare('SELECT status FROM invitations WHERE id=? AND email=?').bind(iid,email).first();if(actual&&actual.status!=='pending')return json({status:actual.status,storeId:i.store_id});fail(409,'Invitation or store changed; reload before responding');}
+   if(!results[0]?.meta?.changes){const actual=await db.prepare('SELECT status,created_at FROM invitations WHERE id=? AND email=?').bind(iid,email).first(),now_=actual&&inviteStatus(actual);if(now_&&now_!=='pending')return json({error:'This invitation is '+now_,status:now_,storeId:i.store_id},409);fail(409,'Invitation or store changed; reload before responding');}
    return json({status,storeId:i.store_id});
   }
   if(path[1]!=='stores'||!path[2])fail(404,'Route not found');
@@ -230,7 +243,7 @@ export async function api(request,env){
    if(!dedicated){if(source.access&&!hasScopedAccess(source)&&!Object.hasOwn(event.after??{},'access'))event.after={...event.after,access:source.access};if(event.operation&&event.operation!=='change')fail(400,'Use the dedicated command endpoint');if(canonical(source.access??null)!==canonical(event.after?.access??null))fail(403,'Use the administrator policy endpoint');if(hasScopedAccess(source))fail(403,'Scoped stores require per-entity commands; snapshot editing is read-only');assertSnapshotMutation(source,event.after,context);assertSteeringUnchanged(source,event.after);try{assertVariantMetadataUnchanged(source.items,event.after.items)}catch(e){fail(400,e.message)}}
    const after=validateState(structuredClone(event.after)),settings=await getSettings(db,user),version=s.version+1;
    if(sub!=='history')validateNewRecords(source,after,user,settings.nickname||email||'Signed-in user');
-   const accepted={intent,...(requestResult?{requestResult}:{}),id:event.id,at:now(),actor:settings.nickname||email||'Signed-in user',actorId:id,device:clean(event.device,100),label:clean(event.label,300)||'Edited tracker',operation:clean(event.operation,32)||'change',target:clean(event.target,100),before:parse(s.state_json),after,version};
+   const accepted={intent,...(requestResult?{requestResult}:{}),id:event.id,at:now(),actor:settings.nickname||email||'Signed-in user',actorId:id,device:continuityId(event.device),label:clean(event.label,300)||'Edited tracker',operation:clean(event.operation,32)||'change',target:clean(event.target,100),before:parse(s.state_json),after,version};
    const encoded=JSON.stringify(accepted);
    const results=await db.batch([
     db.prepare("INSERT OR IGNORE INTO events(id,store_id,version,actor_id,actor_email,actor_name,at,payload_json) SELECT ?,id,?,?,?,?,?,? FROM stores WHERE id=? AND version=? AND archived=0 AND (type='shared' OR owner_id=?) AND EXISTS(SELECT 1 FROM memberships WHERE store_id=stores.id AND user_id=? AND (role='admin' OR (?!='policy' AND role='editor')))").bind(event.id,version,id,email,accepted.actor,accepted.at,encoded,sid,s.version,id,id,sub),
@@ -258,10 +271,10 @@ export async function api(request,env){
    await access(db,sid,user,'admin');
    const [members,invites,history]=await Promise.all([
     db.prepare('SELECT user_id AS userId,email,role,created_at AS createdAt FROM memberships WHERE store_id=?').bind(sid).all(),
-    db.prepare('SELECT id,email,role,status,created_at AS createdAt,responded_at AS respondedAt FROM invitations WHERE store_id=? ORDER BY created_at').bind(sid).all(),
+    db.prepare('SELECT id,email,role,status,created_at,responded_at AS respondedAt FROM invitations WHERE store_id=? ORDER BY created_at').bind(sid).all(),
     db.prepare('SELECT id,actor_id AS actorId,at,action,details_json AS details FROM access_events WHERE store_id=? ORDER BY at').bind(sid).all()
    ]);
-   return json({members:members.results,invitations:invites.results,history:history.results.map(x=>({...x,details:parse(x.details)}))});
+   return json({members:members.results,invitations:invites.results.map(({created_at,...x})=>({...x,status:inviteStatus({...x,created_at}),createdAt:created_at,expiresAt:inviteExpiresAt({created_at})})),history:history.results.map(x=>({...x,details:parse(x.details)}))});
   }
   if(sub==='members'&&path[4]&&method==='POST'){
    const s=await access(db,sid,user,'admin'),b=await body(request),uid=path[4];
@@ -280,11 +293,11 @@ export async function api(request,env){
    if(s.type!=='shared')fail(409,'Change store type to shared before inviting');
    const b=await body(request),email=clean(b.email,320).toLowerCase(),role=roleValue(b.role||'reader');
    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))fail(400,'Valid email required');
-   const existing=await db.prepare("SELECT id,role FROM invitations WHERE store_id=? AND email=? AND status='pending'").bind(sid,email).first();
-   if(existing)return json({invitation:{id:existing.id,email,role:existing.role,status:'pending'},sent:false,note:'Invitation already pending. No email was sent.'});
+   const existing=await db.prepare("SELECT id,role,created_at FROM invitations WHERE store_id=? AND email=? AND status='pending' AND created_at>?").bind(sid,email,inviteCutoff()).first();
+   if(existing)return json({invitation:{id:existing.id,email,role:existing.role,status:'pending',expiresAt:inviteExpiresAt(existing)},sent:false,note:'Invitation already pending. No email was sent.'});
    const iid=crypto.randomUUID(),at=now();
    await adminMutation(db,sid,user,'invite.created',{inviteId:iid,email,role},receipt=>[db.prepare('INSERT INTO invitations(id,store_id,email,role,created_by,created_at) SELECT ?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM access_events WHERE id=?)').bind(iid,sid,email,role,id,at,receipt)],{activeShared:true});
-   return json({invitation:{id:iid,email,role,status:'pending'},sent:false,note:'Invitation saved, not emailed. Invitees must be allowed through the Site sharing policy before accepting.'},201);
+   return json({invitation:{id:iid,email,role,status:'pending',expiresAt:inviteExpiresAt({created_at:at})},sent:false,note:'Invitation saved, not emailed. Invitees must be allowed through the Site sharing policy before accepting.'},201);
   }
   fail(404,'Route not found');
  }catch(e){return json({error:e.status?e.message:'Database request failed. Your previous saved version remains available.'},e.status||500)}
