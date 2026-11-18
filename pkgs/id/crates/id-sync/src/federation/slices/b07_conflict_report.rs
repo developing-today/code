@@ -19,10 +19,15 @@
 //!    it has an open report, and that report names exactly its heads.
 //! 2. **No silent resolution.** A version that joins two or more of a
 //!    conflicted object's heads is a resolution. It is refused unless
-//!    it names the object's open report in its signed header; a header
-//!    that names any other report, or names one without joining heads,
-//!    is refused too. Resolution is therefore always a new signed
-//!    event that comes after the report it resolves.
+//!    its signed header names the conflict it resolves: the
+//!    [`ConflictKey`] of exactly the heads it joins. A header that names
+//!    any other key, or names one without joining heads, is refused too.
+//!    The key depends only on the conflicting versions, never on when or
+//!    from where a replica saw them, so one signed resolution means the
+//!    same thing on every replica that holds the same versions, while
+//!    each replica's report stays its own durable record. Because two
+//!    heads always come with an open report, a resolution is always a
+//!    new signed event that comes after a report covering what it joins.
 //! 3. **Reports are immutable.** When a conflicted object's heads
 //!    change but stay plural, a new report supersedes the old one,
 //!    whose status becomes `Superseded`; when they collapse to one, the
@@ -45,7 +50,7 @@
 //! ```text
 //! "id-sync/b07-version/v1"
 //! object_id               32 bytes
-//! resolves                0x00, or 0x01 followed by a 32-byte report id
+//! resolves                0x00, or 0x01 followed by a 32-byte conflict key
 //! parent_count            u32, big-endian
 //! parents                 parent_count x 32 bytes, strictly ascending
 //! body                    the remaining bytes
@@ -73,6 +78,9 @@ use super::b32_ingest_gate::{
 pub type ObjectId = [u8; 32];
 /// The address of a conflict report: SHA-256 of its canonical bytes.
 pub type ReportId = [u8; 32];
+/// The identity of a set of conflicting versions: what a resolution
+/// names. See [`conflict_key`].
+pub type ConflictKey = [u8; 32];
 /// A SHA-256 digest.
 pub type Digest32 = [u8; 32];
 
@@ -80,6 +88,7 @@ pub type Digest32 = [u8; 32];
 pub const VERSION_DOMAIN: &[u8] = b"id-sync/b07-version/v1";
 const REPORT_DOMAIN: &[u8] = b"id-sync/b07-conflict-report/v1";
 const POLICY_DOMAIN: &[u8] = b"id-sync/b07-store-policy/v1";
+const CONFLICT_KEY_DOMAIN: &[u8] = b"id-sync/b07-conflict-key/v1";
 
 fn sha256(bytes: &[u8]) -> Digest32 {
     let mut hasher = Sha256::new();
@@ -124,8 +133,8 @@ const fn path_tag(path: IngressPath) -> u8 {
 pub struct VersionHeader {
     /// The object this version belongs to.
     pub object_id: ObjectId,
-    /// The open report this version resolves, if it is a resolution.
-    pub resolves: Option<ReportId>,
+    /// The conflict this version resolves, if it is a resolution.
+    pub resolves: Option<ConflictKey>,
     /// The versions this one follows, strictly ascending.
     pub parents: Vec<EventId>,
     /// The version's data.
@@ -202,8 +211,8 @@ pub struct VersionRef {
     pub object_id: ObjectId,
     /// Its parents, ascending.
     pub parents: Vec<EventId>,
-    /// The report it names as resolved, if any.
-    pub resolves: Option<ReportId>,
+    /// The conflict it names as resolved, if any.
+    pub resolves: Option<ConflictKey>,
     /// The identity the gate bound the signing key to.
     pub signer: String,
     /// The key that signed it.
@@ -287,11 +296,16 @@ impl ConflictReport {
         sha256(&self.canonical_bytes())
     }
 
-    /// What a resolution must name as its parents: every conflicting
-    /// version. A resolution is a new signed version with these parents
-    /// whose header names this report.
+    /// What a full resolution names as its parents: every conflicting
+    /// version.
     pub fn resolution_parents(&self) -> Vec<EventId> {
         self.versions.iter().map(|v| v.event_id).collect()
+    }
+
+    /// What a full resolution names in its header: the conflict key of
+    /// every conflicting version.
+    pub fn conflict_key(&self) -> ConflictKey {
+        conflict_key(&self.resolution_parents())
     }
 }
 
@@ -391,17 +405,32 @@ pub enum IngestError {
     /// A parent belongs to a different object.
     ForeignParent(EventId),
     /// The version joins heads of a conflicted object without naming
-    /// its open report.
+    /// the conflict it resolves.
     ResolutionRequired {
-        /// The report a resolution must name.
+        /// The object's open report.
         open: ReportId,
+        /// The key the version would have to name.
+        key: ConflictKey,
     },
-    /// The version names a report it does not resolve: not the
-    /// object's open report, or named without joining its heads.
+    /// The version names a conflict it does not resolve: not the key of
+    /// exactly the heads it joins, or named without joining heads.
     NotAResolution {
-        /// The report the version named.
-        named: ReportId,
+        /// The key the version named.
+        named: ConflictKey,
     },
+}
+
+/// The key of a set of conflicting versions: SHA-256 of
+/// `"id-sync/b07-conflict-key/v1"`, the count as u64 big-endian, then
+/// the distinct event ids in ascending order.
+pub fn conflict_key(versions: &[EventId]) -> ConflictKey {
+    let distinct: BTreeSet<&EventId> = versions.iter().collect();
+    let mut out = CONFLICT_KEY_DOMAIN.to_vec();
+    out.extend_from_slice(&(distinct.len() as u64).to_be_bytes());
+    for id in distinct {
+        out.extend_from_slice(id);
+    }
+    sha256(&out)
 }
 
 /// How long closed reports keep their evidence.
@@ -613,15 +642,19 @@ impl ConflictStore {
             .get(&version.object_id)
             .cloned()
             .unwrap_or_default();
-        let joined = version
+        let joined: Vec<EventId> = version
             .parents
             .iter()
             .filter(|p| state.heads.contains(*p))
-            .count();
+            .copied()
+            .collect();
         match (state.open, version.resolves) {
-            (Some(open), Some(named)) if named == open && joined >= 2 => {}
-            (Some(open), None) if joined >= 2 => {
-                return Err(IngestError::ResolutionRequired { open });
+            (Some(_), Some(named)) if joined.len() >= 2 && named == conflict_key(&joined) => {}
+            (Some(open), None) if joined.len() >= 2 => {
+                return Err(IngestError::ResolutionRequired {
+                    open,
+                    key: conflict_key(&joined),
+                });
             }
             (_, Some(named)) => return Err(IngestError::NotAResolution { named }),
             _ => {}
