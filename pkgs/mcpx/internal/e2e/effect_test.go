@@ -101,6 +101,7 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"daemon.leaseTTL":                    "TestDaemonLeaseTTLForgetsASilentCallerFromTheEnvironment",
 	"elicit.disambiguate":                "TestElicitDisambiguateAsksWhichInstanceFromTheEnvironment",
 	"elicit.disambiguateDefault":         "TestElicitDisambiguateDefaultPicksTheRecentInstanceFromTheEnvironment",
 	"elicit.ttl":                         "TestElicitTTLSetsAnUpstreamQuestionsDeadlineFromTheEnvironment",
@@ -281,6 +282,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestDaemonLeaseTTLForgetsASilentCallerFromTheEnvironment":                       TestDaemonLeaseTTLForgetsASilentCallerFromTheEnvironment,
 	"TestElicitDisambiguateAsksWhichInstanceFromTheEnvironment":                      TestElicitDisambiguateAsksWhichInstanceFromTheEnvironment,
 	"TestElicitDisambiguateDefaultPicksTheRecentInstanceFromTheEnvironment":          TestElicitDisambiguateDefaultPicksTheRecentInstanceFromTheEnvironment,
 	"TestElicitTTLSetsAnUpstreamQuestionsDeadlineFromTheEnvironment":                 TestElicitTTLSetsAnUpstreamQuestionsDeadlineFromTheEnvironment,
@@ -3689,6 +3691,43 @@ func TestElicitDisambiguateDefaultPicksTheRecentInstanceFromTheEnvironment(t *te
 	_, out = thirdSessionCall(t, "MCPX_ELICIT_DISAMBIGUATE=ask", "MCPX_ELICIT_DISAMBIGUATE_DEFAULT=recent")
 	if !strings.Contains(out, "work") && !strings.Contains(out, "scratch") {
 		t.Fatalf("with elicit.disambiguateDefault=recent the call should land on a live instance:\n%s", out)
+	}
+}
+
+// liveAfterASilentCaller makes one call to a call-scoped demo under a
+// fixed caller id that never releases, waits 1.5s with the reaper
+// sweeping every 100ms, and returns ls's LIVE column for demo.
+func liveAfterASilentCaller(t *testing.T, env ...string) string {
+	t.Helper()
+	e := newEnv(t, `{"mcpServers":{"demo":{"command":"FAKE","mcpx":{"sharing":"exclusive","scope":"call","max":4}}}}`)
+	e.setenv(append([]string{"MCPX_DAEMON_REAP_INTERVAL=100ms"}, env...)...)
+	e.run("ls")
+	req, err := http.NewRequest(http.MethodPost, "http://mcpx/v1/call",
+		strings.NewReader(`{"server":"demo","tool":"echo","args":{"message":"held"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Mcpx-Call", "silent-caller")
+	resp, err := e.socketClient(t).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	time.Sleep(1500 * time.Millisecond)
+	return lsDemoRow(t, e.run("ls"))[4]
+}
+
+// TestDaemonLeaseTTLForgetsASilentCallerFromTheEnvironment is the effect
+// probe for daemon.leaseTTL. A caller that never says it has finished
+// keeps its call-scoped instance live under the default 30m retention;
+// with daemon.leaseTTL=500ms the lease is forgotten and the reaper
+// releases the instance.
+func TestDaemonLeaseTTLForgetsASilentCallerFromTheEnvironment(t *testing.T) {
+	if live := liveAfterASilentCaller(t); live == "0" {
+		t.Fatal("oracle: under the default lease retention the silent caller's instance should stay live")
+	}
+	if live := liveAfterASilentCaller(t, "MCPX_DAEMON_LEASE_TTL=500ms"); live != "0" {
+		t.Fatalf("with daemon.leaseTTL=500ms the silent caller's instance should be released, LIVE=%s", live)
 	}
 }
 
