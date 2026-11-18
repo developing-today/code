@@ -19,8 +19,8 @@ let
 
   agentRebuildSwitch = pkgs.writeShellApplication {
     name = "agent-rebuild-switch";
-    # No inherited PATH: under sudo the caller's PATH would otherwise
-    # decide which nix/git/nixos-rebuild run as root.
+    # No inherited PATH: the caller's environment must never decide
+    # which nix/git/nixos-rebuild run as root.
     inheritPath = false;
     runtimeInputs = [
       config.system.build.nixos-rebuild
@@ -32,13 +32,13 @@ let
     ];
     text = ''
       # Argument contract (AGENTS.md, #3352): this command takes no
-      # arguments. The sudo rule also forbids them; this is the second wall.
+      # arguments; the systemd unit passes none.
       if (($# != 0)); then
-        echo "usage: sudo agent-rebuild-switch   (takes no arguments)" >&2
+        echo "usage: agent-rebuild-switch   (takes no arguments; start agent-rebuild-switch.service)" >&2
         exit 2
       fi
       if ((EUID != 0)); then
-        echo "agent-rebuild-switch: run it with sudo" >&2
+        echo "agent-rebuild-switch: must run as root (start agent-rebuild-switch.service)" >&2
         exit 1
       fi
 
@@ -63,10 +63,10 @@ let
       fi
 
       logger -t agent-rebuild-switch "switch to ${flakeRef} started by ''${SUDO_USER:-unknown}"
-      # sudo keeps the caller's working directory, and nix resolves an
-      # installable that contains a slash against the cwd, following a
-      # symlink there into the store. Run from root-owned / so a caller
-      # cannot plant an entry that stands in for the flake reference.
+      # Nix resolves an installable that contains a slash against the
+      # cwd, following a symlink there into the store. Run from root-owned
+      # / so no caller can plant an entry that stands in for the flake
+      # reference (the unit also sets WorkingDirectory=/).
       cd /
       if nixos-rebuild switch --refresh --accept-flake-config --flake ${flakeRef}; then
         logger -t agent-rebuild-switch "switch to ${flakeRef} succeeded"
@@ -79,23 +79,35 @@ let
   };
 in
 {
-  # Passwordless rebuilds for agents on this laptop, scoped to one
-  # command: `sudo agent-rebuild-switch` (no arguments) switches the
-  # system to the amd config on main. Nothing else becomes passwordless:
-  # ./rebuild, nixos-rebuild with its own flags, and every other sudo
-  # still ask for the password.
-  environment.systemPackages = [ agentRebuildSwitch ];
+  # Passwordless rebuilds for agents on this laptop, without sudo.
+  # `systemctl start --no-block agent-rebuild-switch.service` runs the
+  # wrapper above as root; it switches the system to the amd config on
+  # main and takes no input. A polkit rule lets `user` start (only start)
+  # this one unit, so sudo can stay blocked for agents entirely.
+  # Follow a run with `journalctl -u agent-rebuild-switch -f`.
+  systemd.services.agent-rebuild-switch = {
+    description = "Switch amd to the config on main (agent-triggered)";
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${agentRebuildSwitch}/bin/agent-rebuild-switch";
+      WorkingDirectory = "/";
+      Environment = [ "HOME=/root" ];
+    };
+    # The switch this unit runs must not stop or restart the unit itself.
+    restartIfChanged = false;
+    stopIfChanged = false;
+  };
 
-  security.sudo.extraRules = [
-    {
-      users = [ "user" ];
-      commands = [
-        {
-          # `""` after the path is sudoers for "no arguments allowed".
-          command = ''${agentRebuildSwitch}/bin/agent-rebuild-switch ""'';
-          options = [ "NOPASSWD" ];
-        }
-      ];
-    }
-  ];
+  security.polkit.extraConfig = ''
+    polkit.addRule(function (action, subject) {
+      if (
+        action.id == "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("unit") == "agent-rebuild-switch.service" &&
+        action.lookup("verb") == "start" &&
+        subject.user == "user"
+      ) {
+        return polkit.Result.YES;
+      }
+    });
+  '';
 }
