@@ -95,6 +95,9 @@ var implementedEffectProbes = map[string]string{
 	"recipes.limit":              "TestRecipesLimitBoundsTheRankingFromTheEnvironment",
 	"tasks.ttl":                  "TestTasksTTLSetsAnExecTasksRetentionFromTheEnvironment",
 	"tasks.resultWait":           "TestTasksResultWaitBoundsCollectingAResultFromTheEnvironment",
+	"protoTasks.maxTTL":          "TestProtoTasksMaxTTLClampsATasksRetentionFromTheEnvironment",
+	"protoTasks.maxPerRequestor": "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
+	"protoTasks.perMinute":       "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"proto.serveMCP":             "TestServeMCPUnmountsTheEndpointFromTheEnvironment",
 	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
 	"daemon.autostart":           "TestDaemonAutostartIsReachableFromTheEnvironment",
@@ -177,6 +180,9 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestRecipesLimitBoundsTheRankingFromTheEnvironment":                        TestRecipesLimitBoundsTheRankingFromTheEnvironment,
 	"TestTasksTTLSetsAnExecTasksRetentionFromTheEnvironment":                    TestTasksTTLSetsAnExecTasksRetentionFromTheEnvironment,
 	"TestTasksResultWaitBoundsCollectingAResultFromTheEnvironment":              TestTasksResultWaitBoundsCollectingAResultFromTheEnvironment,
+	"TestProtoTasksMaxTTLClampsATasksRetentionFromTheEnvironment":               TestProtoTasksMaxTTLClampsATasksRetentionFromTheEnvironment,
+	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":        TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
+	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                 TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestServeMCPUnmountsTheEndpointFromTheEnvironment":                         TestServeMCPUnmountsTheEndpointFromTheEnvironment,
 	"TestDaemonAddressIsReachableFromTheEnvironment":                            TestDaemonAddressIsReachableFromTheEnvironment,
 	"TestDaemonAutostartIsReachableFromTheEnvironment":                          TestDaemonAutostartIsReachableFromTheEnvironment,
@@ -1261,6 +1267,104 @@ func TestTasksResultWaitBoundsCollectingAResultFromTheEnvironment(t *testing.T) 
 	}
 	if code, body := collect("MCPX_TASKS_RESULT_WAIT=500ms"); code != http.StatusRequestTimeout {
 		t.Fatalf("tasks.resultWait=500ms should give up before a three-second script finishes with 408, got %d:\n%s", code, body)
+	}
+}
+
+// tasksClient is a 2026-07-28 client that declared the tasks extension,
+// against a daemon that hands any call over 100ms a task.
+func tasksClient(t *testing.T, env ...string) func(method string, params map[string]any) map[string]any {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(append([]string{"MCPX_PROTO_MESSAGES_TASK_AFTER=100ms"}, env...)...)
+	e.run("refresh")
+	ep := e.endpoint(t)
+	id := 0
+	return func(method string, params map[string]any) map[string]any {
+		t.Helper()
+		id++
+		params["_meta"] = map[string]any{
+			"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+			"io.modelcontextprotocol/clientCapabilities": map[string]any{
+				"extensions": map[string]any{"io.modelcontextprotocol/tasks": map[string]any{}},
+			},
+		}
+		resp := mcpPost(t, ep, "", map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+		defer func() { _ = resp.Body.Close() }()
+		return decodeJSON(t, resp.Body)
+	}
+}
+
+// startSlowTask calls a two-second script, which the 100ms threshold
+// turns into a task, and returns the reply.
+func startSlowTask(t *testing.T, rpc func(string, map[string]any) map[string]any) map[string]any {
+	t.Helper()
+	return rpc("tools/call", map[string]any{"name": "mcpx_exec",
+		"arguments": map[string]any{"source": "await new Promise((r) => setTimeout(r, 2000))"}})
+}
+
+// protoTasks.maxTTL clamps the retention of a task mcpx hands out.
+// Oracle: the task carries ttlMs 600000 at the default and 5000 with
+// MCPX_PROTO_TASKS_MAX_TTL=5s.
+func TestProtoTasksMaxTTLClampsATasksRetentionFromTheEnvironment(t *testing.T) {
+	ttl := func(env ...string) any {
+		t.Helper()
+		doc := startSlowTask(t, tasksClient(t, env...))
+		res, _ := doc["result"].(map[string]any)
+		if res["resultType"] != "task" {
+			t.Fatalf("a two-second call past a 100ms threshold should be a task:\n%s", dumpJSON(t, doc))
+		}
+		return res["ttlMs"]
+	}
+
+	if got := ttl(); got != float64(600000) {
+		t.Fatalf("at the default protoTasks.maxTTL a task should carry ttlMs 600000, got %v", got)
+	}
+	if got := ttl("MCPX_PROTO_TASKS_MAX_TTL=5s"); got != float64(5000) {
+		t.Fatalf("protoTasks.maxTTL=5s should clamp a task to ttlMs 5000, got %v", got)
+	}
+}
+
+// protoTasks.maxPerRequestor caps one requestor's unfinished tasks.
+// Oracle: two slow calls both become tasks at the default; with
+// MCPX_PROTO_TASKS_MAX_PER_REQUESTOR=1 the second is refused.
+func TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment(t *testing.T) {
+	second := func(env ...string) string {
+		t.Helper()
+		rpc := tasksClient(t, env...)
+		startSlowTask(t, rpc)
+		return dumpJSON(t, startSlowTask(t, rpc))
+	}
+
+	if got := second(); !strings.Contains(got, `"resultType":"task"`) {
+		t.Fatalf("at the default protoTasks.maxPerRequestor a second slow call should still become a task:\n%s", got)
+	}
+	if got := second("MCPX_PROTO_TASKS_MAX_PER_REQUESTOR=1"); !strings.Contains(got, "per-requestor task cap reached") {
+		t.Fatalf("protoTasks.maxPerRequestor=1 should refuse a second unfinished task:\n%s", got)
+	}
+}
+
+// protoTasks.perMinute is the per-requestor admission window for tasks/*
+// calls. A task is started and then read twice with tasks/get.
+// Oracle: both reads succeed at the default; with
+// MCPX_PROTO_TASKS_PER_MINUTE=1 the second is refused.
+func TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment(t *testing.T) {
+	secondRead := func(env ...string) string {
+		t.Helper()
+		rpc := tasksClient(t, env...)
+		res, _ := startSlowTask(t, rpc)["result"].(map[string]any)
+		id, _ := res["taskId"].(string)
+		if id == "" {
+			t.Fatalf("no task was started: %v", res)
+		}
+		rpc("tasks/get", map[string]any{"taskId": id})
+		return dumpJSON(t, rpc("tasks/get", map[string]any{"taskId": id}))
+	}
+
+	if got := secondRead(); !strings.Contains(got, `"taskId"`) || strings.Contains(got, "admission window") {
+		t.Fatalf("at the default protoTasks.perMinute a second tasks/get should succeed:\n%s", got)
+	}
+	if got := secondRead("MCPX_PROTO_TASKS_PER_MINUTE=1"); !strings.Contains(got, "admission window") {
+		t.Fatalf("protoTasks.perMinute=1 should refuse a second tasks/get:\n%s", got)
 	}
 }
 
