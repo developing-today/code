@@ -27,7 +27,7 @@ class Turso:
             raise ValueError("FLEET_TURSO_URL must use HTTPS")
         self.token = os.environ.get("FLEET_TURSO_TOKEN")
         if not self.token:
-            result = subprocess.run(["fleet", "secrets", "get", "turso.fleet-platform-rw-token"], capture_output=True, text=True)
+            result = subprocess.run(["fleet", "secrets", "get", "turso.fleet-platform-rw-token"], capture_output=True, text=True, timeout=60)
             if result.returncode:
                 raise RuntimeError("could not resolve fleet-platform credential")
             self.token = result.stdout.strip()

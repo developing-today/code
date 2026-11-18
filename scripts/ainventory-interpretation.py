@@ -24,8 +24,8 @@ Two jobs, one operator surface, against the Turso fleet-platform `ainventory_*` 
              entry heading is the identity, and an entry already present
              is skipped, not duplicated.
 
-Append-only: the tables this writes are INSERT-only at the database level
-(BEFORE UPDATE/DELETE triggers raise, UPDATE/DELETE grants revoked), so
+Append-only deployment contract: the restored tables require SQLite
+BEFORE UPDATE/DELETE refusal triggers (see ainventory-turso-guards.sql), so
 re-interpreting a batch is a NEW interpretation run, never an edit. The
 separate Turso requests are not transactional; after a failed record
 command, inspect the batch's notes, findings, and runs before retrying.
