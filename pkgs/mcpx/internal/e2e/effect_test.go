@@ -1,6 +1,8 @@
 package e2e_test
 
 import (
+	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -64,6 +66,7 @@ var implementedEffectProbes = map[string]string{
 	"tasks.maxAge":               "TestTasksMaxAgeIsReachableFromEnvironment",
 	"stats.top":                  "TestStatsTopLimitsTheRowsTheStatsAPIReports",
 	"proto.askPoll":              "TestAskPollCeilingIsReachableFromTheEnvironment",
+	"proto.askRounds":            "TestAskRoundsLimitIsReachableFromTheEnvironment",
 	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
 	"http.bodyLimit":             "TestHTTPBodyLimitsRejectOversizedBodies",
 	"http.callBodyLimit":         "TestHTTPBodyLimitsRejectOversizedBodies",
@@ -117,6 +120,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestTasksMaxAgeIsReachableFromEnvironment":              TestTasksMaxAgeIsReachableFromEnvironment,
 	"TestStatsTopLimitsTheRowsTheStatsAPIReports":            TestStatsTopLimitsTheRowsTheStatsAPIReports,
 	"TestAskPollCeilingIsReachableFromTheEnvironment":        TestAskPollCeilingIsReachableFromTheEnvironment,
+	"TestAskRoundsLimitIsReachableFromTheEnvironment":        TestAskRoundsLimitIsReachableFromTheEnvironment,
 	"TestDaemonAddressIsReachableFromTheEnvironment":         TestDaemonAddressIsReachableFromTheEnvironment,
 	"TestHTTPBodyLimitsRejectOversizedBodies":                TestHTTPBodyLimitsRejectOversizedBodies,
 	"TestHTTPEventStreamSettingsChangeTheStream":             TestHTTPEventStreamSettingsChangeTheStream,
@@ -299,6 +303,78 @@ func TestAskPollCeilingIsReachableFromTheEnvironment(t *testing.T) {
 	raised := holdFor("MCPX_PROTO_ASK_POLL=2s")
 	if raised < def+time.Second {
 		t.Fatalf("proto.askPoll=2s should hold a poll about two seconds, got %v against %v at the default", raised, def)
+	}
+}
+
+// proto.askRounds limits how many times one MCP request may ask its client
+// for input. The fake upstream asks twice in one tool call; default settings
+// complete both rounds, while a configured limit of one rejects the second.
+// Oracle: the default returns a complete result containing the second answer;
+// a limit of one returns the ask-round exhaustion error instead.
+func TestAskRoundsLimitIsReachableFromTheEnvironment(t *testing.T) {
+	call := func(env ...string) string {
+		t.Helper()
+		e := askEnv(t)
+		e.setenv(env...)
+		e.run("refresh")
+		ep := e.endpoint(t)
+		meta := map[string]any{
+			"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+			"io.modelcontextprotocol/clientCapabilities": map[string]any{
+				"elicitation": map[string]any{"form": map[string]any{}},
+			},
+		}
+		params := map[string]any{
+			"name":      "mcpx_call",
+			"arguments": map[string]any{"namespace": "ask", "tool": "need_repo_twice"},
+			"_meta":     meta,
+		}
+		for attempt := 0; attempt < 3; attempt++ {
+			resp := mcpPost(t, ep, "", map[string]any{
+				"jsonrpc": "2.0", "id": attempt + 1, "method": "tools/call", "params": params,
+			})
+			var frame map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&frame); err != nil {
+				_ = resp.Body.Close()
+				t.Fatal(err)
+			}
+			_ = resp.Body.Close()
+			if frame["error"] != nil {
+				return dumpJSON(t, frame)
+			}
+			result, _ := frame["result"].(map[string]any)
+			if result["resultType"] == "complete" {
+				return dumpJSON(t, frame)
+			}
+			if result["resultType"] != "input_required" {
+				t.Fatalf("expected input_required or complete, got %s", dumpJSON(t, frame))
+			}
+			state, _ := result["requestState"].(string)
+			requests, _ := result["inputRequests"].(map[string]any)
+			if state == "" || len(requests) != 1 {
+				t.Fatalf("expected one resumable elicitation request, got %s", dumpJSON(t, result))
+			}
+			responses := map[string]any{}
+			for id := range requests {
+				responses[id] = map[string]any{
+					"action":  "accept",
+					"content": map[string]any{"repo": fmt.Sprintf("me/round%d", attempt+1)},
+				}
+			}
+			params["requestState"] = state
+			params["inputResponses"] = responses
+		}
+		t.Fatal("two-round call did not complete or hit its configured limit")
+		return ""
+	}
+
+	defaultResult := call()
+	if !strings.Contains(defaultResult, `"resultType":"complete"`) || !strings.Contains(defaultResult, "me/round2") {
+		t.Fatalf("default proto.askRounds should complete both rounds, got %s", defaultResult)
+	}
+	limitedResult := call("MCPX_PROTO_ASK_ROUNDS=1")
+	if !strings.Contains(limitedResult, "still asking for input after 1 rounds") {
+		t.Fatalf("proto.askRounds=1 should stop the second round, got %s", limitedResult)
 	}
 }
 
