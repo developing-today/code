@@ -67,6 +67,7 @@ var implementedEffectProbes = map[string]string{
 	"stats.top":                  "TestStatsTopLimitsTheRowsTheStatsAPIReports",
 	"proto.askPoll":              "TestAskPollCeilingIsReachableFromTheEnvironment",
 	"proto.askRounds":            "TestAskRoundsLimitIsReachableFromTheEnvironment",
+	"proto.askTTL":               "TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment",
 	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
 	"daemon.autostart":           "TestDaemonAutostartIsReachableFromTheEnvironment",
 	"http.bodyLimit":             "TestHTTPBodyLimitsRejectOversizedBodies",
@@ -122,6 +123,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestStatsTopLimitsTheRowsTheStatsAPIReports":            TestStatsTopLimitsTheRowsTheStatsAPIReports,
 	"TestAskPollCeilingIsReachableFromTheEnvironment":        TestAskPollCeilingIsReachableFromTheEnvironment,
 	"TestAskRoundsLimitIsReachableFromTheEnvironment":        TestAskRoundsLimitIsReachableFromTheEnvironment,
+	"TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment":  TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment,
 	"TestDaemonAddressIsReachableFromTheEnvironment":         TestDaemonAddressIsReachableFromTheEnvironment,
 	"TestDaemonAutostartIsReachableFromTheEnvironment":       TestDaemonAutostartIsReachableFromTheEnvironment,
 	"TestHTTPBodyLimitsRejectOversizedBodies":                TestHTTPBodyLimitsRejectOversizedBodies,
@@ -377,6 +379,52 @@ func TestAskRoundsLimitIsReachableFromTheEnvironment(t *testing.T) {
 	limitedResult := call("MCPX_PROTO_ASK_ROUNDS=1")
 	if !strings.Contains(limitedResult, "still asking for input after 1 rounds") {
 		t.Fatalf("proto.askRounds=1 should stop the second round, got %s", limitedResult)
+	}
+}
+
+// proto.askTTL is the lifetime of an interruptible call begun on /v1/ask
+// without its own ttl: the daemon cancels the call when it runs out. The
+// call is a script that sleeps eight seconds, polled for up to four.
+// Oracle: at the default (15m) the call is still running when the polls
+// stop; with MCPX_PROTO_ASK_TTL=1s it has ended inside that window, its
+// script stopped as timed out after about a second, not eight.
+func TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment(t *testing.T) {
+	outcome := func(env ...string) map[string]any {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		e.run("ls")
+		c := e.longSocketClient(t)
+		_, begun := sockDo(t, c, http.MethodPost, "/v1/ask",
+			map[string]any{"kind": "exec", "source": "await new Promise((r) => setTimeout(r, 8000));"})
+		id, _ := begun["callId"].(string)
+		if id == "" {
+			t.Fatalf("no call id: %v", begun)
+		}
+		defer sockDo(t, c, http.MethodPost, "/v1/ask/"+id+"/abandon", nil)
+		var out map[string]any
+		for stop := time.Now().Add(4 * time.Second); time.Now().Before(stop); {
+			var st int
+			st, out = sockDo(t, c, http.MethodGet, "/v1/ask/"+id+"?waitMs=500", nil)
+			if st != http.StatusOK {
+				t.Fatalf("poll: %d %v", st, out)
+			}
+			if out["done"] == true {
+				break
+			}
+		}
+		return out
+	}
+
+	if def := outcome(); def["done"] == true {
+		t.Fatalf("at the default proto.askTTL the call should still be running after four seconds, got %v", def)
+	}
+	bounded := outcome("MCPX_PROTO_ASK_TTL=1s")
+	run, _ := bounded["result"].(map[string]any)
+	script, _ := run["result"].(map[string]any)
+	took, _ := script["durationMs"].(float64)
+	if bounded["done"] != true || script["timedOut"] != true || took <= 0 || took >= 4000 {
+		t.Fatalf("proto.askTTL=1s should stop the call at its deadline, got %v", bounded)
 	}
 }
 
