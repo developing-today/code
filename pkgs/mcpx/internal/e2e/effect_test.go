@@ -73,6 +73,7 @@ var implementedEffectProbes = map[string]string{
 	"proto.stateTTL":             "TestStateTTLExpiresAResumableRequestFromTheEnvironment",
 	"proto.sessionIdle":          "TestSessionIdleReapsAnUnusedSessionFromTheEnvironment",
 	"proto.mcpPath":              "TestMCPPathMovesTheEndpointFromTheEnvironment",
+	"proto.native":               "TestNativeAsksTheCallingClientFromTheEnvironment",
 	"proto.serveMCP":             "TestServeMCPUnmountsTheEndpointFromTheEnvironment",
 	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
 	"daemon.autostart":           "TestDaemonAutostartIsReachableFromTheEnvironment",
@@ -134,6 +135,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestStateTTLExpiresAResumableRequestFromTheEnvironment": TestStateTTLExpiresAResumableRequestFromTheEnvironment,
 	"TestSessionIdleReapsAnUnusedSessionFromTheEnvironment":  TestSessionIdleReapsAnUnusedSessionFromTheEnvironment,
 	"TestMCPPathMovesTheEndpointFromTheEnvironment":          TestMCPPathMovesTheEndpointFromTheEnvironment,
+	"TestNativeAsksTheCallingClientFromTheEnvironment":       TestNativeAsksTheCallingClientFromTheEnvironment,
 	"TestServeMCPUnmountsTheEndpointFromTheEnvironment":      TestServeMCPUnmountsTheEndpointFromTheEnvironment,
 	"TestDaemonAddressIsReachableFromTheEnvironment":         TestDaemonAddressIsReachableFromTheEnvironment,
 	"TestDaemonAutostartIsReachableFromTheEnvironment":       TestDaemonAutostartIsReachableFromTheEnvironment,
@@ -672,6 +674,47 @@ func TestServeMCPUnmountsTheEndpointFromTheEnvironment(t *testing.T) {
 	}
 	if got := status("MCPX_PROTO_SERVE_MCP=false"); got == http.StatusOK {
 		t.Fatalf("proto.serveMCP=false should leave /mcp unmounted, got %d", got)
+	}
+}
+
+// proto.native puts an upstream server's question to the client that made
+// the call. A modern client that declared elicitation calls a tool whose
+// server asks for a repository.
+// Oracle: at the default the call comes back input_required with the
+// question for the client to answer; with MCPX_PROTO_NATIVE=false the
+// question goes to the broker instead, which has no answerer in the
+// harness, so the call fails with the broker's refusal rather than coming
+// back input_required.
+func TestNativeAsksTheCallingClientFromTheEnvironment(t *testing.T) {
+	first := func(env ...string) string {
+		t.Helper()
+		e := askEnv(t)
+		e.setenv(env...)
+		e.run("refresh")
+		ep := e.endpoint(t)
+		resp := mcpPost(t, ep, "", map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{
+			"name":      "mcpx_call",
+			"arguments": map[string]any{"namespace": "ask", "tool": "need_repo"},
+			"_meta": map[string]any{
+				"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+				"io.modelcontextprotocol/clientCapabilities": map[string]any{
+					"elicitation": map[string]any{"form": map[string]any{}},
+				},
+			},
+		}})
+		defer func() { _ = resp.Body.Close() }()
+		var frame map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&frame); err != nil {
+			t.Fatal(err)
+		}
+		return dumpJSON(t, frame)
+	}
+
+	if got := first(); !strings.Contains(got, `"resultType":"input_required"`) {
+		t.Fatalf("at the default proto.native the client should be asked, got %s", got)
+	}
+	if got := first("MCPX_PROTO_NATIVE=false"); strings.Contains(got, `"resultType":"input_required"`) || !strings.Contains(got, "no agent answerer") {
+		t.Fatalf("proto.native=false should send the question to the broker, not the client, got %s", got)
 	}
 }
 
