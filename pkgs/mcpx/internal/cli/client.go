@@ -328,7 +328,7 @@ func NewClientAt(paths daemon.Paths, configPath, endpoint string) *Client {
 	// no address to fall back to, and the dialer says so when it cannot
 	// join (no TS_AUTHKEY) instead of retrying the name as plain TCP.
 	if host, port, isTSNet, perr := daemon.ParseTSNetEndpoint(c.endpoint); isTSNet {
-		dialer := daemon.NewTSNetDialer("mcpx-client")
+		dialer := daemon.NewTSNetDialer("mcpx-client", set.Duration("daemon.tsnetUpTimeout"))
 		dial := dialer.DialContext
 		if perr != nil {
 			dial = func(context.Context, string, string) (net.Conn, error) { return nil, perr }

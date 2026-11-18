@@ -299,11 +299,11 @@ in
               "PM_AGG_ACTIVITY_FILE=${aggState}/activity-ingestion.json"
               # #6815: the four aggregator stores that used to live only
               # in this state dir (actions, activity-ingestion, usage
-              # snapshots, aa-last-good) are canonical in Supabase
-              # muse-dev2. The local files stay as a rebuildable cache
+              # snapshots, aa-last-good) are canonical in Turso
+              # fleet-platform. The local files stay as a rebuildable cache
               # (see pm-stack/aggregator/README.md, "Store backend");
               # switching this back to "file" is the rollback.
-              "PM_AGG_STORE_BACKEND=supabase"
+              "PM_AGG_STORE_BACKEND=turso"
               "PM_AGG_STORE_WRITER=pm-aggregator.service"
               "BWS_BIN=/run/current-system/sw/bin/bws"
               "BWS_ACCESS_TOKEN_FILE=${home}/.config/bws/access-token"
@@ -472,10 +472,10 @@ in
               "BWS_BIN=/run/current-system/sw/bin/bws"
               "BWS_ACCESS_TOKEN_FILE=${home}/.config/bws/access-token"
               # #6815: the collector writes the aa-last-good canonical
-              # document to Supabase muse-dev2 (the local file stays a
+              # document to Turso fleet-platform (the local file stays a
               # rebuildable cache). Same writer identity as the
               # aggregator unit env; see "Store backend" in the README.
-              "PM_AGG_STORE_BACKEND=supabase"
+              "PM_AGG_STORE_BACKEND=turso"
               "PM_AGG_STORE_WRITER=fleet-feed-collector"
               "FLEET_FEED_OUT=${aggState}/fleet-feed.json"
               "PM_AGG_FRESHNESS_URL=http://127.0.0.1:4871/publish"

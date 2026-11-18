@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -9,7 +8,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 	"io"
 	"net/http"
 	"net/url"
@@ -265,10 +263,10 @@ func (a *App) execRemoteStream(ctx context.Context, c *Client, req map[string]an
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	sc := bufio.NewScanner(resp.Body)
-	// The same ceiling the daemon writes with, rather than a second number
-	// that happens to be larger today.
-	sc.Buffer(make([]byte, 0, int(defaults.HTTPStreamBufferInit)), int(defaults.HTTPStreamBufferMax))
+	// The configured stream line ceiling (http.streamBufferInit and
+	// http.streamBufferMax), the same one `mcpx events` reads with, rather
+	// than the built-in default whatever the setting says.
+	sc := newStreamScanner(resp.Body, c.set.Bytes("http.streamBufferInit"), c.set.Bytes("http.streamBufferMax"))
 	var res execsvc.Result
 	pending := map[string]*os.File{}
 	defer func() {

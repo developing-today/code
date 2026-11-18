@@ -3,7 +3,7 @@
 and the findings event store (issue code#1248, Phase 2 slice 2; slice
 tracker #10040).
 
-Two jobs, one operator surface, against the muse-dev2 `ainventory` schema:
+Two jobs, one operator surface, against the Turso fleet-platform `ainventory_*` tables:
 
   awaiting   List non-empty gather batches with no interpretation run yet
              (`ainventory.v_batches_awaiting_interpretation`). Read only.
@@ -12,7 +12,7 @@ Two jobs, one operator surface, against the muse-dev2 `ainventory` schema:
              batch note (an `ainventory.notes` row of kind 'agent_note'),
              the `ainventory.interpretation_runs` row saying what changed,
              the follow-up research trail, and any findings. These are
-             separate PostgREST inserts, not one transaction: if a later
+             separate Turso inserts, not one transaction: if a later
              request fails, earlier append-only rows remain and need
              operator review before retrying.
 
@@ -24,10 +24,10 @@ Two jobs, one operator surface, against the muse-dev2 `ainventory` schema:
              entry heading is the identity, and an entry already present
              is skipped, not duplicated.
 
-Append-only: the tables this writes are INSERT-only at the database level
-(BEFORE UPDATE/DELETE triggers raise, UPDATE/DELETE grants revoked), so
+Append-only deployment contract: the restored tables require SQLite
+BEFORE UPDATE/DELETE refusal triggers (see ainventory-turso-guards.sql), so
 re-interpreting a batch is a NEW interpretation run, never an edit. The
-separate PostgREST requests are not transactional; after a failed record
+separate Turso requests are not transactional; after a failed record
 command, inspect the batch's notes, findings, and runs before retrying.
 
 Argument contract (repo #3352): the whole command line is declared below
@@ -40,9 +40,8 @@ honoured on every code path that would write.
 Exit codes: 0 success, 1 operational failure (network, DB refusal, an
 empty import), 2 usage error.
 
-Secrets: the service-role key is read by name through `bws`
-(`supabase.muse-dev2.service-role-key`), never printed, with
-BWS_ACCESS_TOKEN honoured when set — the same lookup the gatherer uses.
+Secrets: `fleet secrets get turso.fleet-platform-rw-token` (in memory only).
+FLEET_TURSO_URL/TOKEN override the destination for controlled deployments.
 
 Run:
   scripts/ainventory-interpretation.py awaiting
@@ -62,12 +61,11 @@ import re
 import subprocess
 import sys
 
-REF = os.environ.get("AINVENTORY_SUPABASE_REF", "keihfchslgjetkmnmzra")
-BASE = f"https://{REF}.supabase.co/rest/v1"
-BWS = os.environ.get("BWS_BIN", "/run/current-system/sw/bin/bws")
-SERVICE_ROLE_SECRET = "supabase.muse-dev2.service-role-key"
-UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
-PROFILE = "ainventory"
+from pathlib import Path
+from datetime import datetime, timezone
+from urllib.parse import urlsplit, parse_qs
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fleet_turso import Turso
 NOTE_KIND = "agent_note"
 
 
@@ -181,78 +179,54 @@ def positive_int(text):
 
 
 # --------------------------------------------------------------- transport
-def service_role_key():
-    env = dict(os.environ)
-    if not env.get("BWS_ACCESS_TOKEN"):
-        token_file = os.path.expanduser("~/.config/bitwarden/access-token")
-        if os.path.exists(token_file):
-            with open(token_file) as f:
-                env["BWS_ACCESS_TOKEN"] = f.read().strip()
-    listing = subprocess.run(
-        [BWS, "secret", "list", "-o", "json"],
-        capture_output=True,
-        text=True,
-        env=env,
-        check=True,
-    ).stdout
-    try:
-        secret_id = next(
-            s["id"] for s in json.loads(listing) if s["key"] == SERVICE_ROLE_SECRET
-        )
-    except StopIteration:
-        raise SystemExit(f"secret {SERVICE_ROLE_SECRET} not found in Bitwarden")
-    got = subprocess.run(
-        [BWS, "secret", "get", secret_id, "-o", "json"],
-        capture_output=True,
-        text=True,
-        env=env,
-        check=True,
-    ).stdout
-    return json.loads(got)["value"]
+def database():
+    return Turso()
 
 
-def rest(key, method, path, payload=None, prefer="return=representation"):
-    args = [
-        "curl",
-        "-sS",
-        "-m",
-        "120",
-        "-A",
-        UA,
-        "-H",
-        f"apikey: {key}",
-        "-H",
-        f"Authorization: Bearer {key}",
-    ]
+def rest(db, method, path, payload=None, prefer="return=representation"):
+    """Narrow compatibility adapter for this script's four fixed operations."""
+    parsed = urlsplit(path)
+    params = parse_qs(parsed.query)
     if method == "GET":
-        args += ["-H", f"Accept-Profile: {PROFILE}"]
-    else:
-        args += [
-            "-H",
-            f"Content-Profile: {PROFILE}",
-            "-H",
-            "Content-Type: application/json",
-            "-H",
-            f"Prefer: {prefer}",
-            "-X",
-            method,
-        ]
-        if payload is not None:
-            args += ["-d", json.dumps(payload)]
-    args += [BASE + path, "-w", "\n%{http_code}"]
-    out = subprocess.run(args, capture_output=True, text=True, check=True).stdout
-    body, _, status = out.rpartition("\n")
-    if int(status) >= 400:
-        # A rejected write must never look like a landed one (the lesson
-        # from the gatherer's silent-HTTP-400 bug, #9999).
-        raise RuntimeError(f"{method} {path} -> HTTP {status}: {body[:400]}")
-    return json.loads(body) if body.strip() else None
+        if parsed.path == "/v_batches_awaiting_interpretation":
+            limit = int(params["limit"][0])
+            rows = db.query("""SELECT b.id,b.source_kind,b.source_ref,b.ran_at,b.inserted_counts,b.note
+              FROM ainventory_ingest_batches b WHERE b.source_kind='gatherer'
+              AND EXISTS (SELECT 1 FROM json_each(b.inserted_counts) e
+                WHERE e.key IN ('measurement_events','price_events','provider_policies')
+                AND CAST(e.value AS REAL)>0)
+              AND NOT EXISTS (SELECT 1 FROM ainventory_interpretation_runs r WHERE r.ingest_batch_id=b.id)
+              ORDER BY b.ran_at ASC LIMIT ?""", [limit])
+        elif parsed.path == "/ingest_batches":
+            value = params["id"][0]
+            if not value.startswith("eq."): raise ValueError("unsupported batch filter")
+            rows = db.query("SELECT id,inserted_counts FROM ainventory_ingest_batches WHERE id=?", [value[3:]])
+        elif parsed.path == "/findings":
+            rows = db.query("SELECT source_ref FROM ainventory_findings")
+        else:
+            raise ValueError("unsupported read")
+        for row in rows:
+            if isinstance(row.get("inserted_counts"), str):
+                row["inserted_counts"] = json.loads(row["inserted_counts"])
+        return rows
+    if method != "POST" or parsed.path not in ("/notes", "/findings", "/interpretation_runs"):
+        raise ValueError("unsupported write")
+    table = "ainventory_" + parsed.path[1:]
+    statements = []
+    for source in payload:
+        row = {**source, "created_at": datetime.now(timezone.utc).isoformat()}
+        if not all(re.fullmatch(r"[a-z_]+", key) for key in row):
+            raise ValueError("invalid column")
+        columns = ",".join('"'+key+'"' for key in row)
+        statements.append((f"INSERT INTO {table} ({columns}) VALUES ({','.join('?' for _ in row)}) RETURNING id", list(row.values())))
+    results = db.batch(statements, transaction=True)
+    return [row for group in results for row in group] if prefer != "return=minimal" else None
 
 
 # ------------------------------------------------------------------ verbs
 def cmd_awaiting(args):
     rows = rest(
-        service_role_key(),
+        database(),
         "GET",
         "/v_batches_awaiting_interpretation"
         "?select=id,source_kind,source_ref,ran_at,inserted_counts,note"
@@ -367,12 +341,12 @@ def cmd_record(args):
         print(json.dumps({"dry_run": True, "would_record": plan}, indent=2))
         return 0
 
-    key = service_role_key()
+    key = database()
     batches = rest(key, "GET", batch_path)
     if not batches:
         raise SystemExit(f"no ingest batch {args.batch} in ainventory.ingest_batches")
 
-    # Each PostgREST request commits independently. If a later request
+    # Each Turso request commits independently. If a later request
     # fails, earlier append-only rows remain; the operator must inspect
     # this batch before retrying rather than assume rollback.
     note_row = rest(
@@ -517,7 +491,7 @@ def cmd_import_findings(args):
         )
         return 0
 
-    key = service_role_key()
+    key = database()
     existing = rest(key, "GET", "/findings?select=source_ref&limit=5000") or []
     seen = {r.get("source_ref") for r in existing}
     fresh = [r for r in rows if r["source_ref"] not in seen]
