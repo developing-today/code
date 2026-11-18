@@ -637,7 +637,7 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 		"javascript runtime: auto, deno, bun, node, a name from script.runtimes, or a path")
 	lang := fs.String("language", "",
 		"script language: auto, typescript, javascript, or python (default: script.language)")
-	timeout := fs.Duration("timeout", 0, "kill the script after this long (0 = no limit)")
+	timeout := fs.Duration("timeout", 0, "kill the script after this long (default: exec.timeout; 0 = no limit)")
 	keep := fs.Bool("keep", false, "keep the generated client and script for inspection")
 	session := fs.String("session", "", "session key (default: a fresh one per run)")
 	format := fs.String("format", "", "log rendering: text, json, json-pretty, logfmt, compact, bare")
@@ -881,6 +881,13 @@ func (a *App) runScript(ctx context.Context, args []string, inline bool) error {
 	}
 	if _, given := scanFlag(fs, args, "language"); given {
 		languagePref = *lang
+	}
+	// exec.timeout bounds a script wherever it runs. --timeout, when given,
+	// still wins, including --timeout 0 for no limit; without it the setting
+	// applies here as it does on the daemon, where it was the only place it
+	// was read (docs/in-name-only.md).
+	if _, given := scanFlag(fs, args, "timeout"); !given {
+		*timeout = a.Settings().Duration("exec.timeout")
 	}
 
 	if elsewhere {
