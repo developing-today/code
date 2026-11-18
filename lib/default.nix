@@ -1242,6 +1242,7 @@ let
         "laptop-repo-keeper"
         "laptop-untracked-review"
         "openclaw-backup"
+        "oc-password-sync"
         "pm-dashboard-backup"
         "pm-dashboard-backup-copy"
         "pm-dashboard-backup-date"
