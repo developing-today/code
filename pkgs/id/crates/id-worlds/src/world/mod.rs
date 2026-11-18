@@ -356,14 +356,29 @@ impl ModuleProvenance {
     }
 }
 
-/// How a bundle install follows later versions of its program (D4). Only
-/// pinned exists today: an update is a new install decision.
+/// How a bundle install follows later versions of its program (D4).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InstallPolicy {
     /// Exactly this content hash; nothing changes without a new install.
     #[default]
     Pinned,
+    /// Discover later versions on this install's exact (author, name) line.
+    Tracking,
+}
+
+impl InstallPolicy {
+    /// Whether this install opts into update discovery for `candidate`.
+    /// This does not authorize applying an update; that remains a separate
+    /// owner decision/flow.
+    #[must_use]
+    pub fn tracks(
+        self,
+        installed: &crate::program_bundle::ProgramIdentity,
+        candidate: &crate::program_bundle::ProgramIdentity,
+    ) -> bool {
+        self == Self::Tracking && installed.same_channel(candidate)
+    }
 }
 
 /// The install record of a sideloaded program bundle (#8280).
@@ -387,7 +402,17 @@ pub struct BundleProvenance {
     /// The verified bundle signature, lower-case hex.
     pub bundle_signature: String,
     /// How this install follows later versions.
+    #[serde(default)]
     pub policy: InstallPolicy,
+}
+
+impl BundleProvenance {
+    /// Whether a candidate belongs to this install's opted-in update channel.
+    /// Fork lineage is deliberately not part of channel identity.
+    #[must_use]
+    pub fn tracks(&self, candidate: &crate::program_bundle::ProgramIdentity) -> bool {
+        self.policy.tracks(&self.program, candidate)
+    }
 }
 
 /// Provenance recorded when one world is forked from another (F12.2). It

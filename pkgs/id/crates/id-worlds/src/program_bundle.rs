@@ -97,6 +97,15 @@ pub struct ProgramIdentity {
     pub content_hash: String,
 }
 
+impl ProgramIdentity {
+    /// The update channel is the author's program name; version and content
+    /// hash identify a particular release, not a different channel.
+    #[must_use]
+    pub fn same_channel(&self, other: &Self) -> bool {
+        self.author == other.author && self.name == other.name
+    }
+}
+
 /// The F12.7 guest ABI a payload targets.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -726,6 +735,51 @@ mod tests {
 
     fn original() -> ProgramBundle {
         export(PAYLOAD.to_vec(), spec("chess", 3), &alice()).unwrap()
+    }
+
+    #[test]
+    fn install_policy_defaults_to_pinned_and_pinned_does_not_track() {
+        let provenance = original().provenance();
+        assert_eq!(provenance.policy, crate::world::InstallPolicy::Pinned);
+        let mut later = provenance.program.clone();
+        later.version += 1;
+        later.content_hash = "later-hash".to_owned();
+        assert!(!provenance.tracks(&later));
+    }
+
+    #[test]
+    fn tracking_is_scoped_to_the_exact_author_name_line_not_fork_lineage() {
+        let mut provenance = original().provenance();
+        provenance.policy = crate::world::InstallPolicy::Tracking;
+
+        let mut later_release = provenance.program.clone();
+        later_release.version += 1;
+        later_release.content_hash = "later-hash".to_owned();
+        assert!(provenance.tracks(&later_release));
+
+        let mut other_author = later_release.clone();
+        other_author.author = "different-author".to_owned();
+        assert!(!provenance.tracks(&other_author));
+
+        let mut fork = later_release;
+        fork.name = "chess-fork".to_owned();
+        assert!(!provenance.tracks(&fork));
+
+        let mut fork_provenance = provenance.clone();
+        fork_provenance.program = fork.clone();
+        assert!(!fork_provenance.tracks(&provenance.program));
+        let mut later_fork_release = fork;
+        later_fork_release.version += 1;
+        assert!(fork_provenance.tracks(&later_fork_release));
+    }
+
+    #[test]
+    fn missing_policy_in_older_install_records_defaults_to_pinned() {
+        let provenance = original().provenance();
+        let mut value = serde_json::to_value(provenance).unwrap();
+        value.as_object_mut().unwrap().remove("policy");
+        let restored: crate::world::BundleProvenance = serde_json::from_value(value).unwrap();
+        assert_eq!(restored.policy, crate::world::InstallPolicy::Pinned);
     }
 
     /// Offsets of the manifest and payload inside an encoded bundle.
