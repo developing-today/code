@@ -64,12 +64,10 @@ setting	script.suffix	no integration-test exercise yet; burn-down #8474 (setting
 setting	proto.elicitationPerMinute	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
 setting	proto.samplingPerMinute	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
 setting	proto.samplingSessionPerMinute	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
-setting	protoMessages.taskAfter	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
 setting	protoTasks.cancelGrace	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
 setting	protoTasks.maxPerRequestor	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
 setting	protoTasks.maxTTL	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
 setting	protoTasks.perMinute	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
-setting	protoTasks.pollInterval	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
 setting	spec.first	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
 setting	spec.lenient	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
 setting	spec.precedence	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
