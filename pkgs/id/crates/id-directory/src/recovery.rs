@@ -19,9 +19,9 @@
 //! [`RecoveryEvidence`] folds a passing rotation into the chain through
 //! `crate::keyset::fold_with_recovery`, under checkpoint finality: a
 //! rotation never displaces a final head, and yields to any ordinary
-//! continuation of the head it pins. Not here yet: delayed guardian
-//! removals (Decision 6), which wait on directory timestamps in the
-//! fold, and the directory relay.
+//! continuation of the head it pins. A guardian removal waits out the
+//! delay before it counts (Decision 6), timed by the first-seen times
+//! that `crate::recovery_relay` attests.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -138,6 +138,16 @@ impl AnnexRecord {
             "annex record hash does not match its content"
         );
         verify_signature(&author, &body, &self.signature).context("annex signature")
+    }
+
+    /// The identity the record is about.
+    #[must_use]
+    pub fn identity_id(&self) -> &str {
+        match &self.entry {
+            AnnexEntry::RecoveryRequest { identity_id, .. }
+            | AnnexEntry::RecoveryApproval { identity_id, .. }
+            | AnnexEntry::RecoveryCancellation { identity_id, .. } => identity_id,
+        }
     }
 
     /// A request's content address: its record hash. Single-use, and

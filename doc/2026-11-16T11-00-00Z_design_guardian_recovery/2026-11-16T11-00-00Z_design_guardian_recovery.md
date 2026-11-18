@@ -411,5 +411,11 @@ least `RECOVERY_DELAY_SECONDS` after the change was. Widening changes
 apply at once, and a later update replaces or cancels the pending one.
 The plain `fold` has no timestamps, so there a removal stays pending
 and the old set keeps counting; `RecoveryEvidence::keyset_first_seen`
-supplies the times. Still open: the directory relay and the client
-flow.
+supplies the times. Relay: `recovery_relay::RecoveryRelay` stores
+annex and keyset records and attests each one's first-seen time once,
+in an append-only JSONL file. It refuses any record that does not
+verify, never moves a time it attested, and never attests a request
+before its `created_at`, so it can only lengthen a delay. Its `annex`
+and `keyset_first_seen` feed `RecoveryEvidence` directly. Still open:
+serving the relay over the directory's network API, delivering the
+notifications, and the client flow.
