@@ -21,9 +21,15 @@ on:
     branches: [main]
     paths:
       - "pkgs/fleet/**"
+      # fleet-search builds atlas-search crates by path, so an atlas
+      # manifest change can break the fleet lock and build (#10363).
+      - "pkgs/atlas-search/Cargo.toml"
+      - "pkgs/atlas-search/crates/**"
       - ".github/workflows/fleet-smoke.yml"
       - ".github/scripts/check-fleet-smoke.sh"
       - ".github/scripts/check-fleet-smoke.test.sh"
+      - ".github/scripts/check-fleet-lock.sh"
+      - ".github/scripts/check-fleet-lock.test.sh"
   workflow_dispatch:
 
 permissions:
@@ -49,6 +55,13 @@ jobs:
         run: |
           bash .github/scripts/check-fleet-smoke.sh
           bash .github/scripts/check-fleet-smoke.test.sh
+
+      # Before the nix build, so a stale lock fails here by name
+      # instead of as "no matching package" deep in fleet-0.1.0.drv.
+      - name: Fleet Cargo.lock matches the atlas manifests (#10363)
+        run: |
+          bash .github/scripts/check-fleet-lock.test.sh
+          bash .github/scripts/check-fleet-lock.sh
 
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
