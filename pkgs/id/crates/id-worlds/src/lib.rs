@@ -12,6 +12,8 @@
 //!   [`world_native`], [`world_fixture`], [`world_cache`] and, under
 //!   the `sandbox` feature, [`sandbox`] — the wasmtime guest runner
 //!   whose fuel budgets are the split's determinism canary.
+//! - [`program_bundle`]: the signed single-file program bundle (#8280,
+//!   design D1-D3): export, verify and fork, fully offline.
 //! - [`shell_contract`]: the F13.1 shell contract the native shell
 //!   speaks.
 //! - [`groups::worlds`]: seam 6 of the design — the groups→worlds
@@ -44,6 +46,7 @@ pub use id_core::port;
 
 pub mod blob_gate;
 pub mod groups;
+pub mod program_bundle;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
 mod session_host;
