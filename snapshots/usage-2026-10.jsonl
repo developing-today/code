@@ -1,0 +1,11 @@
+{"ts":"2026-10-29T12:00:00Z","serviceId":"cloudflare","metricId":"r2-storage","value":2,"unit":"gb","limit":10,"source":"manual","observedBy":"fleet-feed-collector"}
+{"ts":"2026-10-29T12:00:00Z","serviceId":"cloudflare","metricId":"platform-excess-est","value":{"low":0,"high":5.2},"unit":"usd-est","source":"estimate","observedBy":"fleet-feed-collector"}
+{"ts":"2026-10-24T12:00:00Z","serviceId":"turso","metricId":"databases","value":1,"unit":"count","limit":100,"source":"manual","observedBy":"fleet-feed-collector"}
+{"ts":"2026-10-24T12:00:00Z","serviceId":"turso","metricId":"storage","value":0,"unit":"gb","limit":5,"source":"manual","observedBy":"fleet-feed-collector"}
+{"ts":"2026-10-25T12:00:00Z","serviceId":"github","metricId":"actions-comped-minutes","value":3079,"unit":"minutes","source":"manual","observedBy":"fleet-feed-collector"}
+{"ts":"2026-10-31T12:00:00Z","serviceId":"modal","metricId":"compute-credits","value":0,"unit":"usd","limit":30,"source":"manual","observedBy":"fleet-feed-collector"}
+{"ts":"2026-10-24T12:00:00Z","serviceId":"bitwarden","metricId":"secrets-count","value":121,"unit":"count","source":"manual","observedBy":"fleet-feed-collector"}
+{"ts":"2026-10-24T12:00:00Z","serviceId":"bitwarden","metricId":"projects-count","value":1,"unit":"count","source":"manual","observedBy":"fleet-feed-collector"}
+{"ts":"2026-10-21T12:00:00Z","serviceId":"backblaze-b2","metricId":"payg-estimate","value":{"low":0,"high":0.07},"unit":"usd-est","source":"estimate","observedBy":"fleet-feed-collector"}
+{"ts":"2026-10-25T12:00:00Z","serviceId":"meta","metricId":"payg-accrued","value":23.92,"unit":"usd","source":"console","observedBy":"fleet-feed-collector"}
+{"ts":"2026-10-25T12:00:00Z","serviceId":"cloudflare","metricId":"gateway-accrual-est","value":{"low":29.6,"high":45.1},"unit":"usd-est","source":"estimate","observedBy":"fleet-feed-collector"}

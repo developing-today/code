@@ -1,0 +1,2 @@
+{"ts":"2026-11-08T15:46:04.559Z","serviceId":"domains","metricId":"total-annual-usd","value":612.54,"unit":"usd","source":"manual","observedBy":"fleet-feed-collector"}
+{"ts":"2026-11-08T15:46:04.559Z","serviceId":"domains","metricId":"domain-count","value":40,"unit":"count","source":"manual","observedBy":"fleet-feed-collector"}
