@@ -416,6 +416,22 @@ impl WorldJournal for FileJournal {
             *version = required;
         }
         entries.extend(transaction.iter().cloned());
+        // Enforce the byte cap here as well (issue #10730): a transaction
+        // writes the whole replacement journal through `compact`, which
+        // deliberately has no cap of its own so a checkpoint trim can shrink
+        // an over-cap journal. Measuring the exact encoded replacement and
+        // refusing before any file work keeps a transaction from pushing the
+        // journal past `max_bytes`.
+        let would_write = entries.iter().try_fold(0u64, |total, entry| {
+            let line = serde_json::to_vec(entry).context("encode journal entry")?;
+            Ok::<u64, anyhow::Error>(total + line.len() as u64 + 1)
+        })?;
+        ensure!(
+            would_write <= self.max_bytes,
+            "world journal {} would exceed its byte cap ({would_write} > {} bytes); transaction refused",
+            self.path.display(),
+            self.max_bytes
+        );
         // `compact` builds and syncs a complete sibling journal before a
         // single rename, so a failed transaction leaves the previous journal
         // intact and a crash sees either all entries or none of them.
@@ -1231,6 +1247,40 @@ mod tests {
         );
         let (_journal, replayed) = FileJournal::open_with_max_bytes(&path, "w", 512).unwrap();
         assert_eq!(replayed.len(), 1 + appended);
+    }
+
+    // #10730: a transaction cannot bypass the byte cap, and a refused
+    // transaction leaves the journal exactly as it was.
+    #[test]
+    fn journal_transactions_are_refused_at_the_byte_cap() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("journal.jsonl");
+        let (mut journal, entries) = FileJournal::open_with_max_bytes(&path, "w", 512).unwrap();
+        assert_eq!(entries.len(), 1, "a fresh journal holds only its header");
+        let fitting = [JournalEntry::CapsGranted {
+            granted: vec!["chat".to_owned()],
+        }];
+        journal.append_transaction(&fitting).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let oversized = [JournalEntry::CapsGranted {
+            granted: vec!["x".repeat(1024)],
+        }];
+        let refusal = journal.append_transaction(&oversized).unwrap_err();
+        assert!(
+            refusal.to_string().contains("byte cap"),
+            "the refusal names the cap: {refusal}"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "a refused transaction leaves the journal untouched"
+        );
+        assert!(
+            std::fs::metadata(&path).unwrap().len() <= 512,
+            "the file never exceeds the cap"
+        );
+        let (_journal, replayed) = FileJournal::open_with_max_bytes(&path, "w", 512).unwrap();
+        assert_eq!(replayed.len(), 2, "only the fitting transaction landed");
     }
 
     // The production cap leaves ordinary appends untouched, and a capped
