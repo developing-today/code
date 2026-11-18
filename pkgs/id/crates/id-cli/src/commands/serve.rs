@@ -2001,9 +2001,14 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                         anyhow::anyhow!("open the gallery in {}: {error:#}", dir.display())
                     })?;
                     status!(
-                        "gallery: {} program bundles and {} featured collections from {}",
+                        "gallery: {} program bundles ({} listed, {} admission), {} featured collections and {} transparency entries from {}",
                         gallery.registry().len(),
+                        gallery
+                            .list(&id_worlds::program_registry::ListQuery::default())
+                            .len(),
+                        gallery.admission().config().posture.as_str(),
                         gallery.collections().count(),
+                        gallery.admission().list().len(),
                         dir.display()
                     );
                     Some(std::sync::Arc::new(std::sync::RwLock::new(gallery)))

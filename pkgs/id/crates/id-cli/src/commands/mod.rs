@@ -59,6 +59,7 @@ pub mod claim;
 pub mod client;
 pub mod doc;
 pub mod find;
+pub mod gallery;
 pub mod get;
 pub mod group;
 pub mod id;
@@ -86,6 +87,7 @@ pub use doc::cmd_doc;
 pub use find::{
     PeekOptions, SearchOptions, cmd_find, cmd_find_matches, cmd_peek, cmd_search, cmd_show,
 };
+pub use gallery::cmd_gallery;
 pub use get::{cmd_get_local, cmd_get_multi, cmd_get_one, cmd_get_one_remote, cmd_gethash};
 pub use group::{cmd_delegate, cmd_group, cmd_revoke};
 pub use id::cmd_id;

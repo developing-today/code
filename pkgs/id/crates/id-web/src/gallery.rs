@@ -14,6 +14,14 @@
 //! - `GET /api/gallery/collections` and
 //!   `GET /api/gallery/collections/{operator}/{name}`: featured collections,
 //!   each signed by and attributed to its operator (G4).
+//! - `GET /api/gallery/transparency?after=&limit=`: the public list of
+//!   removals, refusals and reinstatements, with the admission posture and
+//!   any stated response times (G6, #10005).
+//!
+//! The listing routes show only records the operator's admission lists. A
+//! fetch of a record removed or refused here answers 410 Gone with the
+//! transparency entry that explains it, so the decision is never silent;
+//! the bundle stays valid and may be listed by other hosts.
 //!
 //! Operator speech (collections and the operator's tags, G2) is always
 //! under a field that names the operator, never mixed into a record, so a
@@ -38,6 +46,9 @@ use serde::{Deserialize, Serialize};
 
 use id_worlds::program_bundle::BundleRecord;
 use id_worlds::program_gallery::{Gallery, SearchQuery};
+use id_worlds::program_gallery_admission::{
+    AdmissionPosture, MAX_TRANSPARENCY_PAGE, ReasonClass, TransparencyEntry,
+};
 use id_worlds::program_gallery_operator::SignedCollection;
 use id_worlds::program_registry::ListQuery;
 
@@ -66,6 +77,7 @@ pub fn gallery_routes() -> Router<Option<SharedGallery>> {
             "/api/gallery/collections/{operator}/{name}",
             get(collection_handler),
         )
+        .route("/api/gallery/transparency", get(transparency_handler))
 }
 
 /// A list or search answer.
@@ -108,6 +120,35 @@ pub struct FeaturedAnswer {
 pub struct CollectionsAnswer {
     /// The collections, ordered by operator key then name.
     pub collections: Vec<FeaturedAnswer>,
+}
+
+/// A page of the transparency list (G6).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TransparencyAnswer {
+    /// Whether records are listed before review.
+    pub posture: AdmissionPosture,
+    /// The operator's stated response time per reason class, in hours.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub response_hours: BTreeMap<ReasonClass, u32>,
+    /// The entries after the requested sequence, in order.
+    pub entries: Vec<TransparencyEntry>,
+    /// Pass as `after` for the next page, when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_after: Option<u64>,
+}
+
+/// The answer to a fetch of a record this gallery stopped listing.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UnlistedAnswer {
+    /// The removal or refusal, as it stands on the transparency list.
+    pub unlisted_by: TransparencyEntry,
+}
+
+#[derive(Debug, Deserialize)]
+struct TransparencyParams {
+    #[serde(default)]
+    after: u64,
+    limit: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -167,12 +208,22 @@ async fn bundle_handler(
         )
             .into_response();
     }
-    let bytes = match gallery.read() {
-        Ok(gallery) => gallery.fetch(&content_hash),
+    let (bytes, unlisted_by) = match gallery.read() {
+        Ok(gallery) => (
+            gallery.fetch(&content_hash),
+            gallery.unlisted_by(&content_hash).cloned(),
+        ),
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let Some(bytes) = bytes else {
-        return StatusCode::NOT_FOUND.into_response();
+        return unlisted_by.map_or_else(
+            || StatusCode::NOT_FOUND.into_response(),
+            |unlisted_by| {
+                let mut response = listing(&UnlistedAnswer { unlisted_by });
+                *response.status_mut() = StatusCode::GONE;
+                response
+            },
+        );
     };
     let mut response = bytes.into_response();
     let headers = response.headers_mut();
@@ -263,6 +314,36 @@ async fn collection_handler(
         || StatusCode::NOT_FOUND.into_response(),
         |answer| listing(&answer),
     )
+}
+
+async fn transparency_handler(
+    State(gallery): State<Option<SharedGallery>>,
+    Query(params): Query<TransparencyParams>,
+) -> Response {
+    let Some(gallery) = gallery else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let answer = match gallery.read() {
+        Ok(gallery) => {
+            let admission = gallery.admission();
+            let list = admission.list();
+            let entries = list
+                .page(params.after, params.limit.unwrap_or(MAX_TRANSPARENCY_PAGE))
+                .to_vec();
+            let next_after = entries
+                .last()
+                .map(|last| last.sequence)
+                .filter(|&last| usize::try_from(last).is_ok_and(|last| last < list.len()));
+            TransparencyAnswer {
+                posture: admission.config().posture,
+                response_hours: admission.config().response_hours.clone(),
+                entries,
+                next_after,
+            }
+        }
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    listing(&answer)
 }
 
 /// A stored collection with the attribution its own signature proves.
@@ -428,6 +509,7 @@ mod tests {
             "/api/gallery/records",
             "/api/gallery/search?q=chess",
             &format!("/api/gallery/bundles/{}", "0".repeat(64)),
+            "/api/gallery/transparency",
         ] {
             assert_eq!(get(&app, uri).await.0, StatusCode::NOT_FOUND, "{uri}");
         }
@@ -504,5 +586,70 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND, "attribution is by signer");
+    }
+
+    #[tokio::test]
+    async fn a_removal_is_public_and_a_fetch_of_it_says_why() {
+        use id_worlds::program_gallery_admission::{AdmissionAction, ReasonClass};
+
+        let registry = Registry::open_dir(tempfile::tempdir().unwrap().keep(), AdmitAll).unwrap();
+        let gallery = Arc::new(RwLock::new(Gallery::new(registry)));
+        let (chess, go) = (
+            bundle("chess", 1, "Board game.", &["board"]),
+            bundle("go", 1, "Stones.", &["board"]),
+        );
+        let hash = chess.manifest().content_hash.clone();
+        {
+            let mut gallery = gallery.write().unwrap();
+            gallery.publish(&chess.to_bytes()).unwrap();
+            gallery.publish(&go.to_bytes()).unwrap();
+            gallery
+                .remove(
+                    &hash,
+                    ReasonClass::Malware,
+                    100,
+                    Some("reported".to_owned()),
+                )
+                .unwrap();
+        }
+        let app = app(Some(Arc::clone(&gallery)));
+
+        let (status, headers, body) = get(&app, &format!("/api/gallery/bundles/{hash}")).await;
+        assert_eq!(status, StatusCode::GONE);
+        assert_ne!(headers[header::CACHE_CONTROL], BUNDLE_CACHE);
+        let gone: UnlistedAnswer = serde_json::from_slice(&body).unwrap();
+        assert_eq!(gone.unlisted_by.record, chess.identity());
+        assert_eq!(gone.unlisted_by.reason, ReasonClass::Malware);
+
+        let (_, _, body) = get(&app, "/api/gallery/records").await;
+        let records: RecordsAnswer = serde_json::from_slice(&body).unwrap();
+        assert_eq!(records.records, vec![go.record()]);
+        let (_, _, body) = get(&app, "/api/gallery/search?q=board").await;
+        let found: RecordsAnswer = serde_json::from_slice(&body).unwrap();
+        assert_eq!(found.records, vec![go.record()]);
+
+        gallery
+            .write()
+            .unwrap()
+            .reinstate(&hash, 200, None)
+            .unwrap();
+        assert_eq!(
+            get(&app, &format!("/api/gallery/bundles/{hash}")).await.0,
+            StatusCode::OK
+        );
+
+        let (status, _, body) = get(&app, "/api/gallery/transparency?limit=1").await;
+        assert_eq!(status, StatusCode::OK);
+        let page: TransparencyAnswer = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.posture, AdmissionPosture::Open);
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(page.entries[0].action, AdmissionAction::Removed);
+        assert_eq!(page.next_after, Some(1));
+        let (_, _, body) = get(&app, "/api/gallery/transparency?after=1").await;
+        let page: TransparencyAnswer = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(page.entries[0].action, AdmissionAction::Reinstated);
+        assert_eq!(page.entries[0].reverses, Some(1));
+        assert_eq!(page.next_after, None);
     }
 }

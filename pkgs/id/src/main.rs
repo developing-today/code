@@ -457,6 +457,7 @@ async fn main() -> Result<()> {
             id::commands::cmd_unpublish(listen.as_deref(), path.as_deref()).await
         }
         Some(Command::Publications) => id::commands::cmd_publications().await,
+        Some(Command::Gallery(args)) => id::commands::cmd_gallery(args),
         #[cfg(feature = "sandbox")]
         Some(Command::MatchAudit(command)) => id::commands::cmd_match_audit(command),
         #[cfg(feature = "world")]
