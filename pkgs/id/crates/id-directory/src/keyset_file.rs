@@ -330,18 +330,26 @@ fn append_final_heads(path: &Path, heads: &[String]) -> Result<()> {
         .with_context(|| format!("could not write {}", path.display()))
 }
 
-fn read_log(path: &Path) -> Result<Log> {
-    let text = match std::fs::read_to_string(path) {
+/// The complete lines of a JSONL file: empty when it does not exist,
+/// and without a torn final line.
+///
+/// # Errors
+///
+/// Fails if the file exists but cannot be read.
+pub(crate) fn read_complete(path: &Path) -> Result<String> {
+    let mut text = match std::fs::read_to_string(path) {
         Ok(text) => text,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Log::default()),
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(String::new()),
         Err(error) => {
             return Err(error).with_context(|| format!("could not read {}", path.display()));
         }
     };
-    let complete = match text.rfind('\n') {
-        Some(end) => &text[..=end],
-        None => "",
-    };
+    text.truncate(text.rfind('\n').map_or(0, |end| end + 1));
+    Ok(text)
+}
+
+fn read_log(path: &Path) -> Result<Log> {
+    let complete = read_complete(path)?;
     let mut log = Log::default();
     for (index, line) in complete.lines().enumerate() {
         if line.trim().is_empty() {
@@ -361,7 +369,13 @@ fn read_log(path: &Path) -> Result<Log> {
     Ok(log)
 }
 
-fn append_line(path: &Path, record: &KeysetRecord) -> Result<()> {
+/// Appends `record` as one JSON line and syncs, first cutting any torn
+/// final line.
+///
+/// # Errors
+///
+/// Fails if the record cannot be encoded or the file written.
+pub(crate) fn append_line<T: serde::Serialize>(path: &Path, record: &T) -> Result<()> {
     drop_torn_tail(path)?;
     let mut line = serde_json::to_vec(record)?;
     line.push(b'\n');

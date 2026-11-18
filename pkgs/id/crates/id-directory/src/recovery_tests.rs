@@ -829,7 +829,7 @@ fn pending_guardian_removal_takes_effect_after_delay() {
     let next = KeysetRecord::sign(
         &key(OWNER),
         head.records_folded + 1,
-        head.head_hash.clone(),
+        head.head_hash,
         KeysetEntry::IdpBindingBound {
             binding_id: "later".to_owned(),
         },
@@ -880,4 +880,122 @@ fn adding_folds_at_once_and_restoring_cancels_a_pending_removal() {
     );
     assert!(restored.pending_guardian_set.is_none());
     assert_eq!(restored.guardian_set, owner_head().guardian_set);
+}
+
+// The directory relay (server role: relay and timestamp only).
+
+mod relay {
+    use super::*;
+    use crate::recovery_relay::{RecoveryRelay, RelayedRecord};
+
+    fn store() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recovery-relay.jsonl");
+        (dir, path)
+    }
+
+    #[test]
+    fn a_first_seen_time_is_attested_once_and_survives_a_restart() {
+        let (_dir, path) = store();
+        let request = request(&owner_head(), "lost");
+        let mut relay = RecoveryRelay::open(&path).unwrap();
+        let first = relay
+            .relay(RelayedRecord::Annex(request.clone()), CREATED_AT + 5)
+            .unwrap();
+        assert_eq!((first.first_seen, first.new), (CREATED_AT + 5, true));
+        // Sending it again cannot move the time, so it cannot shorten
+        // the delay.
+        let again = relay
+            .relay(RelayedRecord::Annex(request.clone()), AFTER_DELAY)
+            .unwrap();
+        assert_eq!((again.first_seen, again.new), (CREATED_AT + 5, false));
+        let reopened = RecoveryRelay::open(&path).unwrap();
+        assert_eq!(reopened.first_seen(&request.hash), Some(CREATED_AT + 5));
+    }
+
+    #[test]
+    fn a_request_is_never_attested_before_it_was_created() {
+        let (_dir, path) = store();
+        let request = request(&owner_head(), "lost");
+        let mut relay = RecoveryRelay::open(&path).unwrap();
+        let seen = relay
+            .relay(RelayedRecord::Annex(request), CREATED_AT - 500)
+            .unwrap();
+        assert_eq!(seen.first_seen, CREATED_AT);
+    }
+
+    #[test]
+    fn the_relay_refuses_forged_records() {
+        let (_dir, path) = store();
+        let head = owner_head();
+        let request = request(&head, "lost");
+        let mut forged = approval(&head, &request, 11, 11);
+        if let AnnexEntry::RecoveryApproval { guardian, .. } = &mut forged.entry {
+            *guardian = public(12);
+        }
+        let mut relay = RecoveryRelay::open(&path).unwrap();
+        assert!(
+            relay
+                .relay(RelayedRecord::Annex(forged.clone()), CREATED_AT)
+                .is_err()
+        );
+        let honest = approval(&head, &request, 11, 11);
+        let mut rotation = rotation(&head, &request, &[&honest]);
+        rotation.lamport += 1;
+        assert!(
+            relay
+                .relay(RelayedRecord::Keyset(rotation), CREATED_AT)
+                .is_err()
+        );
+        assert_eq!(relay.first_seen(&forged.hash), None);
+        // A record tampered on disk is refused when the store opens.
+        relay
+            .relay(RelayedRecord::Annex(request), CREATED_AT)
+            .unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.replace("\"lost\"", "\"found\"")).unwrap();
+        assert!(RecoveryRelay::open(&path).is_err());
+    }
+
+    /// Relays the recovered identity's annex at `CREATED_AT` and its
+    /// rotation at `rotation_seen`, then folds from what the relay holds.
+    fn fold_from_relay(rotation_seen: u64) -> (KeysetState, KeysetState, KeysetRecord) {
+        let (log, genesis, head, annex, rotation) = recovered();
+        let (_dir, path) = store();
+        let mut relay = RecoveryRelay::open(&path).unwrap();
+        for record in annex {
+            relay
+                .relay(RelayedRecord::Annex(record), CREATED_AT)
+                .unwrap();
+        }
+        relay
+            .relay(RelayedRecord::Keyset(rotation.clone()), rotation_seen)
+            .unwrap();
+        assert!(relay.annex(&public(GUARDIANS[0])).is_empty());
+        let annex = relay.annex(&public(OWNER));
+        let keyset_first_seen = relay.keyset_first_seen();
+        let folds = guardian_folds();
+        let evidence = RecoveryEvidence {
+            annex: &annex,
+            guardian_folds: &folds,
+            keyset_first_seen: &keyset_first_seen,
+        };
+        let folded = fold_with_recovery(&log, &genesis, &BTreeSet::new(), &evidence).unwrap();
+        (head, folded, rotation)
+    }
+
+    #[test]
+    fn relayed_evidence_folds_a_recovery_only_after_the_delay() {
+        let (head, folded, rotation) = fold_from_relay(AFTER_DELAY);
+        let successor = Successor {
+            admin_key: public(SUCCESSOR),
+            device_key: public(SUCCESSOR_DEVICE),
+        };
+        assert_eq!(
+            folded,
+            apply_rotation(&head, &rotation, &successor).unwrap()
+        );
+        let (head, early, _) = fold_from_relay(AFTER_DELAY - 1);
+        assert_eq!(early, head);
+    }
 }
