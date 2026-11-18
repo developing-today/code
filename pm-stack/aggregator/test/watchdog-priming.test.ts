@@ -21,6 +21,9 @@ interface AttentionEntry {
 let proc: Subprocess | undefined;
 let firstAttention: AttentionEntry[] | undefined;
 
+// #10467: starting the aggregator subprocess can take longer than bun's
+// default 5 s hook budget on a loaded machine; give the hook room to
+// reach its own readiness deadline and fail with that message instead.
 beforeAll(async () => {
   const dir = await mkdtemp(join(tmpdir(), "pm-watchdog-"));
   const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
@@ -94,7 +97,7 @@ beforeAll(async () => {
     if (!firstAttention) await Bun.sleep(150);
   }
   expect(firstAttention).toBeDefined();
-});
+}, 60_000);
 
 afterAll(() => {
   proc?.kill();
