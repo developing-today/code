@@ -147,6 +147,8 @@ in
         home-manager.users.user = {
           imports = [ ../home/laptop-backups.nix ];
           services.laptop-backups.enable = true;
+          # muse-dev2 deleted; preserve existing dumps, retire failed source backup.
+          services.laptop-backups.supabase.enable = false;
         };
       }
       {
@@ -234,7 +236,7 @@ in
         # the store units below.
         home-manager.users.user = {
           imports = [ ../home/supabase-turso-coord-mirror.nix ];
-          services.supabase-turso-coord-mirror.enable = true;
+          services.supabase-turso-coord-mirror.enable = false; # source retired 2026-11-18
         };
       }
       {

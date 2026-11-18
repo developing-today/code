@@ -377,6 +377,16 @@ conditional file supabase/agg_activity_ingestion.json
 conditional file supabase/agg_activity_gaps.json
 conditional file supabase/agg_usage_snapshots.json
 conditional file supabase/agg_store_documents.json
+conditional file turso/agg_actions.json
+conditional file turso/agg_activity_ingestion.json
+conditional file turso/agg_activity_gaps.json
+conditional file turso/agg_usage_snapshots.json
+conditional file turso/agg_store_documents.json
+conditional file turso/alerts_incidents.json
+conditional file turso/alerts_incident_events.json
+conditional file turso/alerts_push_subscriptions.json
+conditional file turso/alerts_notification_sends.json
+conditional file turso/orch_runs.json
 conditional tree db-dumps
 conditional file projector/pmp_links.sql
 optional tree aggregator/snapshots
@@ -610,13 +620,14 @@ fi
 # relocated project; the password and project ref come from Bitwarden by
 # key name only and are never logged.
 SUPA_RAN=0
+TURSO_RAN=0
 SUPA_MODE="${PM_AGG_SUPABASE_EXPORT:-auto}"
 case "$SUPA_MODE" in
 auto | off) ;;
 *) fail "PM_AGG_SUPABASE_EXPORT must be auto or off, got '$SUPA_MODE'" ;;
 esac
-SUPA_BACKEND=""
-if [ -f "$AGG/.env" ]; then
+SUPA_BACKEND="${PM_AGG_STORE_BACKEND:-}"
+if [ -z "$SUPA_BACKEND" ] && [ -f "$AGG/.env" ]; then
   SUPA_BACKEND="$(grep -E '^[[:space:]]*(export[[:space:]]+)?PM_AGG_STORE_BACKEND[[:space:]]*=' "$AGG/.env" 2>/dev/null |
     tail -n 1 | sed -E 's/^[[:space:]]*(export[[:space:]]+)?PM_AGG_STORE_BACKEND[[:space:]]*=[[:space:]]*//')"
   SUPA_BACKEND="$(pmp_trim_value "$SUPA_BACKEND")"
@@ -666,6 +677,21 @@ PYEOF
   )" || fail "Supabase export produced unreadable JSON"
   SUPA_RAN=1
   log "canonical aggregator stores exported from Supabase: $SUPA_COUNTS"
+elif [ "$SUPA_MODE" = "auto" ] && [ "$SUPA_BACKEND" = "turso" ]; then
+  TURSO_EXPORT_BIN="${PM_AGG_TURSO_EXPORT_BIN:-pm-aggregator-export-turso-stores}"
+  command -v "$TURSO_EXPORT_BIN" >/dev/null 2>&1 || fail "Turso exporter not found"
+  "$TURSO_EXPORT_BIN" --output-dir "$STAGE/turso" || fail "Turso canonical store export failed"
+  python3 - "$STAGE/turso" <<'PYEOF'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+for name in ('agg_actions','agg_activity_ingestion','agg_activity_gaps','agg_usage_snapshots','agg_store_documents','alerts_incidents','alerts_incident_events','alerts_push_subscriptions','alerts_notification_sends','orch_runs'):
+    rows = json.loads((root / (name + '.json')).read_text())
+    if not isinstance(rows, list): raise SystemExit(name + ': not a JSON array')
+    print(name + '=' + str(len(rows)))
+PYEOF
+  [ $? -eq 0 ] || fail "Turso export produced unreadable or missing JSON"
+  TURSO_RAN=1
+  log "canonical aggregator stores exported from Turso"
 else
   log "aggregator store backend is '${SUPA_BACKEND:-file}' — Supabase store export not applicable"
 fi
@@ -687,7 +713,7 @@ done
 # --- manifest (files as staged + the expected set's per-member status) ---
 AGG_DIR="$AGG" AGG_DERIVED="$AGG_DERIVED" \
   EXPECTED_SET="$EXPECTED_SET" DUMP_RAN="$DUMP_RAN" PMP_RAN="$PMP_RAN" \
-  SUPA_RAN="$SUPA_RAN" \
+  SUPA_RAN="$SUPA_RAN" TURSO_RAN="$TURSO_RAN" \
   python3 - "$STAGE" "$DATE" "$CREATED_AT" <<'PYEOF'
 import hashlib, json, os, sys
 stage, date, created = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -716,6 +742,8 @@ for line in os.environ.get("EXPECTED_SET", "").splitlines():
     if cls == "conditional":
         if rel.startswith("supabase/"):
             ran = os.environ.get("SUPA_RAN")
+        elif rel.startswith("turso/"):
+            ran = os.environ.get("TURSO_RAN")
         elif rel.startswith("projector/"):
             ran = os.environ.get("PMP_RAN")
         else:
