@@ -3665,9 +3665,7 @@ async function handler(req: Request): Promise<Response> {
         requestAlertTick();
       }
     } catch (err) {
-      console.error(
-        `needs-drew answer: incident close failed (${err instanceof Error ? err.message : "error"})`,
-      );
+      console.error(`needs-drew answer: incident close failed (${err instanceof Error ? err.message : "error"})`);
     }
     return json({
       ledgerId,

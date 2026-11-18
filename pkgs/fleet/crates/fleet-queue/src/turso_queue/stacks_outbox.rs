@@ -559,7 +559,10 @@ pub(crate) fn outbox_circuit(t: &TursoBackend) -> Result<crate::creation_outbox:
     Ok(circuit)
 }
 
-pub(crate) fn outbox_circuit_save(t: &TursoBackend, c: &crate::creation_outbox::Circuit) -> Result<(), TErr> {
+pub(crate) fn outbox_circuit_save(
+    t: &TursoBackend,
+    c: &crate::creation_outbox::Circuit,
+) -> Result<(), TErr> {
     t.exec(
         "INSERT INTO creation_outbox_circuit (id, consecutive_rate_limits, open_until, last_error_class, updated_at) \
          VALUES (1, ?, ?, ?, ?) \

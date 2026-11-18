@@ -660,7 +660,12 @@ impl TursoBackend {
 
     /// Rows of one SELECT as JSON objects, with the given TEXT
     /// columns parsed back into JSON values.
-    pub(crate) fn query_objs(&self, sql: &str, args: &[Arg], json_cols: &[&str]) -> Result<Vec<Value>, TErr> {
+    pub(crate) fn query_objs(
+        &self,
+        sql: &str,
+        args: &[Arg],
+        json_cols: &[&str],
+    ) -> Result<Vec<Value>, TErr> {
         let r = self.exec(sql, args)?;
         Ok(r.rows
             .iter()
@@ -998,7 +1003,9 @@ pub(crate) fn event(
 /// Parse an /events-append request: kind is required and must be a
 /// non-empty string; worker_id/task_id optional (the PG stream's
 /// non-queue writers always wrote task_id NULL); detail defaults {}.
-pub(crate) fn parse_event_append(req: &Value) -> Result<(Option<String>, Option<i64>, String, Value), String> {
+pub(crate) fn parse_event_append(
+    req: &Value,
+) -> Result<(Option<String>, Option<i64>, String, Value), String> {
     let kind = req_str(req, "kind")
         .map(str::trim)
         .filter(|k| !k.is_empty())
@@ -1622,7 +1629,11 @@ pub(crate) fn issue_number_for_repo(key: &str, repo: &str) -> Option<i64> {
         .or_else(|| legacy_alias(repo).and_then(|alias| issue_number_from_dedupe(key, alias)))
 }
 
-pub(crate) fn touch_worker(t: &TursoBackend, worker: &str, task_id: Option<i64>) -> Result<(), TErr> {
+pub(crate) fn touch_worker(
+    t: &TursoBackend,
+    worker: &str,
+    task_id: Option<i64>,
+) -> Result<(), TErr> {
     // PG workers is the roster table (id/role/display_name/status/
     // last_heartbeat_at): a touch upserts the heartbeat and marks
     // the worker working while it holds a task, idle when it
@@ -1872,7 +1883,11 @@ pub(crate) fn execution_lane_fields(ex: &Value) -> (Option<String>, Option<Strin
 /// record_repo_task_lane_execution, contract-shaped: stamp the
 /// executed lane (+ fallback reason / session) onto the task's
 /// ledger row, creating a minimal row when assignment never ran.
-pub(crate) fn record_execution(t: &TursoBackend, req: &Value, row: &Value) -> Result<Option<Value>, TErr> {
+pub(crate) fn record_execution(
+    t: &TursoBackend,
+    req: &Value,
+    row: &Value,
+) -> Result<Option<Value>, TErr> {
     let Some(ex) = req.get("execution").filter(|e| e.is_object()) else {
         return Ok(None);
     };
@@ -1927,7 +1942,11 @@ pub(crate) fn record_execution(t: &TursoBackend, req: &Value, row: &Value) -> Re
     get_ledger(t, task_id)
 }
 
-pub(crate) fn verb_with_execution(t: &TursoBackend, req: &Value, row: Value) -> Result<Value, TErr> {
+pub(crate) fn verb_with_execution(
+    t: &TursoBackend,
+    req: &Value,
+    row: Value,
+) -> Result<Value, TErr> {
     if row.is_null() {
         return Ok(ok(json!({"row": Value::Null})));
     }

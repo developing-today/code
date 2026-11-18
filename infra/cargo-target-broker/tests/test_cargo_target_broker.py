@@ -41,7 +41,9 @@ class EvictionTest(unittest.TestCase):
         self.broker.__exit__(None, None, None)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def add_dir(self, name: str, size: int, last_used: float, key: str | None = None) -> Path:
+    def add_dir(
+        self, name: str, size: int, last_used: float, key: str | None = None
+    ) -> Path:
         path = self.pool / name
         path.mkdir(parents=True)
         (path / "blob").write_bytes(b"x" * size)

@@ -42,7 +42,10 @@ describe("readBodyUpTo (#11335)", () => {
     const text = '{"a":"é😀"}';
     const bytes = new TextEncoder().encode(text);
     const { body } = counting([bytes.slice(0, 7), bytes.slice(7)]);
-    const out = await readBodyUpTo({ headers: new Headers({ "content-length": String(bytes.byteLength) }), body }, bytes.byteLength);
+    const out = await readBodyUpTo(
+      { headers: new Headers({ "content-length": String(bytes.byteLength) }), body },
+      bytes.byteLength,
+    );
     expect(out).toBe(text);
   });
 

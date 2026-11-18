@@ -41,10 +41,14 @@ class SubprocessBoundsTest(unittest.TestCase):
         self.assertIn("timed out", str(ctx.exception))
 
     def test_gh_graphql_is_bounded(self):
-        self.assert_times_out(lambda: sweeper.gh_graphql("query{viewer{login}}"), "gh api graphql")
+        self.assert_times_out(
+            lambda: sweeper.gh_graphql("query{viewer{login}}"), "gh api graphql"
+        )
 
     def test_gh_run_is_bounded(self):
-        self.assert_times_out(lambda: sweeper.gh_run("api", "rate_limit"), "gh api rate_limit")
+        self.assert_times_out(
+            lambda: sweeper.gh_run("api", "rate_limit"), "gh api rate_limit"
+        )
 
     def test_kaneo_psql_is_bounded(self):
         self.assert_times_out(sweeper.kaneo_links, "kaneo psql")
@@ -53,10 +57,14 @@ class SubprocessBoundsTest(unittest.TestCase):
         done = subprocess.CompletedProcess([], 0, stdout="ok\n", stderr="")
         with mock.patch.object(sweeper.subprocess, "run", return_value=done) as run:
             self.assertEqual(sweeper.gh_run("api", "rate_limit"), "ok\n")
-        self.assertEqual(run.call_args.kwargs["timeout"], sweeper.SUBPROCESS_TIMEOUT_SECS)
+        self.assertEqual(
+            run.call_args.kwargs["timeout"], sweeper.SUBPROCESS_TIMEOUT_SECS
+        )
 
     def test_the_timer_unit_has_an_outer_bound(self):
-        unit = (SWEEPER_PATH.parent / "systemd" / "pm-invariant-sweeper.service").read_text()
+        unit = (
+            SWEEPER_PATH.parent / "systemd" / "pm-invariant-sweeper.service"
+        ).read_text()
         self.assertIn("TimeoutStartSec=", unit)
 
 

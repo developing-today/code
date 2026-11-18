@@ -914,7 +914,6 @@ pub(super) fn normalize_execution(mut val: Value) -> Result<Value, String> {
     Ok(val)
 }
 
-
 pub(super) fn execution_arg(args: &Args) -> Option<Value> {
     let raw = args.get("execution")?;
     let val: Value = match serde_json::from_str(&raw) {

@@ -15,9 +15,29 @@ pub const PRIMARY_OK_ENV: &str = "LAPTOP_AGENT_PRIMARY_OK";
 
 /// Git subcommands that change a repository.
 const MUTATING: &[&str] = &[
-    "add", "am", "apply", "branch", "checkout", "cherry-pick", "clean", "commit", "gc", "merge",
-    "mv", "pull", "push", "rebase", "reset", "restore", "revert", "rm", "stash", "switch", "tag",
-    "update-ref", "worktree",
+    "add",
+    "am",
+    "apply",
+    "branch",
+    "checkout",
+    "cherry-pick",
+    "clean",
+    "commit",
+    "gc",
+    "merge",
+    "mv",
+    "pull",
+    "push",
+    "rebase",
+    "reset",
+    "restore",
+    "revert",
+    "rm",
+    "stash",
+    "switch",
+    "tag",
+    "update-ref",
+    "worktree",
 ];
 
 pub fn is_primary_checkout(dir: &Path) -> bool {
@@ -88,7 +108,10 @@ mod tests {
 
     #[test]
     fn git_mutations_are_found_past_global_options() {
-        assert_eq!(git_mutation(&words("git -C /x commit -m m")), Some(("commit".into(), Some("/x"))));
+        assert_eq!(
+            git_mutation(&words("git -C /x commit -m m")),
+            Some(("commit".into(), Some("/x")))
+        );
         assert_eq!(git_mutation(&words("git status")), None);
         assert_eq!(git_mutation(&words("ls -la")), None);
     }

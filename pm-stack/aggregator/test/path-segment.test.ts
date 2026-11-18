@@ -87,9 +87,9 @@ describe("malformed percent-encoding is a JSON 400 on both routes (#2747 matrix)
   }
 
   test("/item/<known board id> still resolves 200", async () => {
-    const board = (await (
-      await fetch(`http://127.0.0.1:${port}/api/board.json`)
-    ).json()) as { board: { id: string }[] };
+    const board = (await (await fetch(`http://127.0.0.1:${port}/api/board.json`)).json()) as {
+      board: { id: string }[];
+    };
     const id = encodeURIComponent(board.board[0].id);
     const res = await fetch(`http://127.0.0.1:${port}/item/${id}`);
     expect(res.status).toBe(200);
