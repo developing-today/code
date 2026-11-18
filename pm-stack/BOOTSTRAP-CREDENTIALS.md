@@ -22,8 +22,8 @@ step 2 of `COLD-RESTORE-RUNBOOK.md`:
    automated and is not stored in any backup.
 4. **1Password service-account tokens.** Fetch from BWS by the `op muse…`
    names.
-5. **SOPS age key.** Tracked in its own gap issue. Reference that issue;
-   do not solve it on this page.
+5. **SOPS age key.** Tracked in its own gap issue, #10295. Reference
+   that issue; do not solve it on this page.
 
 **Sandbox scheduler re-creation** is a platform provisioning step, not a
 backup restore. Do it by the platform procedure, not from the backups.
