@@ -43,6 +43,7 @@
 pub use id_core::port;
 
 pub mod blob_gate;
+pub mod chat_anchor_render;
 pub mod groups;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
