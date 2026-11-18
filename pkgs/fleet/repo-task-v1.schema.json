@@ -1,6 +1,16 @@
 {
   "$id": "repo-task/v1",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "allOf": [{
+    "if": {
+      "required": ["risk"],
+      "properties": {"risk": {
+        "required": ["flags"],
+        "properties": {"flags": {"contains": {"const": "cross-repo-change"}}}
+      }}
+    },
+    "then": {"required": ["implementation_repo"]}
+  }],
   "$defs": {
     "completion_telemetry": {
       "type": "object",
@@ -72,6 +82,11 @@
         "type": "object"
       },
       "type": "array"
+    },
+    "implementation_repo": {
+      "description": "Repository receiving the implementation when different from the issue-tracking repo. Claim repo filters use this field first; issue/dedupe identity remains repo. Explicit owner/name, not a URL.",
+      "type": "string",
+      "pattern": "^(?![.]{1,2}/)[A-Za-z0-9_.-]+/(?![.]{1,2}$)[A-Za-z0-9_.-]+$"
     },
     "repo": {
       "enum": [

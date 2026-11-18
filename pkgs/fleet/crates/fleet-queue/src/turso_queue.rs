@@ -3649,6 +3649,57 @@ mod tests {
     }
 
     #[test]
+    fn implementation_repo_sql_and_budget_matrix() {
+        // Oracle: execute production expressions in isolated SQLite against a model.
+        let output = std::process::Command::new("python3")
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/implementation_repo_sql.py"
+            ))
+            .output()
+            .expect("claim SQL tests require Python 3 with stdlib sqlite3");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn implementation_repo_filters_work_not_tracking_issue() {
+        // Oracle: issue #10415 lives in code, but its deliverable is in Kaneo.
+        // Tracking/dedupe identity must remain code; claim eligibility must not.
+        let row = json!({"queue":"repo-health-code-pilot", "payload": {
+            "repo":"developing-today/code", "implementation_repo":"developing-today/kaneo",
+            "kind":"small_fix", "issue":{"number":10415}
+        }});
+        assert!(!filter_matches(&parse_filter("repo = code").unwrap(), &row));
+        assert!(filter_matches(&parse_filter("repo = kaneo").unwrap(), &row));
+        assert!(filter_matches(&parse_filter("repo != code").unwrap(), &row));
+        let encoded =
+            json!({"queue":"repo-health-code-pilot", "payload":row["payload"].to_string()});
+        assert!(filter_matches(
+            &parse_filter("repo = kaneo").unwrap(),
+            &encoded
+        ));
+        assert_eq!(task_repo_identity(&row), "developing-today/code");
+        assert_eq!(work_identity(&row).unwrap().repo, "developing-today/code");
+        let unknown = json!({"payload":{"repo":"developing-today/code", "risk":{"flags":["cross-repo-change"]}}});
+        assert!(
+            claim_guard_reason(&unknown)
+                .unwrap()
+                .contains("implementation_repo")
+        );
+        let legacy =
+            json!({"queue":"repo-health-code-pilot", "payload":{"repo":"developing-today/code"}});
+        assert!(filter_matches(
+            &parse_filter("repo = code").unwrap(),
+            &legacy
+        ));
+    }
+
+    #[test]
     fn one_queue_task_requirements_match_claimers_automatically_8097() {
         // A task's own declared requirements are honored inside
         // the claim: an ineligible claimer simply does not get
