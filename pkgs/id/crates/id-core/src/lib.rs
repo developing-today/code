@@ -32,6 +32,7 @@ pub mod frames;
 pub mod graph;
 pub mod hex;
 pub mod holders;
+pub mod id_namespace;
 pub mod id_shape;
 pub mod id_uri;
 pub mod intranet;
