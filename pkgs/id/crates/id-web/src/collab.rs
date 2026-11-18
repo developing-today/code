@@ -170,6 +170,12 @@ fn content_to_document(
     (doc, mode)
 }
 
+fn desynchronized_message(lost: u64) -> CollabMessage {
+    CollabMessage::Error {
+        error: format!("Session desynchronized: {lost} messages lost"),
+    }
+}
+
 /// A step in the `ProseMirror` document history.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Step {
@@ -1437,9 +1443,7 @@ async fn handle_collab_socket(
                     );
                     // Tell the client to reconnect for a fresh state.
                     // The client will close the WS → reconnect → get Init + catch-up.
-                    let error_msg = CollabMessage::Error {
-                        error: format!("Session desynchronized: {n} messages lost"),
-                    };
+                    let error_msg = desynchronized_message(n);
                     let mut sender = sender_for_broadcast.lock().await;
                     let _ = sender
                         .send(Message::Binary(error_msg.encode().into()))
@@ -2495,6 +2499,29 @@ mod tests {
                 assert!(error.contains("desynchronized"));
             }
             _ => panic!("Expected Error message"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_lagged_broadcast_produces_recoverable_desync_error() {
+        let (tx, mut rx) = broadcast::channel(1);
+        // Keep the receiver behind until the bounded channel has overwritten
+        // its first item; this induces Lagged deterministically, without sleeps.
+        tx.send(CollabMessage::CursorRemove { client_id: 1 })
+            .unwrap();
+        tx.send(CollabMessage::CursorRemove { client_id: 2 })
+            .unwrap();
+
+        let lost = match rx.recv().await {
+            Err(broadcast::error::RecvError::Lagged(lost)) => lost,
+            other => panic!("expected lagged receiver, got {other:?}"),
+        };
+        match desynchronized_message(lost) {
+            CollabMessage::Error { error } => {
+                assert_eq!(error, "Session desynchronized: 1 messages lost");
+                assert!(error.contains("desynchronized"));
+            }
+            other => panic!("expected recoverable error, got {other:?}"),
         }
     }
 
