@@ -228,6 +228,15 @@ impl BigInt {
         out
     }
 
+    /// Length in bytes of [`BigInt::magnitude_be_bytes`], computed
+    /// without building it.
+    #[must_use]
+    pub fn magnitude_len(&self) -> usize {
+        self.limbs.last().map_or(0, |top| {
+            (self.limbs.len() - 1) * 4 + 4 - (top.leading_zeros() / 8) as usize
+        })
+    }
+
     /// `self + other`.
     #[must_use]
     pub fn add(&self, other: &Self) -> Self {
