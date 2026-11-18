@@ -101,6 +101,8 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor": "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":       "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":             "TestEventsHistoryBoundsTheReplay",
+	"paths.adapters":             "TestPathsAdaptersFindsADeclarationFile",
+	"paths.apis":                 "TestPathsAPIsFindsADeclarationFile",
 	"script.runtime":             "TestScriptRuntimeSelectsTheRuntime",
 	"script.runtimeOrder":        "TestScriptRuntimeOrderRanksTheAutoPick",
 	"script.permissions":         "TestScriptPermissionsSandboxesNode",
@@ -223,6 +225,8 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":        TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                 TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                          TestEventsHistoryBoundsTheReplay,
+	"TestPathsAdaptersFindsADeclarationFile":                                    TestPathsAdaptersFindsADeclarationFile,
+	"TestPathsAPIsFindsADeclarationFile":                                        TestPathsAPIsFindsADeclarationFile,
 	"TestScriptRuntimeSelectsTheRuntime":                                        TestScriptRuntimeSelectsTheRuntime,
 	"TestScriptRuntimeOrderRanksTheAutoPick":                                    TestScriptRuntimeOrderRanksTheAutoPick,
 	"TestScriptPermissionsSandboxesNode":                                        TestScriptPermissionsSandboxesNode,
@@ -2246,6 +2250,41 @@ func TestScriptRuntimesDeclaresARuntime(t *testing.T) {
 	e.setenv(`MCPX_SCRIPT_RUNTIMES={"engine":{"kind":"node","bin":` + jsonQuote(node) + `}}`)
 	if out, err := e.try("exec", "--runtime", "engine", src); err != nil || !strings.Contains(out, "kind=node") {
 		t.Errorf("script.runtimes should declare engine as node: %v\n%s", err, out)
+	}
+}
+
+// TestPathsAdaptersFindsADeclarationFile is the effect probe for
+// paths.adapters: `mcpx adapter list` declares nothing by default, and
+// lists the adapter in the file the environment points it at.
+func TestPathsAdaptersFindsADeclarationFile(t *testing.T) {
+	e := newEnv(t, oneServer)
+	if out := e.run("adapter", "list"); !strings.Contains(out, "No adapters declared") {
+		t.Errorf("by default no adapters should be declared:\n%s", out)
+	}
+	file := filepath.Join(t.TempDir(), "adapters.json")
+	mustWrite(t, file, `{"adapters":[{"name":"probeadapter","command":"echo","tools":[{"name":"say","params":[{"name":"text"}]}]}]}`)
+	e.setenv("MCPX_PATHS_ADAPTERS=" + file)
+	if out := e.run("adapter", "list"); !strings.Contains(out, "probeadapter") {
+		t.Errorf("paths.adapters should declare probeadapter:\n%s", out)
+	}
+}
+
+// TestPathsAPIsFindsADeclarationFile is the effect probe for paths.apis:
+// `mcpx api list` declares nothing by default, and lists the API in the
+// file the environment points it at.
+func TestPathsAPIsFindsADeclarationFile(t *testing.T) {
+	e := newEnv(t, oneServer)
+	if out := e.run("api", "list"); !strings.Contains(out, "No API specifications declared") {
+		t.Errorf("by default no APIs should be declared:\n%s", out)
+	}
+	dir := t.TempDir()
+	spec := filepath.Join(dir, "spec.json")
+	mustWrite(t, spec, `{"openapi":"3.0.0","info":{"title":"P","version":"1"},"servers":[{"url":"http://127.0.0.1:9"}],"paths":{"/w":{"get":{"operationId":"listwidgets","responses":{"200":{"description":"ok"}}}}}}`)
+	file := filepath.Join(dir, "apis.json")
+	mustWrite(t, file, `{"apis":[{"name":"probeapi","spec":`+jsonQuote(spec)+`}]}`)
+	e.setenv("MCPX_PATHS_APIS=" + file)
+	if out := e.run("api", "list"); !strings.Contains(out, "probeapi") || !strings.Contains(out, "1 operations") {
+		t.Errorf("paths.apis should declare probeapi with its one operation:\n%s", out)
 	}
 }
 
