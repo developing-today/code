@@ -1283,7 +1283,7 @@ impl<H: SessionHost> ProtocolHandler for ArtifactPullProtocol<H> {
             return Ok(());
         };
         let request: PullRequest =
-            serde_json::from_slice(&frame).map_err(|error| refused(error.into()))?;
+            crate::checked_json::from_slice_unique(&frame).map_err(refused)?;
         let page = self.page(&request).await.map_err(refused)?;
         let bytes = serde_json::to_vec(&page).map_err(|error| refused(error.into()))?;
         write_frame(&mut send, &bytes).await.map_err(refused)?;
@@ -1330,11 +1330,11 @@ pub async fn push(endpoint: &Endpoint, target: EndpointAddr, artifact: &SignedAr
 }
 
 async fn receive_pushed<H: SessionHost>(hub: &H, body: &[u8]) -> Reply {
-    let artifact: SignedArtifact = match serde_json::from_slice(body) {
+    let artifact: SignedArtifact = match crate::checked_json::from_slice_unique(body) {
         Ok(artifact) => artifact,
         Err(error) => {
             return Reply::Refused {
-                message: format!("not an artifact: {error}"),
+                message: format!("not an artifact: {error:#}"),
             };
         }
     };
@@ -1403,7 +1403,8 @@ pub async fn fetch_page_within(
         let frame = read_frame(&mut recv)
             .await?
             .context("home server closed without a page")?;
-        let page: Page = serde_json::from_slice(&frame).context("artifact page is malformed")?;
+        let page: Page =
+            crate::checked_json::from_slice_unique(&frame).context("artifact page is malformed")?;
         ensure!(
             within_budget(&page.artifacts),
             "artifact page is over its byte budget"
@@ -2561,6 +2562,48 @@ mod tests {
             .spawn();
         let client = endpoint().await;
         fetch_page(&client, loopback(&server), &public(1), 0).await
+    }
+    /// #8794: a pushed artifact with a duplicated key is refused at receipt,
+    /// before the hub stores it, and the refusal names the key.
+    #[tokio::test]
+    async fn a_pushed_artifact_with_a_duplicated_key_is_refused_by_name() {
+        let artifact = ArtifactLog::default()
+            .sign(&key(1), &document("hello"))
+            .unwrap();
+        let body = serde_json::to_vec(&artifact).unwrap();
+        let (duplicated, key) = crate::checked_json::with_duplicated_first_key(&body);
+        match receive_pushed(&crate::host::UnreachedHost, &duplicated).await {
+            Reply::Refused { message } => {
+                assert!(message.contains(&format!("{key:?}")), "{message}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+    /// #8794: pull requests and pages from a peer refuse a duplicated key by
+    /// name instead of collapsing it.
+    #[test]
+    fn pull_frames_with_a_duplicated_key_are_refused_by_name() {
+        let request = serde_json::to_vec(&PullRequest {
+            account: public(1),
+            after: 0,
+        })
+        .unwrap();
+        let page = serde_json::to_vec(&Page {
+            artifacts: Vec::new(),
+        })
+        .unwrap();
+        let (request, request_key) = crate::checked_json::with_duplicated_first_key(&request);
+        let (page, page_key) = crate::checked_json::with_duplicated_first_key(&page);
+        let error = crate::checked_json::from_slice_unique::<PullRequest>(&request).unwrap_err();
+        assert!(
+            format!("{error:#}").contains(&format!("{request_key:?}")),
+            "{error:#}"
+        );
+        let error = crate::checked_json::from_slice_unique::<Page>(&page).unwrap_err();
+        assert!(
+            format!("{error:#}").contains(&format!("{page_key:?}")),
+            "{error:#}"
+        );
     }
     /// The client checks the budget of each page it is sent. A page of several
     /// artifacts over the budget is refused, and one oversized artifact alone is not.

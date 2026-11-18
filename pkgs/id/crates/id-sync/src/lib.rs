@@ -24,6 +24,7 @@
 pub mod announcement;
 pub mod artifact;
 pub mod chained_message;
+mod checked_json;
 pub mod dht;
 pub mod envelope;
 pub mod envelope_net;
