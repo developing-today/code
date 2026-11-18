@@ -101,6 +101,9 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"policy.write":                       "TestPolicyWriteDeniesAnUnannotatedCallFromTheEnvironment",
+	"elicit.confirmDestructive":          "TestElicitConfirmDestructiveGatesADestructiveCallFromTheEnvironment",
+	"autonomy.max":                       "TestAutonomyMaxClampsARecipeRunFromTheEnvironment",
 	"daemon.inline":                      "TestDaemonInlineAlwaysAnswersWithoutASocketFromTheEnvironment",
 	"autostart.bin":                      "TestAutostartBinChoosesTheDaemonExecutableFromTheEnvironment",
 	"autostart.args":                     "TestAutostartArgsReplaceTheDaemonCommandLineFromTheEnvironment",
@@ -256,6 +259,9 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestPolicyWriteDeniesAnUnannotatedCallFromTheEnvironment":                       TestPolicyWriteDeniesAnUnannotatedCallFromTheEnvironment,
+	"TestElicitConfirmDestructiveGatesADestructiveCallFromTheEnvironment":            TestElicitConfirmDestructiveGatesADestructiveCallFromTheEnvironment,
+	"TestAutonomyMaxClampsARecipeRunFromTheEnvironment":                              TestAutonomyMaxClampsARecipeRunFromTheEnvironment,
 	"TestDaemonInlineAlwaysAnswersWithoutASocketFromTheEnvironment":                  TestDaemonInlineAlwaysAnswersWithoutASocketFromTheEnvironment,
 	"TestAutostartBinChoosesTheDaemonExecutableFromTheEnvironment":                   TestAutostartBinChoosesTheDaemonExecutableFromTheEnvironment,
 	"TestAutostartArgsReplaceTheDaemonCommandLineFromTheEnvironment":                 TestAutostartArgsReplaceTheDaemonCommandLineFromTheEnvironment,
@@ -3020,6 +3026,74 @@ func TestDaemonWatchConfigPicksUpAHandEditFromTheEnvironment(t *testing.T) {
 	}
 	if out := edited("MCPX_DAEMON_WATCH_CONFIG=false"); strings.Contains(out, "beta") || !strings.Contains(out, "demo") {
 		t.Fatalf("with daemon.watchConfig=false the hand edit should not be picked up, got:\n%s", out)
+	}
+}
+
+// TestPolicyWriteDeniesAnUnannotatedCallFromTheEnvironment is the effect
+// probe for policy.write. demo.structured publishes no annotations, so
+// it counts as a call that may write. Under the harness's allow it
+// returns its result; with policy.write=deny it is refused by the write
+// policy and never runs.
+func TestPolicyWriteDeniesAnUnannotatedCallFromTheEnvironment(t *testing.T) {
+	allow := newEnv(t, oneServer)
+	if out := allow.run("call", "demo.structured", `{}`); !strings.Contains(out, "42") {
+		t.Fatalf("oracle: under policy.write=allow the call should return its result:\n%s", out)
+	}
+	deny := newEnv(t, oneServer)
+	deny.setenv("MCPX_POLICY_WRITE=deny")
+	out, err := deny.try("call", "demo.structured", `{}`)
+	if err == nil {
+		t.Fatalf("with policy.write=deny the call should be refused; got:\n%s", out)
+	}
+	if !strings.Contains(out, "refused by the write policy (mode deny)") {
+		t.Fatalf("the refusal should name the write policy, got:\n%s", out)
+	}
+}
+
+// TestElicitConfirmDestructiveGatesADestructiveCallFromTheEnvironment is
+// the effect probe for elicit.confirmDestructive. Under the harness's
+// policy.write=allow, demo.wipe runs by default. With the floor on, a
+// destructive call asks even under allow, and a headless caller cannot
+// confirm, so it is refused as not confirmed.
+func TestElicitConfirmDestructiveGatesADestructiveCallFromTheEnvironment(t *testing.T) {
+	if out := newEnv(t, oneServer).run("call", "demo.wipe", `{}`); !strings.Contains(out, "wiped") {
+		t.Fatalf("oracle: by default the destructive call should run:\n%s", out)
+	}
+	e := newEnv(t, oneServer)
+	e.setenv("MCPX_ELICIT_CONFIRM_DESTRUCTIVE=true")
+	out, err := e.try("call", "demo.wipe", `{}`)
+	if err == nil {
+		t.Fatalf("with elicit.confirmDestructive=true the headless destructive call should be refused; got:\n%s", out)
+	}
+	if !strings.Contains(out, "may be destructive and was not confirmed") {
+		t.Fatalf("the refusal should say the destructive call was not confirmed, got:\n%s", out)
+	}
+}
+
+// TestAutonomyMaxClampsARecipeRunFromTheEnvironment is the effect probe
+// for autonomy.max. A recipe that leaves a file behind is run with
+// --autonomy run. Under the default ceiling (run) it runs and the file
+// appears; with autonomy.max=propose the request is lowered to propose,
+// the CLI says so, and the file never appears.
+func TestAutonomyMaxClampsARecipeRunFromTheEnvironment(t *testing.T) {
+	run := func(extra ...string) (string, bool) {
+		e := newEnv(t, oneServer)
+		writeRecipe(t, e, "mark", markRecipe)
+		e.setenv(extra...)
+		mark := filepath.Join(e.dir, "mark.out")
+		out := e.run("recipes", "run", "mark", "--autonomy", "run", "path="+mark)
+		_, err := os.Stat(mark)
+		return out, err == nil
+	}
+	if out, marked := run(); !marked {
+		t.Fatalf("oracle: under the default ceiling the recipe should run and leave its mark:\n%s", out)
+	}
+	out, marked := run("MCPX_AUTONOMY_MAX=propose")
+	if marked {
+		t.Fatalf("with autonomy.max=propose the recipe should not run:\n%s", out)
+	}
+	if !strings.Contains(out, "clamped to propose by autonomy.max") {
+		t.Fatalf("the CLI should say the request was lowered, got:\n%s", out)
 	}
 }
 
