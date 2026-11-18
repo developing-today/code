@@ -1,6 +1,6 @@
 import {test, expect} from 'bun:test';
 import {Database} from 'bun:sqlite';
-import {aaPayloadSql,AA_BATCH_INDEX_SQL,AA_PRICES_SQL} from '../src/aa-turso-sql.ts';
+import {aaPayloadSql,AA_BATCH_INDEX_SQL,AA_PRICES_SQL,assertAaNumericInputs,aaRankingValuesSql,rankAaValues,aaSectionQueries} from '../src/aa-turso-sql.ts';
 import {storeStatement} from '../src/turso-stores.ts';
 // Oracle: explicit workbook arithmetic and as-of selection, executed by SQLite.
 test('Turso AA preserves workbook metrics, boolean JSON and historical batches',()=>{
@@ -23,11 +23,22 @@ test('Turso AA preserves workbook metrics, boolean JSON and historical batches',
  db.query('insert into ainventory_ingest_batches values(?,?,?)').run(latest,'2026-11-11T00:00:00Z','{"rows":3}');
  const run=(sql:string)=>{const stmt=storeStatement(sql);const r=db.query(stmt.sql).get(...stmt.args.map(a=>a.value)) as any;return JSON.parse(Object.values(r)[0] as string);};
  const a=run(aaPayloadSql(old)),b=run(aaPayloadSql(null));
+ expect(rankAaValues(db.query(aaRankingValuesSql(old)).all() as any[])).toEqual(a.rankings);
+ expect(Object.keys(aaSectionQueries(old))).toHaveLength(8);
  expect(a.batch).toBe(old);expect(b.batch).toBe(latest);
  expect(a.rankings[0].rawScore).toBe(50);expect(b.rankings[0].rawScore).toBe(51);
  expect(a.rankings[0].eligible).toBe(true);expect(a.rankings[0].intelEffPerUsd).toBe(5.5);
  expect(a.rankings[0].pointsPerDollar).toBe(25);expect(a.thresholds[0].usable).toBe(true);
  expect(a.thresholds[0].usdPerUsablePoint).toBeCloseTo(2/11);
  expect(run(AA_BATCH_INDEX_SQL)[0].insertedCounts).toEqual({rows:3});
- expect(run(AA_PRICES_SQL)).toEqual([]);db.close();
+ expect(run(AA_PRICES_SQL)).toEqual([]);
+ db.exec(`insert into ainventory_price_events(id,model_name,provider,input_usd_per_1m,effective_date) values(1,'model','p',1,'2026-01-01'),(2,'model','p',2,'2026-11-01');`);
+ expect(run(AA_PRICES_SQL)[0].inputPer1M).toBe(2);db.close();
+});
+
+test('malformed workbook numbers fail closed instead of SQLite casting to zero',()=>{
+ expect(()=>assertAaNumericInputs([{cell:"oops"}])).toThrow('malformed');
+ expect(()=>assertAaNumericInputs([{cell:"Infinity"}])).toThrow('malformed');
+ expect(()=>assertAaNumericInputs([{cell:"2cats"}])).toThrow('malformed');
+ expect(()=>assertAaNumericInputs([{cell:""},{cell:null},{cell:"2.5e-3"},{cell:42}])).not.toThrow();
 });

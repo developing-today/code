@@ -95,7 +95,7 @@ import {
   isAaSection,
   type AaRawPayload,
 } from "../src/aa.ts";
-import { AA_BATCH_INDEX_SQL, AA_PAYLOAD_SQL_REVISION, AA_PRICES_SQL, aaPayloadSql } from "../src/aa-turso-sql.ts";
+import { AA_BATCH_INDEX_SQL, AA_PAYLOAD_SQL_REVISION, AA_PRICES_SQL, aaPayloadSql, aaNumericInputsSql, assertAaNumericInputs, aaSectionQueries, aaRankingValuesSql, rankAaValues } from "../src/aa-turso-sql.ts";
 import {
   aaBatchFingerprint,
   aaCacheFileName,
@@ -567,9 +567,25 @@ function aaRawFromRows(rows: unknown): AaRawPayload | null {
 
 /** Fetch one batch payload (a uuid; null is the latest fallback). */
 async function fetchAaPayload(batch: string | null): Promise<AaRawPayload> {
-  const raw = aaRawFromRows(await storeQuery(aaPayloadSql(batch)));
-  if (!raw) throw new Error("Turso returned no AA payload");
-  return raw;
+  // Pin one batch before independent section reads so an import during the
+  // request cannot mix different workbook versions into one cache entry.
+  if (batch === null) {
+    const latest = await storeQuery("select import_batch from ainventory_sources where kind='drive-workbook' order by imported_at desc limit 1") as {import_batch: string}[];
+    if (!latest[0]?.import_batch) throw new Error("Turso returned no AA workbook batch");
+    batch = latest[0].import_batch;
+  }
+  assertAaNumericInputs(await storeQuery(aaNumericInputsSql(batch)) as {cell: unknown}[]);
+  const payload: Record<string,unknown> = {};
+  for (const [key, sql] of Object.entries(aaSectionQueries(batch))) {
+    if (key === "rankings") {
+      payload[key] = rankAaValues(await storeQuery(aaRankingValuesSql(batch)) as Record<string,unknown>[]);
+    } else {
+      const rows = await storeQuery(sql) as {section: unknown}[];
+      if (rows.length !== 1) throw new Error(`Turso returned no AA ${key} section`);
+      payload[key] = key === "batch" ? rows[0].section : JSON.parse(rows[0].section as string);
+    }
+  }
+  return payload as unknown as AaRawPayload;
 }
 
 /**

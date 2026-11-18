@@ -1,6 +1,9 @@
 #!/usr/bin/env bun
 // Usage: export-turso-stores.ts --output-dir DIRECTORY
 // Strict arguments before I/O. Exports only the fixed canonical PM stores.
+// Each table is keyset-paginated independently: this is NOT an atomic
+// cross-table point-in-time snapshot; concurrent writes can appear at different
+// cutoffs. Quiesce writers when a transaction-consistent restore set is needed.
 // Output includes private subscription data; keep it inside the private backup.
 const args = process.argv.slice(2);
 if (args.length !== 2 || args[0] !== "--output-dir" || !args[1] || args[1].startsWith("-")) {
