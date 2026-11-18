@@ -1188,9 +1188,15 @@ async fn query_session<I: SessionIo>(
                     io.mark_authorized();
                 }
                 let store = documents_store.as_ref().or(service.blobs.as_ref());
-                if let Err(message) =
-                    document_session(service.frame_meter(), service.world(), io, token, store, &name)
-                        .await
+                if let Err(message) = document_session(
+                    service.frame_meter(),
+                    service.world(),
+                    io,
+                    token,
+                    store,
+                    &name,
+                )
+                .await
                 {
                     let _ = send_error(service.frame_meter(), io, message).await;
                     return;

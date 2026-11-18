@@ -885,12 +885,8 @@ impl CollabMessage {
                 to_vec(&(msg::NEW_VERSION, hash, name)).unwrap_or_default()
             }
             Self::Auth { token } => to_vec(&(msg::AUTH, token)).unwrap_or_default(),
-            Self::Checkpoint { text } => {
-                to_vec(&(msg::CHECKPOINT, text)).unwrap_or_default()
-            }
-            Self::Checkpointed { head } => {
-                to_vec(&(msg::CHECKPOINTED, head)).unwrap_or_default()
-            }
+            Self::Checkpoint { text } => to_vec(&(msg::CHECKPOINT, text)).unwrap_or_default(),
+            Self::Checkpointed { head } => to_vec(&(msg::CHECKPOINTED, head)).unwrap_or_default(),
             Self::AuthOk {
                 client_id,
                 name,
@@ -1180,13 +1176,9 @@ async fn handle_collab_socket(
                 if reference.media_type == "text/markdown" {
                     hydrated_filename = Some("note.md");
                 }
-                let content =
-                    load_file_content(&store, &reference.content.to_string()).await;
+                let content = load_file_content(&store, &reference.content.to_string()).await;
                 if content.is_none() {
-                    tracing::debug!(
-                        "[collab] Head blob for note '{}' not in the store",
-                        doc_id
-                    );
+                    tracing::debug!("[collab] Head blob for note '{}' not in the store", doc_id);
                 }
                 content
             }
@@ -2937,7 +2929,10 @@ mod tests {
         )
         .unwrap();
         let state2 = CollabState::new();
-        state2.seed_note_events(log.events().to_vec()).await.unwrap();
+        state2
+            .seed_note_events(log.events().to_vec())
+            .await
+            .unwrap();
         assert_eq!(state2.note_heads(note2).await.unwrap().len(), 2);
         assert_eq!(state2.note_head_content(note2).await.unwrap(), Some(fork));
     }
@@ -3003,9 +2998,13 @@ mod tests {
             .unwrap();
         let dir = tempfile::tempdir().unwrap();
         let tags = Arc::new(
-            id_store::tags::TagStore::init_in(&docs, "collab-note-wire-test", dir.path().join("meta"))
-                .await
-                .unwrap(),
+            id_store::tags::TagStore::init_in(
+                &docs,
+                "collab-note-wire-test",
+                dir.path().join("meta"),
+            )
+            .await
+            .unwrap(),
         );
         let state = crate::AppState::new(
             store,
@@ -3077,7 +3076,6 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(state.collab.note_heads(note).await.unwrap().len(), 1);
 
-
         // A session document outlives its last client by a one-hour
         // cleanup grace period (DOCUMENT_CLEANUP), so a quick
         // reconnect rejoins the live session; hydration is the
@@ -3122,9 +3120,4 @@ mod tests {
 
         server.abort();
     }
-
-
-    
-
-    
 }
