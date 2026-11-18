@@ -48,6 +48,7 @@ import {
 import { GithubHotListConsumer, unconfiguredGithubStatus } from "./github-hot-list.ts";
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
+import { IdentityRegistryStore, identityMappingAuditEvent, validateIdentityMapping } from "./identity-registry.ts";
 import {
   computeCoverage,
   CoverageSnapshotStore,
@@ -345,6 +346,7 @@ const storeRemotes = cfg.storeBackend === "supabase" ? createSupabaseRemotes() :
 const actionsStore = new ActionsStore(cfg.actionsFile, undefined, storeRemotes?.actions);
 const viewsStore = new ViewsStore(cfg.viewsFile);
 const eventsStore = new EventsStore(cfg.eventsFile);
+const identityRegistryStore = new IdentityRegistryStore(cfg.identityRegistryFile);
 const freshnessStore = new FreshnessStore(cfg.freshnessFile);
 
 /** #3976: the 5-minute anti-entropy reconciler over the freshness
@@ -2088,6 +2090,68 @@ async function handler(req: Request): Promise<Response> {
   if (req.method === "GET" && path === "/api/author-identities") {
     const records = await source.registry().catch(() => []);
     return json({ identities: identitiesFromRecords(records) });
+  }
+
+  // #9604: role mappings are managed only by a verified Access owner.
+  // The asserted author here is deliberately fixed; request-body identity
+  // or role claims never authorize registry changes.
+  if (
+    path === "/api/admin/identity-registry" &&
+    (req.method === "GET" || req.method === "POST" || req.method === "DELETE")
+  ) {
+    const access = await enforceAccessAuthor(req, { kind: "drew", id: "drew", label: "Drew" });
+    if (!access.ok) return json({ error: access.error }, access.status);
+    if (!access.verified || access.author.kind !== "drew") {
+      return json({ error: "verified Access owner required" }, 403);
+    }
+    const auditActor = access.identity?.sub || access.identity?.email || access.author.id;
+    if (req.method === "GET") return json({ registry: await identityRegistryStore.list() });
+    try {
+      const body = await readJsonBody(req);
+      if (req.method === "POST") {
+        const parsed = validateIdentityMapping(body);
+        if (!parsed.ok) return json({ error: parsed.error }, 400);
+        const result = await identityRegistryStore.set(
+          parsed.identity,
+          parsed.role,
+          auditActor,
+        );
+        await eventsStore.record(
+          identityMappingAuditEvent({
+            identity: parsed.identity,
+            previousRole: result.previousRole,
+            role: parsed.role,
+            revision: result.registry.revision,
+            actor: auditActor,
+          }),
+        );
+        return json({ registry: result.registry, previousRole: result.previousRole });
+      }
+      const identity = typeof body === "object" && body !== null ? (body as { identity?: unknown }).identity : undefined;
+      if (
+        typeof identity !== "string" ||
+        identity.trim() === "" ||
+        identity.trim().length > 200 ||
+        /\s/.test(identity.trim())
+      ) {
+        return json({ error: "identity must be a non-empty whitespace-free string (max 200 chars)" }, 400);
+      }
+      const result = await identityRegistryStore.remove(identity.trim());
+      if (result.previousRole !== null) {
+        await eventsStore.record(
+          identityMappingAuditEvent({
+            identity: identity.trim(),
+            previousRole: result.previousRole,
+            role: null,
+            revision: result.registry.revision,
+            actor: auditActor,
+          }),
+        );
+      }
+      return json({ registry: result.registry, previousRole: result.previousRole });
+    } catch (error) {
+      return json({ error: `identity registry operation failed: ${error instanceof Error ? error.message : error}` }, 500);
+    }
   }
 
   // --- Dashboard comment writes (#906 §2) --------------------------------
