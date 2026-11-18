@@ -110,6 +110,17 @@ fn payload(
     out
 }
 
+/// The conflict key from the slice contract, computed independently.
+fn key_of(ids: &[EventId]) -> [u8; 32] {
+    let distinct: BTreeSet<&EventId> = ids.iter().collect();
+    let mut out = b"id-sync/b07-conflict-key/v1".to_vec();
+    out.extend_from_slice(&u64::try_from(distinct.len()).unwrap().to_be_bytes());
+    for id in distinct {
+        out.extend_from_slice(id);
+    }
+    sha(&out)
+}
+
 fn envelope(
     signer: usize,
     event_id: EventId,
@@ -248,8 +259,14 @@ fn run(
             _ => heads.iter().rev().take(2).copied().collect(),
         };
         let open = store.open_report(&object_id);
+        let joined: Vec<EventId> = parents
+            .iter()
+            .filter(|p| heads.contains(p))
+            .copied()
+            .collect();
         let resolves = match step.resolves {
-            1 | 2 => open,
+            1 => Some(key_of(&joined)),
+            2 => Some(key_of(&heads)),
             3 => Some([0x5A; 32]),
             _ => None,
         };
@@ -258,11 +275,13 @@ fn run(
 
         // Predict.
         let conflicted = heads.len() > 1;
-        let joined = parents.iter().filter(|p| heads.contains(p)).count();
         let expect_err = match (open, resolves) {
-            (Some(o), Some(r)) if r == o && joined >= 2 => None,
+            (Some(_), Some(r)) if joined.len() >= 2 && r == key_of(&joined) => None,
             (_, Some(r)) => Some(IngestError::NotAResolution { named: r }),
-            (Some(o), None) if joined >= 2 => Some(IngestError::ResolutionRequired { open: o }),
+            (Some(o), None) if joined.len() >= 2 => Some(IngestError::ResolutionRequired {
+                open: o,
+                key: key_of(&joined),
+            }),
             _ => None,
         };
         assert_eq!(conflicted, open.is_some(), "open report iff diverged");
@@ -391,15 +410,37 @@ fn check_audit_order(store: &ConflictStore) {
             }
             AuditEntry::Resolved { report_id, .. } => assert!(created.contains(report_id)),
             AuditEntry::Recorded { event_id, .. } => {
-                if let Some(named) = store.version(event_id).unwrap().resolves {
-                    assert!(created.contains(&named), "resolution before its report");
-                    let next = audit.get(i + 1).copied();
-                    assert!(matches!(
-                        next,
-                        Some(AuditEntry::Resolved { report_id, .. }
-                            | AuditEntry::ReportCreated { supersedes: Some(report_id), .. })
-                            if report_id == named
-                    ));
+                let version = store.version(event_id).unwrap();
+                if let Some(named) = version.resolves {
+                    // The next entry closes a report that was created
+                    // earlier and that holds exactly what was resolved.
+                    let closed = match audit.get(i + 1).copied() {
+                        Some(
+                            AuditEntry::Resolved { report_id, .. }
+                            | AuditEntry::ReportCreated {
+                                supersedes: Some(report_id),
+                                ..
+                            },
+                        ) => report_id,
+                        other => panic!("resolution followed by {other:?}"),
+                    };
+                    assert!(created.contains(&closed), "resolution before its report");
+                    let covered: BTreeSet<EventId> = store
+                        .report(&closed)
+                        .unwrap()
+                        .report
+                        .versions
+                        .iter()
+                        .map(|v| v.event_id)
+                        .collect();
+                    let joined: Vec<EventId> = version
+                        .parents
+                        .iter()
+                        .filter(|p| covered.contains(*p))
+                        .copied()
+                        .collect();
+                    assert!(joined.len() >= 2);
+                    assert_eq!(key_of(&joined), named);
                 }
             }
             AuditEntry::Held { .. } | AuditEntry::Refused { .. } => {}
@@ -468,12 +509,14 @@ fn divergence_reports_versions_signers_sources_and_disputed_data() {
         ]
     );
 
-    // A merge that does not name the report is refused, and so is one
-    // that names some other report.
+    // A merge that does not name the conflict is refused, and so is one
+    // that names some other conflict.
+    let key = store.report(&id).unwrap().report.conflict_key();
+    assert_eq!(key, key_of(&[event(3), event(2)]));
     let silent = envelope(2, event(4), doc, None, &[event(2), event(3)], b"merged");
     assert_eq!(
         store.ingest(IngressPath::Remote, &silent, "peer-c", NOW),
-        Err(IngestError::ResolutionRequired { open: id })
+        Err(IngestError::ResolutionRequired { open: id, key })
     );
     let wrong = envelope(
         2,
@@ -489,7 +532,14 @@ fn divergence_reports_versions_signers_sources_and_disputed_data() {
     );
     assert_eq!(store.open_report(&doc), Some(id));
 
-    let resolution = envelope(2, event(6), doc, Some(id), &[event(2), event(3)], b"merged");
+    let resolution = envelope(
+        2,
+        event(6),
+        doc,
+        Some(key),
+        &[event(2), event(3)],
+        b"merged",
+    );
     assert_eq!(
         store.ingest(IngressPath::Remote, &resolution, "peer-c", NOW),
         Ok(IngestOutcome::Resolved(id))
@@ -669,7 +719,7 @@ fn retention_drops_only_closed_reports_after_expiry() {
         2,
         event(9),
         a,
-        Some(open_ids[0]),
+        Some(store.report(&open_ids[0]).unwrap().report.conflict_key()),
         &[event(1), event(2)],
         b"m",
     );
@@ -687,4 +737,40 @@ fn retention_drops_only_closed_reports_after_expiry() {
         ReportStatus::Open
     );
     assert_eq!(store.expire(u64::MAX), 0, "open reports never expire");
+}
+
+#[test]
+fn one_signed_resolution_resolves_the_same_conflict_on_every_replica() {
+    let doc = object(4);
+    let root = envelope(0, event(1), doc, None, &[], b"v0");
+    let left = envelope(0, event(2), doc, None, &[event(1)], b"left");
+    let right = envelope(1, event(3), doc, None, &[event(1)], b"right");
+    let key = key_of(&[event(2), event(3)]);
+    let resolution = envelope(2, event(4), doc, Some(key), &[event(2), event(3)], b"m");
+
+    // Two replicas see the same versions in a different order, by
+    // different paths and from different peers.
+    let mut a = store();
+    let mut b = store();
+    for env in [&root, &left, &right] {
+        a.ingest(IngressPath::Local, env, "self", NOW).unwrap();
+    }
+    for env in [&right, &root, &left] {
+        b.ingest(IngressPath::Remote, env, "peer-a", NOW + 5)
+            .unwrap();
+    }
+    let (ra, rb) = (a.open_report(&doc).unwrap(), b.open_report(&doc).unwrap());
+    assert_ne!(ra, rb, "each replica keeps its own record");
+    assert_eq!(a.report(&ra).unwrap().report.conflict_key(), key);
+    assert_eq!(b.report(&rb).unwrap().report.conflict_key(), key);
+
+    assert_eq!(
+        a.ingest(IngressPath::Local, &resolution, "self", NOW),
+        Ok(IngestOutcome::Resolved(ra))
+    );
+    assert_eq!(
+        b.ingest(IngressPath::Remote, &resolution, "peer-a", NOW + 5),
+        Ok(IngestOutcome::Resolved(rb))
+    );
+    assert_eq!(a.heads(&doc), b.heads(&doc));
 }
