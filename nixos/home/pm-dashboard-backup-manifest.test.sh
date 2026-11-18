@@ -250,11 +250,11 @@ fi
 if manifest_json missing-optional | python3 -c '
 import json, sys
 m = json.load(sys.stdin)
-sys.exit(0 if len(m.get("expected", [])) == 36 else 1)
+sys.exit(0 if len(m.get("expected", [])) == 46 else 1)
 '; then
-  ok "missing-optional: manifest lists all 36 expected members"
+  ok "missing-optional: manifest lists all 46 expected members"
 else
-  fail "missing-optional: manifest expected list is not the full 36-member set"
+  fail "missing-optional: manifest expected list is not the full 46-member set"
 fi
 
 # --- decisions ledger is required (#10293) -----------------------------------
@@ -478,6 +478,41 @@ if grep -q 'canonical aggregator stores exported from Supabase: .*agg_actions=1.
 else
   fail "supabase-export: log lacks the per-table counts: $(cat "$TMP_ROOT/supabase-export.log")"
 fi
+
+# --- Turso exporter stages every required table, no credentials in fixtures ---
+setup_home turso-export
+EXPORTER="$TMP_ROOT/turso-fixture-exporter"
+cat >"$EXPORTER" <<'STUBEOF'
+#!/usr/bin/env bash
+set -eu
+[[ "$1" == --output-dir && $# == 2 ]]
+mkdir -p "$2"
+for table in agg_actions agg_activity_ingestion agg_activity_gaps agg_usage_snapshots agg_store_documents alerts_incidents alerts_incident_events alerts_push_subscriptions alerts_notification_sends orch_runs; do
+  printf '[]' >"$2/$table.json"
+done
+STUBEOF
+chmod +x "$EXPORTER"
+PATH="$BIN:$PATH" HOME="$RUN_HOME" BWS_ACCESS_TOKEN=fake-token \
+ RCLONE_STUB_DIR="$TMP_ROOT/turso-export/rclone-store" \
+ RCLONE_CALLS_LOG="$TMP_ROOT/turso-export/rclone-calls.log" \
+ PM_DB_DUMP_SCRIPT="$DUMP_SCRIPT_ARG" PM_AGG_STORE_BACKEND=turso \
+ PM_AGG_TURSO_EXPORT_BIN="$EXPORTER" \
+ bash "$SCRIPT" 2026-10-28 >"$TMP_ROOT/turso-export.log" 2>&1
+RC=$?
+if [[ $RC -eq 0 ]]; then ok "turso-export: completed"; else fail "turso-export: rc=$RC $(cat "$TMP_ROOT/turso-export.log")"; fi
+assert_member turso-export turso/agg_actions.json required present
+assert_member turso-export turso/alerts_push_subscriptions.json required present
+assert_member turso-export turso/orch_runs.json required present
+
+setup_home turso-missing
+PATH="$BIN:$PATH" HOME="$RUN_HOME" BWS_ACCESS_TOKEN=fake-token \
+ RCLONE_STUB_DIR="$TMP_ROOT/turso-missing/rclone-store" \
+ RCLONE_CALLS_LOG="$TMP_ROOT/turso-missing/rclone-calls.log" \
+ PM_DB_DUMP_SCRIPT="$DUMP_SCRIPT_ARG" PM_AGG_STORE_BACKEND=turso \
+ PM_AGG_TURSO_EXPORT_BIN=/nonexistent/turso-exporter \
+ bash "$SCRIPT" 2026-10-28 >"$TMP_ROOT/turso-missing.log" 2>&1
+RC=$?
+if [[ $RC -ne 0 ]] && no_upload turso-missing; then ok "turso-missing: fails without uploading"; else fail "turso-missing: did not fail closed"; fi
 
 if ((failures > 0)); then
   echo "pm-dashboard-backup manifest tests: $failures failure(s)" >&2
