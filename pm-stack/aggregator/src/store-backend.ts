@@ -14,14 +14,15 @@
 // classes, and in file mode no database call is made. An unavailable
 // Supabase client in supabase mode is an error, never a silent fallback
 // to a local canonical copy.
-export type StoreBackendKind = "file" | "supabase";
+export type StoreBackendKind = "file" | "supabase" | "turso";
 
 export function parseStoreBackend(env: Record<string, string | undefined> = process.env): StoreBackendKind {
   const raw = (env.PM_AGG_STORE_BACKEND ?? "").trim();
   if (raw === "" || raw === "file") return "file";
   if (raw === "supabase") return "supabase";
+  if (raw === "turso") return "turso";
   throw new Error(
-    `Invalid PM_AGG_STORE_BACKEND=${JSON.stringify(env.PM_AGG_STORE_BACKEND)}; expected "file" or "supabase"`,
+    `Invalid PM_AGG_STORE_BACKEND=${JSON.stringify(env.PM_AGG_STORE_BACKEND)}; expected "file", "supabase", or "turso"`,
   );
 }
 
