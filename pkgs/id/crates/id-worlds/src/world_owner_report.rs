@@ -506,6 +506,10 @@ pub fn project<R: BufRead>(
             break;
         }
         let text = buf.strip_suffix(b"\n").unwrap_or(&buf);
+        if text.is_empty() {
+            // A blank line is skipped, as `FileJournal::open` skips it.
+            continue;
+        }
         let entry: JournalEntry = serde_json::from_slice(text)
             .map_err(|_parse_error| OwnerReportError::Malformed { line })?;
         coverage.entries += 1;

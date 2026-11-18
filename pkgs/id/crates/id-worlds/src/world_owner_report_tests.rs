@@ -157,6 +157,16 @@ fn repeated_projection_is_identical() {
 }
 
 #[test]
+fn blank_lines_are_skipped_like_the_journal_reader() {
+    let mut bytes = jsonl(&[header(1)]);
+    bytes.extend(b"\n");
+    bytes.extend(jsonl(&[issued(1, None, None)]));
+    let report = run(&bytes).unwrap();
+    assert_eq!(report.joins.count, 1);
+    assert_eq!(report.journal.entries, 2);
+}
+
+#[test]
 fn a_repeated_issue_counts_once() {
     let report = run(&jsonl(&[
         header(1),

@@ -26,6 +26,7 @@ use crate::{
 };
 
 mod journal;
+mod owner;
 #[cfg(test)]
 use journal::check_journal_bytes;
 use journal::{journal_backup, print_journal_check, print_world_provenance, world_provenance};
@@ -991,6 +992,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             json,
         } => fork_world_on_disk(&source, &dir, name.as_deref(), template, json),
         WorldCommand::Provenance { dir, json } => print_world_provenance(&dir, json),
+        WorldCommand::Owner { dir, since, json } => owner::print_world_owner(&dir, since, json),
         WorldCommand::Journal(args) => match args.action {
             JournalCommand::Check { dir, json } => print_journal_check(&dir, json),
             JournalCommand::Backup { dir, out } => journal_backup(&dir, &out),

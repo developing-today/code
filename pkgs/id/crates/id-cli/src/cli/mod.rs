@@ -28,9 +28,11 @@
 //!   list       List all stored files
 //!   id         Print node ID
 //!   key        Export or import a local identity key
+//!   keyset     Show or change this identity's keyset (admin key and devices)
 //!   peers      Discover and list known peers
 //!   tag        Manage metadata tags (set, del, list, search) (aliases: label, link)
 //!   world        Mint invites for, and join, multiplayer worlds hosted over Iroh
+//!   gallery      Administer a program gallery directory (removals, appeals, review)
 //!   match-audit Export and verify signed match-audit v0 logs
 //!   group        Groups: create, policy, add, remove, set roles, list, join
 //!   delegate     Grant a delegate a scope in a group
