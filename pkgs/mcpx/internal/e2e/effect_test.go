@@ -101,6 +101,9 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor": "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":       "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":             "TestEventsHistoryBoundsTheReplay",
+	"artifacts.chunkBytes":       "TestArtifactsChunkBytesSplitsAStreamedBody",
+	"script.launcher":            "TestScriptLauncherReplacesTheLauncher",
+	"paths.placeholders":         "TestPathsPlaceholdersDeclaresALauncherPlaceholder",
 	"artifacts.interceptImages":  "TestArtifactsInterceptImagesStoresAnEmittedImage",
 	"plumbing.indexOnQuery":      "TestPlumbingIndexOnQueryIngestsBeforeALogQuery",
 	"plumbing.validatePaths":     "TestPlumbingValidatePathsChecksTheLogDirUpFront",
@@ -231,6 +234,9 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":        TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                 TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                          TestEventsHistoryBoundsTheReplay,
+	"TestArtifactsChunkBytesSplitsAStreamedBody":                                TestArtifactsChunkBytesSplitsAStreamedBody,
+	"TestScriptLauncherReplacesTheLauncher":                                     TestScriptLauncherReplacesTheLauncher,
+	"TestPathsPlaceholdersDeclaresALauncherPlaceholder":                         TestPathsPlaceholdersDeclaresALauncherPlaceholder,
 	"TestArtifactsInterceptImagesStoresAnEmittedImage":                          TestArtifactsInterceptImagesStoresAnEmittedImage,
 	"TestPlumbingIndexOnQueryIngestsBeforeALogQuery":                            TestPlumbingIndexOnQueryIngestsBeforeALogQuery,
 	"TestPlumbingValidatePathsChecksTheLogDirUpFront":                           TestPlumbingValidatePathsChecksTheLogDirUpFront,
@@ -2426,6 +2432,70 @@ func TestPlumbingIndexOnQueryIngestsBeforeALogQuery(t *testing.T) {
 	}
 	if out := query("MCPX_PLUMBING_INDEX_ON_QUERY=false"); strings.Contains(out, "daemon starting") {
 		t.Errorf("with plumbing.indexOnQuery off nothing should have been ingested:\n%s", out)
+	}
+}
+
+// TestArtifactsChunkBytesSplitsAStreamedBody is the effect probe for
+// artifacts.chunkBytes: a streamed four-byte artifact arrives in one chunk at
+// the default size and in four at a one-byte size.
+func TestArtifactsChunkBytesSplitsAStreamedBody(t *testing.T) {
+	chunks := func(env ...string) int {
+		e := newEnv(t, oneServer)
+		e.setenv(append([]string{"MCPX_EXEC_OUTPUT=stream", "MCPX_ARTIFACTS_DELIVERY=stream"}, env...)...)
+		out, err := e.try("exec", artifactScript)
+		if err != nil {
+			t.Fatalf("exec: %v\n%s", err, out)
+		}
+		return strings.Count(out, `"type":"artifact.chunk"`)
+	}
+	if n := chunks(); n != 1 {
+		t.Errorf("at the default chunk size a four-byte body should arrive in one chunk, got %d", n)
+	}
+	if n := chunks("MCPX_ARTIFACTS_CHUNK_BYTES=1"); n != 4 {
+		t.Errorf("artifacts.chunkBytes=1 should split the four-byte body into four chunks, got %d", n)
+	}
+}
+
+// launcherRun runs a one-line script with the given launcher source and
+// environment, and returns its stdout.
+func launcherRun(t *testing.T, launcher string, env ...string) (string, error) {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	file := filepath.Join(t.TempDir(), "launcher.ts")
+	mustWrite(t, file, launcher)
+	e.setenv(append([]string{"MCPX_SCRIPT_LAUNCHER=" + file}, env...)...)
+	script := filepath.Join(e.dir, "launched.ts")
+	mustWrite(t, script, `console.log("script-ran")`)
+	out, _, err := e.split("run", script)
+	return out, err
+}
+
+// TestScriptLauncherReplacesTheLauncher is the effect probe for
+// script.launcher: the default launcher runs the script, and a launcher
+// given in the environment runs in its place.
+func TestScriptLauncherReplacesTheLauncher(t *testing.T) {
+	e := newEnv(t, oneServer)
+	script := filepath.Join(e.dir, "launched.ts")
+	mustWrite(t, script, `console.log("script-ran")`)
+	if out := e.run("run", script); !strings.Contains(out, "script-ran") || strings.Contains(out, "custom-launcher") {
+		t.Errorf("the default launcher should run the script:\n%s", out)
+	}
+	if out, err := launcherRun(t, `console.log("custom-launcher");`); err != nil || !strings.Contains(out, "custom-launcher") || strings.Contains(out, "script-ran") {
+		t.Errorf("script.launcher should replace the launcher (err %v):\n%s", err, out)
+	}
+}
+
+// TestPathsPlaceholdersDeclaresALauncherPlaceholder is the effect probe for
+// paths.placeholders: a launcher that uses @greet fails with no placeholder
+// search path, and runs greet.ts once the path names its directory.
+func TestPathsPlaceholdersDeclaresALauncherPlaceholder(t *testing.T) {
+	if out, err := launcherRun(t, "@greet\n"); err == nil && strings.Contains(out, "greeted") {
+		t.Errorf("with no placeholder path @greet should not resolve:\n%s", out)
+	}
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "greet.ts"), `console.log("greeted");`)
+	if out, err := launcherRun(t, "@greet\n", "MCPX_PATHS_PLACEHOLDERS="+dir); err != nil || !strings.Contains(out, "greeted") {
+		t.Errorf("paths.placeholders should make @greet run greet.ts (err %v):\n%s", err, out)
 	}
 }
 

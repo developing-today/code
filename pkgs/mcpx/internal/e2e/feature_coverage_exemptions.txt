@@ -49,7 +49,6 @@ setting	script.importsCrossProject	no integration-test exercise yet; burn-down #
 setting	script.importsNetwork	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
 setting	script.importsOnDynamic	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
 setting	script.importsOnMissing	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
-setting	script.launcher	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
 setting	proto.elicitationPerMinute	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
 setting	proto.samplingPerMinute	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
 setting	proto.samplingSessionPerMinute	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
@@ -71,7 +70,6 @@ setting	logging.maxAge	no integration-test exercise yet; burn-down #8467 (settin
 setting	logstore.followBacklog	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
 setting	output.color	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
 setting	paths.config	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
-setting	paths.placeholders	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
 setting	pool.callTimeout	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
 setting	pool.idleTimeout	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
 setting	pool.min	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
@@ -102,7 +100,6 @@ setting	prompt.maxTokens	no integration-test exercise yet; burn-down #8471 (sett
 setting	prompt.runTimeout	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
 setting	prompt.sample	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
 setting	prompt.sampleTimeout	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
-setting	artifacts.chunkBytes	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	artifacts.gcInterval	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	artifacts.idleTtl	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	artifacts.maxAge	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
