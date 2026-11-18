@@ -73,6 +73,7 @@ mod ingest;
 pub mod range;
 mod resolve;
 pub mod sync;
+mod validity;
 mod waiting_rows;
 mod writer_set;
 
@@ -83,6 +84,7 @@ pub use id_store::event_types::{
 };
 pub use id_store::event_types::{Ingest, Refusal};
 use ingest::{is_present, is_proof_header, present_in};
+pub use validity::Validity;
 use waiting_rows::{Mirror, Row};
 pub use writer_set::{DiscoveredWriterSet, WriterSetStoreError};
 
