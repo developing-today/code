@@ -1,6 +1,7 @@
 package e2e_test
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -68,6 +69,7 @@ var implementedEffectProbes = map[string]string{
 	"proto.askPoll":              "TestAskPollCeilingIsReachableFromTheEnvironment",
 	"proto.askRounds":            "TestAskRoundsLimitIsReachableFromTheEnvironment",
 	"proto.askTTL":               "TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment",
+	"proto.askTimeout":           "TestAskTimeoutReleasesAHeldRequestFromTheEnvironment",
 	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
 	"daemon.autostart":           "TestDaemonAutostartIsReachableFromTheEnvironment",
 	"http.bodyLimit":             "TestHTTPBodyLimitsRejectOversizedBodies",
@@ -124,6 +126,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestAskPollCeilingIsReachableFromTheEnvironment":        TestAskPollCeilingIsReachableFromTheEnvironment,
 	"TestAskRoundsLimitIsReachableFromTheEnvironment":        TestAskRoundsLimitIsReachableFromTheEnvironment,
 	"TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment":  TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment,
+	"TestAskTimeoutReleasesAHeldRequestFromTheEnvironment":   TestAskTimeoutReleasesAHeldRequestFromTheEnvironment,
 	"TestDaemonAddressIsReachableFromTheEnvironment":         TestDaemonAddressIsReachableFromTheEnvironment,
 	"TestDaemonAutostartIsReachableFromTheEnvironment":       TestDaemonAutostartIsReachableFromTheEnvironment,
 	"TestHTTPBodyLimitsRejectOversizedBodies":                TestHTTPBodyLimitsRejectOversizedBodies,
@@ -425,6 +428,85 @@ func TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment(t *testing.T) {
 	took, _ := script["durationMs"].(float64)
 	if bounded["done"] != true || script["timedOut"] != true || took <= 0 || took >= 4000 {
 		t.Fatalf("proto.askTTL=1s should stop the call at its deadline, got %v", bounded)
+	}
+}
+
+// proto.askTimeout bounds how long the daemon's /mcp holds one request
+// while the question it put to its client goes unanswered. A 2025-11-25
+// client that declared form elicitation calls a tool that asks; it is sent
+// elicitation/create on the stream and never answers.
+// Oracle: at the default (10m) the stream carries no final frame within
+// six seconds; with MCPX_PROTO_ASK_TIMEOUT=1s it ends inside that window
+// with the stopped-waiting error.
+func TestAskTimeoutReleasesAHeldRequestFromTheEnvironment(t *testing.T) {
+	final := func(env ...string) string {
+		t.Helper()
+		e := askEnv(t)
+		e.setenv(env...)
+		e.run("refresh")
+		ep := e.endpoint(t)
+		init := mcpPost(t, ep, "", map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "initialize",
+			"params": map[string]any{
+				"protocolVersion": "2025-11-25",
+				"capabilities":    map[string]any{"elicitation": map[string]any{"form": map[string]any{}}},
+			},
+		})
+		session := init.Header.Get("Mcp-Session-Id")
+		_ = init.Body.Close()
+		if session == "" {
+			t.Fatal("a legacy client needs a session")
+		}
+		resp := mcpPost(t, ep, session, map[string]any{
+			"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+			"params": map[string]any{"name": "mcpx_call",
+				"arguments": map[string]any{"namespace": "ask", "tool": "need_repo"}},
+		})
+		frames := make(chan map[string]any, 8)
+		go func() {
+			defer close(frames)
+			sc := bufio.NewScanner(resp.Body)
+			for sc.Scan() {
+				var frame map[string]any
+				if line := sc.Text(); strings.HasPrefix(line, "data: ") &&
+					json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &frame) == nil {
+					frames <- frame
+				}
+			}
+		}()
+		defer func() { _ = resp.Body.Close() }()
+		asked := false
+		stop := time.After(6 * time.Second)
+		for {
+			select {
+			case frame, open := <-frames:
+				if !open {
+					t.Fatalf("the stream ended without a final frame (asked: %v)", asked)
+				}
+				if frame["method"] == "elicitation/create" {
+					asked = true // and never answered
+					continue
+				}
+				if frame["id"] != nil && (frame["result"] != nil || frame["error"] != nil) {
+					if !asked {
+						t.Fatalf("the call ended before its client was asked: %s", dumpJSON(t, frame))
+					}
+					return dumpJSON(t, frame)
+				}
+			case <-stop:
+				if !asked {
+					t.Fatal("the client was never asked")
+				}
+				return ""
+			}
+		}
+	}
+
+	if got := final(); got != "" {
+		t.Fatalf("at the default proto.askTimeout the request should still be held after six seconds, got %s", got)
+	}
+	if got := final("MCPX_PROTO_ASK_TIMEOUT=1s"); !strings.Contains(got, "did not finish before mcpx stopped waiting") {
+		t.Fatalf("proto.askTimeout=1s should end the request with the stopped-waiting error, got %q", got)
 	}
 }
 
