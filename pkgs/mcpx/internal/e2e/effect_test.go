@@ -100,6 +100,8 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor": "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":       "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":             "TestEventsHistoryBoundsTheReplay",
+	"catalog.budget":             "TestCatalogBudgetFitsTheSignatures",
+	"catalog.bias":               "TestCatalogBiasPicksWhatATightBudgetShows",
 	"catalog.pinnedTools":        "TestCatalogPinnedToolsAlwaysListInReactiveMode",
 	"retention.maxTools":         "TestRetentionMaxToolsCapsTheReactiveWorkingSet",
 	"diagnose.history":           "TestDiagnoseHistoryCapsRecordedSchemaChanges",
@@ -190,6 +192,8 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":        TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                 TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                          TestEventsHistoryBoundsTheReplay,
+	"TestCatalogBudgetFitsTheSignatures":                                        TestCatalogBudgetFitsTheSignatures,
+	"TestCatalogBiasPicksWhatATightBudgetShows":                                 TestCatalogBiasPicksWhatATightBudgetShows,
 	"TestCatalogPinnedToolsAlwaysListInReactiveMode":                            TestCatalogPinnedToolsAlwaysListInReactiveMode,
 	"TestRetentionMaxToolsCapsTheReactiveWorkingSet":                            TestRetentionMaxToolsCapsTheReactiveWorkingSet,
 	"TestDiagnoseHistoryCapsRecordedSchemaChanges":                              TestDiagnoseHistoryCapsRecordedSchemaChanges,
@@ -1599,6 +1603,38 @@ func TestRetentionMaxToolsCapsTheReactiveWorkingSet(t *testing.T) {
 	e.setenv("MCPX_RETENTION_MAX_TOOLS=2")
 	if n := retained(reactiveTools(t, e, "echo")); n != 2 {
 		t.Errorf("retention.maxTools=2 should keep 2 activated tools, kept %d", n)
+	}
+}
+
+// shownSignatures counts the tool signatures `mcpx catalog` printed.
+func shownSignatures(out string) int { return strings.Count(out, "  - demo.") }
+
+// TestCatalogBudgetFitsTheSignatures is the effect probe for catalog.budget:
+// the default budget shows every demo signature, and a 20-token budget from
+// the environment shows none of them while still naming the namespace.
+func TestCatalogBudgetFitsTheSignatures(t *testing.T) {
+	e := newEnv(t, oneServer)
+	if out := e.run("catalog"); shownSignatures(out) != 9 {
+		t.Errorf("the default catalog.budget should show all 9 demo signatures:\n%s", out)
+	}
+	e.setenv("MCPX_CATALOG_BUDGET=20")
+	if out := e.run("catalog"); shownSignatures(out) != 0 || !strings.Contains(out, "none shown") {
+		t.Errorf("catalog.budget=20 should show no signatures:\n%s", out)
+	}
+}
+
+// TestCatalogBiasPicksWhatATightBudgetShows is the effect probe for
+// catalog.bias: at a budget that fits two signatures, demo.wipe is not
+// among them unbiased and is once the environment biases toward it.
+func TestCatalogBiasPicksWhatATightBudgetShows(t *testing.T) {
+	e := newEnv(t, oneServer)
+	e.setenv("MCPX_CATALOG_BUDGET=60")
+	if out := e.run("catalog"); strings.Contains(out, "demo.wipe(") {
+		t.Errorf("unbiased, a 60-token catalog should not reach demo.wipe:\n%s", out)
+	}
+	e.setenv("MCPX_CATALOG_BIAS=wipe")
+	if out := e.run("catalog"); !strings.Contains(out, "demo.wipe(") {
+		t.Errorf("catalog.bias=wipe should show demo.wipe within the same budget:\n%s", out)
 	}
 }
 
