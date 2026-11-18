@@ -78,15 +78,7 @@ setting	plugin.instructions	no integration-test exercise yet; burn-down #8472 (s
 setting	plugin.remember	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
 setting	plugin.toolTiming	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
 setting	plugin.tools	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
-setting	logging.dir	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
-setting	logging.format	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
-setting	logging.include	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
-setting	logging.keep	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
-setting	logging.level	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
 setting	logging.maxAge	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
-setting	logging.maxBytes	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
-setting	logging.maxLines	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
-setting	logging.source	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
 setting	logging.trace	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
 setting	logstore.followBacklog	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
 setting	output.color	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test

@@ -100,6 +100,14 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor": "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":       "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":             "TestEventsHistoryBoundsTheReplay",
+	"logging.level":              "TestLoggingLevelShowsDebugRecords",
+	"logging.format":             "TestLoggingFormatRendersJSON",
+	"logging.source":             "TestLoggingSourceAddsTheCallSite",
+	"logging.dir":                "TestLoggingDirHoldsTheDurableLog",
+	"logging.include":            "TestLoggingIncludeChoosesTheAmbientBlocks",
+	"logging.maxLines":           "TestLoggingMaxLinesRotatesTheFile",
+	"logging.maxBytes":           "TestLoggingMaxBytesRotatesTheFile",
+	"logging.keep":               "TestLoggingKeepPrunesRotatedFiles",
 	"artifacts.enabled":          "TestArtifactsEnabledGatesTheStore",
 	"artifacts.maxBytes":         "TestArtifactsMaxBytesRefusesALargeArtifact",
 	"artifacts.quota":            "TestArtifactsQuotaBoundsTheStore",
@@ -201,6 +209,14 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":        TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                 TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                          TestEventsHistoryBoundsTheReplay,
+	"TestLoggingLevelShowsDebugRecords":                                         TestLoggingLevelShowsDebugRecords,
+	"TestLoggingFormatRendersJSON":                                              TestLoggingFormatRendersJSON,
+	"TestLoggingSourceAddsTheCallSite":                                          TestLoggingSourceAddsTheCallSite,
+	"TestLoggingDirHoldsTheDurableLog":                                          TestLoggingDirHoldsTheDurableLog,
+	"TestLoggingIncludeChoosesTheAmbientBlocks":                                 TestLoggingIncludeChoosesTheAmbientBlocks,
+	"TestLoggingMaxLinesRotatesTheFile":                                         TestLoggingMaxLinesRotatesTheFile,
+	"TestLoggingMaxBytesRotatesTheFile":                                         TestLoggingMaxBytesRotatesTheFile,
+	"TestLoggingKeepPrunesRotatedFiles":                                         TestLoggingKeepPrunesRotatedFiles,
 	"TestArtifactsEnabledGatesTheStore":                                         TestArtifactsEnabledGatesTheStore,
 	"TestArtifactsMaxBytesRefusesALargeArtifact":                                TestArtifactsMaxBytesRefusesALargeArtifact,
 	"TestArtifactsQuotaBoundsTheStore":                                          TestArtifactsQuotaBoundsTheStore,
@@ -1796,6 +1812,149 @@ func TestArtifactsDirReceivesTheRunsArtifacts(t *testing.T) {
 	e.run("exec", artifactScript)
 	if b, err := os.ReadFile(filepath.Join(dir, "n.txt")); err != nil || string(b) != "hihi" {
 		t.Errorf("artifacts.dir should receive n.txt with its body, got %q (%v)", b, err)
+	}
+}
+
+// loggedRun starts a daemon with env and its durable log in a fresh
+// directory, then `mcpx run`s a script that logs at debug and at info. It
+// returns the run's stderr, the log directory, and the daemon.start record.
+func loggedRun(t *testing.T, env ...string) (stderr, dir, start string) {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	dir = filepath.Join(t.TempDir(), "logs")
+	e.setenv(append([]string{"MCPX_LOGGING_DIR=" + dir}, env...)...)
+	e.run("ls")
+	script := filepath.Join(e.dir, "logged.ts")
+	mustWrite(t, script, `log.debug("debug-line"); log.info("info-a"); log.info("info-b"); log.info("info-c");`)
+	_, stderr, err := e.split("run", script)
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, stderr)
+	}
+	for _, f := range logFiles(t, dir) {
+		b, _ := os.ReadFile(filepath.Join(dir, f))
+		for _, line := range strings.Split(string(b), "\n") {
+			if strings.Contains(line, `"event":"daemon.start"`) {
+				start = line
+			}
+		}
+	}
+	return stderr, dir, start
+}
+
+// logFiles lists the JSONL files in a log directory.
+func logFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	ents, _ := os.ReadDir(dir)
+	var out []string
+	for _, ent := range ents {
+		if strings.HasSuffix(ent.Name(), ".jsonl") {
+			out = append(out, ent.Name())
+		}
+	}
+	return out
+}
+
+// TestLoggingLevelShowsDebugRecords is the effect probe for logging.level:
+// a script's debug record is hidden at the default level and shown at debug.
+func TestLoggingLevelShowsDebugRecords(t *testing.T) {
+	if se, _, _ := loggedRun(t); strings.Contains(se, "debug-line") || !strings.Contains(se, "info-a") {
+		t.Errorf("the default logging.level should show info and hide debug:\n%s", se)
+	}
+	if se, _, _ := loggedRun(t, "MCPX_LOGGING_LEVEL=debug"); !strings.Contains(se, "debug-line") {
+		t.Errorf("logging.level=debug should show the debug record:\n%s", se)
+	}
+}
+
+// TestLoggingFormatRendersJSON is the effect probe for logging.format: the
+// default renders a script's record as text, and json renders it as JSON.
+func TestLoggingFormatRendersJSON(t *testing.T) {
+	const asJSON = `"msg":"info-a"`
+	if se, _, _ := loggedRun(t); strings.Contains(se, asJSON) || !strings.Contains(se, "info-a") {
+		t.Errorf("the default logging.format should render text:\n%s", se)
+	}
+	if se, _, _ := loggedRun(t, "MCPX_LOGGING_FORMAT=json"); !strings.Contains(se, asJSON) {
+		t.Errorf("logging.format=json should render the record as JSON:\n%s", se)
+	}
+}
+
+// TestLoggingSourceAddsTheCallSite is the effect probe for logging.source:
+// a script's record carries no source location at the default, and does
+// at logging.source=debug.
+func TestLoggingSourceAddsTheCallSite(t *testing.T) {
+	if se, _, _ := loggedRun(t); strings.Contains(se, "source.file=") {
+		t.Errorf("the default logging.source should add no call site:\n%s", se)
+	}
+	if se, _, _ := loggedRun(t, "MCPX_LOGGING_SOURCE=debug"); !strings.Contains(se, "source.file=") {
+		t.Errorf("logging.source=debug should add the call site:\n%s", se)
+	}
+}
+
+// TestLoggingDirHoldsTheDurableLog is the effect probe for logging.dir: the
+// durable log lands in the directory the environment names, and nowhere
+// in it before then.
+func TestLoggingDirHoldsTheDurableLog(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "logs")
+	e := newEnv(t, oneServer)
+	e.run("ls")
+	if got := logFiles(t, dir); len(got) != 0 {
+		t.Fatalf("with no logging.dir, nothing should be logged to %s: %v", dir, got)
+	}
+	e2 := newEnv(t, oneServer)
+	e2.setenv("MCPX_LOGGING_DIR=" + dir)
+	e2.run("ls")
+	if got := logFiles(t, dir); len(got) == 0 {
+		t.Errorf("logging.dir should hold the daemon's durable log")
+	}
+}
+
+// TestLoggingIncludeChoosesTheAmbientBlocks is the effect probe for
+// logging.include: daemon.start carries host but not network facts at the
+// default, none at "none", and network ones too at "all".
+func TestLoggingIncludeChoosesTheAmbientBlocks(t *testing.T) {
+	if _, _, start := loggedRun(t); !strings.Contains(start, `"host.name"`) || strings.Contains(start, `"net.`) {
+		t.Errorf("the default logging.include should carry host and not network facts:\n%s", start)
+	}
+	if _, _, start := loggedRun(t, "MCPX_LOGGING_INCLUDE=none"); start == "" || strings.Contains(start, `"host.name"`) {
+		t.Errorf("logging.include=none should drop the host block:\n%s", start)
+	}
+	if _, _, start := loggedRun(t, "MCPX_LOGGING_INCLUDE=all"); !strings.Contains(start, `"net.`) {
+		t.Errorf("logging.include=all should add the network block:\n%s", start)
+	}
+}
+
+// TestLoggingMaxLinesRotatesTheFile is the effect probe for
+// logging.maxLines: the default keeps one file, and one line per file
+// rotates into several.
+func TestLoggingMaxLinesRotatesTheFile(t *testing.T) {
+	if _, dir, _ := loggedRun(t); len(logFiles(t, dir)) != 1 {
+		t.Errorf("the default logging.maxLines should keep one file: %v", logFiles(t, dir))
+	}
+	if _, dir, _ := loggedRun(t, "MCPX_LOGGING_MAX_LINES=1"); len(logFiles(t, dir)) < 3 {
+		t.Errorf("logging.maxLines=1 should rotate into several files: %v", logFiles(t, dir))
+	}
+}
+
+// TestLoggingMaxBytesRotatesTheFile is the effect probe for
+// logging.maxBytes: the default keeps one file, and a 10-byte bound
+// rotates into several.
+func TestLoggingMaxBytesRotatesTheFile(t *testing.T) {
+	if _, dir, _ := loggedRun(t); len(logFiles(t, dir)) != 1 {
+		t.Errorf("the default logging.maxBytes should keep one file: %v", logFiles(t, dir))
+	}
+	if _, dir, _ := loggedRun(t, "MCPX_LOGGING_MAX_BYTES=10"); len(logFiles(t, dir)) < 3 {
+		t.Errorf("logging.maxBytes=10 should rotate into several files: %v", logFiles(t, dir))
+	}
+}
+
+// TestLoggingKeepPrunesRotatedFiles is the effect probe for logging.keep:
+// rotating every line keeps many rotated files at the default, and at most
+// one besides the live file at keep=1.
+func TestLoggingKeepPrunesRotatedFiles(t *testing.T) {
+	if _, dir, _ := loggedRun(t, "MCPX_LOGGING_MAX_LINES=1"); len(logFiles(t, dir)) < 3 {
+		t.Errorf("the default logging.keep should keep several rotated files: %v", logFiles(t, dir))
+	}
+	if _, dir, _ := loggedRun(t, "MCPX_LOGGING_MAX_LINES=1", "MCPX_LOGGING_KEEP=1"); len(logFiles(t, dir)) > 2 {
+		t.Errorf("logging.keep=1 should prune to one rotated file: %v", logFiles(t, dir))
 	}
 }
 
