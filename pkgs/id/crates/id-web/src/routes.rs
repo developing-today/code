@@ -696,11 +696,10 @@ fn create_router_inner(state: AppState) -> Router {
 /// built with the default policy -- re-applying the listener
 /// policy here would double-guard the request, not widen it.
 ///
-/// Known limit: WebSocket upgrades under a mount do not complete,
-/// because the on-demand dispatch has no hyper upgrade handle to
-/// offer the world bridge; the program page and its HTTP surface
-/// serve normally. Dynamic publication *listeners* serve the same
-/// router through `axum::serve` directly and have no such limit.
+/// WebSocket sessions work under a mount (#11290): the request is
+/// rewritten in place, keeping its extensions, so the connection's
+/// hyper upgrade handle reaches the mounted world's bridge just as it
+/// does on a dedicated publication listener.
 async fn publication_mount_layer(
     State(state): State<AppState>,
     req: axum::http::Request<Body>,
@@ -2769,6 +2768,101 @@ mod upload_router_tests {
         assert_eq!(res.status(), StatusCode::OK);
         let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
         assert!(!body.is_empty());
+    }
+
+    /// #11290: a WebSocket session under a publication mount completes
+    /// over a real connection. The mount layer rewrites the request in
+    /// place, so the connection's upgrade handle travels with it to the
+    /// mounted world's bridge: an authorized join snapshots the mounted
+    /// world, and an invalid capability is refused by the world's own
+    /// session gate, exactly as on the program surface.
+    #[tokio::test]
+    async fn publication_mount_websocket_session_round_trips_over_a_real_connection() {
+        use futures_util::{SinkExt as _, StreamExt as _};
+        use tokio_tungstenite::tungstenite::Message as ClientMessage;
+
+        type Client = tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >;
+        async fn next_frame(client: &mut Client) -> Option<serde_json::Value> {
+            match tokio::time::timeout(std::time::Duration::from_secs(30), client.next())
+                .await
+                .expect("timed out waiting for a world frame")
+            {
+                Some(Ok(ClientMessage::Text(text))) => Some(serde_json::from_str(&text).unwrap()),
+                _ => None,
+            }
+        }
+
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        state.world = Some(hub_with_world("arena", Some("s3cret")));
+        let app = create_router(state.clone(), WebSecurity::default());
+        state.publication_mounts.mount("arena", "/prog").unwrap();
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/prog/api/world/invite")
+                    .header("content-type", "application/json")
+                    .header("x-world-admin-token", "s3cret")
+                    .body(Body::from("{\"display_name\":\"guest\"}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let capability = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["capability"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        // Authorized: the upgrade completes under the mount and the
+        // join reaches the mounted world.
+        let (mut client, _) =
+            tokio_tungstenite::connect_async(format!("ws://{addr}/prog/ws/world"))
+                .await
+                .unwrap();
+        client
+            .send(ClientMessage::Text(
+                serde_json::json!({"type": "join", "capability": capability})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let snapshot = next_frame(&mut client).await.unwrap();
+        assert_eq!(snapshot["snapshot"]["world_id"], "arena", "{snapshot}");
+
+        // Unauthorized: a capability the world never issued is refused
+        // by the world's own session gate; the mount grants nothing.
+        let (mut stranger, _) =
+            tokio_tungstenite::connect_async(format!("ws://{addr}/prog/ws/world"))
+                .await
+                .unwrap();
+        stranger
+            .send(ClientMessage::Text(
+                serde_json::json!({"type": "join", "capability": "not-a-capability"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let refused = next_frame(&mut stranger).await;
+        assert!(
+            refused
+                .as_ref()
+                .is_none_or(|frame| frame.get("snapshot").is_none()),
+            "an invalid capability must not join: {refused:?}"
+        );
     }
 
     #[tokio::test]
