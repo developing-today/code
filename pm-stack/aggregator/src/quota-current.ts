@@ -18,6 +18,7 @@
 // - Several entries can share a serviceId (one per credential): a
 //   fresh ok entry wins over an error entry; otherwise the newest
 //   entry decides the surfaced state.
+import { readFile } from "node:fs/promises";
 import { poolState } from "./derive.ts";
 import { isProviderAuthAlert, reevaluateProviderAuth } from "./provider-auth-alerts.ts";
 import { lifecycleForEntry, safeProviderReason } from "./credential-lifecycle.ts";
@@ -134,6 +135,129 @@ export function parseQuotaCurrent(doc: unknown): QuotaCurrentFile | null {
 }
 
 type FreshState = PoolFreshness["state"];
+
+/**
+ * Pause between the quota-file read attempts (#10816): long enough
+ * for a transient sandbox→laptop transport blip to clear, short
+ * enough to stay invisible on a request path that only pays it when
+ * the first read already failed.
+ */
+export const QUOTA_CURRENT_RETRY_PAUSE_MS = 1_000;
+
+/**
+ * How a quota-current.json read resolved (#10816):
+ * - "ok": read and structurally valid.
+ * - "missing": the path is genuinely absent (ENOENT on both attempts).
+ * - "unparseable": the bytes arrived but are not valid JSON or fail
+ *   structural validation — a gatherer investigation, never a retry.
+ * - "transport": the read itself failed with anything but ENOENT
+ *   (EACCES, EIO, ETIMEDOUT, ECONNRESET, …) — a wait/retry situation
+ *   that must never be reported as a missing file.
+ */
+export type QuotaCurrentReadVerdict = "ok" | "missing" | "unparseable" | "transport";
+
+export interface QuotaCurrentReadResult {
+  verdict: QuotaCurrentReadVerdict;
+  file: QuotaCurrentFile | null;
+  /** Total read attempts made (2 whenever the first attempt failed). */
+  attempts: number;
+  /** Human-readable cause for every non-ok verdict. */
+  error?: string;
+}
+
+/**
+ * Read-error half of the #10816 verdict: ENOENT means the path is
+ * genuinely absent; every other read failure is a
+ * transport/transient failure, never "missing".
+ */
+export function classifyQuotaCurrentReadError(err: unknown): "missing" | "transport" {
+  if (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as { code?: unknown }).code === "ENOENT"
+  ) {
+    return "missing";
+  }
+  return "transport";
+}
+
+/**
+ * Read + validate the gatherer's quota-current.json (#10816): a
+ * failed read is retried once after a short pause, and the outcome
+ * classifies distinctly — a transport failure is reported as such
+ * and must never abort a run as "file missing". Parse/validation
+ * failures are deterministic, so they classify immediately without
+ * spending the retry.
+ */
+export async function readQuotaCurrentFile(
+  path: string,
+  opts?: {
+    readFile?: (path: string, encoding: "utf8") => Promise<string>;
+    pauseMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+  },
+): Promise<QuotaCurrentReadResult> {
+  const read: (path: string, encoding: "utf8") => Promise<string> =
+    opts?.readFile ?? ((p, enc) => readFile(p, enc));
+  const pauseMs = opts?.pauseMs ?? QUOTA_CURRENT_RETRY_PAUSE_MS;
+  const sleep: (ms: number) => Promise<void> =
+    opts?.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let raw: string | null = null;
+  let attempts = 0;
+  let firstMissing = false;
+  try {
+    raw = await read(path, "utf8");
+    attempts = 1;
+  } catch (err) {
+    firstMissing = classifyQuotaCurrentReadError(err) === "missing";
+    // One retry after a short pause: the 2026-11-16 09:17 steward run
+    // collapsed a sandbox→laptop transport blip into "file missing"
+    // and aborted its run (no ledger event that hour). The writer is
+    // atomic (tmp + rename), so a genuinely absent file still reads
+    // absent after the pause — the retry only ever rescues blips.
+    await sleep(pauseMs);
+    attempts = 2;
+    try {
+      raw = await read(path, "utf8");
+    } catch (retryErr) {
+      // "missing" only when the path was absent on BOTH attempts; any
+      // other read failure on either attempt is a transport verdict.
+      if (firstMissing && classifyQuotaCurrentReadError(retryErr) === "missing") {
+        return { verdict: "missing", file: null, attempts, error: `quota-current.json absent at ${path}` };
+      }
+      const detail = retryErr instanceof Error ? retryErr.message : String(retryErr);
+      return {
+        verdict: "transport",
+        file: null,
+        attempts,
+        error: `quota-current.json unreadable after retry (${detail}) — transport failure, not a missing file`,
+      };
+    }
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw ?? "");
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return {
+      verdict: "unparseable",
+      file: null,
+      attempts,
+      error: `quota-current.json at ${path} is not valid JSON (${detail})`,
+    };
+  }
+  const file = parseQuotaCurrent(parsed);
+  if (!file) {
+    return {
+      verdict: "unparseable",
+      file: null,
+      attempts,
+      error: `quota-current.json at ${path} failed structural validation`,
+    };
+  }
+  return { verdict: "ok", file, attempts };
+}
 
 function entryState(entry: QuotaCurrentEntry, nowMs: number): FreshState {
   if (entry.state === "lapsed") return "lapsed";

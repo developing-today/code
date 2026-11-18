@@ -68,7 +68,7 @@ import { poolItemToGhItem } from "../projects.ts";
 import { createNeedsDrewSweeper, type NeedsDrewCensus } from "../needs-drew.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
 import { assembleWorkItems } from "../work-items.ts";
-import { overlayQuotaCurrent, overlayTursoUsage, parseQuotaCurrent } from "../quota-current.ts";
+import { overlayQuotaCurrent, overlayTursoUsage, readQuotaCurrentFile } from "../quota-current.ts";
 import { SnapshotStore, type SnapshotsRemote } from "../snapshots.ts";
 import { gristDocUrl, kaneoTaskUrl } from "../service-links.ts";
 import { fixtureSource } from "./fixtures.ts";
@@ -848,12 +848,12 @@ export function inFlightBoardItems(section: OrchestrationSection, existing: Boar
  * leaves the base services untouched.
  */
 async function tursoOverlay(cfg: Config, services: SaasService[]): Promise<SaasService[]> {
-  try {
-    const raw = await readFile(cfg.quotaCurrentFile, "utf8");
-    const file = parseQuotaCurrent(JSON.parse(raw));
-    if (file) return overlayTursoUsage(services, file);
-  } catch {
-    /* no gatherer file (or unreadable): base services stand */
+  // #10816: one retry + distinct verdicts — a transport failure is
+  // logged as such and never reported as a missing gatherer file.
+  const read = await readQuotaCurrentFile(cfg.quotaCurrentFile);
+  if (read.verdict === "ok" && read.file) return overlayTursoUsage(services, read.file);
+  if (read.verdict !== "missing") {
+    console.error(`[quota-current] WARNING: turso overlay skipped: ${read.error} (attempts: ${read.attempts})`);
   }
   return services;
 }
@@ -1481,12 +1481,12 @@ export function liveSource(
   // PR #4695): a pool the gatherer now reports healthy must clear its
   // walled/high-usage actions on the usage strip too.
   async function overlayCurrent(base: QuotaView): Promise<QuotaView> {
-    try {
-      const raw = await readFile(cfg.quotaCurrentFile, "utf8");
-      const file = parseQuotaCurrent(JSON.parse(raw));
-      if (file) return overlayQuotaCurrent(base, file);
-    } catch {
-      /* no gatherer file (or unreadable): base view stands */
+    // #10816: one retry + distinct verdicts — a transport failure is
+    // logged as such and never reported as a missing gatherer file.
+    const read = await readQuotaCurrentFile(cfg.quotaCurrentFile);
+    if (read.verdict === "ok" && read.file) return overlayQuotaCurrent(base, read.file);
+    if (read.verdict !== "missing") {
+      console.error(`[quota-current] WARNING: quota overlay skipped: ${read.error} (attempts: ${read.attempts})`);
     }
     return base;
   }
@@ -1844,19 +1844,32 @@ export function liveSource(
         provenance.quota = "fixtures (no fleet feed file yet)";
         view = await fix.quota();
       }
-      try {
-        const raw = await readFile(cfg.quotaCurrentFile, "utf8");
-        const file = parseQuotaCurrent(JSON.parse(raw));
-        if (file) {
-          provenance.quota += ` · gatherer ${file.generatedAt}`;
-          const sanitized = file.sanitized;
-          if (sanitized && sanitized.droppedProviders + sanitized.droppedWindows > 0) {
-            provenance.quota += ` · sanitized quota-current: dropped ${sanitized.droppedProviders} provider(s), ${sanitized.droppedWindows} window(s)`;
-          }
-          return overlayQuotaCurrent(view, file);
+      // #10816: the gatherer read retries once after a short pause
+      // and classifies distinctly — a transport failure keeps the base
+      // view (like every other read failure) but is provenanced as a
+      // transport verdict, never as a missing file.
+      const gatherer = await readQuotaCurrentFile(cfg.quotaCurrentFile);
+      if (gatherer.verdict === "ok" && gatherer.file) {
+        const file = gatherer.file;
+        provenance.quota += ` · gatherer ${file.generatedAt}`;
+        const sanitized = file.sanitized;
+        if (sanitized && sanitized.droppedProviders + sanitized.droppedWindows > 0) {
+          provenance.quota += ` · sanitized quota-current: dropped ${sanitized.droppedProviders} provider(s), ${sanitized.droppedWindows} window(s)`;
         }
-      } catch {
-        /* no gatherer file (or unreadable): base view stands */
+        return overlayQuotaCurrent(view, file);
+      }
+      if (gatherer.verdict === "missing") {
+        provenance.quota += " · no gatherer file (quota-current.json absent) — base view stands";
+      } else if (gatherer.verdict === "unparseable") {
+        provenance.quota += ` · gatherer file unparseable (${gatherer.error}) — base view stands; needs gatherer investigation`;
+        console.error(
+          `[quota-current] WARNING: ${gatherer.error} (attempts: ${gatherer.attempts})`,
+        );
+      } else {
+        provenance.quota += ` · gatherer file unreadable after retry (${gatherer.error}) — base view stands; transport failure, NOT a missing file`;
+        console.error(
+          `[quota-current] WARNING: ${gatherer.error} (attempts: ${gatherer.attempts})`,
+        );
       }
       return view;
     },

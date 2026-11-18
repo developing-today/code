@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
+  classifyQuotaCurrentReadError,
   overlayQuotaCurrent,
   overlayTursoUsage,
   parseQuotaCurrent,
+  readQuotaCurrentFile,
   QUOTA_CURRENT_FRESH_MS,
   QUOTA_CURRENT_FUTURE_SKEW_MS,
 } from "../src/quota-current.ts";
@@ -1522,5 +1524,100 @@ describe("intentionally uninstrumented pools keep their window state (#10684)", 
     const poolOut = out.pools.find((p) => p.id === "anthropic:claude-pro")!;
     expect(poolOut.state).toBe("error");
     expect(poolOut.freshness?.state).toBe("error");
+  });
+});
+
+describe("quota-current file read with retry (#10816)", () => {
+  const validDoc = JSON.stringify(
+    file([entry({ serviceId: "openai", windows: [win("7d", 11, iso(5 * 60_000))] })]),
+  );
+  const enoent = () => Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+  const econnreset = () => Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+
+  function harness(reads: (() => Promise<string>)[]) {
+    const sleeps: number[] = [];
+    let calls = 0;
+    return {
+      sleeps,
+      readFile: async (_path: string, _enc: "utf8") => {
+        const fn = reads[Math.min(calls++, reads.length - 1)]!;
+        return fn();
+      },
+      sleep: async (ms: number) => {
+        sleeps.push(ms);
+      },
+      get calls() {
+        return calls;
+      },
+    };
+  }
+
+  test("ok on the first attempt spends no retry and no sleep", async () => {
+    const h = harness([async () => validDoc]);
+    const res = await readQuotaCurrentFile("/state/quota-current.json", h);
+    expect(res.verdict).toBe("ok");
+    expect(res.attempts).toBe(1);
+    expect(res.file?.providers).toHaveLength(1);
+    expect(h.calls).toBe(1);
+    expect(h.sleeps).toEqual([]);
+  });
+
+  test("a transport blip then success retries once and reads ok", async () => {
+    const h = harness([async () => Promise.reject(econnreset()), async () => validDoc]);
+    const res = await readQuotaCurrentFile("/state/quota-current.json", h);
+    expect(res.verdict).toBe("ok");
+    expect(res.attempts).toBe(2);
+    expect(res.file?.providers).toHaveLength(1);
+    expect(h.calls).toBe(2);
+    expect(h.sleeps).toHaveLength(1);
+  });
+
+  test("ENOENT on both attempts is genuinely missing, not transport", async () => {
+    const h = harness([async () => Promise.reject(enoent()), async () => Promise.reject(enoent())]);
+    const res = await readQuotaCurrentFile("/state/quota-current.json", h);
+    expect(res.verdict).toBe("missing");
+    expect(res.file).toBeNull();
+    expect(res.attempts).toBe(2);
+    expect(res.error).toMatch(/absent/);
+  });
+
+  test("a transport failure on both attempts is transport, never missing", async () => {
+    const h = harness([async () => Promise.reject(econnreset()), async () => Promise.reject(econnreset())]);
+    const res = await readQuotaCurrentFile("/state/quota-current.json", h);
+    expect(res.verdict).toBe("transport");
+    expect(res.file).toBeNull();
+    expect(res.attempts).toBe(2);
+    expect(res.error).toMatch(/transport failure, not a missing file/);
+  });
+
+  test("transport then missing is still transport, never missing", async () => {
+    const h = harness([async () => Promise.reject(econnreset()), async () => Promise.reject(enoent())]);
+    const res = await readQuotaCurrentFile("/state/quota-current.json", h);
+    expect(res.verdict).toBe("transport");
+  });
+
+  test("invalid JSON is unparseable with no retry spent", async () => {
+    const h = harness([async () => "{not json"]);
+    const res = await readQuotaCurrentFile("/state/quota-current.json", h);
+    expect(res.verdict).toBe("unparseable");
+    expect(res.attempts).toBe(1);
+    expect(h.calls).toBe(1);
+    expect(h.sleeps).toEqual([]);
+  });
+
+  test("structural validation failure is unparseable with no retry spent", async () => {
+    const h = harness([async () => JSON.stringify({ version: 1 })]);
+    const res = await readQuotaCurrentFile("/state/quota-current.json", h);
+    expect(res.verdict).toBe("unparseable");
+    expect(res.attempts).toBe(1);
+    expect(res.error).toMatch(/structural validation/);
+  });
+
+  test("classify: only ENOENT reads missing", () => {
+    expect(classifyQuotaCurrentReadError(enoent())).toBe("missing");
+    expect(classifyQuotaCurrentReadError(econnreset())).toBe("transport");
+    expect(classifyQuotaCurrentReadError(new Error("EACCES: permission denied"))).toBe("transport");
+    expect(classifyQuotaCurrentReadError(new Error("boom"))).toBe("transport");
+    expect(classifyQuotaCurrentReadError(null)).toBe("transport");
   });
 });
