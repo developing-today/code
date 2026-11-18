@@ -21,9 +21,12 @@ integration commit `0809001c3b1681f0b6fff2dfa907588cfa286d51`:
 Paused only its timer, verified the oneshot was inactive, atomically replaced
 its unit link, reloaded systemd, and restored the active timer. Existing drop-ins
 were preserved. No running job was interrupted and no push was sent. Effective
-ExecStart points to the new package. The first natural post-cutover quota tick
-was not yet observed at this receipt's initial verification; old `Result=success`
-was not treated as evidence that the new code had run.
+ExecStart points to the new package. The first natural post-cutover quota tick started at 22:15:15 UTC and finished
+at 22:16:39 UTC with exit 0. Its actual process command used the new package.
+That run recorded no Supabase/project-reference log hits; its timer remained
+active. Claude quota requests encountered rate limiting with bounded retries,
+so process success is not a claim that every provider quota was refreshed.
+No forced quota run or test push was used.
 
 The stale `default.target.wants/pm-aggregator.service` link was also preserved
 in that backup directory and changed to `../pm-aggregator.service`. A daemon
