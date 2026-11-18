@@ -494,6 +494,8 @@ mod tests {
                 name,
                 version,
                 licence: None,
+                description: None,
+                categories: &[],
             },
             author,
         )
@@ -706,6 +708,8 @@ mod tests {
                 name: "chess",
                 version: 1,
                 licence: None,
+                description: None,
+                categories: &[],
             },
             &bob(),
         )

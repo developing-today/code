@@ -49,6 +49,7 @@ mod assets;
 mod collab;
 mod content_mode;
 mod explore;
+pub mod gallery;
 mod groups;
 mod home;
 mod identity;
@@ -643,6 +644,10 @@ pub struct AppState {
     /// built anywhere else — the handler then answers 404 rather
     /// than inventing an ad.
     pub transport_ad: Option<Arc<id_core::transport_advertisement::AdMinter>>,
+    /// The program gallery whose public read surface (list, fetch, search)
+    /// this node serves under `/api/gallery` (#10003). `None` unless the
+    /// serving process wires one in; every gallery route then answers 404.
+    pub gallery: Option<gallery::SharedGallery>,
     /// State for collaborative editing sessions.
     pub collab: Arc<CollabState>,
     /// Asset URLs (with cache-busting hashes).
@@ -720,6 +725,7 @@ impl std::fmt::Debug for AppState {
             .field("groups_log", &self.groups_log)
             .field("seitan", &self.seitan)
             .field("transport_ad", &self.transport_ad.is_some())
+            .field("gallery", &self.gallery.is_some())
             .finish()
     }
 }
@@ -771,6 +777,7 @@ impl AppState {
             store,
             transfer_endpoint: None,
             transport_ad: None,
+            gallery: None,
             collab: Arc::new(CollabState::new()),
             assets: load_asset_urls(),
             peers,
@@ -816,6 +823,12 @@ impl AppState {
         minter: Option<Arc<id_core::transport_advertisement::AdMinter>>,
     ) {
         self.transport_ad = minter;
+    }
+
+    /// Serve this program gallery's read surface under `/api/gallery`
+    /// (#10003); see [`AppState::gallery`].
+    pub fn set_gallery(&mut self, gallery: Option<gallery::SharedGallery>) {
+        self.gallery = gallery;
     }
 }
 
@@ -993,6 +1006,7 @@ pub async fn web_routers(
         seitan,
         None,
         None,
+        None,
     )
     .await?;
     Ok(routers)
@@ -1073,6 +1087,7 @@ pub async fn web_routers_with_surface(
     seitan: SeitanState,
     transfer_endpoint: Option<iroh::endpoint::Endpoint>,
     transport_ad: Option<Arc<id_core::transport_advertisement::AdMinter>>,
+    gallery: Option<gallery::SharedGallery>,
 ) -> anyhow::Result<(Vec<Router>, WebSurfaceFactory)> {
     let mut state = match local_events {
         Some(events) => {
@@ -1101,6 +1116,7 @@ pub async fn web_routers_with_surface(
     };
     state.set_transfer_endpoint(transfer_endpoint);
     state.set_transport_ad(transport_ad);
+    state.set_gallery(gallery);
     let surface = WebSurfaceFactory {
         state: state.clone(),
         world: world.clone(),

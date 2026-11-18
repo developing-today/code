@@ -47,6 +47,7 @@ pub use id_core::port;
 pub mod blob_gate;
 pub mod groups;
 pub mod program_bundle;
+pub mod program_gallery;
 pub mod program_registry;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;

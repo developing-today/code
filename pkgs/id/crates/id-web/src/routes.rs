@@ -669,6 +669,9 @@ fn create_router_inner(state: AppState) -> Router {
         }
         None => router.merge(super::world_ws::world_http_routes().with_state(world_state)),
     };
+    // The program gallery's read surface (#10003): 404 on every route
+    // unless the serving process wired a gallery in.
+    let router = router.merge(super::gallery::gallery_routes().with_state(state.gallery.clone()));
     let router = router
         .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
         .with_state(state.clone());
