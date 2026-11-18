@@ -252,7 +252,7 @@
       "archive_rows": 941,
       "archive_exact": true,
       "status": "operational-restored-and-verified",
-      "target": null,
+      "target": "agent_mirror_history_agent_agents",
       "destination": "fleet-mirror",
       "reason": "Target absent or empty per parent/nonPM",
       "evidence": "mirror-history-production-verification.json (nonPM direct fresh readback)"
@@ -267,7 +267,7 @@
       "archive_rows": 299,
       "archive_exact": true,
       "status": "operational-restored-and-verified",
-      "target": null,
+      "target": "agent_mirror_history_goals_goals",
       "destination": "fleet-mirror",
       "reason": "Target absent or empty per parent/nonPM",
       "evidence": "mirror-history-production-verification.json (nonPM direct fresh readback)"
@@ -276,7 +276,7 @@
       "archive_rows": 1,
       "archive_exact": true,
       "status": "operational-restored-and-verified",
-      "target": null,
+      "target": "agent_mirror_history_goals_updates",
       "destination": "fleet-mirror",
       "reason": "Target absent or empty per parent/nonPM",
       "evidence": "mirror-history-production-verification.json (nonPM direct fresh readback)"
@@ -285,7 +285,7 @@
       "archive_rows": 2354,
       "archive_exact": true,
       "status": "operational-restored-and-verified",
-      "target": null,
+      "target": "agent_mirror_history_scheduler_jobs",
       "destination": "fleet-mirror",
       "reason": "Target absent or empty per parent/nonPM",
       "evidence": "mirror-history-production-verification.json (nonPM direct fresh readback)"
@@ -946,7 +946,7 @@
       "archive_rows": 2,
       "archive_exact": true,
       "status": "operational-restored-and-verified",
-      "target": null,
+      "target": "automation_sources",
       "destination": "fleet-platform",
       "evidence": "config-production-verification.json"
     },
@@ -1122,7 +1122,7 @@
       "archive_rows": 1,
       "archive_exact": true,
       "status": "operational-restored-and-verified",
-      "target": null,
+      "target": "finance_sources",
       "destination": "fleet-platform",
       "evidence": "config-production-verification.json"
     },
@@ -1181,7 +1181,7 @@
       "archive_rows": 1,
       "archive_exact": true,
       "status": "operational-restored-and-verified",
-      "target": null,
+      "target": "home_sources",
       "destination": "fleet-platform",
       "evidence": "config-production-verification.json"
     },
@@ -1358,7 +1358,7 @@
       "archive_rows": 1,
       "archive_exact": true,
       "status": "operational-restored-and-verified",
-      "target": null,
+      "target": "research_sources",
       "destination": "fleet-platform",
       "evidence": "config-production-verification.json"
     },
@@ -1452,5 +1452,6 @@
     "Queue coverage compares keys, not full value equality; intentionally no replay of stale live controls.",
     "Backup contains zero push subscriptions; phone delivery not verified.",
     "Remote Muse runtime coverage is not established by this database receipt."
-  ]
+  ],
+  "archive_verification": "Exact local decoded COPY value hashes independently reproduced; imported cloud archive all130table counts verified."
 }
