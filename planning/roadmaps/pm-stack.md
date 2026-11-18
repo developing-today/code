@@ -6,9 +6,9 @@ The roadmap of record is this file and its siblings in `planning/roadmaps/`. The
 
 ## Now
 
-| Title                                                                 | Status      | Intent                                                                                                                                                                                                                          | Links |
-| --------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
-| PM stack coherence: single URL, fresh data, triage-able, hierarchical | in-progress | The coherence epic for the whole stack: one place to look, data that is current, issues a worker can pick up without archaeology.                                                                                               | #1184 |
+| Title                                                                 | Status      | Intent                                                                                                                            | Links |
+| --------------------------------------------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------- | ----- |
+| PM stack coherence: single URL, fresh data, triage-able, hierarchical | in-progress | The coherence epic for the whole stack: one place to look, data that is current, issues a worker can pick up without archaeology. | #1184 |
 
 ## Next
 
