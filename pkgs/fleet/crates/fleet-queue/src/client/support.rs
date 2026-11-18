@@ -235,7 +235,7 @@ pub(crate) fn usage(verb: &str) -> &'static str {
             "usage: repo-queue claim [--queue <name>] [--worker <id>] [--lease-seconds <n>] [--lane <l>] [--task <id>] [--count <n>] [--from-session <id>] [--platform <p>] [--session-id <id>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>] [--filter <f>] [--pool <p>] [--launched-by <who>] [--remaining-budget-minutes <n>] [--handoff] [--bind]\n\nClaims the highest-priority eligible task."
         }
         "release" => {
-            "usage: repo-queue release <task-id> [--worker <id>] [--reason <text>]\n\nReleases a held claim."
+            "usage: repo-queue release <task-id> [--worker <id>] [--lane <id>] [--reason <text>]\n\nReleases a held claim."
         }
         "lane" => {
             "usage: repo-queue lane <task-id> [--worker <id>] [--exclusion-reason <text>] [--opencode-reason <text>] [--limit-platform <p>] [--limit-reason <text>] [--clear-platform-limit]\n\nReports lane progress on a task."
@@ -244,19 +244,19 @@ pub(crate) fn usage(verb: &str) -> &'static str {
             "usage: repo-queue bind <task-id> [--worker <id>] --session-id <id> [--launched-by <who>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>]\n\nBinds a worker to a task."
         }
         "heartbeat" => {
-            "usage: repo-queue heartbeat <task-id> [--worker <id>] [--extend-seconds <n>] [--progress <p>] [--progress-file <f>]\n\nRefreshes a claim lease."
+            "usage: repo-queue heartbeat <task-id> [--worker <id>] [--lane <id>] [--extend-seconds <n>] [--progress <p>] [--progress-file <f>]\n\nRefreshes a claim lease."
         }
         "checkpoint" => {
-            "usage: repo-queue checkpoint <task-id> [--worker <id>] [--stage <s>] [--progress <p>] [--progress-file <f>]\n\nRecords a progress checkpoint."
+            "usage: repo-queue checkpoint <task-id> [--worker <id>] [--lane <id>] [--stage <s>] [--progress <p>] [--progress-file <f>]\n\nRecords a progress checkpoint."
         }
         "park" => {
-            "usage: repo-queue park <task-id> [--worker <id>] --reason <text> [--delay-seconds <n>] [--not-before <ts>] [--progress <p>] [--progress-file <f>] [--ready-condition <c>] [--execution <id>] [--required-budget-minutes <n>]\n\nParks a task."
+            "usage: repo-queue park <task-id> [--worker <id>] [--lane <id>] --reason <text> [--delay-seconds <n>] [--not-before <ts>] [--progress <p>] [--progress-file <f>] [--ready-condition <c>] [--execution <id>] [--required-budget-minutes <n>]\n\nParks a task."
         }
         "wake" => {
             "usage: repo-queue wake <task-id> [--worker <id>] [--reason <text>]\n\nWakes a parked task."
         }
         "block" => {
-            "usage: repo-queue block <task-id> [--worker <id>] --reason-class <c> --blocker <b> [--progress <p>] [--progress-file <f>] [--ledger-id <id>] [--question <text>] [--context <text>] [--options-json <json>] [--links-json <json>] [--blocked-by-pr <n>] [--blocked-by-issue <n>] [--blocked-by-task <id>] [--blocked-by-ci <ref>] [--dep-recheck-seconds <n>] [--dep-max-ttl-seconds <n>]\n\nMarks a task blocked."
+            "usage: repo-queue block <task-id> [--worker <id>] [--lane <id>] --reason-class <c> --blocker <b> [--progress <p>] [--progress-file <f>] [--ledger-id <id>] [--question <text>] [--context <text>] [--options-json <json>] [--links-json <json>] [--blocked-by-pr <n>] [--blocked-by-issue <n>] [--blocked-by-task <id>] [--blocked-by-ci <ref>] [--dep-recheck-seconds <n>] [--dep-max-ttl-seconds <n>]\n\nMarks a task blocked."
         }
         "unblock" => {
             "usage: repo-queue unblock <task-id> [--worker <id>] [--reason <text>]\n\nClears a task's blocked state."
@@ -274,10 +274,10 @@ pub(crate) fn usage(verb: &str) -> &'static str {
             "usage: repo-queue revive <task-id> [--worker <id>] [--reason <text>] [--not-before <ts>]\n\nRevives a terminal task."
         }
         "fail" => {
-            "usage: repo-queue fail <task-id> [--worker <id>] [--error <text>] [--reason-class <c>] [--execution <id>]\n\nFails a task."
+            "usage: repo-queue fail <task-id> [--worker <id>] [--lane <id>] [--error <text>] [--reason-class <c>] [--execution <id>]\n\nFails a task."
         }
         "complete" => {
-            "usage: repo-queue complete <task-id> [--worker <id>] [--result <json>] [--result-file <f>] [--telemetry <json>] [--execution <id>] [--queue <name>]\n\nCompletes a task."
+            "usage: repo-queue complete <task-id> [--worker <id>] [--lane <id>] [--result <json>] [--result-file <f>] [--telemetry <json>] [--execution <id>] [--queue <name>]\n\nCompletes a task."
         }
         "verify-disposition" => {
             "usage: repo-queue verify-disposition <issue> --repo <owner/name> [--pr <n,n>] [--follow-up-task <id> | --follow-up-issue <n|url> | --follow-up-pr <n>] [--reason <text>] [--staleness-seconds <n>] [--json]\n\nReads the issue and its linked PRs back from GitHub and prints the disposition a terminal completion must carry (#10611); exits 1 when the broker's gate would reject it."
@@ -796,6 +796,20 @@ pub(super) fn bare_claim_refusal(args: &Args, queue_scope: &Option<String>) -> O
 pub(super) fn opt_worker(args: &Args) -> String {
     args.get("worker")
         .unwrap_or_else(|| DEFAULT_WORKER.to_string())
+}
+
+/// The caller's lane id for the holder-checked verbs (heartbeat,
+/// checkpoint, park, release, block, fail, complete): `--lane`, else
+/// `REPO_QUEUE_LANE` from the environment, else none (#6985). Every
+/// scheduled lane shares one worker id, so the lane is what tells
+/// the broker whose claim a verb acts on; with none, the broker
+/// checks the worker alone, as before.
+pub(super) fn lane_arg(args: &Args) -> Value {
+    args.get("lane")
+        .or_else(|| std::env::var("REPO_QUEUE_LANE").ok())
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .map_or(Value::Null, Value::String)
 }
 
 pub(super) fn load_packet(path: &str) -> Value {

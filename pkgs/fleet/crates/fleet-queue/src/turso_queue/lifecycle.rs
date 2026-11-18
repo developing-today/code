@@ -1429,17 +1429,48 @@ pub(crate) fn verb_claim_flow(t: &TursoBackend, req: &Value) -> Value {
 
 /// Shared guard for the claimed-by verbs: returns the task row or
 /// the PG-shaped refusal.
+///
+/// #6985: every scheduled lane claims as the same worker
+/// (repo-worker-code), so a worker match alone let one lane
+/// heartbeat, checkpoint, park or complete another lane's live
+/// claim — the second lane's verbs all succeeded and the overlap
+/// showed only on GitHub as two agent notes. When the request
+/// names the caller's lane (`lane`, a registry lane id) and the
+/// row records the claiming lane, the two must agree. Either side
+/// missing keeps the worker-only check (older callers, claims made
+/// with no --lane).
 pub(crate) fn claimed_by(
     t: &TursoBackend,
     task_id: i64,
     worker: &str,
     verb: &str,
+    req: &Value,
 ) -> Result<Value, Value> {
     match get_task(t, task_id) {
         Ok(Some(row))
             if row.get("status").and_then(|v| v.as_str()) == Some("claimed")
                 && row.get("worker_id").and_then(|v| v.as_str()) == Some(worker) =>
         {
+            if let Some((holder, caller)) = foreign_lane_claim(&row, req) {
+                let _ = event(
+                    t,
+                    Some(worker),
+                    Some(task_id),
+                    "claim_refused",
+                    &json!({
+                        "via": verb,
+                        "reason": "claimed_by_another_lane",
+                        "holder_lane_id": holder,
+                        "caller_lane_id": caller,
+                    }),
+                );
+                return Err(fail(
+                    5,
+                    format!(
+                        "{verb}: task {task_id} is not claimed by {worker} on lane {caller}: lane {holder} holds it"
+                    ),
+                ));
+            }
             Ok(row)
         }
         Ok(_) => Err(fail(
@@ -1450,11 +1481,30 @@ pub(crate) fn claimed_by(
     }
 }
 
+/// The (holder lane, caller lane) pair when a claimed row's lane
+/// and the request's lane are both registry lane ids and differ
+/// (#6985). An execution mode ("direct", "opencode") or a missing
+/// lane on either side is no lane identity and never refuses.
+pub(crate) fn foreign_lane_claim(row: &Value, req: &Value) -> Option<(String, String)> {
+    let caller = req_str(req, "lane")
+        .map(str::trim)
+        .filter(|l| !l.is_empty())?;
+    let holder = row
+        .get("lane_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|l| !l.is_empty())?;
+    if matches!(caller, "direct" | "opencode") || matches!(holder, "direct" | "opencode") {
+        return None;
+    }
+    (caller != holder).then(|| (holder.to_string(), caller.to_string()))
+}
+
 pub(crate) fn verb_heartbeat(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
     let extend = req_i64(req, "extend_seconds").unwrap_or(HEARTBEAT_DEFAULT_EXTEND_SECONDS);
-    let row = match claimed_by(t, task_id, &worker, "heartbeat_task") {
+    let row = match claimed_by(t, task_id, &worker, "heartbeat_task", req) {
         Ok(r) => r,
         Err(v) => return v,
     };
@@ -1498,7 +1548,7 @@ pub(crate) fn verb_checkpoint(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
     let stage = req_str(req, "stage").unwrap_or("").to_string();
-    let row = match claimed_by(t, task_id, &worker, "checkpoint_task") {
+    let row = match claimed_by(t, task_id, &worker, "checkpoint_task", req) {
         Ok(r) => r,
         Err(v) => return v,
     };
@@ -1634,7 +1684,7 @@ pub(crate) fn verb_park(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
     let reason = req_str(req, "reason").unwrap_or("").to_string();
-    let row = match claimed_by(t, task_id, &worker, "park_task") {
+    let row = match claimed_by(t, task_id, &worker, "park_task", req) {
         Ok(r) => r,
         Err(v) => return v,
     };
@@ -1853,7 +1903,7 @@ pub(crate) fn verb_release(t: &TursoBackend, req: &Value) -> Value {
                 .to_string(),
         );
     }
-    let row = match claimed_by(t, task_id, &worker, "release_repo_task") {
+    let row = match claimed_by(t, task_id, &worker, "release_repo_task", req) {
         Ok(r) => r,
         Err(v) => return v,
     };
