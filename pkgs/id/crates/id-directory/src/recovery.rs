@@ -315,7 +315,7 @@ pub fn check_rotation(check: &RotationCheck<'_>) -> Result<Successor> {
             .iter()
             .find(|approval| approval.hash == *hash)
             .with_context(|| format!("approval {hash} is not available"))?;
-        let guardian = approving_guardian(approval, check, request_id)?;
+        let guardian = approving_guardian(approval, check.head, check.guardian_folds, request_id)?;
         approving.insert(guardian);
     }
     let threshold = usize::try_from(set.threshold).unwrap_or(usize::MAX);
@@ -340,7 +340,8 @@ pub fn check_rotation(check: &RotationCheck<'_>) -> Result<Successor> {
         "recovery delay has not elapsed"
     );
     if let Some(cancel) = check.cancellations.iter().find(|cancel| {
-        cancel.first_seen < check.rotation_first_seen && cancels(cancel.record, check, request_id)
+        cancel.first_seen < check.rotation_first_seen
+            && cancels(cancel.record, check.head, request_id)
     }) {
         bail!("recovery request was cancelled by {}", cancel.record.author);
     }
@@ -355,9 +356,10 @@ pub fn check_rotation(check: &RotationCheck<'_>) -> Result<Successor> {
 
 /// The guardian identity an approval counts for, or why it counts for
 /// none.
-fn approving_guardian(
+pub(crate) fn approving_guardian(
     approval: &AnnexRecord,
-    check: &RotationCheck<'_>,
+    head: &KeysetState,
+    guardian_folds: &BTreeMap<String, KeysetState>,
     request_id: &str,
 ) -> Result<String> {
     approval.verify().context("approval")?;
@@ -371,17 +373,16 @@ fn approving_guardian(
         bail!("approval {} is not an approval", approval.hash);
     };
     ensure!(
-        *identity_id == check.head.identity_id && approved == request_id,
+        *identity_id == head.identity_id && approved == request_id,
         "approval {} is for another request",
         approval.hash
     );
     ensure!(
-        approval.prev_hash == check.head.head_hash,
+        approval.prev_hash == head.head_hash,
         "approval {} pins another head",
         approval.hash
     );
-    let set = check
-        .head
+    let set = head
         .guardian_set
         .as_ref()
         .context("the pinned head names no guardians")?;
@@ -390,8 +391,7 @@ fn approving_guardian(
         "approval {} is from {guardian}, not a guardian at the pinned head",
         approval.hash
     );
-    let fold = check
-        .guardian_folds
+    let fold = guardian_folds
         .get(guardian)
         .with_context(|| format!("no fold for guardian {guardian}"))?;
     ensure!(
@@ -404,7 +404,7 @@ fn approving_guardian(
 
 /// Does `record` validly cancel the request? One signature from a key
 /// that, at the pinned head, is an active admin or an unrevoked device.
-fn cancels(record: &AnnexRecord, check: &RotationCheck<'_>, request_id: &str) -> bool {
+pub(crate) fn cancels(record: &AnnexRecord, head: &KeysetState, request_id: &str) -> bool {
     let AnnexEntry::RecoveryCancellation {
         identity_id,
         request_id: cancelled,
@@ -414,10 +414,10 @@ fn cancels(record: &AnnexRecord, check: &RotationCheck<'_>, request_id: &str) ->
         return false;
     };
     record.verify().is_ok()
-        && *identity_id == check.head.identity_id
+        && *identity_id == head.identity_id
         && cancelled == request_id
         && basis == CANCELLED_BY_SURVIVING_KEY
-        && (check.head.is_admin(&record.author) || check.head.is_device(&record.author))
+        && (head.is_admin(&record.author) || head.is_device(&record.author))
 }
 
 /// The state a passing rotation folds to (Decision 3).
@@ -541,7 +541,7 @@ impl RecoveryEvidence<'_> {
 
 impl RecoveryEvidence<'_> {
     /// `head` with its pending guardian change matured as of `at`.
-    fn at(&self, head: &KeysetState, at: u64) -> KeysetState {
+    pub(crate) fn at(&self, head: &KeysetState, at: u64) -> KeysetState {
         let pending_seen = head
             .pending_guardian_set
             .as_ref()
