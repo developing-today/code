@@ -72,6 +72,7 @@ pub mod world_replication_net;
 pub mod world_session;
 #[cfg(feature = "ssh")]
 pub mod world_ssh;
+pub mod world_owner_report;
 pub mod world_storage;
 pub mod world_store;
 pub mod world_terminal;
