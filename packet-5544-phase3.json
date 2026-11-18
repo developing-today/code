@@ -1,0 +1,60 @@
+{
+ "body": "Follow-up to task 9611 (lane code-w, 2026-11-09): phases 1-2 of design #835 are merged \u2014 phase 1 journal gate (PR #4535) and phase 2 actor-authorized operations (PR #8034, merge d60169796346c71101b9b8d3ab467a337320f023: WorldCommand::RevokeAuthorized / InstallProgramAuthorized authorize the live JoinCapability in the serialized actor and derive the audit actor). Remaining is phase 3 of doc/2026-11-01_design_id835.md: joined-session frames and end-to-end proof. Make InstallBegin accept an omitted admin token only in joined builder sessions (reject mixed admin/session credentials; pre-join admin path unchanged); add a joined revoke { participant_id } ClientFrame routed to revoke_authorized; carry the optional actor_denied code on ServerFrame::Error for these denials; enforce builder Wasm-only installs (never the native installer); add real-session (SessionIo) tests for builder success, moderator success, guest denial with code actor_denied, expiry/revocation races (revoking a builder mid-upload prevents activation), journal attribution, and unchanged admin/upload safeguards (size/hash bounds, upload concurrency, source-only refusal).",
+ "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:8036",
+ "payload": {
+  "acceptance": [
+   "A joined builder installs a valid Wasm module through the real session upload sequence; journal records Committed + BuilderInstalled { by: derived } atomically",
+   "A joined moderator revokes via the new revoke frame; Revoked { by: Some(derived) } is durable before success is reported and the revoked session disconnects",
+   "Guests and invalid/expired/revoked capabilities are refused with wire code actor_denied; builder installs reject native artifacts",
+   "Existing admin pre-join install, upload bounds, and F11.13 code meanings unchanged; pkgs/id tests pass"
+  ],
+  "context_refs": [
+   "https://github.com/developing-today/code/issues/8036",
+   "https://github.com/developing-today/code/issues/5544",
+   "https://github.com/developing-today/code/issues/835",
+   "doc: doc/2026-11-01_design_id835.md",
+   "https://github.com/developing-today/code/pull/8034"
+  ],
+  "dedupe": {
+   "basis": "Phase 3 of design #835 filed as its own implementation issue #8036 on 2026-11-09 by task 9611 completion; no live task exists for #8036.",
+   "checked_at": "2026-11-09T11:00:00Z"
+  },
+  "evidence": [
+   "doc/2026-11-01_design_id835.md phased plan: step 3 (joined-session frames) depends on steps 1-2, both now merged",
+   "PR #8034 (phase 2) merged 2026-11-09, merge commit d60169796346c71101b9b8d3ab467a337320f023",
+   "PR #4535 (phase 1 journal gate) merged 2026-11-08"
+  ],
+  "issue": {
+   "number": 8036,
+   "title": "id: implement design #835 phase 3 \u2014 joined-session builder/moderator frames",
+   "url": "https://github.com/developing-today/code/issues/8036"
+  },
+  "kind": "small_fix",
+  "max_attempts": 3,
+  "priority_reason": "Final phase of design #835 for issue #5544; phases 1-2 landed 2026-11-08/09, session enablement is the remaining acceptance surface.",
+  "problem": "Design #835 phases 1-2 are merged but the session path is not enabled: InstallBegin still requires an admin token pre-join and there is no joined revoke ClientFrame, so builder/moderator authority is not yet usable over real sessions.",
+  "repo": "developing-today/code",
+  "risk": {
+   "flags": [],
+   "level": "medium"
+  },
+  "schema": "repo-task/v1",
+  "scope": {
+   "exclude": [
+    "Design changes without filing a design amendment",
+    "Work outside pkgs/id unless the design explicitly requires it",
+    "Re-doing phases 1-2 (merged: PR #4535, PR #8034)"
+   ],
+   "include": [
+    "pkgs/id/src/world_session: joined builder install via existing upload sequence, joined revoke frame, optional actor_denied error code",
+    "pkgs/id tests: real-session end-to-end coverage per the design acceptance criteria"
+   ]
+  },
+  "tests": [
+   "cargo test for pkgs/id (laptop or CI) passes, including new real-session tests for this phase's behaviour"
+  ],
+  "timebox_minutes": 45
+ },
+ "title": "Implement design #835 phase 3 for #5544: joined-session builder/moderator frames",
+ "priority": 50
+}

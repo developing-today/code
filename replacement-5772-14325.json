@@ -1,0 +1,50 @@
+{
+ "title": "Replacement for falsely completed task 14325: VMs: declarative guest definitions (nixvirt / microvm.nix) + mutable carve-out list (#5772)",
+ "body": "Replacement task enqueued by lane code-w (2026-11-09) after task 14325 was erroneously completed as already_done during a GitHub GraphQL rate-limit outage: the worker's fresh-state read returned empty and the completion was recorded without evidence. Fresh REST verification shows issue #5772 is OPEN. Work this task as the original small_fix task: revalidate against current GitHub state, then proceed per the runbook.",
+ "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:5772",
+ "priority": 50,
+ "payload": {
+  "kind": "small_fix",
+  "repo": "developing-today/code",
+  "risk": {
+   "flags": [],
+   "level": "low"
+  },
+  "issue": {
+   "number": 5772,
+   "title": "VMs: declarative guest definitions (nixvirt / microvm.nix) + mutable carve-out list",
+   "url": "https://github.com/developing-today/code/issues/5772",
+   "state_checked_at": "2026-11-09T11:10:00Z"
+  },
+  "scope": {
+   "include": [
+    "issue #5772: VMs: declarative guest definitions (nixvirt / microvm.nix) + mutable carve-out list"
+   ],
+   "exclude": [
+    "work beyond this issue's stated scope"
+   ]
+  },
+  "tests": [
+   "targeted checks named in the issue, or a state verification with evidence"
+  ],
+  "dedupe": {
+   "basis": "replacement for task 14325, falsely completed 2026-11-09 by lane code-w during a GraphQL rate-limit outage; correction note on issue #5772",
+   "checked_at": "2026-11-09T11:10:00Z"
+  },
+  "schema": "repo-task/v1",
+  "problem": "Issue #5772 is OPEN and its small_fix work was never done: task 14325 was falsely completed as already_done without evidence.",
+  "evidence": [
+   "task 14325 completion recorded outcome already_done with empty GitHub evidence (worker's gh GraphQL read hit the user-token rate limit)",
+   "fresh REST read 2026-11-09: issue #5772 state open"
+  ],
+  "acceptance": [
+   "#5772 revalidated fresh and worked to a real terminal outcome with evidence"
+  ],
+  "context_refs": [
+   "https://github.com/developing-today/code/issues/5772"
+  ],
+  "max_attempts": 4,
+  "priority_reason": "Correction: restores work lost to a false completion on 2026-11-09.",
+  "timebox_minutes": 45
+ }
+}

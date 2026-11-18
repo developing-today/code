@@ -1,0 +1,122 @@
+[
+ {
+  "orig_task": 3979,
+  "issue": 2438,
+  "kind": "small_fix",
+  "issue_state": "open",
+  "hard_stops": [],
+  "enqueue_rc": 0,
+  "enqueue_head": "revived: new task 14376 (queue repo-health-code-pilot, status queued), predecessor task 3979 (done)\n{\n  \"id\": 14376,\n  \"queue\": \"repo-health-code-pilot\",\n  \"title\": \"Replacement for falsely completed task 3979: mcpx: Phase 3 of #2434 \u2014 -32021 when no broker audience can answer + error-register truth",
+  "replacement_task": 14376,
+  "replacement_status": "queued",
+  "note_url": "https://github.com/developing-today/code/issues/2438#issuecomment-6738404114"
+ },
+ {
+  "orig_task": 14099,
+  "issue": 7297,
+  "kind": "pr_shepherd",
+  "issue_state": "open",
+  "hard_stops": [],
+  "enqueue_rc": 2,
+  "enqueue_head": "error: packet.dedupe_key: family 'fix' is not valid for kind 'pr_shepherd' (allowed: [\"pr\", \"pr-set\", \"set\"])\nrepo-queue: packet validation failed (1 error(s))\n",
+  "replacement_task": null,
+  "replacement_status": null,
+  "note_url": "https://github.com/developing-today/code/issues/7297#issuecomment-6738404759"
+ },
+ {
+  "orig_task": 14239,
+  "issue": 1253,
+  "kind": "triage",
+  "issue_state": "open",
+  "hard_stops": [],
+  "enqueue_rc": 0,
+  "enqueue_head": "revived: new task 14377 (queue repo-health-code-pilot, status queued), predecessor task 14239 (done)\n{\n  \"id\": 14377,\n  \"queue\": \"repo-health-code-pilot\",\n  \"title\": \"Replacement for falsely completed task 14239: design(pm-stack): one identity across the stack \u2014 SSO propagation from the public entry",
+  "replacement_task": 14377,
+  "replacement_status": "queued",
+  "note_url": "https://github.com/developing-today/code/issues/1253#issuecomment-6738405584"
+ },
+ {
+  "orig_task": 14325,
+  "issue": 5772,
+  "kind": "small_fix",
+  "issue_state": "open",
+  "hard_stops": [],
+  "enqueue_rc": 0,
+  "enqueue_head": "revived: new task 14378 (queue repo-health-code-pilot, status queued), predecessor task 14325 (done)\n{\n  \"id\": 14378,\n  \"queue\": \"repo-health-code-pilot\",\n  \"title\": \"Replacement for falsely completed task 14325: VMs: declarative guest definitions (nixvirt / microvm.nix) + mutable carve-out list (#5",
+  "replacement_task": 14378,
+  "replacement_status": "queued",
+  "note_url": "https://github.com/developing-today/code/issues/5772#issuecomment-6738406374"
+ },
+ {
+  "orig_task": 13931,
+  "issue": 1837,
+  "kind": "small_fix",
+  "issue_state": "open",
+  "hard_stops": [],
+  "enqueue_rc": 0,
+  "enqueue_head": "revived: new task 14379 (queue repo-health-code-pilot, status queued), predecessor task 13931 (done)\n{\n  \"id\": 14379,\n  \"queue\": \"repo-health-code-pilot\",\n  \"title\": \"Replacement for falsely completed task 13931: mcpx: Phase 3 of #1834 \u2014 reviewable sampling in mcpx elicit + matrix/register truth-up ",
+  "replacement_task": 14379,
+  "replacement_status": "queued",
+  "note_url": "https://github.com/developing-today/code/issues/1837#issuecomment-6738407136"
+ },
+ {
+  "orig_task": 14345,
+  "issue": 5887,
+  "kind": "small_fix",
+  "issue_state": "open",
+  "hard_stops": [],
+  "enqueue_rc": 0,
+  "enqueue_head": "revived: new task 14380 (queue repo-health-code-pilot, status queued), predecessor task 14345 (done)\n{\n  \"id\": 14380,\n  \"queue\": \"repo-health-code-pilot\",\n  \"title\": \"Replacement for falsely completed task 14345: id: design: user-held keys (custody variant b) (from #5684) (#5887)\",\n  \"body\": \"Replac",
+  "replacement_task": 14380,
+  "replacement_status": "queued",
+  "note_url": "https://github.com/developing-today/code/issues/5887#issuecomment-6738408153"
+ },
+ {
+  "orig_task": 14321,
+  "issue": 2241,
+  "kind": "small_fix",
+  "issue_state": "open",
+  "hard_stops": [],
+  "enqueue_rc": 0,
+  "enqueue_head": "revived: new task 14382 (queue repo-health-code-pilot, status queued), predecessor task 14321 (done)\n{\n  \"id\": 14382,\n  \"queue\": \"repo-health-code-pilot\",\n  \"title\": \"Replacement for falsely completed task 14321: id: PoC: intermittent-signature live stream for collaborative editing (#2241)\",\n  \"body",
+  "replacement_task": 14382,
+  "replacement_status": "queued",
+  "note_url": "https://github.com/developing-today/code/issues/2241#issuecomment-6738409113"
+ },
+ {
+  "orig_task": 8250,
+  "issue": 3352,
+  "kind": "triage",
+  "issue_state": "open",
+  "hard_stops": [],
+  "enqueue_rc": 0,
+  "enqueue_head": "revived: new task 14383 (queue repo-health-code-pilot, status queued), predecessor task 8250 (done)\n{\n  \"id\": 14383,\n  \"queue\": \"repo-health-code-pilot\",\n  \"title\": \"Replacement for falsely completed task 8250: Design: unknown means stop \u2014 one strict argument contract for the repo's operator scripts",
+  "replacement_task": 14383,
+  "replacement_status": "queued",
+  "note_url": "https://github.com/developing-today/code/issues/3352#issuecomment-6738410144"
+ },
+ {
+  "orig_task": 14375,
+  "issue": 3352,
+  "kind": "small_fix",
+  "issue_state": "open",
+  "hard_stops": [],
+  "enqueue_rc": 0,
+  "enqueue_head": "revived: new task 14384 (queue repo-health-code-pilot, status queued), predecessor task 14375 (done)\n{\n  \"id\": 14384,\n  \"queue\": \"repo-health-code-pilot\",\n  \"title\": \"Replacement for falsely completed task 14375: Design: unknown means stop \u2014 one strict argument contract for the repo's operator scrip",
+  "replacement_task": 14384,
+  "replacement_status": "queued",
+  "note_url": "https://github.com/developing-today/code/issues/3352#issuecomment-6738411119"
+ },
+ {
+  "orig_task": 6638,
+  "issue": 3424,
+  "kind": "triage",
+  "issue_state": "open",
+  "hard_stops": [],
+  "enqueue_rc": 0,
+  "enqueue_head": "revived: new task 14385 (queue repo-health-code-pilot, status queued), predecessor task 12114 (done)\n{\n  \"id\": 14385,\n  \"queue\": \"repo-health-code-pilot\",\n  \"title\": \"Replacement for falsely completed task 6638: design(queue): durable task data model \u2014 blocker links, park revalidation, status reason",
+  "replacement_task": 14385,
+  "replacement_status": "queued",
+  "note_url": "https://github.com/developing-today/code/issues/3424#issuecomment-6738412255"
+ }
+]

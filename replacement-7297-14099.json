@@ -1,0 +1,53 @@
+{
+ "title": "Replacement for falsely completed task 14099: Unowned PR batch from branch disposition (2026-11-07) (#7297)",
+ "body": "Replacement task enqueued by lane code-w (2026-11-09) after task 14099 was erroneously completed as already_done during a GitHub GraphQL rate-limit outage: the worker's fresh-state read returned empty and the completion was recorded without evidence. Fresh REST verification shows issue #7297 is OPEN. Work this task as the original pr_shepherd task: revalidate against current GitHub state, then proceed per the runbook.",
+ "dedupe_key": "repo-health:v1:set:7297:owed:developing-today/code",
+ "priority": 50,
+ "payload": {
+  "kind": "pr_shepherd",
+  "repo": "developing-today/code",
+  "risk": {
+   "flags": [],
+   "level": "low"
+  },
+  "issue": {
+   "number": 7297,
+   "title": "Unowned PR batch from branch disposition (2026-11-07)",
+   "url": "https://github.com/developing-today/code/issues/7297",
+   "state_checked_at": "2026-11-09T11:10:00Z"
+  },
+  "scope": {
+   "include": [
+    "issue #7297: Unowned PR batch from branch disposition (2026-11-07)"
+   ],
+   "exclude": [
+    "work beyond this issue's stated scope"
+   ]
+  },
+  "tests": [
+   "targeted checks named in the issue, or a state verification with evidence"
+  ],
+  "dedupe": {
+   "basis": "replacement for task 14099, falsely completed 2026-11-09 by lane code-w during a GraphQL rate-limit outage; correction note on issue #7297",
+   "checked_at": "2026-11-09T11:10:00Z"
+  },
+  "schema": "repo-task/v1",
+  "problem": "Issue #7297 is OPEN and its pr_shepherd work was never done: task 14099 was falsely completed as already_done without evidence.",
+  "evidence": [
+   "task 14099 completion recorded outcome already_done with empty GitHub evidence (worker's gh GraphQL read hit the user-token rate limit)",
+   "fresh REST read 2026-11-09: issue #7297 state open"
+  ],
+  "acceptance": [
+   "#7297 revalidated fresh and worked to a real terminal outcome with evidence"
+  ],
+  "context_refs": [
+   "https://github.com/developing-today/code/issues/7297"
+  ],
+  "max_attempts": 4,
+  "priority_reason": "Correction: restores work lost to a false completion on 2026-11-09.",
+  "timebox_minutes": 45,
+  "set": {
+   "origin_issue": 7297
+  }
+ }
+}

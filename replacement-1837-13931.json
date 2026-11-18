@@ -1,0 +1,50 @@
+{
+ "title": "Replacement for falsely completed task 13931: mcpx: Phase 3 of #1834 \u2014 reviewable sampling in mcpx elicit + matrix/register truth-up + nix#256 evidence (#1837)",
+ "body": "Replacement task enqueued by lane code-w (2026-11-09) after task 13931 was erroneously completed as already_done during a GitHub GraphQL rate-limit outage: the worker's fresh-state read returned empty and the completion was recorded without evidence. Fresh REST verification shows issue #1837 is OPEN. Work this task as the original small_fix task: revalidate against current GitHub state, then proceed per the runbook.",
+ "dedupe_key": "repo-health:v1:fix:developing-today/code:issue:1837",
+ "priority": 50,
+ "payload": {
+  "kind": "small_fix",
+  "repo": "developing-today/code",
+  "risk": {
+   "flags": [],
+   "level": "low"
+  },
+  "issue": {
+   "number": 1837,
+   "title": "mcpx: Phase 3 of #1834 \u2014 reviewable sampling in mcpx elicit + matrix/register truth-up + nix#256 evidence",
+   "url": "https://github.com/developing-today/code/issues/1837",
+   "state_checked_at": "2026-11-09T11:10:00Z"
+  },
+  "scope": {
+   "include": [
+    "issue #1837: mcpx: Phase 3 of #1834 \u2014 reviewable sampling in mcpx elicit + matrix/register truth-up + nix#256 evidence"
+   ],
+   "exclude": [
+    "work beyond this issue's stated scope"
+   ]
+  },
+  "tests": [
+   "targeted checks named in the issue, or a state verification with evidence"
+  ],
+  "dedupe": {
+   "basis": "replacement for task 13931, falsely completed 2026-11-09 by lane code-w during a GraphQL rate-limit outage; correction note on issue #1837",
+   "checked_at": "2026-11-09T11:10:00Z"
+  },
+  "schema": "repo-task/v1",
+  "problem": "Issue #1837 is OPEN and its small_fix work was never done: task 13931 was falsely completed as already_done without evidence.",
+  "evidence": [
+   "task 13931 completion recorded outcome already_done with empty GitHub evidence (worker's gh GraphQL read hit the user-token rate limit)",
+   "fresh REST read 2026-11-09: issue #1837 state open"
+  ],
+  "acceptance": [
+   "#1837 revalidated fresh and worked to a real terminal outcome with evidence"
+  ],
+  "context_refs": [
+   "https://github.com/developing-today/code/issues/1837"
+  ],
+  "max_attempts": 4,
+  "priority_reason": "Correction: restores work lost to a false completion on 2026-11-09.",
+  "timebox_minutes": 45
+ }
+}
