@@ -70,6 +70,7 @@ var implementedEffectProbes = map[string]string{
 	"proto.askRounds":            "TestAskRoundsLimitIsReachableFromTheEnvironment",
 	"proto.askTTL":               "TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment",
 	"proto.askTimeout":           "TestAskTimeoutReleasesAHeldRequestFromTheEnvironment",
+	"proto.stateTTL":             "TestStateTTLExpiresAResumableRequestFromTheEnvironment",
 	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
 	"daemon.autostart":           "TestDaemonAutostartIsReachableFromTheEnvironment",
 	"http.bodyLimit":             "TestHTTPBodyLimitsRejectOversizedBodies",
@@ -127,6 +128,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestAskRoundsLimitIsReachableFromTheEnvironment":        TestAskRoundsLimitIsReachableFromTheEnvironment,
 	"TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment":  TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment,
 	"TestAskTimeoutReleasesAHeldRequestFromTheEnvironment":   TestAskTimeoutReleasesAHeldRequestFromTheEnvironment,
+	"TestStateTTLExpiresAResumableRequestFromTheEnvironment": TestStateTTLExpiresAResumableRequestFromTheEnvironment,
 	"TestDaemonAddressIsReachableFromTheEnvironment":         TestDaemonAddressIsReachableFromTheEnvironment,
 	"TestDaemonAutostartIsReachableFromTheEnvironment":       TestDaemonAutostartIsReachableFromTheEnvironment,
 	"TestHTTPBodyLimitsRejectOversizedBodies":                TestHTTPBodyLimitsRejectOversizedBodies,
@@ -507,6 +509,62 @@ func TestAskTimeoutReleasesAHeldRequestFromTheEnvironment(t *testing.T) {
 	}
 	if got := final("MCPX_PROTO_ASK_TIMEOUT=1s"); !strings.Contains(got, "did not finish before mcpx stopped waiting") {
 		t.Fatalf("proto.askTimeout=1s should end the request with the stopped-waiting error, got %q", got)
+	}
+}
+
+// proto.stateTTL is how long a requestState handed to a modern client
+// stays resumable. The client is asked for a repository, waits three
+// seconds, then resumes with its answer.
+// Oracle: at the default (30m) the resumed call completes with the answer;
+// with MCPX_PROTO_STATE_TTL=1s the resume is refused as expired.
+func TestStateTTLExpiresAResumableRequestFromTheEnvironment(t *testing.T) {
+	resume := func(env ...string) string {
+		t.Helper()
+		e := askEnv(t)
+		e.setenv(env...)
+		e.run("refresh")
+		ep := e.endpoint(t)
+		params := map[string]any{
+			"name":      "mcpx_call",
+			"arguments": map[string]any{"namespace": "ask", "tool": "need_repo"},
+			"_meta": map[string]any{
+				"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+				"io.modelcontextprotocol/clientCapabilities": map[string]any{
+					"elicitation": map[string]any{"form": map[string]any{}},
+				},
+			},
+		}
+		post := func(id int) map[string]any {
+			resp := mcpPost(t, ep, "", map[string]any{"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": params})
+			defer func() { _ = resp.Body.Close() }()
+			var frame map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&frame); err != nil {
+				t.Fatal(err)
+			}
+			return frame
+		}
+		first := post(1)
+		result, _ := first["result"].(map[string]any)
+		state, _ := result["requestState"].(string)
+		requests, _ := result["inputRequests"].(map[string]any)
+		if result["resultType"] != "input_required" || state == "" || len(requests) != 1 {
+			t.Fatalf("expected one resumable question, got %s", dumpJSON(t, first))
+		}
+		answers := map[string]any{}
+		for id := range requests {
+			answers[id] = map[string]any{"action": "accept", "content": map[string]any{"repo": "me/late"}}
+		}
+		time.Sleep(3 * time.Second)
+		params["requestState"] = state
+		params["inputResponses"] = answers
+		return dumpJSON(t, post(2))
+	}
+
+	if got := resume(); !strings.Contains(got, `"resultType":"complete"`) || !strings.Contains(got, "me/late") {
+		t.Fatalf("at the default proto.stateTTL a resume after three seconds should complete, got %s", got)
+	}
+	if got := resume("MCPX_PROTO_STATE_TTL=1s"); !strings.Contains(got, "requestState expired") {
+		t.Fatalf("proto.stateTTL=1s should refuse a resume after three seconds, got %s", got)
 	}
 }
 
