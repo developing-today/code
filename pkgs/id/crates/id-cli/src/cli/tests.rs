@@ -2066,7 +2066,7 @@ fn test_cli_parse_web_cookie_secure() {
 }
 
 #[test]
-fn test_cli_parse_gallery_dir_requires_web() {
+fn test_cli_parse_gallery_dir_and_publish() {
     match Cli::parse_from(["id", "serve", "--web", "--gallery-dir", "/srv/gallery"]).command {
         Some(Command::Serve(args)) => assert_eq!(
             args.gallery_dir.as_deref(),
@@ -2078,7 +2078,25 @@ fn test_cli_parse_gallery_dir_requires_web() {
         Some(Command::Serve(args)) => assert!(args.gallery_dir.is_none()),
         _ => panic!("Expected Serve command"),
     }
-    assert!(Cli::try_parse_from(["id", "serve", "--gallery-dir", "/srv/gallery"]).is_err());
+    match Cli::parse_from([
+        "id",
+        "serve",
+        "--gallery-dir",
+        "/srv/gallery",
+        "--gallery-accept-publish",
+    ])
+    .command
+    {
+        Some(Command::Serve(args)) => {
+            assert!(
+                args.gallery_dir.is_some(),
+                "the Iroh registry needs no --web"
+            );
+            assert!(args.gallery_accept_publish);
+        }
+        _ => panic!("Expected Serve command"),
+    }
+    assert!(Cli::try_parse_from(["id", "serve", "--gallery-accept-publish"]).is_err());
 }
 
 #[test]
