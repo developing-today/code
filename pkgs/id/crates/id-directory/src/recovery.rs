@@ -463,20 +463,24 @@ fn rotated_state(
 /// The recovery evidence a replica holds for one identity.
 ///
 /// That is every annex record it has with its directory first-seen
-/// time, each guardian identity's current fold, and when each
-/// `RecoveryRotation` record was first seen, by record hash. As a
-/// [`RecoveryRule`] it folds exactly the rotations Rule R accepts.
+/// time, each guardian identity's current fold, and when the directory
+/// first saw each keyset record, by record hash. As a [`RecoveryRule`]
+/// it folds exactly the rotations Rule R accepts, and matures delayed
+/// guardian-set changes (Decision 6) by those times.
 #[derive(Clone, Copy, Debug)]
 pub struct RecoveryEvidence<'a> {
     pub annex: &'a [Seen<'a>],
     pub guardian_folds: &'a BTreeMap<String, KeysetState>,
-    pub rotation_first_seen: &'a BTreeMap<String, u64>,
+    pub keyset_first_seen: &'a BTreeMap<String, u64>,
 }
 
 impl RecoveryEvidence<'_> {
     /// Rule R for `rotation` continuing the fold `head`.
     ///
-    /// Single use needs no consumed set here: a rotation must continue
+    /// The guardian set counted is the one in force when the request
+    /// was first seen: a pending removal that had not matured by then
+    /// still counts the removed guardians, and not the added ones
+    /// (Decision 6.2). Single use needs no consumed set here: a rotation must continue
     /// the head its request pins, so two rotations of one request are
     /// siblings and at most one folds.
     ///
@@ -496,10 +500,10 @@ impl RecoveryEvidence<'_> {
                     && matches!(seen.record.entry, AnnexEntry::RecoveryRequest { .. })
             })
             .with_context(|| format!("recovery request {request_id} is not available"))?;
-        let rotation_first_seen = *self
-            .rotation_first_seen
-            .get(&rotation.hash)
+        let rotation_first_seen = self
+            .first_seen(&rotation.hash)
             .context("the rotation has no first-seen time")?;
+        let head = self.at(head, request.first_seen);
         let approvals: Vec<AnnexRecord> = self
             .annex
             .iter()
@@ -513,7 +517,7 @@ impl RecoveryEvidence<'_> {
             .cloned()
             .collect();
         check_rotation(&RotationCheck {
-            head,
+            head: &head,
             request: request.clone(),
             approvals: &approvals,
             guardian_folds: self.guardian_folds,
@@ -525,10 +529,26 @@ impl RecoveryEvidence<'_> {
     }
 }
 
+impl RecoveryEvidence<'_> {
+    /// `head` with its pending guardian change matured as of `at`.
+    fn at(&self, head: &KeysetState, at: u64) -> KeysetState {
+        let pending_seen = head
+            .pending_guardian_set
+            .as_ref()
+            .and_then(|pending| self.first_seen(&pending.record_hash));
+        head.matured(pending_seen, Some(at))
+    }
+}
+
 impl RecoveryRule for RecoveryEvidence<'_> {
     fn rotate(&self, head: &KeysetState, record: &KeysetRecord) -> Option<KeysetState> {
         let successor = self.check(head, record).ok()?;
-        Some(rotated_state(head, record, &successor))
+        let at_rotation = self.at(head, self.first_seen(&record.hash)?);
+        Some(rotated_state(&at_rotation, record, &successor))
+    }
+
+    fn first_seen(&self, record_hash: &str) -> Option<u64> {
+        self.keyset_first_seen.get(record_hash).copied()
     }
 }
 
