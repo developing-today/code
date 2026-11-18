@@ -105,6 +105,7 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"script.checkOnUnsupported":          "TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes",
 	"daemon.takeoverTimeout":             "TestDaemonTakeoverTimeoutBoundsTheHandoverFromTheEnvironment",
 	"daemon.socketProbeTimeout":          "TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale",
 	"logging.maxAge":                     "TestLoggingMaxAgeRotatesAnAgedFile",
@@ -321,6 +322,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes":                       TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes,
 	"TestDaemonTakeoverTimeoutBoundsTheHandoverFromTheEnvironment":                   TestDaemonTakeoverTimeoutBoundsTheHandoverFromTheEnvironment,
 	"TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale":                   TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale,
 	"TestLoggingMaxAgeRotatesAnAgedFile":                                             TestLoggingMaxAgeRotatesAnAgedFile,
@@ -4739,6 +4741,50 @@ func TestDaemonTakeoverTimeoutBoundsTheHandoverFromTheEnvironment(t *testing.T) 
 	}
 	if got := e.run("call", "demo.echo", `{"message":"after"}`); !strings.Contains(got, "after") {
 		t.Fatalf("the old daemon should still answer:\n%s", got)
+	}
+}
+
+// TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes is the effect
+// probe for script.checkOnUnsupported: with an explicit check on bun, the
+// default (warn) runs the script with a notice that only Deno checks,
+// skip runs it quietly, and switch, with no deno to check with, refuses.
+func TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes(t *testing.T) {
+	testsupport.RequireBinary(t, "bun")
+	e := newEnv(t, oneServer)
+	script := filepath.Join(e.dir, "plain.ts")
+	if err := os.WriteFile(script, []byte("export default function () { return \"ran-plain\"; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.setenv("MCPX_SCRIPT_RUNTIME=bun")
+	e.setenv("MCPX_SCRIPT_TYPECHECK=on")
+
+	out, err := e.try("run", script)
+	if err != nil || !strings.Contains(out, "ran-plain") {
+		t.Fatalf("the default policy should still run the script: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "only available under Deno") {
+		t.Errorf("the default policy should warn that only Deno checks:\n%s", out)
+	}
+
+	e.setenv("MCPX_SCRIPT_CHECK_ON_UNSUPPORTED=skip")
+	out, err = e.try("run", script)
+	if err != nil || !strings.Contains(out, "ran-plain") {
+		t.Fatalf("skip should run the script: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "only available under Deno") {
+		t.Errorf("skip should not warn:\n%s", out)
+	}
+
+	if _, lookErr := exec.LookPath("deno"); lookErr == nil {
+		return // switch would check with the real deno; the two legs above already tell the policies apart.
+	}
+	e.setenv("MCPX_SCRIPT_CHECK_ON_UNSUPPORTED=switch")
+	out, err = e.try("run", script)
+	if err == nil {
+		t.Fatalf("switch with no deno on PATH should refuse:\n%s", out)
+	}
+	if !strings.Contains(out, "deno is not on PATH") || strings.Contains(out, "ran-plain") {
+		t.Errorf("switch should refuse before running, naming the missing deno:\n%s", out)
 	}
 }
 
