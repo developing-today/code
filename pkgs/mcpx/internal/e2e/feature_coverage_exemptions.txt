@@ -21,7 +21,6 @@ setting	http.idleConns	no integration-test exercise yet; burn-down #8469 (settin
 setting	http.remoteIdleConns	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
 setting	http.streamBufferInit	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
 setting	script.checkOnError	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
-setting	script.checkOnUnsupported	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
 setting	script.importsCrossProject	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
 setting	script.importsNetwork	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
 setting	script.importsOnMissing	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
