@@ -634,6 +634,22 @@
       "reason": "Active Python workflow tests do not include worker/."
     },
     {
+      "id": "decision-events-worker",
+      "paths": [
+        "pm-stack/decision-events-worker/test/events.test.ts",
+        "pm-stack/decision-events-worker/test/pagination.test.ts"
+      ],
+      "invocation": "cd pm-stack/decision-events-worker && bun test",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test decision-events-worker suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [9860]
+    },
+    {
       "id": "opencode-claimant.install",
       "paths": ["pm-stack/opencode-claimant/test/install.test.mjs"],
       "invocation": "cd pm-stack/opencode-claimant && bun test test/install.test.mjs",
