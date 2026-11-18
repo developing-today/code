@@ -20,10 +20,10 @@
 - Source IDs unmapped: 0
 - Source IDs with conflicting mapping shards: 0
 - Explicitly resolved mapping collisions: 8
-- Applied expert owner/gap rulings: 157
+- Applied expert owner/gap rulings: 158
 - Partially covered source outcomes: 120
 - Acceptance-enriched planned owner outcomes: 0
-- Concrete reviewed outcome oracles: 1544
+- Concrete reviewed outcome oracles: 1545
 - Generic/unreviewed oracle mappings: 0
 - Member oracle mappings needing review: 2
 - Coverage complete: false
@@ -40,10 +40,10 @@
 - mapped: 15 source statements
 - partial: 41 source statements
 - proposal: 132 source statements
-- research: 70 source statements
+- research: 71 source statements
 - superseded: 1 source statements
 - unmapped: 0 source statements
-- unresolved-cross-domain: 705 source statements
+- unresolved-cross-domain: 704 source statements
 - unsupported: 0 source statements
 
 ## Nested member disposition counts
@@ -206,7 +206,6 @@
 
 ## Unresolved cross-domain outcomes
 
-- ADD-A-023
 - ADD-A-025
 - ADD-A-027
 - HANDOFF-GATE-01

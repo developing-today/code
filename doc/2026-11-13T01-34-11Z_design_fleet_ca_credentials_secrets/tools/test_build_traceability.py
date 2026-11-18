@@ -587,6 +587,58 @@ class BuildTraceabilityTests(unittest.TestCase):
                 proposal, "S-1", "root-key", "stmt", "design-x", "oracle-y",
                 "reason-z", role="supporting", acceptance_enrichment=[clause])
 
+    def test_coverage_ruling_reassigns_owner_and_binds_supporting_role(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fixture = Fixture(temp)
+            fixture.write_proposals([proposal(), proposal("new-owner")])
+            fixture.write_mapping([mapping_row(
+                disposition="unresolved-cross-domain",
+                reason="UNRESOLVED/CROSS-DOMAIN: pki-root-abc is a policy boundary, not the evaluation owner")])
+            unruled, _ = fixture.build()
+            self.assertEqual(unruled[0]["oracle_quality"], "unresolved-no-acceptance-oracle")
+            clause = "Model application-level immutable generation IDs, not native version IDs."
+            ruling = {
+                "source_or_member_id": "S-1", "primary_proposal_id": "new-owner",
+                "supporting_proposal_ids": ["pki-root-abc"], "design_section": "proposals.json#new-owner",
+                "test_oracle": "Restore two synthetic generations by manifest and reject a replayed manifest.",
+                "coverage_rationale": "RESEARCH/PLANNED: new-owner evaluates this; pki-root-abc is policy only.",
+                "acceptance_enrichment": [clause],
+            }
+            path = Path(temp) / "coverage-rulings.json"
+
+            def ruled(doc):
+                path.write_text(json.dumps([doc]), encoding="utf-8")
+                return build([str(fixture.inv)], [str(fixture.prop)], [str(fixture.map)],
+                             str(fixture.receipts), False, None, fixture.source_root, [], None, [str(path)])
+
+            rows, _ = ruled(ruling)
+            self.assertEqual(len(rows), 1)
+            row = rows[0]
+            self.assertEqual(row["proposal_id"], "new-owner")
+            self.assertEqual(row["supporting_proposal_ids"], ["pki-root-abc"])
+            self.assertEqual(row["disposition"], "research")
+            self.assertEqual(row["oracle_quality"], "reviewed-specific-oracle")
+            self.assertEqual(row["acceptance_enrichment"], [clause])
+            self.assertEqual(row["issue_publication_status"], unruled[0]["issue_publication_status"])
+            self.assertEqual(row["implementation_status"], unruled[0]["implementation_status"])
+            matrix = Path(temp) / "traceability.jsonl"
+            matrix.write_text("".join(json.dumps(item) + "\n" for item in rows), encoding="utf-8")
+            policy = prepare_manifest.load_policy()
+            normalized = [prepare_manifest.normalize_one(item, f"fixture[{index}]", policy)
+                          for index, item in enumerate(fixture.proposals)]
+            bound = {item["id"]: item for item in prepare_manifest.bind_traceability(normalized, str(matrix), policy)}
+            self.assertIn("- Ownership role in this issue: primary", bound["new-owner"]["body"])
+            self.assertNotIn("- Ownership role in this issue: supporting", bound["new-owner"]["body"])
+            self.assertIn("- Ownership role in this issue: supporting", bound["pki-root-abc"]["body"])
+            self.assertNotIn("- Ownership role in this issue: primary", bound["pki-root-abc"]["body"])
+            for body in (bound["new-owner"]["body"], bound["pki-root-abc"]["body"]):
+                self.assertIn(clause, body)
+                self.assertIn("Restore two synthetic generations by manifest", body)
+            with self.assertRaisesRegex(TraceabilityError, "supporting_proposal_ids must be distinct"):
+                ruled({**ruling, "supporting_proposal_ids": ["new-owner"]})
+            with self.assertRaisesRegex(TraceabilityError, "primary_proposal_id must resolve"):
+                ruled({**ruling, "primary_proposal_id": "no-such-proposal"})
+
     def test_proposal_dependency_cycles_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             p1, p2 = proposal("Proposal-1", ["Proposal-2"]), proposal("Proposal-2", ["Proposal-1"])

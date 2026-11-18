@@ -2,7 +2,7 @@
 
 These reviewed rows and expert ruling clauses are planned issue-body inputs, not evidence of implemented behavior. Enrich only the named owner's body; supporting issues are labeled separately. The source oracle is a planned acceptance condition, not a passing test result.
 
-- Owner-linked partial/ruling rows: 876
+- Owner-linked partial/ruling rows: 878
 - Partial rows without a local proposal owner: 3
 
 ## ARCH-01 (14 rows)
@@ -1463,7 +1463,22 @@ For each signer verify AIA issuer candidate/CDP actual signer’s current CRL; m
 - Reason: PARTIAL: FUT-05 is a bounded research proposal aligned to this source outcome; it supplies only the stated synthetic evidence/go-no-go scope and does not authorize production implementation or deployment.
 - Oracle / acceptance case: Topology study lists measured resource and recovery outcomes for each candidate; a simulated node/site loss tests recovery claims against declared RPO/RTO.
 
-## FUT-10 (2 rows)
+## FUT-10 (3 rows)
+
+### ADD-A-023 — primary owner
+- Canonical requirement: `r2-research`
+- Disposition: research; section: proposals/future-infrastructure.json#FUT-10 §Scope / deliverable and §Acceptance / oracle; designs/federation-infrastructure.md (cloud object storage as an encrypted artifact/backup sink only)
+- Reason: RESEARCH-OWNER: RESEARCH/PLANNED: PROPOSED OWNER, PENDING EXPERT REVIEW (scoped source-mapping review recorded on developing-today/code#9155, issuecomment-6909803610, 2026-11-16T07:04:51Z; not an expert-reviewed ruling). ADD-A-023 asks for optional private, tightly scoped, versioned R2 backup research under #9166. FUT-10 (#9166) evaluates exactly that client-encrypted R2 continuity archive with synthetic fixtures and is the acceptance owner. OPS-10 (#9165) is supporting policy only: it is the production approval and legacy-cache boundary, not the owner of the R2 evaluation. Source locator is unchanged: the statement is line 53 of the immutable snapshot (file SHA-256 a84b7885cc6c19707b6ff0a8f77460af06b9c8ad80cd554053f01dc40942ea20); line 54 is only its position in the reformatted sources/ view.
+- Oracle / acceptance case: Source-specific acceptance oracle (preserved verbatim):
+Research brief demonstrates synthetic client-side encrypted upload, versioned object readback and denial to ordinary worker credentials; plaintext mode remains disabled.
+
+Expert planned coverage oracle:
+Using synthetic bytes and a fake store: capture every store request and assert it carries ciphertext only, and assert a plaintext upload is refused by default; write two immutable generations and independently restore each one by manifest with exact plaintext hashes; reject a replaced or replayed manifest, a wrong key, a missing generation, and a normal worker principal's list, read, write and delete.
+
+- Expert ruling acceptance enrichment:
+  - Prove that each declared scoped role permits only the operations it needs. A fake-store harness policy is not evidence of real R2 enforcement and must not be reported as such.
+  - Model application-level immutable generation IDs and conditional no-overwrite, not native version IDs or multi-object transactions. Cloudflare's S3 compatibility table lists GetBucketVersioning and PutBucketVersioning as unimplemented and documents conditional PutObject headers as evaluated atomically against committed bucket state (https://developers.cloudflare.com/r2/api/s3/api/, page dated 2026-11-10, read 2026-11-18).
+  - Synthetic fixtures only: no production R2 account, bucket, credentials, keys, configuration, or escrow authorization.
 
 ### RSEC-06 — primary owner
 - Canonical requirement: `R-SEC-06`
@@ -2896,7 +2911,7 @@ One descriptor drives CLI/help/capability and typed request shape; redacted rece
 - Reason: PARTIAL: OPS-09 owns a bounded portion of this member clause, but its scoped deliverable does not cover the whole outcome: “| Leaf default algorithms | All permitted by profile; warn unsupported consumers | Determine which actual TLS/SSH/client stacks can use ML-DSA X.509 and how to select multiple identities |” No parent mapping is inherited. Source: sources/fleet_architecture_spec_v0_3.md §14 open decisions.
 - Oracle / acceptance case: Decider: Decision-register completeness checker plus explicit human approval state Input/evidence: For SPEC-0164 member 6, a decision-register row containing the exact source clause, explicit status, evidence need and owner/approval; negative row omits evidence or silently fills an undecided security value. Expected invariant: The clause remains explicitly represented with evidence/status, and no unresolved security-critical choice is guessed. Clause: | Leaf default algorithms | All permitted by profile; warn unsupported consumers | Determine which actual TLS/SSH/client stacks can use ML-DSA X.509 and how to select multiple identities | Reference oracle: §14 lines 843–872 requires explicit evidence and forbids guessed security-critical policy; §15.4 line 953 specifies future-issue evidence. §28 downstream gates do not substitute for unresolved research.
 
-## OPS-10 (28 rows)
+## OPS-10 (29 rows)
 
 ### HANDOFF-0003-AT-L31-ac5bf6-1; parent HANDOFF-0003 — primary owner
 - Canonical requirement: `design-phase-safety`
@@ -3059,6 +3074,21 @@ One descriptor drives CLI/help/capability and typed request shape; redacted rece
 - Disposition: partial; section: Outcome — operation-level approval contract, not a second custody policy; ROOT-09/10 own custody mechanics
 - Reason: PARTIAL: OPS-10 maps root custody to a scoped approval hazard and requires destination/restore completeness, but the actual three-destination policy and independent restores belong to PKI root custody proposals, not this proposal.
 - Oracle / acceptance case: Policy matrix permits exactly laptop/BWS/OP approved destinations, denies a fourth mock backend, verifies archive hash/restore, and distinguishes active signer from escrow copy.
+
+### ADD-A-023 — supporting owner
+- Canonical requirement: `r2-research`
+- Disposition: research; section: proposals/future-infrastructure.json#FUT-10 §Scope / deliverable and §Acceptance / oracle; designs/federation-infrastructure.md (cloud object storage as an encrypted artifact/backup sink only)
+- Reason: RESEARCH-OWNER: RESEARCH/PLANNED: PROPOSED OWNER, PENDING EXPERT REVIEW (scoped source-mapping review recorded on developing-today/code#9155, issuecomment-6909803610, 2026-11-16T07:04:51Z; not an expert-reviewed ruling). ADD-A-023 asks for optional private, tightly scoped, versioned R2 backup research under #9166. FUT-10 (#9166) evaluates exactly that client-encrypted R2 continuity archive with synthetic fixtures and is the acceptance owner. OPS-10 (#9165) is supporting policy only: it is the production approval and legacy-cache boundary, not the owner of the R2 evaluation. Source locator is unchanged: the statement is line 53 of the immutable snapshot (file SHA-256 a84b7885cc6c19707b6ff0a8f77460af06b9c8ad80cd554053f01dc40942ea20); line 54 is only its position in the reformatted sources/ view.
+- Oracle / acceptance case: Source-specific acceptance oracle (preserved verbatim):
+Research brief demonstrates synthetic client-side encrypted upload, versioned object readback and denial to ordinary worker credentials; plaintext mode remains disabled.
+
+Expert planned coverage oracle:
+Using synthetic bytes and a fake store: capture every store request and assert it carries ciphertext only, and assert a plaintext upload is refused by default; write two immutable generations and independently restore each one by manifest with exact plaintext hashes; reject a replaced or replayed manifest, a wrong key, a missing generation, and a normal worker principal's list, read, write and delete.
+
+- Expert ruling acceptance enrichment:
+  - Prove that each declared scoped role permits only the operations it needs. A fake-store harness policy is not evidence of real R2 enforcement and must not be reported as such.
+  - Model application-level immutable generation IDs and conditional no-overwrite, not native version IDs or multi-object transactions. Cloudflare's S3 compatibility table lists GetBucketVersioning and PutBucketVersioning as unimplemented and documents conditional PutObject headers as evaluated atomically against committed bucket state (https://developers.cloudflare.com/r2/api/s3/api/, page dated 2026-11-10, read 2026-11-18).
+  - Synthetic fixtures only: no production R2 account, bucket, credentials, keys, configuration, or escrow authorization.
 
 ### HANDOFF-GATE-09 — primary owner
 - Canonical requirement: `implementation-handoff.gate-09`
