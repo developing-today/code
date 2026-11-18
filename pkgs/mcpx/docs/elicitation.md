@@ -224,6 +224,15 @@ Close() error
 `Await` takes no timeout: the deadline rides on the `Request`, so one
 question cannot be awaited with two different lifetimes.
 
+**Identity.** The broker binds no user identity
+([decision 0007](decisions/0007-elicitation-identity.md)). A question is
+addressed by its id; `Request.Session` is a correlation label as the caller
+sent it, stored and searchable but never checked. `Get`, `Respond` and
+`Lookup` take an id only, and `Filter.Session` narrows a listing without
+gating one. Answering authority is daemon access: whoever drives the daemon
+as its OS owner may see and answer every question. Any future identity
+enters at the transport, under a record superseding 0007.
+
 `Await` blocks on a channel when the answerer is in-process, and polls the
 table when it is not. Polling is acceptable here because the interval that
 matters is human — a 250 ms poll against a question a person answers in twenty
@@ -568,10 +577,13 @@ reads, and there is no `--plugin-elicit`.
    is already looking at.
 3. **`MCPX_PLUGIN_ELICIT=auto`** — policy only.
 
-The session id the plugin already injects is what makes this work. A question
-raised by a call from session X is offered to session X and to nobody else. No
-new plumbing; the existing injection is exactly the binding the spec requires
-between an elicitation and a user identity.
+The session id the plugin already injects is what makes this work: the plugin
+can filter the listing by its own session so it shows the user only the
+questions its calls raised. That filter is routing, not an access boundary, and the
+session id is not a user identity: under
+[decision 0007](decisions/0007-elicitation-identity.md) the label is a
+correlation value the caller supplies, and any surface with daemon access can
+still list and answer every question.
 
 ### 5.6 TUI
 

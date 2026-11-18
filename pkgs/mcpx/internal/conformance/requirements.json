@@ -15200,10 +15200,7 @@
     },
     "notes": {
       "client": "n/a",
-      "server": "yes — GAP: mcpx binds to `MCPX_SESSION_ID`/connection, i.e. session identity alone (no user auth exists)"
-    },
-    "claims": {
-      "server": "gap"
+      "server": "yes — state is keyed by elicitation id over signed `requestState` in an owner-only store; the session label keys nothing (decision 0007)"
     }
   },
   {
@@ -15784,10 +15781,7 @@
     },
     "notes": {
       "client": "n/a",
-      "server": "yes — GAP-ish: `MCPX_SESSION_ID` is client-provided; the signed `requestState` binds to a connection mcpx issued, which is the verification"
-    },
-    "claims": {
-      "server": "gap"
+      "server": "yes — `MCPX_SESSION_ID` is client-provided and is a correlation label only; no authorization, visibility or answer acceptance branches on it (decision 0007)"
     }
   },
   {
