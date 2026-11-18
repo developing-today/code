@@ -35,6 +35,21 @@ def check_absent(c,table,x):
   left='('+','.join(lhs)+')' if len(keys)>1 else lhs[0]
   item='('+','.join(rhs)+')' if len(keys)>1 else rhs[0]
   if c.execute('SELECT 1 FROM '+quote(table)+' WHERE '+left+' IN ('+','.join(item for row in rows)+') LIMIT 1',args):raise ValueError('candidate key exists or timestamp-equivalent collision')
+def check_unique_indexes(c,table,x):
+ for idx in c.execute('PRAGMA index_list('+quote(table)+')'):
+  if str(idx[2])!='1':continue
+  if str(idx[4])!='0':raise ValueError('partial unique index requires specialized review')
+  keys=[r[2] for r in c.execute('PRAGMA index_info('+quote(idx[1])+')')]
+  if not keys or any(k is None or k not in x['columns'] for k in keys):raise ValueError('expression index requires specialized review')
+  if keys==x['keys']:continue
+  y=dict(x);y['keys']=keys;y['temporal_keys']=[k for k in keys if k in x['temporal_keys']]
+  y['rows']=[r for r in x['rows'] if all(r[x['columns'].index(k)] is not None for k in keys)]
+  seen=set()
+  for row in y['rows']:
+   key=tuple(canonical_time(row[x['columns'].index(k)]) if k in y['temporal_keys'] else row[x['columns'].index(k)] for k in keys)
+   if key in seen:raise ValueError('candidate duplicate unique-index value')
+   seen.add(key)
+  check_absent(c,table,y)
 def preflight(c,data):
  counts={}
  for table,x in data.items():
@@ -43,6 +58,7 @@ def preflight(c,data):
   counts[table]=int(c.execute('SELECT count(*) FROM '+quote(table))[0][0])
   if counts[table]<x['initial_count']:raise ValueError('count decreased')
   check_absent(c,table,x)
+  check_unique_indexes(c,table,x)
  return counts
 def main():
  p=argparse.ArgumentParser(description=__doc__);p.add_argument('candidate',type=Path);p.add_argument('--apply',action='store_true');p.add_argument('--expect-sha256');p.add_argument('--target',choices=['fleet-platform','fleet-platform-reconcile-stage-20261118'],default='fleet-platform');a=p.parse_args()
