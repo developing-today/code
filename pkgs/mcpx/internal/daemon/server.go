@@ -438,9 +438,10 @@ func (s *Server) listenTSNet() error {
 		return nil
 	}
 	tsLn, err := tsnetTransport{
-		hostname: hostname,
-		stateDir: s.tsnetStateDir(),
-		authKey:  envTSNetAuthKey(),
+		hostname:  hostname,
+		stateDir:  s.tsnetStateDir(),
+		authKey:   envTSNetAuthKey(),
+		upTimeout: s.set.Duration("daemon.tsnetUpTimeout"),
 	}.Listen()
 	if err != nil {
 		return err
