@@ -1117,6 +1117,14 @@ pub async fn web_routers_with_surface(
     state.set_transfer_endpoint(transfer_endpoint);
     state.set_transport_ad(transport_ad);
     state.set_gallery(gallery);
+    // Note checkpoints granted to a group resolve against the node's
+    // group log (#3819); nothing has cloned `collab` yet, so swapping it
+    // here reaches every router and the surface factory.
+    state.collab = Arc::new(
+        CollabState::new().with_note_group_roles(groups::note_group_roles(
+            groups::resolve_groups_log(groups_log.clone()),
+        )),
+    );
     let surface = WebSurfaceFactory {
         state: state.clone(),
         world: world.clone(),

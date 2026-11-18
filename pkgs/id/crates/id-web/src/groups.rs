@@ -23,7 +23,9 @@ use axum::response::{Html, IntoResponse, Response};
 
 use super::AppState;
 use super::templates::{html_escape, render_page};
-use id_events::groups::{Event, Key, Projection, fold};
+use id_events::groups::{Event, Key, Projection, Role, fold};
+use id_store::note_checkpoints::{GroupRoles, NoteRole};
+use p2panda_core::Hash;
 
 /// Resolves the group-log path the web page reads: the configured
 /// path when one was passed in, else the default file name the group
@@ -77,6 +79,47 @@ pub fn read_projection(path: &Path) -> Result<Projection> {
         }
     }
     Ok(fold(&events)?)
+}
+
+/// The note role a group grants `member` (#3819, #2048 Q2/Q3): the
+/// member's group role mapped onto the note ladder — Read to Read,
+/// Write and Manage to Write, Admin to Admin. `Pull` (ciphertext
+/// replication only) grants no note access, and neither does a group
+/// that is not in effect: a pending friendship or a dissolved group.
+#[must_use]
+pub fn note_role_in(projection: &Projection, group: &Hash, member: &Key) -> Option<NoteRole> {
+    let view = projection.group(group)?;
+    if !view.is_active() {
+        return None;
+    }
+    match view.members.get(member)? {
+        Role::Pull => None,
+        Role::Read => Some(NoteRole::Read),
+        Role::Write | Role::Manage => Some(NoteRole::Write),
+        Role::Admin => Some(NoteRole::Admin),
+    }
+}
+
+/// The production group-role resolver for the note access boundary
+/// (#3819): it folds the group log at `path` on every check, so a
+/// member added or removed takes effect at the next checkpoint
+/// without a restart. Checks run only when a note checkpoint is
+/// published, so the fold is not on any per-keystroke path. A log
+/// that cannot be read or folded resolves no group roles: group
+/// grants fail closed, and user grants, the owner and public notes
+/// are unaffected.
+#[must_use]
+pub fn note_group_roles(path: PathBuf) -> GroupRoles {
+    GroupRoles::new(move |group, member| match read_projection(&path) {
+        Ok(projection) => note_role_in(&projection, &group, &member),
+        Err(error) => {
+            tracing::warn!(
+                path = %path.display(),
+                "note access: group log unreadable, group grants resolve to none: {error:#}"
+            );
+            None
+        }
+    })
 }
 
 fn key_hex(key: &Key) -> String {
@@ -238,6 +281,74 @@ mod tests {
         )
         .unwrap();
         path
+    }
+
+    const BEA: Key = [3; 32];
+    const CAL: Key = [4; 32];
+    const DEE: Key = [5; 32];
+
+    #[test]
+    fn group_roles_map_onto_the_note_ladder() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(id_groups::groups::log::FILE_NAME);
+        let mut log = GroupLog::open(&path).unwrap();
+        let members = vec![
+            (ANN, Role::Read),
+            (BEA, Role::Write),
+            (CAL, Role::Manage),
+            (DEE, Role::Pull),
+        ];
+        let group = log
+            .record(OWNER, None, create_body(Policy::default(), members))
+            .unwrap()
+            .event;
+        let projection = read_projection(&path).unwrap();
+        let role = |member: &Key| note_role_in(&projection, &group, member);
+        assert_eq!(role(&OWNER), Some(NoteRole::Admin));
+        assert_eq!(role(&ANN), Some(NoteRole::Read));
+        assert_eq!(role(&BEA), Some(NoteRole::Write));
+        assert_eq!(role(&CAL), Some(NoteRole::Write));
+        assert_eq!(role(&DEE), None, "Pull replicates ciphertext only");
+        assert_eq!(role(&[9; 32]), None, "not a member");
+        let unknown = Hash::from_bytes([7; 32]);
+        assert_eq!(note_role_in(&projection, &unknown, &ANN), None);
+    }
+
+    #[test]
+    fn the_resolver_reads_the_current_log_so_removal_revokes() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(id_groups::groups::log::FILE_NAME);
+        let roles = note_group_roles(path.clone());
+        let group = Hash::from_bytes([8; 32]);
+        // No log yet: nothing resolves, and nothing panics.
+        assert_eq!(roles.role(group, ANN), None);
+
+        let mut log = GroupLog::open(&path).unwrap();
+        let group = log
+            .record(
+                OWNER,
+                None,
+                create_body(Policy::default(), vec![(ANN, Role::Write)]),
+            )
+            .unwrap()
+            .event;
+        assert_eq!(roles.role(group, ANN), Some(NoteRole::Write));
+
+        log.record(
+            OWNER,
+            Some(group),
+            Body::Member(MemberOp::Remove {
+                member: ANN,
+                mode: RemoveMode::Revoke,
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            roles.role(group, ANN),
+            None,
+            "a removal takes effect without rebuilding the resolver"
+        );
+        assert_eq!(roles.role(group, OWNER), Some(NoteRole::Admin));
     }
 
     #[test]
