@@ -101,6 +101,8 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"doctor.timeout":                     "TestDoctorTimeoutBoundsTheDaemonCheck",
+	"registry.timeout":                   "TestRegistryTimeoutBoundsARegistryRequest",
 	"completion.maxValues":               "TestCompletionMaxValuesCapsTheValues",
 	"catalog.instructions":               "TestCatalogInstructionsShowsServerGuidance",
 	"plumbing.launcherPlaceholderRepeat": "TestPlumbingLauncherPlaceholderRepeatAllowsATwiceUsedName",
@@ -241,6 +243,8 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":        TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                 TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                          TestEventsHistoryBoundsTheReplay,
+	"TestDoctorTimeoutBoundsTheDaemonCheck":                                     TestDoctorTimeoutBoundsTheDaemonCheck,
+	"TestRegistryTimeoutBoundsARegistryRequest":                                 TestRegistryTimeoutBoundsARegistryRequest,
 	"TestCompletionMaxValuesCapsTheValues":                                      TestCompletionMaxValuesCapsTheValues,
 	"TestCatalogInstructionsShowsServerGuidance":                                TestCatalogInstructionsShowsServerGuidance,
 	"TestPlumbingLauncherPlaceholderRepeatAllowsATwiceUsedName":                 TestPlumbingLauncherPlaceholderRepeatAllowsATwiceUsedName,
@@ -2676,6 +2680,36 @@ func TestCompletionMaxValuesCapsTheValues(t *testing.T) {
 	}
 	if n := values("MCPX_COMPLETION_MAX_VALUES=1"); n != 1 {
 		t.Errorf("completion.maxValues=1 should cap the values at one, got %d", n)
+	}
+}
+
+// TestDoctorTimeoutBoundsTheDaemonCheck is the effect probe for
+// doctor.timeout: `mcpx doctor` reaches the daemon at the default bound, and
+// a one-nanosecond bound fails the connection check before it can.
+func TestDoctorTimeoutBoundsTheDaemonCheck(t *testing.T) {
+	e := newEnv(t, oneServer)
+	if out, err := e.try("doctor"); err != nil {
+		t.Errorf("at the default doctor.timeout the daemon should be reached (err %v):\n%s", err, out)
+	}
+	e2 := newEnv(t, oneServer)
+	e2.setenv("MCPX_DOCTOR_TIMEOUT=1ns")
+	if out, err := e2.try("doctor"); err == nil || !strings.Contains(out, "deadline exceeded") {
+		t.Errorf("doctor.timeout=1ns should fail the connection check on its deadline (err %v):\n%s", err, out)
+	}
+}
+
+// TestRegistryTimeoutBoundsARegistryRequest is the effect probe for
+// registry.timeout: a search against the stub registry answers at the
+// default bound, and a one-nanosecond bound cuts it off.
+func TestRegistryTimeoutBoundsARegistryRequest(t *testing.T) {
+	e := newEnv(t, oneServer)
+	if out, err := e.try("registry", "search", "demo"); err != nil || !strings.Contains(out, "a stub entry") {
+		t.Errorf("at the default registry.timeout the stub should answer (err %v):\n%s", err, out)
+	}
+	e2 := newEnv(t, oneServer)
+	e2.setenv("MCPX_REGISTRY_TIMEOUT=1ns")
+	if out, err := e2.try("registry", "search", "demo"); err == nil || strings.Contains(out, "a stub entry") {
+		t.Errorf("registry.timeout=1ns should cut the search off (err %v):\n%s", err, out)
 	}
 }
 
