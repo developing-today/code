@@ -16,10 +16,10 @@
 //! ordinary Ed25519 signatures (Decision 5): no key is ever split or
 //! reconstructed, and no record carries key material.
 //!
-//! What is not here yet, per the design's split: folding a rotation
-//! into the chain waits on checkpoint finality (#2380 packet 5), and
-//! delayed guardian removals (Decision 6) wait on directory timestamps
-//! in the fold. The directory relay itself is a separate slice.
+//! What is not here yet: folding a rotation into the chain (now that
+//! checkpoint finality exists, `crate::keyset::fold_with_finality`),
+//! and delayed guardian removals (Decision 6), which wait on directory
+//! timestamps in the fold. The directory relay is a separate slice.
 
 use std::collections::{BTreeMap, BTreeSet};
 

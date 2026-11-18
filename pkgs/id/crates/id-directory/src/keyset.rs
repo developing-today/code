@@ -52,8 +52,8 @@ pub enum KeysetEntry {
     /// The terminal record of a guardian recovery (guardian recovery
     /// design, Decision 3), signed by the successor admin key. Plain
     /// [`fold`] never accepts it: it folds only under Rule R, which
-    /// [`crate::recovery::check_rotation`] evaluates, and joins the fold
-    /// once checkpoint finality lands (that design's split, item 2).
+    /// [`crate::recovery::check_rotation`] evaluates; folding it under
+    /// checkpoint finality is that design's split, item 2.
     RecoveryRotation {
         request_id: String,
         approval_hashes: Vec<String>,
@@ -435,6 +435,107 @@ impl KeysetState {
 /// device checkpoint can neither displace an admin record at a fork nor
 /// wedge the head with an unbounded lamport value.
 pub fn fold(log: &Log, trusted_genesis_hash: &str) -> Result<KeysetState> {
+    fold_with_finality(log, trusted_genesis_hash, &BTreeSet::new())
+}
+
+/// [`fold`] under checkpoint finality (ADR Decision 4 rule 5).
+///
+/// Every record hash in `final_heads` is a head this replica once verified a
+/// `Checkpoint` against, so the chain through it is fixed. At a fork,
+/// a branch whose continuation passes through a final head wins over
+/// any sibling, whatever its merge key and whatever it revokes: a
+/// sibling arriving after finality is evidence only. Forks not on the
+/// way to a final head follow the ordinary rules. `final_heads` is the
+/// replica's own record, kept outside the mergeable log like the
+/// trusted genesis; [`checkpoint_final_heads`] says which heads to add.
+///
+/// # Errors
+///
+/// Fails if the trusted genesis is missing or malformed.
+pub fn fold_with_finality(
+    log: &Log,
+    trusted_genesis_hash: &str,
+    final_heads: &BTreeSet<String>,
+) -> Result<KeysetState> {
+    let (state, lamport) = genesis_state(log, trusted_genesis_hash)?;
+    let mut branches = HashMap::new();
+    Ok(extend(log, state, lamport, final_heads, &mut branches)?.state)
+}
+
+/// Heads on the canonical chain (folded under `final_heads`) that a
+/// valid `Checkpoint` covers.
+///
+/// A covering checkpoint is one signed by a device key active at that
+/// head whose record count and state hash match the fold of the chain
+/// up to it (rule 6). A replica that finds such a head adds it to its
+/// final heads; from then on that prefix cannot be displaced.
+///
+/// # Errors
+///
+/// Fails if the trusted genesis is missing or malformed.
+pub fn checkpoint_final_heads(
+    log: &Log,
+    trusted_genesis_hash: &str,
+    final_heads: &BTreeSet<String>,
+) -> Result<BTreeSet<String>> {
+    let checkpoints: Vec<&KeysetRecord> = log
+        .records
+        .values()
+        .filter(|record| matches!(record.entry, KeysetEntry::Checkpoint { .. }))
+        .collect();
+    let mut covered = BTreeSet::new();
+    if checkpoints.is_empty() {
+        return Ok(covered);
+    }
+    for prefix in canonical_prefixes(log, trusted_genesis_hash, final_heads)? {
+        let verified = checkpoints.iter().any(|record| {
+            record.prev_hash == prefix.head_hash && apply_entry(&mut prefix.clone(), record).is_ok()
+        });
+        if verified {
+            covered.insert(prefix.head_hash.clone());
+        }
+    }
+    Ok(covered)
+}
+
+/// The folded state at every record of the canonical chain, genesis
+/// first.
+fn canonical_prefixes(
+    log: &Log,
+    trusted_genesis_hash: &str,
+    final_heads: &BTreeSet<String>,
+) -> Result<Vec<KeysetState>> {
+    let head = fold_with_finality(log, trusted_genesis_hash, final_heads)?;
+    let by_hash: HashMap<&str, &KeysetRecord> = log
+        .records
+        .values()
+        .map(|record| (record.hash.as_str(), record))
+        .collect();
+    let mut chain = Vec::new();
+    let mut cursor = head.head_hash.as_str();
+    while cursor != trusted_genesis_hash {
+        let record = by_hash
+            .get(cursor)
+            .context("canonical chain record missing from log")?;
+        chain.push(*record);
+        cursor = record.prev_hash.as_str();
+    }
+    let (mut state, _) = genesis_state(log, trusted_genesis_hash)?;
+    let mut prefixes = vec![state.clone()];
+    for record in chain.into_iter().rev() {
+        apply_entry(&mut state, record)?;
+        state.head_hash.clone_from(&record.hash);
+        state.records_folded = state
+            .records_folded
+            .checked_add(1)
+            .context("keyset record count overflow")?;
+        prefixes.push(state.clone());
+    }
+    Ok(prefixes)
+}
+
+/// The state at the trusted genesis, and the genesis lamport.
+fn genesis_state(log: &Log, trusted_genesis_hash: &str) -> Result<(KeysetState, u64)> {
     validate_hash_or_empty(trusted_genesis_hash, false, "trusted_genesis_hash")?;
     let roots = log
         .records
@@ -481,8 +582,7 @@ pub fn fold(log: &Log, trusted_genesis_hash: &str) -> Result<KeysetState> {
         head_hash: genesis.hash.clone(),
         records_folded: 1,
     };
-    let mut branches = HashMap::new();
-    Ok(extend(log, state, genesis.lamport, &mut branches)?.state)
+    Ok((state, genesis.lamport))
 }
 
 /// Where a branch of the chain leads: the state its canonical
@@ -492,6 +592,8 @@ pub fn fold(log: &Log, trusted_genesis_hash: &str) -> Result<KeysetState> {
 struct Branch {
     state: KeysetState,
     removed: BTreeSet<String>,
+    /// Whether the branch passes through a checkpoint-final head.
+    pinned: bool,
 }
 
 /// Folds the canonical continuation of `state`, whose head was folded
@@ -507,6 +609,7 @@ fn extend(
     log: &Log,
     state: KeysetState,
     head_lamport: u64,
+    final_heads: &BTreeSet<String>,
     branches: &mut HashMap<String, Branch>,
 ) -> Result<Branch> {
     let candidates: Vec<(&KeysetRecord, KeysetState)> = log
@@ -532,6 +635,7 @@ fn extend(
         return Ok(Branch {
             state,
             removed: BTreeSet::new(),
+            pinned: false,
         });
     }
     let mut followed = Vec::with_capacity(candidates.len());
@@ -545,17 +649,23 @@ fn extend(
                 .records_folded
                 .checked_add(1)
                 .context("keyset record count overflow")?;
-            let tail = extend(log, next_state, record.lamport, branches)?;
+            let tail = extend(log, next_state, record.lamport, final_heads, branches)?;
             removed.extend(tail.removed);
             let branch = Branch {
                 state: tail.state,
                 removed,
+                pinned: tail.pinned || final_heads.contains(&record.hash),
             };
             branches.insert(record.hash.clone(), branch.clone());
             branch
         };
         followed.push((record, branch));
     }
+    // Checkpoint finality outranks every other rule: a branch through
+    // a final head is the chain.
+    let pinned: Vec<usize> = (0..followed.len())
+        .filter(|index| followed[*index].1.pinned)
+        .collect();
     let revoked = |index: usize| {
         followed.iter().enumerate().any(|(other, (_, branch))| {
             other != index && branch.removed.contains(&followed[index].0.author)
@@ -564,7 +674,9 @@ fn extend(
     let standing: Vec<usize> = (0..followed.len())
         .filter(|index| !revoked(*index))
         .collect();
-    let pool: Vec<usize> = if standing.is_empty() {
+    let pool: Vec<usize> = if !pinned.is_empty() {
+        pinned
+    } else if standing.is_empty() {
         (0..followed.len()).collect()
     } else {
         standing
@@ -1128,6 +1240,165 @@ mod tests {
         let state = fold(&log, &first.hash).unwrap();
         assert!(state.is_device(&public(3)));
         assert_eq!(state.head_hash, enrolled.hash);
+    }
+
+    /// Genesis (admin 1, device 2), then the admin binds "x" at lamport
+    /// 5, and device 2 checkpoints that head. Returns the log, the
+    /// genesis, the bound head and the checkpoint.
+    fn checkpointed_chain() -> (Log, KeysetRecord, KeysetRecord, KeysetRecord) {
+        let admin = key(1);
+        let first = KeysetRecord::sign(
+            &admin,
+            1,
+            "",
+            KeysetEntry::Genesis {
+                admin_key: public(1),
+                device_key: public(2),
+                label: "phone".to_owned(),
+            },
+            None,
+        )
+        .unwrap();
+        let bound = append(
+            &first,
+            &admin,
+            5,
+            KeysetEntry::IdpBindingBound {
+                binding_id: "x".to_owned(),
+            },
+            None,
+        );
+        let mut log = Log::default();
+        log.insert(first.clone()).unwrap();
+        log.insert(bound.clone()).unwrap();
+        let at_bound = fold(&log, &first.hash).unwrap();
+        let checkpoint = append(
+            &bound,
+            &key(2),
+            6,
+            KeysetEntry::Checkpoint {
+                state_hash: at_bound.state_hash().unwrap(),
+                record_count: at_bound.records_folded,
+            },
+            None,
+        );
+        log.insert(checkpoint.clone()).unwrap();
+        (log, first, bound, checkpoint)
+    }
+
+    #[test]
+    fn a_verified_checkpoint_makes_its_head_final() {
+        let (log, first, bound, _) = checkpointed_chain();
+        let finals = checkpoint_final_heads(&log, &first.hash, &BTreeSet::new()).unwrap();
+        assert_eq!(finals, BTreeSet::from([bound.hash]));
+    }
+
+    #[test]
+    fn a_checkpoint_that_does_not_match_or_is_not_a_devices_finalizes_nothing() {
+        let (mut log, first, bound, _) = checkpointed_chain();
+        let at_bound = fold(&log, &first.hash).unwrap();
+        // Signed by a key that is no device of this identity.
+        let stranger = append(
+            &bound,
+            &key(9),
+            7,
+            KeysetEntry::Checkpoint {
+                state_hash: at_bound.state_hash().unwrap(),
+                record_count: at_bound.records_folded,
+            },
+            None,
+        );
+        // Signed by the device, but attesting the wrong state.
+        let wrong = append(
+            &bound,
+            &key(2),
+            8,
+            KeysetEntry::Checkpoint {
+                state_hash: first.hash.clone(),
+                record_count: at_bound.records_folded,
+            },
+            None,
+        );
+        let mut bad = Log::default();
+        for record in log.records() {
+            if !matches!(record.entry, KeysetEntry::Checkpoint { .. }) {
+                bad.insert(record.clone()).unwrap();
+            }
+        }
+        bad.insert(stranger).unwrap();
+        bad.insert(wrong).unwrap();
+        assert!(
+            checkpoint_final_heads(&bad, &first.hash, &BTreeSet::new())
+                .unwrap()
+                .is_empty()
+        );
+        // The good checkpoint still counts beside them.
+        log = merge(&log, &bad);
+        assert_eq!(
+            checkpoint_final_heads(&log, &first.hash, &BTreeSet::new()).unwrap(),
+            BTreeSet::from([bound.hash])
+        );
+    }
+
+    #[test]
+    fn a_late_sibling_with_a_smaller_merge_key_cannot_displace_a_final_head() {
+        let (mut log, first, bound, _) = checkpointed_chain();
+        let finals = checkpoint_final_heads(&log, &first.hash, &BTreeSet::new()).unwrap();
+        let sibling = append(
+            &first,
+            &key(1),
+            2,
+            KeysetEntry::IdpBindingBound {
+                binding_id: "y".to_owned(),
+            },
+            None,
+        );
+        log.insert(sibling.clone()).unwrap();
+        // Without finality, the smaller merge key wins the fork.
+        assert_eq!(fold(&log, &first.hash).unwrap().head_hash, sibling.hash);
+        let state = fold_with_finality(&log, &first.hash, &finals).unwrap();
+        assert_eq!(state.head_hash, bound.hash);
+        assert_eq!(state.idp_bindings.get("x"), Some(&BindingState::Bound));
+        assert!(!state.idp_bindings.contains_key("y"));
+    }
+
+    #[test]
+    fn a_late_revoking_sibling_cannot_displace_a_final_head() {
+        let (mut log, first, bound, _) = checkpointed_chain();
+        let finals = checkpoint_final_heads(&log, &first.hash, &BTreeSet::new()).unwrap();
+        // The admin rotates away, which would revoke the author of the
+        // final branch under revocation priority.
+        let rotation = append(
+            &first,
+            &key(1),
+            9,
+            KeysetEntry::AdminKeyRotated {
+                new_admin_key: public(3),
+            },
+            Some(&key(3)),
+        );
+        log.insert(rotation.clone()).unwrap();
+        assert_eq!(fold(&log, &first.hash).unwrap().head_hash, rotation.hash);
+        let state = fold_with_finality(&log, &first.hash, &finals).unwrap();
+        assert_eq!(state.head_hash, bound.hash);
+        assert!(state.is_admin(&public(1)));
+        // The final head still extends normally.
+        let next = append(
+            &bound,
+            &key(1),
+            10,
+            KeysetEntry::IdpBindingRevoked {
+                binding_id: "x".to_owned(),
+            },
+            None,
+        );
+        log.insert(next.clone()).unwrap();
+        assert_eq!(
+            fold_with_finality(&log, &first.hash, &finals)
+                .unwrap()
+                .head_hash,
+            next.hash
+        );
     }
 
     /// One step the generated-history property test can append. Indices

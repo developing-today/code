@@ -24,7 +24,11 @@ use anyhow::{Context, Result, bail, ensure};
 use ed25519_dalek::SigningKey;
 use id_core::hex::hex_encode;
 
-use crate::keyset::{KeysetEntry, KeysetRecord, KeysetState, Log, fold};
+use std::collections::BTreeSet;
+
+use crate::keyset::{
+    KeysetEntry, KeysetRecord, KeysetState, Log, checkpoint_final_heads, fold_with_finality,
+};
 
 /// The server identity's keyset log, beside [`id_core::KEY_FILE`].
 pub const KEYSET_FILE: &str = ".id-keyset.jsonl";
@@ -40,6 +44,10 @@ pub struct KeysetFile {
     path: PathBuf,
     log: Log,
     genesis_hash: String,
+    /// Heads this replica verified a checkpoint against (ADR Decision 4
+    /// rule 5), kept beside the log in [`final_heads_path`]: they are
+    /// this replica's own record, never merged from another.
+    final_heads: BTreeSet<String>,
 }
 
 impl KeysetFile {
@@ -57,14 +65,7 @@ impl KeysetFile {
         let mut log = read_log(&path)?;
         let identity = hex_encode(&key.verifying_key().to_bytes());
         if let Some(genesis_hash) = trusted_genesis(&log, &identity) {
-            return Ok((
-                Self {
-                    path,
-                    log,
-                    genesis_hash,
-                },
-                false,
-            ));
+            return Ok((Self::loaded(path, log, genesis_hash)?, false));
         }
         ensure!(
             log.records().next().is_none(),
@@ -85,14 +86,7 @@ impl KeysetFile {
         append_line(&path, &genesis)?;
         let genesis_hash = genesis.hash.clone();
         log.insert(genesis)?;
-        Ok((
-            Self {
-                path,
-                log,
-                genesis_hash,
-            },
-            true,
-        ))
+        Ok((Self::loaded(path, log, genesis_hash)?, true))
     }
 
     /// Opens the keyset log at `path` for the identity `identity` (its
@@ -106,11 +100,107 @@ impl KeysetFile {
     pub fn open_existing(path: impl Into<PathBuf>, identity: &str) -> Result<Option<Self>> {
         let path = path.into();
         let log = read_log(&path)?;
-        Ok(trusted_genesis(&log, identity).map(|genesis_hash| Self {
+        trusted_genesis(&log, identity)
+            .map(|genesis_hash| Self::loaded(path, log, genesis_hash))
+            .transpose()
+    }
+
+    /// Reads the persisted final heads and records any head a
+    /// checkpoint in the log now covers.
+    fn loaded(path: PathBuf, log: Log, genesis_hash: String) -> Result<Self> {
+        let mut file = Self {
+            final_heads: read_final_heads(&final_heads_path(&path))?,
             path,
             log,
             genesis_hash,
-        }))
+        };
+        file.finalize()?;
+        Ok(file)
+    }
+
+    /// Adds every head a verified checkpoint covers to the final heads,
+    /// persisting the new ones. Returns how many were added.
+    fn finalize(&mut self) -> Result<usize> {
+        let covered = checkpoint_final_heads(&self.log, &self.genesis_hash, &self.final_heads)?;
+        let fresh: Vec<String> = covered.difference(&self.final_heads).cloned().collect();
+        if !fresh.is_empty() {
+            append_final_heads(&final_heads_path(&self.path), &fresh)?;
+            self.final_heads.extend(fresh.iter().cloned());
+        }
+        Ok(fresh.len())
+    }
+
+    /// The checkpoint-final heads this replica has verified.
+    #[must_use]
+    pub const fn final_heads(&self) -> &BTreeSet<String> {
+        &self.final_heads
+    }
+
+    /// Signs a `Checkpoint` of the current head with `key`, which must
+    /// be an active device key, appends it, and records the head as
+    /// final. Returns the head hash it covers.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `key` is not an active device key, signing fails, or a
+    /// file cannot be written.
+    pub fn checkpoint(&mut self, key: &SigningKey) -> Result<String> {
+        let state = self.state()?;
+        let record = KeysetRecord::sign(
+            key,
+            self.next_lamport()?,
+            state.head_hash.clone(),
+            KeysetEntry::Checkpoint {
+                state_hash: state.state_hash()?,
+                record_count: state.records_folded,
+            },
+            None,
+        )?;
+        let mut next = self.log.clone();
+        next.insert(record.clone())?;
+        let covered = checkpoint_final_heads(&next, &self.genesis_hash, &self.final_heads)?;
+        ensure!(
+            covered.contains(&state.head_hash),
+            "{} is not an active device key of this identity",
+            record.author
+        );
+        append_line(&self.path, &record)?;
+        self.log = next;
+        self.finalize()?;
+        Ok(state.head_hash)
+    }
+
+    /// Merges records from another replica's copy of this log. Each one
+    /// must verify; duplicates are skipped. Records that do not fold
+    /// are kept as evidence, as in any fork. Returns how many were new.
+    ///
+    /// # Errors
+    ///
+    /// Fails if a record does not verify or the file cannot be written;
+    /// records before the failing one stay merged.
+    pub fn merge_records(
+        &mut self,
+        records: impl IntoIterator<Item = KeysetRecord>,
+    ) -> Result<usize> {
+        let mut added = 0;
+        for record in records {
+            if self.log.insert(record.clone())? {
+                append_line(&self.path, &record)?;
+                added += 1;
+            }
+        }
+        self.finalize()?;
+        Ok(added)
+    }
+
+    fn next_lamport(&self) -> Result<u64> {
+        self.log
+            .records()
+            .map(|record| record.lamport)
+            .max()
+            .unwrap_or(0)
+            .checked_add(1)
+            .context("keyset lamport overflow")
     }
 
     /// The folded keyset state.
@@ -120,7 +210,7 @@ impl KeysetFile {
     /// Fails if the trusted genesis is missing, which a file opened
     /// here cannot be.
     pub fn state(&self) -> Result<KeysetState> {
-        fold(&self.log, &self.genesis_hash)
+        fold_with_finality(&self.log, &self.genesis_hash, &self.final_heads)
     }
 
     /// The hash of the genesis record anchoring this identity's fold.
@@ -151,19 +241,12 @@ impl KeysetFile {
         countersigner: Option<&SigningKey>,
     ) -> Result<KeysetRecord> {
         let before = self.state()?;
-        let lamport = self
-            .log
-            .records()
-            .map(|record| record.lamport)
-            .max()
-            .unwrap_or(0)
-            .checked_add(1)
-            .context("keyset lamport overflow")?;
+        let lamport = self.next_lamport()?;
         let record =
             KeysetRecord::sign(key, lamport, before.head_hash.clone(), entry, countersigner)?;
         let mut next = self.log.clone();
         next.insert(record.clone())?;
-        let after = fold(&next, &self.genesis_hash)?;
+        let after = fold_with_finality(&next, &self.genesis_hash, &self.final_heads)?;
         if after.head_hash != record.hash {
             let author = &record.author;
             if before.is_admin(author) {
@@ -188,6 +271,63 @@ fn trusted_genesis(log: &Log, identity: &str) -> Option<String> {
                 && matches!(&record.entry, KeysetEntry::Genesis { admin_key, .. } if admin_key == identity)
         })
         .map(|record| record.hash.clone())
+}
+
+/// Where a keyset log's final heads live: beside it, one hash a line.
+#[must_use]
+pub fn final_heads_path(log_path: &Path) -> PathBuf {
+    let mut name = log_path.as_os_str().to_owned();
+    name.push(".final");
+    PathBuf::from(name)
+}
+
+fn read_final_heads(path: &Path) -> Result<BTreeSet<String>> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(BTreeSet::new()),
+        Err(error) => {
+            return Err(error).with_context(|| format!("could not read {}", path.display()));
+        }
+    };
+    let complete = match text.rfind('\n') {
+        Some(end) => &text[..=end],
+        None => "",
+    };
+    let mut heads = BTreeSet::new();
+    for (index, line) in complete.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        ensure!(
+            line.len() == 64
+                && line
+                    .bytes()
+                    .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')),
+            "{} line {}: not a record hash",
+            path.display(),
+            index + 1
+        );
+        heads.insert(line.to_owned());
+    }
+    Ok(heads)
+}
+
+fn append_final_heads(path: &Path, heads: &[String]) -> Result<()> {
+    drop_torn_tail(path)?;
+    let mut text = String::new();
+    for head in heads {
+        text.push_str(head);
+        text.push('\n');
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("could not open {}", path.display()))?;
+    file.write_all(text.as_bytes())
+        .and_then(|()| file.sync_all())
+        .with_context(|| format!("could not write {}", path.display()))
 }
 
 fn read_log(path: &Path) -> Result<Log> {
@@ -410,5 +550,51 @@ mod tests {
 
         std::fs::write(&path, format!("{good}not json\n")).unwrap();
         assert!(KeysetFile::open_or_migrate(&path, &key(1)).is_err());
+    }
+
+    #[test]
+    fn a_checkpoint_pins_the_head_across_a_merge_and_a_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(KEYSET_FILE);
+        let owner = key(1);
+        let (mut file, _) = KeysetFile::open_or_migrate(&path, &owner).unwrap();
+        let genesis = file.genesis_hash().to_owned();
+        file.append(
+            &owner,
+            KeysetEntry::IdpBindingBound {
+                binding_id: "mine".to_owned(),
+            },
+            None,
+        )
+        .unwrap();
+        let head = file.state().unwrap().head_hash;
+        assert_eq!(file.checkpoint(&owner).unwrap(), head);
+        assert!(file.final_heads().contains(&head));
+        // Another replica's sibling of the bind, sorting first.
+        let sibling = KeysetRecord::sign(
+            &owner,
+            1,
+            genesis,
+            KeysetEntry::IdpBindingBound {
+                binding_id: "theirs".to_owned(),
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(file.merge_records([sibling.clone(), sibling]).unwrap(), 1);
+        assert_eq!(file.state().unwrap().head_hash, head);
+        let (again, _) = KeysetFile::open_or_migrate(&path, &owner).unwrap();
+        assert_eq!(again.state().unwrap().head_hash, head);
+        assert!(final_heads_path(&path).exists());
+    }
+
+    #[test]
+    fn only_a_device_key_can_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(KEYSET_FILE);
+        let (mut file, _) = KeysetFile::open_or_migrate(&path, &key(1)).unwrap();
+        assert!(file.checkpoint(&key(5)).is_err());
+        assert!(file.final_heads().is_empty());
+        assert_eq!(file.records().count(), 1);
     }
 }

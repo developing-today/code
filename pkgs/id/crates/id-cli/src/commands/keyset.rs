@@ -34,7 +34,8 @@ pub async fn cmd_keyset(command: KeysetCommand) -> Result<()> {
         KeysetCommand::Show { client }
         | KeysetCommand::Enrol { client, .. }
         | KeysetCommand::Revoke { client, .. }
-        | KeysetCommand::Rotate { client, .. } => *client,
+        | KeysetCommand::Rotate { client, .. }
+        | KeysetCommand::Checkpoint { client } => *client,
     };
     let key_path = if client { CLIENT_KEY_FILE } else { KEY_FILE };
     let keyset_path = if client {
@@ -96,9 +97,14 @@ pub async fn cmd_keyset(command: KeysetCommand) -> Result<()> {
             )?;
             println!("Rotated the admin key to {new_admin_key}.");
         }
+        KeysetCommand::Checkpoint { .. } => {
+            let head = file.checkpoint(&key)?;
+            println!("Checkpointed head {head}; it is final here.");
+        }
     }
     let state = file.state()?;
     print!("{}", render_state(&state));
+    println!("{}", finality_line(&file, &state.head_hash));
     let marker = if client {
         CLIENT_RESTORED_KEY_FILE
     } else {
@@ -153,6 +159,17 @@ pub fn render_state(state: &KeysetState) -> String {
     out
 }
 
+/// One line on how far the head is protected by checkpoint finality.
+fn finality_line(file: &KeysetFile, head: &str) -> String {
+    if file.final_heads().contains(head) {
+        "head: final (checkpointed)".to_owned()
+    } else if file.final_heads().is_empty() {
+        "head: provisional (no checkpoint yet; `id keyset checkpoint` makes it final)".to_owned()
+    } else {
+        "head: provisional (an earlier head is final)".to_owned()
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -189,6 +206,18 @@ mod tests {
         assert!(text.contains(&format!("  {}  revoked  laptop\n", public_hex(&laptop))));
         assert!(text.contains("original device"));
         assert!(text.ends_with("records: 3\n"));
+    }
+
+    #[test]
+    fn the_head_reads_final_once_checkpointed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(KEYSET_FILE);
+        let owner = SigningKey::from_bytes(&[1; 32]);
+        let (mut file, _) = KeysetFile::open_or_migrate(&path, &owner).unwrap();
+        let head = file.state().unwrap().head_hash;
+        assert!(finality_line(&file, &head).contains("no checkpoint yet"));
+        file.checkpoint(&owner).unwrap();
+        assert_eq!(finality_line(&file, &head), "head: final (checkpointed)");
     }
 
     #[test]
