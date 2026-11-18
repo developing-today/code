@@ -51,6 +51,7 @@ mod gh;
 #[cfg(feature = "gh")]
 mod gh_cache;
 mod gh_closure;
+mod invocation_ledger;
 
 #[allow(dead_code)]
 // the derivation runs in build.rs (which includes this module by path); the binary itself consumes only the baked FLEET_DERIVED_VERSION value, plus these unit tests
@@ -1391,6 +1392,7 @@ fn restore_default_sigpipe() {
 fn restore_default_sigpipe() {}
 
 fn main() {
+    let started = std::time::Instant::now();
     restore_default_sigpipe();
     let argv: Vec<String> = std::env::args().collect();
     let invoked_as = argv
@@ -1407,40 +1409,46 @@ fn main() {
     // Config decides the disable table; a malformed config is a loud
     // error on every path (a silently ignored disable would defeat
     // the §7 incident lever).
-    let config = match fleet_config::Config::load() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(EXIT_USAGE);
-        }
-    };
-
-    let code = if invoked_as == "fleet" {
-        let surface = Surface::new(None, config);
-        run_root(&surface, &args, &invoked_as)
-    } else if let Some(variant) = Variant::from_invocation_name(&invoked_as) {
-        // Refinement A: the hyphenated name narrows (never widens).
-        let surface = Surface::new(Some(variant), config);
-        run_root(&surface, &args, &invoked_as)
-    } else if let Some(route) = alias_route(&invoked_as) {
-        let surface = Surface::new(None, config);
-        let d = domain(route.domain).expect("registry aliases route to real domains");
-        let mut routed: Vec<String> = Vec::new();
-        if let Some(implied) = route.implied_arg {
-            routed.push(implied.to_string());
-        }
-        routed.extend(args);
-        run_domain(&surface, d, &routed, &invoked_as)
-    } else if is_known_invocation_name(&invoked_as) {
-        unreachable!("known names are handled above");
-    } else {
-        eprintln!(
-            "fleet: invoked under unknown name '{invoked_as}'; expected 'fleet', a variant \
+    let code = match fleet_config::Config::load() {
+        Ok(config) => {
+            if invoked_as == "fleet" {
+                let surface = Surface::new(None, config);
+                run_root(&surface, &args, &invoked_as)
+            } else if let Some(variant) = Variant::from_invocation_name(&invoked_as) {
+                // Refinement A: the hyphenated name narrows (never widens).
+                let surface = Surface::new(Some(variant), config);
+                run_root(&surface, &args, &invoked_as)
+            } else if let Some(route) = alias_route(&invoked_as) {
+                let surface = Surface::new(None, config);
+                let d = domain(route.domain).expect("registry aliases route to real domains");
+                let mut routed: Vec<String> = Vec::new();
+                if let Some(implied) = route.implied_arg {
+                    routed.push(implied.to_string());
+                }
+                routed.extend(args.iter().cloned());
+                run_domain(&surface, d, &routed, &invoked_as)
+            } else if is_known_invocation_name(&invoked_as) {
+                unreachable!("known names are handled above");
+            } else {
+                eprintln!(
+                    "fleet: invoked under unknown name '{invoked_as}'; expected 'fleet', a variant \
              name ('fleet-serve', 'fleet-connect'), or a known alias (repo-queue, queue-broker, \
              secrets-broker, laptop-agent, laptop-agent-broker, atlas-search)"
-        );
-        EXIT_USAGE
+                );
+                EXIT_USAGE
+            }
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            EXIT_USAGE
+        }
     };
+    // Telemetry is local, payload-free and best-effort: failure to write
+    // the ledger must never alter the command's result.
+    let _ = invocation_ledger::append(
+        &invocation_ledger::path(),
+        &invocation_ledger::record(&invoked_as, &args, code, started.elapsed().as_millis()),
+    );
     std::process::exit(code);
 }
 
