@@ -248,7 +248,7 @@ pub(crate) fn claim_preamble(
                 // disabled by hand keeps refusing. Ids outside
                 // every known family keep the unknown-lane refusal.
                 if lane_family_of(lane_id).is_none() {
-                    return Err(format!("claim_repo_task: unknown lane_id {lane_id}"));
+                    return Err(unknown_lane_error(lane_id));
                 }
                 t.exec(
                     "INSERT OR IGNORE INTO lanes (lane_id, worker_id, queue, enabled) VALUES (?, ?, '*', 1)",
@@ -262,7 +262,7 @@ pub(crate) fn claim_preamble(
                 match lanes.into_iter().next() {
                     Some(l) => l,
                     None => {
-                        return Err(format!("claim_repo_task: unknown lane_id {lane_id}"));
+                        return Err(unknown_lane_error(lane_id));
                     }
                 }
             }

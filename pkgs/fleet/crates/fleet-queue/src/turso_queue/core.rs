@@ -473,20 +473,39 @@ pub(crate) fn not_code_lane_owner(lane_id: &str) -> Option<&'static str> {
 /// it is deliberately not part of the canonical seed set above,
 /// but a darwin-nix lane claim provisions its row on first use.
 pub(crate) fn lane_family_of(lane_id: &str) -> Option<&str> {
-    const FAMILIES: [&str; 7] = [
-        "code",
-        "any",
-        "not-code",
-        "opencode",
-        "openchamber",
-        "nix",
-        "darwin-nix",
-    ];
     let (family, suffix) = lane_id.rsplit_once('-')?;
     if suffix.is_empty() || !suffix.bytes().all(|b| b.is_ascii_lowercase()) {
         return None;
     }
-    FAMILIES.contains(&family).then_some(family)
+    LANE_FAMILIES.contains(&family).then_some(family)
+}
+
+/// The lane families the broker knows (see lane_family_of).
+const LANE_FAMILIES: [&str; 7] = [
+    "code",
+    "any",
+    "not-code",
+    "opencode",
+    "openchamber",
+    "nix",
+    "darwin-nix",
+];
+
+/// The refusal for a claim whose lane id has no registry row and no
+/// known family. It keeps the "unknown lane_id" verdict callers key
+/// on, and when the id is a bare family name ("not-code" for
+/// "not-code-d", #6853's recurrence) it says so and names the shape
+/// to pass instead, so the caller can correct itself rather than
+/// stop.
+pub(crate) fn unknown_lane_error(lane_id: &str) -> String {
+    if LANE_FAMILIES.contains(&lane_id) {
+        format!(
+            "claim_repo_task: unknown lane_id {lane_id}: that is a lane family, not a lane; \
+             pass a lane in it such as {lane_id}-<suffix> (your scheduled lane's full id)"
+        )
+    } else {
+        format!("claim_repo_task: unknown lane_id {lane_id}")
+    }
 }
 
 /// The registry seed statement (#6853): INSERT OR IGNORE, so it

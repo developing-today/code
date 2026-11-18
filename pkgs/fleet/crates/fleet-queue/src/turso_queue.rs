@@ -680,6 +680,25 @@ mod tests {
     }
 
     #[test]
+    fn a_bare_family_lane_id_is_refused_with_the_shape_to_pass() {
+        // #6853 recurrence: scheduled lanes passed `--lane not-code`
+        // for not-code-d. The refusal keeps the unknown-lane verdict
+        // but says what to pass, so the caller can correct itself.
+        let bare = unknown_lane_error("not-code");
+        assert!(
+            bare.starts_with("claim_repo_task: unknown lane_id not-code"),
+            "{bare}"
+        );
+        assert!(bare.contains("lane family"), "{bare}");
+        assert!(bare.contains("not-code-<suffix>"), "{bare}");
+        // Ids that are not a family keep the plain refusal.
+        assert_eq!(
+            unknown_lane_error("banana-1"),
+            "claim_repo_task: unknown lane_id banana-1"
+        );
+    }
+
+    #[test]
     fn lane_seed_sql_is_insert_or_ignore_over_the_canonical_set() {
         // #6853 oracle: the seed can only fill missing rows -- an
         // existing registration (in particular a lane disabled via
