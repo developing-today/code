@@ -88,6 +88,7 @@ var implementedEffectProbes = map[string]string{
 	"mcp.passthrough":            "TestMCPPassthroughServesANamespaceDirectlyFromTheEnvironment",
 	"completion.perMinute":       "TestCompletionPerMinuteLimitsOneCallerFromTheEnvironment",
 	"completion.serverPerMinute": "TestCompletionServerPerMinuteLimitsAllCallersFromTheEnvironment",
+	"logstore.queryLimit":        "TestLogstoreQueryLimitBoundsALogQueryFromTheEnvironment",
 	"proto.serveMCP":             "TestServeMCPUnmountsTheEndpointFromTheEnvironment",
 	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
 	"daemon.autostart":           "TestDaemonAutostartIsReachableFromTheEnvironment",
@@ -164,6 +165,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestMCPPassthroughServesANamespaceDirectlyFromTheEnvironment":              TestMCPPassthroughServesANamespaceDirectlyFromTheEnvironment,
 	"TestCompletionPerMinuteLimitsOneCallerFromTheEnvironment":                  TestCompletionPerMinuteLimitsOneCallerFromTheEnvironment,
 	"TestCompletionServerPerMinuteLimitsAllCallersFromTheEnvironment":           TestCompletionServerPerMinuteLimitsAllCallersFromTheEnvironment,
+	"TestLogstoreQueryLimitBoundsALogQueryFromTheEnvironment":                   TestLogstoreQueryLimitBoundsALogQueryFromTheEnvironment,
 	"TestServeMCPUnmountsTheEndpointFromTheEnvironment":                         TestServeMCPUnmountsTheEndpointFromTheEnvironment,
 	"TestDaemonAddressIsReachableFromTheEnvironment":                            TestDaemonAddressIsReachableFromTheEnvironment,
 	"TestDaemonAutostartIsReachableFromTheEnvironment":                          TestDaemonAutostartIsReachableFromTheEnvironment,
@@ -1084,6 +1086,36 @@ func TestCompletionServerPerMinuteLimitsAllCallersFromTheEnvironment(t *testing.
 	}
 	if got := completionStatuses(t, []string{"MCPX_COMPLETION_SERVER_PER_MINUTE=1"}, "one", "two"); got[0] != http.StatusOK || got[1] != http.StatusTooManyRequests {
 		t.Fatalf("completion.serverPerMinute=1 should refuse a second caller's completion with 429, got %v", got)
+	}
+}
+
+// logstore.queryLimit is how many records GET /v1/log returns when the
+// caller names no limit. Two calls leave well over two records.
+// Oracle: at the default (100) the query returns more than two records;
+// with MCPX_LOGSTORE_QUERY_LIMIT=2 it returns exactly two.
+func TestLogstoreQueryLimitBoundsALogQueryFromTheEnvironment(t *testing.T) {
+	records := func(env ...string) int {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		e.run("refresh")
+		e.run("call", "demo.echo", `{"message":"a"}`)
+		e.run("call", "demo.echo", `{"message":"b"}`)
+		resp, err := e.socketClient(t).Get("http://mcpx/v1/log")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		doc := decodeJSON(t, resp.Body)
+		recs, _ := doc["records"].([]any)
+		return len(recs)
+	}
+
+	if n := records(); n <= 2 {
+		t.Fatalf("at the default logstore.queryLimit the query should return every record of two calls (more than two), got %d", n)
+	}
+	if n := records("MCPX_LOGSTORE_QUERY_LIMIT=2"); n != 2 {
+		t.Fatalf("logstore.queryLimit=2 should return exactly two records, got %d", n)
 	}
 }
 
