@@ -22,6 +22,10 @@ The `*` policy is the store read gate. A deny there denies the entire view; use 
 - `assertSnapshotMutation` rejects any policy/group change by a nonadmin, and rejects whole-snapshot writes by scope-limited editors. Admin writes cannot alter denied records. This is an honest read-only limitation, not a finished per-entity editing solution. Admin policy recovery requires a dedicated endpoint that never overwrites unseen data.
 - Apply the projection before search, summaries, exports, research context, and any callback response. API authorization must use stored state, not the client projection. Reject malformed policy before mutation persistence. Existing authenticated role and optimistic-version transaction checks remain mandatory.
 
+## Principal and installation (BA-W01 L1)
+
+`principalFromGateway` in `identity.mjs` is the one place a request's principal comes from: the account headers the Worker rebuilds after verifying the gateway signature (`external/worker.mjs`), as `{kind:'account',id,email}`. A request with none is refused. No body field (`actor`, `actorId`, `principal`, `author`) names a principal: events take `actorId` from it, new notes and inventory rows are stamped with it, and an existing row keeps the `actorId`, `author`, `recordedAt` and `device` it was first stamped with whatever a later snapshot says. The browser's installation ID is continuity metadata only: `continuityId` keeps it when it is a UUID and drops anything else, and nothing reads it for a decision.
+
 ## Guest/account proof design
 
 `identity.mjs` supplies random UUID installation IDs and 256-bit guest-claim token primitives. Only the SHA-256 hash is persisted; token is returned once. Claims bind guest ID and store ID, expire in at most ten minutes, and reject consumed records, changed stores, invalid tokens and absent authenticated accounts. These primitives do not create sessions or authenticate accounts.
