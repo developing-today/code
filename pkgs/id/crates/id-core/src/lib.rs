@@ -33,6 +33,7 @@ pub mod graph;
 pub mod hex;
 pub mod holders;
 pub mod id_shape;
+pub mod id_uri;
 pub mod intranet;
 pub mod ip_evidence;
 pub mod json_unique;
