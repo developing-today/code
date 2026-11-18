@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -102,6 +104,15 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"model.provider":                     "TestModelProviderSelectsTheBackendFromTheEnvironment",
+	"model.baseURL":                      "TestModelBaseURLPointsTheProviderAtAnEndpointFromTheEnvironment",
+	"model.default":                      "TestModelDefaultNamesTheModelFromTheEnvironment",
+	"model.apiKeyEnv":                    "TestModelAPIKeyEnvNamesTheKeyVariableFromTheEnvironment",
+	"model.budget":                       "TestModelBudgetCapsAHooksTokensFromTheEnvironment",
+	"prompt.maxTokens":                   "TestPromptMaxTokensSetsAHooksTokenCapFromTheEnvironment",
+	"model.providers":                    "TestModelProvidersRoutesAProviderToItsEndpointFromTheEnvironment",
+	"model.profiles":                     "TestModelProfilesResolvesANamedChainFromTheEnvironment",
+	"model.timeout":                      "TestModelTimeoutBoundsAGenerationFromTheEnvironment",
 	"session.releaseTimeout":             "TestSessionReleaseTimeoutBoundsTheEndOfRunReleaseFromTheEnvironment",
 	"daemon.idleExit":                    "TestDaemonIdleExitStopsAnIdleDaemonFromTheEnvironment",
 	"daemon.port":                        "TestDaemonPortBindsTheChosenPortFromTheEnvironment",
@@ -288,6 +299,15 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestModelProviderSelectsTheBackendFromTheEnvironment":                           TestModelProviderSelectsTheBackendFromTheEnvironment,
+	"TestModelBaseURLPointsTheProviderAtAnEndpointFromTheEnvironment":                TestModelBaseURLPointsTheProviderAtAnEndpointFromTheEnvironment,
+	"TestModelDefaultNamesTheModelFromTheEnvironment":                                TestModelDefaultNamesTheModelFromTheEnvironment,
+	"TestModelAPIKeyEnvNamesTheKeyVariableFromTheEnvironment":                        TestModelAPIKeyEnvNamesTheKeyVariableFromTheEnvironment,
+	"TestModelBudgetCapsAHooksTokensFromTheEnvironment":                              TestModelBudgetCapsAHooksTokensFromTheEnvironment,
+	"TestPromptMaxTokensSetsAHooksTokenCapFromTheEnvironment":                        TestPromptMaxTokensSetsAHooksTokenCapFromTheEnvironment,
+	"TestModelProvidersRoutesAProviderToItsEndpointFromTheEnvironment":               TestModelProvidersRoutesAProviderToItsEndpointFromTheEnvironment,
+	"TestModelProfilesResolvesANamedChainFromTheEnvironment":                         TestModelProfilesResolvesANamedChainFromTheEnvironment,
+	"TestModelTimeoutBoundsAGenerationFromTheEnvironment":                            TestModelTimeoutBoundsAGenerationFromTheEnvironment,
 	"TestSessionReleaseTimeoutBoundsTheEndOfRunReleaseFromTheEnvironment":            TestSessionReleaseTimeoutBoundsTheEndOfRunReleaseFromTheEnvironment,
 	"TestDaemonIdleExitStopsAnIdleDaemonFromTheEnvironment":                          TestDaemonIdleExitStopsAnIdleDaemonFromTheEnvironment,
 	"TestDaemonPortBindsTheChosenPortFromTheEnvironment":                             TestDaemonPortBindsTheChosenPortFromTheEnvironment,
@@ -3890,6 +3910,202 @@ func TestSessionReleaseTimeoutBoundsTheEndOfRunReleaseFromTheEnvironment(t *test
 	}
 	if live := liveAfterAnExec(t, "MCPX_SESSION_RELEASE_TIMEOUT=1ns"); live != "1" {
 		t.Fatalf("with session.releaseTimeout=1ns the release should not land, leaving one instance, LIVE=%s", live)
+	}
+}
+
+// fakeModel is an OpenAI-compatible chat endpoint that records what it
+// was sent and answers with advice naming itself, after delay.
+type fakeModel struct {
+	URL  string
+	tag  string
+	mu   sync.Mutex
+	reqs []fakeModelRequest
+}
+
+type fakeModelRequest struct {
+	Auth      string
+	Model     string `json:"model"`
+	MaxTokens int    `json:"max_tokens"`
+}
+
+func newFakeModel(t *testing.T, tag string, delay time.Duration) *fakeModel {
+	t.Helper()
+	m := &fakeModel{tag: tag}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req fakeModelRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		req.Auth = r.Header.Get("Authorization")
+		m.mu.Lock()
+		m.reqs = append(m.reqs, req)
+		m.mu.Unlock()
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(delay):
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"probe","model":"fake-model","choices":[{"index":0,`+
+			`"message":{"role":"assistant","content":"advice from `+tag+`"},"finish_reason":"stop"}]}`)
+	}))
+	t.Cleanup(srv.Close)
+	m.URL = srv.URL
+	return m
+}
+
+// last is the most recent request the endpoint saw; the zero value if none.
+func (m *fakeModel) last() fakeModelRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.reqs) == 0 {
+		return fakeModelRequest{}
+	}
+	return m.reqs[len(m.reqs)-1]
+}
+
+// promptHookFrame runs a one-line script under a config whose one
+// script hook is an onSuccess prompt, with hooks allowed to run and env
+// on top, and returns that hook's frame from `exec --json`.
+func promptHookFrame(t *testing.T, env ...string) map[string]any {
+	t.Helper()
+	e := newEnv(t, `{"mcpServers":{"demo":{"command":"FAKE"}},`+
+		`"script":{"hooks":[{"phase":"onSuccess","prompt":"review the run"}]}}`)
+	e.setenv(append([]string{"MCPX_HOOKS_AUTONOMY=run", "FAKE_MODEL_KEY=probe-key"}, env...)...)
+	out := e.run("--json", "exec", `console.log("x")`)
+	var doc struct {
+		Hooks []map[string]any `json:"hooks"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil || len(doc.Hooks) != 1 {
+		t.Fatalf("exec --json should report one hook frame (%v):\n%s", err, out)
+	}
+	return doc.Hooks[0]
+}
+
+// modelAt is the environment that points the prompt hook at m through
+// model.provider, model.baseURL and model.default.
+func modelAt(m *fakeModel) []string {
+	return []string{"MCPX_MODEL_PROVIDER=openai", "MCPX_MODEL_BASE_URL=" + m.URL,
+		"MCPX_MODEL_DEFAULT=openai/fake-model"}
+}
+
+// TestModelProviderSelectsTheBackendFromTheEnvironment is the effect
+// probe for model.provider. At the default (none) a prompt hook reports
+// that no provider is configured and nothing is called; with
+// model.provider=openai the hook's advice comes from the endpoint.
+func TestModelProviderSelectsTheBackendFromTheEnvironment(t *testing.T) {
+	a := newFakeModel(t, "A", 0)
+	if f := promptHookFrame(t, "MCPX_MODEL_BASE_URL="+a.URL, "MCPX_MODEL_DEFAULT=openai/fake-model"); !strings.Contains(fmt.Sprint(f["error"]), "no model provider is configured") {
+		t.Fatalf("oracle: with model.provider at its default the hook should have no provider: %v", f)
+	}
+	if f := promptHookFrame(t, modelAt(a)...); f["advice"] != "advice from A" {
+		t.Fatalf("with model.provider=openai the hook should be advised by the endpoint: %v", f)
+	}
+}
+
+// TestModelBaseURLPointsTheProviderAtAnEndpointFromTheEnvironment is the
+// effect probe for model.baseURL: the same hook is answered by whichever
+// endpoint model.baseURL names.
+func TestModelBaseURLPointsTheProviderAtAnEndpointFromTheEnvironment(t *testing.T) {
+	a, b := newFakeModel(t, "A", 0), newFakeModel(t, "B", 0)
+	if f := promptHookFrame(t, modelAt(a)...); f["advice"] != "advice from A" {
+		t.Fatalf("oracle: model.baseURL at A should be answered by A: %v", f)
+	}
+	if f := promptHookFrame(t, append(modelAt(a), "MCPX_MODEL_BASE_URL="+b.URL)...); f["advice"] != "advice from B" {
+		t.Fatalf("model.baseURL at B should be answered by B: %v", f)
+	}
+}
+
+// TestModelDefaultNamesTheModelFromTheEnvironment is the effect probe for
+// model.default. With no default and no model on the hook, the provider
+// has no model to ask for; with model.default=openai/fake-model the
+// request names fake-model.
+func TestModelDefaultNamesTheModelFromTheEnvironment(t *testing.T) {
+	a := newFakeModel(t, "A", 0)
+	if f := promptHookFrame(t, "MCPX_MODEL_PROVIDER=openai", "MCPX_MODEL_BASE_URL="+a.URL); !strings.Contains(fmt.Sprint(f["error"]), "no model named") {
+		t.Fatalf("oracle: with no model.default the hook should have no model to ask for: %v", f)
+	}
+	if promptHookFrame(t, modelAt(a)...); a.last().Model != "fake-model" {
+		t.Fatalf("with model.default=openai/fake-model the request should name fake-model: %+v", a.last())
+	}
+}
+
+// TestModelAPIKeyEnvNamesTheKeyVariableFromTheEnvironment is the effect
+// probe for model.apiKeyEnv. mcpx reads no key variable unless one is
+// named, so by default the request carries no Authorization; naming
+// FAKE_MODEL_KEY sends its value as the bearer token.
+func TestModelAPIKeyEnvNamesTheKeyVariableFromTheEnvironment(t *testing.T) {
+	a := newFakeModel(t, "A", 0)
+	if promptHookFrame(t, modelAt(a)...); a.last().Auth != "" {
+		t.Fatalf("oracle: with no model.apiKeyEnv the request should carry no key: %q", a.last().Auth)
+	}
+	if promptHookFrame(t, append(modelAt(a), "MCPX_MODEL_API_KEY_ENV=FAKE_MODEL_KEY")...); a.last().Auth != "Bearer probe-key" {
+		t.Fatalf("with model.apiKeyEnv=FAKE_MODEL_KEY the request should carry its value: %q", a.last().Auth)
+	}
+}
+
+// TestModelBudgetCapsAHooksTokensFromTheEnvironment is the effect probe
+// for model.budget: a hook asks for the default token cap, and for no
+// more than model.budget=7 when it is set.
+func TestModelBudgetCapsAHooksTokensFromTheEnvironment(t *testing.T) {
+	a := newFakeModel(t, "A", 0)
+	promptHookFrame(t, modelAt(a)...)
+	if def := a.last().MaxTokens; def <= 7 {
+		t.Fatalf("oracle: the default cap should be well above 7 tokens, got %d", def)
+	}
+	if promptHookFrame(t, append(modelAt(a), "MCPX_MODEL_BUDGET=7")...); a.last().MaxTokens != 7 {
+		t.Fatalf("with model.budget=7 the request should ask for 7 tokens: %+v", a.last())
+	}
+}
+
+// TestPromptMaxTokensSetsAHooksTokenCapFromTheEnvironment is the effect
+// probe for prompt.maxTokens: the request's max_tokens follows it.
+func TestPromptMaxTokensSetsAHooksTokenCapFromTheEnvironment(t *testing.T) {
+	a := newFakeModel(t, "A", 0)
+	promptHookFrame(t, modelAt(a)...)
+	if def := a.last().MaxTokens; def == 11 || def == 0 {
+		t.Fatalf("oracle: the default cap should be set and not 11, got %d", def)
+	}
+	if promptHookFrame(t, append(modelAt(a), "MCPX_PROMPT_MAX_TOKENS=11")...); a.last().MaxTokens != 11 {
+		t.Fatalf("with prompt.maxTokens=11 the request should ask for 11 tokens: %+v", a.last())
+	}
+}
+
+// TestModelProvidersRoutesAProviderToItsEndpointFromTheEnvironment is the
+// effect probe for model.providers: with model.baseURL at A, a
+// per-provider entry giving openai the base URL of B routes the hook to B.
+func TestModelProvidersRoutesAProviderToItsEndpointFromTheEnvironment(t *testing.T) {
+	a, b := newFakeModel(t, "A", 0), newFakeModel(t, "B", 0)
+	if f := promptHookFrame(t, modelAt(a)...); f["advice"] != "advice from A" {
+		t.Fatalf("oracle: without model.providers the hook should go to A: %v", f)
+	}
+	if f := promptHookFrame(t, append(modelAt(a), `MCPX_MODEL_PROVIDERS={"openai":{"baseURL":"`+b.URL+`"}}`)...); f["advice"] != "advice from B" {
+		t.Fatalf("with model.providers giving openai B's URL the hook should go to B: %v", f)
+	}
+}
+
+// TestModelProfilesResolvesANamedChainFromTheEnvironment is the effect
+// probe for model.profiles: with model.default naming a profile whose
+// chain is openai/other-model, the request names other-model.
+func TestModelProfilesResolvesANamedChainFromTheEnvironment(t *testing.T) {
+	a := newFakeModel(t, "A", 0)
+	if promptHookFrame(t, modelAt(a)...); a.last().Model != "fake-model" {
+		t.Fatalf("oracle: without a profile the request should name fake-model: %+v", a.last())
+	}
+	if promptHookFrame(t, append(modelAt(a), `MCPX_MODEL_PROFILES={"quick":{"models":["openai/other-model"]}}`,
+		"MCPX_MODEL_DEFAULT=quick")...); a.last().Model != "other-model" {
+		t.Fatalf("with model.default naming profile quick the request should name other-model: %+v", a.last())
+	}
+}
+
+// TestModelTimeoutBoundsAGenerationFromTheEnvironment is the effect probe
+// for model.timeout: an endpoint that takes 700ms still advises the hook
+// under the default bound, and is cut off at model.timeout=100ms.
+func TestModelTimeoutBoundsAGenerationFromTheEnvironment(t *testing.T) {
+	slow := newFakeModel(t, "slow", 700*time.Millisecond)
+	if f := promptHookFrame(t, modelAt(slow)...); f["advice"] != "advice from slow" {
+		t.Fatalf("oracle: under the default model.timeout a 700ms endpoint should answer: %v", f)
+	}
+	if f := promptHookFrame(t, append(modelAt(slow), "MCPX_MODEL_TIMEOUT=100ms")...); !strings.Contains(fmt.Sprint(f["error"]), "deadline exceeded") {
+		t.Fatalf("with model.timeout=100ms the 700ms endpoint should be cut off: %v", f)
 	}
 }
 
