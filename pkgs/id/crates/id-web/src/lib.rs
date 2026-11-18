@@ -49,6 +49,7 @@ mod assets;
 mod collab;
 mod content_mode;
 mod explore;
+pub mod gallery;
 mod groups;
 mod home;
 mod identity;
@@ -58,6 +59,7 @@ mod security;
 mod seitan;
 mod tags_ws;
 mod templates;
+mod transport_ad;
 pub mod world_ws;
 
 pub use content_mode::{ContentMode, MediaType, detect_mode, detect_mode_with_content};
@@ -68,7 +70,7 @@ pub use markdown::{
 
 use axum::Router;
 use iroh_blobs::api::Store;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -78,7 +80,7 @@ use id_store::tags::TagStore;
 
 pub use app_interface::{WebInterface, WebInterfaceError, WebMode, web_interface_from_app_toml};
 pub use assets::static_handler;
-pub use collab::CollabState;
+pub use collab::{CollabState, note_session_key};
 pub use identity::IdentityStore;
 #[doc(hidden)]
 pub use identity::crash_gate;
@@ -237,6 +239,253 @@ impl Drop for SavePermit {
     }
 }
 
+/// Default number of successful registrations one source may complete
+/// inside [`DEFAULT_REGISTER_WINDOW`] before the register handler starts
+/// refusing with 429 (#1766).
+pub const DEFAULT_REGISTER_LIMIT: usize = 10;
+
+/// Default registration rate-limit window (#1766).
+pub const DEFAULT_REGISTER_WINDOW: Duration = Duration::from_secs(60);
+
+/// Per-source rate limiter for `POST /api/identity/register` (#1766).
+///
+/// The identity store's admission cap bounds how many identities can
+/// exist, but the register handler itself was unthrottled: a caller on
+/// a non-loopback bind could burn request-rate CPU/IO and squat cap
+/// slots with junk registrations. This limiter follows the
+/// [`SaveRateLimiter`] pattern — a per-key map whose entries are swept
+/// once they can no longer refuse, so the map holds only sources
+/// active inside the current window (#1713 discipline).
+///
+/// The key is the request's source (the peer IP, supplied by the
+/// listener's connect-info; see `identity_register_handler` in
+/// `routes.rs`). Forwarded headers are never consulted: on the
+/// directly exposed listener they are client-spoofable (the
+/// `security.rs` doctrine). Only *successful* registrations are
+/// counted — a refusal at the admission cap or a failed attempt does
+/// not consume budget. The check/record split means a concurrent
+/// burst can overshoot the limit by the number of requests in flight;
+/// that tolerance is immaterial against the sustained-rate
+/// cap-squatting this limiter exists to stop.
+#[derive(Debug, Clone)]
+pub struct RegisterRateLimiter {
+    /// Map of source key → timestamps of successful registrations
+    /// inside the current window, oldest first.
+    attempts: Arc<Mutex<HashMap<String, VecDeque<Instant>>>>,
+    /// Maximum successful registrations per source inside `window`.
+    pub limit: usize,
+    /// Sliding window length.
+    pub window: Duration,
+}
+
+impl RegisterRateLimiter {
+    /// Create a new registration rate limiter.
+    pub fn new(limit: usize, window: Duration) -> Self {
+        Self {
+            attempts: Arc::new(Mutex::new(HashMap::new())),
+            limit,
+            window,
+        }
+    }
+
+    /// Drop one source's aged-out timestamps; returns the number of
+    /// in-window registrations remaining for it.
+    fn prune(times: &mut VecDeque<Instant>, now: Instant, window: Duration) -> usize {
+        while times
+            .front()
+            .is_some_and(|t| now.duration_since(*t) >= window)
+        {
+            times.pop_front();
+        }
+        times.len()
+    }
+
+    /// Check whether a registration from `source` is allowed now.
+    ///
+    /// Returns `Ok(())` if the source is under its limit, or
+    /// `Err(remaining)` with the time until the oldest in-window
+    /// registration ages out and a new one is allowed.
+    pub async fn check(&self, source: &str) -> Result<(), Duration> {
+        if self.limit == 0 {
+            return Err(self.window);
+        }
+        let mut map = self.attempts.lock().await;
+        let now = Instant::now();
+        if let Some(times) = map.get_mut(source) {
+            if Self::prune(times, now, self.window) >= self.limit {
+                // The front is the oldest in-window registration
+                // (prune kept it because it is younger than the
+                // window), so the remaining wait is exact.
+                let oldest = *times.front().unwrap_or(&now);
+                return Err(self
+                    .window
+                    .checked_sub(now.duration_since(oldest))
+                    .unwrap_or(Duration::ZERO));
+            }
+            if times.is_empty() {
+                map.remove(source);
+            }
+        }
+        Ok(())
+    }
+
+    /// Record a successful registration from `source`.
+    pub async fn record(&self, source: &str) {
+        let mut map = self.attempts.lock().await;
+        let now = Instant::now();
+        // Sweep every source's aged-out entries: they can no longer
+        // refuse a registration, and keeping them would grow the map
+        // by one entry for every source ever seen (#1713).
+        map.retain(|_, times| Self::prune(times, now, self.window) > 0);
+        map.entry(source.to_owned()).or_default().push_back(now);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod register_rate_limiter_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn under_limit_is_allowed_and_over_limit_is_refused() {
+        let limiter = RegisterRateLimiter::new(2, Duration::from_secs(60));
+        limiter.check("203.0.113.7").await.unwrap();
+        limiter.record("203.0.113.7").await;
+        limiter.check("203.0.113.7").await.unwrap();
+        limiter.record("203.0.113.7").await;
+        let remaining = limiter.check("203.0.113.7").await.unwrap_err();
+        assert!(remaining > Duration::ZERO && remaining <= Duration::from_secs(60));
+    }
+
+    #[tokio::test]
+    async fn sources_are_independent() {
+        let limiter = RegisterRateLimiter::new(1, Duration::from_secs(60));
+        limiter.record("198.51.100.1").await;
+        assert!(limiter.check("198.51.100.1").await.is_err());
+        limiter.check("198.51.100.2").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn window_expiry_allows_registration_again() {
+        let limiter = RegisterRateLimiter::new(1, Duration::from_millis(60));
+        limiter.record("192.0.2.9").await;
+        assert!(limiter.check("192.0.2.9").await.is_err());
+        tokio::time::sleep(Duration::from_millis(90)).await;
+        limiter.check("192.0.2.9").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn zero_window_never_refuses() {
+        // The routes tests disable the save limiter with a ZERO
+        // cooldown; a ZERO window is the same off switch here.
+        let limiter = RegisterRateLimiter::new(1, Duration::ZERO);
+        for _ in 0..5 {
+            limiter.record("203.0.113.99").await;
+            limiter.check("203.0.113.99").await.unwrap();
+        }
+    }
+}
+
+/// Explorer route prefixes a publication path mount must not
+/// shadow (#2146 phase 4, invariant 3: no implicit shadowing).
+/// Segment prefixes grounded in the routes `create_router_inner`,
+/// `world_ws` and `explore` register at the time of writing: the
+/// page routes, the `/api` and `/ws` trees, static assets, the
+/// world page and socket defaults, and the transport-advertisement
+/// well-known path. A mount conflicts when it equals a reserved
+/// route, sits under one, or is a segment-prefix ancestor of one
+/// (the either-direction segment-boundary relation the `id-cli`
+/// publication registry's shadow check uses) -- so `/world`,
+/// `/api/files` and `/` conflict, while `/worlds` does not.
+pub const RESERVED_EXPLORER_ROUTES: &[&str] = &[
+    "/",
+    "/.well-known",
+    "/api",
+    "/assets",
+    "/blob",
+    "/blocks",
+    "/edit",
+    "/explore",
+    "/files",
+    "/groups",
+    "/hash",
+    "/invite",
+    "/peers",
+    "/settings",
+    "/view",
+    "/world",
+    "/ws",
+];
+
+/// Canonicalise a publication mount path, or explain why it cannot
+/// be one (#2146 phase 4: canonicalize once, at mount time, and
+/// reject invalid or ambiguous paths rather than normalising a
+/// spelling into a different mount than the caller named).
+///
+/// Canonical form: starts with `/`, no empty / `.` / `..`
+/// segments, no trailing slash except the root itself, and no
+/// whitespace, control, or URL-delimiter (`?`, `#`, `\`)
+/// characters anywhere -- the dispatcher matches mount paths
+/// against the request path verbatim, so a spelling another layer
+/// might read as a different path is ambiguous. `/` is a valid
+/// canonical path (the reserved-route check in
+/// [`PublicationMounts::mount`] is what refuses it, as a shadow
+/// of the whole Explorer).
+///
+/// # Errors
+///
+/// Fails on a relative path, an empty / `.` / `..` segment, a
+/// trailing slash, or a whitespace / control / delimiter
+/// character.
+pub fn canonicalize_mount_path(path: &str) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        path.starts_with('/'),
+        "mount path must start with '/': {path:?}"
+    );
+    anyhow::ensure!(
+        !path
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '?' | '#' | '\\')),
+        "mount path must not contain whitespace, control, or delimiter characters: {path:?}"
+    );
+    let mut segments = Vec::new();
+    for segment in path.split('/').skip(1) {
+        match segment {
+            "" if segments.is_empty() && path == "/" => {}
+            "" => anyhow::bail!("mount path has an empty segment: {path:?}"),
+            "." | ".." => {
+                anyhow::bail!("mount path must not contain '{segment}' segments: {path:?}")
+            }
+            _ => segments.push(segment),
+        }
+    }
+    if segments.is_empty() {
+        return Ok("/".to_string());
+    }
+    Ok(format!("/{}", segments.join("/")))
+}
+
+/// Whether canonical mount path `mount` shadows reserved Explorer
+/// route `route`: a segment-boundary prefix relation in either
+/// direction (the mount is the route, sits under it, or contains
+/// it). The root mount shadows every route.
+fn mount_shadows_route(mount: &str, route: &str) -> bool {
+    mount == route
+        || mount == "/"
+        || route.starts_with(&format!("{mount}/"))
+        || mount.starts_with(&format!("{route}/"))
+}
+
+/// The first reserved Explorer route the canonical mount path
+/// `mount_path` shadows, if any.
+#[must_use]
+pub fn shadowed_reserved_route(mount_path: &str) -> Option<&'static str> {
+    RESERVED_EXPLORER_ROUTES
+        .iter()
+        .find(|route| mount_shadows_route(mount_path, route))
+        .copied()
+}
+
 /// Dynamic publication path mounts (#2147 slice 3): mount path ->
 /// world name, shared by every clone of an [`AppState`] (all web
 /// listeners of one serve process) and by the serve-owned publication
@@ -247,8 +496,10 @@ impl Drop for SavePermit {
 /// router: publishing inserts a row, unpublishing removes it, and
 /// the Explorer route the mount shadowed answers again. The table
 /// is the live half only -- the persisted set is the publication
-/// registry in `id-cli`, which owns validation (canonical paths,
-/// shadow acknowledgement); rows here are already canonical.
+/// registry in `id-cli`. The table validates every mount itself
+/// (canonical path, reserved-route and taken-path conflicts; see
+/// [`PublicationMounts::mount`]), so a row here is always one the
+/// dispatcher can honour exactly as written.
 #[derive(Clone, Default)]
 pub struct PublicationMounts {
     inner: Arc<std::sync::RwLock<std::collections::BTreeMap<String, String>>>,
@@ -281,11 +532,52 @@ impl PublicationMounts {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Mount `world` at the canonical mount `path`, replacing any
-    /// mount already there (the registry refuses a second publish
-    /// at a taken placement before this is ever called).
-    pub fn mount(&self, world: &str, path: &str) {
-        self.write().insert(path.to_owned(), world.to_owned());
+    /// Mount `world` at `path` (#2146 phase 4).
+    ///
+    /// The path is canonicalised and checked here, at mount time,
+    /// so no caller can insert a row the dispatcher would read
+    /// differently than the caller meant:
+    ///
+    /// - a non-canonical path (see [`canonicalize_mount_path`])
+    ///   is an error;
+    /// - a path that shadows a reserved Explorer route (see
+    ///   [`RESERVED_EXPLORER_ROUTES`]) is an error -- an
+    ///   intentional override is possible only through the #2147
+    ///   publication operation's explicit shadow acknowledgement,
+    ///   which this table-level API deliberately does not grow;
+    /// - a path already mounted to a *different* world is an
+    ///   error, never a silent replacement. Re-mounting the same
+    ///   world at the same path is idempotent. Nested mounts (a
+    ///   mount under another mount, for a different world) are
+    ///   not a conflict: [`Self::lookup`] prefers the longest.
+    ///
+    /// # Errors
+    ///
+    /// Fails as described above; on error the table is unchanged.
+    pub fn mount(&self, world: &str, path: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !world.trim().is_empty(),
+            "mount world name must not be empty"
+        );
+        let canonical = canonicalize_mount_path(path)?;
+        if let Some(route) = shadowed_reserved_route(&canonical) {
+            anyhow::bail!(
+                "mount path {canonical} shadows the reserved Explorer route {route} \
+                 -- refusing to mount world '{world}' there"
+            );
+        }
+        let mut table = self.write();
+        match table.get(&canonical) {
+            Some(existing) if existing != world => anyhow::bail!(
+                "mount path {canonical} is already mounted to world '{existing}' \
+                 -- refusing to remount it to '{world}' (unmount it first)"
+            ),
+            Some(_) => Ok(()),
+            None => {
+                table.insert(canonical, world.to_owned());
+                Ok(())
+            }
+        }
     }
 
     /// Remove the mount at `path`, restoring the Explorer route.
@@ -306,8 +598,8 @@ impl PublicationMounts {
 
     /// The mount governing `request_path`, if any: the longest
     /// mount path that equals the request path or is a whole-segment
-    /// prefix of it. The root mount (`/`) governs every path.
-    /// Returns `(mount_path, world)`.
+    /// prefix of it. A root mount (`/`), were one present, would
+    /// govern every path. Returns `(mount_path, world)`.
     #[must_use]
     pub fn lookup(&self, request_path: &str) -> Option<(String, String)> {
         self.read()
@@ -345,6 +637,17 @@ pub struct AppState {
     /// for states built outside `id serve` (tests, embedded surfaces) —
     /// the send route then answers 503 rather than inventing an identity.
     pub transfer_endpoint: Option<iroh::endpoint::Endpoint>,
+    /// The transport-advertisement minter whose current signed ad
+    /// the `/.well-known/id-transport-advertisement` handler serves
+    /// (#8214 slice 4). `id serve` wires its node's minter in
+    /// through [`web_routers_with_surface`]; `None` for states
+    /// built anywhere else — the handler then answers 404 rather
+    /// than inventing an ad.
+    pub transport_ad: Option<Arc<id_core::transport_advertisement::AdMinter>>,
+    /// The program gallery whose public read surface (list, fetch, search)
+    /// this node serves under `/api/gallery` (#10003). `None` unless the
+    /// serving process wires one in; every gallery route then answers 404.
+    pub gallery: Option<gallery::SharedGallery>,
     /// State for collaborative editing sessions.
     pub collab: Arc<CollabState>,
     /// Asset URLs (with cache-busting hashes).
@@ -357,6 +660,8 @@ pub struct AppState {
     pub tag_store: Arc<TagStore>,
     /// Per-file save rate limiter.
     pub save_limiter: SaveRateLimiter,
+    /// Per-source registration rate limiter (#1766).
+    pub register_limiter: RegisterRateLimiter,
     /// Serializes filename-tag claims (upload name resolution, create
     /// existence check, save tag assignment) and the filename-keyed
     /// metadata writes across clones of this state (#2363, #8407).
@@ -411,6 +716,7 @@ impl std::fmt::Debug for AppState {
             .field("node_id", &self.node_id)
             .field("tag_store", &"<TagStore>")
             .field("save_limiter", &self.save_limiter)
+            .field("register_limiter", &self.register_limiter)
             .field("identity", &self.identity)
             .field("local_events", &"<LocalEvents>")
             .field("world", &self.world)
@@ -418,6 +724,8 @@ impl std::fmt::Debug for AppState {
             .field("cookie_secure", &self.cookie_secure)
             .field("groups_log", &self.groups_log)
             .field("seitan", &self.seitan)
+            .field("transport_ad", &self.transport_ad.is_some())
+            .field("gallery", &self.gallery.is_some())
             .finish()
     }
 }
@@ -468,12 +776,18 @@ impl AppState {
         Ok(Self {
             store,
             transfer_endpoint: None,
+            transport_ad: None,
+            gallery: None,
             collab: Arc::new(CollabState::new()),
             assets: load_asset_urls(),
             peers,
             node_id,
             tag_store,
             save_limiter: SaveRateLimiter::new(DEFAULT_SAVE_COOLDOWN),
+            register_limiter: RegisterRateLimiter::new(
+                DEFAULT_REGISTER_LIMIT,
+                DEFAULT_REGISTER_WINDOW,
+            ),
             upload_name_lock: Arc::new(Mutex::new(())),
             identity: IdentityStore::new_with_max_identities(
                 secret_key,
@@ -499,6 +813,22 @@ impl AppState {
     /// [`AppState::transfer_endpoint`].
     pub fn set_transfer_endpoint(&mut self, endpoint: Option<iroh::endpoint::Endpoint>) {
         self.transfer_endpoint = endpoint;
+    }
+
+    /// Wire the serving node's transport-advertisement minter in
+    /// (#8214 slice 4). `id serve` passes its minter through
+    /// [`web_routers_with_surface`]; see [`AppState::transport_ad`].
+    pub fn set_transport_ad(
+        &mut self,
+        minter: Option<Arc<id_core::transport_advertisement::AdMinter>>,
+    ) {
+        self.transport_ad = minter;
+    }
+
+    /// Serve this program gallery's read surface under `/api/gallery`
+    /// (#10003); see [`AppState::gallery`].
+    pub fn set_gallery(&mut self, gallery: Option<gallery::SharedGallery>) {
+        self.gallery = gallery;
     }
 }
 
@@ -675,6 +1005,8 @@ pub async fn web_routers(
         groups_log,
         seitan,
         None,
+        None,
+        None,
     )
     .await?;
     Ok(routers)
@@ -754,6 +1086,8 @@ pub async fn web_routers_with_surface(
     groups_log: Option<std::path::PathBuf>,
     seitan: SeitanState,
     transfer_endpoint: Option<iroh::endpoint::Endpoint>,
+    transport_ad: Option<Arc<id_core::transport_advertisement::AdMinter>>,
+    gallery: Option<gallery::SharedGallery>,
 ) -> anyhow::Result<(Vec<Router>, WebSurfaceFactory)> {
     let mut state = match local_events {
         Some(events) => {
@@ -781,6 +1115,8 @@ pub async fn web_routers_with_surface(
         }
     };
     state.set_transfer_endpoint(transfer_endpoint);
+    state.set_transport_ad(transport_ad);
+    state.set_gallery(gallery);
     let surface = WebSurfaceFactory {
         state: state.clone(),
         world: world.clone(),
@@ -1139,7 +1475,17 @@ mod tests {
 
     #[test]
     fn test_load_asset_urls_from_manifest() {
+        use assets::Assets;
+
         let urls = load_asset_urls();
+        if Assets::get("manifest.json").is_none() {
+            // Clean checkout: no built frontend, so the documented
+            // fallback is the unhashed defaults (see load_asset_urls
+            // and pkgs/id/build.rs). The test must not require a build.
+            assert_eq!(urls.main_js, "/assets/main.js");
+            assert_eq!(urls.styles_css, "/assets/styles.css");
+            return;
+        }
         // Should load hashed URLs from manifest (name.hash.ext format)
         // Check that main_js has at least two dots (name.hash.js)
         let js_dots = urls.main_js.matches('.').count();
@@ -1317,8 +1663,8 @@ mod publication_mounts_tests {
     fn lookup_matches_whole_segments_and_prefers_the_longest_mount() {
         let mounts = PublicationMounts::new();
         assert_eq!(mounts.lookup("/prog"), None);
-        mounts.mount("arena", "/prog");
-        mounts.mount("deep", "/prog/deep");
+        mounts.mount("arena", "/prog").unwrap();
+        mounts.mount("deep", "/prog/deep").unwrap();
         assert_eq!(
             mounts.lookup("/prog"),
             Some(("/prog".to_owned(), "arena".to_owned()))
@@ -1337,17 +1683,160 @@ mod publication_mounts_tests {
     }
 
     #[test]
-    fn root_mount_governs_everything_and_unmount_reports_absence() {
+    fn root_mount_is_refused_as_a_reserved_shadow_and_unmount_reports_absence() {
         let mounts = PublicationMounts::new();
-        mounts.mount("arena", "/");
-        assert_eq!(
-            mounts.lookup("/anything/at/all"),
-            Some(("/".to_owned(), "arena".to_owned()))
-        );
-        mounts.unmount("/").unwrap();
+        // Phase 4: `/` is canonical, but mounting there shadows the
+        // reserved Explorer route `/` (and with it every route), so
+        // the table refuses it and nothing is mounted.
+        let error = mounts.mount("arena", "/").unwrap_err().to_string();
+        assert!(error.contains("reserved Explorer route /"), "{error}");
+        assert_eq!(mounts.lookup("/anything/at/all"), None);
         assert_eq!(mounts.lookup("/anything"), None);
         // The MountSink contract: unmounting what is not mounted is
         // an error (the route was not removed), never a silent Ok.
         assert!(mounts.unmount("/").is_err());
+    }
+
+    #[test]
+    fn canonical_mount_paths_are_accepted() {
+        for (given, canonical) in [
+            ("/", "/"),
+            ("/prog", "/prog"),
+            ("/games/arena", "/games/arena"),
+            // A `.` inside a segment is not a `.` segment.
+            ("/v1.2/prog", "/v1.2/prog"),
+        ] {
+            assert_eq!(
+                super::canonicalize_mount_path(given).unwrap(),
+                canonical,
+                "{given}"
+            );
+        }
+        // Target resolution by world name: the table stores the
+        // world name the mount was made with.
+        let mounts = PublicationMounts::new();
+        mounts.mount("arena", "/prog").unwrap();
+        assert_eq!(
+            mounts.snapshot().get("/prog").map(String::as_str),
+            Some("arena")
+        );
+    }
+
+    #[test]
+    fn noncanonical_mount_paths_are_rejected_and_mount_nothing() {
+        let mounts = PublicationMounts::new();
+        for path in [
+            "",
+            "prog",
+            "prog/",
+            "/prog/",
+            "//prog",
+            "/prog//deep",
+            "/./prog",
+            "/prog/./deep",
+            "/../prog",
+            "/prog/../deep",
+            "/pro g",
+            "/prog\t",
+            "/prog?x=1",
+            "/prog#frag",
+            "/prog\\deep",
+            "/prog\u{7f}",
+        ] {
+            assert!(
+                super::canonicalize_mount_path(path).is_err(),
+                "canonicalize {path:?}"
+            );
+            assert!(mounts.mount("arena", path).is_err(), "mount {path:?}");
+        }
+        // An empty world name names no target either.
+        assert!(mounts.mount("", "/prog").is_err());
+        assert!(mounts.mount("  ", "/prog").is_err());
+        assert!(mounts.snapshot().is_empty());
+    }
+
+    #[test]
+    fn reserved_explorer_routes_are_refused() {
+        let mounts = PublicationMounts::new();
+        for path in [
+            "/",
+            "/.well-known",
+            "/.well-known/id-transport-advertisement",
+            "/api",
+            "/api/files",
+            "/assets",
+            "/assets/app.js",
+            "/blob",
+            "/blocks",
+            "/edit",
+            "/edit/some-file",
+            "/explore",
+            "/files",
+            "/groups",
+            "/hash",
+            "/invite",
+            "/peers",
+            "/settings",
+            "/view",
+            "/world",
+            "/world/anything",
+            "/ws",
+            "/ws/world",
+        ] {
+            let error = mounts.mount("arena", path).unwrap_err().to_string();
+            assert!(error.contains("reserved Explorer route"), "{path}: {error}");
+        }
+        assert!(mounts.snapshot().is_empty());
+        // Near misses are not segment-boundary shadows and mount fine.
+        for path in ["/worlds", "/apis", "/asset", "/world-page", "/wsx"] {
+            mounts.mount("arena", path).unwrap();
+        }
+    }
+
+    #[test]
+    fn remounting_a_path_to_a_different_world_is_refused() {
+        let mounts = PublicationMounts::new();
+        mounts.mount("arena", "/prog").unwrap();
+        // Same world at the same path: idempotent.
+        mounts.mount("arena", "/prog").unwrap();
+        // A different world at the same path: refused, and the
+        // original mount is untouched (never silently replaced).
+        let error = mounts.mount("deep", "/prog").unwrap_err().to_string();
+        assert!(
+            error.contains("already mounted to world 'arena'"),
+            "{error}"
+        );
+        assert_eq!(
+            mounts.lookup("/prog"),
+            Some(("/prog".to_owned(), "arena".to_owned()))
+        );
+        // A nested mount for a different world is not a conflict.
+        mounts.mount("deep", "/prog/deep").unwrap();
+        assert_eq!(
+            mounts.lookup("/prog/deep"),
+            Some(("/prog/deep".to_owned(), "deep".to_owned()))
+        );
+    }
+
+    #[test]
+    fn lookup_isolates_sibling_mounts_on_segment_boundaries() {
+        let mounts = PublicationMounts::new();
+        mounts.mount("arena", "/prog").unwrap();
+        mounts.mount("solo", "/solo").unwrap();
+        // Each mount resolves only its own subtree, to its own world.
+        assert_eq!(
+            mounts.lookup("/prog/run"),
+            Some(("/prog".to_owned(), "arena".to_owned()))
+        );
+        assert_eq!(
+            mounts.lookup("/solo/run"),
+            Some(("/solo".to_owned(), "solo".to_owned()))
+        );
+        // A path merely string-prefixed by a mount is outside it:
+        // it reaches neither that mount nor any sibling.
+        assert_eq!(mounts.lookup("/prog2"), None);
+        assert_eq!(mounts.lookup("/program"), None);
+        assert_eq!(mounts.lookup("/sol"), None);
+        assert_eq!(mounts.lookup("/other"), None);
     }
 }

@@ -23,7 +23,9 @@
 //! the RPC/SQL call; the broker is the trust boundary for
 //! non-CLI callers):
 //!
-//!   max_attempts (either copy)  integer 1..=1000; the two copies must agree
+//!   max_attempts (either copy)  integer 1..=1000; the packet/row copy is
+//!                               the single source of truth — the payload
+//!                               copy is a mirror, never compared (#10648)
 //!   not_before (packet + park/revive flags)
 //!                               RFC 3339 string, at most 366 days in the future
 //!   priority                    one of 10, 20, 30, 40, 50, 70, 90
@@ -182,6 +184,16 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
         if !ok {
             errs.push(format!("payload.{f}: must be a positive integer"));
         }
+    }
+    // #3418: optional minimum uninterrupted budget to reach the next
+    // safe checkpoint. Absent/null means no requirement (legacy rows
+    // stay claimable as today); when present it must be a positive
+    // integer. No upper bound: a 5256-class 120-minute requirement
+    // (and larger future ones) must be declarable.
+    match get("required_budget_minutes") {
+        None | Some(Value::Null) => {}
+        Some(Value::Number(n)) if n.as_i64().map(|v| v >= 1).unwrap_or(false) => {}
+        _ => errs.push("payload.required_budget_minutes: must be a positive integer".to_string()),
     }
     if let Some(value) = get("max_attempts") {
         if !valid_max_attempts(value) {
@@ -487,14 +499,20 @@ fn match_dedupe(key: &str) -> Option<DedupeMatch> {
                         // Shape YYYY-Www plus a real ISO week (01..=53):
                         // W00/W99 name no week, so a key spelled with one can
                         // never dedupe against a real week's key (#5482).
-                        let week_ok = week.len() == 8
-                            && all_digits(&week[..4])
-                            && week.as_bytes()[4] == b'-'
+                        //
+                        // Every positional check reads raw bytes rather than
+                        // string slices: a length of 8 can be reached with a
+                        // multibyte character straddling offset 4, and slicing
+                        // a `str` there panics the calling thread (#10760).
+                        let week_ok = wb.len() == 8
+                            && wb[..4].iter().all(u8::is_ascii_digit)
+                            && wb[4] == b'-'
                             && wb[5] == b'W'
-                            && all_digits(&week[6..])
-                            && week[6..]
-                                .parse::<u32>()
-                                .is_ok_and(|w| (1..=53).contains(&w));
+                            && wb[6..].iter().all(u8::is_ascii_digit)
+                            && std::str::from_utf8(&wb[6..])
+                                .ok()
+                                .and_then(|digits| digits.parse::<u32>().ok())
+                                .is_some_and(|w| (1..=53).contains(&w));
                         if slug_ok && week_ok {
                             return Some(DedupeMatch {
                                 family: fam.into(),
@@ -892,7 +910,14 @@ pub fn validate_not_before(value: &Value, field: &str) -> Result<(), String> {
 /// validator cap of 100 was never raised to match, so the claim path
 /// quarantined the fleet's own packets. Both max_attempts copies
 /// (packet + payload) validate against this ceiling, and the error
-/// strings name it, so the bound cannot drift between copies again.
+/// strings name it. Agreement between the copies is NOT required
+/// (#10648): the packet/row copy is the single source of truth and
+/// the payload copy is a mirror, normalized at enqueue by
+/// task_from_packet. The #6448 agreement rule assumed both copies
+/// are written once at creation; the #8973 creation-default
+/// alignment (d67e7bfbf, 2026-11-14) updated row copies in bulk
+/// while payload copies kept their old values, and the agreement
+/// rule quarantined 449 tasks for the resulting split.
 pub(crate) const MAX_ATTEMPTS_CEILING: u64 = 1000;
 
 /// The default max_attempts for a newly created task (#8973).
@@ -929,10 +954,23 @@ pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
             errors.push(format!(
                 "packet.max_attempts: must be an integer between 1 and {MAX_ATTEMPTS_CEILING}"
             ));
-        } else if let Some(other) = payload.get("max_attempts") {
-            if valid_max_attempts(other) && value != other {
-                errors.push("packet.max_attempts: must match payload.max_attempts".to_string());
-            }
+        }
+        // #10648: NO agreement check against payload.max_attempts.
+        // The packet copy (which becomes the task row) is the single
+        // source of truth; the payload copy is a mirror that
+        // task_from_packet normalizes at enqueue. A mirror that
+        // disagrees is stale data, not an invalid packet — under the
+        // old rule a bulk row update split the copies and the claim
+        // guard quarantined 449 tasks for it (2026-11-14..16).
+    }
+    // #3418: top-level required_budget_minutes is the packet copy
+    // (task_from_packet normalizes it into the payload mirror at
+    // enqueue, same #10648 shape as max_attempts). Absent/null
+    // means no requirement; a present value must be a positive
+    // integer.
+    if let Some(value) = obj.get("required_budget_minutes").filter(|v| !v.is_null()) {
+        if !matches!(value, Value::Number(n) if n.as_i64().map(|v| v >= 1).unwrap_or(false)) {
+            errors.push("packet.required_budget_minutes: must be a positive integer".to_string());
         }
     }
 
@@ -1019,13 +1057,67 @@ pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
 
 /// task_from_packet: the agent.tasks row shape the enqueue RPC takes.
 pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
-    let payload = packet.get("payload").cloned().unwrap_or(json!({}));
+    let mut payload = packet.get("payload").cloned().unwrap_or(json!({}));
     let max_attempts = packet
         .get("max_attempts")
         .filter(|v| !v.is_null())
         .or_else(|| payload.get("max_attempts"))
         .cloned()
         .unwrap_or(json!(TASK_DEFAULT_MAX_ATTEMPTS));
+    // #10648: the row built below is the single source of truth for
+    // max_attempts; normalize the stored payload copy to the selected
+    // value so the two copies are born aligned and can never split
+    // the way the 2026-11-14 bulk row update split them. Skipped if
+    // the mirror would push the payload past the size ceiling —
+    // a stale mirror is harmless now that validation never compares
+    // the copies, but an over-ceiling payload would fail the claim
+    // guard's size check.
+    let prior_mirror = payload.get("max_attempts").cloned();
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("max_attempts".to_string(), max_attempts.clone());
+    }
+    let size = serde_json::to_string(&payload)
+        .map(|s| s.len())
+        .unwrap_or(0);
+    if size > PAYLOAD_MAX_BYTES {
+        if let Some(obj) = payload.as_object_mut() {
+            match prior_mirror {
+                Some(v) => {
+                    obj.insert("max_attempts".to_string(), v);
+                }
+                None => {
+                    obj.remove("max_attempts");
+                }
+            }
+        }
+    }
+    // #3418: the packet-level required_budget_minutes (when present
+    // and valid) is the selected requirement; otherwise the payload
+    // copy stands. Mirror the selected value into the payload so the
+    // column stamp and the JSONB copy are born aligned (#10648
+    // shape). Absent in both places: no requirement (NULL downstream,
+    // legacy claim behavior). NO default from timebox_minutes here:
+    // stamping a default would make every new task requirement-
+    // bearing while deployed helpers predate --remaining-budget-
+    // minutes and could then claim nothing (#4712 deployment lag).
+    let required_budget = packet
+        .get("required_budget_minutes")
+        .filter(|v| !v.is_null())
+        .or_else(|| {
+            payload
+                .get("required_budget_minutes")
+                .filter(|v| !v.is_null())
+        })
+        .cloned()
+        .unwrap_or(Value::Null);
+    if !required_budget.is_null() {
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert(
+                "required_budget_minutes".to_string(),
+                required_budget.clone(),
+            );
+        }
+    }
     json!({
         "queue": queue,
         "title": packet.get("title").cloned().unwrap_or(Value::Null),
@@ -1035,6 +1127,7 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
         "priority": packet.get("priority").cloned().unwrap_or(Value::Null),
         "not_before": packet.get("not_before").cloned().unwrap_or(Value::Null),
         "max_attempts": max_attempts,
+        "required_budget_minutes": required_budget,
     })
 }
 
@@ -1073,14 +1166,23 @@ mod tests {
                 );
             }
         }
+        // #10648: split copies are NOT an error — the packet copy is
+        // the single source of truth (the payload copy here is 4),
+        // the row takes the packet value, and task_from_packet
+        // normalizes the stored payload mirror to it.
         let mut packet = base.clone();
         packet["max_attempts"] = json!(5);
         assert!(
-            validate_packet(&packet)
+            !validate_packet(&packet)
                 .0
                 .iter()
-                .any(|e| e.contains("must match"))
+                .any(|e| e.contains("max_attempts")),
+            "{}",
+            validate_packet(&packet).0.join("; ")
         );
+        let row = task_from_packet(&packet, "q");
+        assert_eq!(row["max_attempts"], 5);
+        assert_eq!(row["payload"]["max_attempts"], 5);
         for n in [1, 4, 100, 1000] {
             packet["max_attempts"] = json!(n);
             packet["payload"]["max_attempts"] = json!(n);
@@ -1113,6 +1215,163 @@ mod tests {
         assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 1000);
         packet["payload"]["max_attempts"] = json!(7);
         assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 7);
+    }
+
+    #[test]
+    fn required_budget_minutes_validation_and_selection_3418() {
+        // #3418 (#4712): optional at both levels; absent/null in both
+        // means no requirement (NULL downstream, legacy claim
+        // behavior). Present values must be positive integers; the
+        // packet copy wins and the payload mirror is normalized.
+        let payload = payload_with(json!({"issue": {"number": 4712}}));
+        let base = json!({"title": "test", "priority": 30, "payload": payload});
+        // Absent everywhere validates clean and selects NULL.
+        assert!(
+            !validate_packet(&base)
+                .0
+                .iter()
+                .any(|e| e.contains("required_budget")),
+            "{}",
+            validate_packet(&base).0.join("; ")
+        );
+        let row = task_from_packet(&base, "q");
+        assert_eq!(row["required_budget_minutes"], Value::Null);
+        assert!(row["payload"].get("required_budget_minutes").is_none());
+        // Explicit null at either level is also "no requirement".
+        for top in [true, false] {
+            let mut packet = base.clone();
+            if top {
+                packet["required_budget_minutes"] = Value::Null;
+            } else {
+                packet["payload"]["required_budget_minutes"] = Value::Null;
+            }
+            assert!(
+                !validate_packet(&packet)
+                    .0
+                    .iter()
+                    .any(|e| e.contains("required_budget")),
+                "{packet}"
+            );
+            assert_eq!(
+                task_from_packet(&packet, "q")["required_budget_minutes"],
+                Value::Null
+            );
+        }
+        // Bad values fail at their own level.
+        for bad in [json!(0), json!(-5), json!(1.5), json!("120"), json!(-1)] {
+            for top in [true, false] {
+                let mut packet = base.clone();
+                if top {
+                    packet["required_budget_minutes"] = bad.clone();
+                } else {
+                    packet["payload"]["required_budget_minutes"] = bad.clone();
+                }
+                let field = if top {
+                    "packet.required_budget_minutes"
+                } else {
+                    "payload.required_budget_minutes"
+                };
+                assert!(
+                    validate_packet(&packet).0.iter().any(|e| e.contains(field)),
+                    "{packet}"
+                );
+            }
+        }
+        // 5256-class 120-minute requirement (above the 45-min
+        // standard timebox) validates clean — no upper bound.
+        for good in [1, 10, 45, 120, 1000] {
+            let mut packet = base.clone();
+            packet["payload"]["required_budget_minutes"] = json!(good);
+            assert!(
+                !validate_packet(&packet)
+                    .0
+                    .iter()
+                    .any(|e| e.contains("required_budget")),
+                "{packet}"
+            );
+            let row = task_from_packet(&packet, "q");
+            assert_eq!(row["required_budget_minutes"], good);
+            assert_eq!(row["payload"]["required_budget_minutes"], good);
+        }
+        // Packet copy wins; payload mirror normalized to it.
+        let mut packet = base.clone();
+        packet["required_budget_minutes"] = json!(120);
+        packet["payload"]["required_budget_minutes"] = json!(10);
+        assert!(
+            !validate_packet(&packet)
+                .0
+                .iter()
+                .any(|e| e.contains("required_budget")),
+            "{}",
+            validate_packet(&packet).0.join("; ")
+        );
+        let row = task_from_packet(&packet, "q");
+        assert_eq!(row["required_budget_minutes"], 120);
+        assert_eq!(row["payload"]["required_budget_minutes"], 120);
+    }
+
+    #[test]
+    fn split_max_attempts_copies_never_quarantine_per_10648() {
+        // Regression oracle: the 2026-11-16 blocked-pile audit census
+        // — 449 tasks quarantined by the claim guard because the
+        // #8973 bulk alignment set the row copy to 1000 while payload
+        // copies kept 2/3/4/6. Every such split must now validate
+        // clean, and the stored row must carry the row value in both
+        // copies (payload mirror normalized at enqueue).
+        for stale in [2, 3, 4, 6] {
+            let payload = payload_with(json!({"issue": {"number": 10648}}));
+            let mut packet = json!({"title": "test", "priority": 30, "payload": payload});
+            packet["payload"]["max_attempts"] = json!(stale);
+            packet["max_attempts"] = json!(1000);
+            let (errors, _w) = validate_packet(&packet);
+            assert!(
+                !errors.iter().any(|e| e.contains("max_attempts")),
+                "stale payload copy {stale} must not error: {errors:?}"
+            );
+            let row = task_from_packet(&packet, "q");
+            assert_eq!(row["max_attempts"], 1000);
+            assert_eq!(row["payload"]["max_attempts"], 1000);
+        }
+        // The mirror image: a producer still sending the old packet
+        // value beside a newer payload copy — the packet copy wins,
+        // because it is the one the row (and the claim predicate's
+        // attempts cap) reads.
+        let payload = payload_with(json!({"issue": {"number": 10648}}));
+        let mut packet = json!({"title": "test", "priority": 30, "payload": payload});
+        packet["payload"]["max_attempts"] = json!(1000);
+        packet["max_attempts"] = json!(4);
+        assert!(
+            !validate_packet(&packet)
+                .0
+                .iter()
+                .any(|e| e.contains("max_attempts"))
+        );
+        let row = task_from_packet(&packet, "q");
+        assert_eq!(row["max_attempts"], 4);
+        assert_eq!(row["payload"]["max_attempts"], 4);
+    }
+
+    proptest! {
+        /// Invariant (#10648): for ANY two in-range copies, validation
+        /// never raises a max_attempts error — disagreement between
+        /// the copies is not invalidity. Oracle: the
+        /// single-source-of-truth rule (the packet/row copy governs).
+        #[test]
+        fn max_attempts_copies_may_disagree_freely(
+            packet_copy in 1u64..=1000,
+            payload_copy in 1u64..=1000,
+        ) {
+            let payload = payload_with(json!({"issue": {"number": 10648}}));
+            let mut packet = json!({"title": "test", "priority": 30, "payload": payload});
+            packet["max_attempts"] = json!(packet_copy);
+            packet["payload"]["max_attempts"] = json!(payload_copy);
+            let (errors, _w) = validate_packet(&packet);
+            prop_assert!(
+                !errors.iter().any(|e| e.contains("max_attempts")),
+                "copies {}/{} errored: {:?}",
+                packet_copy, payload_copy, errors
+            );
+        }
     }
 
     #[test]
@@ -1281,6 +1540,26 @@ mod tests {
                 .is_none()
         );
     }
+    // A week field whose multibyte character straddles a fixed offset used
+    // to reach `&week[4..]` on a non-char boundary and panic (#10760). It must
+    // simply fail the shape check.
+    #[test]
+    fn maintenance_week_with_multibyte_bytes_does_not_panic() {
+        assert!(
+            match_dedupe("repo-health:v1:maintenance:developing-today/code:weekly:202\u{e9}W01")
+                .is_none()
+        );
+        assert!(
+            match_dedupe("repo-health:v1:maintenance:developing-today/code:weekly:202\u{e9}W0")
+                .is_none()
+        );
+        // Controls: the ASCII neighbours still classify as before.
+        assert!(
+            match_dedupe("repo-health:v1:maintenance:developing-today/code:weekly:2026-W01")
+                .is_some()
+        );
+    }
+
     fn valid_packet() -> Value {
         json!({
             "title": "t",

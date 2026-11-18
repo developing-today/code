@@ -7,6 +7,12 @@
 # does not depend on any CLI session state. Idempotent: items whose
 # title already exists in the target collection are skipped.
 set -euo pipefail
+# Argument contract (#3352): this script takes no command-line
+# arguments; anything given is a usage error before any work runs.
+if [ "$#" -gt 0 ]; then
+  echo "seed.sh: unexpected argument '$1'; usage: ./seed.sh" >&2
+  exit 2
+fi
 
 cd "$(dirname "$0")"
 SECRETS_FILE="${PM_STACK_SECRETS:-$PWD/../../secrets/pm-stack.sops.yaml}"

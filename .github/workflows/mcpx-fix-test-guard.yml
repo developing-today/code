@@ -11,13 +11,10 @@ name: mcpx-fix-test-guard
 # new check appears for them.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/mcpx/**"
-      - ".github/scripts/check-mcpx-fix-test.sh"
-      - ".github/scripts/check-mcpx-fix-test.test.sh"
-      - ".github/workflows/mcpx-fix-test-guard.yml"
+  schedule:
+    # Nightly instead of on every push to main (Drew, 2026-11-16; see
+    # .github/ci-policy.md "Nightly main CI").
+    - cron: "17 7 * * *"
   workflow_dispatch:
 
 permissions:

@@ -109,6 +109,13 @@
       })
       # Provides pkgs.openclaw + pkgs.openclawPackages for home/openclaw.
       inputs.nix-openclaw.overlays.default
+      # antigravity-cli (agy) from the auto-tracking flake: newest upstream
+      # (1.5.9 as of 2026-11-16) in place of the fleet pin's 1.4.8 (code#10772).
+      # NOTE: this list is the ONLY live overlay path -- nixos/nixpkgs sets
+      # nixpkgs.pkgs explicitly, which bypasses the nixpkgs.overlays option,
+      # so the same overlay declared in nixos/environment/default.nix is dead.
+      # Drew's order: agy tracks the newest Google release, not the pin.
+      inputs.antigravity-cli-nix.overlays.default
       # inputs.waybar.overlays.default # ?? !! style.css
       # (final: prev: { omnix = inputs.omnix.packages.${system}.default; })
     ];

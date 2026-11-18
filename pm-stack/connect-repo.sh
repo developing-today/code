@@ -19,6 +19,25 @@
 # (task counts are read from Kaneo's database). Secrets are read from
 # ../secrets/pm-stack.sops.yaml and never printed.
 set -euo pipefail
+# Argument contract (#3352): `status` (the default) takes nothing more,
+# `connect` takes exactly one non-empty slug; anything else is a usage
+# error before any work runs.
+connect_repo_usage() {
+  echo "connect-repo.sh: $1; usage: $0 status | connect <slug>" >&2
+  exit 2
+}
+case "${1:-status}" in
+status)
+  [ "$#" -le 1 ] || connect_repo_usage "unexpected argument '$2' after status"
+  ;;
+connect)
+  [ "$#" -ge 2 ] && [ -n "$2" ] || connect_repo_usage "connect needs a project slug"
+  [ "$#" -le 2 ] || connect_repo_usage "unexpected argument '$3' after connect $2"
+  ;;
+*)
+  connect_repo_usage "unknown command '$1'"
+  ;;
+esac
 
 cd "$(dirname "$0")"
 STACK_DIR="$PWD"

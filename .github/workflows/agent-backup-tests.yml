@@ -28,12 +28,10 @@ name: agent-backup tests
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/agent-backup/**"
-      - "home/common/default.nix"
-      - ".github/workflows/agent-backup-tests.yml"
+  schedule:
+    # Nightly instead of on every push to main (Drew, 2026-11-16; see
+    # .github/ci-policy.md "Nightly main CI").
+    - cron: "17 7 * * *"
 
 permissions:
   contents: read

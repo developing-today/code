@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
+import { resolveHome } from './home-dir.mjs';
 
 // #2953 (define, don't assign): store an externally-spelled key with
 // define semantics, so "__proto__" becomes an own property instead of
@@ -39,11 +40,11 @@ const ROOT_DIR = path.resolve(import.meta.dirname, '..');
 // is the only home resolution. The old `|| '/home/user'` fallback was
 // a hardcoded-user substitute directory; unset/empty HOME now fails
 // loudly naming HOME instead of syncing another user's config/state.
-const HOME_DIR = process.env.HOME;
-if (!HOME_DIR) {
-  console.error(
-    '[sync-models] Error: HOME is not set or is empty: sync-models requires a non-empty HOME to resolve its config/state paths (home-resolution contract, issues #5762/#5763)',
-  );
+let HOME_DIR;
+try {
+  HOME_DIR = resolveHome(process.env, 'sync-models (config/state paths)');
+} catch (err) {
+  console.error(`[sync-models] Error: ${err.message}`);
   process.exit(2);
 }
 // Config resolution (#591, #4544): the model catalogs this script maintains
@@ -97,6 +98,23 @@ async function fetchModelsDev() {
 // port is logged rather than passed as a flag, and an HTTPS listener is logged
 // the same way, so try each candidate port with each candidate token and keep
 // the first one that returns a catalog.
+class LiveCatalogShapeError extends Error {}
+
+function parseLiveCatalogBody(body) {
+  const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+  const describe = (value) => (value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value);
+  if (!isObject(body)) {
+    throw new LiveCatalogShapeError(`language-server GetAvailableModels: expected a JSON object, got ${describe(body)}`);
+  }
+  if (!isObject(body.response)) {
+    throw new LiveCatalogShapeError(`language-server GetAvailableModels: response must be an object, got ${describe(body.response)}`);
+  }
+  if (!isObject(body.response.models)) {
+    throw new LiveCatalogShapeError(`language-server GetAvailableModels: response.models must be an object, got ${describe(body.response.models)}`);
+  }
+  return body.response.models;
+}
+
 async function fetchLiveCatalog() {
   const tokens = [];
   const ports = [];
@@ -134,9 +152,11 @@ async function fetchLiveCatalog() {
           signal: AbortSignal.timeout(3000)
         });
         if (!res.ok) continue;
-        const models = (await res.json()).response?.models || {};
+        const models = parseLiveCatalogBody(await res.json());
         if (Object.keys(models).length > 0) return models;
-      } catch {}
+      } catch (err) {
+        if (err instanceof LiveCatalogShapeError) throw err;
+      }
     }
   }
   return null;
@@ -171,7 +191,10 @@ async function discoverAntigravityModels() {
 
   // Try 2: agy CLI models command
   try {
-    const agyOut = execSync('HOME=/home/user/.gemini/agy-proxy-env agy models 2>&1', { encoding: 'utf-8' });
+    const agyOut = execSync('agy models 2>&1', {
+      encoding: 'utf-8',
+      env: { ...process.env, HOME: path.join(HOME_DIR, '.gemini', 'agy-proxy-env') },
+    });
     const lines = agyOut.split('\n');
     for (const line of lines) {
       const trimmed = line.trim();

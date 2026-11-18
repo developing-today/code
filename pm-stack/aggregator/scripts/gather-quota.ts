@@ -107,7 +107,6 @@
 //      disables the Turso sink (default on; token resolved by name
 //      via the resolveBwsSecret plumbing:
 //      turso.fleet-platform-rw-token).
-import { existsSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { access, appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -117,7 +116,11 @@ import type { QuotaCurrentEntry, QuotaCurrentFile, QuotaGatherHeartbeat, Snapsho
 import {
   GATHERER_SOURCE,
   CLAUDE_CROSS_TICK_STATE_KEY,
+  CLAUDE_RETRY_BASE_MS,
+  CLAUDE_RETRY_MAX_ATTEMPTS,
   claudeCooldownMs,
+  claudeFailureKind,
+  claudeRetryDelayMs,
   isClaudeRateLimitFailure,
   parseClaudeCrossTick,
   serializeClaudeCrossTick,
@@ -135,6 +138,7 @@ import { SnapshotStore, isSnapshotRecord, snapshotKey } from "../src/snapshots.t
 import { safeProviderReason } from "../src/credential-lifecycle.ts";
 import { renewOpenDesignSession, type OpenDesignCredentialLike } from "../src/opendesign-renewal.ts";
 import { ensureLibDependencies } from "../src/lib-deps.ts";
+import { loadOpenChamberLib, resolveLibDir as resolveOpenChamberLib } from "../src/openchamber-lib.ts";
 import { readProviderAuthAlerts } from "../src/provider-auth-alerts.ts";
 import { renewMetaSession } from "../src/meta-renewal.ts";
 import { classEnabled, getAlertsStore } from "../src/alerts.ts";
@@ -144,28 +148,41 @@ const PKG = join(dirname(fileURLToPath(import.meta.url)), "..");
 const HOME = homedir();
 const HIDDEN = join(HOME, "workspace/goals/keep-the-four-repos-healthy/hidden_files");
 
-/** The OpenDesign keeper's credential-store accessors live in the
- * OpenChamber lib (the managed store's home). Store plumbing for ONE
- * credential the keeper maintains — never a quota reading path: all
- * readings come from the subcommand (see the header). */
-function resolveLibDir(): string {
-  const candidates = [
+/** Candidate checkouts for the OpenDesign keeper's managed credential
+ * store (the OpenChamber lib). Store plumbing for ONE credential the
+ * keeper maintains, never a quota reading path: all readings come from
+ * the subcommand (see the header). Each candidate must be a clean main
+ * checkout (src/openchamber-lib.ts), so a parked or stale checkout is
+ * rejected rather than imported. */
+function openChamberLibCandidates(): string[] {
+  return [
     process.env.OPENCHAMBER_LIB_DIR,
     join(HOME, "git/devtoday-openchamber/packages/web/server/lib"),
     join(HOME, "git/openchamber-fork/packages/web/server/lib"),
   ].filter((d): d is string => typeof d === "string" && d !== "");
-  for (const dir of candidates) {
-    if (existsSync(join(dir, "quota/index.js"))) return dir;
-  }
-  return candidates[0];
 }
-const libDir = resolveLibDir();
 const currentPath = process.env.QUOTA_CURRENT_PATH ?? join(PKG, "quota-current.json");
 const heartbeatPath = process.env.QUOTA_HEARTBEAT_PATH ?? join(PKG, "quota-gatherer-heartbeat.json");
 const statePath = process.env.QUOTA_GATHERER_STATE_PATH ?? join(PKG, "quota-gatherer-state.json");
 const snapshotsDir = process.env.QUOTA_SNAPSHOTS_DIR ?? join(PKG, "snapshots");
 const outboxPath = process.env.USAGE_SNAPSHOT_OUTBOX_PATH ?? null;
-const subcommandTimeoutMs = Number(process.env.QUOTA_SUBCOMMAND_TIMEOUT_MS ?? 240_000);
+/** Strict millisecond parse for boot-time env (#2835 env-number contract):
+ * digits only, 1..2^31-1, else fail naming the variable and the value
+ * instead of coercing NaN/negative/huge values into a fetch deadline. */
+function strictEnvMillis(name: string, raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw === "") return fallback;
+  if (/^[0-9]+$/.test(raw)) {
+    const value = Number(raw);
+    if (value >= 1 && value <= 2147483647) return value;
+  }
+  throw new Error(`${name}="${raw}" is not a valid millisecond count (expected an integer 1-2147483647)`);
+}
+
+const subcommandTimeoutMs = strictEnvMillis(
+  "QUOTA_SUBCOMMAND_TIMEOUT_MS",
+  process.env.QUOTA_SUBCOMMAND_TIMEOUT_MS,
+  240_000,
+);
 const OBSERVED_BY = "quota-gatherer";
 
 /** Providers always asked explicitly, by name, every tick: their
@@ -278,15 +295,6 @@ async function resolveBwsSecret(key: string): Promise<string | null> {
   }
 }
 
-/** Managed-credential accessors for the OpenDesign keeper (libDir). */
-interface OpenDesignCredentialsModule {
-  readManagedCredential: (providerId: string) => OpenDesignCredentialLike | null;
-  writeManagedCredential: (providerId: string, value: OpenDesignCredentialLike) => unknown;
-}
-interface OpenDesignProviderModule {
-  fetchOpenDesignQuota: (credential: OpenDesignCredentialLike) => Promise<unknown>;
-}
-
 /**
  * The OpenDesign session keeper run. Runs before the subcommand so a
  * credential renewed this tick is the one the tick's OpenDesign read
@@ -299,6 +307,10 @@ interface OpenDesignProviderModule {
 async function runOpenDesignRenewal(tickAt: string): Promise<void> {
   if (process.env.OPENDESIGN_RENEWAL_DISABLED === "1") return;
   try {
+    // Resolve first: a parked, dirty or non-main checkout is rejected
+    // here, before anything from it is installed or imported. The keeper
+    // then fails soft and the subcommand readings still run.
+    const lib = await resolveOpenChamberLib(openChamberLibCandidates());
     // #8759: the lib checkout is a plain clone; if its declared
     // dependencies were never installed, every import below fails
     // with "Cannot find package ..." and Bun caches that failure
@@ -322,16 +334,11 @@ async function runOpenDesignRenewal(tickAt: string): Promise<void> {
           }
         : undefined;
     await ensureLibDependencies({
-      libDir,
+      libDir: lib.dir,
       log: (line) => console.log("quota-gatherer: " + line),
       ...(install ? { install } : {}),
     });
-    const credentials = (await import(
-      join(libDir, "quota/credentials/providers.js")
-    )) as unknown as OpenDesignCredentialsModule;
-    const provider = (await import(
-      join(libDir, "quota/providers/opendesign.js")
-    )) as unknown as OpenDesignProviderModule;
+    const { credentials, provider } = await loadOpenChamberLib(lib);
     const state = await renewOpenDesignSession({
       readCredential: () => credentials.readManagedCredential("opendesign"),
       writeCredential: (value) => {
@@ -527,6 +534,13 @@ async function readState(): Promise<Map<string, string>> {
   return new Map();
 }
 
+/** #8725: within-tick Claude retry base delay override (tests set
+ * it near zero; production uses CLAUDE_RETRY_BASE_MS). */
+function claudeRetryBaseMs(): number {
+  const raw = Number(process.env.QUOTA_CLAUDE_RETRY_BASE_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : CLAUDE_RETRY_BASE_MS;
+}
+
 /** The subcommand invocation: QUOTA_SUBCOMMAND overrides the whole
  *  command (interim fork builds, tests); the default is the deployed
  *  opencode binary's quota subcommand. Explicit provider ids are
@@ -683,6 +697,69 @@ async function collectRuns(tickAt: string): Promise<ProviderRun[]> {
     if (id === "command-code" || id === "_commandcode") run = keepCommandCodePlanWindows(run);
     runs.push(run);
   }
+  // #8725: within-tick retry of the Claude leg. A 429 from the
+  // Anthropic usage endpoint used to fail the leg for the whole
+  // tick, leaving a stale row that downstream readers misread as a
+  // credential failure. The leg now re-asks the subcommand for
+  // _claude inside the same tick - bounded retries with jittered
+  // backoff honoring Retry-After - and only a persistent 429 falls
+  // through to the cross-tick retention in main, with the failure
+  // kind recorded there. Other providers are untouched.
+  const claudeIdx = runs.findIndex((r) => r.id === "_claude");
+  if (claudeIdx >= 0) {
+    const failureOf = (r: ProviderRun): string => r.error ?? r.entries.find((e) => e.error)?.error ?? "";
+    let run = runs[claudeIdx];
+    let attempt = 0;
+    while (
+      attempt < CLAUDE_RETRY_MAX_ATTEMPTS &&
+      !run.entries.some((e) => e.state === "ok" && entryHasMeasuredWindow(e)) &&
+      isClaudeRateLimitFailure(failureOf(run))
+    ) {
+      const delayMs = claudeRetryDelayMs(attempt, failureOf(run), Math.random, claudeRetryBaseMs());
+      console.log(
+        "quota-gatherer: _claude rate-limited - retry " +
+          (attempt + 1) +
+          "/" +
+          CLAUDE_RETRY_MAX_ATTEMPTS +
+          " in " +
+          delayMs +
+          "ms (#8725)",
+      );
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      const retryT0 = Date.now();
+      try {
+        const retryStdout = await execSubcommand(subcommandArgv(["_claude"]));
+        const retryResults = parseSubcommandResults(retryStdout, "claude retry").filter(
+          (r) => r.providerId === "_claude",
+        );
+        if (retryResults.length) {
+          run = finalizeRun(
+            "_claude",
+            retryResults.map((r) => entryFromResult(r, tickAt)),
+            retryT0,
+          );
+          runs[claudeIdx] = run;
+        }
+      } catch (err) {
+        console.log(
+          "quota-gatherer: _claude retry " +
+            (attempt + 1) +
+            " exec failed: " +
+            (err instanceof Error ? err.message : String(err)),
+        );
+      }
+      attempt++;
+    }
+    if (attempt > 0) {
+      console.log(
+        "quota-gatherer: _claude within-tick retries used=" +
+          attempt +
+          " recovered=" +
+          run.entries.some((e) => e.state === "ok" && entryHasMeasuredWindow(e)) +
+          " (#8725)",
+      );
+    }
+  }
   return runs;
 }
 
@@ -835,7 +912,7 @@ async function main(): Promise<number> {
         claudeMemoryDirty = true;
       }
       if (claudeMemory.lastGoodEntry && nowMs < claudeMemory.cooldownUntil) {
-        claudeRun.entries = markRetained([claudeMemory.lastGoodEntry], tickAt);
+        claudeRun.entries = markRetained([claudeMemory.lastGoodEntry], tickAt, claudeFailureKind(failureText));
         claudeRun.retained = true;
       }
     }
@@ -892,6 +969,7 @@ async function main(): Promise<number> {
       ms: run.ms,
       rows: run.entries.length,
       ...(run.error ? { error: safeProviderReason(run.error) } : {}),
+      ...(run.id === "_claude" && run.error ? { errorKind: claudeFailureKind(run.error) } : {}),
     };
     console.log(
       `quota-gatherer: ${run.id} ${run.state} ${run.ms}ms rows=${run.entries.length}${run.retained ? " retained-last-known" : ""}${run.error ? ` error=${safeProviderReason(run.error).slice(0, 140)}` : ""}`,

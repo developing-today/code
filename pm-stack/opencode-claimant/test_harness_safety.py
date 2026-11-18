@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Black-box regression tests for the offline harness, never the live claimant."""
+
 import os
 from pathlib import Path
 import shutil
@@ -19,8 +20,11 @@ class HarnessSafetyTests(unittest.TestCase):
             mode = home / ".local/state/opencode-claimant/mode"
             mode.parent.mkdir(parents=True)
             mode.write_bytes(b"live\noperator-sentinel\x00")
-            before = {str(p.relative_to(home)): p.read_bytes()
-                      for p in home.rglob("*") if p.is_file()}
+            before = {
+                str(p.relative_to(home)): p.read_bytes()
+                for p in home.rglob("*")
+                if p.is_file()
+            }
             source = ROOT
             if injected_test is not None:
                 source = base / "fixture"
@@ -31,14 +35,26 @@ class HarnessSafetyTests(unittest.TestCase):
                 (source / "test_claimant.py").write_text(injected_test)
                 (source / "test_poll.py").write_text("")
                 (source / "test/test_claimant.py").write_text("")
-            env = dict(os.environ, HOME=str(home),
-                       XDG_STATE_HOME=str(home / "state"),
-                       OPENCODE_AUTH_FILE=str(home / "auth-must-not-be-read"),
-                       OPENCODE_URL="http://127.0.0.1:1")
-            proc = subprocess.run(["bash", str(source / script), *arguments],
-                                  env=env, capture_output=True, text=True, timeout=30)
-            after = {str(p.relative_to(home)): p.read_bytes()
-                     for p in home.rglob("*") if p.is_file()}
+                (source / "test_prompt_constants.py").write_text("")
+            env = dict(
+                os.environ,
+                HOME=str(home),
+                XDG_STATE_HOME=str(home / "state"),
+                OPENCODE_AUTH_FILE=str(home / "auth-must-not-be-read"),
+                OPENCODE_URL="http://127.0.0.1:1",
+            )
+            proc = subprocess.run(
+                ["bash", str(source / script), *arguments],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            after = {
+                str(p.relative_to(home)): p.read_bytes()
+                for p in home.rglob("*")
+                if p.is_file()
+            }
             self.assertEqual(before, after, proc.stderr)
             return proc
 
@@ -63,11 +79,16 @@ class HarnessSafetyTests(unittest.TestCase):
             self.assertIn("forced failure", result.stderr)
 
     def test_caught_network_or_process_attempt_still_fails_runner(self):
-        for statement in ("import socket; socket.socket()",
-                          "import subprocess; subprocess.run(['must-not-execute'])"):
-            fixture = ("import unittest\nclass Guard(unittest.TestCase):\n"
-                       " def test_attempt(self):\n  try:\n   " + statement +
-                       "\n  except RuntimeError: pass\n")
+        for statement in (
+            "import socket; socket.socket()",
+            "import subprocess; subprocess.run(['must-not-execute'])",
+        ):
+            fixture = (
+                "import unittest\nclass Guard(unittest.TestCase):\n"
+                " def test_attempt(self):\n  try:\n   "
+                + statement
+                + "\n  except RuntimeError: pass\n"
+            )
             result = self.run_harness("test_slice1.sh", injected_test=fixture)
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertIn("Forbidden external I/O attempted", result.stderr)

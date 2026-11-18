@@ -1,14 +1,17 @@
 //! Alias display over tag claims (Phase 5, P5.7; owner decisions 2026-10-12).
 //!
 //! An alias is a tag claim named [`ALIAS_NAME`], whose value is the alias text. Its subject is the
-//! object's ID: a group's create event, or a user's first identity event (#160, not yet built).
+//! object's ID: a group's create event, or a user's first identity event (#160; the event
+//! kind and the subject resolution — identity event when present, else the log's earliest
+//! event — live in `id_store::identity`).
 //! This module is the one place that decides what a view shows for an object's aliases.
 //!
 //! The rules, in order:
 //!
 //! - A pet name, which this client's owner set, is shown first. It is local and adds no claim.
 //! - Otherwise the server's stored primary alias is shown, as one value. Only groups have one for
-//!   now, because a user's primary is keyed by account key and no user subject exists yet (#160).
+//!   now, because a user's primary is keyed by account key; resolving that key to the user's
+//!   subject is `id_store::identity::resolve_subject` (#160).
 //! - Otherwise, one alias claim is shown alone, and two or more are shown as contested. Nothing is
 //!   picked silently. The full set is always in [`Row::aliases`].
 //!

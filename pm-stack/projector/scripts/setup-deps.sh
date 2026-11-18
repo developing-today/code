@@ -7,6 +7,12 @@
 # needed packages from there into ./node_modules. When network is available,
 # `bun install` in this directory is the normal path instead.
 set -euo pipefail
+# Argument contract (#3352): this script takes no command-line
+# arguments; anything given is a usage error before any work runs.
+if [ "$#" -gt 0 ]; then
+  echo "setup-deps.sh: unexpected argument '$1'; usage: bash scripts/setup-deps.sh" >&2
+  exit 2
+fi
 cd "$(dirname "$0")/.."
 
 SRC="${LIBXML_SRC:-$HOME/.cache/opencode/npm/opencode-mem@latest/1792868233137/node_modules}"

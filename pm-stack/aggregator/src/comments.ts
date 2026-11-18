@@ -30,7 +30,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { timingSafeEqual } from "node:crypto";
 import { dirname } from "node:path";
-import type { DashAuthor, DashComment, DashCommentKind, RefKey } from "./model.ts";
+import type { CommentProvenance, DashAuthor, DashComment, DashCommentKind, RefKey } from "./model.ts";
 import { isValidRef, refUrl } from "./model.ts";
 import {
   archiveStoreBytes,
@@ -97,6 +97,9 @@ function commentRecordProblem(value: unknown): string | null {
   if (value.authorVerified !== undefined && typeof value.authorVerified !== "boolean") {
     return "authorVerified must be a boolean";
   }
+  if (value.provenance !== undefined && value.provenance !== "verified" && value.provenance !== "asserted-legacy") {
+    return "provenance must be verified or asserted-legacy";
+  }
   if (typeof value.body !== "string") return "body must be a string";
   if (
     value.kind === "message" &&
@@ -122,6 +125,15 @@ function commentRecordProblem(value: unknown): string | null {
       return "pending github comments require githubRef";
   }
   return null;
+}
+
+/**
+ * A comment's author provenance (#1253 §5). Records written before the
+ * marker existed carry an author that was only ever the caller's claim,
+ * so a missing marker reads as asserted-legacy, never as verified.
+ */
+export function commentProvenance(comment: Pick<DashComment, "provenance">): CommentProvenance {
+  return comment.provenance === "verified" ? "verified" : "asserted-legacy";
 }
 
 export function isObjectRef(s: unknown): s is string {
@@ -366,7 +378,10 @@ export class CommentsStore {
     return out;
   }
 
-  async add(input: NewComment, options: { authorVerified?: boolean } = {}): Promise<DashComment> {
+  async add(
+    input: NewComment,
+    options: { authorVerified?: boolean; provenance?: CommentProvenance } = {},
+  ): Promise<DashComment> {
     await this.load();
     const comment: DashComment = {
       id: newCommentId(),
@@ -374,6 +389,7 @@ export class CommentsStore {
       kind: input.kind,
       author: input.author,
       authorVerified: options.authorVerified === true,
+      provenance: options.provenance === "verified" ? "verified" : "asserted-legacy",
       body: input.body,
       createdAt: new Date().toISOString(),
       ...(input.kind === "message" ? { triageState: "new" as const } : {}),

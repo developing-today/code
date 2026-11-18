@@ -21,13 +21,10 @@ name: id bench
 # CI tier policy: see .github/ci-policy.md
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/id/**"
-      - ".github/workflows/id-bench.yml"
-      - ".github/scripts/id-bench-compare.sh"
-      - ".github/scripts/id-bench-compare.test.sh"
+  schedule:
+    # Nightly instead of on every push to main (Drew, 2026-11-16; see
+    # .github/ci-policy.md "Nightly main CI").
+    - cron: "17 7 * * *"
   workflow_dispatch:
 
 permissions:
@@ -74,6 +71,12 @@ jobs:
       # before the bench build so a broken script fails fast.
       - name: Test the compare script
         run: .github/scripts/id-bench-compare.test.sh
+
+      # The benchmark crate is a standalone workspace; its adapter and
+      # workload-oracle integration targets are not reached by pkgs/id's
+      # default-member test checks.
+      - name: Test benchmark adapters and workload oracle
+        run: nix develop ./pkgs/id --command cargo test --manifest-path ./pkgs/id/benchmarks/Cargo.toml --tests
 
       # Full-size workloads, exactly as the baselines were taken
       # (BASELINES.md): --quick numbers are smoke sizes and are never

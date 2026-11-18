@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -38,6 +37,7 @@ type env struct {
 	mcpx    string
 	fake    string
 	envVars []string
+	runner  runner
 }
 
 func newEnv(t *testing.T, cfgBody string) *env {
@@ -55,10 +55,11 @@ func newEnv(t *testing.T, cfgBody string) *env {
 	}
 
 	e := &env{
-		t:    t,
-		dir:  dir,
-		mcpx: mcpx,
-		fake: fake,
+		t:      t,
+		dir:    dir,
+		mcpx:   mcpx,
+		fake:   fake,
+		runner: binaryRunner{},
 		// The child environment is built from an allowlist, not inherited:
 		// ChildEnv drops everything the test does not control, so no caller
 		// variable reaches the binary whatever the caller's shell exported
@@ -118,6 +119,9 @@ func newEnv(t *testing.T, cfgBody string) *env {
 			// fails is how the leak went unnoticed for so long.
 			t.Logf("cleanup: mcpx stop --all failed: %v\n%s", err, out)
 		}
+		if err := testsupport.StopSupervisors(filepath.Join(e.dir, "state")); err != nil {
+			t.Errorf("cleanup: stop supervised servers: %v", err)
+		}
 	})
 	return e
 }
@@ -172,18 +176,20 @@ func (e *env) tryUnrecorded(args ...string) (string, error) {
 	return e.tryWithCoverage(e.mcpx, false, args...)
 }
 
+// tryWithCoverage runs one invocation through the env's runner
+// (#1980 stage 2). A different binary than the env's own — an upgrade
+// build, say — is a process by definition and always goes to the
+// binary runner, whatever the env's runner is.
 func (e *env) tryWithCoverage(bin string, record bool, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Dir = e.dir
-	cmd.Env = e.envVars
-	out, err := cmd.CombinedOutput()
-	err = harnessTimeout(ctx, err)
+	r := e.runner
+	if r == nil || bin != e.mcpx {
+		r = binaryRunner{bin: bin}
+	}
+	out, err := r.run(context.Background(), e, nil, args...)
 	if err == nil && record {
 		e.recordCLI(args)
 	}
-	return string(out), err
+	return out, err
 }
 
 // harnessTimeout names the harness's own deadline as the killer. Without it
@@ -200,16 +206,16 @@ func harnessTimeout(ctx context.Context, err error) error {
 // protocol server is spoken to.
 func (e *env) runStdin(stdin string, args ...string) string {
 	e.t.Helper()
-	cmd := exec.Command(e.mcpx, args...)
-	cmd.Dir = e.dir
-	cmd.Env = e.envVars
-	cmd.Stdin = strings.NewReader(stdin)
-	out, err := cmd.CombinedOutput()
+	r := e.runner
+	if r == nil {
+		r = binaryRunner{}
+	}
+	out, err := r.run(context.Background(), e, strings.NewReader(stdin), args...)
 	if err != nil {
 		e.t.Fatalf("mcpx %s failed: %v\n%s", strings.Join(args, " "), err, out)
 	}
 	e.recordCLI(args)
-	return string(out)
+	return out
 }
 
 func (e *env) run(args ...string) string {
@@ -1660,6 +1666,40 @@ func TestErrorsCarryStructuredFramesAndAString(t *testing.T) {
 	stack, _ := desc["stack"].(string)
 	if !strings.Contains(stack, "deliberate") || !strings.Contains(stack, "boom") {
 		t.Errorf("a readable stack string should be present too: %q", stack)
+	}
+}
+
+// Bun fidelity for the emitted shim (#8350). Two gaps closed in emit.go:
+// captureConsole picked the Deno inspect branch under Bun (Bun exposes a
+// Deno compatibility global), rendering values in Deno's format instead of
+// Bun's own; and captureFrames trusted Bun's V8 CallSite shim, which can
+// return a single unnamed frame for a stack Bun's default stack string
+// names correctly. The caller below is deliberately not a one-liner:
+// JavaScriptCore inlines trivial wrappers, and a frame that was inlined
+// away exists in no stack representation on any runtime -- that is the
+// documented Bun exception, and it is why TestCaptureFramesIsAvailableTo
+// Scripts keeps its one-liner assertion on the default runtime only.
+func TestBunCaptureFramesAndConsoleMatchTheRuntime(t *testing.T) {
+	testsupport.RequireBinary(t, "bun")
+	e := newEnv(t, oneServer)
+	out := e.run("exec", "--runtime", "bun", "--format", "bare",
+		`function worker(n) { let acc = 0; for (let i = 0; i < n; i++) acc += i * 3;
+		   const f = captureFrames(0, 4); return { acc, top: f[0]?.function }; }
+		 console.log(JSON.stringify(worker(5)));`)
+	if !strings.Contains(out, `"top":"worker"`) {
+		t.Errorf("captureFrames should name its caller under Bun:\n%s", out)
+	}
+	// Bun's console renders an object multi-line with a trailing comma and
+	// collapses values deeper than depth 2 to [Object ...]; the captured
+	// record must read the same way.
+	out = e.run("exec", "--runtime", "bun", "--format", "compact",
+		`console.info("shaped", { a: 1, b: [1, 2] });
+		 console.info("obj", { nested: { deep: [1, { x: 2 }] } });`)
+	if !strings.Contains(out, "b: [ 1, 2 ],") {
+		t.Errorf("console records under Bun should use Bun's own formatting:\n%s", out)
+	}
+	if !strings.Contains(out, "[Object ...]") {
+		t.Errorf("console records under Bun should collapse past depth 2 like Bun's console:\n%s", out)
 	}
 }
 
@@ -3243,7 +3283,9 @@ func TestConcurrentRunsOfOneScriptKeepTheirOwnLauncher(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func(i int) {
 			mark := fmt.Sprintf("LAUNCHER-%d", i)
-			o, err := e.try("run", "--launcher",
+			// The launcher is deliberately headerless, so it does not
+			// type check; run checks by default (#1868 point 4).
+			o, err := e.try("run", "--script-check", "off", "--launcher",
 				fmt.Sprintf("console.log(%q); @entry", mark), script)
 			out <- res{mark, o, err}
 		}(i)

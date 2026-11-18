@@ -413,6 +413,9 @@ func TestAClientThatDeclaredNothingStillReachesTheBroker(t *testing.T) {
 	e := askEnv(t)
 	e.run("refresh")
 	ep := e.endpoint(t)
+	// The second process below is the question's answerer; it is present
+	// before the question is raised, as a broker answerer must be (#2438).
+	beAnswerer(t, e)
 
 	type outcome struct {
 		body string

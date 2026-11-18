@@ -48,6 +48,10 @@ mod secrets;
 #[cfg(feature = "gh")]
 mod gh;
 
+#[cfg(feature = "gh")]
+mod gh_cache;
+mod gh_closure;
+
 #[allow(dead_code)]
 // the derivation runs in build.rs (which includes this module by path); the binary itself consumes only the baked FLEET_DERIVED_VERSION value, plus these unit tests
 mod derived_version;
@@ -729,6 +733,18 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
         println!("{}", fleet_search::serve::SERVE_USAGE);
         return EXIT_OK;
     }
+    // The proxy role under its serve spelling has its own usage
+    // (SERVE_PROXY_USAGE, #6770): `fleet serve proxy --help` asks for
+    // the role's help, not the serve domain's — answer it before the
+    // generic interception below, the same carve-out the search role
+    // gets above (#6400).
+    if d.name == "serve"
+        && args.first().map(|s| s.as_str()) == Some("proxy")
+        && args.get(1).is_some_and(|a| is_help_flag(a))
+    {
+        println!("{SERVE_PROXY_USAGE}");
+        return EXIT_OK;
+    }
     // Domain help is registry data: always available, even where the
     // domain itself is not (§3).
     if wants_domain_help(d, args) {
@@ -830,6 +846,12 @@ fn run_domain(surface: &Surface, d: &Domain, args: &[String], invoked_as: &str) 
             #[cfg(feature = "secrets")]
             if d.name == "secrets" {
                 return secrets::run(&surface.config, args);
+            }
+            // developing-today/code#10796: the laptop-agent domain runs for
+            // real — the transport ladder and the verbs over the laptop daemon.
+            #[cfg(feature = "laptop-agent")]
+            if d.name == "laptop-agent" {
+                return fleet_laptop_agent::cli::run(&surface.config, args);
             }
             // code#8887: the gh domain runs for real — the real
             // `gh` binary as a passthrough under the token

@@ -21,6 +21,12 @@
 # Overrides: RFA_CONFIG (config path), RFA_GRAPHQL_URL (endpoint),
 # RFA_REPOS_DIR (clone root, default ./repos next to the config).
 set -euo pipefail
+# Argument contract (#3352): this script takes no command-line
+# arguments; anything given is a usage error before any work runs.
+if [ "$#" -gt 0 ]; then
+  echo "apply-config.sh: unexpected argument '$1'; usage: [DRY_RUN=1] ./apply-config.sh (dry run is DRY_RUN=1, not a flag)" >&2
+  exit 2
+fi
 
 cd "$(dirname "$0")"
 CONFIG="${RFA_CONFIG:-$PWD/config.json}"

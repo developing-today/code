@@ -224,6 +224,16 @@ func TypeCheckResolved(ctx context.Context, runtimeBin, entry string, mode TypeC
 // for checker errors and runtimes that cannot check. The switch policy uses
 // Deno as a checker only; it does not alter the runtime selected for execution.
 func TypeCheckWithPolicy(ctx context.Context, runtimeBin, entry string, mode TypeCheckMode, timeout time.Duration, configArgs []string, execDir, onError, onUnsupported string) *Report {
+	return TypeCheckWithPolicyExplicit(ctx, runtimeBin, entry, mode, timeout, configArgs, execDir, onError, onUnsupported, true)
+}
+
+// TypeCheckWithPolicyExplicit is TypeCheckWithPolicy with the caller's
+// explicitness: explicit says the check was actually requested (a setting
+// given in any spelling), as opposed to switched on by a per-command
+// default. The Deno-only notice under the warn policy is shown only for
+// an explicit check (#1868 point 4): a default-on run is quiet on
+// runtimes that strip types rather than checking them.
+func TypeCheckWithPolicyExplicit(ctx context.Context, runtimeBin, entry string, mode TypeCheckMode, timeout time.Duration, configArgs []string, execDir, onError, onUnsupported string, explicit bool) *Report {
 	r := &Report{}
 	if mode == TypeCheckOff || mode == "" {
 		return r
@@ -242,6 +252,13 @@ func TypeCheckWithPolicy(ctx context.Context, runtimeBin, entry string, mode Typ
 			}
 			checker = deno
 		default: // "warn" is also the zero-value policy for direct callers.
+			if !explicit {
+				// Nobody asked for this check: it is on by a
+				// per-command default, so the notice that it
+				// cannot run here would be noise on every
+				// bun/node run. The check is simply skipped.
+				return r
+			}
 			r.Add(Problem{
 				What:  "script checking is only available under Deno; " + base + " strips types rather than checking them",
 				Where: "script.check",

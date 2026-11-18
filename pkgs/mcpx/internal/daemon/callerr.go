@@ -111,7 +111,14 @@ type CallErrorBody struct {
 	// the write policy refused it. Empty for every other failure --
 	// a tool that ran and failed carries Upstream instead -- so a
 	// caller can branch on the gate without parsing Error's text.
-	Code        string                `json:"code,omitempty"`
+	Code string `json:"code,omitempty"`
+	// RefusalCode is the structured reason a gate refusal happened
+	// (#1927 item 6): the elicit.RefusalCode of the ErrNotConfirmed
+	// behind Code "confirmation_required" -- e.g.
+	// "confirmation_unanswered" vs "elicitation_declined" -- so a
+	// caller can branch on why it was refused, not just that it was.
+	// Empty for every non-refusal failure and for allowed calls.
+	RefusalCode string                `json:"refusalCode,omitempty"`
 	Diagnostics []diagnose.Diagnostic `json:"diagnostics,omitempty"`
 	// Upstream is the JSON-RPC error the server answered with, when the
 	// failure was one. A relay needs the code and data, not the sentence:
@@ -139,9 +146,17 @@ const ClientCapsHeader = "X-Mcpx-Client-Capabilities"
 // mcpclient.WithCallerVersion.
 const CallerVersionHeader = "X-Mcpx-Caller-Protocol"
 
+// TaskExecutionHeader carries, on /v1/call and /v1/ask, that the call is
+// the inner call of a protocol task (SEP-2663); see
+// mcpclient.WithTaskExecution.
+const TaskExecutionHeader = "X-Mcpx-Task-Execution"
+
 // withClientCaps applies ClientCapsHeader and CallerVersionHeader to ctx.
 func withClientCaps(ctx context.Context, r *http.Request) context.Context {
 	ctx = mcpclient.WithCallerVersion(ctx, r.Header.Get(CallerVersionHeader))
+	if r.Header.Get(TaskExecutionHeader) != "" {
+		ctx = mcpclient.WithTaskExecution(ctx)
+	}
 	raw := r.Header.Get(ClientCapsHeader)
 	if raw == "" || !json.Valid([]byte(raw)) {
 		return ctx
@@ -239,6 +254,7 @@ func callErrorBody(err error) CallErrorBody {
 	switch {
 	case errors.As(err, &notConfirmed):
 		body.Code = "confirmation_required"
+		body.RefusalCode = string(notConfirmed.Code)
 	case errors.As(err, &writeDenied):
 		body.Code = "write_policy_denied"
 	}

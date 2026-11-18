@@ -19,6 +19,7 @@ import {
   parseIdentityRegisterResponse,
 } from "./identity-refresh";
 import { clientIdForDisplay } from "./settings-identity";
+import { closeDownloadMenu, toggleDownloadMenu } from "./download-menu";
 import { closeImageBrowser } from "./image-browser";
 import { createNavigation } from "./navigation";
 import { resolveSaveFilename } from "./save-filename";
@@ -1600,22 +1601,17 @@ async function init(): Promise<void> {
       if (format) {
         app.downloadFile(format);
       }
+      // Choosing an action dismisses the menu; keep focus on the toggle
+      // instead of letting it fall to the body with the hidden item.
+      closeDownloadMenu(document, { restoreFocus: true });
     }
 
     // Toggle download dropdown
-    const downloadBtn = target.closest("#download-btn");
-    if (downloadBtn) {
-      const menu = document.getElementById("download-menu");
-      if (menu) {
-        menu.classList.toggle("show");
-      }
-    } else {
+    if (target.closest("#download-btn")) {
+      toggleDownloadMenu();
+    } else if (!target.closest("#download-dropdown")) {
       // Close dropdown when clicking outside
-      const dropdown = target.closest("#download-dropdown");
-      if (!dropdown) {
-        const menu = document.getElementById("download-menu");
-        if (menu) menu.classList.remove("show");
-      }
+      closeDownloadMenu();
     }
   });
 
@@ -1627,6 +1623,13 @@ async function init(): Promise<void> {
         app.autoSave.saveNow();
       }
       return;
+    }
+
+    // Escape dismisses the download menu and returns focus to its toggle.
+    // A no-op when the menu is closed, so editor dialogs keep their own
+    // Escape handling.
+    if (event.key === "Escape") {
+      closeDownloadMenu(document, { restoreFocus: true });
     }
 
     // Enter key on tag inputs submits the tag

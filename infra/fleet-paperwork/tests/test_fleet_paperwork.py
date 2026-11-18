@@ -3,9 +3,12 @@
 Run: python3 -m unittest discover -s tests -v
 """
 
+import io
 import os
+import socket
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import unittest.mock
@@ -513,6 +516,177 @@ class TestResponseShapes(unittest.TestCase):
         with unittest.mock.patch.object(fp, "http", fake_http):
             hit = fp.find_by_exact_title(_FakeClient(), "developing-today/code", "T")
         self.assertEqual(hit["number"], 5)
+
+
+class TestPageBounds(unittest.TestCase):
+    """#9150 (#6622 rule 2): both App page loops stop at a page bound and
+    fail naming the listing instead of following pages forever."""
+
+    def client(self):
+        c = fp.AppClient.__new__(fp.AppClient)
+        c.jwt = "jwt"
+        c._tokens = {}
+        c._installations = None
+        return c
+
+    def test_installations_stops_at_short_page(self):
+        def fake_http(method, path, token, body=None, expect=dict):
+            page = int(path.rsplit("page=", 1)[1])
+            return 200, [
+                {"id": page * 1000 + i} for i in range(100 if page == 1 else 3)
+            ]
+
+        with unittest.mock.patch.object(fp, "http", fake_http):
+            self.assertEqual(len(self.client().installations()), 103)
+
+    def test_installations_never_short_fails_at_bound(self):
+        calls = []
+
+        def fake_http(method, path, token, body=None, expect=dict):
+            calls.append(path)
+            return 200, [{"id": i} for i in range(100)]
+
+        with (
+            unittest.mock.patch.object(fp, "http", fake_http),
+            unittest.mock.patch("sys.stderr"),
+        ):
+            with self.assertRaises(SystemExit):
+                self.client().installations()
+        self.assertEqual(len(calls), fp.GITHUB_LIST_MAX_PAGES)
+
+    def test_repositories_never_reaching_total_fails_at_bound(self):
+        calls = []
+
+        def fake_http(method, path, token, body=None, expect=dict):
+            calls.append(path)
+            page = int(path.rsplit("page=", 1)[1])
+            return 200, {
+                "total_count": 10**9,
+                "repositories": [{"full_name": f"o/r{page}-{i}"} for i in range(100)],
+            }
+
+        c = self.client()
+        c.token_for = lambda owner: "tok"
+        with (
+            unittest.mock.patch.object(fp, "http", fake_http),
+            unittest.mock.patch("sys.stderr"),
+        ):
+            with self.assertRaises(SystemExit):
+                c.assert_repo_in_scope("o/missing")
+        self.assertEqual(len(calls), fp.GITHUB_LIST_MAX_PAGES)
+
+    def test_repositories_found_on_second_page(self):
+        def fake_http(method, path, token, body=None, expect=dict):
+            page = int(path.rsplit("page=", 1)[1])
+            names = [f"o/r{i}" for i in range(100)] if page == 1 else ["o/target"]
+            return 200, {
+                "total_count": 101,
+                "repositories": [{"full_name": n} for n in names],
+            }
+
+        c = self.client()
+        c.token_for = lambda owner: "tok"
+        with unittest.mock.patch.object(fp, "http", fake_http):
+            self.assertIsNone(c.assert_repo_in_scope("o/target"))
+
+
+class TestTransportTimeout(unittest.TestCase):
+    """#11214: the tool has exactly one transport (`http_raw`), and it used
+    to block forever on a connection that was accepted and then stalled.
+
+    Oracle: the timeout bound itself. Each case starts a local socket server
+    that stalls, calls the real `http_raw` with a short
+    REQUEST_TIMEOUT_SECONDS, and asserts it dies within ~2x that bound with
+    a diagnostic naming the method and URL. On the pre-fix code these hang
+    (or, for the read-phase case, escape as a bare traceback), so the bound
+    is what fails, not just the message text.
+    """
+
+    def stall_server(self, send_headers: bool) -> str:
+        """Start a server that accepts one connection and never finishes it.
+
+        send_headers=True announces a body it never sends (read-phase stall).
+        send_headers=False accepts and says nothing (response-phase stall).
+        """
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        self.addCleanup(srv.close)
+        accept_blocker = threading.Event()
+
+        def serve():
+            try:
+                conn, _ = srv.accept()
+            except OSError:
+                return
+            try:
+                conn.recv(65536)
+                if send_headers:
+                    conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n")
+                accept_blocker.wait(30)
+            except OSError:
+                pass
+            finally:
+                conn.close()
+
+        t = threading.Thread(target=serve, daemon=True)
+        t.start()
+        self.addCleanup(accept_blocker.set)
+        return f"http://127.0.0.1:{srv.getsockname()[1]}/stall"
+
+    def assert_dies_within_bound(self, url: str):
+        """Oracle: the bound. `http_raw` runs in a thread; if it is still
+        alive past the bound it blocks forever (pre-fix behaviour) or hangs
+        inside resp.read(), and the join assertion is what fails."""
+        timeout = 0.5
+        bound = 2 * timeout + 1
+        outcome = {}
+        err = io.StringIO()
+
+        def call():
+            try:
+                outcome["result"] = fp.http_raw("GET", url, "tok")
+            except SystemExit as exc:
+                outcome["exit"] = exc.code
+            except BaseException as exc:  # pre-fix: a bare TimeoutError
+                outcome["raised"] = exc
+
+        with (
+            # create=True so the pre-fix module (no such constant) fails on
+            # the bound below, not on the patch itself.
+            unittest.mock.patch.object(
+                fp, "REQUEST_TIMEOUT_SECONDS", timeout, create=True
+            ),
+            unittest.mock.patch("sys.stderr", err),
+        ):
+            started = time.monotonic()
+            worker = threading.Thread(target=call, daemon=True)
+            worker.start()
+            worker.join(bound)
+            elapsed = time.monotonic() - started
+        self.assertFalse(
+            worker.is_alive(),
+            f"http_raw was still blocked after {bound:.1f}s against a stalling server",
+        )
+        self.assertNotIn(
+            "raised",
+            outcome,
+            f"http_raw escaped as a traceback: {outcome.get('raised')!r}",
+        )
+        self.assertEqual(outcome.get("exit"), 1)
+        self.assertLess(elapsed, bound)
+        message = err.getvalue()
+        self.assertIn("GET", message)
+        self.assertIn(url, message)
+        self.assertIn("timed out", message)
+        self.assertNotIn("Traceback", message)
+
+    def test_stalled_response_phase_dies_naming_method_and_url(self):
+        self.assert_dies_within_bound(self.stall_server(send_headers=False))
+
+    def test_stalled_body_read_dies_naming_method_and_url(self):
+        self.assert_dies_within_bound(self.stall_server(send_headers=True))
 
 
 if __name__ == "__main__":

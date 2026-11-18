@@ -110,9 +110,15 @@ type Extras struct {
 	// Supervised runs a stdio server under a per-server supervisor
 	// process (#1385, Phase 1 of #1384): the supervisor owns the child's
 	// pipes for the child's whole life and daemons attach to it, so the
-	// child survives a daemon restart. Default false - the direct spawn
-	// path is unchanged.
-	Supervised bool `json:"supervised,omitempty"`
+	// child survives a daemon restart. Since Phase 3 (#9963) supervised
+	// is the default for stdio servers in any config loaded from a
+	// file: parse materializes true when the key is absent, an explicit
+	// false opts the server back into the legacy direct-spawn path,
+	// and an explicit true is the Phase 1 opt-in, unchanged. A nil here
+	// means no file load has defaulted it (a programmatically built
+	// config) and reads as not supervised. Read it through
+	// SupervisedEnabled, never directly.
+	Supervised *bool `json:"supervised,omitempty"`
 	// Logging overrides the global settings for records about this server, so
 	// a single misbehaving server can be made verbose without drowning in the
 	// rest. Nested rather than flat, because "logging.level" reads as one
@@ -196,6 +202,16 @@ type Extras struct {
 	RequiresServers []string `json:"requiresServers,omitempty"`
 	// Preconditions maps specific tool names to preconditions.
 	Preconditions map[string]Precondition `json:"preconditions,omitempty"`
+}
+
+// SupervisedEnabled reports whether this server's resolved config
+// runs its stdio child under a supervisor: the explicit value, with
+// the Phase 3 default (true) already materialized by parse for
+// file-loaded configs (#9963). Nil Extras or a nil field (a config
+// built in code, never parsed from a file) reads as false, the
+// Phase 1 behaviour.
+func (e *Extras) SupervisedEnabled() bool {
+	return e != nil && e.Supervised != nil && *e.Supervised
 }
 
 // ToolView is one declared view of a tool (#1933 slices 1-3). A view
@@ -864,6 +880,20 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 		merged.Name = name
 		merged.AliasOf = s.AliasOf
 		merged.Mcpx = s.Mcpx
+		// Only the supervised bit is inherited from the target: an
+		// alias is a view of the target's process, so how that
+		// process is spawned follows the target, but the rest of the
+		// alias's extras are its own view (hiding is per view, and
+		// the target's excludeTools must not leak into the alias).
+		if target.Mcpx != nil && target.Mcpx.Supervised != nil {
+			if merged.Mcpx == nil {
+				merged.Mcpx = &Extras{Supervised: target.Mcpx.Supervised}
+			} else if merged.Mcpx.Supervised == nil {
+				cp := *merged.Mcpx
+				cp.Supervised = target.Mcpx.Supervised
+				merged.Mcpx = &cp
+			}
+		}
 		s = &merged
 	}
 	// A per-server protocol overrides upstream.protocol, so it is read
@@ -1485,6 +1515,9 @@ func mergeExtras(near, far Extras) Extras {
 	// survive into the nearer config, and a key both files use
 	// composes with allOf rather than being replaced.
 	near.ArgumentRules = mergeArgumentRules(near.ArgumentRules, far.ArgumentRules)
+	if near.Supervised == nil {
+		near.Supervised = far.Supervised
+	}
 	return near
 }
 
@@ -1555,6 +1588,13 @@ func parse(b []byte) (*Config, error) {
 		if s.URL != "" && s.Transport == "" {
 			s.Transport = "http"
 		}
+		// Supervised stdio is opt-in again ("supervised": true). #9963
+		// made it the default, but the supervisor socket is keyed by
+		// server name alone, so a server's second scoped instance
+		// (another session, repo or worktree) attached to the first
+		// one's supervisor and was refused, and supervisors outlived
+		// `mcpx stop`. The default returns once sockets are keyed per
+		// instance and stop reaps them.
 	}
 	return c, nil
 }

@@ -47,12 +47,20 @@ Prints one JSON object:
                                               # closed (see fetch below)
     "live_root_sessions": int | null,        # all root sessions;
                                               # null = server unreadable
-    "active_root_sessions": int | null,      # roots still active
-                                              # (see is_active_root)
+    "active_root_sessions": int | null,      # CLAIMANT roots still
+                                              # active (see
+                                              # count_active_claimant_roots):
+                                              # scheduled fleet sessions
+                                              # (lane runners, the
+                                              # claimant's own fire,
+                                              # sweeps) are outside the
+                                              # cap (#5016, ruling
+                                              # session-cap-5016)
     "cap": 36,
     "concurrency_cap": 36,
-    "cap_room": int | null                   # CAP - active roots;
-                                              # null when count unknown
+    "cap_room": int | null                   # CAP - active claimant
+                                              # roots; null when count
+                                              # unknown
   }
 
 Read-only by construction: claimed rows come from the queue-broker's
@@ -66,9 +74,10 @@ launch room: an unreadable session list or active set must never
 become a launch decision.
 
 The pure classification functions (is_candidate, is_active_root,
-count_active_roots, summarize_cap, parse_lease_ms, is_stuck_bound)
-are the contract test_poll.py pins; claimant.py counts through the
-same functions so the two entry points cannot diverge in shape.
+count_active_roots, count_active_claimant_roots, is_scheduled_session,
+summarize_cap, parse_lease_ms, is_stuck_bound) are the contract
+test_poll.py pins; claimant.py counts through the same functions so
+the two entry points cannot diverge in shape.
 """
 
 import ast
@@ -83,6 +92,25 @@ import time
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+def _required_home() -> Path:
+    """Home per the #5762 home-resolution contract (code#8221): a
+    non-empty HOME, or a named error -- never the passwd fallback
+    Path.home() applies when HOME is unset. The claimant is fired
+    programmatically (OpenChamber cron), a context with no HOME
+    guarantee, and every path anchored below is fleet state."""
+    home = os.environ.get("HOME")
+    if not home:
+        raise RuntimeError(
+            "HOME is unset or empty: opencode-claimant cannot resolve "
+            "its state paths (#5762 home-resolution contract)"
+        )
+    return Path(home)
+
+
+HOME_DIR = _required_home()
+
 
 QUEUES = [
     "repo-health-code-pilot",
@@ -102,13 +130,39 @@ CONCURRENCY_CAP = CAP
 # whose client died mid-run, so it stops counting too — the claimant
 # fires every 10 min and a working session updates far more often.
 ACTIVE_WINDOW_MS = 30 * 60 * 1000
+# A root in the server's active set normally counts no matter what its
+# stored markers say (a resumed session keeps an earlier run's idle
+# marker). But `/api/session/active` also keeps reporting sessions whose
+# client died mid-run: #5016's zombie sat there for ~18 hours, silent,
+# with no outcome and no idle marker, holding a cap slot. OpenCode
+# refreshes `time.updated` on every step, so a session whose clock has
+# not moved for this long is a zombie, not work. Two hours is 4x the
+# 30-minute marker window and far beyond any single legitimate silent
+# step (the longest builds are held under the fleet build lock and
+# still emit progress), so a live session can never be mistaken for
+# this. Releasing a slot only changes cap accounting; it never kills
+# the session, so the blast radius of a false positive is one extra
+# launch slot, not lost work.
+ACTIVE_SET_STALE_MS = 2 * 60 * 60 * 1000
+
+# Ruling `session-cap-5016` (#5016): the cap is the claimant's launch
+# budget. Every fleet-scheduled session is infrastructure, outside it:
+# scheduled lane runners ("Queue lane (scheduled) - ..."), the
+# claimant's own fire ("Opencode lane claimant/executor - ..."), the
+# conductor and the sweeps all carry metadata.openchamber.kind ==
+# "scheduled". The title prefixes are the fallback for legacy rows
+# written before OpenChamber stamped that marker.
+SCHEDULED_TITLE_PREFIXES = (
+    "Queue lane (scheduled)",
+    "Opencode lane claimant/executor",
+)
 
 # Packaged fleet binary via its repo-queue argv0 alias
 # (~/.local/bin/repo-queue -> ~/.local/bin/fleet); the hand-built
 # ~/fleet-brokers/bin tree was retired by the code#5362 cutover
 # (task 12731).
-REPO_QUEUE_CMD = Path.home() / ".local" / "bin" / "repo-queue"
-PRIMARY_CLONE = Path.home() / "git" / "code"
+REPO_QUEUE_CMD = HOME_DIR / ".local" / "bin" / "repo-queue"
+PRIMARY_CLONE = HOME_DIR / "git" / "code"
 
 # Queue-broker coordinates for the rich /list read, mirroring the
 # fleet client's own resolution (pkgs/fleet crates/fleet-queue
@@ -117,8 +171,8 @@ PRIMARY_CLONE = Path.home() / "git" / "code"
 # for the client token. The token is read at call time, travels in the
 # X-Agent-Token header exactly as the binary sends it, and is never
 # logged.
-BROKER_URL_FILE = Path.home() / ".config" / "repo-queue" / "broker-url"
-BROKER_TOKEN_FILE = Path.home() / ".config" / "queue-broker" / "token"
+BROKER_URL_FILE = HOME_DIR / ".config" / "repo-queue" / "broker-url"
+BROKER_TOKEN_FILE = HOME_DIR / ".config" / "queue-broker" / "token"
 # One page at the broker's own maximum (LIST_LIMIT_MAX = 500 in
 # client.rs). A queue's claimed set is far smaller; and a short page
 # could only ever under-report candidates, never invent one.
@@ -130,13 +184,13 @@ LIST_LIMIT = 500
 # database. The broker's own /lane route ASSIGNS a lane — it is a
 # write, and poll.py is read-only by construction, so the ledger is
 # never read through it (Codex finding on PR #7059).
-TURSO_EXEC = Path.home() / "tools" / "turso-exec.py"
+TURSO_EXEC = HOME_DIR / "tools" / "turso-exec.py"
 LEDGER_DB = "fleet-queue"
 
 OPENCODE_URL = os.environ.get("OPENCODE_URL", "http://127.0.0.1:13420")
 AUTH_FILE = os.environ.get(
     "OPENCODE_AUTH_FILE",
-    os.path.expanduser("~/.local/state/opencode/service-prod.json"),
+    str(HOME_DIR / ".local/state/opencode/service-prod.json"),
 )
 
 UUID_LANE = re.compile(
@@ -376,6 +430,38 @@ def is_root_session(s):
     return isinstance(s, dict) and not s.get("parentID") and not s.get("parent_id")
 
 
+def is_scheduled_session(s):
+    """True iff `s` is a fleet-SCHEDULED session: infrastructure that
+    is outside the claimant's launch cap (#5016, ruling
+    `session-cap-5016`).
+
+    The machine-readable marker is `metadata.openchamber.kind ==
+    "scheduled"`, stamped by OpenChamber on every scheduled task's
+    session (lane runners, the claimant fire itself, the conductor,
+    the sweeps — verified live 2026-11-16 across 366 roots). The
+    title prefixes fall back for legacy rows created before that
+    marker existed. Unknown/malformed metadata is NOT scheduled:
+    counting an extra root can only tighten the cap, never
+    manufacture room."""
+    if not isinstance(s, dict):
+        return False
+    metadata = s.get("metadata")
+    openchamber = metadata.get("openchamber") if isinstance(metadata, dict) else None
+    if isinstance(openchamber, dict) and openchamber.get("kind") == "scheduled":
+        return True
+    title = s.get("title")
+    if isinstance(title, str):
+        return title.startswith(SCHEDULED_TITLE_PREFIXES)
+    return False
+
+
+def is_claimant_root_session(s):
+    """A root session that consumes a claimant cap slot: work the
+    claimant owns. Scheduled fleet roots never do (see
+    is_scheduled_session)."""
+    return is_root_session(s) and not is_scheduled_session(s)
+
+
 def _active_root_state(s, now_ms, active_ids=None):
     """True (proven active), False (proven inactive), or None (the
     entry's timing cannot be read, so its activity is UNKNOWN — see
@@ -386,8 +472,18 @@ def _active_root_state(s, now_ms, active_ids=None):
     # its stored outcome/idle from the earlier run while it is mid-run
     # again (the aggregator's mapper overrides stored outcomes the same
     # way, pm-stack/aggregator/src/sources/opencode.ts). Membership
-    # counts the root no matter what its stored markers say.
+    # counts the root no matter what its stored markers say — unless
+    # the session's clock has not moved for ACTIVE_SET_STALE_MS, the
+    # zombie case the active set cannot express (#5016: ~18h silent,
+    # no outcome, no idle, still "running"). An entry whose timing is
+    # unreadable keeps membership: cap counts stay conservative.
     if active_ids is not None and s.get("id") in active_ids:
+        timing = _session_timing(s)
+        if timing is None:
+            return True
+        _idle, updated = timing
+        if updated and now_ms - updated >= ACTIVE_SET_STALE_MS:
+            return False
         return True
     # Terminal markers are decidable without a readable clock
     # (#8853): a finished root stays finished even when its
@@ -421,8 +517,19 @@ def count_active_roots(sessions, now_ms, active_ids=None):
     return sum(1 for state in states if state)
 
 
+def count_active_claimant_roots(sessions, now_ms, active_ids=None):
+    """Active roots that consume a claimant cap slot (#5016, ruling
+    `session-cap-5016`): claimant work roots only.
+
+    Scheduled fleet sessions are filtered out BEFORE classification,
+    so a malformed timing on a lane runner can no longer make the cap
+    unknown either — it was never the claimant's slot to lose."""
+    claimant_roots = [s for s in sessions if is_claimant_root_session(s)]
+    return count_active_roots(claimant_roots, now_ms, active_ids)
+
+
 def summarize_cap(sessions, active_ids, now_ms):
-    """(live_root_sessions, active_root_sessions, cap_room).
+    """(live_root_sessions, active_claimant_roots, cap_room).
 
     Either server read failing makes the active count UNKNOWN, never
     zero: a resumed root's stored markers read as finished, so falling
@@ -430,13 +537,15 @@ def summarize_cap(sessions, active_ids, now_ms):
     report cap_room 12 over 12 running sessions. Unknown propagates as
     None and the claimant launches nothing — the same fail-closed rule
     the session list itself has always had.
-    """
+
+    `live_root_sessions` stays every root (a census fact); only the
+    counted active set is narrowed to claimant roots (#5016)."""
     if sessions is None:
         return None, None, None
     roots = [s for s in sessions if is_root_session(s)]
     if active_ids is None:
         return len(roots), None, None
-    active = count_active_roots(roots, now_ms, active_ids)
+    active = count_active_claimant_roots(roots, now_ms, active_ids)
     if active is None:
         return len(roots), None, None
     return len(roots), active, max(0, CAP - active)
@@ -530,6 +639,22 @@ def _broker_post(path, body):
     return data
 
 
+# Read failures from the most recent poll cycle, keyed (queue, status)
+# -> first-line error text (#8042). _fetch_rows still returns [] on a
+# failure — a queue that cannot be read contributes no candidates and
+# no stuck-bound rows, and the cap still fails closed via the session
+# reads, so a partial view can never cause a launch by itself — but the
+# failure is RECORDED here so main() can publish read_ok per queue and
+# a consumer never has to mistake an unread queue for an empty one.
+_READ_ERRORS = {}
+
+
+def queue_read_errors(queue):
+    """Recorded read errors for one queue from the latest poll cycle:
+    {status: error text}; empty when every read for the queue succeeded."""
+    return {status: err for (q, status), err in _READ_ERRORS.items() if q == queue}
+
+
 def _fetch_rows(queue, status):
     """Rows of one status for one queue from the broker's rich /list.
     The repo-queue binary's list verb prints a human table, and
@@ -538,7 +663,8 @@ def _fetch_rows(queue, status):
     (#7325/#7375). Returns [] with a warning on any failure: a queue
     that cannot be read contributes no candidates and no stuck-bound
     rows, and the cap still fails closed via the session reads, so a
-    partial view can never cause a launch by itself."""
+    partial view can never cause a launch by itself. The failure is
+    also recorded in _READ_ERRORS (#8042)."""
     try:
         data = _broker_post(
             "/list",
@@ -551,10 +677,12 @@ def _fetch_rows(queue, status):
         )
     except Exception as e:
         print(f"Warning: Could not poll queue {queue}: {e}", file=sys.stderr)
+        _READ_ERRORS[(queue, status)] = str(e)[:200]
         return []
     if isinstance(data, dict):
         data = data.get("rows") or []
     if not isinstance(data, list):
+        _READ_ERRORS[(queue, status)] = "unexpected broker response shape"
         return []
     rows = []
     for row in data:
@@ -749,17 +877,18 @@ def get_stuck_bound(rows, session_by_id, active_ids, now_ms):
 
 
 def get_active_root_session_count():
-    """Count of active root sessions, or -1 when either server read
-    fails (the sentinel claimant.py's cap_step has always used).
-    Counting itself is count_active_roots over the verified live
-    session shape — the same function claimant.py now delegates to."""
+    """Count of active CLAIMANT root sessions, or -1 when either server
+    read fails (the sentinel claimant.py's cap_step has always used).
+    Counting is count_active_claimant_roots: scheduled fleet sessions
+    (lane runners, the claimant's own fire) are outside the cap per
+    ruling `session-cap-5016` (#5016)."""
     sessions = fetch_sessions()
     if sessions is None:
         return -1
     active_ids = fetch_active_ids()
     if active_ids is None:
         return -1
-    count = count_active_roots(sessions, int(time.time() * 1000), active_ids)
+    count = count_active_claimant_roots(sessions, int(time.time() * 1000), active_ids)
     return -1 if count is None else count
 
 
@@ -775,6 +904,7 @@ def main():
         for s in sessions:
             if isinstance(s, dict) and s.get("id"):
                 session_by_id[s["id"]] = s
+    _READ_ERRORS.clear()
     out = {"queues": {}, "candidates": [], "stuck_bound": [], "stale_binding": []}
     # Fetch every queue's rows first so the lane ledger is read ONCE
     # for the whole poll (#5508): candidate-shaped rows from claimed
@@ -809,12 +939,18 @@ def main():
             )
             for r in get_stuck_bound(rows, session_by_id, active_ids, now_ms)
         ]
+        read_errors = queue_read_errors(q)
         out["queues"][q] = {
             "claimed": len(rows),
             "handed_off": len(handed_off_rows),
             "candidates": cands,
             "stuck_bound": stuck,
             "stale_binding": stale,
+            # #8042: a queue whose broker read failed is UNKNOWN, not
+            # empty — consumers (claimant gate_step) must not conclude
+            # "no candidates" from its empty lists.
+            "read_ok": not read_errors,
+            "read_errors": read_errors,
         }
         out["candidates"].extend(cands)
         out["stuck_bound"].extend(stuck)
@@ -833,4 +969,12 @@ def main():
 
 
 if __name__ == "__main__":
+    # Argument contract (#3352): no command-line arguments; anything given
+    # is a usage error before any work runs.
+    if len(sys.argv) > 1:
+        print(
+            f"poll.py: unexpected argument {sys.argv[1]!r}; usage: python3 poll.py",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     sys.exit(main())

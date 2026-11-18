@@ -23,10 +23,19 @@
 //! parity criterion against a live host.
 
 pub mod events;
+pub mod form;
+pub mod providers;
 pub mod render;
 mod session;
 
-pub use session::{ServerUpdate, SessionState, SessionView, join_frame, run_session};
+pub use providers::{
+    CLIENT_FILE_READ_PROVIDER, ClientProviderExecutor, FileReadExecutor, LocalAuditEntry,
+    LocalBounds, ProviderAdapter,
+};
+pub use session::{
+    ServerUpdate, SessionState, SessionView, join_frame, run_session, run_session_with_providers,
+    semantic_diff_text,
+};
 
 use id::world_presentation::WorldSurface;
 use serde_json::{Value, json};
@@ -157,6 +166,51 @@ pub fn resize_frame(width: u16, height: u16) -> Result<Value, FrameError> {
 #[must_use]
 pub fn chat_frame(text: &str) -> Value {
     json!({ "type": "chat", "text": text })
+}
+
+/// Build the join frame for an agent-profile shell (contract revision
+/// 11, #6300 section 4.2): the `agent_profile` capability flag advertises
+/// that this shell consumes semantic diffs. A host without the revision
+/// ignores the flag and serves full views at reduced fidelity with
+/// identical authority.
+#[must_use]
+pub fn agent_join_frame(capability: &str, after: Option<u64>) -> Value {
+    json!({
+        "type": "join",
+        "capability": capability,
+        "after": after,
+        "agent_profile": true,
+    })
+}
+
+/// Build the contract `screen_subscribe` frame (agent profile, contract
+/// revision 11): subscribe this session to a screen region — `(x, y,
+/// width, height)` in cells — and/or semantic event classes. An empty
+/// class list means all classes; omitting the list means no event diffs.
+#[must_use]
+pub fn screen_subscribe_frame(
+    region: Option<(u16, u16, u16, u16)>,
+    event_classes: Option<&[&str]>,
+) -> Value {
+    let mut frame = json!({ "type": "screen_subscribe" });
+    if let Some((x, y, width, height)) = region {
+        frame["region"] = json!({ "x": x, "y": y, "width": width, "height": height });
+    }
+    if let Some(classes) = event_classes {
+        frame["event_classes"] = json!(classes);
+    }
+    frame
+}
+
+/// Build the contract `input` frame carrying a stale-decision token
+/// (contract revision 11, #6300 section 4.3): the screen revision the
+/// input was decided against. The host applies the input only while
+/// that revision is still current.
+#[must_use]
+pub fn input_frame_with_revision(bytes: &[u8], screen_revision: u64) -> Value {
+    let mut frame = input_frame(bytes);
+    frame["screen_revision"] = json!(screen_revision);
+    frame
 }
 
 /// Decide what the presenter shows for one host `view` frame.

@@ -25,11 +25,10 @@ name: cold-store-reaper
 # job provisions Python and zstd as well.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/cold-store-reaper/**"
-      - ".github/workflows/cold-store-reaper.yml"
+  schedule:
+    # Nightly instead of on every push to main (Drew, 2026-11-16; see
+    # .github/ci-policy.md "Nightly main CI").
+    - cron: "17 7 * * *"
   workflow_dispatch:
 
 permissions:

@@ -1573,6 +1573,118 @@ mod tests {
     }
 
     #[test]
+    fn test_link_id_reference_destinations_preserved_and_malformed_neutralized() {
+        // #5745 remainder (task 19948): a validated Reference
+        // degradation — id://<hash hex> or id://<hash hex>@<hash hex>,
+        // the exact grammar Reference::to_markdown emits and
+        // Reference::from_markdown parses (a Hash is 64 hex digits) —
+        // keeps its href through import and round-trips on save,
+        // while malformed id: URLs are neutralized to "#".
+        let target = "0123456789abcdef".repeat(4);
+        let revision = "fedcba9876543210".repeat(4);
+        for md in [
+            format!("[surface](id://{target})"),
+            format!("[surface](id://{target}@{revision})"),
+        ] {
+            let expected_href = md
+                .strip_prefix("[surface](")
+                .unwrap()
+                .strip_suffix(')')
+                .unwrap()
+                .to_owned();
+            let doc = markdown_to_prosemirror(&md);
+            let para_content = doc["content"][0]["content"].as_array().unwrap();
+            let link_mark = para_content[0]["marks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["type"] == "link")
+                .unwrap_or_else(|| panic!("no link mark for {md}"));
+            assert_eq!(
+                link_mark["attrs"]["href"], expected_href,
+                "id reference href lost for {md}"
+            );
+            let (first, second) = two_saves(&format!("{md}\n"));
+            assert_eq!(
+                first,
+                format!("{md}\n"),
+                "id reference not preserved on save for {md}"
+            );
+            assert_eq!(first, second, "no fixpoint for {md}");
+        }
+        for md in [
+            "[surface](id://not-hex)".to_owned(),
+            // Short hex is not a Hash, so not a validated degradation.
+            "[surface](id://0123456789abcdef)".to_owned(),
+            format!("[surface](id://{target}/extra)"),
+            "[surface](id://)".to_owned(),
+            format!("[surface](id://{target}@{revision}@{target})"),
+            format!("[surface](id:{target})"),
+        ] {
+            let doc = markdown_to_prosemirror(&md);
+            let para_content = doc["content"][0]["content"].as_array().unwrap();
+            let link_mark = para_content[0]["marks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["type"] == "link")
+                .unwrap_or_else(|| panic!("no link mark for {md}"));
+            assert_eq!(
+                link_mark["attrs"]["href"], "#",
+                "malformed id href survived for {md}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_link_newline_placeholder_scheme_judgment() {
+        // #5745 remainder (task 19948): an angle-form destination
+        // whose scheme separator was split by a newline is protected
+        // with an idweb-newline placeholder before parsing; the
+        // sanitizer must judge the scheme the newline interrupted —
+        // https is preserved (with the newline restored in the PM
+        // href), while the same construction around an executable
+        // scheme stays neutralized.
+        let doc = markdown_to_prosemirror("[open](<https\n://example.com>)\n");
+        let para_content = doc["content"][0]["content"].as_array().unwrap();
+        let link_mark = para_content[0]["marks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["type"] == "link")
+            .expect("no link mark for the protected https destination");
+        assert_eq!(
+            link_mark["attrs"]["href"], "https\n://example.com",
+            "protected https destination not preserved"
+        );
+        let (first, second) = two_saves("[open](<https\n://example.com>)\n");
+        assert_eq!(
+            first, "[open](<https\n://example.com>)\n",
+            "protected https not preserved on save"
+        );
+        assert_eq!(first, second, "no fixpoint for protected https");
+
+        for md in [
+            "[open](<java\nscript:alert(1)>)",
+            "[open](<javascript\n:alert(1)>)",
+            "[open](<data\n:text/html,hello>)",
+        ] {
+            let doc = markdown_to_prosemirror(md);
+            let para_content = doc["content"][0]["content"].as_array().unwrap();
+            let link_mark = para_content[0]["marks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["type"] == "link")
+                .unwrap_or_else(|| panic!("no link mark for {md}"));
+            assert_eq!(
+                link_mark["attrs"]["href"], "#",
+                "executable href survived for {md}"
+            );
+        }
+    }
+
+    #[test]
     fn test_link_sanitizer_save_direction_and_linked_image() {
         // #5745: a PM doc that never passed the parse direction (the
         // collab Rich path stores raw ProseMirror JSON) is neutralized

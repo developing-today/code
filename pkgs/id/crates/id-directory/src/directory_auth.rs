@@ -21,6 +21,18 @@ use id_core::hex::hex_encode;
 
 /// How long a session lasts after it is opened.
 pub const SESSION_TTL_MS: u64 = 12 * 60 * 60 * 1000;
+/// Hard cap on live sessions across every principal (#10643). Sessions are
+/// minted for any resolved account or admin viewer and live for
+/// [`SESSION_TTL_MS`], so without a bound one caller could grow the map
+/// without limit (memory exhaustion, and a longer whole-map sweep on every
+/// open). Keeping the map under this cap makes the expired-entry sweep cost
+/// O(cap), a constant.
+const SESSION_LIMIT: usize = 4096;
+/// Hard cap on live sessions held by one principal (#10643): a sixteenth of
+/// [`SESSION_LIMIT`], so a single account can never starve the others out of
+/// the map — at least sixteen principals can hold their full allowance at
+/// the same time. A principal's allowance refills as its sessions expire.
+const SESSION_PER_PRINCIPAL: usize = SESSION_LIMIT / 16;
 const CODE_TTL_MS: u64 = 15 * 60 * 1000;
 const CODE_RESEND_MS: u64 = 60 * 1000;
 const CODE_ATTEMPTS: u32 = 5;
@@ -158,8 +170,39 @@ pub struct DirectoryAuth {
 
 impl DirectoryAuth {
     /// Open a session for a principal and return its token, shown once.
-    pub fn open_session(&mut self, principal: Principal, now: u64) -> String {
+    ///
+    /// Expired sessions are swept first, so expiry always frees capacity.
+    /// The map is hard-bounded (#10643): at most [`SESSION_LIMIT`] live
+    /// sessions in total and [`SESSION_PER_PRINCIPAL`] per principal, so
+    /// the sweep's whole-map scan costs O(cap) however many sessions have
+    /// been opened. A live session is never evicted to make room, so a
+    /// refusal is deterministic: the caller waits for expiry or closes a
+    /// session it no longer uses.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`Refusal::RateLimited`] if the requesting principal or
+    /// the world as a whole is at its cap.
+    pub fn open_session(&mut self, principal: Principal, now: u64) -> Result<String> {
         self.sessions.retain(|_, record| record.expires_at > now);
+        let held = self
+            .sessions
+            .values()
+            .filter(|record| record.principal == principal)
+            .count();
+        if held >= SESSION_PER_PRINCIPAL {
+            return Err(Refusal::RateLimited(
+                "too many sessions are open for this account; sign out or try again later"
+                    .to_owned(),
+            )
+            .into());
+        }
+        if self.sessions.len() >= SESSION_LIMIT {
+            return Err(Refusal::RateLimited(
+                "too many sessions are open; try again shortly".to_owned(),
+            )
+            .into());
+        }
         let mut secret = [0_u8; 32];
         rand::rng().fill(&mut secret);
         let token = format!("sess.{}", hex_encode(&secret));
@@ -170,7 +213,7 @@ impl DirectoryAuth {
                 expires_at: now + SESSION_TTL_MS,
             },
         );
-        token
+        Ok(token)
     }
 
     /// Who a session token stands for, if it is current.
@@ -518,13 +561,82 @@ mod tests {
     #[test]
     fn a_session_lasts_its_ttl_and_closes_on_request() {
         let mut auth = DirectoryAuth::default();
-        let token = auth.open_session(Principal::Admin, now());
+        let token = auth.open_session(Principal::Admin, now()).unwrap();
         assert!(token.starts_with("sess."));
         assert_eq!(auth.principal(&token, now()), Some(Principal::Admin));
         assert_eq!(auth.principal(&token, now() + SESSION_TTL_MS), None);
-        let again = auth.open_session(Principal::Account("ab".repeat(32)), now());
+        let again = auth
+            .open_session(Principal::Account("ab".repeat(32)), now())
+            .unwrap();
         auth.close_session(&again);
         assert_eq!(auth.principal(&again, now()), None);
+    }
+
+    #[test]
+    fn sessions_are_capped_globally_and_refusal_is_deterministic() {
+        let mut auth = DirectoryAuth::default();
+        // Fill the global cap with distinct principals, so only the
+        // global bound can bind.
+        let first = auth
+            .open_session(Principal::Account("acct-0".to_owned()), now())
+            .unwrap();
+        for i in 1..SESSION_LIMIT {
+            auth.open_session(Principal::Account(format!("acct-{i}")), now())
+                .unwrap();
+        }
+        assert_eq!(auth.sessions.len(), SESSION_LIMIT);
+        // A new principal is refused, deterministically: the same
+        // refusal on retry, and nothing is evicted to make room.
+        for _ in 0..2 {
+            let error = auth
+                .open_session(Principal::Account("acct-new".to_owned()), now())
+                .unwrap_err();
+            assert!(matches!(
+                error.downcast_ref::<Refusal>(),
+                Some(Refusal::RateLimited(_))
+            ));
+        }
+        assert_eq!(auth.sessions.len(), SESSION_LIMIT);
+        // Expiry is what frees a bounded map: the next open sweeps the
+        // dead entries first, so a new principal takes the freed space.
+        auth.open_session(
+            Principal::Account("acct-new".to_owned()),
+            now() + SESSION_TTL_MS,
+        )
+        .unwrap();
+        assert!(auth.principal(&first, now() + SESSION_TTL_MS).is_none());
+    }
+
+    #[test]
+    fn one_principal_cannot_consume_the_whole_session_capacity() {
+        let mut auth = DirectoryAuth::default();
+        let account = "ab".repeat(32);
+        for _ in 0..SESSION_PER_PRINCIPAL {
+            auth.open_session(Principal::Account(account.clone()), now())
+                .unwrap();
+        }
+        // The principal's next session is refused at its own cap…
+        let error = auth
+            .open_session(Principal::Account(account.clone()), now())
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<Refusal>(),
+            Some(Refusal::RateLimited(_))
+        ));
+        assert_eq!(auth.sessions.len(), SESSION_PER_PRINCIPAL);
+        // …but the global capacity is untouched: another principal (and
+        // the admin) opens normally, so one account cannot starve the rest.
+        auth.open_session(Principal::Account("cd".repeat(32)), now())
+            .unwrap();
+        auth.open_session(Principal::Admin, now()).unwrap();
+        assert_eq!(auth.sessions.len(), SESSION_PER_PRINCIPAL + 2);
+        // Expiry frees the principal's whole allowance without a refusal.
+        let later = now() + SESSION_TTL_MS;
+        for _ in 0..SESSION_PER_PRINCIPAL {
+            auth.open_session(Principal::Account(account.clone()), later)
+                .unwrap();
+        }
+        assert_eq!(auth.sessions.len(), SESSION_PER_PRINCIPAL);
     }
 
     #[test]

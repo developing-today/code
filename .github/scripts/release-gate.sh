@@ -29,7 +29,12 @@
 #        component release. Residual risk: a path-filter gap (a commit
 #        that should have triggered a watched workflow but did not) is
 #        judged on an older run. Keep the path filters accurate.
-#      - Non-push workflows (nix ci — schedule/workflow_dispatch only):
+#      Since 2026-11-16 (nightly main CI, ci-policy.md) no watched
+#      workflow has a push trigger, so every one of them takes the
+#      non-push rule below; the two push rules stay for any workflow
+#      that regains a push trigger.
+#      - Non-push workflows (schedule/workflow_dispatch only; all of the
+#        watched set since 2026-11-16):
 #        their latest completed run on main, of any event, whose head
 #        SHA is the release SHA or an ancestor of it (decision on #1782,
 #        2026-11-13, option (b) from issue note 6782949534). The judged
@@ -84,13 +89,9 @@ WATCHED_WORKFLOWS=(
 # (CodeRabbit finding on PR #4636). Keep this list in sync with the
 # push triggers.
 PATH_FILTERED_WORKFLOWS=(
-  "mcpx"
-  "mcpx conformance"
-  "mcpx nix build"
-  "go modules build"
-  "identity build"
-  "map build"
-  "id bench"
+  # Empty since 2026-11-16: every watched workflow lost its push trigger
+  # when main CI moved to a nightly schedule (ci-policy.md, "Nightly main
+  # CI"), so all of them are judged as non-push workflows below.
 )
 
 is_path_filtered() {
@@ -112,6 +113,16 @@ is_path_filtered() {
 # trigger is path-filtered).
 NON_PUSH_WORKFLOWS=(
   "nix ci"
+  # Push triggers removed 2026-11-16 (nightly main CI ruling): these now
+  # run on schedule + workflow_dispatch only.
+  "id"
+  "mcpx"
+  "mcpx conformance"
+  "mcpx nix build"
+  "go modules build"
+  "identity build"
+  "map build"
+  "id bench"
 )
 
 is_non_push() {
@@ -244,7 +255,11 @@ FAKE_GH
   run_gate_case failed 1
   run_gate_case missing 1
   run_gate_case pending 1
-  run_gate_case fallback 0
+  # Since 2026-11-16 no watched workflow is path-filtered (all are
+  # nightly, judged by the non-push rule), so an older run that is not
+  # the release SHA or its ancestor no longer passes: mcpx's fallback
+  # run on an unrelated SHA now refuses the release.
+  run_gate_case fallback 1
   run_gate_case fallback-red 1
   run_gate_case success 1 stale-sha
 

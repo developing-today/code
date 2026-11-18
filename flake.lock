@@ -21,6 +21,29 @@
         "type": "github"
       }
     },
+    "antigravity-cli-nix": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs-unstable"
+        ]
+      },
+      "locked": {
+        "lastModified": 1794654022,
+        "narHash": "sha256-0w9dkDfIq5VK6RMset1Jw7D2lcnvZWW78c2epNYxbCc=",
+        "owner": "selfhost-it",
+        "repo": "antigravity-cli-nix",
+        "rev": "c081b0688d176cf315418b49afbcc600e2461ade",
+        "type": "github"
+      },
+      "original": {
+        "owner": "selfhost-it",
+        "repo": "antigravity-cli-nix",
+        "type": "github"
+      }
+    },
     "aquamarine": {
       "inputs": {
         "hyprutils": [
@@ -1330,11 +1353,11 @@
     "mcpx-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1794021949,
-        "narHash": "sha256-qiIa3rV7keHJCEdqMKILnsbr6SbRSYbFZXuCRO5PqeA=",
+        "lastModified": 1794968769,
+        "narHash": "sha256-a8f42Y1P0bzJ4PPHpl62bWMfI+z4YMhmBMnpw5g8WFU=",
         "owner": "developing-today",
         "repo": "code",
-        "rev": "bcc090152f3fd7d97d5fbc81c4815224a39d4d30",
+        "rev": "d3a0db813931cf3eae942f7179ad28c5b33d77e9",
         "type": "github"
       },
       "original": {
@@ -1737,11 +1760,11 @@
     },
     "nixpkgs-25": {
       "locked": {
-        "lastModified": 1793726008,
-        "narHash": "sha256-jQp1wKvbwWdLBASTXkSi/VYmDJ5AbBi1WvcMt9HWJC8=",
+        "lastModified": 1794537146,
+        "narHash": "sha256-Wpz/7x/YWnDIBu7yj6ixe8j6fIMsidd9Y+o1PqPF3iM=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "1d060086d60cb76a40cf37109f979d88a5bd6396",
+        "rev": "d5cc6833999746cffdfe0598f7bc801a57b887a9",
         "type": "github"
       },
       "original": {
@@ -2240,11 +2263,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1794701110,
-        "narHash": "sha256-zaEglOngiL3LK/vWDPnTtBooaXrkX4YuVWwQrcIbcMg=",
+        "lastModified": 1794970519,
+        "narHash": "sha256-Wh4NpHy09RYO+evXgs6ct6hZ5EzZkWFdB0f08YhYyxM=",
         "owner": "developing-today-forks",
         "repo": "openchamber",
-        "rev": "ce3173a4923e4bd365bea77f0b16c55636fbc8c2",
+        "rev": "877cf35f8f5dde8d07b450d1881f16b4aeb3cac3",
         "type": "github"
       },
       "original": {
@@ -2264,11 +2287,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1794783126,
-        "narHash": "sha256-qKoBg2CFcpBqqnXl0liu5PSxuz0YP4PF42b8+ShmfWk=",
+        "lastModified": 1794969136,
+        "narHash": "sha256-24GnJaspSuH52JbVaDGepY1w5eDxS0HbgvZV8XNmf1w=",
         "owner": "developing-today-forks",
         "repo": "opencode",
-        "rev": "5b65c2a21d2fadbdcdf58ed96f85563bc5d25966",
+        "rev": "0a8dbadfea6ae84c21913fa5ec907de945997055",
         "type": "github"
       },
       "original": {
@@ -2372,6 +2395,7 @@
     "root": {
       "inputs": {
         "affinity-nix": "affinity-nix",
+        "antigravity-cli-nix": "antigravity-cli-nix",
         "chatgpt-desktop": "chatgpt-desktop",
         "clan-core": "clan-core",
         "claude-desktop": "claude-desktop",

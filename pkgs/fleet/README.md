@@ -222,11 +222,27 @@ registry, marking each unavailable domain with the reason
 build name, the source rev and the exact enabled-capability list;
 `fleet capabilities` prints the same surface as JSON.
 
+## Operator reference
+
+- [`docs/fleet-gh-credentials.md`](docs/fleet-gh-credentials.md) —
+  the `fleet gh` credential lifecycle: secret names per leg,
+  in-process minting, rotation order and overrides, retry-safety,
+  unknown-org behavior, exit codes and raw mode (code#10744).
+- [`doc/decisions/`](../../doc/decisions/README.md) — the **fleet
+  decision records** (FDR) index: every durable ruling on queue
+  claim/park/resume semantics, supervision and stop authority, cap
+  policy, and attribution/logging, with its source ruling and
+  implementation links. **A change to any of those semantics requires
+  a decision record in the same body of work** — the same PR, or the
+  same run for non-PR work. See
+  [the rule](../../doc/decisions/README.md#5-same-body-of-work).
+
 ## Build and smoke
 
 ```sh
 nix build .#fleet .#fleet-serve .#fleet-connect .#fleet-connect-static
 ./pkgs/fleet/smoke.sh ./result ./result-1 ./result-2 ./result-3
+# (the smoke suite also runs in CI: .github/workflows/fleet-smoke.yml, #6400)
 cargo test --workspace   # unit tests (registry, config, proto, secrets)
 ```
 

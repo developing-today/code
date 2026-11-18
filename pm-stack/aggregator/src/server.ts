@@ -56,6 +56,7 @@ import {
   type RepoCensus,
 } from "./coverage.ts";
 import { loadConfig } from "./config.ts";
+import { createSupabaseRemotes } from "./remote-stores.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
 import { AA_PLAN_FACTS, sectionPoolIdsFromConfig } from "./aa.ts";
@@ -63,6 +64,7 @@ import {
   getNeedsDrew,
   listOpenNeedsDrew,
   raiseNeedsDrew,
+  needsDrewIncidentKey,
   recordAnswer,
   shouldFetchNeedsDrewCensus,
   validateNeedsDrew,
@@ -137,11 +139,13 @@ import { buildEpicRollups } from "./epics.ts";
 import { SpendRollupStore } from "./spend-rollups.ts";
 import { buildSpendCards, type SpendCardsView } from "./spend-cards.ts";
 import { buildProgramData, programRefs } from "./program.ts";
+import { buildReleaseSnapshots } from "./releases.ts";
 import {
   PROJECT_CONFIGS,
   allProjectRefs,
   buildProjectDetail,
   buildProjectSummaries,
+  projectDocTarget,
   projectConfigById,
 } from "./project-config.ts";
 import { PHASE12_REPO, parsePhase12Steps, type Phase12Snapshot } from "./phase12.ts";
@@ -333,7 +337,12 @@ async function coverageSnapshot(
   }
   return next;
 }
-const actionsStore = new ActionsStore(cfg.actionsFile);
+// #6815: the four formerly laptop-local stores (actions, activity
+// ingestion, usage snapshots, aa-last-good) move to muse-dev2 when
+// PM_AGG_STORE_BACKEND=supabase. Exactly one backend is active: with
+// "file" (the default) no remote exists and no database call is made.
+const storeRemotes = cfg.storeBackend === "supabase" ? createSupabaseRemotes() : null;
+const actionsStore = new ActionsStore(cfg.actionsFile, undefined, storeRemotes?.actions);
 const viewsStore = new ViewsStore(cfg.viewsFile);
 const eventsStore = new EventsStore(cfg.eventsFile);
 const freshnessStore = new FreshnessStore(cfg.freshnessFile);
@@ -344,7 +353,7 @@ const freshnessStore = new FreshnessStore(cfg.freshnessFile);
  *  collector's notice identity (generatedAt + sha256 of the file).
  *  Its health view feeds /health + /api/health via healthContext. */
 const freshnessReconciler = new FreshnessReconciler(freshnessStore, [fleetFeedRevisionReader(cfg.feedFile)]);
-const activityStore = new IngestionStore(cfg.activityFile);
+const activityStore = new IngestionStore(cfg.activityFile, storeRemotes?.activity);
 const githubHotListConsumer =
   cfg.source === "live" && cfg.projector.baseUrl && cfg.projector.apiToken
     ? new GithubHotListConsumer({
@@ -459,6 +468,7 @@ function pickSource(): Source {
         onFreshness: recordFreshness,
         onSourceGap: recordSourceGap,
         seenActivityIds: (source) => activityStore.seenIds(source),
+        snapshotRemote: storeRemotes?.usage,
       })
     : fixtureSource();
 }
@@ -2148,7 +2158,12 @@ async function handler(req: Request): Promise<Response> {
       // only the validation/body-parse path above earns a 400.
       let comment;
       try {
-        comment = await commentsStore.add(parsed.value, { authorVerified: authorization.authorVerified });
+        comment = await commentsStore.add(parsed.value, {
+          authorVerified: authorization.authorVerified,
+          // #1253 split 4 (#9606): "verified" only when the author came
+          // from the Access JWT above, never from the request body.
+          provenance: commentAccess.verified ? "verified" : "asserted-legacy",
+        });
       } catch (err) {
         return json({ error: `comment persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
       }
@@ -3088,10 +3103,13 @@ async function handler(req: Request): Promise<Response> {
         404,
       );
     }
-    const [items, pool, rows] = await Promise.all([
+    const [items, pool, rows, orchestration, formOpts, actionsByObject] = await Promise.all([
       source.items(allProjectRefs()).catch(() => new Map()),
       source.projects().catch(() => []),
       source.roadmap().catch(() => []),
+      source.orchestration().catch(() => null),
+      commentFormOpts(),
+      actionsStore.byObject(),
     ]);
     // #9922: the id page's Path to Phase 12 panel — fetch the #1235
     // body snapshot when the source carries one, and resolve the
@@ -3158,9 +3176,14 @@ async function handler(req: Request): Promise<Response> {
         }
       }
     }
+    // #1108 remainder: the project's derived doc (roadmap
+    // description + newest status record) from the checkout-reading
+    // source, when it carries one; null keeps the registry text.
+    const docTarget = projectDocTarget(config);
+    const projectDoc = docTarget && source.projectDoc ? await source.projectDoc(docTarget).catch(() => null) : null;
     return html(
       renderProgramProject(
-        buildProjectDetail(config, items, pool, rows),
+        buildProjectDetail(config, items, pool, rows, projectDoc),
         items,
         prov(),
         provDetail(),
@@ -3170,6 +3193,12 @@ async function handler(req: Request): Promise<Response> {
         f12,
         queueSnap,
         phaseMapping,
+        {
+          orchestration,
+          actionsByObject,
+          identities: formOpts.identities,
+          orchestrationState: source.diagnostics?.().orchestration.state,
+        },
       ),
     );
   }
@@ -3182,7 +3211,9 @@ async function handler(req: Request): Promise<Response> {
       source.projects().catch(() => []),
       source.roadmap().catch(() => []),
     ]);
-    return json(buildProjectDetail(config, items, pool, rows));
+    const docTarget = projectDocTarget(config);
+    const projectDoc = docTarget && source.projectDoc ? await source.projectDoc(docTarget).catch(() => null) : null;
+    return json(buildProjectDetail(config, items, pool, rows, projectDoc));
   }
 
   if (path === "/health") {
@@ -3239,6 +3270,19 @@ async function handler(req: Request): Promise<Response> {
       { showAllDone },
     );
     return jsonCompact({ board: bounded.board, items: bounded.items, view: resolved.view?.id ?? null });
+  }
+  if (path === "/api/releases.json") {
+    // #9067 (design section 4/6): milestone close-out snapshots over
+    // the collector's per-item milestone ingestion — program
+    // milestones get retroactive counts, release milestones get the
+    // close-out record (counts split closed vs carried-over, the
+    // release date, and the description line).
+    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
+    return json({
+      generatedAt: new Date().toISOString(),
+      source: "project pool milestone ingestion (#9067)",
+      releases: buildReleaseSnapshots(pool),
+    });
   }
   if (path === "/api/roadmap.json") {
     const { rows, items, reconciliation } = await roadmapContext();
@@ -3609,6 +3653,20 @@ async function handler(req: Request): Promise<Response> {
       via: "api",
     });
     if (!updated?.answer) return json({ error: "answer not recorded" }, 500);
+    // #8605: the answer resolves the question, so close its alert
+    // incident — the raiser posted it under this question's source with
+    // key needs-drew:<ledgerId>, and until now nothing ever closed it.
+    // Best-effort, like the stack-health close in the intake above: a
+    // store failure is logged and never fails the recorded answer.
+    try {
+      const store = await getAlertsStore();
+      if (store) {
+        await store.closeOpenIncidentByKey(item.source, needsDrewIncidentKey(ledgerId));
+        requestAlertTick();
+      }
+    } catch (err) {
+      console.error(`needs-drew answer: incident close failed (${err instanceof Error ? err.message : "error"})`);
+    }
     return json({
       ledgerId,
       answered: true,

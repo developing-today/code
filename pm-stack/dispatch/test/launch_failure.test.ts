@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { compensateOrphanedIssue, handleLaunchFailure, withCreatedSession } from "../src/launch_failure.ts";
+import { ClaimLostError } from "../src/queue.ts";
 
 // Regression tests for #2901: a wait:false launch failure used to only
 // PATCH last_error onto the task, leaving it queued forever. Both wait
@@ -83,7 +84,61 @@ describe("handleLaunchFailure", () => {
     expect(calls.closes).toEqual([["developing-today/code", 9, "not_planned"]]);
   });
 
-  async function assertCreatedSessionFailure(stage: "sendPrompt" | "claim patch") {
+  test("notes a deleted session without the may-still-be-live hedge when cleanup succeeds (#10632)", async () => {
+    const sessionId = "session/deleted-7";
+    const launchError = new Error("prompt failed");
+    const calls = {
+      deleted: [] as string[],
+      cancels: [] as [number, string][],
+      comments: [] as [string, number, string][],
+      closes: [] as [string, number, string | undefined][],
+      events: [] as string[],
+    };
+    const queue = {
+      async cancelTask(id: number, reason: string): Promise<void> {
+        calls.events.push("cancel");
+        calls.cancels.push([id, reason]);
+      },
+    };
+    const github = {
+      async comment(repo: string, issueNumber: number, body: string): Promise<void> {
+        calls.events.push("comment");
+        calls.comments.push([repo, issueNumber, body]);
+      },
+      async closeIssue(repo: string, issueNumber: number, stateReason?: "not_planned" | "completed"): Promise<void> {
+        calls.events.push("close");
+        calls.closes.push([repo, issueNumber, stateReason]);
+      },
+    };
+    const msg = await handleLaunchFailure(
+      queue,
+      github,
+      "developing-today/code",
+      4135,
+      2901,
+      launchError,
+      sessionId,
+      async (id: string) => {
+        calls.events.push("delete");
+        calls.deleted.push(id);
+      },
+    );
+    expect(msg).toBe(launchError.message);
+    // The cancel reason is written before the DELETE runs, so its hedge
+    // is still accurate and stays out of scope for this fix.
+    expect(calls.cancels).toEqual([
+      [4135, `dispatch launch failed: prompt failed; OpenCode session ${sessionId} may still be live`],
+    ]);
+    expect(calls.deleted).toEqual([sessionId]);
+    expect(calls.comments).toHaveLength(1);
+    expect(calls.comments[0][2]).toContain(`OpenCode session ${sessionId} was deleted`);
+    expect(calls.comments[0][2]).toContain("session cleanup succeeded");
+    expect(calls.comments[0][2]).not.toContain("may still be live");
+    expect(calls.events).toEqual(["cancel", "delete", "comment", "close"]);
+    expect(calls.closes).toEqual([["developing-today/code", 2901, "not_planned"]]);
+  });
+
+  async function assertCreatedSessionFailure(stage: "sendPrompt" | "claim") {
     const sessionId = "session/created-42";
     const launchError = new Error(`${stage} failed`);
     const context = { sessionId: null as string | null };
@@ -109,8 +164,8 @@ describe("handleLaunchFailure", () => {
     };
     const queue = {
       async ensureWorker(): Promise<void> {},
-      async patchTask(): Promise<void> {
-        if (stage === "claim patch") throw launchError;
+      async claimTask(): Promise<void> {
+        if (stage === "claim") throw launchError;
       },
       async cancelTask(id: number, reason: string): Promise<void> {
         calls.events.push("cancel");
@@ -136,7 +191,7 @@ describe("handleLaunchFailure", () => {
       await withCreatedSession(session.id, context, async () => {
         await opencode.sendPrompt();
         await queue.ensureWorker();
-        await queue.patchTask();
+        await queue.claimTask();
       });
     } catch (e) {
       thrown = e;
@@ -173,8 +228,8 @@ describe("handleLaunchFailure", () => {
     await assertCreatedSessionFailure("sendPrompt");
   });
 
-  test("created session is cleaned up and reported after claim patch fails", async () => {
-    await assertCreatedSessionFailure("claim patch");
+  test("created session is cleaned up and reported after the claim fails", async () => {
+    await assertCreatedSessionFailure("claim");
   });
 });
 
@@ -228,5 +283,32 @@ describe("compensateOrphanedIssue (#4917)", () => {
     await expect(compensateOrphanedIssue(broken, "developing-today/code", 6, "enqueue", new Error("x"))).resolves.toBe(
       "x",
     );
+  });
+});
+
+// #10737: a launch that lost the claim race must leave the task and its
+// issue to the worker that claimed them, and only clean up its own
+// session.
+describe("handleLaunchFailure on a lost claim (#10737)", () => {
+  test("does not cancel, note or close; deletes only the launch's session", async () => {
+    const { calls, queue, github } = stubs();
+    const deleted: string[] = [];
+    const msg = await handleLaunchFailure(
+      queue,
+      github,
+      "developing-today/code",
+      4135,
+      2901,
+      new ClaimLostError(4135, "queued"),
+      "ses_lost",
+      async (id) => {
+        deleted.push(id);
+      },
+    );
+    expect(msg).toContain("no longer queued");
+    expect(calls.cancels).toEqual([]);
+    expect(calls.comments).toEqual([]);
+    expect(calls.closes).toEqual([]);
+    expect(deleted).toEqual(["ses_lost"]);
   });
 });

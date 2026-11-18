@@ -94,6 +94,7 @@ var allowed = map[string]string{
 	"2*time.Second":        "the reply window eramcp (testsupport's fake MCP server) gives a client before answering 'dropped': a simulated peer's timing, not a product default",
 	"10*time.Second":       "the leftover grace in testsupport's sweep: how long a process seen running from a build dir gets to exit on its own before the sweep calls it leaked; it mirrors the harness's daemon drain budget",
 	"100*time.Millisecond": "the leftover poll interval in testsupport's sweep: how often the sweep re-checks a draining process inside its grace period",
+	"15*time.Second":       "how long testsupport's StopSupervisors waits for one supervisor's socket to disappear after asking it to stop: the harness reaping its own e2e children, not a product default",
 
 	// A definition, like the kibibyte shifts above: the seed's shuffle
 	// formula masks a hash to MaxInt63, and (1<<63 - 1) is that value

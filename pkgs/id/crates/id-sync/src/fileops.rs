@@ -636,9 +636,7 @@ impl<'a> FileOps<'a> {
 
     /// Hard-delete `name`: the name itself, its metadata, and its archive tags.
     pub async fn delete(&self, name: &str) -> Result<DeleteOutcome, FileOpError> {
-        if name.trim().is_empty() {
-            return Err(FileOpError::EmptyName);
-        }
+        Self::validate_name(name)?;
 
         // Renames move the file identity metadata, including these archive
         // references, to the current name. Read them before deleting metadata.

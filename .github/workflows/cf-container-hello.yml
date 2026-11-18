@@ -30,13 +30,10 @@ on:
   # signal on the changes that can break them -- the package itself
   # and the cross-package validator it loads. Path-gated to exactly
   # those changes, per the header above and .github/ci-policy.md.
-  push:
-    branches: [main]
-    paths:
-      - "pkgs/cf-container-hello/**"
-      - "pkgs/lab-ops-hub/container/app.py"
-      - "pkgs/lab-ops-hub/container/requirements.txt"
-      - ".github/workflows/cf-container-hello.yml"
+  schedule:
+    # Nightly instead of on every push to main (Drew, 2026-11-16; see
+    # .github/ci-policy.md "Nightly main CI").
+    - cron: "17 7 * * *"
   workflow_dispatch:
 
 permissions:

@@ -31,7 +31,8 @@ export type CborErrorCode =
   | "DuplicateKey"
   | "KeysOutOfOrder"
   | "TrailingBytes"
-  | "UnknownCriticalField";
+  | "UnknownCriticalField"
+  | "TooDeeplyNested";
 
 /** Typed profile error; `code` names the Rust variant it mirrors. */
 export class CborError extends Error {
@@ -75,7 +76,9 @@ function isKey(value: CborValue): boolean {
   return value.kind === "text" || value.kind === "uint" || value.kind === "int";
 }
 
-function encodeInto(value: CborValue, out: number[]): void {
+function encodeInto(value: CborValue, out: number[], depth: number): void {
+  // #11315: refuse what decodeCanonical would refuse, and bound recursion.
+  if (depth > MAX_NESTING_DEPTH) throw new CborError("TooDeeplyNested");
   switch (value.kind) {
     case "null":
       out.push(0xf6);
@@ -101,14 +104,14 @@ function encodeInto(value: CborValue, out: number[]): void {
     }
     case "array":
       encodeArgument(4, BigInt(value.value.length), out);
-      for (const item of value.value) encodeInto(item, out);
+      for (const item of value.value) encodeInto(item, out, depth + 1);
       return;
     case "map": {
       const encoded: { keyBytes: Uint8Array; val: CborValue }[] = [];
       for (const [key, val] of value.value) {
         if (!isKey(key)) throw new CborError("InvalidMapKey");
         const keyOut: number[] = [];
-        encodeInto(key, keyOut);
+        encodeInto(key, keyOut, depth + 1);
         const keyBytes = new Uint8Array(keyOut);
         if (encoded.some((e) => compareBytes(e.keyBytes, keyBytes) === 0)) {
           throw new CborError("DuplicateKey");
@@ -119,7 +122,7 @@ function encodeInto(value: CborValue, out: number[]): void {
       encodeArgument(5, BigInt(encoded.length), out);
       for (const { keyBytes, val } of encoded) {
         out.push(...keyBytes);
-        encodeInto(val, out);
+        encodeInto(val, out, depth + 1);
       }
       return;
     }
@@ -129,9 +132,15 @@ function encodeInto(value: CborValue, out: number[]): void {
 /** Encode a value in the canonical profile. */
 export function encodeCanonical(value: CborValue): Uint8Array {
   const out: number[] = [];
-  encodeInto(value, out);
+  encodeInto(value, out, 0);
   return new Uint8Array(out);
 }
+
+/** Maximum nesting depth for decoded values. Mirrors the Rust
+ * `MAX_NESTING_DEPTH`: each open array or map consumes at least one
+ * input byte, so without this bound hostile nesting recurses until
+ * the stack overflows. */
+export const MAX_NESTING_DEPTH = 64;
 
 class Reader {
   pos = 0;
@@ -171,6 +180,11 @@ class Reader {
   }
 
   value(): CborValue {
+    return this.valueInner(0);
+  }
+
+  private valueInner(depth: number): CborValue {
+    if (depth > MAX_NESTING_DEPTH) throw new CborError("TooDeeplyNested");
     const initial = this.byte();
     const major = initial >> 5;
     const additional = initial & 0x1f;
@@ -195,7 +209,7 @@ class Reader {
       case 4: {
         const len = Number(this.argument(additional));
         const items: CborValue[] = [];
-        for (let i = 0; i < len; i++) items.push(this.value());
+        for (let i = 0; i < len; i++) items.push(this.valueInner(depth + 1));
         return { kind: "array", value: items };
       }
       case 5: {
@@ -204,7 +218,7 @@ class Reader {
         let previous: Uint8Array | undefined;
         for (let i = 0; i < len; i++) {
           const keyStart = this.pos;
-          const key = this.value();
+          const key = this.valueInner(depth + 1);
           if (!isKey(key)) throw new CborError("InvalidMapKey");
           const keyBytes = this.bytes.slice(keyStart, this.pos);
           if (previous !== undefined) {
@@ -213,7 +227,7 @@ class Reader {
             if (order < 0) throw new CborError("KeysOutOfOrder");
           }
           previous = keyBytes;
-          entries.push([key, this.value()]);
+          entries.push([key, this.valueInner(depth + 1)]);
         }
         return { kind: "map", value: entries };
       }

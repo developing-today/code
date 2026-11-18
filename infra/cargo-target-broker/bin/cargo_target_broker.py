@@ -262,6 +262,10 @@ class Broker:
     def evict_until_under_cap(self, now: float) -> list[str]:
         """Evict LRU idle dirs while over cap. Never evicts a leased dir."""
         evicted: list[str] = []
+        # Dirs whose removal failed this pass: their rows stay (so the
+        # bytes still count against the cap) and they are not retried
+        # in the same pass, so a stuck dir cannot spin this loop.
+        failed: set[int] = set()
         while self.total_bytes() > self.cap_bytes:
             leased = self.leased_dir_ids()
             row = self.db.execute(
@@ -269,12 +273,34 @@ class Broker:
             ).fetchall()
             victim = None
             for r in row:
-                if r["id"] not in leased:
+                if r["id"] not in leased and r["id"] not in failed:
                     victim = self._row(r)
                     break
             if victim is None:
                 break
-            shutil.rmtree(victim.path, ignore_errors=True)
+            error: OSError | None = None
+            try:
+                shutil.rmtree(victim.path)
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                error = e
+            if victim.path.exists():
+                # #11417: the dir (or part of it) is still on disk. Keep
+                # its row and re-measure what is left, so the cap keeps
+                # counting it and adopt_strays never re-registers it.
+                remaining = self.dir_size(victim.path)
+                self.db.execute(
+                    "UPDATE dirs SET bytes_cached = ? WHERE id = ?",
+                    (remaining, victim.id),
+                )
+                self.bump("eviction_failures")
+                failed.add(victim.id)
+                eprint(
+                    f"target-broker: could not evict {victim.path}: "
+                    f"{error or 'directory still present'}; kept {remaining} bytes on the books"
+                )
+                continue
             self.db.execute("DELETE FROM dirs WHERE id = ?", (victim.id,))
             self.bump("evictions")
             evicted.append(str(victim.path))
@@ -427,6 +453,7 @@ class Broker:
                     "dirs_created",
                     "dirs_adopted",
                     "evictions",
+                    "eviction_failures",
                     "leases_expired",
                 )
             },
@@ -527,6 +554,7 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"checkouts: {warm} warm / {cold} cold ({rate:.0f}% warm),"
                 f" evictions: {c['evictions']},"
+                f" failed evictions: {c['eviction_failures']},"
                 f" expired leases: {c['leases_expired']}"
             )
         return 0

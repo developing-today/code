@@ -151,6 +151,7 @@ fn scenario(seed: u64) -> Vec<Step> {
             checkpoint: None,
             rotation: None,
             chat: None,
+            anchor: None,
         };
         let body = action.as_ref().map(|action| encode_body(action).unwrap());
         let event = sign(&key(who), seq, backlink, body.as_deref(), ext).unwrap();

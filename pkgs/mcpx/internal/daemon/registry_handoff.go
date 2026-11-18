@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
+	"github.com/developing-today/code/pkgs/mcpx/internal/mcpclient"
 	"github.com/developing-today/code/pkgs/mcpx/internal/pool"
 )
 
@@ -188,4 +190,45 @@ func (a *Adoption) Attach() {
 // Server.waitOrphanTerminations), and so do tests.
 func (a *Adoption) WaitOrphanTerminations() {
 	a.orphanWG.Wait()
+}
+
+// AdoptSupervised runs the #9962 state-dir scan over every pool: a
+// supervised server whose supervisor is already running (left behind
+// by a previous daemon) is adopted by attach, so its child keeps its
+// PID across the restart and no duplicate is spawned. Called at daemon
+// startup and again after a takeover commits — at startup a live
+// predecessor may still be attached (the scan then no-ops); after the
+// commit the predecessor has detached and the attach succeeds.
+func (r *Registry) AdoptSupervised(ctx context.Context) {
+	r.mu.RLock()
+	seen := map[*pool.Pool]bool{}
+	var pools []*pool.Pool
+	for _, name := range r.order {
+		if p := r.pools[name]; !seen[p] {
+			seen[p] = true
+			pools = append(pools, p)
+		}
+	}
+	r.mu.RUnlock()
+	for _, p := range pools {
+		p.AdoptRunningSupervised(ctx)
+	}
+}
+
+// ReapOrphanedSupervisors runs the reap half of the #9963
+// adopt-or-reap scan at daemon startup: a supervisor socket no
+// configured supervised server maps to belongs to a server that
+// left the config (or opted out), so its supervisor and child are
+// terminated and the reap logged; a socket whose supervisor refuses
+// (a daemon attached, a protocol-version mismatch) and stale socket
+// files are logged and left or removed accordingly. See
+// mcpclient.ScanSupervisorSockets.
+func (r *Registry) ReapOrphanedSupervisors() {
+	var configured []string
+	for _, name := range r.Names() {
+		if v, ok := r.View(name); ok && v.Stdio() && v.Mcpx.SupervisedEnabled() {
+			configured = append(configured, name)
+		}
+	}
+	mcpclient.ScanSupervisorSockets(mcpclient.StateDir(), configured, r.logf)
 }

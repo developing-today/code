@@ -1674,10 +1674,12 @@ mod tests {
                 "{entry:?}"
             );
         }
-        // The max-version pin moved to version 9 with signed play
-        // (#4346), after version 8 for recurring schedules (#1355);
-        // the lease entries still require exactly 7.
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_SIGNED_PLAY);
+        // The max-version pin moved to version 11 with program-bundle
+        // installs (#8280), after version 10 for portal grants (F12.14
+        // wiring, code#1068), version 9 for signed play (#4346) and
+        // version 8 for recurring schedules (#1355); the lease entries
+        // still require exactly 7.
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_PROGRAM_BUNDLE);
         // A checkpoint carrying a non-bootstrap lease also requires
         // version 7; one without a lease keeps its existing version.
         let mut lease = WriteLease::bootstrap();
@@ -2696,6 +2698,103 @@ mod tests {
         core.active_module_provenance = Some(provenance.clone());
         core.active_seed = 7;
         let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(
+            restored.core.active_module_provenance,
+            Some(provenance.clone())
+        );
+        assert_eq!(restored.program.unwrap().provenance, Some(provenance));
+    }
+
+    fn sample_bundle_provenance() -> ModuleProvenance {
+        let author = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let bundle = crate::program_bundle::export(
+            b"bundle payload".to_vec(),
+            crate::program_bundle::ProgramSpec {
+                name: "chess",
+                version: 1,
+                licence: None,
+                description: None,
+                categories: &[],
+            },
+            &author,
+        )
+        .unwrap();
+        ModuleProvenance::Bundle(bundle.provenance())
+    }
+
+    fn install_event(provenance: Option<ModuleProvenance>) -> WorldEvent {
+        WorldEvent {
+            sequence: 1,
+            participant_id: 0,
+            kind: WorldEventKind::ProgramInstalled {
+                module_hash: "h".to_owned(),
+                seed: 1,
+                provenance,
+                trust: None,
+            },
+        }
+    }
+
+    /// #8280: an older binary cannot parse bundle provenance, so every entry
+    /// that carries it raises the header to the program-bundle version, and
+    /// nothing else does.
+    #[test]
+    fn bundle_provenance_requires_the_program_bundle_journal_version() {
+        let bundle = sample_bundle_provenance();
+        let committed = |provenance| JournalEntry::Committed {
+            event: install_event(provenance),
+        };
+        assert_eq!(
+            journal_version_required_by(&committed(Some(bundle.clone()))),
+            JOURNAL_VERSION_PROGRAM_BUNDLE
+        );
+        assert_eq!(
+            journal_version_required_by(&committed(Some(ModuleProvenance::Artifact))),
+            JOURNAL_VERSION
+        );
+        assert_eq!(
+            journal_version_required_by(&committed(None)),
+            JOURNAL_VERSION
+        );
+        let part = JournalEntry::CheckpointEventsPart {
+            sequence: 1,
+            part_index: 0,
+            part_count: 1,
+            events: vec![install_event(Some(bundle))],
+        };
+        assert_eq!(
+            journal_version_required_by(&part),
+            JOURNAL_VERSION_PROGRAM_BUNDLE
+        );
+        let plain_part = JournalEntry::CheckpointEventsPart {
+            sequence: 1,
+            part_index: 0,
+            part_count: 1,
+            events: vec![install_event(None)],
+        };
+        assert_eq!(
+            journal_version_required_by(&plain_part),
+            JOURNAL_VERSION_CHECKPOINT_PARTS
+        );
+    }
+
+    #[test]
+    fn bundle_provenance_survives_checkpoint_compaction_and_restore() {
+        let provenance = sample_bundle_provenance();
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        core.active_module_provenance = Some(provenance.clone());
+        core.active_seed = 7;
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(
+            entries.iter().any(|entry| matches!(
+                entry,
+                JournalEntry::Created { version, .. } if *version == JOURNAL_VERSION_PROGRAM_BUNDLE
+            )),
+            "the compacted header carries the program-bundle version: {entries:?}"
+        );
 
         let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
         assert_eq!(
@@ -5258,6 +5357,85 @@ mod tests {
         let fresh: serde_json::Value = serde_json::from_str(&heard[1]).unwrap();
         assert_eq!(fresh["id"], "say-fresh");
         assert_eq!(fresh["ok"], true);
+    }
+
+    /// A program that wants a `client.file.read` whose id flips from
+    /// `read-stale` to `read-fresh` once it hears the first result.
+    struct ReopenRead {
+        heard: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl WorldProgram for ReopenRead {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::System { event } = &event.kind {
+                self.heard.lock().unwrap().push(event.clone());
+            }
+            Ok(())
+        }
+
+        fn wants(&mut self) -> Result<Option<String>> {
+            let id = if self.heard.lock().unwrap().is_empty() {
+                "read-stale"
+            } else {
+                "read-fresh"
+            };
+            Ok(Some(
+                serde_json::json!({
+                    "v": 1,
+                    "requests": [{
+                        "id": id,
+                        "cap": "client.file.read",
+                        "args": {"path": "notes.txt"},
+                    }],
+                })
+                .to_string(),
+            ))
+        }
+    }
+
+    /// F13.7 step 6: the restart rule covers client providers too. A
+    /// pre-open `client.file.read` want is refused `restarted` and
+    /// never routed to a client — no local file is read unattributed
+    /// after a reopen — and the refusal joins the provider audit
+    /// trail (broker-level coverage:
+    /// `restarted_refusal_is_recorded_in_the_audit_trail`). A fresh
+    /// want in the same pass still reaches the broker.
+    #[tokio::test]
+    async fn reopened_client_provider_wants_are_refused_not_routed() {
+        let mut core = world(16);
+        core.ledger
+            .set_allowed(BTreeSet::from(["client.file.read".to_owned()]));
+        core.ledger
+            .set_granted(BTreeSet::from(["client.file.read".to_owned()]));
+        let heard = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut actor = WorldActor::for_test(
+            core,
+            Box::new(ReopenRead {
+                heard: heard.clone(),
+            }),
+            None,
+        );
+        actor.stale_wants_at_open = BTreeSet::from(["read-stale".to_owned()]);
+
+        actor.after_change().await;
+
+        let heard = heard.lock().unwrap();
+        assert_eq!(heard.len(), 2, "unexpected deliveries: {heard:?}");
+        let refusal: serde_json::Value = serde_json::from_str(&heard[0]).unwrap();
+        assert_eq!(refusal["id"], "read-stale");
+        assert_eq!(refusal["ok"], false);
+        assert_eq!(refusal["error"], "actor_denied");
+        assert_eq!(refusal["reason"], "restarted");
+        // The fresh want reached the broker, which refused it
+        // unattributed (this harness has no joined session) rather
+        // than routing it to any client.
+        let fresh: serde_json::Value = serde_json::from_str(&heard[1]).unwrap();
+        assert_eq!(fresh["id"], "read-fresh");
+        assert_eq!(fresh["ok"], false);
+        assert_eq!(fresh["error"], "actor_denied");
+        assert_eq!(fresh["reason"], "unattributed");
+        assert_eq!(actor.provider_broker.pending_count(), 0);
+        assert!(actor.handled_requests.contains("read-stale"));
     }
 
     /// The capture half of the restart rule: `spawn_restored` refuses the
@@ -8105,6 +8283,280 @@ mod tests {
             .unwrap();
         assert_eq!(event.kind, WorldEventKind::Input(b"cell-0".to_vec()));
     }
+    // ---- Phase 3 (#3805, design #2819): handoff at the actor boundary ----
+
+    struct LeaseWorld {
+        handle: WorldHandle,
+        token: JoinCapability,
+        journal: TransferJournal,
+        clock: Arc<ManualClock>,
+        program_updates: Arc<AtomicU64>,
+    }
+
+    struct LeaseTestProgram(Arc<AtomicU64>);
+
+    impl WorldProgram for LeaseTestProgram {
+        fn update(&mut self, _event: &WorldEvent) -> Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn wants(&mut self) -> Result<Option<String>> {
+            Ok(None)
+        }
+    }
+
+    async fn lease_world() -> LeaseWorld {
+        let clock = Arc::new(ManualClock::new(1_000));
+        let core = WorldCore::new_with_clock("w", WorldLimits::default(), clock.clone()).unwrap();
+        let journal = TransferJournal(Arc::new(std::sync::Mutex::new(vec![lease_header()])));
+        let program_updates = Arc::new(AtomicU64::new(0));
+        let handle = WorldHandle::spawn_durable(
+            core,
+            Box::new(LeaseTestProgram(program_updates.clone())),
+            Some(Box::new(journal.clone())),
+        );
+        let (_, token) = handle.issue("ann", WorldScopes::GUEST).await.unwrap();
+        LeaseWorld {
+            handle,
+            token,
+            journal,
+            clock,
+            program_updates,
+        }
+    }
+
+    fn committed_inputs(journal: &TransferJournal) -> usize {
+        journal
+            .entries()
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry,
+                    JournalEntry::Committed { event }
+                        if matches!(event.kind, WorldEventKind::Input(_))
+                )
+            })
+            .count()
+    }
+
+    fn lease_error(error: &anyhow::Error) -> Option<LeaseRejectionReason> {
+        error.downcast_ref::<LeaseRejectionReason>().copied()
+    }
+
+    fn lease_entries(journal: &TransferJournal) -> Vec<JournalEntry> {
+        journal
+            .entries()
+            .into_iter()
+            .filter(|entry| matches!(entry, JournalEntry::LeaseHandedOff { .. }))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn do_to_native_handoff_fences_the_do_executor_and_refuses_queued_commands() {
+        let w = lease_world().await;
+        w.handle
+            .input(w.token.clone(), b"0".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(committed_inputs(&w.journal), 1);
+        assert_eq!(w.program_updates.load(Ordering::SeqCst), 1);
+
+        // The handoff is queued ahead of two in-flight commands: they were
+        // received by the DO executor but not journaled before the boundary.
+        let (handoff, first, second) = tokio::join!(
+            w.handle.handoff_write_lease("native-1", 1, Some(31_000)),
+            w.handle.input(w.token.clone(), b"0".to_vec()),
+            w.handle.chat(w.token.clone(), "late"),
+        );
+        assert_eq!(handoff.unwrap(), 1);
+        assert_eq!(
+            lease_error(&first.unwrap_err()),
+            Some(LeaseRejectionReason::NotHolder)
+        );
+        assert_eq!(
+            lease_error(&second.unwrap_err()),
+            Some(LeaseRejectionReason::NotHolder)
+        );
+        assert_eq!(
+            w.program_updates.load(Ordering::SeqCst),
+            1,
+            "a command behind the handoff must not execute in the old program"
+        );
+
+        // The old writer's durable prefix ends at the control record; no
+        // committed command follows that boundary from the DO actor.
+        assert_eq!(committed_inputs(&w.journal), 1);
+        let entries = w.journal.entries();
+        assert!(matches!(
+            entries.last(),
+            Some(JournalEntry::LeaseHandedOff { from, to, epoch: 1, .. })
+                if from == DO_WRITE_LEASE_HOLDER && to == "native-1"
+        ));
+        assert!(
+            !entries
+                .iter()
+                .skip_while(|entry| !matches!(entry, JournalEntry::LeaseHandedOff { .. }))
+                .any(|entry| matches!(entry, JournalEntry::Committed { .. }))
+        );
+
+        // The DO cannot hand off again: it no longer holds the lease.
+        assert!(
+            w.handle
+                .handoff_write_lease("native-2", 2, Some(31_000))
+                .await
+                .is_err()
+        );
+        assert_eq!(lease_entries(&w.journal).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn native_to_do_handback_preserves_committed_prefix_and_refuses_uncommitted_retry() {
+        let w = lease_world().await;
+        w.handle
+            .input(w.token.clone(), b"0".to_vec())
+            .await
+            .unwrap();
+        w.handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+        // Native-era commands reach the DO executor only to be refused.
+        let refused = w.handle.input(w.token.clone(), b"0".to_vec()).await;
+        assert_eq!(
+            lease_error(&refused.unwrap_err()),
+            Some(LeaseRejectionReason::NotHolder)
+        );
+
+        // De-escalation: the lease returns to the DO at the next epoch with
+        // no term.
+        assert_eq!(
+            w.handle
+                .handoff_write_lease(DO_WRITE_LEASE_HOLDER, 2, None)
+                .await
+                .unwrap(),
+            2
+        );
+        // The client retries the refused command; it commits exactly once.
+        w.handle
+            .input(w.token.clone(), b"0".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(committed_inputs(&w.journal), 2);
+
+        // The journal alone rebuilds DO-held epoch 2: replay is the oracle.
+        let restored =
+            WorldCore::restore("w", WorldLimits::default(), w.journal.entries()).unwrap();
+        let lease = restored.core.write_lease();
+        assert_eq!(lease.holder.as_deref(), Some(DO_WRITE_LEASE_HOLDER));
+        assert_eq!(lease.epoch, 2);
+        assert_eq!(
+            lease.transitions().map(|t| t.kind).collect::<Vec<_>>(),
+            [
+                LeaseTransitionKind::HandedOff,
+                LeaseTransitionKind::HandedOff
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_native_lease_fences_the_do_until_recovery_is_journaled() {
+        // Walkthrough: lease expiry mid-turn / native crash. Expiry fences
+        // the native holder but grants no new owner.
+        let w = lease_world().await;
+        w.handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+        w.clock.advance(60_000);
+        let refused = w.handle.input(w.token.clone(), b"0".to_vec()).await;
+        assert_eq!(
+            lease_error(&refused.unwrap_err()),
+            Some(LeaseRejectionReason::NotHolder)
+        );
+        assert_eq!(committed_inputs(&w.journal), 0);
+
+        // Expiry does not grant the DO ownership. Normal expiry recovery
+        // (journaled revoke then grant) is a separate slice; a handoff cannot
+        // silently turn an expired term into a live one.
+        assert!(
+            w.handle
+                .handoff_write_lease(DO_WRITE_LEASE_HOLDER, 2, None)
+                .await
+                .is_err()
+        );
+        let refused_again = w.handle.input(w.token.clone(), b"0".to_vec()).await;
+        assert!(refused_again.is_err());
+        assert_eq!(committed_inputs(&w.journal), 0);
+    }
+
+    #[tokio::test]
+    async fn stale_handoff_proposals_are_refused_and_journal_nothing() {
+        // A host working from a stale lease view proposes an epoch the
+        // authority has already passed.
+        let w = lease_world().await;
+        w.handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap();
+        let before = w.journal.entries().len();
+        // Stale: proposes epoch 1 again, and a handback that skips epochs.
+        assert!(
+            w.handle
+                .handoff_write_lease(DO_WRITE_LEASE_HOLDER, 1, None)
+                .await
+                .is_err()
+        );
+        assert!(
+            w.handle
+                .handoff_write_lease(DO_WRITE_LEASE_HOLDER, 3, None)
+                .await
+                .is_err()
+        );
+        // A native lease needs a future term; the DO lease must be untermed.
+        assert!(
+            w.handle
+                .handoff_write_lease(DO_WRITE_LEASE_HOLDER, 2, Some(99_000))
+                .await
+                .is_err()
+        );
+        assert_eq!(w.journal.entries().len(), before);
+
+        // The correct, caught-up proposal still succeeds afterwards.
+        w.handle
+            .handoff_write_lease(DO_WRITE_LEASE_HOLDER, 2, None)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_handoff_append_leaves_the_do_holding_but_read_only() {
+        // An append failure at the boundary must not move the lease; the
+        // world fails closed.
+        struct FailingJournal;
+        impl WorldJournal for FailingJournal {
+            fn append(&mut self, _entry: &JournalEntry) -> Result<()> {
+                bail!("injected append failure")
+            }
+        }
+        let clock = Arc::new(ManualClock::new(1_000));
+        let core = WorldCore::new_with_clock("w", WorldLimits::default(), clock).unwrap();
+        let handle =
+            WorldHandle::spawn_durable(core, Box::new(Mock::new()), Some(Box::new(FailingJournal)));
+        assert!(
+            handle
+                .handoff_write_lease("native-1", 1, Some(31_000))
+                .await
+                .is_err()
+        );
+        // No holder change was acknowledged: the world is read-only, not
+        // handed to a second executor.
+        let again = handle
+            .handoff_write_lease("native-1", 1, Some(31_000))
+            .await
+            .unwrap_err();
+        assert!(format!("{again:#}").contains("storage failed"), "{again:#}");
+    }
 }
 
 #[cfg(test)]
@@ -8909,6 +9361,173 @@ mod schedule_tests {
         let _ = response.await.unwrap().unwrap();
     }
 
+    /// A journal that records how the actor persisted - plain appends
+    /// vs batches with their sizes - so a group-commit test observes the
+    /// batching itself, not just its effects (#8239).
+    #[derive(Clone, Default)]
+    struct BatchJournal {
+        entries: Arc<std::sync::Mutex<Vec<JournalEntry>>>,
+        appends: Arc<std::sync::Mutex<usize>>,
+        batches: Arc<std::sync::Mutex<Vec<usize>>>,
+    }
+
+    impl BatchJournal {
+        fn for_world(world_id: &str) -> Self {
+            let journal = Self::default();
+            journal.entries.lock().unwrap().push(JournalEntry::Created {
+                world_id: world_id.to_owned(),
+                version: JOURNAL_VERSION,
+            });
+            journal
+        }
+
+        fn committed(&self) -> Vec<JournalEntry> {
+            self.entries
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|entry| matches!(entry, JournalEntry::Committed { .. }))
+                .cloned()
+                .collect()
+        }
+    }
+
+    impl WorldJournal for BatchJournal {
+        fn append(&mut self, entry: &JournalEntry) -> Result<()> {
+            *self.appends.lock().unwrap() += 1;
+            self.entries.lock().unwrap().push(entry.clone());
+            Ok(())
+        }
+
+        fn append_batch(&mut self, entries: &[JournalEntry]) -> Result<()> {
+            self.batches.lock().unwrap().push(entries.len());
+            self.entries.lock().unwrap().extend(entries.iter().cloned());
+            Ok(())
+        }
+    }
+
+    /// A program that refuses the input `boom` and accepts everything else.
+    struct BatchProgram;
+
+    impl WorldProgram for BatchProgram {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::Input(input) = &event.kind {
+                ensure!(input != b"boom", "the program refuses this input");
+            }
+            Ok(())
+        }
+    }
+
+    fn batch_actor(
+        id: &str,
+        bounds: CapabilityBounds,
+    ) -> (WorldActor, JoinCapability, BatchJournal) {
+        let journal = BatchJournal::for_world(id);
+        let mut core = WorldCore::new(id, WorldLimits::default()).unwrap();
+        let (ann, token) = core
+            .issue_capability("ann", WorldScopes::GUEST, bounds)
+            .unwrap();
+        let issued = core.issued_entry(ann.id).unwrap();
+        journal.entries.lock().unwrap().push(issued);
+        let actor = WorldActor::for_test(
+            core,
+            Box::new(BatchProgram),
+            Some(Box::new(journal.clone())),
+        );
+        (actor, token, journal)
+    }
+
+    /// Drive one drained batch through the actor's batch handler and
+    /// collect every reply, in order.
+    async fn batch_replies(
+        actor: &mut WorldActor,
+        token: &JoinCapability,
+        inputs: &[&[u8]],
+    ) -> Vec<Result<WorldEvent>> {
+        let mut commands = Vec::new();
+        let mut responses = Vec::new();
+        for input in inputs {
+            let (reply, response) = tokio::sync::oneshot::channel();
+            commands.push(WorldCommand::Input {
+                token: token.clone(),
+                input: input.to_vec(),
+                session_id: None,
+                signed_move: None,
+                reply,
+            });
+            responses.push(response);
+        }
+        actor.handle_input_batch(commands).await;
+        let mut results = Vec::new();
+        for response in responses {
+            results.push(response.await.unwrap());
+        }
+        results
+    }
+
+    // #8239 oracle: a batch of N inputs commits N events in order, with
+    // consecutive sequences, persisted as ONE batch append and no plain
+    // appends - one sync covers the whole group.
+    #[tokio::test]
+    async fn input_batch_commits_n_events_with_one_batch_append() {
+        let (mut actor, token, journal) = batch_actor("batch-ok", CapabilityBounds::default());
+        let results = batch_replies(
+            &mut actor,
+            &token,
+            &[b"one", b"two", b"three", b"four", b"five"],
+        )
+        .await;
+        let sequences: Vec<u64> = results
+            .iter()
+            .map(|result| result.as_ref().unwrap().sequence)
+            .collect();
+        assert_eq!(sequences, vec![1, 2, 3, 4, 5]);
+        assert_eq!(journal.committed().len(), 5);
+        assert_eq!(*journal.batches.lock().unwrap(), vec![5]);
+        assert_eq!(*journal.appends.lock().unwrap(), 0);
+    }
+
+    // #8239 oracle: staging stops at the first program rejection - the
+    // staged prefix commits, the rejected input is answered with the
+    // rejection the single path produces, and the input after it is
+    // routed through the single path, where the now-unhealthy program
+    // refuses it as unavailable. Nothing after the prefix is journaled.
+    #[tokio::test]
+    async fn input_batch_stops_at_program_rejection() {
+        let (mut actor, token, journal) = batch_actor("batch-boom", CapabilityBounds::default());
+        let results = batch_replies(&mut actor, &token, &[b"one", b"boom", b"two"]).await;
+        assert!(results[0].is_ok(), "{:?}", results[0]);
+        let rejected = format!("{:#}", results[1].as_ref().unwrap_err());
+        assert!(
+            rejected.contains("world program rejected input"),
+            "{rejected}"
+        );
+        let unavailable = format!("{:#}", results[2].as_ref().unwrap_err());
+        assert!(unavailable.contains("unavailable"), "{unavailable}");
+        assert_eq!(journal.committed().len(), 1);
+        assert_eq!(*journal.batches.lock().unwrap(), vec![1]);
+        assert!(!actor.program_healthy);
+    }
+
+    // #8239 oracle: staged spends count against the uses limit before
+    // commit - a batch of three from a participant with two uses left
+    // admits exactly two, and the third is refused at prepare time with
+    // the single path's uses error.
+    #[tokio::test]
+    async fn input_batch_accounts_staged_spends_against_uses() {
+        let bounds = CapabilityBounds {
+            expires_at: None,
+            uses: Some(2),
+        };
+        let (mut actor, token, journal) = batch_actor("batch-uses", bounds);
+        let results = batch_replies(&mut actor, &token, &[b"one", b"two", b"three"]).await;
+        assert!(results[0].is_ok(), "{:?}", results[0]);
+        assert!(results[1].is_ok(), "{:?}", results[1]);
+        let refused = format!("{:#}", results[2].as_ref().unwrap_err());
+        assert!(refused.contains("no uses left"), "{refused}");
+        assert_eq!(journal.committed().len(), 2);
+    }
+
     #[tokio::test]
     async fn input_session_attribution_is_ephemeral_and_distinguishes_connections() {
         let (mut actor, _, token, journal) = scheduling_actor("sessions", &[], false);
@@ -9222,6 +9841,107 @@ mod schedule_tests {
                 .filter(|entry| matches!(entry, JournalEntry::ScheduleFired { .. }))
                 .count(),
             1
+        );
+    }
+
+    /// The ids of the journal's `ScheduleFired` entries, in journal order:
+    /// the fire history an operator reads from the world's journal.
+    fn journaled_fires(journal: &Recorded) -> Vec<String> {
+        journal
+            .entries()
+            .into_iter()
+            .filter_map(|entry| match entry {
+                JournalEntry::ScheduleFired { id } => Some(id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// #8342 (#796 item 10-2, the firing ceiling): a firing storm cannot
+    /// exceed [`crate::world_caps::MAX_SCHEDULE_FIRES_PER_WAKEUP`] fires in
+    /// one wakeup.
+    ///
+    /// Oracle: that declared constant, checked against the journal's
+    /// `ScheduleFired` entries (the visible fire history). No live path can
+    /// pend more schedules than the bound, because
+    /// [`crate::world_caps::MAX_PENDING_SCHEDULES`] is no larger, so the
+    /// storm is planted directly to exercise the truncation itself: the
+    /// earliest due fire first, and the rest fire on the next wakeup with
+    /// none lost.
+    #[tokio::test]
+    async fn a_firing_storm_is_bounded_per_wakeup_and_the_rest_fire_next() {
+        let bound = crate::world_caps::MAX_SCHEDULE_FIRES_PER_WAKEUP;
+        assert!(
+            crate::world_caps::MAX_PENDING_SCHEDULES <= bound,
+            "a world's pending cap fits in one wakeup"
+        );
+        let extra = 8;
+        let (mut actor, clock, _token, journal) =
+            scheduling_actor("sched-storm", &["schedule.at"], false);
+        for index in 0..bound + extra {
+            let at = EPOCH_MS + u64::try_from(index).unwrap();
+            actor
+                .core
+                .schedules
+                .insert(format!("s{index:03}"), PendingSchedule::one_shot(at));
+        }
+        clock.advance(u64::try_from(bound + extra).unwrap());
+
+        actor.fire_schedules().await;
+        let first = journaled_fires(&journal);
+        assert_eq!(first.len(), bound, "one wakeup fires at most the bound");
+        let earliest: Vec<String> = (0..bound).map(|index| format!("s{index:03}")).collect();
+        assert_eq!(first, earliest, "the earliest due schedules fire first");
+        assert_eq!(
+            schedule_fires(&actor).len(),
+            bound,
+            "the program received exactly the journaled fires"
+        );
+        assert_eq!(actor.core.schedules.len(), extra, "the rest stay pending");
+
+        actor.fire_schedules().await;
+        assert_eq!(journaled_fires(&journal).len(), bound + extra);
+        assert!(actor.core.schedules.is_empty(), "no fire was lost");
+        actor.fire_schedules().await;
+        assert_eq!(
+            journaled_fires(&journal).len(),
+            bound + extra,
+            "nothing fires twice"
+        );
+    }
+
+    /// #8342: a recurring schedule that fell many intervals behind (a host
+    /// asleep, say) fires once per wakeup, never a catch-up burst, and its
+    /// series still ends at its count. Oracle: one journaled `ScheduleFired`
+    /// per wakeup and the schedule's `remaining` count.
+    #[tokio::test]
+    async fn a_recurring_schedule_far_behind_fires_once_per_wakeup() {
+        let (mut actor, clock, _token, journal) =
+            scheduling_actor("sched-behind", &["schedule.at"], false);
+        let remaining = 3;
+        actor.core.schedules.insert(
+            "r".to_owned(),
+            PendingSchedule {
+                at_ms: EPOCH_MS + 10,
+                interval_ms: Some(10),
+                remaining,
+                target: None,
+            },
+        );
+        clock.advance(10_000);
+        for wakeup in 1..=remaining {
+            actor.fire_schedules().await;
+            assert_eq!(
+                journaled_fires(&journal).len(),
+                usize::try_from(wakeup).unwrap(),
+                "wakeup {wakeup} fires the overdue series once"
+            );
+        }
+        assert!(actor.core.schedules.is_empty(), "the series ended");
+        actor.fire_schedules().await;
+        assert_eq!(
+            journaled_fires(&journal),
+            vec!["r".to_owned(); usize::try_from(remaining).unwrap()]
         );
     }
 
@@ -10241,6 +10961,510 @@ mod schedule_tests {
         assert_eq!(restored.core.schedule_grants, core.schedule_grants);
         assert_eq!(restored.core.schedule_receipts, core.schedule_receipts);
     }
+    // ---- F12.14 portals wiring (code#1068) ----
+
+    /// A program that records every host (system) event it receives,
+    /// so a test can see exactly what a portal delivery handed it.
+    struct PortalRecorder {
+        seen: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl WorldProgram for PortalRecorder {
+        fn update(&mut self, event: &WorldEvent) -> Result<()> {
+            if let WorldEventKind::System { event } = &event.kind {
+                self.seen.lock().unwrap().push(event.clone());
+            }
+            Ok(())
+        }
+
+        fn wants(&mut self) -> Result<Option<String>> {
+            Ok(None)
+        }
+    }
+
+    /// The test transport: a switchboard over a fixed set of handles,
+    /// standing in for `HubPortalDelivery` exactly as `RecordingSink`
+    /// stands in for `HubScheduleDelivery` in the schedule tests.
+    struct PortalSwitchboard {
+        handles: Arc<Mutex<BTreeMap<String, WorldHandle>>>,
+    }
+
+    impl PortalSwitchboard {
+        fn handle(&self, world: &str) -> Option<WorldHandle> {
+            self.handles.lock().unwrap().get(world).cloned()
+        }
+    }
+
+    impl PortalDelivery for PortalSwitchboard {
+        fn peer_portal_grants<'a>(
+            &'a self,
+            world: &'a str,
+        ) -> PortalDeliveryFuture<'a, Option<PortalGrants>> {
+            Box::pin(async move {
+                let handle = self.handle(world)?;
+                handle.portal_grants().await.ok()
+            })
+        }
+
+        fn deliver_portal<'a>(
+            &'a self,
+            source: &'a str,
+            target: &'a str,
+            message: &'a str,
+        ) -> PortalDeliveryFuture<'a, Result<(), PortalSendError>> {
+            Box::pin(async move {
+                let Some(handle) = self.handle(target) else {
+                    return Err(PortalSendError::Unavailable(format!(
+                        "unknown portal target {target}"
+                    )));
+                };
+                handle
+                    .deliver_portal_message(source.to_owned(), message.to_owned())
+                    .await
+            })
+        }
+    }
+
+    /// Two spawned worlds wired to each other through a switchboard,
+    /// plus the recorders watching what each program received.
+    async fn portal_pair() -> (
+        WorldHandle,
+        WorldHandle,
+        Arc<Mutex<Vec<String>>>,
+        Arc<Mutex<Vec<String>>>,
+    ) {
+        let seen_a = Arc::new(Mutex::new(Vec::new()));
+        let seen_b = Arc::new(Mutex::new(Vec::new()));
+        let a = WorldHandle::spawn_with_program(
+            WorldCore::new("world-a", WorldLimits::default()).unwrap(),
+            Box::new(PortalRecorder {
+                seen: Arc::clone(&seen_a),
+            }),
+        );
+        let b = WorldHandle::spawn_with_program(
+            WorldCore::new("world-b", WorldLimits::default()).unwrap(),
+            Box::new(PortalRecorder {
+                seen: Arc::clone(&seen_b),
+            }),
+        );
+        let switchboard = Arc::new(PortalSwitchboard {
+            handles: Arc::new(Mutex::new(BTreeMap::from([
+                ("world-a".to_owned(), a.clone()),
+                ("world-b".to_owned(), b.clone()),
+            ]))),
+        });
+        a.set_portal_delivery(switchboard.clone()).await.unwrap();
+        b.set_portal_delivery(switchboard).await.unwrap();
+        (a, b, seen_a, seen_b)
+    }
+
+    async fn grant_both(a: &WorldHandle, b: &WorldHandle) {
+        a.admin_set_portal_grant("world-b".to_owned(), true)
+            .await
+            .unwrap();
+        b.admin_set_portal_grant("world-a".to_owned(), true)
+            .await
+            .unwrap();
+    }
+
+    fn portal_audit(handle: &WorldHandle, action: &str) -> Vec<AuditRecord> {
+        handle
+            .audit_records()
+            .into_iter()
+            .filter(|record| record.action == action)
+            .collect()
+    }
+
+    /// Oracle (F12.14 exit proof, wiring slice): a granted pair
+    /// exchanges a message — the receiver's program gets a host event
+    /// naming the sender, and EACH world's audit log carries exactly
+    /// one portal entry for the exchange, send on the sender and
+    /// deliver on the receiver. The admin grants themselves are
+    /// audit-recorded like every other admin command.
+    #[tokio::test]
+    async fn portal_granted_pair_exchanges_with_audit_on_both_sides() {
+        let (a, b, _seen_a, seen_b) = portal_pair().await;
+        grant_both(&a, &b).await;
+        a.send_portal_message("world-b".to_owned(), "hello through the portal".to_owned())
+            .await
+            .unwrap();
+        let seen = seen_b.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1);
+        let event: serde_json::Value = serde_json::from_str(&seen[0]).unwrap();
+        assert_eq!(event["cap"], "portal");
+        assert_eq!(event["event"], "message");
+        assert_eq!(event["from"], "world-a");
+        assert_eq!(event["message"], "hello through the portal");
+
+        let sends = portal_audit(&a, "portal.send");
+        assert_eq!(sends.len(), 1);
+        assert_eq!(sends[0].outcome, "accepted");
+        assert_eq!(sends[0].parameters["from_world"], "world-a");
+        assert_eq!(sends[0].parameters["to_world"], "world-b");
+        assert_eq!(sends[0].parameters["bytes"], 24);
+        let delivers = portal_audit(&b, "portal.deliver");
+        assert_eq!(delivers.len(), 1);
+        assert_eq!(delivers[0].outcome, "accepted");
+        assert_eq!(delivers[0].parameters, sends[0].parameters);
+        assert!(portal_audit(&b, "portal.send").is_empty());
+        assert!(portal_audit(&a, "portal.deliver").is_empty());
+
+        for handle in [&a, &b] {
+            let grants = portal_audit(handle, "AdminSetPortalGrant");
+            assert_eq!(grants.len(), 1);
+            assert_eq!(grants[0].outcome, "accepted");
+            assert_eq!(grants[0].parameters["granted"], true);
+        }
+    }
+
+    /// Oracle: a sender that never granted the portal refuses before
+    /// any transport happens — the refusal is the kernel's
+    /// sender-not-granted, audited on the sender, and the peer sees
+    /// nothing at all.
+    #[tokio::test]
+    async fn portal_sender_ungranted_refuses_with_sender_audit() {
+        let (a, b, _seen_a, seen_b) = portal_pair().await;
+        b.admin_set_portal_grant("world-a".to_owned(), true)
+            .await
+            .unwrap();
+        let error = a
+            .send_portal_message("world-b".to_owned(), "anyone there?".to_owned())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            PortalSendError::Refused(id_caps::portal::PortalRefusal::SenderNotGranted {
+                peer: "world-b".to_owned()
+            })
+        );
+        let sends = portal_audit(&a, "portal.send");
+        assert_eq!(sends.len(), 1);
+        assert_eq!(sends[0].outcome, "refused");
+        assert_eq!(sends[0].parameters["refusal"], "portal.sender_not_granted");
+        assert!(portal_audit(&b, "portal.deliver").is_empty());
+        assert!(seen_b.lock().unwrap().is_empty());
+    }
+
+    /// Oracle: a granted sender whose peer never granted back refuses
+    /// as peer-not-granted — the mutual check reads BOTH books.
+    #[tokio::test]
+    async fn portal_peer_ungranted_refuses() {
+        let (a, b, _seen_a, seen_b) = portal_pair().await;
+        a.admin_set_portal_grant("world-b".to_owned(), true)
+            .await
+            .unwrap();
+        let error = a
+            .send_portal_message("world-b".to_owned(), "knock knock".to_owned())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            PortalSendError::Refused(id_caps::portal::PortalRefusal::PeerNotGranted {
+                peer: "world-a".to_owned()
+            })
+        );
+        let sends = portal_audit(&a, "portal.send");
+        assert_eq!(sends.len(), 1);
+        assert_eq!(sends[0].parameters["refusal"], "portal.peer_not_granted");
+        assert!(portal_audit(&b, "portal.deliver").is_empty());
+        assert!(seen_b.lock().unwrap().is_empty());
+    }
+
+    /// Oracle (PR #10840 CodeRabbit regression): simultaneous
+    /// sends in both directions complete - the send orchestration
+    /// runs outside the actor command loops, so neither actor
+    /// waits on the other while holding its own loop.
+    #[tokio::test]
+    async fn portal_bidirectional_sends_do_not_deadlock() {
+        let (a, b, seen_a, seen_b) = portal_pair().await;
+        grant_both(&a, &b).await;
+        let both = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            tokio::join!(
+                a.send_portal_message("world-b".to_owned(), "ping".to_owned()),
+                b.send_portal_message("world-a".to_owned(), "pong".to_owned())
+            )
+        })
+        .await
+        .expect("bidirectional portal sends must not deadlock");
+        both.0.unwrap();
+        both.1.unwrap();
+        assert_eq!(seen_b.lock().unwrap().len(), 1);
+        assert_eq!(seen_a.lock().unwrap().len(), 1);
+    }
+
+    /// Oracle (PR #10840 CodeRabbit regression): a world can send
+    /// a portal message to itself - its own grant book is both
+    /// halves of the mutual check, and the delivery is processed
+    /// because the send does not hold the actor loop while waiting.
+    #[tokio::test]
+    async fn portal_self_send_delivers() {
+        let (a, _b, seen_a, _seen_b) = portal_pair().await;
+        a.admin_set_portal_grant("world-a".to_owned(), true)
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            a.send_portal_message("world-a".to_owned(), "note to self".to_owned()),
+        )
+        .await
+        .expect("self portal send must not deadlock")
+        .unwrap();
+        let seen = seen_a.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1);
+        let event: serde_json::Value = serde_json::from_str(&seen[0]).unwrap();
+        assert_eq!(event["from"], "world-a");
+        assert_eq!(event["message"], "note to self");
+    }
+
+    /// Oracle (PR #10840 CodeRabbit regression): a peer whose
+    /// grant book cannot be read (unknown to the transport) is a
+    /// transport failure - `Unavailable`, with NO portal.send audit
+    /// entry, because no policy decision was ever made. Contrast
+    /// `portal_peer_ungranted_refuses`, where the book IS read and
+    /// the refusal is audited.
+    #[tokio::test]
+    async fn portal_unreadable_peer_book_is_unavailable_not_refused() {
+        let (a, _b, _seen_a, _seen_b) = portal_pair().await;
+        a.admin_set_portal_grant("world-c".to_owned(), true)
+            .await
+            .unwrap();
+        let error = a
+            .send_portal_message("world-c".to_owned(), "anyone there?".to_owned())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, PortalSendError::Unavailable(_)),
+            "unreadable peer book must be Unavailable, got {error:?}"
+        );
+        assert!(portal_audit(&a, "portal.send").is_empty());
+    }
+
+    /// Oracle (PR #10840 CodeRabbit regression): a granted send
+    /// with NO transport installed is `Unavailable`, not a
+    /// peer-not-granted refusal - no peer book exists to refuse on.
+    #[tokio::test]
+    async fn portal_granted_send_without_sink_is_unavailable() {
+        let handle =
+            WorldHandle::spawn(WorldCore::new("world-solo", WorldLimits::default()).unwrap());
+        handle
+            .admin_set_portal_grant("world-b".to_owned(), true)
+            .await
+            .unwrap();
+        let error = handle
+            .send_portal_message("world-b".to_owned(), "hello?".to_owned())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, PortalSendError::Unavailable(_)),
+            "sinkless send must be Unavailable, got {error:?}"
+        );
+        assert!(portal_audit(&handle, "portal.send").is_empty());
+    }
+
+    /// Oracle (PR #10840 CodeRabbit regression): a message at the
+    /// raw 16 KiB bound made of control characters passes the raw
+    /// check, but its serialized host event escapes past
+    /// MAX_EVENT_BYTES - it refuses as message-too-large carrying
+    /// the envelope size and the event ceiling, on the send side,
+    /// instead of being dropped by delivery as Unavailable.
+    #[tokio::test]
+    async fn portal_escapable_message_refuses_on_envelope_bound() {
+        let (a, b, _seen_a, seen_b) = portal_pair().await;
+        grant_both(&a, &b).await;
+        let message = "\0".repeat(id_caps::portal::MAX_PORTAL_MESSAGE_BYTES);
+        assert_eq!(message.len(), id_caps::portal::MAX_PORTAL_MESSAGE_BYTES);
+        let error = a
+            .send_portal_message("world-b".to_owned(), message.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            PortalSendError::Refused(id_caps::portal::PortalRefusal::MessageTooLarge {
+                bytes: portal_message_event("world-a", &message).len(),
+                max: crate::world_caps::MAX_EVENT_BYTES,
+            })
+        );
+        let sends = portal_audit(&a, "portal.send");
+        assert_eq!(sends.len(), 1);
+        assert_eq!(sends[0].parameters["refusal"], "portal.message_too_large");
+        assert!(portal_audit(&b, "portal.deliver").is_empty());
+        assert!(seen_b.lock().unwrap().is_empty());
+    }
+    /// Oracle: revoking mid-conversation refuses the next message as
+    /// revoked — distinct from never-granted — on whichever side
+    /// revoked: the sender's own revoke refuses as sender-revoked,
+    /// and after a re-grant the peer's revoke refuses as
+    /// peer-revoked.
+    #[tokio::test]
+    async fn portal_revoke_mid_conversation_refuses_as_revoked() {
+        let (a, b, _seen_a, _seen_b) = portal_pair().await;
+        grant_both(&a, &b).await;
+        a.send_portal_message("world-b".to_owned(), "first".to_owned())
+            .await
+            .unwrap();
+        a.admin_set_portal_grant("world-b".to_owned(), false)
+            .await
+            .unwrap();
+        let error = a
+            .send_portal_message("world-b".to_owned(), "second".to_owned())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            PortalSendError::Refused(id_caps::portal::PortalRefusal::SenderRevoked {
+                peer: "world-b".to_owned()
+            })
+        );
+        a.admin_set_portal_grant("world-b".to_owned(), true)
+            .await
+            .unwrap();
+        b.admin_set_portal_grant("world-a".to_owned(), false)
+            .await
+            .unwrap();
+        let error = a
+            .send_portal_message("world-b".to_owned(), "third".to_owned())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            PortalSendError::Refused(id_caps::portal::PortalRefusal::PeerRevoked {
+                peer: "world-a".to_owned()
+            })
+        );
+        let refusals: Vec<String> = portal_audit(&a, "portal.send")
+            .iter()
+            .filter(|record| record.outcome == "refused")
+            .map(|record| record.parameters["refusal"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            refusals,
+            [
+                "portal.sender_revoked".to_owned(),
+                "portal.peer_revoked".to_owned()
+            ]
+        );
+    }
+
+    /// Oracle: the bounds refuse with their own codes — one byte over
+    /// the 16 KiB ceiling is message-too-large, and the 33rd message
+    /// inside one rate window is rate-limited (the first 32 pass).
+    #[tokio::test]
+    async fn portal_oversize_and_rate_limit_refuse_with_codes() {
+        let (a, b, _seen_a, _seen_b) = portal_pair().await;
+        grant_both(&a, &b).await;
+        let oversize = "x".repeat(id_caps::portal::MAX_PORTAL_MESSAGE_BYTES + 1);
+        let error = a
+            .send_portal_message("world-b".to_owned(), oversize)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            PortalSendError::Refused(id_caps::portal::PortalRefusal::MessageTooLarge {
+                bytes: id_caps::portal::MAX_PORTAL_MESSAGE_BYTES + 1,
+                max: id_caps::portal::MAX_PORTAL_MESSAGE_BYTES,
+            })
+        );
+        for index in 0..id_caps::portal::PORTAL_RATE_LIMIT {
+            a.send_portal_message("world-b".to_owned(), format!("m{index}"))
+                .await
+                .unwrap();
+        }
+        let error = a
+            .send_portal_message("world-b".to_owned(), "one too many".to_owned())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            PortalSendError::Refused(id_caps::portal::PortalRefusal::RateLimited {
+                limit: id_caps::portal::PORTAL_RATE_LIMIT,
+                window_ms: id_caps::portal::PORTAL_RATE_WINDOW_MS,
+            })
+        );
+        let codes: Vec<String> = portal_audit(&a, "portal.send")
+            .iter()
+            .filter(|record| record.outcome == "refused")
+            .map(|record| record.parameters["refusal"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            codes,
+            [
+                "portal.message_too_large".to_owned(),
+                "portal.rate_limited".to_owned()
+            ]
+        );
+    }
+
+    /// Oracle: portals are off by default and a world with no grants
+    /// and no transport installed behaves exactly as before the
+    /// feature — its book is empty and a send refuses locally as
+    /// sender-not-granted without touching any other world.
+    #[tokio::test]
+    async fn portal_unwired_world_refuses_locally_and_stays_empty() {
+        let handle =
+            WorldHandle::spawn(WorldCore::new("lonely-w", WorldLimits::default()).unwrap());
+        assert!(
+            handle
+                .portal_grants()
+                .await
+                .unwrap()
+                .peers()
+                .next()
+                .is_none()
+        );
+        let error = handle
+            .send_portal_message("world-b".to_owned(), "hello?".to_owned())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            PortalSendError::Refused(id_caps::portal::PortalRefusal::SenderNotGranted {
+                peer: "world-b".to_owned()
+            })
+        );
+    }
+
+    /// Oracle: the grant store is durable — grant and revoke entries
+    /// replay from the journal into the exact book (a revoked peer
+    /// replays as REVOKED, not as never-granted), and both states
+    /// survive checkpoint compaction.
+    #[test]
+    fn portal_grants_replay_and_survive_compaction() {
+        let header = || JournalEntry::Created {
+            world_id: "w".to_owned(),
+            version: JOURNAL_VERSION_PORTALS,
+        };
+        let grant = JournalEntry::PortalGrantSet {
+            peer: "world-b".to_owned(),
+            granted: true,
+        };
+        assert_eq!(journal_version_required_by(&grant), JOURNAL_VERSION_PORTALS);
+        let restored =
+            WorldCore::restore("w", WorldLimits::default(), [header(), grant.clone()]).unwrap();
+        assert_eq!(
+            restored.core.portal_grants.state("world-b"),
+            Some(id_caps::portal::PortalGrantState::Granted)
+        );
+        let revoke = JournalEntry::PortalGrantSet {
+            peer: "world-b".to_owned(),
+            granted: false,
+        };
+        let restored =
+            WorldCore::restore("w", WorldLimits::default(), [header(), grant, revoke]).unwrap();
+        assert_eq!(
+            restored.core.portal_grants.state("world-b"),
+            Some(id_caps::portal::PortalGrantState::Revoked)
+        );
+        // Compaction: a core carrying a granted and a revoked peer
+        // re-emits both, so a restored core sees the same book.
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        core.portal_grants.grant("world-b");
+        core.portal_grants.grant("world-c");
+        assert!(core.portal_grants.revoke("world-c"));
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(restored.core.portal_grants, core.portal_grants);
+    }
 }
 
 #[cfg(test)]
@@ -10304,6 +11528,65 @@ mod audit_tests {
                 })
                 .to_string(),
             ))
+        }
+    }
+
+    // #1063: schema-v2 records carry a target and a unique correlation
+    // id on every line, admin commands included.
+    #[test]
+    fn audit_records_carry_target_correlation_and_schema_v2() {
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry().with(AuditCapture(records.clone()));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let core = WorldCore::new("audit-correlation", WorldLimits::default()).unwrap();
+        let mut actor = WorldActor::for_test(core, Box::new(FirstUseProgram), None);
+
+        futures_lite::future::block_on(async {
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::UpdateCaps {
+                    grant: vec!["time.now".to_owned()],
+                    revoke: vec![],
+                    reply,
+                })
+                .await;
+            response.await.unwrap().unwrap();
+
+            let (reply, response) = tokio::sync::oneshot::channel();
+            actor
+                .handle(WorldCommand::UpdateCaps {
+                    grant: vec![],
+                    revoke: vec!["time.now".to_owned()],
+                    reply,
+                })
+                .await;
+            response.await.unwrap().unwrap();
+        });
+
+        let captured = records.lock().unwrap().clone();
+        let updates: Vec<_> = captured
+            .iter()
+            .filter(|record| record["action"] == "UpdateCaps")
+            .collect();
+        assert_eq!(
+            updates.len(),
+            2,
+            "one record per admin command: {captured:?}"
+        );
+        let mut correlation_ids = BTreeSet::new();
+        for record in updates {
+            assert_eq!(record["schema_version"], 2);
+            assert_eq!(record["target"], "audit-correlation");
+            let correlation_id = record["correlation_id"].as_str().unwrap();
+            assert!(
+                correlation_id.starts_with("audit:"),
+                "correlation id shape: {correlation_id}"
+            );
+            assert!(
+                correlation_ids.insert(correlation_id.to_owned()),
+                "correlation ids are unique per record"
+            );
         }
     }
 
@@ -10417,7 +11700,7 @@ mod audit_tests {
                 && record["actor"] == "program"
         }));
         assert!(captured.iter().all(|record| {
-            record["schema_version"] == 1
+            record["schema_version"] == 2
                 && record["world_id"] == "audit-test"
                 && record.get("admin_token").is_none()
         }));
@@ -10614,6 +11897,69 @@ mod audit_tests {
         assert!(
             captured.is_empty(),
             "participant-readable queries must not be audited as admin: {captured:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn retained_audit_log_replays_to_the_final_grants() {
+        // F12.6 exit test (issue #1063), retained-log half: the admin
+        // actions below each produce exactly one record in the
+        // world's retained audit log, and replaying that log
+        // reconstructs the final grants the world reports.
+        let core = WorldCore::new("audit-retained", WorldLimits::default()).unwrap();
+        let world = WorldHandle::spawn(core);
+        world
+            .update_caps(
+                vec!["chat.say".to_owned(), "time.now".to_owned()],
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        world
+            .update_caps(Vec::new(), vec!["time.now".to_owned()])
+            .await
+            .unwrap();
+        // A refused ceiling change is audited and replays as nothing.
+        assert!(world.set_caps_ceiling(vec!["*".to_owned()]).await.is_err());
+        world
+            .set_caps_ceiling(vec!["chat.say".to_owned(), "time.now".to_owned()])
+            .await
+            .unwrap();
+
+        let records = world.audit_records();
+        let admin_actions: Vec<(&str, &str)> = records
+            .iter()
+            .filter(|record| matches!(record.action.as_str(), "UpdateCaps" | "SetCapsCeiling"))
+            .map(|record| (record.action.as_str(), record.outcome.as_str()))
+            .collect();
+        assert_eq!(
+            admin_actions,
+            [
+                ("UpdateCaps", "accepted"),
+                ("UpdateCaps", "accepted"),
+                ("SetCapsCeiling", "refused"),
+                ("SetCapsCeiling", "accepted"),
+            ]
+        );
+
+        let report = world.caps_report().await.unwrap();
+        let replayed = replay_grants(&records);
+        assert_eq!(
+            replayed.granted,
+            report.granted.iter().cloned().collect::<BTreeSet<String>>()
+        );
+        assert_eq!(
+            replayed.ceiling,
+            Some(report.ceiling.iter().cloned().collect::<BTreeSet<String>>())
+        );
+
+        // The same records export as one OTLP log record each.
+        let payload = export_otlp_json(&records);
+        assert_eq!(
+            payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
+                .as_array()
+                .map(Vec::len),
+            Some(records.len())
         );
     }
 

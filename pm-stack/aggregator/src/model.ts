@@ -53,6 +53,16 @@ export interface GhItem {
   resolution?: ItemResolution;
 }
 
+/** A GitHub milestone as the collector ingests it per item (#9067):
+ * the title plus the two stamps the release accounting needs — dueOn
+ * is the release date for release milestones (program milestones are
+ * rolling and carry null), closedAt marks a closed release. */
+export interface MilestoneRef {
+  title: string;
+  dueOn: string | null;
+  closedAt: string | null;
+}
+
 /**
  * One item of the org GitHub Project pool (#910 stage 5): a Project
  * item plus its linked issue/PR, as read by the fleet-feed collector
@@ -90,6 +100,8 @@ export interface ProjectPoolItem {
    * section selects by these, never by updatedAt (#5279 Codex). */
   closedAt?: string;
   mergedAt?: string;
+  /** The linked issue's GitHub milestone, when it has one (#9067). */
+  milestone?: MilestoneRef;
   /** Project single-select fields; null when unset on the item. */
   status: string | null;
   area: string | null;
@@ -99,7 +111,8 @@ export interface ProjectPoolItem {
   /** Issue graph edges (#2399, part 1 of #1122): the data contract the
    *  weighted render (part 2, #2400) consumes. All edges are issue-only
    *  (PRs and drafts never carry them) and all are absence-friendly: a
-   *  missing edge means "GitHub has none", never an error. Refs use the
+   *  missing edge means "GitHub has none", never an error; incomplete
+   *  returned endpoints are retained in edgeDiagnostics. Refs use the
    *  same "owner/repo#123" canonical key as ref. */
   /** Sub-issue parent of the linked issue. Absent when it has none. */
   parentRef?: RefKey;
@@ -107,12 +120,23 @@ export interface ProjectPoolItem {
   blockedBy?: RefKey[];
   /** Refs this item blocks (GitHub "blocks"). Absent when none. */
   blocks?: RefKey[];
+  /** Project relation endpoints the collector could not turn into refs.
+   *  These are retained so a graph can distinguish incomplete source data
+   *  from a valid ref outside the loaded pool. */
+  edgeDiagnostics?: ProjectPoolEdgeDiagnostic[];
   /** Epic membership: the nearest sub-issue ancestor (following
    *  parentRef chains within the fetched pool) whose pool item has
    *  Project Kind "Epic". Absent for epics themselves, for items with
    *  no epic ancestor, and when the parent chain leaves the pool (the
    *  collector only knows Kind for items on the board). */
   epicRef?: RefKey;
+}
+
+export interface ProjectPoolEdgeDiagnostic {
+  relation: "parent" | "blockedBy" | "blocks";
+  state: "unavailable" | "malformed";
+  /** Best-effort raw canonical ref; null when the endpoint had no usable identity. */
+  target: string | null;
 }
 
 /** One configured field on Project #4, exported for repository-readable audits. */
@@ -248,7 +272,7 @@ export interface Provenance {
 export interface ProvenanceFacet {
   /** The provenance string, unchanged — also the chip's tooltip. */
   text: string;
-  state: "live" | "fixtures" | "stale" | "absent" | "invalid" | "error";
+  state: "live" | "partial-fixtures" | "fixtures" | "stale" | "absent" | "invalid" | "error";
   ageMs?: number;
   count?: number;
   countLabel?: string;
@@ -1222,6 +1246,9 @@ export interface DashAuthor {
   sessionId?: string;
 }
 
+/** How a comment's author was established (#1253 §5). */
+export type CommentProvenance = "verified" | "asserted-legacy";
+
 export interface DashComment {
   id: string;
   /** The object ref the thread hangs on (see above). */
@@ -1230,6 +1257,14 @@ export interface DashComment {
   author: DashAuthor;
   /** True only when a privileged Drew/Muse author supplied the configured operator token. */
   authorVerified?: boolean;
+  /**
+   * Where the author came from (#1253 split 4, #9606): "verified" when
+   * the server derived it from a validated Cloudflare Access identity,
+   * "asserted-legacy" when it is the caller's own claim (Access not
+   * configured, or a record written before provenance existed). Absent
+   * on old records; read it through commentProvenance().
+   */
+  provenance?: CommentProvenance;
   body: string;
   createdAt: string;
   /** kind "message": the orchestrator's triage state. */
@@ -1570,6 +1605,11 @@ export interface QuotaCurrentEntry {
    *  only one tick old, well inside the freshness bound). Absent on
    *  fresh reads. */
   retainedFromFailedTick?: string;
+  /** #8725: why the tick that retained this entry failed, when the
+   * gatherer classified the failure (Claude leg kinds: rate_limited,
+   * credential, other). A rate-limit retention must never be read
+   * downstream as a credential or session failure. */
+  retentionFailureKind?: string;
   source: string;
   error?: string;
   windows: QuotaCurrentWindow[];
@@ -1582,7 +1622,10 @@ export interface QuotaGatherHeartbeat {
   tickAt: string;
   ok: boolean;
   durationMs: number;
-  perProvider: Record<string, { state: "ok" | "error" | "lapsed"; ms: number; rows: number; error?: string }>;
+  perProvider: Record<
+    string,
+    { state: "ok" | "error" | "lapsed"; ms: number; rows: number; error?: string; errorKind?: string }
+  >;
   /** Set when the tick itself failed before any provider ran (import / credential store). */
   error?: string;
 }

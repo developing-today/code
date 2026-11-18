@@ -247,7 +247,7 @@ export function goPoolServiceId(entry: QuotaCurrentEntry): string | null {
  * Claude+GPT pool. Quota grouping must use the same rule, or burn and
  * quota would disagree about which pool a model draws from.
  */
-function antigravityPoolForModel(model: string, legacy = false): string {
+export function antigravityPoolForModel(model: string, legacy = false): string {
   if (legacy)
     return model.startsWith("gemini") ? ANTIGRAVITY_LEGACY_GEMINI_SERVICE_ID : ANTIGRAVITY_LEGACY_CLAUDE_GPT_SERVICE_ID;
   return model.startsWith("gemini") ? ANTIGRAVITY_GEMINI_SERVICE_ID : ANTIGRAVITY_CLAUDE_GPT_SERVICE_ID;
@@ -1108,11 +1108,16 @@ export function lastKnownEntries(prev: readonly QuotaCurrentEntry[], providerId:
  * signal readers use to classify the entry stale immediately,
  * instead of it reading as fresh until the freshness bound lapses.
  */
-export function markRetained(entries: readonly QuotaCurrentEntry[], failedTickIso: string): QuotaCurrentEntry[] {
+export function markRetained(
+  entries: readonly QuotaCurrentEntry[],
+  failedTickIso: string,
+  failureKind?: string,
+): QuotaCurrentEntry[] {
   return entries.map((e) => ({
     ...e,
     providerId: canonicalProviderId(e.providerId),
     retainedFromFailedTick: failedTickIso,
+    ...(failureKind ? { retentionFailureKind: failureKind } : {}),
   }));
 }
 /** #5928: cross-tick memory for the _claude read. The quota fetcher's
@@ -1188,4 +1193,39 @@ export function retryAfterMsFromFailure(text: string): number | null {
 export function claudeCooldownMs(failureText: string): number {
   const fromHeader = retryAfterMsFromFailure(failureText);
   return Math.min(fromHeader ?? CLAUDE_COOLDOWN_FALLBACK_MS, CLAUDE_COOLDOWN_CAP_MS);
+}
+/** #8725: the failure kind recorded on a retained Claude row and on
+ * the heartbeat leg, so a rate-limit retention is distinguishable
+ * from a credential/session failure downstream. */
+export type ClaudeFailureKind = "rate_limited" | "credential" | "other";
+
+export function claudeFailureKind(failureText: string): ClaudeFailureKind {
+  if (isClaudeRateLimitFailure(failureText)) return "rate_limited";
+  if (/session expired|unauthori[sz]ed|401|token.?expired|invalid.*token/i.test(failureText)) return "credential";
+  return "other";
+}
+
+/** #8725: within-tick retry budget for the Claude leg. The tick is
+ * capped at 300s by its systemd unit and each subcommand invocation
+ * self-limits, so the waits stay small: at most 3 retries, base 5s
+ * doubling, capped at 30s, honoring Retry-After when carried. */
+export const CLAUDE_RETRY_MAX_ATTEMPTS = 3;
+export const CLAUDE_RETRY_BASE_MS = 5_000;
+export const CLAUDE_RETRY_CAP_MS = 30_000;
+
+/** Delay before within-tick retry attempt (0-based) of the Claude
+ * leg: Retry-After when the failure carries one, else exponential
+ * backoff from baseMs; either way capped, then jittered to
+ * [50%, 100%] of the capped value so retries do not land in
+ * lockstep. The rand source is injectable for tests. */
+export function claudeRetryDelayMs(
+  attempt: number,
+  failureText: string,
+  rand: () => number = Math.random,
+  baseMs: number = CLAUDE_RETRY_BASE_MS,
+): number {
+  const fromHeader = retryAfterMsFromFailure(failureText);
+  const planned = fromHeader ?? baseMs * 2 ** Math.max(0, attempt);
+  const capped = Math.min(Math.max(planned, 0), CLAUDE_RETRY_CAP_MS);
+  return Math.round(capped * (0.5 + rand() * 0.5));
 }

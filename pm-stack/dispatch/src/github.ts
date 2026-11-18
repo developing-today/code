@@ -14,6 +14,7 @@
 // `gh` CLI. Either way failures surface as GitHubError with both routes'
 // errors summarized — issue creation is never silently skipped.
 import { createSign } from "node:crypto";
+import { isTimeoutAbort, outboundTimeout } from "./fetchTimeout.ts";
 
 const GH_API = "https://api.github.com";
 
@@ -34,6 +35,11 @@ export class MalformedBodyError extends GitHubError {}
  * issue may already exist server-side, so the gh fallback create must
  * NOT run (it would file a duplicate tracking issue). */
 class MalformedCreateBodyError extends MalformedBodyError {}
+
+/** The app create-issue POST timed out after it was sent: GitHub may have
+ * created the issue and only the response was slow, so, as with a
+ * malformed 2xx body, the gh fallback create must NOT run (#10849). */
+export class AmbiguousCreateError extends GitHubError {}
 
 function describeValue(v: unknown): string {
   if (v === null) return "null";
@@ -153,6 +159,7 @@ export class GitHubClient {
         "User-Agent": "pm-dispatch",
       },
       body: body === undefined ? undefined : JSON.stringify(body),
+      signal: outboundTimeout(),
     });
   }
 
@@ -254,7 +261,17 @@ export class GitHubClient {
     if (this.appConfigured) {
       try {
         const token = await this.installationToken(repo);
-        const res = await this.appApi("POST", `/repos/${repo}/issues`, token, { title, body, labels });
+        let res: Response;
+        try {
+          res = await this.appApi("POST", `/repos/${repo}/issues`, token, { title, body, labels });
+        } catch (postErr) {
+          if (isTimeoutAbort(postErr)) {
+            throw new AmbiguousCreateError(
+              `github issue create timed out after the request was sent; the issue may exist (${repo}: ${title.slice(0, 80)})`,
+            );
+          }
+          throw postErr;
+        }
         if (!res.ok) {
           throw new GitHubError(`github issue create failed (HTTP ${res.status}): ${(await res.text()).slice(0, 200)}`);
         }
@@ -278,7 +295,7 @@ export class GitHubClient {
         // A malformed 2xx create body is NOT a fallback case: the app
         // POST may already have created the issue server-side, so a gh
         // create would file a duplicate tracking issue (#7101).
-        if (e instanceof MalformedCreateBodyError) throw e;
+        if (e instanceof MalformedCreateBodyError || e instanceof AmbiguousCreateError) throw e;
         // Fall through to gh with the app error preserved in the message
         // if gh fails too.
         try {

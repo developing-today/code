@@ -4,4 +4,8 @@ After=network.target docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -lc 'python3 /home/user/pm-stack/invariant-sweeper.py --post-epic'
+# Outer bound for the whole sweep (#11416): each gh/psql call is
+# already capped at 120s, but a oneshot unit has no start timeout
+# by default, so cap the run as a whole too.
+TimeoutStartSec=45min
+ExecStart=/bin/sh -lc 'python3 /home/user/pm-stack/invariant-sweeper.py --act --post-epic'

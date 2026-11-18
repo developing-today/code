@@ -2,12 +2,13 @@
 //!
 //! Defines all the Axum routes and their handlers for serving the web UI.
 
+use std::net::SocketAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{
     Form, Json, Router,
     body::Body,
-    extract::{DefaultBodyLimit, Multipart, Path, Query, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
@@ -28,7 +29,7 @@ use id_store::tags::TagStore;
 use id_sync::fileops::{FileOpError, FileOps, claim_archive_name, snapshot_provenance_tags};
 use iroh_base::EndpointId;
 
-mod file_handlers;
+pub(crate) mod file_handlers;
 use file_handlers::*;
 
 /// Default number of files per page.
@@ -580,6 +581,10 @@ fn create_router_inner(state: AppState) -> Router {
     let router = Router::new()
         // Page routes (return full HTML pages)
         .route("/", get(index_handler))
+        .route(
+            "/.well-known/id-transport-advertisement",
+            get(super::transport_ad::transport_advertisement_handler),
+        )
         .route("/files", get(files_page_handler))
         .route(&world_route, get(world_page_handler))
         .route("/settings", get(settings_handler))
@@ -664,6 +669,9 @@ fn create_router_inner(state: AppState) -> Router {
         }
         None => router.merge(super::world_ws::world_http_routes().with_state(world_state)),
     };
+    // The program gallery's read surface (#10003): 404 on every route
+    // unless the serving process wired a gallery in.
+    let router = router.merge(super::gallery::gallery_routes().with_state(state.gallery.clone()));
     let router = router
         .layer(DefaultBodyLimit::max(DEFAULT_BODY_LIMIT))
         .with_state(state.clone());
@@ -691,11 +699,10 @@ fn create_router_inner(state: AppState) -> Router {
 /// built with the default policy -- re-applying the listener
 /// policy here would double-guard the request, not widen it.
 ///
-/// Known limit: WebSocket upgrades under a mount do not complete,
-/// because the on-demand dispatch has no hyper upgrade handle to
-/// offer the world bridge; the program page and its HTTP surface
-/// serve normally. Dynamic publication *listeners* serve the same
-/// router through `axum::serve` directly and have no such limit.
+/// WebSocket sessions work under a mount (#11290): the request is
+/// rewritten in place, keeping its extensions, so the connection's
+/// hyper upgrade handle reaches the mounted world's bridge just as it
+/// does on a dedicated publication listener.
 async fn publication_mount_layer(
     State(state): State<AppState>,
     req: axum::http::Request<Body>,
@@ -2096,10 +2103,104 @@ struct DeleteResponse {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod identity_register_rate_limit_tests {
+    use std::{sync::Arc, time::Duration};
+
+    use axum::{body::to_bytes, extract::State};
+    use iroh::endpoint::{Endpoint, RelayMode, presets};
+    use iroh_blobs::{api::Store, store::mem::MemStore};
+    use iroh_docs::protocol::Docs;
+    use iroh_gossip::net::Gossip;
+
+    use super::*;
+    use id_store::tags::TagStore;
+
+    use crate::{AppState, RegisterRateLimiter};
+
+    async fn state_with_limit(limit: usize) -> AppState {
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let store: Store = MemStore::new().into();
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let docs = Docs::memory()
+            .spawn(endpoint.clone(), store.clone(), gossip)
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let tags = Arc::new(
+            TagStore::init_in(&docs, "register-limit-test", dir.path().join("meta"))
+                .await
+                .unwrap(),
+        );
+        let mut state = AppState::new(
+            store,
+            None,
+            "register-limit-test".to_owned(),
+            tags,
+            [7; 32],
+            dir.path().join(".identity.redb"),
+        )
+        .await
+        .unwrap();
+        state.register_limiter = RegisterRateLimiter::new(limit, Duration::from_secs(60));
+        state
+    }
+
+    async fn register(state: &AppState, name: &str) -> Response {
+        identity_register_handler(
+            State(state.clone()),
+            ConnectInfo("203.0.113.7:12345".parse().unwrap()),
+            Json(IdentityRegisterRequest {
+                name: Some(name.to_owned()),
+            }),
+        )
+        .await
+        .into_response()
+    }
+
+    async fn response_json(response: Response) -> serde_json::Value {
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn register_is_rate_limited_per_source_with_an_observable_429() {
+        let state = state_with_limit(2).await;
+
+        // Under the limit: registrations succeed.
+        let first = register(&state, "one").await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_body = response_json(first).await;
+        let token = first_body["token"].as_str().unwrap().to_owned();
+        let second = register(&state, "two").await;
+        assert_eq!(second.status(), StatusCode::OK);
+
+        // Over the limit: a structured 429 with a Retry-After header.
+        let third = register(&state, "three").await;
+        assert_eq!(third.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(third.headers().contains_key(header::RETRY_AFTER));
+        let third_body = response_json(third).await;
+        assert_eq!(third_body["error"], "registration_rate_limited");
+        assert_eq!(third_body["reason"], "rate_limited");
+
+        // The limit is on registration only: /api/identity/me for an
+        // already-registered identity is unaffected.
+        let me = identity_me_handler(State(state.clone()), Query(IdentityMeQuery { token }))
+            .await
+            .into_response();
+        assert_eq!(me.status(), StatusCode::OK);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod save_publication_tests {
     use std::{sync::Arc, time::Duration};
 
     use axum::{body::to_bytes, extract::State};
+    use futures_lite::StreamExt;
     use iroh::endpoint::{Endpoint, RelayMode, presets};
     use iroh_blobs::{api::Store, store::mem::MemStore};
     use iroh_docs::protocol::Docs;
@@ -2156,10 +2257,20 @@ mod save_publication_tests {
     }
 
     async fn save(state: AppState, name: &str, text: &str) -> Response {
+        save_based_on(
+            state,
+            name,
+            text,
+            &iroh_blobs::Hash::from_bytes([42; 32]).to_string(),
+        )
+        .await
+    }
+
+    async fn save_based_on(state: AppState, name: &str, text: &str, base: &str) -> Response {
         save_handler(
             State(state),
             Json(SaveRequest {
-                doc_id: iroh_blobs::Hash::from_bytes([42; 32]).to_string(),
+                doc_id: base.to_owned(),
                 name: name.to_owned(),
                 doc: json!({"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":text}]}]}),
             }),
@@ -2212,7 +2323,15 @@ mod save_publication_tests {
         )));
 
         // Repeated successful checkpoints get distinct durable revision events.
-        let second = save(state.clone(), "revision.md", "second revision").await;
+        // The second save names the first save's hash as its base (#8524:
+        // a save whose base is no longer current is refused as stale).
+        let second = save_based_on(
+            state.clone(),
+            "revision.md",
+            "second revision",
+            body["hash"].as_str().unwrap(),
+        )
+        .await;
         assert_eq!(second.status(), StatusCode::OK);
         let second_body = response_json(second).await;
         assert_ne!(body["document_id"], second_body["document_id"]);
@@ -2223,6 +2342,105 @@ mod save_publication_tests {
             .unwrap();
         assert!(state.local_events.lock().await.history(event_id).is_ok());
         assert!(state.local_events.lock().await.history(second_id).is_ok());
+    }
+
+    #[tokio::test]
+    async fn stale_save_is_refused_and_the_current_version_is_preserved() {
+        // #8524: clients A and B both open H1. A saves (base H1) and the
+        // name moves to H2. B's save, still based on H1, must NOT
+        // silently supersede A's version.
+        let (mut state, _endpoint, _docs) = state().await;
+        state.save_limiter = SaveRateLimiter::new(Duration::ZERO);
+
+        let first = save(state.clone(), "notes.md", "original").await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_body = response_json(first).await;
+        let h1 = first_body["hash"].as_str().unwrap().to_owned();
+
+        let a = save_based_on(state.clone(), "notes.md", "A edit", &h1).await;
+        assert_eq!(a.status(), StatusCode::OK);
+        let a_body = response_json(a).await;
+        let h2 = a_body["hash"].as_str().unwrap().to_owned();
+
+        let b = save_based_on(state.clone(), "notes.md", "B stale edit", &h1).await;
+        assert_eq!(b.status(), StatusCode::CONFLICT);
+        let b_body = response_json(b).await;
+        assert_eq!(b_body["reason"], "stale_save_conflict");
+        assert_eq!(b_body["current_doc_id"], h2);
+
+        // The current version is A's, untouched by B's refused save.
+        let current = current_filename_hash(&state.store, "notes.md")
+            .await
+            .unwrap();
+        assert_eq!(current.to_string(), h2);
+    }
+
+    #[tokio::test]
+    async fn matching_save_archives_the_displaced_version() {
+        // #8524: the non-stale path is unchanged — a save based on the
+        // current hash succeeds and the displaced version is archived
+        // under its timestamped name.
+        let (mut state, _endpoint, _docs) = state().await;
+        state.save_limiter = SaveRateLimiter::new(Duration::ZERO);
+
+        let first = save(state.clone(), "notes.md", "original").await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_body = response_json(first).await;
+        let h1 = first_body["hash"].as_str().unwrap().to_owned();
+
+        let second = save_based_on(state.clone(), "notes.md", "updated", &h1).await;
+        assert_eq!(second.status(), StatusCode::OK);
+
+        let mut archived = false;
+        let mut tags = state.store.tags().list().await.unwrap();
+        while let Some(Ok(tag_info)) = tags.next().await {
+            let tag_name = String::from_utf8_lossy(tag_info.name.as_ref()).to_string();
+            if tag_name.starts_with("notes.md.archive.") && tag_info.hash.to_string() == h1 {
+                archived = true;
+            }
+        }
+        assert!(archived, "the displaced version must keep its archive tag");
+    }
+
+    #[tokio::test]
+    async fn concurrent_saves_from_the_same_base_have_exactly_one_winner() {
+        // #8524: two saves racing from the same base — the name lock
+        // serializes them and the loser meets the conflict policy
+        // instead of silently superseding the winner.
+        let (mut state, _endpoint, _docs) = state().await;
+        state.save_limiter = SaveRateLimiter::new(Duration::ZERO);
+
+        let first = save(state.clone(), "notes.md", "original").await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_body = response_json(first).await;
+        let h1 = first_body["hash"].as_str().unwrap().to_owned();
+
+        let (r1, r2) = tokio::join!(
+            save_based_on(state.clone(), "notes.md", "racer one", &h1),
+            save_based_on(state.clone(), "notes.md", "racer two", &h1),
+        );
+        let statuses = [r1.status(), r2.status()];
+        // Exactly one racer wins. The loser is refused — with the 409
+        // conflict when it reaches the stale check, or with the
+        // limiter's 429 while the winner's save is still in flight
+        // (the #2466 name reservation). Either way it never silently
+        // supersedes the winner.
+        assert!(
+            statuses.contains(&StatusCode::OK)
+                && (statuses.contains(&StatusCode::CONFLICT)
+                    || statuses.contains(&StatusCode::TOO_MANY_REQUESTS)),
+            "exactly one racer wins and the other is refused: {statuses:?}"
+        );
+        let winner_body = response_json(if r1.status() == StatusCode::OK {
+            r1
+        } else {
+            r2
+        })
+        .await;
+        let current = current_filename_hash(&state.store, "notes.md")
+            .await
+            .unwrap();
+        assert_eq!(current.to_string(), winner_body["hash"].as_str().unwrap());
     }
 
     #[tokio::test]
@@ -2457,7 +2675,7 @@ mod upload_router_tests {
 
         // Mounting at runtime (no router rebuild) makes /prog serve
         // the mounted world's program surface.
-        state.publication_mounts.mount("arena", "/prog");
+        state.publication_mounts.mount("arena", "/prog").unwrap();
         let mounted = app
             .clone()
             .oneshot(Request::builder().uri("/prog").body(Body::empty()).unwrap())
@@ -2485,6 +2703,251 @@ mod upload_router_tests {
             .await
             .unwrap();
         assert_eq!(after.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn publication_mount_on_a_reserved_route_is_refused_and_explorer_still_answers() {
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        state.world = Some(hub_with_world("arena", Some("s3cret")));
+        let app = create_router(state.clone(), WebSecurity::default());
+
+        // Phase 4: /world is a reserved Explorer route, so the
+        // table refuses the mount instead of letting it shadow the
+        // Explorer page there.
+        let error = state
+            .publication_mounts
+            .mount("arena", "/world")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("reserved Explorer route /world"), "{error}");
+        assert_eq!(state.publication_mounts.lookup("/world"), None);
+
+        // The Explorer world page still answers at /world.
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/world")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn publication_mount_session_round_trip_is_gated_by_the_world_admin_secret() {
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        state.world = Some(hub_with_world("arena", Some("s3cret")));
+        let app = create_router(state.clone(), WebSecurity::default());
+        state.publication_mounts.mount("arena", "/prog").unwrap();
+
+        let invite = |token: Option<&str>| {
+            let mut builder = Request::builder()
+                .method("POST")
+                .uri("/prog/api/world/invite")
+                .header("content-type", "application/json");
+            if let Some(token) = token {
+                builder = builder.header("x-world-admin-token", token);
+            }
+            builder
+                .body(Body::from("{\"display_name\":\"guest\"}"))
+                .unwrap()
+        };
+
+        // Unauthorized under the mount: no token, and a wrong token,
+        // are both refused by the mounted world's own gate — the
+        // mount adds no authority of its own and removes none.
+        for token in [None, Some("wrong")] {
+            let res = app.clone().oneshot(invite(token)).await.unwrap();
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "token {token:?}");
+        }
+
+        // Authorized under the mount: the world's admin secret mints
+        // the invite through the mount-scoped API URL — the session
+        // round-trip (refused anonymously, served with the secret)
+        // behaves exactly as it does on the program surface itself.
+        let res = app.clone().oneshot(invite(Some("s3cret"))).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        assert!(!body.is_empty());
+    }
+
+    /// #11290: a WebSocket session under a publication mount completes
+    /// over a real connection. The mount layer rewrites the request in
+    /// place, so the connection's upgrade handle travels with it to the
+    /// mounted world's bridge: an authorized join snapshots the mounted
+    /// world, and an invalid capability is refused by the world's own
+    /// session gate, exactly as on the program surface.
+    #[tokio::test]
+    async fn publication_mount_websocket_session_round_trips_over_a_real_connection() {
+        use futures_util::{SinkExt as _, StreamExt as _};
+        use tokio_tungstenite::tungstenite::Message as ClientMessage;
+
+        type Client = tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >;
+        async fn next_frame(client: &mut Client) -> Option<serde_json::Value> {
+            match tokio::time::timeout(std::time::Duration::from_secs(30), client.next())
+                .await
+                .expect("timed out waiting for a world frame")
+            {
+                Some(Ok(ClientMessage::Text(text))) => Some(serde_json::from_str(&text).unwrap()),
+                _ => None,
+            }
+        }
+
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        state.world = Some(hub_with_world("arena", Some("s3cret")));
+        let app = create_router(state.clone(), WebSecurity::default());
+        state.publication_mounts.mount("arena", "/prog").unwrap();
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/prog/api/world/invite")
+                    .header("content-type", "application/json")
+                    .header("x-world-admin-token", "s3cret")
+                    .body(Body::from("{\"display_name\":\"guest\"}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let capability = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["capability"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        // Authorized: the upgrade completes under the mount and the
+        // join reaches the mounted world.
+        let (mut client, _) =
+            tokio_tungstenite::connect_async(format!("ws://{addr}/prog/ws/world"))
+                .await
+                .unwrap();
+        client
+            .send(ClientMessage::Text(
+                serde_json::json!({"type": "join", "capability": capability})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let snapshot = next_frame(&mut client).await.unwrap();
+        assert_eq!(snapshot["snapshot"]["world_id"], "arena", "{snapshot}");
+
+        // Unauthorized: a capability the world never issued is refused
+        // by the world's own session gate; the mount grants nothing.
+        let (mut stranger, _) =
+            tokio_tungstenite::connect_async(format!("ws://{addr}/prog/ws/world"))
+                .await
+                .unwrap();
+        stranger
+            .send(ClientMessage::Text(
+                serde_json::json!({"type": "join", "capability": "not-a-capability"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let refused = next_frame(&mut stranger).await;
+        assert!(
+            refused
+                .as_ref()
+                .is_none_or(|frame| frame.get("snapshot").is_none()),
+            "an invalid capability must not join: {refused:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn publication_mounts_isolate_sibling_worlds_at_the_router() {
+        let (_, mut state, _dir, _endpoint, _docs) = router_with_state().await;
+        let opener = id_worlds::world_hub::testing::MemoryOpener::new(false);
+        let dyn_opener: std::sync::Arc<dyn id_worlds::world_hub::WorldOpener> = opener.clone();
+        let hub = id_worlds::world_hub::WorldHub::new(
+            dyn_opener,
+            Some("admin".to_owned()),
+            "arena",
+            id_worlds::world_hub::HubLimits::default(),
+        );
+        hub.create("arena").await.unwrap();
+        hub.create("vault").await.unwrap();
+        state.world = Some(hub);
+        let app = create_router(state.clone(), WebSecurity::default());
+        state.publication_mounts.mount("arena", "/prog").unwrap();
+        state.publication_mounts.mount("vault", "/vault").unwrap();
+
+        // Each mount serves its own world's program page, and only
+        // its own: the page names the mounted world.
+        for (path, world) in [("/prog", "arena"), ("/vault", "vault")] {
+            let res = app
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{path}");
+            let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+            let text = String::from_utf8_lossy(&body);
+            assert!(
+                text.contains(&format!("data-world-program=\"{world}\"")),
+                "{path}: {text}"
+            );
+        }
+
+        // A mount's scoped API refuses to name its sibling: the
+        // program bridge is pinned to the mounted world, so an
+        // invite naming the other world is refused through this
+        // mount — and served through the sibling's own mount.
+        let invite = |uri: &str, world: &str| {
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("x-world-admin-token", "admin")
+                .body(Body::from(format!(
+                    "{{\"display_name\":\"guest\",\"world\":\"{world}\"}}"
+                )))
+                .unwrap()
+        };
+        let res = app
+            .clone()
+            .oneshot(invite("/prog/api/world/invite", "vault"))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::NOT_FOUND,
+            "invite vault via /prog"
+        );
+        let res = app
+            .clone()
+            .oneshot(invite("/vault/api/world/invite", "vault"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "invite vault via /vault");
+
+        // A string-prefix sibling path is outside both mounts and
+        // reaches no program surface at all.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/prog2")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
@@ -2885,6 +3348,104 @@ mod upload_router_tests {
         let admitted = seitan_admit(&app, &proof).await;
         assert_eq!(admitted.status(), StatusCode::OK);
         assert!(state.seitan.is_verified(&uid));
+    }
+
+    /// The `arena` world's own live directory, through its actor.
+    async fn seitan_world(state: &AppState) -> id_worlds::world_hub::WorldLease {
+        state
+            .world
+            .as_ref()
+            .unwrap()
+            .lease(Some("arena"), None)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn seitan_admit_lands_in_the_live_world_directory() {
+        // #8538 (a)+(b): an account created in the world's own
+        // directory (not the server-config one) admits without
+        // `unknown_account`, and `AccountVerified` lands in the world's
+        // live directory, the one capability authorization consults.
+        let (app, state, _dir, _endpoint, _docs) =
+            seitan_app(crate::SeitanState::default(), false).await;
+        let uid = seitan_account_key();
+        {
+            let world = seitan_world(&state).await;
+            world
+                .service()
+                .world()
+                .apply_directory_entry(id_worlds::directory::DirectoryEntry::AccountKeyed {
+                    id: uid.clone(),
+                    name: "joiner".to_owned(),
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                world
+                    .service()
+                    .world()
+                    .directory_account(&uid)
+                    .await
+                    .unwrap(),
+                Some(false)
+            );
+        }
+        let token = id_directory::seitan::Token::generate();
+        let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
+        assert_eq!(registered.status(), StatusCode::OK);
+        let proof = id_directory::seitan::accept::sign(&token, &uid, 1, seitan_now_ms()).unwrap();
+        let admitted = seitan_admit(&app, &proof).await;
+        assert_eq!(admitted.status(), StatusCode::OK);
+        let world = seitan_world(&state).await;
+        assert_eq!(
+            world
+                .service()
+                .world()
+                .directory_account(&uid)
+                .await
+                .unwrap(),
+            Some(true),
+            "AccountVerified must land in the live world directory"
+        );
+        assert!(!state.seitan.is_verified(&uid));
+    }
+
+    #[tokio::test]
+    async fn seitan_admit_for_an_account_in_both_directories_verifies_only_the_world() {
+        // #8538: when both directories hold the account, the world's
+        // live directory is authoritative and the only one appended
+        // to, so the two never disagree about which one admitted it.
+        let (app, state, _dir, _endpoint, _docs) =
+            seitan_app(crate::SeitanState::default(), true).await;
+        let uid = seitan_account_key();
+        seitan_world(&state)
+            .await
+            .service()
+            .world()
+            .apply_directory_entry(id_worlds::directory::DirectoryEntry::AccountKeyed {
+                id: uid.clone(),
+                name: "joiner".to_owned(),
+            })
+            .await
+            .unwrap();
+        let token = id_directory::seitan::Token::generate();
+        let registered = seitan_register(&app, token.as_str(), Some("s3cret")).await;
+        assert_eq!(registered.status(), StatusCode::OK);
+        let proof = id_directory::seitan::accept::sign(&token, &uid, 1, seitan_now_ms()).unwrap();
+        let admitted = seitan_admit(&app, &proof).await;
+        assert_eq!(admitted.status(), StatusCode::OK);
+        assert_eq!(
+            seitan_world(&state)
+                .await
+                .service()
+                .world()
+                .directory_account(&uid)
+                .await
+                .unwrap(),
+            Some(true)
+        );
+        assert!(!state.seitan.is_verified(&uid));
     }
 
     #[tokio::test]
@@ -3533,7 +4094,7 @@ mod upload_router_tests {
         assert_eq!(status, StatusCode::OK, "{body}");
 
         for name in NON_CANONICAL_NAMES {
-            for uri in ["/api/delete", "/api/restore"] {
+            for uri in ["/api/delete", "/api/restore", "/api/hard-delete"] {
                 let (status, body) = post_name(router.clone(), uri, name).await;
                 assert_eq!(status, StatusCode::BAD_REQUEST, "{uri} {name}: {body}");
                 let tags = state
@@ -3563,6 +4124,18 @@ mod upload_router_tests {
             .await
             .unwrap();
         assert!(tags.is_empty(), "padded restore clears the trimmed name");
+
+        // #10623: hard-delete holds the same canonical rule; padding is
+        // normalized to the trimmed name, non-canonical shapes are refused.
+        let (status, body) = post_name(router.clone(), "/api/hard-delete", " notes.md ").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            upload_name_owner(&state.store, "notes.md")
+                .await
+                .unwrap()
+                .is_none(),
+            "padded hard-delete removes the trimmed name"
+        );
     }
 
     // #10585: a multipart filename carrying a path or padding is stored as
@@ -4218,10 +4791,44 @@ struct IdentityUpdateNameRequest {
 /// for future reconnection.
 async fn identity_register_handler(
     State(state): State<AppState>,
+    connect_info: ConnectInfo<SocketAddr>,
     Json(req): Json<IdentityRegisterRequest>,
 ) -> impl IntoResponse {
+    // #1766 (remainder): throttle registrations per source. The key is
+    // the peer IP from the listener's connect-info — forwarded headers
+    // are client-spoofable on the direct listener and are never
+    // consulted (security.rs doctrine). The `id serve` listener wiring
+    // supplies connect-info (id-cli serve.rs); a surface that served
+    // this router without it would reject the request, and no such
+    // production surface exists (the program router served by
+    // publication listeners carries no identity routes). Only
+    // successful registrations are recorded, so a refusal at the
+    // admission cap below does not consume a source's budget.
+    let source = connect_info.0.ip().to_string();
+    if let Err(remaining) = state.register_limiter.check(&source).await {
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        let secs = remaining.as_secs_f64().ceil() as u64;
+        tracing::info!(
+            "[identity] Registration rate limited for source {source}: {secs}s remaining"
+        );
+        // Structured refusal, same shape as the save limiter's
+        // (#2244): machine-readable reason + retry value in the body,
+        // `Retry-After` header alongside.
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, secs.to_string())],
+            Json(serde_json::json!({
+                "error": "registration_rate_limited",
+                "detail": format!("Too many registrations from this source. Try again in {secs}s."),
+                "reason": "rate_limited",
+                "retry_after_ms": secs.saturating_mul(1_000),
+            })),
+        )
+            .into_response();
+    }
     match state.identity.register(req.name).await {
         Ok((token, identity)) => {
+            state.register_limiter.record(&source).await;
             tracing::info!("[identity] Registered new client: {}", identity.client_id);
             (
                 StatusCode::OK,

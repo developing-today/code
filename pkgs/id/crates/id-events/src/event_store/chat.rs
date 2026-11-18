@@ -195,7 +195,7 @@ impl EventStore {
             }
             parents.insert(item.event.id, event_parents);
         }
-        let join = join_event(&stored, &resolved.applied, reader, &parents);
+        let join = join_event(&stored, &resolved.applied, group, reader, &parents);
         Ok(visible_history(
             timeline,
             &policy.history,
@@ -205,12 +205,16 @@ impl EventStore {
     }
 }
 
-/// The event that made `reader` a member: a create listing them, or an add naming them.
-/// When several qualify, the one with the smallest causal past is the join; ties break by
-/// event ID, so the choice depends only on the stored events.
-fn join_event(
+/// The event that made `reader` a member of `group`: a create listing them, or an add
+/// naming them. Selection is scoped to the requested group (issue #8743): a create's
+/// group is its own event ID, and an add applies to the group its header names — a
+/// membership event in any other group never qualifies, however small its causal past.
+/// When several in-group events qualify, the one with the smallest causal past is the
+/// join; ties break by event ID, so the choice depends only on the stored events.
+pub(super) fn join_event(
     stored: &[resolve::Stored],
     applied: &std::collections::HashSet<Hash>,
+    group: &Hash,
     reader: &AuthorKey,
     parents: &HashMap<Hash, Vec<Hash>>,
 ) -> Option<Hash> {
@@ -221,10 +225,15 @@ fn join_event(
             continue;
         }
         let joined = match &item.action {
-            Some(GroupAction::Create { initial_members }) => initial_members
-                .iter()
-                .any(|(member, _)| names_reader(member)),
-            Some(GroupAction::Add { member, .. }) => names_reader(member),
+            Some(GroupAction::Create { initial_members }) => {
+                item.event.id == *group
+                    && initial_members
+                        .iter()
+                        .any(|(member, _)| names_reader(member))
+            }
+            Some(GroupAction::Add { member, .. }) => {
+                item.event.header.extensions.group == Some(*group) && names_reader(member)
+            }
             _ => false,
         };
         if joined {
@@ -299,6 +308,7 @@ mod tests {
             link: None,
             checkpoint: None,
             rotation: None,
+            anchor: None,
         };
         let event = sign(key, seq, backlink, Some(&body), ext).unwrap();
         (event, body)
@@ -325,6 +335,7 @@ mod tests {
             link: None,
             checkpoint: None,
             rotation: None,
+            anchor: None,
         };
         sign(key, seq, backlink, None, ext).unwrap()
     }
@@ -481,6 +492,7 @@ mod tests {
                 link: None,
                 checkpoint: None,
                 rotation: None,
+                anchor: None,
             },
         )
         .unwrap();
@@ -519,6 +531,88 @@ mod tests {
     }
 
     #[test]
+    /// Issue #8743 regression: the join selector must only consider membership events
+    /// of the requested group. Reader Bob is a member of two groups: he is listed in
+    /// foreign group B's create (the smallest causal past in the store) and is added to
+    /// target group A only after Alice has posted there. Before the fix, group B's
+    /// create was selected as Bob's join for group A, so a non-full history policy cut
+    /// group A's timeline at the foreign event and exposed pre-join history.
+    #[test]
+    fn test_join_event_is_scoped_to_the_requested_group() {
+        let (alice, bob, carol) = (key(61), key(62), key(63));
+
+        // Foreign group B: Carol creates it listing Bob. Its create is Bob's earliest
+        // membership event anywhere in the store.
+        let create_b = GroupAction::Create {
+            initial_members: vec![
+                (individual(&carol), p2panda_auth::Access::manage()),
+                (individual(&bob), p2panda_auth::Access::write()),
+            ],
+        };
+        let (create_b_event, _) = group_op(&carol, 0, None, vec![], None, &create_b);
+        let group_b = create_b_event.id;
+
+        // Target group A: Alice creates it without Bob, posts a message, and only then
+        // adds Bob.
+        let create_a = GroupAction::Create {
+            initial_members: vec![(individual(&alice), p2panda_auth::Access::manage())],
+        };
+        let (create_a_event, _) = group_op(&alice, 0, None, vec![], None, &create_a);
+        let group_a = create_a_event.id;
+        let message_a = chat_event(&alice, 1, Some(group_a), vec![], group_a, "before bob");
+        let add_a = GroupAction::Add {
+            member: individual(&bob),
+            access: p2panda_auth::Access::write(),
+        };
+        let (add_a_event, _) =
+            group_op(&alice, 2, Some(message_a.id), vec![], Some(group_a), &add_a);
+
+        let stored = vec![
+            resolve::Stored {
+                event: create_b_event.clone(),
+                action: Some(create_b),
+                device: None,
+            },
+            resolve::Stored {
+                event: create_a_event.clone(),
+                action: Some(create_a),
+                device: None,
+            },
+            resolve::Stored {
+                event: message_a.clone(),
+                action: None,
+                device: None,
+            },
+            resolve::Stored {
+                event: add_a_event.clone(),
+                action: Some(add_a),
+                device: None,
+            },
+        ];
+        let applied: std::collections::HashSet<Hash> =
+            stored.iter().map(|item| item.event.id).collect();
+        let mut parents: HashMap<Hash, Vec<Hash>> = HashMap::new();
+        parents.insert(message_a.id, vec![group_a]);
+        parents.insert(add_a_event.id, vec![message_a.id]);
+
+        // For group A, only the in-group add qualifies — never the foreign create with
+        // the smaller causal past.
+        assert_eq!(
+            join_event(&stored, &applied, &group_a, &author(&bob), &parents),
+            Some(add_a_event.id)
+        );
+        // For group B, its own create is the join.
+        assert_eq!(
+            join_event(&stored, &applied, &group_b, &author(&bob), &parents),
+            Some(group_b)
+        );
+        // A reader no in-group event names has no join in that group.
+        assert_eq!(
+            join_event(&stored, &applied, &group_a, &author(&carol), &parents),
+            None
+        );
+    }
+
     fn test_group_policy_comes_from_the_create() {
         let (_dir, store, _alice, _bob, group, _create) = channel();
         // The membership create bridges to a group create under the custom template with

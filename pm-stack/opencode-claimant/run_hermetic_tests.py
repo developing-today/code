@@ -4,6 +4,7 @@
 Oracle: existing mocked unit suites, plus explicit fail-closed I/O guards.
 The guard is process-local and cannot affect an operator's running claimant.
 """
+
 import sys
 
 if len(sys.argv) != 1:
@@ -22,7 +23,13 @@ violations = []
 
 
 def guard(event, args):
-    if event in {"subprocess.Popen", "os.system", "os.exec", "os.posix_spawn", "os.fork"} or event.startswith("socket."):
+    if event in {
+        "subprocess.Popen",
+        "os.system",
+        "os.exec",
+        "os.posix_spawn",
+        "os.fork",
+    } or event.startswith("socket."):
         violations.append(event)
         raise RuntimeError("offline test attempted external I/O: " + event)
 
@@ -37,20 +44,30 @@ def load(name, path):
 with tempfile.TemporaryDirectory(prefix="claimant-offline-") as tmp:
     # Reset all inherited service/credential overrides before module imports.
     os.environ.clear()
-    os.environ.update(HOME=tmp, XDG_STATE_HOME=tmp + "/state", XDG_CONFIG_HOME=tmp + "/config",
-                      OPENCODE_AUTH_FILE=tmp + "/absent-auth.json")
+    os.environ.update(
+        HOME=tmp,
+        XDG_STATE_HOME=tmp + "/state",
+        XDG_CONFIG_HOME=tmp + "/config",
+        OPENCODE_AUTH_FILE=tmp + "/absent-auth.json",
+    )
     # Tests using tempfile also write inside the disposable tree.
     tempfile.tempdir = tmp
     sys.addaudithook(guard)
     suite = unittest.TestSuite()
-    for name, path in (("offline_claimant", ROOT / "test_claimant.py"),
-                       ("offline_poll", ROOT / "test_poll.py"),
-                       ("offline_mode", ROOT / "test" / "test_claimant.py")):
+    for name, path in (
+        ("offline_claimant", ROOT / "test_claimant.py"),
+        ("offline_poll", ROOT / "test_poll.py"),
+        ("offline_mode", ROOT / "test" / "test_claimant.py"),
+        ("offline_prompt_constants", ROOT / "test_prompt_constants.py"),
+    ):
         suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(load(name, path)))
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     # Even code that catches the guard exception cannot turn an attempted
     # real queue/server call into a successful offline check.
     if violations:
-        print("Forbidden external I/O attempted: " + ", ".join(violations), file=sys.stderr)
+        print(
+            "Forbidden external I/O attempted: " + ", ".join(violations),
+            file=sys.stderr,
+        )
     status = 0 if result.wasSuccessful() and not violations else 1
 raise SystemExit(status)

@@ -2,7 +2,7 @@
 
 ### Parallel writers
 
-These apply whenever other agents may share the repository. Reasons and detail: [`planning/workflow/collaboration.md`](planning/workflow/collaboration.md).
+These apply whenever other agents may share the repository. Reasons and detail: [`planning/workflow/collaboration.md`](../../planning/workflow/collaboration.md).
 
 - **Boot:** `source /home/user/.local/share/plaza-tools/git-env.sh` (commits fail without it), then a fresh worktree from `origin/<base>`. Push the empty branch first; open the PR after the first commit.
 - **One writer per file.** Wide files (`AGENTS.md`, `doc/README.md`, indexes, a package's `main.md` and `design.md`) change only by PR from your own branch.
@@ -23,6 +23,16 @@ design-mill protocol.
   parent's route: launch children from the directory their work belongs
   in, and state the directory and route in the launch prompt anyway, so
   the record shows intent.
+- **Scratch worktrees are per run (#11348).** A scheduled task that
+  needs a throwaway tree gets it from `node bin/scratch-worktree.mjs add
+  --repo <checkout> --prefix <task-name>`, which names the path with a
+  UTC timestamp and random suffix, fetches the base, refuses to adopt a
+  path that already exists, and prints the path and an owner token as
+  JSON. Clean up with `node bin/scratch-worktree.mjs remove --path <path>
+  --token <token>`: it removes only a clean tree this run created and
+  never forces. Never build the path from the date or a per-day counter,
+  never guard with `test -d … ||`, never pipe `worktree add` through
+  `tail`, and never `git worktree remove --force` a scratch tree.
 - **Scope the task to the context it needs.** A child gets a crisp spec
   and only the context that task requires; the parent keeps the whole
   picture. Independent tasks launch in parallel. Follow up with a finished

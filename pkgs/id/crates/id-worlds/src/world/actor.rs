@@ -3,11 +3,13 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tracing::Instrument;
 
-use crate::world_caps::{CapError, CapsReport, Decision, Request, Subscription};
+use crate::world_caps::{CapsReport, Decision, Subscription};
+
+mod execution;
 
 /// Reserved tracing target for structured administrative and provider-use audit records.
 pub(crate) const AUDIT_TRACE_TARGET: &str = "id::audit";
@@ -29,6 +31,38 @@ pub(crate) struct AuditRecord {
     pub(crate) parameters: serde_json::Value,
     /// `accepted`, `refused`, or a provider-use decision.
     pub(crate) outcome: String,
+    /// What the action acted on: the world for administrative commands,
+    /// the capability for provider use, the named world (or `hub`) for
+    /// session admin frames. Added in schema version 2 (#1063); absent
+    /// (empty) in version-1 records.
+    #[serde(default)]
+    pub(crate) target: String,
+    /// Correlation id tying this record to the frame or command that
+    /// produced it; unique and monotonic per process. Added in schema
+    /// version 2 (#1063); absent (empty) in version-1 records.
+    #[serde(default)]
+    pub(crate) correlation_id: String,
+}
+
+/// Monotonic sequence behind audit correlation ids, shared by the
+/// actor and the session layer so every audit line a process emits
+/// carries a unique correlation id (#1063).
+static AUDIT_CORRELATION_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+pub(crate) fn next_audit_correlation_id() -> String {
+    let seq = AUDIT_CORRELATION_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("audit:{seq}")
+}
+
+/// Emit one audit record on the reserved target — the single emission
+/// point for the whole audit stream, so the actor and the session
+/// layer can never drift in shape.
+pub(crate) fn emit_audit_record(record: &AuditRecord) {
+    if let Ok(json) = serde_json::to_string(record) {
+        tracing::info!(target: AUDIT_TRACE_TARGET, audit_record = %json);
+    } else {
+        tracing::error!(target: AUDIT_TRACE_TARGET, action = %record.action, "could not serialize audit record");
+    }
 }
 
 fn authority_identity(authority: &Authority) -> String {
@@ -46,6 +80,7 @@ impl WorldCommand {
             Self::DelegateToFriend { .. } => "DelegateToFriend",
             Self::Directory { .. } => "Directory",
             Self::ApplyDirectory { .. } => "ApplyDirectory",
+            Self::DirectoryAccount { .. } => "DirectoryAccount",
             Self::Revoke { .. } => "Revoke",
             Self::RevokeAuthorized { .. } => "RevokeAuthorized",
             Self::ParticipantId { .. } => "ParticipantId",
@@ -56,6 +91,7 @@ impl WorldCommand {
             Self::EntityInput { .. } => "EntityInput",
             Self::ExportEntity { .. } => "ExportEntity",
             Self::ImportEntity { .. } => "ImportEntity",
+            Self::HandoffWriteLease { .. } => "HandoffWriteLease",
             Self::Snapshot { .. } => "Snapshot",
             Self::HostView { .. } => "HostView",
             Self::EventsAfter { .. } => "EventsAfter",
@@ -76,6 +112,12 @@ impl WorldCommand {
             Self::AdminSetScheduleGrant { .. } => "AdminSetScheduleGrant",
             Self::DeliverSchedule { .. } => "DeliverSchedule",
             Self::SetScheduleDelivery { .. } => "SetScheduleDelivery",
+            Self::AdminSetPortalGrant { .. } => "AdminSetPortalGrant",
+            Self::PortalGrantsInfo { .. } => "PortalGrantsInfo",
+            Self::PortalSendPrecheck { .. } => "PortalSendPrecheck",
+            Self::PortalSendAdmit { .. } => "PortalSendAdmit",
+            Self::PortalSendRecord { .. } => "PortalSendRecord",
+            Self::DeliverPortal { .. } => "DeliverPortal",
             Self::CapsInfo { .. } => "CapsInfo",
             Self::SetIsolation { .. } => "SetIsolation",
             Self::IsolationInfo { .. } => "IsolationInfo",
@@ -93,6 +135,11 @@ impl WorldCommand {
         }
     }
 }
+
+/// The most unsigned inputs one group-commit batch may stage (#8239):
+/// bounding the drain bounds how long the actor loop spends staging
+/// before it persists, and how much one sync must cover.
+const MAX_INPUT_BATCH: usize = 64;
 
 pub(crate) enum WorldCommand {
     Issue {
@@ -126,6 +173,14 @@ pub(crate) enum WorldCommand {
     ApplyDirectory {
         entry: crate::directory::DirectoryEntry,
         reply: oneshot::Sender<Result<()>>,
+    },
+    /// Whether the world's directory holds `account`, and if so
+    /// whether it is verified (#8538). Refused on a replica, like
+    /// `ApplyDirectory`: the answer exists so a caller can apply an
+    /// entry next, and a replica never applies one.
+    DirectoryAccount {
+        account: String,
+        reply: oneshot::Sender<Result<Option<bool>>>,
     },
     Revoke {
         participant_id: u64,
@@ -205,6 +260,15 @@ pub(crate) enum WorldCommand {
         payload: Vec<u8>,
         payload_digest: String,
         reply: oneshot::Sender<Result<HandoffTransferState>>,
+    },
+    /// DO-authority control request. The actor derives the source holder
+    /// from its journaled state and serializes the durable boundary with all
+    /// world commands.
+    HandoffWriteLease {
+        to: String,
+        epoch: u64,
+        expires_at_ms: Option<u64>,
+        reply: oneshot::Sender<Result<u64>>,
     },
     Snapshot {
         token: JoinCapability,
@@ -336,6 +400,59 @@ pub(crate) enum WorldCommand {
         delivery: std::sync::Arc<dyn ScheduleDelivery>,
         reply: oneshot::Sender<()>,
     },
+    /// Admin: set this world's F12.14 portal grant for one peer
+    /// (code#1068 wiring slice): `granted: true` grants the portal,
+    /// `granted: false` revokes a live grant. Replies with the full
+    /// grant book after the change.
+    AdminSetPortalGrant {
+        peer: String,
+        granted: bool,
+        reply: oneshot::Sender<Result<id_caps::portal::PortalGrants>>,
+    },
+    /// Read this world's current portal grant book (the transport
+    /// reads the peer's book through this before a send).
+    PortalGrantsInfo {
+        reply: oneshot::Sender<id_caps::portal::PortalGrants>,
+    },
+    /// Phase 1 of a portal send (code#1068 wiring slice): the
+    /// actor-local half of the pre-transport check — this world must
+    /// be writable and must itself grant the target. Runs no
+    /// cross-world await, so the command loop never blocks on a peer.
+    PortalSendPrecheck {
+        target: String,
+        bytes: usize,
+        reply: oneshot::Sender<Result<(), PortalSendError>>,
+    },
+    /// Phase 3 of a portal send: the full mutual check against the
+    /// peer book the handle fetched through the transport (phase 2,
+    /// outside the actor), the delivered-envelope bound, and the
+    /// per-pair rate admission. Replies with this world's id (the
+    /// source name the transport delivers under).
+    PortalSendAdmit {
+        target: String,
+        peer_grants: id_caps::portal::PortalGrants,
+        message: String,
+        reply: oneshot::Sender<Result<String, PortalSendError>>,
+    },
+    /// Phase 5 of a portal send: record the send-side audit shape
+    /// for the delivery outcome the handle observed (phase 4) — an
+    /// accepted shape for `refusal: None`, the refusal shape (and a
+    /// `Refused` reply) for `Some`.
+    PortalSendRecord {
+        target: String,
+        bytes: usize,
+        refusal: Option<id_caps::portal::PortalRefusal>,
+        reply: oneshot::Sender<Result<(), PortalSendError>>,
+    },
+    /// A portal message arriving from `source` (code#1068 wiring
+    /// slice). Replies `Ok` only when this world accepted it (its
+    /// own grant re-checked, message delivered to the program); a
+    /// policy refusal is recorded in this world's audit log.
+    DeliverPortal {
+        source: String,
+        message: String,
+        reply: oneshot::Sender<Result<(), PortalSendError>>,
+    },
     /// Admin: read the capability report.
     CapsInfo {
         reply: oneshot::Sender<Result<CapsReport>>,
@@ -463,9 +580,25 @@ pub(crate) struct WorldActor {
     /// the composition layer. `None` leaves cross-world schedules
     /// pending: no sink, no delivery.
     pub(crate) schedule_delivery: Option<std::sync::Arc<dyn ScheduleDelivery>>,
+    /// (The F12.14 portal transport sink lives on the handle, not
+    /// the actor: send orchestration runs outside this command loop
+    /// so a send never waits on a peer actor while holding it —
+    /// see `WorldHandle::send_portal_message`.)
+    /// Per-ordered-pair portal rate windows (code#1068 wiring
+    /// slice), keyed by target peer world: this actor is always the
+    /// source half of the pair. Actor-lifetime only, like the
+    /// schedule receipts' in-memory mirrors — the kernel window is a
+    /// send-side admission control, not durable state.
+    pub(crate) portal_rate: BTreeMap<String, id_caps::portal::PortalRateWindow>,
     /// Host metrics registry (F11.7), shared with the handle and the
     /// session layer; see [`WorldMetrics`].
     pub(crate) metrics: WorldMetrics,
+    /// Retained audit log (F12.6), shared with the handle and the
+    /// session layer; see [`WorldAuditLog`].
+    pub(crate) audit: WorldAuditLog,
+    /// Client-provider broker (F13.7 step 3), shared with the handle
+    /// and the session layer; see [`ProviderBroker`].
+    pub(crate) provider_broker: ProviderBroker,
     pub(crate) storage_failed: bool,
     /// F12.13 replica mode: the world serves spectators from a verified
     /// journal and refuses every local mutation and side effect. Set only
@@ -568,20 +701,20 @@ impl WorldActor {
         parameters: serde_json::Value,
         outcome: &str,
     ) {
+        let target = self.core.world_id().to_owned();
         let record = AuditRecord {
-            schema_version: 1,
+            schema_version: 2,
             timestamp_ms: self.core.clock().now_ms(),
             world_id: self.core.world_id().to_owned(),
             actor: actor.into(),
             action: action.to_owned(),
             parameters,
             outcome: outcome.to_owned(),
+            target,
+            correlation_id: next_audit_correlation_id(),
         };
-        if let Ok(json) = serde_json::to_string(&record) {
-            tracing::info!(target: AUDIT_TRACE_TARGET, audit_record = %json);
-        } else {
-            tracing::error!(target: AUDIT_TRACE_TARGET, action, "could not serialize audit record");
-        }
+        self.audit.record(record.clone());
+        emit_audit_record(&record);
     }
 
     fn audit_admin_result(
@@ -605,12 +738,19 @@ impl WorldActor {
             Decision::AllowAndGrant => "first_use_grant",
             Decision::Deny(_) => "denied",
         };
-        self.audit_record(
+        let record = AuditRecord {
+            schema_version: 2,
+            timestamp_ms: self.core.clock().now_ms(),
+            world_id: self.core.world_id().to_owned(),
             actor,
-            "provider_use",
-            serde_json::json!({"capability": capability}),
-            outcome,
-        );
+            action: "provider_use".to_owned(),
+            parameters: serde_json::json!({"capability": capability}),
+            outcome: outcome.to_owned(),
+            target: capability.to_owned(),
+            correlation_id: next_audit_correlation_id(),
+        };
+        self.audit.record(record.clone());
+        emit_audit_record(&record);
     }
 
     pub(crate) async fn run(mut self, mut receiver: mpsc::Receiver<WorldCommand>, restored: bool) {
@@ -618,14 +758,24 @@ impl WorldActor {
             self.invalidate_restored_form_presentations().await;
         }
         self.after_change().await;
+        // A command the batch drain stopped at (the first non-Input) is
+        // held here and handled next iteration, in order (#8239).
+        let mut pending: Option<WorldCommand> = None;
         loop {
             // Ticks and schedules sleep until their earliest deadline; with
             // neither armed this branch never wakes.
             let deadline = self.next_deadline();
-            let command = tokio::select! {
+            let command = if let Some(command) = pending.take() {
+                command
+            } else {
+                tokio::select! {
                 command = receiver.recv() => match command {
                     Some(command) => command,
                     None => break,
+                },
+                _ = self.provider_broker.wait_changed() => {
+                    self.drain_provider_completions().await;
+                    continue;
                 },
                 () = Self::sleep_until(deadline) => {
                     self.fire_ticks().await;
@@ -633,6 +783,7 @@ impl WorldActor {
                     self.fire_schedules().await;
                     self.after_change().await;
                     continue;
+                }
                 }
             };
             if matches!(command, WorldCommand::Shutdown { .. }) {
@@ -642,15 +793,68 @@ impl WorldActor {
                 break;
             }
             self.metrics.record_queue_depth(receiver.len() as u64);
-            let started = std::time::Instant::now();
-            let name = command.name();
-            async {
-                self.handle(command).await;
+            // Group commit (#8239): an unsigned Input at the head of the
+            // queue drains the unsigned Inputs already behind it into one
+            // batch, persisted with a single journal sync. The drain stops
+            // at the first other command, held in `pending` for the next
+            // iteration - command order is never changed.
+            let mut command = Some(command);
+            let mut input_batch: Vec<WorldCommand> = Vec::new();
+            if matches!(
+                command.as_ref(),
+                Some(WorldCommand::Input {
+                    signed_move: None,
+                    ..
+                })
+            ) {
+                if let Some(held) = command.take() {
+                    input_batch.push(held);
+                }
+                while input_batch.len() < MAX_INPUT_BATCH {
+                    match receiver.try_recv() {
+                        Ok(next)
+                            if matches!(
+                                next,
+                                WorldCommand::Input {
+                                    signed_move: None,
+                                    ..
+                                }
+                            ) =>
+                        {
+                            input_batch.push(next);
+                        }
+                        Ok(next) => {
+                            pending = Some(next);
+                            break;
+                        }
+                        Err(_) => break,
+                    }
+                }
             }
-            .instrument(tracing::info_span!("command", name))
-            .await;
+            let started = std::time::Instant::now();
+            if input_batch.len() > 1 {
+                async {
+                    self.handle_input_batch(input_batch).await;
+                }
+                .instrument(tracing::info_span!("command", name = "InputBatch"))
+                .await;
+            } else {
+                // An empty batch means the drain above never took the
+                // held command; a non-empty batch pops its element. One
+                // of the two always yields the command.
+                let Some(command) = input_batch.pop().or_else(|| command.take()) else {
+                    continue;
+                };
+                let name = command.name();
+                async {
+                    self.handle(command).await;
+                }
+                .instrument(tracing::info_span!("command", name))
+                .await;
+            }
             self.metrics.record_command(started.elapsed());
             self.after_change().await;
+            self.drain_provider_completions().await;
             self.acting = None;
             self.acting_session = None;
         }
@@ -670,7 +874,7 @@ impl WorldActor {
     /// A read-only replica never wakes for ticks or schedules: it serves
     /// spectators from its verified journal and fires nothing locally.
     pub(crate) fn next_deadline(&self) -> Option<std::time::Instant> {
-        if self.read_only {
+        if self.read_only || !self.holds_live_do_lease() {
             return None;
         }
         let deliverable = self.program_healthy && !self.storage_failed;
@@ -687,6 +891,7 @@ impl WorldActor {
                 deliverable,
             ))
             .chain(self.loc_watches.values().min().copied())
+            .chain(self.provider_broker.next_deadline())
             .min()
     }
 
@@ -711,7 +916,82 @@ impl WorldActor {
 
     fn check_writable(&self) -> Result<()> {
         self.check_not_replica()?;
-        self.check_storage()
+        self.check_storage()?;
+        self.check_do_lease()
+    }
+
+    fn check_do_lease(&self) -> Result<()> {
+        let lease = self.core.write_lease();
+        lease
+            .check_writer(
+                DO_WRITE_LEASE_HOLDER,
+                lease.epoch,
+                self.core.clock().now_ms(),
+            )
+            .map_err(anyhow::Error::new)
+    }
+
+    fn holds_live_do_lease(&self) -> bool {
+        self.check_do_lease().is_ok()
+    }
+
+    /// Persist a DO-mediated ownership boundary before changing the live
+    /// lease. The host adapter is responsible for authenticating this control
+    /// request and meeting the drain/replay barrier before invoking it.
+    fn handoff_write_lease(
+        &mut self,
+        to: String,
+        epoch: u64,
+        expires_at_ms: Option<u64>,
+    ) -> Result<u64> {
+        self.check_not_replica()?;
+        self.check_storage()?;
+        ensure!(
+            self.journal.is_some(),
+            "write lease handoff requires a durable journal"
+        );
+        let from = self
+            .core
+            .write_lease()
+            .holder
+            .clone()
+            .context("write lease has no current holder")?;
+        ensure!(from != to, "write lease handoff must change holders");
+        ensure!(
+            from == DO_WRITE_LEASE_HOLDER || to == DO_WRITE_LEASE_HOLDER,
+            "write lease handoff must include the DO authority"
+        );
+        // Expiry already fenced a native holder at the append gate, but
+        // recovery must use revoke/grant, not handoff. Refuse here so an
+        // expired term cannot be renewed by changing the holder.
+        let now_ms = self.core.clock().now_ms();
+        self.core
+            .write_lease()
+            .check_writer(&from, self.core.write_lease().epoch, now_ms)
+            .map_err(anyhow::Error::new)?;
+        if to == DO_WRITE_LEASE_HOLDER {
+            ensure!(
+                expires_at_ms.is_none(),
+                "the DO write lease must not have a term expiry"
+            );
+        } else {
+            ensure!(
+                expires_at_ms.is_some_and(|expiry| expiry > now_ms),
+                "a native write lease requires a future expiry"
+            );
+        }
+
+        let mut next_lease = self.core.write_lease().clone();
+        next_lease.apply_handoff(&from, &to, epoch, expires_at_ms)?;
+        self.persist(JournalEntry::LeaseHandedOff {
+            from,
+            to,
+            epoch,
+            expires_at_ms,
+        })?;
+        self.core.write_lease = next_lease;
+        self.core.since_checkpoint = self.core.since_checkpoint.saturating_add(1);
+        Ok(epoch)
     }
 
     /// Policy-B admission, checked at every token-admission entry
@@ -740,1792 +1020,6 @@ impl WorldActor {
             .context("issued capability vanished")?;
         self.persist(entry)?;
         Ok(issued)
-    }
-
-    /// Durably record `entry`, or turn the world read-only.
-    fn persist(&mut self, entry: JournalEntry) -> Result<()> {
-        ensure!(
-            !self.read_only,
-            "world is read-only (replica); local mutations are refused"
-        );
-        ensure!(
-            !self.storage_failed,
-            "world storage failed; the world is read-only"
-        );
-        let world_id = self.core.world_id().to_owned();
-        let replication_sender = self.replication_sender.clone();
-        if let Some(journal) = self.journal.as_mut() {
-            // The append includes its fsync, so this is the full durable
-            // cost of the entry (F11.7 journal append + fsync latency).
-            let started = std::time::Instant::now();
-            let version_before = journal.replication_header_version();
-            if let Err(error) = journal.append(&entry) {
-                self.storage_failed = true;
-                tracing::error!("world journal append failed: {error:#}");
-                if version_before != journal.replication_header_version() {
-                    let _ = replication_sender.send(ReplicationUpdate::ResetFailed);
-                }
-                return Err(error.context("world storage failed; the world is read-only"));
-            }
-            self.metrics.record_journal_append(started.elapsed());
-            // Write locality (#2275): an entity-addressed input is a
-            // region-scoped write, so it lands in the locality table
-            // under its entity reference.
-            if let JournalEntry::Committed { event } | JournalEntry::System { event } = &entry {
-                if let WorldEventKind::EntityInput { entity_ref, .. } = &event.kind {
-                    self.metrics.record_write_locality(entity_ref);
-                }
-            }
-            if let Some(header_version) = journal.replication_header_version() {
-                if version_before != Some(header_version) {
-                    let update = journal
-                        .replication_snapshot()
-                        .map(ReplicationUpdate::Reset)
-                        .unwrap_or_else(|error| {
-                            tracing::error!(
-                                "world {world_id}: replication reset snapshot failed: {error:#}"
-                            );
-                            ReplicationUpdate::ResetFailed
-                        });
-                    let _ = replication_sender.send(update);
-                } else {
-                    let _ = replication_sender.send(ReplicationUpdate::Append {
-                        header_version,
-                        entry: journal_entry_line(&entry),
-                    });
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Durably record related entries as one transaction, or turn the world
-    /// read-only. Builder install events and their audit attribution must never
-    /// be split across a crash.
-    fn persist_transaction(&mut self, entries: &[JournalEntry]) -> Result<()> {
-        ensure!(
-            !self.storage_failed,
-            "world storage failed; the world is read-only"
-        );
-        if let Some(journal) = self.journal.as_mut() {
-            let started = std::time::Instant::now();
-            if let Err(error) = journal.append_transaction(entries) {
-                self.storage_failed = true;
-                tracing::error!("world journal transaction failed: {error:#}");
-                return Err(error.context("world storage failed; the world is read-only"));
-            }
-            self.metrics.record_journal_append(started.elapsed());
-        }
-        Ok(())
-    }
-
-    fn export_entity(
-        &mut self,
-        handoff_id: String,
-        entity_ref: String,
-        source_region: String,
-        target_region: String,
-        prior_owner_epoch: u64,
-    ) -> Result<HandoffTransferState> {
-        self.check_storage()?;
-        ensure!(self.program_healthy, "world program is unavailable");
-        ensure!(
-            self.journal.is_some(),
-            "entity export requires a durable world journal"
-        );
-        ensure!(
-            self.core.limits.region_sharded,
-            "entity export requires a region-sharded world"
-        );
-        ensure!(
-            handoff_id.len() == 32 && handoff_id.bytes().all(|b| b.is_ascii_hexdigit()),
-            "handoff ID must be 128-bit hexadecimal"
-        );
-        core::validate_entity_ref(&entity_ref)?;
-        for (name, value) in [
-            ("source region", source_region.as_str()),
-            ("target region", target_region.as_str()),
-        ] {
-            ensure!(!value.trim().is_empty(), "{name} must not be empty");
-            ensure!(value.len() <= 256, "{name} exceeds 256 bytes");
-            ensure!(
-                !value.chars().any(char::is_control),
-                "{name} contains a control character"
-            );
-        }
-        ensure!(
-            source_region != target_region,
-            "source and target regions match"
-        );
-        let program_module_hash = self
-            .core
-            .active_module_hash
-            .clone()
-            .context("world has no installed program for entity export")?;
-        // Exact-retry recovery: if this export already committed (its reply
-        // was lost, or the actor restarted and replayed it), return the
-        // stored receipt instead of preparing a duplicate the core would
-        // refuse. A stored export whose fields differ from the request is
-        // not a retry — it falls through and validate_entity_export
-        // rejects the conflicting handoff ID / entity.
-        if let Some(existing) = self.core.handoff_transfers.iter().find(|transfer| {
-            transfer.direction == HandoffDirection::Export && transfer.handoff_id == handoff_id
-        }) && existing.entity_ref == entity_ref
-            && existing.source_region == source_region
-            && existing.target_region == target_region
-            && existing.prior_owner_epoch == prior_owner_epoch
-            && existing.program_module_hash == program_module_hash
-        {
-            ensure!(
-                !self.transfer_replay_pending(HandoffDirection::Export, &handoff_id),
-                "entity export {handoff_id:?} is durably recorded but has not been applied; replay required"
-            );
-            return Ok(existing.clone());
-        }
-        let request = EntityTransferRequest::Export {
-            handoff_id: handoff_id.clone(),
-            entity_ref: entity_ref.clone(),
-            source_region: source_region.clone(),
-            target_region: target_region.clone(),
-            prior_owner_epoch,
-            program_module_hash: program_module_hash.clone(),
-        };
-        let EntityTransferPlan::Export {
-            payload_schema,
-            payload,
-            app_event,
-        } = self.program.prepare_entity_transfer(&request)?
-        else {
-            bail!("world program returned an import plan for an export request");
-        };
-        ensure!(
-            !payload_schema.trim().is_empty() && payload_schema.len() <= 128,
-            "entity transfer payload schema must be 1..=128 bytes"
-        );
-        ensure!(
-            !payload_schema.chars().any(char::is_control),
-            "entity transfer payload schema contains a control character"
-        );
-        ensure!(
-            payload.len() <= MAX_ENTITY_TRANSFER_PAYLOAD_BYTES,
-            "entity transfer payload exceeds {MAX_ENTITY_TRANSFER_PAYLOAD_BYTES} bytes"
-        );
-        let payload_digest = hex_encode(blake3::hash(&payload).as_bytes());
-        let event_text = serde_json::json!({
-            "protocol": "world.entity-transfer.v1",
-            "direction": "export",
-            "handoff_id": handoff_id,
-            "entity_ref": entity_ref,
-            "source_region": source_region,
-            "target_region": target_region,
-            "prior_owner_epoch": prior_owner_epoch,
-            "module_hash": program_module_hash,
-            "payload_schema": payload_schema,
-            "payload_digest": payload_digest,
-            "app_event": app_event,
-        })
-        .to_string();
-        ensure!(
-            event_text.len() <= crate::world_caps::MAX_EVENT_BYTES,
-            "entity transfer event exceeds {} bytes",
-            crate::world_caps::MAX_EVENT_BYTES
-        );
-        let source_event = WorldEvent {
-            sequence: 0,
-            participant_id: 0,
-            kind: WorldEventKind::System { event: event_text },
-        };
-        let transfer = HandoffTransferState {
-            handoff_id: handoff_id.clone(),
-            entity_ref: entity_ref.clone(),
-            source_region: source_region.clone(),
-            target_region: target_region.clone(),
-            direction: HandoffDirection::Export,
-            prior_owner_epoch,
-            new_owner_epoch: None,
-            program_module_hash: program_module_hash.clone(),
-            payload_schema: payload_schema.clone(),
-            payload_digest: payload_digest.clone(),
-            payload: Some(payload.clone()),
-            event: source_event.clone(),
-        };
-        self.core.validate_entity_export(&transfer)?;
-
-        // The durable entry is the source-side fence. Install it before
-        // applying the prepared event so no subsequent command can mutate
-        // this entity, even when the program rejects the post-append update.
-        self.persist(JournalEntry::EntityExported {
-            handoff_id,
-            entity_ref,
-            source_region,
-            target_region,
-            prior_owner_epoch,
-            source_event: source_event.clone(),
-            payload_schema,
-            program_module_hash,
-            payload,
-            payload_digest,
-        })?;
-        self.core.record_entity_export(transfer.clone());
-        if let Err(error) = self.program.update(&source_event) {
-            self.pending_transfer_replays.push(transfer);
-            self.program_healthy = false;
-            tracing::error!("world program rejected a durable entity export: {error:#}");
-            return Err(
-                error.context("world program rejected a durable entity export; replay required")
-            );
-        }
-        let records = match program_records(self.program.as_mut()) {
-            Ok(records) => records.unwrap_or_default(),
-            Err(error) => {
-                self.program_healthy = false;
-                tracing::error!("world program records failed after entity export: {error:#}");
-                return Err(error.context(
-                    "world program failed after a durable entity export; replay required",
-                ));
-            }
-        };
-        self.republished(records, self.core.sequence);
-        let _ = self.view_changed.send(self.core.sequence);
-        Ok(transfer)
-    }
-
-    /// Whether a durably recorded transfer is still waiting for a program
-    /// to apply it (#3902): while it is, its stored receipt is withheld
-    /// from exact retries instead of being acknowledged.
-    fn transfer_replay_pending(&self, direction: HandoffDirection, handoff_id: &str) -> bool {
-        self.pending_transfer_replays
-            .iter()
-            .any(|pending| pending.direction == direction && pending.handoff_id == handoff_id)
-    }
-
-    fn import_entity(
-        &mut self,
-        handoff_id: String,
-        entity_ref: String,
-        source_region: String,
-        target_region: String,
-        prior_owner_epoch: u64,
-        program_module_hash: String,
-        payload_schema: String,
-        payload: Vec<u8>,
-        payload_digest: String,
-    ) -> Result<HandoffTransferState> {
-        self.check_storage()?;
-        ensure!(self.program_healthy, "world program is unavailable");
-        ensure!(
-            self.journal.is_some(),
-            "entity import requires a durable world journal"
-        );
-        ensure!(
-            self.core.limits.region_sharded,
-            "entity import requires a region-sharded world"
-        );
-        ensure!(
-            handoff_id.len() == 32 && handoff_id.bytes().all(|b| b.is_ascii_hexdigit()),
-            "handoff ID must be 128-bit hexadecimal"
-        );
-        core::validate_entity_ref(&entity_ref)?;
-        for (name, value) in [
-            ("source region", source_region.as_str()),
-            ("target region", target_region.as_str()),
-        ] {
-            ensure!(!value.trim().is_empty(), "{name} must not be empty");
-            ensure!(value.len() <= 256, "{name} exceeds 256 bytes");
-            ensure!(
-                !value.chars().any(char::is_control),
-                "{name} contains a control character"
-            );
-        }
-        ensure!(
-            source_region != target_region,
-            "source and target regions match"
-        );
-        // Validate the envelope before any mutation (design #2818 \§3):
-        // the module hash and payload schema must be ones this destination
-        // runs, and the payload must hash to the digest the source recorded.
-        let active_module_hash = self
-            .core
-            .active_module_hash
-            .clone()
-            .context("world has no installed program for entity import")?;
-        ensure!(
-            program_module_hash == active_module_hash,
-            "entity import program module hash does not match the destination program"
-        );
-        ensure!(
-            !payload_schema.trim().is_empty() && payload_schema.len() <= 128,
-            "entity transfer payload schema must be 1..=128 bytes"
-        );
-        ensure!(
-            !payload_schema.chars().any(char::is_control),
-            "entity transfer payload schema contains a control character"
-        );
-        ensure!(
-            payload.len() <= MAX_ENTITY_TRANSFER_PAYLOAD_BYTES,
-            "entity transfer payload exceeds {MAX_ENTITY_TRANSFER_PAYLOAD_BYTES} bytes"
-        );
-        ensure!(
-            payload_digest == hex_encode(blake3::hash(&payload).as_bytes()),
-            "entity transfer payload digest does not match"
-        );
-        let new_owner_epoch = prior_owner_epoch
-            .checked_add(1)
-            .context("entity import owner epoch overflow")?;
-        // Exact-retry recovery: if this import already committed (its reply
-        // was lost, or the actor restarted and replayed it), return the
-        // stored receipt instead of applying the entity twice. A stored
-        // import whose fields differ from the request is not a retry \— it
-        // falls through and validate_entity_import rejects the conflicting
-        // handoff ID / entity, failing closed, never overwriting.
-        if let Some(existing) = self.core.handoff_transfers.iter().find(|transfer| {
-            transfer.direction == HandoffDirection::Import && transfer.handoff_id == handoff_id
-        }) && existing.entity_ref == entity_ref
-            && existing.source_region == source_region
-            && existing.target_region == target_region
-            && existing.prior_owner_epoch == prior_owner_epoch
-            && existing.new_owner_epoch == Some(new_owner_epoch)
-            && existing.program_module_hash == program_module_hash
-            && existing.payload_schema == payload_schema
-            && existing.payload_digest == payload_digest
-        {
-            ensure!(
-                !self.transfer_replay_pending(HandoffDirection::Import, &handoff_id),
-                "entity import {handoff_id:?} is durably recorded but has not been applied; replay required"
-            );
-            return Ok(existing.clone());
-        }
-        let request = EntityTransferRequest::Import {
-            handoff_id: handoff_id.clone(),
-            entity_ref: entity_ref.clone(),
-            source_region: source_region.clone(),
-            target_region: target_region.clone(),
-            prior_owner_epoch,
-            program_module_hash: program_module_hash.clone(),
-            payload_schema: payload_schema.clone(),
-            payload: payload.clone(),
-            payload_digest: payload_digest.clone(),
-        };
-        let EntityTransferPlan::Import { app_event } =
-            self.program.prepare_entity_transfer(&request)?
-        else {
-            bail!("world program returned an export plan for an import request");
-        };
-        let event_text = serde_json::json!({
-            "protocol": "world.entity-transfer.v1",
-            "direction": "import",
-            "handoff_id": handoff_id,
-            "entity_ref": entity_ref,
-            "source_region": source_region,
-            "target_region": target_region,
-            "prior_owner_epoch": prior_owner_epoch,
-            "new_owner_epoch": new_owner_epoch,
-            "module_hash": program_module_hash,
-            "payload_schema": payload_schema,
-            "payload_digest": payload_digest,
-            "payload_hex": hex_encode(&payload),
-            "app_event": app_event,
-        })
-        .to_string();
-        ensure!(
-            event_text.len() <= crate::world_caps::MAX_EVENT_BYTES,
-            "entity transfer event exceeds {} bytes",
-            crate::world_caps::MAX_EVENT_BYTES
-        );
-        let destination_event = WorldEvent {
-            sequence: 0,
-            participant_id: 0,
-            kind: WorldEventKind::System { event: event_text },
-        };
-        let transfer = HandoffTransferState {
-            handoff_id: handoff_id.clone(),
-            entity_ref: entity_ref.clone(),
-            source_region: source_region.clone(),
-            target_region: target_region.clone(),
-            direction: HandoffDirection::Import,
-            prior_owner_epoch,
-            new_owner_epoch: Some(new_owner_epoch),
-            program_module_hash: program_module_hash.clone(),
-            payload_schema: payload_schema.clone(),
-            payload_digest: payload_digest.clone(),
-            payload: None,
-            event: destination_event.clone(),
-        };
-        self.core.validate_entity_import(&transfer)?;
-
-        // Persist-before-apply: the durable entry is the import receipt.
-        // Record it in the dedupe ledger before applying the prepared
-        // event, so a retry after a crash observes the receipt instead of
-        // applying the entity twice. The receipt is returned only after
-        // the program applies the event; a post-append failure withholds
-        // it and recovery replays the durable entry.
-        self.persist(JournalEntry::EntityImported {
-            handoff_id,
-            entity_ref,
-            source_region,
-            target_region,
-            prior_owner_epoch,
-            new_owner_epoch,
-            program_module_hash,
-            payload_schema,
-            payload_digest,
-            destination_event: destination_event.clone(),
-        })?;
-        self.core.record_entity_import(transfer.clone());
-        if let Err(error) = self.program.update(&destination_event) {
-            self.pending_transfer_replays.push(transfer);
-            self.program_healthy = false;
-            tracing::error!("world program rejected a durable entity import: {error:#}");
-            return Err(
-                error.context("world program rejected a durable entity import; replay required")
-            );
-        }
-        let records = match program_records(self.program.as_mut()) {
-            Ok(records) => records.unwrap_or_default(),
-            Err(error) => {
-                self.program_healthy = false;
-                tracing::error!("world program records failed after entity import: {error:#}");
-                return Err(error.context(
-                    "world program failed after a durable entity import; replay required",
-                ));
-            }
-        };
-        self.republished(records, self.core.sequence);
-        let _ = self.view_changed.send(self.core.sequence);
-        Ok(transfer)
-    }
-
-    /// Publish freshly recomputed records. Participant events push their own
-    /// view frame right after the event; host events signal the views watch.
-    fn republished(&mut self, records: Records, sequence: u64) {
-        publish_records(&self.records_sender, sequence, records);
-    }
-
-    /// Deliver a host-originated event to the program: journal it first is
-    /// impossible (the program must accept it for the journal to be true), so
-    /// the order is update, then journal, exactly like participant input.
-    /// Returns whether the program accepted the event and it was journaled.
-    /// A read-only replica never delivers: host events are authoritative
-    /// program effects and must not originate from a replica.
-    async fn deliver(&mut self, text: String) -> bool {
-        self.deliver_system(text, None).await
-    }
-
-    /// Deliver a form response and durably spend the authenticated submitter's
-    /// use budget only after the system event was accepted and journaled.
-    async fn deliver_form_result(&mut self, text: String, participant_id: Option<u64>) -> bool {
-        self.deliver_system(text, participant_id).await
-    }
-
-    async fn deliver_system(&mut self, text: String, participant_id: Option<u64>) -> bool {
-        if self.read_only {
-            return false;
-        }
-        if !self.program_healthy || self.storage_failed {
-            return false;
-        }
-        if text.len() > crate::world_caps::MAX_EVENT_BYTES {
-            tracing::error!("world event exceeds the delivery bound; dropped");
-            return false;
-        }
-        let event = WorldEvent {
-            sequence: 0,
-            participant_id: 0,
-            kind: WorldEventKind::System { event: text },
-        };
-        if let Err(error) = self.program.update(&event) {
-            self.program_healthy = false;
-            tracing::error!("world program rejected a host event: {error:#}");
-            return false;
-        }
-        match program_records(self.program.as_mut()) {
-            Ok(records) => {
-                let records = records.unwrap_or_default();
-                publish_records(&self.records_sender, self.core.sequence, records);
-            }
-            Err(error) => {
-                self.program_healthy = false;
-                tracing::error!("world program records failed: {error:#}");
-                return false;
-            }
-        }
-        let journaled = self
-            .persist(JournalEntry::System {
-                event: event.clone(),
-            })
-            .is_ok();
-        if journaled {
-            if let Some(participant_id) = participant_id {
-                self.core.spend(participant_id);
-            }
-            self.core.record_admin_history(event);
-            self.core.since_checkpoint = self.core.since_checkpoint.saturating_add(1);
-        }
-        let _ = self.view_changed.send(self.core.sequence);
-        journaled
-    }
-
-    /// Pending forms intentionally are not durable. On reopen, tell a program
-    /// that had form authority to clear stale views and re-present them with
-    /// fresh tokens; otherwise it could leave an unanswerable form on screen.
-    async fn invalidate_restored_form_presentations(&mut self) {
-        if !self.core.ledger.is_granted("form.result") {
-            return;
-        }
-        let event = serde_json::json!({
-            "cap": "form.result",
-            "event": "invalidated",
-            "reason": "restarted",
-        })
-        .to_string();
-        let _ = self.deliver(event).await;
-    }
-
-    /// Recompute the program's `wants` and serve the delta: new subscriptions
-    /// (armed or refused), new requests (executed, result delivered). Passes
-    /// repeat while the program reacts to delivered results, so a chain of
-    /// asks settles inside one change. A read-only replica never runs this:
-    /// program requests are side effects (chat.say, schedule.at) that must
-    /// not originate from a replica. Requests the program already listed
-    /// at a restored open are refused, not executed (see
-    /// [`stale_wants_at_open`](Self::stale_wants_at_open)).
-    pub(crate) async fn after_change(&mut self) {
-        if self.read_only {
-            return;
-        }
-        for _ in 0..64 {
-            if !self.program_healthy || self.storage_failed {
-                break;
-            }
-            let Some(text) = (match self.program.wants() {
-                Ok(wants) => wants,
-                Err(error) => {
-                    self.program_healthy = false;
-                    tracing::error!("world program wants failed: {error:#}");
-                    break;
-                }
-            }) else {
-                break;
-            };
-            let wants = match crate::world_caps::parse_wants(&text) {
-                Ok(wants) => wants,
-                Err(error) => {
-                    self.program_healthy = false;
-                    tracing::error!("world program wants invalid: {error:#}");
-                    break;
-                }
-            };
-            self.apply_subscriptions(&wants).await;
-            let mut fresh = Vec::new();
-            for request in &wants.requests {
-                if self.handled_requests.insert(request.id.clone()) {
-                    fresh.push(request.clone());
-                }
-            }
-            if fresh.is_empty() {
-                break;
-            }
-            // A program inventing endless request ids cannot grow this set
-            // without bound; old ids may then re-execute, which is the
-            // documented at-least-once behavior.
-            if self.handled_requests.len() > 4096 {
-                let current: BTreeSet<String> = wants
-                    .requests
-                    .iter()
-                    .map(|request| request.id.clone())
-                    .collect();
-                self.handled_requests.retain(|id| current.contains(id));
-            }
-            for request in fresh {
-                // Pre-restart intent is never re-executed with world
-                // authority: the side effect may already have happened, and
-                // there is no acting participant to attribute a repeat to.
-                // Refusing (rather than executing) keeps non-idempotent
-                // providers (chat.say today; kv / http.fetch / notify as
-                // they land) to at-most-once per id across a reopen; the
-                // program re-issues the id afterwards if it still wants the
-                // effect, and that new intent executes normally.
-                if self.stale_wants_at_open.remove(&request.id) {
-                    let refusal = crate::world_caps::result_event(
-                        &request.id,
-                        Err(CapError::actor_denied_with("restarted")),
-                    );
-                    self.deliver(refusal).await;
-                    continue;
-                }
-                let outcome = self.execute(&request);
-                self.deliver(crate::world_caps::result_event(&request.id, outcome))
-                    .await;
-            }
-        }
-        self.compact_if_due().await;
-    }
-
-    /// Subscribe new subscriptions, drop removed ones, refuse ungranted ones
-    /// (once per spec), and keep ticks armed only while someone is present.
-    async fn apply_subscriptions(&mut self, wants: &crate::world_caps::Wants) {
-        for sub in &wants.subscribe {
-            if !self.active_subs.insert(sub.clone()) {
-                continue;
-            }
-            // The tick floor is a hard limit, not a grant question: a
-            // sub-floor tick is refused like a denied subscription (once
-            // per spec) and never armed, however it was granted.
-            if let Subscription::Tick(ms) = sub
-                && *ms < self.core.limits.min_tick_ms
-            {
-                let spec = sub.spec();
-                if self.denied_subs.insert(spec.clone()) {
-                    let error = crate::world_caps::CapError::bad_args_with(format!(
-                        "time.tick interval {ms}ms is below the world minimum {}ms",
-                        self.core.limits.min_tick_ms
-                    ));
-                    self.deliver(crate::world_caps::subscription_refused_event(&spec, &error))
-                        .await;
-                }
-                continue;
-            }
-            // A loc.watch spec that fails the core parse (a foreign
-            // shape, a non-numeric interval, or an interval below the
-            // floor) is refused like a sub-floor tick: once per spec,
-            // and never armed (#2341 slice 2).
-            if let Subscription::Unknown(spec) = sub
-                && spec.starts_with("loc.watch")
-                && let Err(error) = crate::world_caps::parse_loc_watch_interval_ms(spec)
-            {
-                if self.denied_subs.insert(spec.clone()) {
-                    self.deliver(crate::world_caps::subscription_refused_event(spec, &error))
-                        .await;
-                }
-                continue;
-            }
-            let decision = self.core.ledger.decide(sub.cap());
-            self.audit_provider_decision(sub.cap(), &decision, "program".to_owned());
-            match decision {
-                Decision::Allow => self.arm(sub),
-                Decision::AllowAndGrant => {
-                    let granted: Vec<String> = self.core.ledger.granted().iter().cloned().collect();
-                    if self.persist(JournalEntry::CapsGranted { granted }).is_ok() {
-                        self.arm(sub);
-                    }
-                }
-                Decision::Deny(error) => {
-                    let spec = sub.spec();
-                    if self.denied_subs.insert(spec.clone()) {
-                        self.deliver(crate::world_caps::subscription_refused_event(&spec, &error))
-                            .await;
-                    }
-                }
-            }
-        }
-        let current = wants.subscribe.clone();
-        self.active_subs.retain(|sub| current.contains(sub));
-        // Timers for subscriptions that just left the wants are
-        // disarmed now, not at their distant deadlines (PR #8643
-        // Codex round-2 P2): otherwise every wants update can leave
-        // up to MAX_LOC_WATCHES stale timers behind, growing the map
-        // — and every next_deadline scan — without bound. This is
-        // the same prune reconcile_subscriptions applies on an
-        // authority change.
-        let active = &self.active_subs;
-        self.loc_watches
-            .retain(|ms, _| active.contains(&Subscription::LocWatch(*ms)));
-        self.denied_subs
-            .retain(|spec| current.iter().any(|sub| &sub.spec() == spec));
-        if self.presence.values().all(|count| *count == 0) {
-            self.ticks.clear();
-            self.loc_watches.clear();
-        }
-    }
-
-    /// Arm a granted subscription's timer, if any and if anyone is present.
-    /// A tick below the world's `min_tick_ms` floor is never armed.
-    fn arm(&mut self, sub: &Subscription) {
-        // A loc.watch arms only while consent stands (#2341 slice 2):
-        // an unconsented watch is known but never delivers, and if
-        // consent later stands, the presence path arms it.
-        if let Subscription::LocWatch(ms) = sub
-            && self.location_consent == crate::world_caps::LocationConsent::Granted
-            && !self.presence.is_empty()
-            && !self.loc_watches.contains_key(ms)
-        {
-            self.loc_watches.insert(
-                *ms,
-                self.core.clock().now_instant() + std::time::Duration::from_millis(*ms),
-            );
-        }
-        if let Subscription::Tick(ms) = sub
-            && *ms >= self.core.limits.min_tick_ms
-            && !self.presence.is_empty()
-            && !self.ticks.contains_key(ms)
-        {
-            self.ticks.insert(
-                *ms,
-                self.core.clock().now_instant() + std::time::Duration::from_millis(*ms),
-            );
-        }
-    }
-
-    /// Deliver one tick event per due interval and re-arm.
-    pub(crate) async fn fire_ticks(&mut self) {
-        if self.read_only {
-            return;
-        }
-        let now = self.core.clock().now_instant();
-        let due: Vec<u64> = self
-            .ticks
-            .iter()
-            .filter(|(_, next)| **next <= now)
-            .map(|(ms, _)| *ms)
-            .collect();
-        for ms in due {
-            self.ticks
-                .insert(ms, now + std::time::Duration::from_millis(ms));
-            let event = serde_json::json!({
-                "cap": "time.tick",
-                "interval": ms,
-                // The tick's "now" reads the injected clock too, so a manual
-                // clock drives the payload as well as the deadline.
-                "now": self.core.clock().now_ms(),
-            });
-            self.deliver(event.to_string()).await;
-        }
-    }
-
-    /// Deliver one reading per due `loc.watch` interval and re-arm
-    /// (#2341 slice 2), mirroring [`fire_ticks`](Self::fire_ticks).
-    /// A watch whose consent has been withdrawn since it armed is
-    /// closed with exactly the revocation event and removed from the
-    /// active subscriptions. With consent standing but no host fix,
-    /// nothing is delivered — a reading is never fabricated.
-    pub(crate) async fn fire_loc_watches(&mut self) {
-        if self.read_only {
-            return;
-        }
-        let now = self.core.clock().now_instant();
-        let due: Vec<u64> = self
-            .loc_watches
-            .iter()
-            .filter(|(_, next)| **next <= now)
-            .map(|(ms, _)| *ms)
-            .collect();
-        for ms in due {
-            // A watch that is no longer an active, granted
-            // subscription is stale (its authority was removed after
-            // it armed): disarm it without delivering a reading.
-            if !self.active_subs.contains(&Subscription::LocWatch(ms))
-                || !self.core.ledger.is_granted("loc.watch")
-            {
-                self.loc_watches.remove(&ms);
-                self.active_subs.remove(&Subscription::LocWatch(ms));
-                continue;
-            }
-            if self.location_consent != crate::world_caps::LocationConsent::Granted {
-                self.loc_watches.remove(&ms);
-                self.active_subs.remove(&Subscription::LocWatch(ms));
-                self.deliver(crate::world_caps::loc_watch_revocation_event())
-                    .await;
-                continue;
-            }
-            self.loc_watches
-                .insert(ms, now + std::time::Duration::from_millis(ms));
-            if let Some(reading) = self.current_location_reading() {
-                self.deliver(crate::world_caps::loc_watch_reading_event(&reading))
-                    .await;
-            }
-        }
-    }
-
-    /// Fire the schedules that are due, earliest first, at most
-    /// [`crate::world_caps::MAX_SCHEDULE_FIRES_PER_WAKEUP`] per wakeup. Each
-    /// fire is delivered as a tick is, and its schedule is consumed only after
-    /// that delivery is journaled. A refused fire, or one that could not be
-    /// journaled, leaves its schedule pending, so the next run delivers it.
-    /// A read-only replica never fires: schedules are writer authority.
-    pub(crate) async fn fire_schedules(&mut self) {
-        if self.read_only {
-            return;
-        }
-        let now = self.core.clock().now_ms();
-        let mut due: Vec<(u64, String)> = self
-            .core
-            .schedules
-            .iter()
-            .filter(|(_, schedule)| schedule.at_ms <= now)
-            .map(|(id, schedule)| (schedule.at_ms, id.clone()))
-            .collect();
-        due.sort_unstable();
-        due.truncate(crate::world_caps::MAX_SCHEDULE_FIRES_PER_WAKEUP);
-        for (_, id) in due {
-            let late = self.overdue_at_open.contains(&id);
-            let Some(schedule) = self.core.schedules.get(&id).cloned() else {
-                continue;
-            };
-            let delivered = match &schedule.target {
-                None => self.deliver(schedule_fired_event(&id, late)).await,
-                Some(target) => {
-                    // Cross-world (#1355 part 2): consent is re-checked at
-                    // fire time — a grant revoked or an isolation change
-                    // since the set leaves the occurrence pending, exactly
-                    // like an unavailable target.
-                    let consented = self.core.isolation == Isolation::Unisolated
-                        && self
-                            .core
-                            .schedule_grants
-                            .get(target)
-                            .is_some_and(|grant| grant.send);
-                    if !consented {
-                        break;
-                    }
-                    let Some(sink) = self.schedule_delivery.clone() else {
-                        break;
-                    };
-                    sink.deliver_schedule(
-                        &self.core.world_id.clone(),
-                        target,
-                        &id,
-                        schedule.at_ms,
-                        late,
-                    )
-                    .await
-                }
-            };
-            if !delivered {
-                break;
-            }
-            if self
-                .persist(JournalEntry::ScheduleFired { id: id.clone() })
-                .is_err()
-            {
-                break;
-            }
-            // One journaled transition, shared with replay: a recurring
-            // schedule re-arms in place (fixed-rate, one slot), a one-shot
-            // is consumed.
-            self.core.apply_schedule_fired(&id);
-            self.overdue_at_open.remove(&id);
-        }
-    }
-
-    /// Execute one capability request. Anything the world has not granted is
-    /// an error the program sees.
-    fn execute(&mut self, request: &Request) -> Result<serde_json::Value, CapError> {
-        if request.cap == "form.result" {
-            return Err(CapError::bad_args_with("event_only"));
-        }
-        let actor_permits = match self.acting {
-            None => true,
-            Some(participant) => self
-                .core
-                .effective_scopes(participant)
-                .is_some_and(|scopes| scopes.allows_effect(&request.cap)),
-        };
-        let decision = self.core.ledger.decide_for(&request.cap, actor_permits);
-        let actor = self
-            .acting
-            .map_or_else(|| "program".to_owned(), |id| format!("participant:{id}"));
-        self.audit_provider_decision(&request.cap, &decision, actor.clone());
-        match decision {
-            Decision::Allow => {}
-            Decision::AllowAndGrant => {
-                let granted: Vec<String> = self.core.ledger.granted().iter().cloned().collect();
-                self.persist(JournalEntry::CapsGranted { granted })
-                    .map_err(|_| CapError::failed_with("capability_grant_persist_failed"))?;
-            }
-            Decision::Deny(error) => return Err(error),
-        }
-        match request.cap.as_str() {
-            "time.now" => Ok(serde_json::json!({"now": unix_ms()})),
-            "random.u64" => Ok(serde_json::json!({"value": rand::rng().random::<u64>()})),
-            "players.list" => Ok(serde_json::json!({"players": self.players_list()})),
-            "world.info" => Ok(serde_json::json!({
-                "world": self.core.world_id,
-                "sequence": self.core.sequence,
-            })),
-            "device.info" => self.execute_device_info(&request.args),
-            "form.present" => self.execute_form_present(&request.args),
-            "form.result" => Err(CapError::bad_args_with("event_only")),
-            "form.cancel" => self.execute_form_cancel(&request.args),
-            "loc.position" => self.execute_loc_position(&request.args),
-            "chat.say" => self.execute_chat(&request.args),
-            "chat.history" => {
-                // A supplied `count` must be an unsigned integer; only an
-                // omitted count falls back to the default. Treating a
-                // malformed count as omitted silently turns a client error
-                // into a successful read (#7892).
-                let count = match request.args.get("count") {
-                    None => 16,
-                    Some(value) => value
-                        .as_u64()
-                        .ok_or_else(CapError::bad_args)?
-                        .min(crate::world_caps::MAX_CHAT_HISTORY_LINES as u64)
-                        as usize,
-                };
-                Ok(serde_json::json!({
-                    "lines": chat_history(
-                        &self.core.events,
-                        count.min(crate::world_caps::MAX_CHAT_HISTORY_LINES),
-                    ),
-                }))
-            }
-            "records.read" => self.execute_records_read(&request.args),
-            "schedule.at" => self.execute_schedule_at(&request.args),
-            "schedule.cancel" => self.execute_schedule_cancel(&request.args),
-            _ => Err(CapError::unknown()),
-        }
-    }
-
-    /// Opening a form opens the deferred result channel. Apply normal grant,
-    /// ceiling and actor-scope policy here, after the presentation is valid;
-    /// the submission boundary rechecks the grant in case it is later revoked.
-    fn authorize_form_result(&mut self) -> Result<(), CapError> {
-        let actor_permits = match self.acting {
-            None => true,
-            Some(participant) => self
-                .core
-                .effective_scopes(participant)
-                .is_some_and(|scopes| scopes.allows_effect("form.result")),
-        };
-        let decision = self.core.ledger.decide_for("form.result", actor_permits);
-        let actor = self
-            .acting
-            .map_or_else(|| "program".to_owned(), |id| format!("participant:{id}"));
-        self.audit_provider_decision("form.result", &decision, actor);
-        match decision {
-            Decision::Allow => Ok(()),
-            Decision::AllowAndGrant => {
-                let granted: Vec<String> = self.core.ledger.granted().iter().cloned().collect();
-                self.persist(JournalEntry::CapsGranted { granted })
-                    .map_err(|_| CapError::failed_with("capability_grant_persist_failed"))
-            }
-            Decision::Deny(error) => Err(error),
-        }
-    }
-
-    fn fresh_form_presentation_token(&self) -> String {
-        loop {
-            let candidate = format!("{:032x}", rand::rng().random::<u128>());
-            if !self
-                .pending_forms
-                .values()
-                .any(|pending| pending.presentation_token == candidate)
-            {
-                return candidate;
-            }
-        }
-    }
-
-    fn validate_form_presentation_size(
-        &self,
-        form: &id_core::world_presentation::FormSurface,
-        presentation_token: &str,
-    ) -> Result<(), CapError> {
-        use id_core::world_presentation::MAX_FORM_BYTES;
-
-        let mut presented = form.clone();
-        presented.presentation_token = Some(presentation_token.to_owned());
-        presented
-            .validate()
-            .map_err(|_| CapError::bad_args_with("field_invalid"))?;
-        let mut envelope = serde_json::to_value(presented)
-            .map_err(|_| CapError::bad_args_with("field_invalid"))?;
-        envelope["kind"] = serde_json::json!("form");
-        let view_bytes = serde_json::to_vec(&envelope)
-            .map_err(|_| CapError::bad_args_with("field_invalid"))?
-            .len();
-        if view_bytes > MAX_FORM_BYTES {
-            return Err(CapError::bad_args_with("form_view_too_large"));
-        }
-        if view_bytes > self.core.limits.presentation_bytes {
-            return Err(CapError::bad_args_with("presentation_too_large"));
-        }
-        Ok(())
-    }
-
-    /// `device.info` (#2338): the hosting device's capability
-    /// manifest, in the v1 shape the taxonomy specifies. The manifest
-    /// comes from the adapter boundary's cached copy — this provider
-    /// never enumerates the device itself. A host that cannot
-    /// describe its device refuses with `unknown_cap`, and a request
-    /// naming a manifest version this host does not speak is refused
-    /// rather than silently interpreted.
-    fn execute_device_info(&self, args: &serde_json::Value) -> Result<serde_json::Value, CapError> {
-        crate::world_caps::DeviceManifest::requested_version(args)?;
-        let Some(manifest) = &self.device_manifest else {
-            return Err(CapError::unknown());
-        };
-        Ok(manifest.to_json())
-    }
-
-    /// Register a bounded form for the adapter's trusted widget renderer.
-    /// The form itself is also the current `WorldSurface::Form` view; this
-    /// request only opens its deferred result correlation window.
-    fn execute_form_present(
-        &mut self,
-        args: &serde_json::Value,
-    ) -> Result<serde_json::Value, CapError> {
-        use id_core::world_presentation::FormSurface;
-
-        let Some(args) = args.as_object() else {
-            return Err(CapError::bad_args());
-        };
-        if args.len() != 2 || !args.contains_key("form_id") || !args.contains_key("form") {
-            return Err(CapError::bad_args());
-        }
-        let form_id = args
-            .get("form_id")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(CapError::bad_args)?;
-        let mut raw_form = args.get("form").cloned().ok_or_else(CapError::bad_args)?;
-        if let Some(object) = raw_form.as_object_mut()
-            && object.get("kind").and_then(serde_json::Value::as_str) == Some("form")
-        {
-            object.remove("kind");
-        }
-        if let Some(object) = raw_form.as_object_mut() {
-            // A form view may carry a token copied from an earlier
-            // presentation; only this host boundary may mint a new one.
-            object.remove("presentation_token");
-        }
-        let form: FormSurface = serde_json::from_value(raw_form)
-            .map_err(|_| CapError::bad_args_with("field_invalid"))?;
-        form.validate()
-            .map_err(|_| CapError::bad_args_with("field_invalid"))?;
-        if form.form_id != form_id {
-            return Err(CapError::bad_args_with("field_invalid"));
-        }
-        let args_size = serde_json::to_vec(args).map_or(usize::MAX, |encoded| encoded.len());
-        if args_size > crate::world_caps::MAX_ARGS_BYTES {
-            return Err(CapError::bad_args_with("args_too_large"));
-        }
-        if let Some(manifest) = &self.device_manifest
-            && manifest
-                .display
-                .get("kind")
-                .and_then(serde_json::Value::as_str)
-                != Some("headless")
-            && let Err(error) = form.validate_device_input(&manifest.input)
-        {
-            let reason = if format!("{error:#}").contains("text entry unavailable") {
-                "text_entry_unavailable"
-            } else {
-                "input_unavailable"
-            };
-            return Err(CapError::bad_args_with(reason));
-        }
-        if let Some(existing) = self.pending_forms.get(form_id) {
-            if existing.surface != form {
-                return Err(CapError::bad_args_with("field_invalid"));
-            }
-            let presentation_token = self.fresh_form_presentation_token();
-            self.validate_form_presentation_size(&form, &presentation_token)?;
-            self.authorize_form_result()?;
-            let Some(existing) = self.pending_forms.get_mut(form_id) else {
-                return Err(CapError::failed_with("pending_form_disappeared"));
-            };
-            existing.presentation_token = presentation_token.clone();
-            return Ok(serde_json::json!({
-                "form_id": form_id,
-                "presentation_token": presentation_token,
-                "presented": true
-            }));
-        }
-        if self.pending_forms.len() >= crate::world_caps::MAX_PENDING_FORMS {
-            return Err(CapError::failed_with("too_many_pending_forms"));
-        }
-        let presentation_token = self.fresh_form_presentation_token();
-        self.validate_form_presentation_size(&form, &presentation_token)?;
-        self.authorize_form_result()?;
-        self.pending_forms.insert(
-            form_id.to_owned(),
-            PendingForm {
-                surface: form,
-                presentation_token: presentation_token.clone(),
-            },
-        );
-        Ok(serde_json::json!({
-            "form_id": form_id,
-            "presentation_token": presentation_token,
-            "presented": true
-        }))
-    }
-
-    fn execute_form_cancel(
-        &mut self,
-        args: &serde_json::Value,
-    ) -> Result<serde_json::Value, CapError> {
-        let Some(args) = args.as_object() else {
-            return Err(CapError::bad_args());
-        };
-        if args.len() != 1 || !args.contains_key("form_id") {
-            return Err(CapError::bad_args());
-        }
-        let form_id = args
-            .get("form_id")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(CapError::bad_args)?;
-        let cancelled = self.pending_forms.remove(form_id).is_some();
-        Ok(serde_json::json!({"form_id": form_id, "cancelled": cancelled}))
-    }
-
-    /// Consume one host response. Invalid field values are reported once to the
-    /// program and leave the form pending for explicit adapter re-presentation;
-    /// this path never retries or loops on the server.
-    async fn submit_form_result(
-        &mut self,
-        token: Option<JoinCapability>,
-        session_id: Option<SessionId>,
-        result: id_core::world_presentation::FormResult,
-    ) -> Result<FormSubmissionStatus> {
-        let participant_id = if let Some(token) = token {
-            let Ok(participant) = self.core.authorize(&token, crate::world::WorldScopes::JOIN)
-            else {
-                return Ok(FormSubmissionStatus::Unavailable {
-                    error: "join_denied",
-                    reason: "invalid_capability",
-                });
-            };
-            if !self
-                .core
-                .effective_scopes(participant)
-                .is_some_and(|scopes| scopes.allows_effect("form.result"))
-            {
-                return Ok(FormSubmissionStatus::Unavailable {
-                    error: "actor_denied",
-                    reason: "effect_scope_denied",
-                });
-            }
-            Some(participant)
-        } else {
-            None
-        };
-        if !self.core.ledger.is_granted("form.result") {
-            return Ok(FormSubmissionStatus::Unavailable {
-                error: "cap_denied",
-                reason: "capability_revoked",
-            });
-        }
-        let Some(pending) = self.pending_forms.get(&result.form_id) else {
-            return Ok(FormSubmissionStatus::Unavailable {
-                error: "bad_args",
-                reason: "form_cancelled",
-            });
-        };
-        if result.presentation_token != pending.presentation_token {
-            return Ok(FormSubmissionStatus::Unavailable {
-                error: "bad_args",
-                reason: "stale_presentation",
-            });
-        }
-        if let Some(participant_id) = participant_id
-            && self.core.ensure_uses_left(participant_id).is_err()
-        {
-            return Ok(FormSubmissionStatus::Unavailable {
-                error: "actor_denied",
-                reason: "use_limit_exhausted",
-            });
-        }
-        let valid = pending.surface.validate_result(&result).is_ok();
-        let (event, retry_token) = if valid {
-            (
-                serde_json::json!({
-                    "cap": "form.result",
-                    "form_id": result.form_id,
-                    "action": result.action,
-                    "values": result.values,
-                }),
-                None,
-            )
-        } else {
-            let token = self.fresh_form_presentation_token();
-            (
-                serde_json::json!({
-                    "cap": "form.result",
-                    "form_id": result.form_id,
-                    "ok": false,
-                    "error": "bad_args",
-                    "reason": "field_invalid",
-                    "presentation_token": token,
-                }),
-                Some(token),
-            )
-        };
-        let mut event = event;
-        if let Some(participant_id) = participant_id {
-            event["participant_id"] = serde_json::json!(participant_id);
-        }
-        let event = event.to_string();
-        ensure!(
-            event.len() <= crate::world_caps::MAX_EVENT_BYTES,
-            "form.result event exceeds MAX_EVENT_BYTES"
-        );
-        self.acting = participant_id;
-        self.acting_session = participant_id.and(session_id);
-        ensure!(
-            self.deliver_form_result(event, participant_id).await,
-            "form.result event was not delivered"
-        );
-        if valid {
-            self.pending_forms.remove(&result.form_id);
-            Ok(FormSubmissionStatus::Accepted)
-        } else {
-            let presentation_token = retry_token
-                .ok_or_else(|| anyhow::anyhow!("invalid result omitted its retry token"))?;
-            if let Some(pending) = self.pending_forms.get_mut(&result.form_id) {
-                pending.presentation_token = presentation_token.clone();
-            }
-            Ok(FormSubmissionStatus::Rejected { presentation_token })
-        }
-    }
-    /// Record the host location source's latest fix (#2341 slice 2),
-    /// stamped with the world clock so serving can report the fix's
-    /// true age at delivery time.
-    pub(crate) fn set_location_fix(&mut self, reading: crate::world_caps::LocationReading) {
-        self.location_fix_received_at = Some(self.core.clock().now_instant());
-        self.location_fix = Some(reading);
-    }
-
-    /// The cached fix with its age updated to now: `fix_age_ms` is
-    /// defined as the age when delivered, so the elapsed time since
-    /// receipt is added at serve time (PR #8643 Codex round-2 P2).
-    /// A fix recorded without a receipt stamp (a direct field write)
-    /// is served as recorded.
-    fn current_location_reading(&self) -> Option<crate::world_caps::LocationReading> {
-        let mut reading = self.location_fix?;
-        if let Some(received_at) = self.location_fix_received_at {
-            let elapsed = self
-                .core
-                .clock()
-                .now_instant()
-                .saturating_duration_since(received_at);
-            reading.fix_age_ms = reading
-                .fix_age_ms
-                .saturating_add(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
-        }
-        Some(reading)
-    }
-
-    /// `loc.position` (#2341 slice 2): one reading from the host
-    /// location source, gated in order by the cap ledger (in
-    /// [`execute`](Self::execute), before dispatch), the consent seam,
-    /// and the source itself. A consent refusal is the consent seam's
-    /// own error; no source or no fix is `no_fix`; a fix less precise
-    /// than the request's `max_accuracy_m` ceiling is refused with
-    /// `precision_ceiling`, never silently degraded.
-    fn execute_loc_position(
-        &self,
-        args: &serde_json::Value,
-    ) -> Result<serde_json::Value, CapError> {
-        if let Some(refusal) = self.location_consent.refusal() {
-            return Err(refusal);
-        }
-        let Some(reading) = self.current_location_reading() else {
-            return Err(CapError::no_fix());
-        };
-        // A supplied ceiling that is not an unsigned integer is
-        // malformed, not absent: refuse it instead of silently
-        // dropping the precision check (#2341, PR #8643 Codex P2).
-        if let Some(raw_ceiling) = args.get("max_accuracy_m") {
-            let ceiling = raw_ceiling.as_u64().ok_or_else(CapError::bad_args)?;
-            reading.refuse_beyond_ceiling(ceiling as f64)?;
-        }
-        Ok(reading.to_json())
-    }
-
-    fn players_list(&self) -> Vec<serde_json::Value> {
-        self.core
-            .participants()
-            .into_iter()
-            .map(|participant| {
-                serde_json::json!({
-                    "id": participant.id,
-                    "name": participant.display_name,
-                    "present": self.presence.get(&participant.id).is_some_and(|c| *c > 0),
-                })
-            })
-            .collect()
-    }
-
-    /// `records.read`: a byte-bounded, prefix-scoped page of the world's
-    /// published records, key-ordered with the same exclusive `after` cursor
-    /// the session protocol uses. Follow `next_after` while it is non-empty.
-    /// The page is bounded by the cap-result budget
-    /// (world_caps::MAX_RECORDS_RESULT_PAGE_BYTES), not the session
-    /// protocol's larger page budget, so an admitted page always fits
-    /// the result event that delivers it (#4888).
-    fn execute_records_read(
-        &self,
-        args: &serde_json::Value,
-    ) -> Result<serde_json::Value, CapError> {
-        let records = self.records_sender.borrow().1.clone();
-        // #7899: a present-but-non-string prefix/after is bad_args,
-        // not "omitted" — treating it as omitted silently widens a
-        // scoped read to every record, or restarts pagination.
-        let prefix = match args.get("prefix") {
-            None => None,
-            Some(value) => Some(value.as_str().ok_or(CapError::bad_args())?),
-        };
-        let after = match args.get("after") {
-            None => None,
-            Some(value) => Some(value.as_str().ok_or(CapError::bad_args())?),
-        };
-        let mut page: Vec<serde_json::Value> = Vec::new();
-        let mut used = 0usize;
-        let mut last_included: Option<String> = None;
-        let mut more = false;
-        for (key, value) in records.iter() {
-            if let Some(prefix) = prefix
-                && !key.starts_with(prefix)
-            {
-                continue;
-            }
-            if let Some(after) = after
-                && key.as_str() <= after
-            {
-                continue;
-            }
-            // Count the entry as it will actually be serialized in
-            // the result value, plus one byte for its array comma.
-            let size = serde_json::to_vec(&serde_json::json!({"key": key, "value": value}))
-                .map_or(usize::MAX, |entry| entry.len())
-                + 1;
-            if used + size > crate::world_caps::MAX_RECORDS_RESULT_PAGE_BYTES {
-                if page.is_empty() {
-                    return Err(CapError::bad_args());
-                }
-                more = true;
-                break;
-            }
-            used += size;
-            last_included = Some(key.clone());
-            page.push(serde_json::json!({"key": key, "value": value}));
-        }
-        Ok(serde_json::json!({
-            "records": page,
-            "next_after": more.then_some(last_included).flatten(),
-        }))
-    }
-
-    /// `chat.say` commits a host chat line; its result is the new sequence.
-    fn execute_chat(&mut self, args: &serde_json::Value) -> Result<serde_json::Value, CapError> {
-        let Some(text) = args.get("text").and_then(serde_json::Value::as_str) else {
-            return Err(CapError::bad_args());
-        };
-        match self.core.prepare_system_chat(text) {
-            Ok(event) => {
-                if self
-                    .persist(JournalEntry::Committed {
-                        event: event.clone(),
-                    })
-                    .is_err()
-                {
-                    return Err(CapError::failed());
-                }
-                if self.core.commit_prepared(event.clone()).is_err() {
-                    return Err(CapError::failed());
-                }
-                let _ = self.event_sender.send(event.clone());
-                Ok(serde_json::json!({"sequence": event.sequence}))
-            }
-            Err(_) => Err(CapError::bad_args()),
-        }
-    }
-
-    /// Accept (or refuse) one cross-world schedule fire arriving here
-    /// (#1355 part 2). Acceptance requires this world unisolated, a
-    /// receive grant for the source, and no receipt for the same
-    /// (source, id, planned time) — a retry after the receipt is answered
-    /// true without delivering again. The fire's `System` entry is
-    /// journaled by `deliver`; the receipt follows it, so the source
-    /// consumes its occurrence only once both are durable.
-    async fn accept_schedule_delivery(
-        &mut self,
-        source: &str,
-        id: &str,
-        at_ms: u64,
-        late: bool,
-    ) -> bool {
-        if self.read_only {
-            return false;
-        }
-        if self.core.isolation != Isolation::Unisolated {
-            return false;
-        }
-        if !self
-            .core
-            .schedule_grants
-            .get(source)
-            .is_some_and(|grant| grant.receive)
-        {
-            return false;
-        }
-        let key = (source.to_owned(), id.to_owned(), at_ms);
-        if self.core.schedule_receipts.contains(&key) {
-            return true;
-        }
-        if !self
-            .deliver(schedule_fired_event_from(id, late, Some(source)))
-            .await
-        {
-            return false;
-        }
-        if self
-            .persist(JournalEntry::ScheduleReceived {
-                source: source.to_owned(),
-                id: id.to_owned(),
-                at_ms,
-            })
-            .is_err()
-        {
-            return false;
-        }
-        self.core.schedule_receipts.insert(key);
-        true
-    }
-
-    /// `schedule.at`: pend a fire of `id` at `at` (unix ms). With
-    /// `interval_ms` and `count` the schedule is recurring (#1355): it
-    /// re-arms fixed-rate after each fire until `count` total fires have
-    /// happened. The schedule is journaled before the result is delivered.
-    /// A refused request changes nothing but the usage count.
-    fn execute_schedule_at(
-        &mut self,
-        args: &serde_json::Value,
-    ) -> Result<serde_json::Value, CapError> {
-        let id = args
-            .get("id")
-            .and_then(serde_json::Value::as_str)
-            .ok_or(CapError::bad_args())?;
-        let at_ms = args
-            .get("at")
-            .and_then(serde_json::Value::as_u64)
-            .ok_or(CapError::bad_args())?;
-        let interval_ms = args.get("interval_ms").and_then(serde_json::Value::as_u64);
-        let count = match args.get("count") {
-            None => None,
-            Some(value) => Some(
-                value
-                    .as_u64()
-                    .and_then(|count| u32::try_from(count).ok())
-                    .ok_or(CapError::bad_args())?,
-            ),
-        };
-        if args.get("interval_ms").is_some() && interval_ms.is_none() {
-            return Err(CapError::bad_args());
-        }
-        let target = args.get("world").and_then(serde_json::Value::as_str);
-        if args.get("world").is_some() && target.is_none() {
-            return Err(CapError::bad_args());
-        }
-        if let Err(error) = self.core.check_schedule_targeted(
-            id,
-            at_ms,
-            interval_ms,
-            count,
-            target,
-            self.core.clock().now_ms(),
-        ) {
-            tracing::debug!("world {}: schedule refused: {error:#}", self.core.world_id);
-            return Err(CapError::bad_args_with(format!("{error:#}")));
-        }
-        if self
-            .persist(JournalEntry::ScheduleSet {
-                id: id.to_owned(),
-                at_ms,
-                interval_ms,
-                remaining: count.filter(|_| interval_ms.is_some()),
-                target: target.map(str::to_owned),
-            })
-            .is_err()
-        {
-            return Err(CapError::failed());
-        }
-        self.core.schedules.insert(
-            id.to_owned(),
-            PendingSchedule {
-                at_ms,
-                interval_ms,
-                remaining: count.unwrap_or(1),
-                target: target.map(str::to_owned),
-            },
-        );
-        let mut result = serde_json::json!({"id": id, "fires_at": at_ms});
-        if let (Some(interval), Some(count)) = (interval_ms, count) {
-            result["interval_ms"] = serde_json::json!(interval);
-            result["count"] = serde_json::json!(count);
-        }
-        if let Some(target) = target {
-            result["world"] = serde_json::json!(target);
-        }
-        Ok(result)
-    }
-
-    /// `schedule.cancel`: drop a pending schedule before it fires. `cancelled`
-    /// is false when nothing by that id is pending.
-    fn execute_schedule_cancel(
-        &mut self,
-        args: &serde_json::Value,
-    ) -> Result<serde_json::Value, CapError> {
-        let id = args
-            .get("id")
-            .and_then(serde_json::Value::as_str)
-            .ok_or(CapError::bad_args())?;
-        if crate::world_caps::validate_schedule_id(id).is_err() {
-            return Err(CapError::bad_args());
-        }
-        if !self.core.schedules.contains_key(id) {
-            return Ok(serde_json::json!({"cancelled": false}));
-        }
-        if self
-            .persist(JournalEntry::ScheduleCancelled { id: id.to_owned() })
-            .is_err()
-        {
-            return Err(CapError::failed());
-        }
-        self.core.schedules.remove(id);
-        self.overdue_at_open.remove(id);
-        Ok(serde_json::json!({"cancelled": true}))
-    }
-
-    /// A participant opened or closed a session: presence transitions deliver
-    /// `players` events and arm or disarm ticks.
-    async fn handle_presence(&mut self, participant: u64, joined: bool) {
-        let was_present = self
-            .presence
-            .get(&participant)
-            .is_some_and(|count| *count > 0);
-        let count = self.presence.entry(participant).or_default();
-        if joined {
-            *count += 1;
-        } else if *count > 0 {
-            *count -= 1;
-        }
-        let now_present = *count > 0;
-        if *count == 0 {
-            self.presence.remove(&participant);
-        }
-        if now_present && !was_present && self.ticks.is_empty() {
-            let intervals: Vec<u64> = self
-                .active_subs
-                .iter()
-                .filter_map(|sub| match sub {
-                    Subscription::Tick(ms)
-                        if *ms >= self.core.limits.min_tick_ms
-                            && self.core.ledger.is_granted(sub.cap()) =>
-                    {
-                        Some(*ms)
-                    }
-                    _ => None,
-                })
-                .collect();
-            for ms in intervals {
-                self.ticks.entry(ms).or_insert_with(|| {
-                    self.core.clock().now_instant() + std::time::Duration::from_millis(ms)
-                });
-            }
-        }
-        if now_present && !was_present && self.loc_watches.is_empty() {
-            let intervals: Vec<u64> = self
-                .active_subs
-                .iter()
-                .filter_map(|sub| match sub {
-                    Subscription::LocWatch(ms)
-                        if self.location_consent == crate::world_caps::LocationConsent::Granted
-                            && self.core.ledger.is_granted(sub.cap()) =>
-                    {
-                        Some(*ms)
-                    }
-                    _ => None,
-                })
-                .collect();
-            for ms in intervals {
-                self.loc_watches.entry(ms).or_insert_with(|| {
-                    self.core.clock().now_instant() + std::time::Duration::from_millis(ms)
-                });
-            }
-        }
-        if self.presence.is_empty() {
-            self.ticks.clear();
-            self.loc_watches.clear();
-        }
-        if now_present != was_present
-            && self.active_subs.contains(&Subscription::Players)
-            && self.core.ledger.is_granted("players")
-        {
-            let name = self
-                .core
-                .participant(participant)
-                .map_or_else(|| participant.to_string(), |p| p.display_name);
-            self.deliver(presence_event(participant, &name, now_present))
-                .await;
-        }
-    }
-
-    fn require_moderation(&self, authority: &Authority, what: &str) -> Result<()> {
-        let directory = self.core.directory();
-        let allowed = match authority {
-            Authority::Admin => true,
-            Authority::Signed(key) => directory
-                .account_for_key(key)
-                .is_some_and(|account| directory.is_moderator(&account)),
-        };
-        if allowed {
-            Ok(())
-        } else {
-            Err(crate::directory::Refusal::Forbidden(format!(
-                "only an admin or a moderator {what}"
-            ))
-            .into())
-        }
-    }
-
-    fn set_isolation(&mut self, authority: &Authority, isolation: Isolation) -> Result<Isolation> {
-        self.check_writable()?;
-        self.require_moderation(authority, "changes isolation")?;
-        self.persist(JournalEntry::Isolation { isolation })?;
-        self.core.isolation = isolation;
-        Ok(isolation)
-    }
-
-    fn set_cross_world_write(
-        &mut self,
-        authority: &Authority,
-        enabled: bool,
-    ) -> Result<WorldPolicy> {
-        self.check_writable()?;
-        self.require_moderation(authority, "changes cross-world writes")?;
-        if !enabled && self.core.cross_world_forced && *authority != Authority::Admin {
-            return Err(crate::directory::Refusal::Forbidden(
-                "the admin forced cross-world writes on; only the admin can turn them off"
-                    .to_owned(),
-            )
-            .into());
-        }
-        self.persist(JournalEntry::CrossWorldWrite { enabled })?;
-        self.core.cross_world_write = enabled;
-        if !enabled {
-            self.core.cross_world_forced = false;
-        }
-        Ok(self.core.policy())
-    }
-
-    fn force_cross_world_write(&mut self, authority: &Authority) -> Result<WorldPolicy> {
-        self.check_writable()?;
-        if *authority != Authority::Admin {
-            return Err(crate::directory::Refusal::Forbidden(
-                "only the admin forces cross-world writes".to_owned(),
-            )
-            .into());
-        }
-        if self.core.isolation == Isolation::Isolated {
-            return Err(crate::directory::Refusal::Forbidden(
-                "an isolated world cannot be forced to accept cross-world writes; unisolate it first"
-                    .to_owned(),
-            )
-            .into());
-        }
-        self.persist(JournalEntry::CrossWorldWriteForced)?;
-        self.core.cross_world_write = true;
-        self.core.cross_world_forced = true;
-        Ok(self.core.policy())
-    }
-
-    fn set_file_scope(
-        &mut self,
-        authority: &Authority,
-        scope: FileScope,
-        write_override: Option<bool>,
-    ) -> Result<WorldPolicy> {
-        self.check_writable()?;
-        self.require_moderation(authority, "changes the file scope")?;
-        if write_override.is_some() && *authority != Authority::Admin {
-            return Err(crate::directory::Refusal::Forbidden(
-                "only the admin sets the file write override".to_owned(),
-            )
-            .into());
-        }
-        self.persist(JournalEntry::FileScope { scope })?;
-        self.core.file_scope = scope;
-        if let Some(enabled) = write_override {
-            self.persist(JournalEntry::FileWriteOverride { enabled })?;
-            self.core.file_write_override = enabled;
-        }
-        Ok(self.core.policy())
-    }
-
-    /// Replace the world's capability ceiling. It takes effect now: uses and
-    /// subscriptions the ceiling excludes are refused from here on. Grants are
-    /// kept, so lifting the ceiling again restores them.
-    fn set_caps_ceiling(&mut self, ceiling: Vec<String>) -> Result<CapsReport> {
-        self.check_writable()?;
-        crate::world_caps::validate_ceiling_names(&ceiling)?;
-        let ceiling: BTreeSet<String> = ceiling.into_iter().collect();
-        self.persist(JournalEntry::CapsCeiling {
-            ceiling: ceiling.iter().cloned().collect(),
-        })?;
-        self.core.caps_ceiling = ceiling;
-        self.core.sync_ledger_ceiling();
-        self.reconcile_subscriptions();
-        self.caps_report()
-    }
-
-    /// Re-check subscriptions after an authority change. An armed one that is
-    /// no longer granted is dropped and its tick disarmed. Every refused one is
-    /// dropped too, so the next pass decides it again: a refusal that still
-    /// holds is announced again, and one the change now grants is armed.
-    fn reconcile_subscriptions(&mut self) {
-        let ledger = &self.core.ledger;
-        let refused = &self.denied_subs;
-        self.active_subs
-            .retain(|sub| !refused.contains(&sub.spec()) && ledger.is_granted(sub.cap()));
-        self.denied_subs.clear();
-        let active = &self.active_subs;
-        self.ticks
-            .retain(|ms, _| active.contains(&Subscription::Tick(*ms)));
-        // Location watches disarm alongside ticks (#2341, PR #8643
-        // Codex P1): a watch whose capability authority was removed
-        // must stop delivering readings, not merely lose its
-        // subscription record.
-        self.loc_watches
-            .retain(|ms, _| active.contains(&Subscription::LocWatch(*ms)));
-    }
-
-    /// The capability report an admin sees.
-    fn caps_report(&mut self) -> Result<CapsReport> {
-        let requested = match self.program.wants() {
-            Ok(Some(text)) => crate::world_caps::parse_wants(&text)
-                .map(|wants| wants.caps().into_iter().collect::<Vec<_>>())
-                .unwrap_or_default(),
-            Ok(None) => Vec::new(),
-            Err(_) => Vec::new(),
-        };
-        let granted: Vec<String> = self.core.ledger.granted().iter().cloned().collect();
-        let effective: Vec<String> = self.core.ledger.effective().into_iter().collect();
-        let missing: Vec<String> = requested
-            .iter()
-            .filter(|cap| !effective.contains(cap))
-            .cloned()
-            .collect();
-        Ok(CapsReport {
-            granted,
-            requested,
-            missing,
-            usage: self.core.ledger.usage().clone(),
-            policy: if self.core.ledger.grant_on_use() {
-                "grant-on-use"
-            } else {
-                "deny"
-            }
-            .to_owned(),
-            catalog: crate::world_caps::PROVIDER_REGISTRY
-                .ordered_names()
-                .into_iter()
-                .map(str::to_owned)
-                .collect(),
-            ceiling: self.core.caps_ceiling.iter().cloned().collect(),
-            effective,
-            view_failures: self.view_failures,
-        })
     }
 
     pub(crate) async fn handle(&mut self, command: WorldCommand) {
@@ -2639,6 +1133,15 @@ impl WorldActor {
                 let result = self
                     .check_not_replica()
                     .and_then(|()| self.core.directory_mut().apply(&entry));
+                let _ = reply.send(result);
+            }
+            WorldCommand::DirectoryAccount { account, reply } => {
+                let result = self.check_not_replica().map(|()| {
+                    let directory = self.core.directory();
+                    directory
+                        .account(&account)
+                        .map(|_| directory.is_verified(&account))
+                });
                 let _ = reply.send(result);
             }
             WorldCommand::Revoke {
@@ -2971,6 +1474,15 @@ impl WorldActor {
                     target_region,
                     prior_owner_epoch,
                 );
+                let _ = reply.send(result);
+            }
+            WorldCommand::HandoffWriteLease {
+                to,
+                epoch,
+                expires_at_ms,
+                reply,
+            } => {
+                let result = self.handoff_write_lease(to, epoch, expires_at_ms);
                 let _ = reply.send(result);
             }
             WorldCommand::ImportEntity {
@@ -3557,6 +2069,82 @@ impl WorldActor {
             WorldCommand::SetScheduleDelivery { delivery, reply } => {
                 self.schedule_delivery = Some(delivery);
                 let _ = reply.send(());
+            }
+            WorldCommand::AdminSetPortalGrant {
+                peer,
+                granted,
+                reply,
+            } => {
+                let audit_peer = peer.clone();
+                let result = (|| -> Result<id_caps::portal::PortalGrants> {
+                    self.check_writable()?;
+                    crate::world_hub::validate_world_name(&peer)?;
+                    if granted {
+                        self.persist(JournalEntry::PortalGrantSet {
+                            peer: peer.clone(),
+                            granted: true,
+                        })?;
+                        self.core.portal_grants.grant(&peer);
+                    } else if self.core.portal_grants.state(&peer)
+                        == Some(id_caps::portal::PortalGrantState::Granted)
+                    {
+                        // Only a live grant's revocation is journaled:
+                        // revoking a peer that was never granted (or is
+                        // already revoked) changes no recorded state,
+                        // so it must not mint a revoked tombstone the
+                        // live book does not have.
+                        self.persist(JournalEntry::PortalGrantSet {
+                            peer: peer.clone(),
+                            granted: false,
+                        })?;
+                        self.core.portal_grants.revoke(&peer);
+                    }
+                    Ok(self.core.portal_grants.clone())
+                })();
+                self.audit_admin_result(
+                    "admin",
+                    "AdminSetPortalGrant",
+                    serde_json::json!({"peer": audit_peer, "granted": granted}),
+                    result.is_ok(),
+                );
+                let _ = reply.send(result);
+            }
+            WorldCommand::PortalGrantsInfo { reply } => {
+                let _ = reply.send(self.core.portal_grants.clone());
+            }
+            WorldCommand::PortalSendPrecheck {
+                target,
+                bytes,
+                reply,
+            } => {
+                let result = self.portal_send_precheck(&target, bytes);
+                let _ = reply.send(result);
+            }
+            WorldCommand::PortalSendAdmit {
+                target,
+                peer_grants,
+                message,
+                reply,
+            } => {
+                let result = self.portal_send_admit(&target, &peer_grants, &message);
+                let _ = reply.send(result);
+            }
+            WorldCommand::PortalSendRecord {
+                target,
+                bytes,
+                refusal,
+                reply,
+            } => {
+                let result = self.portal_send_record(&target, bytes, refusal);
+                let _ = reply.send(result);
+            }
+            WorldCommand::DeliverPortal {
+                source,
+                message,
+                reply,
+            } => {
+                let result = self.accept_portal_delivery(&source, message).await;
+                let _ = reply.send(result);
             }
             WorldCommand::SetIsolation {
                 authority,
@@ -4670,7 +3258,7 @@ mod replication_feed_tests {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod device_info_tests {
     use super::*;
-    use crate::world_caps::{CapError, DeviceManifest};
+    use crate::world_caps::{CapError, DeviceManifest, Request};
 
     struct DeviceInfoProgram;
 
@@ -4837,6 +3425,7 @@ mod device_info_tests {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod form_tests {
     use super::*;
+    use crate::world_caps::{CapError, Request};
     use id_core::world_presentation::{
         FormAction, FormActionKind, FormField, FormResult, FormSurface,
     };
@@ -5462,10 +4051,12 @@ impl WorldActor {
             .filter(|(_, schedule)| schedule.at_ms <= core.clock().now_ms())
             .map(|(id, _)| id.clone())
             .collect();
+        let provider_broker = ProviderBroker::new(core.world_id.clone(), WorldAuditLog::new());
         Self {
             core,
             program,
             journal,
+            provider_broker,
             storage_failed: false,
             read_only: false,
             admission_gate: None,
@@ -5494,8 +4085,10 @@ impl WorldActor {
             location_fix_received_at: None,
             loc_watches: BTreeMap::new(),
             schedule_delivery: None,
+            portal_rate: BTreeMap::new(),
             auth: crate::directory_auth::DirectoryAuth::default(),
             metrics: WorldMetrics::default(),
+            audit: WorldAuditLog::new(),
         }
     }
 }

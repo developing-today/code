@@ -74,9 +74,50 @@ pub struct Disposition {
     pub issue_state: String,
     pub issue_state_reason: Option<String>,
     pub issue_closed_at: Option<String>,
+    /// Login of whoever closed the issue, from the readback. An
+    /// intentional close that leaves related work open is only
+    /// authorized when a person (not automation) made it.
+    pub issue_closed_by: Option<String>,
     pub pulls: Vec<Pull>,
     pub verdict: String,
-    pub follow_up: Option<Value>,
+    pub follow_up: Option<FollowUp>,
+}
+
+/// The follow-up an open remainder is handed to. Each target is
+/// verified, never taken on the operator's word: an issue target
+/// carries its own readback (state and explicit links), a successor
+/// PR must be merged in this readback, and a task target is checked
+/// by the broker against the queue itself (`check_successor_task`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FollowUp {
+    pub reason: String,
+    pub task_id: Option<i64>,
+    pub issue: Option<FollowUpIssue>,
+    pub successor_pr: Option<i64>,
+}
+
+/// The readback of a follow-up issue.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FollowUpIssue {
+    pub url: String,
+    pub number: i64,
+    pub state: String,
+    /// Issues and PRs the follow-up's body links with an explicit
+    /// marker (`Refs #n`, `Fixes #n`, `Related program: #n`).
+    pub links: Vec<i64>,
+}
+
+/// What the broker knows about a follow-up task id, looked up in
+/// the queue at completion time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SuccessorTask {
+    pub id: i64,
+    pub status: String,
+    /// Whether `status` is one of the queue's live statuses.
+    pub live: bool,
+    /// The issue the task is for (its packet's issue, else its
+    /// dedupe key), when it names one.
+    pub issue: Option<i64>,
 }
 
 fn s(v: &Value, key: &str) -> Option<String> {
@@ -120,6 +161,7 @@ pub fn parse_record(v: &Value) -> Result<Disposition, String> {
     }
     let issue_state_reason = non_empty_str(issue, "state_reason");
     let issue_closed_at = non_empty_str(issue, "closed_at");
+    let issue_closed_by = non_empty_str(issue, "closed_by");
 
     let mut pulls = Vec::new();
     match obj.get("pulls") {
@@ -171,18 +213,7 @@ pub fn parse_record(v: &Value) -> Result<Disposition, String> {
 
     let follow_up = match obj.get("follow_up") {
         None | Some(Value::Null) => None,
-        Some(f) => {
-            let has_target = f.get("task_id").and_then(|t| t.as_i64()).is_some()
-                || non_empty_str(f, "issue_url").is_some();
-            let reason = non_empty_str(f, "reason");
-            if !has_target {
-                return Err("disposition.follow_up needs task_id or issue_url".to_string());
-            }
-            if reason.is_none() {
-                return Err("disposition.follow_up.reason missing".to_string());
-            }
-            Some(f.clone())
-        }
+        Some(f) => Some(parse_follow_up(f)?),
     };
 
     Ok(Disposition {
@@ -193,9 +224,61 @@ pub fn parse_record(v: &Value) -> Result<Disposition, String> {
         issue_state,
         issue_state_reason,
         issue_closed_at,
+        issue_closed_by,
         pulls,
         verdict,
         follow_up,
+    })
+}
+
+fn parse_follow_up(f: &Value) -> Result<FollowUp, String> {
+    if !f.is_object() {
+        return Err("disposition.follow_up is not an object".to_string());
+    }
+    let reason = non_empty_str(f, "reason")
+        .ok_or_else(|| "disposition.follow_up.reason missing".to_string())?;
+    let task_id = f.get("task_id").and_then(|t| t.as_i64());
+    let successor_pr = f.get("successor_pr").and_then(|t| t.as_i64());
+    let issue = match non_empty_str(f, "issue_url") {
+        None => None,
+        Some(url) => {
+            let readback = "an issue follow-up needs its readback; re-run \
+                            `repo-queue verify-disposition --follow-up-issue`";
+            let number = f
+                .get("issue_number")
+                .and_then(|n| n.as_i64())
+                .ok_or_else(|| format!("disposition.follow_up.issue_number missing: {readback}"))?;
+            let state = non_empty_str(f, "issue_state")
+                .ok_or_else(|| format!("disposition.follow_up.issue_state missing: {readback}"))?;
+            if state != "open" && state != "closed" {
+                return Err(format!(
+                    "disposition.follow_up.issue_state {state:?} is not open|closed"
+                ));
+            }
+            let links = match f.get("issue_links") {
+                Some(Value::Array(items)) => items.iter().filter_map(|n| n.as_i64()).collect(),
+                _ => {
+                    return Err(format!(
+                        "disposition.follow_up.issue_links missing: {readback}"
+                    ));
+                }
+            };
+            Some(FollowUpIssue {
+                url,
+                number,
+                state,
+                links,
+            })
+        }
+    };
+    if task_id.is_none() && issue.is_none() && successor_pr.is_none() {
+        return Err("disposition.follow_up needs task_id, issue_url or successor_pr".to_string());
+    }
+    Ok(FollowUp {
+        reason,
+        task_id,
+        issue,
+        successor_pr,
     })
 }
 
@@ -265,14 +348,12 @@ pub fn check(
                 ));
             }
         }
-        "open_draft_with_followup" | "open_draft_superseded" => {
-            if record.follow_up.is_none() {
-                return Err(format!(
-                    "verdict {} needs a recorded follow_up (task_id or \
-                     issue_url plus reason)",
-                    record.verdict
-                ));
-            }
+        "open_draft_with_followup" | "open_draft_superseded" if record.follow_up.is_none() => {
+            return Err(format!(
+                "verdict {} needs a recorded follow_up (task_id, issue_url or \
+                 successor_pr, plus reason)",
+                record.verdict
+            ));
         }
         _ => {}
     }
@@ -287,33 +368,191 @@ pub fn check(
         }
     }
 
-    if record.issue_state == "open" {
-        let unfinished: Vec<i64> = record
-            .pulls
+    let unfinished: Vec<i64> = record
+        .pulls
+        .iter()
+        .filter(|p| p.unfinished())
+        .map(|p| p.number)
+        .collect();
+
+    // A recorded follow-up is checked whether or not the remainder
+    // needs one: a missing, closed or unrelated target is never
+    // evidence of anything.
+    if let Some(follow_up) = &record.follow_up {
+        check_follow_up(record, follow_up, &unfinished)?;
+    }
+
+    if !unfinished.is_empty() {
+        let list = unfinished
             .iter()
-            .filter(|p| p.unfinished())
-            .map(|p| p.number)
-            .collect();
-        if !unfinished.is_empty()
+            .map(|n| format!("#{n}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if record.verdict == "invalid_no_work" {
+            return Err(format!(
+                "verdict invalid_no_work but linked PR {list} still carries work \
+                 (issue #{})",
+                record.issue_number
+            ));
+        }
+        if record.issue_state == "open"
             && !matches!(
                 record.verdict.as_str(),
                 "open_draft_with_followup" | "open_draft_superseded"
             )
         {
             return Err(format!(
-                "issue #{} is OPEN with open/unmerged linked PR {}; a terminal \
+                "issue #{} is OPEN with open/unmerged linked PR {list}; a terminal \
                  exit needs verdict open_draft_with_followup or \
                  open_draft_superseded plus a recorded follow_up",
                 record.issue_number,
-                unfinished
-                    .iter()
-                    .map(|n| format!("#{n}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
             ));
+        }
+        // The intentional-close exception: a closed issue may leave
+        // related work open only when the close was a deliberate,
+        // authorized act and a verified follow-up owns the rest.
+        if record.follow_up.is_none() {
+            return Err(format!(
+                "issue #{} is {} with open/unmerged linked PR {list}; record a \
+                 follow_up that owns the remainder (a live task_id, an open \
+                 issue_url that links {list}, or a merged successor_pr)",
+                record.issue_number, record.issue_state
+            ));
+        }
+        if record.issue_state == "closed" {
+            check_closure_authorized(record, &list)?;
         }
     }
     Ok(())
+}
+
+/// The offline checks on a follow-up: everything the readback can
+/// prove. A task target is the broker's to check
+/// (`check_successor_task`), since only the queue knows its state.
+fn check_follow_up(
+    record: &Disposition,
+    follow_up: &FollowUp,
+    unfinished: &[i64],
+) -> Result<(), String> {
+    if let Some(issue) = &follow_up.issue {
+        if issue.number == record.issue_number {
+            return Err(format!(
+                "follow_up issue #{} is the issue being completed; a follow-up \
+                 must be a different item",
+                issue.number
+            ));
+        }
+        if issue.state != "open" {
+            return Err(format!(
+                "follow_up issue #{} is {}; a closed issue cannot own the \
+                 remaining work",
+                issue.number, issue.state
+            ));
+        }
+        if unfinished.is_empty() {
+            if !issue.links.contains(&record.issue_number) {
+                return Err(format!(
+                    "follow_up issue #{} does not link #{} with an explicit \
+                     marker (Refs/Fixes/Related program); an unrelated issue \
+                     owns nothing",
+                    issue.number, record.issue_number
+                ));
+            }
+        } else if let Some(missing) = unfinished.iter().find(|n| !issue.links.contains(n)) {
+            return Err(format!(
+                "follow_up issue #{} does not link unfinished PR #{missing} with \
+                 an explicit marker (Refs #{missing}); it does not own that \
+                 remainder",
+                issue.number
+            ));
+        }
+    }
+    if let Some(pr) = follow_up.successor_pr {
+        match record.pulls.iter().find(|p| p.number == pr) {
+            None => {
+                return Err(format!(
+                    "follow_up successor PR #{pr} is not in the readback for \
+                     issue #{}; a successor must link the issue",
+                    record.issue_number
+                ));
+            }
+            Some(p) if p.merged_at.is_none() => {
+                return Err(format!(
+                    "follow_up successor PR #{pr} is not merged; only a merged \
+                     successor resolves the remainder"
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// A close that leaves linked work open counts only when a person
+/// made it on purpose: the readback names who closed it (not an
+/// automation account, #10136) and why.
+fn check_closure_authorized(record: &Disposition, list: &str) -> Result<(), String> {
+    let n = record.issue_number;
+    let closer = record.issue_closed_by.as_deref().ok_or_else(|| {
+        format!(
+            "issue #{n} is closed with open/unmerged linked PR {list} but the \
+             readback does not say who closed it (issue.closed_by); re-run \
+             `repo-queue verify-disposition`"
+        )
+    })?;
+    if closer.ends_with("[bot]") {
+        return Err(format!(
+            "issue #{n} was closed by {closer}, an automation account, with \
+             open/unmerged linked PR {list}; an automated close is not an \
+             authorized disposition"
+        ));
+    }
+    if record.issue_state_reason.is_none() {
+        return Err(format!(
+            "issue #{n} is closed with open/unmerged linked PR {list} but the \
+             readback has no state_reason; an intentional close records why"
+        ));
+    }
+    Ok(())
+}
+
+/// The broker's check on a follow-up task: it must exist, be live,
+/// be a different task from the one completing, and be for the
+/// same issue. `found` is the queue's row for `follow_up.task_id`.
+pub fn check_successor_task(
+    record: &Disposition,
+    completing_task: i64,
+    found: Option<&SuccessorTask>,
+) -> Result<(), String> {
+    let Some(want) = record.follow_up.as_ref().and_then(|f| f.task_id) else {
+        return Ok(());
+    };
+    let task = found.ok_or_else(|| format!("follow_up task {want} does not exist in the queue"))?;
+    if task.id == completing_task {
+        return Err(format!(
+            "follow_up task {want} is the task being completed; it cannot be \
+             its own successor"
+        ));
+    }
+    if !task.live {
+        return Err(format!(
+            "follow_up task {want} is {}; a terminal task owns nothing",
+            task.status
+        ));
+    }
+    match task.issue {
+        Some(i) if i == record.issue_number => Ok(()),
+        Some(i) => Err(format!(
+            "follow_up task {want} is for issue #{i}, not #{}; an unrelated \
+             task does not own this remainder",
+            record.issue_number
+        )),
+        None => Err(format!(
+            "follow_up task {want} names no issue, so it cannot be shown to \
+             own #{}'s remainder",
+            record.issue_number
+        )),
+    }
 }
 
 /// The disposition carried by a completion result, parsed and
@@ -322,6 +561,8 @@ pub fn require_verified(
     result: &Value,
     expected_issue: Option<i64>,
     now_epoch: i64,
+    completing_task: i64,
+    lookup: &mut dyn FnMut(i64) -> Result<Option<SuccessorTask>, String>,
 ) -> Result<Disposition, String> {
     let raw = result.get("disposition").ok_or_else(|| {
         "complete_task: this completion requires a verified disposition \
@@ -346,6 +587,16 @@ pub fn require_verified(
         DEFAULT_STALENESS_SECONDS,
     )
     .map_err(|e| format!("complete_task: {e}; the task remains claimed"))?;
+    if let Some(task_id) = record.follow_up.as_ref().and_then(|f| f.task_id) {
+        let found = lookup(task_id).map_err(|e| {
+            format!(
+                "complete_task: cannot read follow_up task {task_id} ({e}); the \
+                 task remains claimed"
+            )
+        })?;
+        check_successor_task(&record, completing_task, found.as_ref())
+            .map_err(|e| format!("complete_task: {e}; the task remains claimed"))?;
+    }
     Ok(record)
 }
 
@@ -367,9 +618,8 @@ pub fn linked_prs(result: &Value) -> Vec<i64> {
         "commit",
         "commit_sha",
     ] {
-        match result.get(key) {
-            Some(v) => collect_pr_numbers(v, &mut push),
-            None => {}
+        if let Some(v) = result.get(key) {
+            collect_pr_numbers(v, &mut push);
         }
     }
     // A bare `pr: 9245` counts too.
@@ -420,8 +670,13 @@ pub fn pr_number_in(text: &str) -> Option<i64> {
         let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
         return digits.parse().ok();
     }
-    // owner/repo#123
-    if let Some((_, tail)) = t.rsplit_once('#') {
+    // owner/repo#123 — only that shape: a prose note such as
+    // "triaged #9155" names an issue, not a PR.
+    if let Some((head, tail)) = t.rsplit_once('#') {
+        let repo_shaped = head.contains('/') && !head.chars().any(char::is_whitespace);
+        if !repo_shaped {
+            return None;
+        }
         let digits: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
         if !digits.is_empty() && digits.len() == tail.trim().len() {
             return digits.parse().ok();
@@ -454,9 +709,57 @@ pub fn body_links_issue(body: &str, issue: i64) -> bool {
     false
 }
 
+/// Every number a body links with an explicit marker
+/// (`Refs #n`, `Fixes #n`, `Closes #n`, `Related program: #n`,
+/// `Related: #n`). A bare prose `#n` is not a link.
+pub fn body_link_numbers(body: &str) -> Vec<i64> {
+    let lower = body.to_lowercase();
+    let mut out: Vec<i64> = Vec::new();
+    for marker in ["refs", "fixes", "closes", "related program:", "related:"] {
+        let mut start = 0;
+        while let Some(idx) = lower[start..].find(marker) {
+            let at = start + idx + marker.len();
+            let after = lower[at..].trim_start();
+            if let Some(rest) = after.strip_prefix('#') {
+                let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+                if let Ok(n) = digits.parse::<i64>() {
+                    if !out.contains(&n) {
+                        out.push(n);
+                    }
+                }
+            }
+            start = at;
+        }
+    }
+    out
+}
+
+/// The follow-up object for an issue target, from the follow-up
+/// issue's live readback (`gh api repos/<repo>/issues/<n>` or
+/// `gh issue view --json number,state,body`).
+pub fn follow_up_issue(url: &str, issue_json: &Value, reason: &str) -> Value {
+    let body = issue_json
+        .get("body")
+        .and_then(|b| b.as_str())
+        .unwrap_or("");
+    json!({
+        "issue_url": url,
+        "issue_number": issue_json.get("number").cloned().unwrap_or(Value::Null),
+        "issue_state": issue_json
+            .get("state")
+            .and_then(|x| x.as_str())
+            .map(|x| x.to_lowercase())
+            .unwrap_or_default(),
+        "issue_links": body_link_numbers(body),
+        "reason": reason,
+    })
+}
+
 /// Assemble a disposition from live GitHub JSON.
 ///
-/// `issue_json` is `gh issue view --json number,state,stateReason,closedAt`;
+/// `issue_json` is the REST issue (`gh api repos/<repo>/issues/<n>`,
+/// which carries `closed_by`) or `gh issue view --json
+/// number,state,stateReason,closedAt`;
 /// `prs_json` is `gh pr list --state all --json number,state,isDraft,mergedAt,body`.
 /// `linked` are the explicit PR numbers (queue provenance or `--pr`);
 /// `follow_up` is the operator's recorded follow-up, if any.
@@ -519,8 +822,21 @@ pub fn from_gh(
         "issue": {
             "number": issue_number,
             "state": state,
-            "state_reason": issue_json.get("stateReason").cloned().unwrap_or(Value::Null),
-            "closed_at": issue_json.get("closedAt").cloned().unwrap_or(Value::Null),
+            "state_reason": issue_json
+                .get("state_reason")
+                .or_else(|| issue_json.get("stateReason"))
+                .cloned()
+                .unwrap_or(Value::Null),
+            "closed_at": issue_json
+                .get("closed_at")
+                .or_else(|| issue_json.get("closedAt"))
+                .cloned()
+                .unwrap_or(Value::Null),
+            "closed_by": issue_json
+                .get("closed_by")
+                .and_then(|c| c.get("login"))
+                .cloned()
+                .unwrap_or(Value::Null),
         },
         "pulls": pulls,
         "verdict": verdict,
@@ -808,6 +1124,11 @@ mod tests {
             vec![77]
         );
         assert!(linked_prs(&json!({"note": "see #9155 for context"})).is_empty());
+        assert!(linked_prs(&json!({"evidence": "triaged #9155"})).is_empty());
+        assert_eq!(
+            linked_prs(&json!({"evidence": "developing-today/code#9245"})),
+            vec![9245]
+        );
     }
 
     #[test]
@@ -850,8 +1171,10 @@ mod tests {
 
     #[test]
     fn from_gh_merged_successor_clears_the_draft() {
-        let issue = json!({"number": 9155, "state": "CLOSED", "stateReason": "COMPLETED",
-                           "closedAt": "2026-11-16T05:00:00Z"});
+        // The REST issue shape carries who closed it.
+        let issue = json!({"number": 9155, "state": "closed", "state_reason": "completed",
+                           "closed_at": "2026-11-16T05:00:00Z",
+                           "closed_by": {"login": "dezren39"}});
         let prs = json!([
             {"number": 9245, "state": "OPEN", "isDraft": true, "mergedAt": null,
              "body": "Related program: #9155"},
@@ -860,6 +1183,26 @@ mod tests {
         ]);
         let out = from_gh(&issue, &prs, &[], None, "2026-11-16T05:39:00Z");
         assert_eq!(out["verdict"], "merged_verified");
+        assert_eq!(out["issue"]["closed_by"], "dezren39");
+        // A merged sibling alone does not say it resolves the draft.
+        let rec = parse_record(&out).unwrap();
+        let err = check(
+            &rec,
+            Some(9155),
+            &[9245, 9300],
+            rec.checked_at_epoch,
+            DEFAULT_STALENESS_SECONDS,
+        )
+        .unwrap_err();
+        assert!(err.contains("follow_up"), "{err}");
+        // Named as the successor, the merged PR resolves it.
+        let out = from_gh(
+            &issue,
+            &prs,
+            &[],
+            Some(json!({"successor_pr": 9300, "reason": "#9300 landed what #9245 drafted"})),
+            "2026-11-16T05:39:00Z",
+        );
         let rec = parse_record(&out).unwrap();
         check(
             &rec,
@@ -868,7 +1211,223 @@ mod tests {
             rec.checked_at_epoch,
             DEFAULT_STALENESS_SECONDS,
         )
-        .expect("a merged successor plus the closed issue is a verified disposition");
+        .expect("a verified merged successor plus an authorized close is a disposition");
+    }
+
+    /// #9155 closed with draft #9245 still open: the intentional-close
+    /// case the review asked the broker (not only the CLI) to cover.
+    fn closed_with_open_draft() -> Value {
+        json!({
+            "checked_at": "2026-11-16T05:39:00Z",
+            "source": "fleet gh readback",
+            "issue": {"number": 9155, "state": "closed", "state_reason": "completed",
+                      "closed_at": "2026-11-16T05:00:00Z", "closed_by": "dezren39"},
+            "pulls": [{"number": 9245, "state": "open", "is_draft": true, "merged_at": null}],
+            "verdict": "closed_verified",
+        })
+    }
+
+    fn gate(v: &Value) -> Result<(), String> {
+        let rec = parse_record(v)?;
+        check(
+            &rec,
+            Some(9155),
+            &[],
+            rec.checked_at_epoch,
+            DEFAULT_STALENESS_SECONDS,
+        )
+    }
+
+    #[test]
+    fn closed_issue_with_unfinished_draft_and_no_follow_up_rejects() {
+        let err = gate(&closed_with_open_draft()).unwrap_err();
+        assert!(err.contains("#9245"), "{err}");
+        assert!(err.contains("follow_up"), "{err}");
+        // merged_verified does not dodge it either
+        let mut v = closed_with_open_draft();
+        v["pulls"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"number": 9300, "state": "closed", "merged_at": "2026-11-16T05:00:00Z"}));
+        v["verdict"] = json!("merged_verified");
+        assert!(gate(&v).is_err());
+        // nor does invalid_no_work
+        let mut v = closed_with_open_draft();
+        v["verdict"] = json!("invalid_no_work");
+        v["follow_up"] = json!({"successor_pr": 1, "reason": "x"});
+        assert!(gate(&v).is_err());
+    }
+
+    #[test]
+    fn closed_issue_exception_needs_an_authorized_close() {
+        let follow = json!({"issue_url": "https://github.com/o/r/issues/9400",
+                            "issue_number": 9400, "issue_state": "open",
+                            "issue_links": [9245], "reason": "#9400 owns the draft"});
+        let mut v = closed_with_open_draft();
+        v["follow_up"] = follow.clone();
+        gate(&v).expect("authorized close with a follow-up that owns the draft");
+        // a bot close (the #9155 01:45 shape) is not authorized
+        v["issue"]["closed_by"] = json!("developing-today[bot]");
+        let err = gate(&v).unwrap_err();
+        assert!(err.contains("automation"), "{err}");
+        // an unknown closer is not evidence either
+        v["issue"]["closed_by"] = Value::Null;
+        assert!(gate(&v).unwrap_err().contains("closed_by"));
+        // nor is a close with no recorded reason
+        let mut v = closed_with_open_draft();
+        v["follow_up"] = follow;
+        v["issue"]["state_reason"] = Value::Null;
+        assert!(gate(&v).unwrap_err().contains("state_reason"));
+    }
+
+    #[test]
+    fn bogus_follow_ups_reject() {
+        let base = |follow: Value| {
+            let mut v = closed_with_open_draft();
+            v["follow_up"] = follow;
+            gate(&v)
+        };
+        // the issue itself
+        let err = base(
+            json!({"issue_url": "u", "issue_number": 9155, "issue_state": "open",
+                              "issue_links": [9245], "reason": "r"}),
+        )
+        .unwrap_err();
+        assert!(err.contains("being completed"), "{err}");
+        // a closed follow-up issue
+        let err = base(
+            json!({"issue_url": "u", "issue_number": 9400, "issue_state": "closed",
+                              "issue_links": [9245], "reason": "r"}),
+        )
+        .unwrap_err();
+        assert!(err.contains("closed issue cannot own"), "{err}");
+        // an unrelated open issue (links neither the draft nor the issue)
+        let err = base(
+            json!({"issue_url": "u", "issue_number": 9400, "issue_state": "open",
+                              "issue_links": [1], "reason": "r"}),
+        )
+        .unwrap_err();
+        assert!(err.contains("#9245"), "{err}");
+        // a successor that is not merged
+        let mut v = closed_with_open_draft();
+        v["pulls"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"number": 9301, "state": "open", "merged_at": null}));
+        v["follow_up"] = json!({"successor_pr": 9301, "reason": "r"});
+        assert!(gate(&v).unwrap_err().contains("not merged"));
+        // a successor that is not in the readback
+        let err = base(json!({"successor_pr": 4242, "reason": "r"})).unwrap_err();
+        assert!(err.contains("not in the readback"), "{err}");
+        // an issue follow-up without its readback is malformed
+        let mut v = closed_with_open_draft();
+        v["follow_up"] = json!({"issue_url": "u", "reason": "r"});
+        assert!(parse_record(&v).unwrap_err().contains("readback"));
+        // a follow-up with no target at all
+        let mut v = closed_with_open_draft();
+        v["follow_up"] = json!({"reason": "r"});
+        assert!(parse_record(&v).is_err());
+    }
+
+    #[test]
+    fn follow_up_task_is_checked_against_the_queue() {
+        let mut v = closed_with_open_draft();
+        v["follow_up"] = json!({"task_id": 17413, "reason": "#9245 stays with 17413"});
+        let rec = parse_record(&v).unwrap();
+        // the offline gate leaves the task to the broker
+        check(
+            &rec,
+            Some(9155),
+            &[],
+            rec.checked_at_epoch,
+            DEFAULT_STALENESS_SECONDS,
+        )
+        .unwrap();
+        let task = |status: &str, live: bool, issue: Option<i64>| SuccessorTask {
+            id: 17413,
+            status: status.to_string(),
+            live,
+            issue,
+        };
+        // missing
+        assert!(
+            check_successor_task(&rec, 15345, None)
+                .unwrap_err()
+                .contains("does not exist")
+        );
+        // terminal
+        assert!(
+            check_successor_task(&rec, 15345, Some(&task("done", false, Some(9155))))
+                .unwrap_err()
+                .contains("done")
+        );
+        // unrelated
+        assert!(
+            check_successor_task(&rec, 15345, Some(&task("queued", true, Some(1))))
+                .unwrap_err()
+                .contains("unrelated")
+        );
+        assert!(check_successor_task(&rec, 15345, Some(&task("queued", true, None))).is_err());
+        // itself
+        assert!(
+            check_successor_task(&rec, 17413, Some(&task("claimed", true, Some(9155))))
+                .unwrap_err()
+                .contains("its own successor")
+        );
+        // a real successor
+        check_successor_task(&rec, 15345, Some(&task("queued", true, Some(9155))))
+            .expect("a live task for the same issue owns the remainder");
+    }
+
+    #[test]
+    fn require_verified_runs_the_queue_lookup() {
+        let mut v = closed_with_open_draft();
+        v["checked_at"] = json!("2026-11-16T05:39:00Z");
+        v["follow_up"] = json!({"task_id": 17413, "reason": "r"});
+        let now = parse_rfc3339_epoch("2026-11-16T05:40:00Z").unwrap();
+        let result = json!({"disposition": v});
+        let mut terminal = |_id: i64| {
+            Ok(Some(SuccessorTask {
+                id: 17413,
+                status: "cancelled".into(),
+                live: false,
+                issue: Some(9155),
+            }))
+        };
+        assert!(require_verified(&result, Some(9155), now, 15345, &mut terminal).is_err());
+        let mut broken = |_id: i64| Err("broker down".to_string());
+        assert!(
+            require_verified(&result, Some(9155), now, 15345, &mut broken)
+                .unwrap_err()
+                .contains("broker down")
+        );
+        let mut live = |_id: i64| {
+            Ok(Some(SuccessorTask {
+                id: 17413,
+                status: "queued".into(),
+                live: true,
+                issue: Some(9155),
+            }))
+        };
+        require_verified(&result, Some(9155), now, 15345, &mut live).unwrap();
+    }
+
+    #[test]
+    fn follow_up_issue_readback_and_link_numbers() {
+        assert_eq!(
+            body_link_numbers("Refs #9245\nRelated program: #9155, see #1"),
+            vec![9245, 9155]
+        );
+        let f = follow_up_issue(
+            "https://github.com/o/r/issues/9400",
+            &json!({"number": 9400, "state": "OPEN", "body": "Refs #9245"}),
+            "owns the draft",
+        );
+        assert_eq!(f["issue_state"], "open");
+        assert_eq!(f["issue_links"], json!([9245]));
+        let mut v = closed_with_open_draft();
+        v["follow_up"] = f;
+        gate(&v).unwrap();
     }
 
     #[test]

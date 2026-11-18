@@ -378,10 +378,65 @@ class CompletionModel:
         return operation in self.remote
 
 
+FIXTURE_SCHEMA = "pmo-offline-fixtures/v1"
+FIXTURE_SECTIONS = ("priority_and_eligibility", "graph", "exploration", "completion")
+
+
+def _reject_duplicate_keys(pairs: list) -> dict:
+    obj = {}
+    for key, value in pairs:
+        if key in obj:
+            raise ValueError(f"duplicate key in fixtures: {key!r}")
+        obj[key] = value
+    return obj
+
+
+def load_fixtures(raw: bytes) -> dict:
+    """Strict fixture-contract load; every off-contract input fails closed.
+
+    The experiment's claims rest on the fixture being exactly the pinned
+    contract: a duplicate JSON key, an unknown major schema, a non-string
+    (lossy) decimal ID, invalid UTF-8, or a missing section must reject
+    the run with a machine-readable failure, never a silent coercion or
+    a partial model. Raises ValueError on any violation; main() maps it
+    to the fail result.
+    """
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"fixtures are not valid UTF-8: {exc}") from exc
+    fixtures = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+    if not isinstance(fixtures, dict):
+        raise ValueError("fixtures root must be a JSON object")
+    if fixtures.get("fixture_schema") != FIXTURE_SCHEMA:
+        raise ValueError(f"unknown fixture schema: {fixtures.get('fixture_schema')!r}")
+    for section in FIXTURE_SECTIONS:
+        if section not in fixtures:
+            raise ValueError(f"fixtures missing required section: {section}")
+    golden = fixtures["priority_and_eligibility"]
+    if not isinstance(golden.get("items"), list) or not isinstance(
+        golden.get("expected_order"), list
+    ):
+        raise ValueError("priority_and_eligibility must carry items and expected_order")
+    for item in golden["items"]:
+        for field in ("canonical_id", "peer_rank"):
+            value = item.get(field)
+            if not isinstance(value, str) or not value.isascii() or not value.isdigit():
+                raise ValueError(
+                    f"{field} must be an ASCII decimal string, got {value!r}"
+                )
+    graph = fixtures["graph"]
+    if not isinstance(graph.get("nodes"), list) or not isinstance(
+        graph.get("edges"), list
+    ):
+        raise ValueError("graph section must carry nodes and edges lists")
+    return fixtures
+
+
 def run(args: argparse.Namespace) -> dict:
     fixture_path = HERE / "fixtures.json"
     fixture_bytes = fixture_path.read_bytes()
-    fixtures = json.loads(fixture_bytes)
+    fixtures = load_fixtures(fixture_bytes)
     checks = Checks()
     rng = CounterRng(args.seed)
 

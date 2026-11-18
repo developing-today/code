@@ -2,7 +2,6 @@
 package cli
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -477,6 +476,9 @@ func (c *Client) open(ctx context.Context, method, path string, body []byte, con
 		req.Header.Set(daemon.CallerVersionHeader, v)
 	}
 	c.authorize(req)
+	if mcpclient.TaskExecutionFrom(ctx) {
+		req.Header.Set(daemon.TaskExecutionHeader, "1")
+	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		if isDialErr(err) {
@@ -1275,9 +1277,7 @@ func (c *Client) Stream(ctx context.Context, f events.Filter, fn func(events.Eve
 			}
 			continue
 		}
-		sc := bufio.NewScanner(resp.Body)
-		sc.Buffer(make([]byte, 0, c.set.Bytes("http.streamBufferInit")),
-			int(c.set.Bytes("http.streamBufferMax")))
+		sc := newStreamScanner(resp.Body, c.set.Bytes("http.streamBufferInit"), c.set.Bytes("http.streamBufferMax"))
 		var data strings.Builder
 		for sc.Scan() {
 			line := sc.Text()

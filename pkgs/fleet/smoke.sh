@@ -75,8 +75,8 @@ run() {
   ok "$name"
 }
 
-FULL_CAPS="Enabled capabilities: proxy-connect, proxy-serve, queue, queue-broker, secrets-broker, search, search-serve, dispatch, laptop-agent, secrets, gh"
-SERVE_CAPS="Enabled capabilities: proxy-connect, proxy-serve, queue-broker, secrets-broker, search-serve, secrets"
+FULL_CAPS="Enabled capabilities: proxy-connect, proxy-serve, proxy-raw-splice, queue, queue-broker, secrets-broker, search, search-serve, dispatch, dispatch-test, laptop-agent, secrets, gh"
+SERVE_CAPS="Enabled capabilities: proxy-connect, proxy-serve, proxy-raw-splice, queue-broker, secrets-broker, search-serve, secrets"
 CONNECT_CAPS="Enabled capabilities: proxy-connect"
 
 check_variant() {
@@ -453,6 +453,10 @@ printf 'smoke-secrets-token\n' >"$TMP/sb-token"
 printf 'smoke-queue-token\n' >"$TMP/qb-token"
 
 # secrets-broker role on a scratch port: /health answers unauthenticated.
+# This hermetic world has no bws, so the broker's first refresh never
+# succeeds and /health answers 503 with serving=false (#10868: a
+# broker that has never loaded is not serving). That 503 body is the
+# proof the role bound and answered, so curl runs without -f.
 env SECRETS_BROKER_BIND=127.0.0.1:19800 SECRETS_BROKER_TOKEN_FILE="$TMP/sb-token" \
   "$SERVE_OUT/bin/fleet" serve secrets-broker >"$TMP/sb.log" 2>&1 &
 SB_PID=$!
@@ -465,7 +469,8 @@ env QUEUE_BROKER_BIND=127.0.0.1:19801 QUEUE_BROKER_TOKEN_FILE="$TMP/qb-token" \
   "$FULL_OUT/bin/fleet" serve queue-broker >"$TMP/qb.log" 2>&1 &
 QB_PID=$!
 sleep 1
-run "secrets-broker role: /health answers" 0 '"ok":true' curl -sf http://127.0.0.1:19800/health
+run "secrets-broker role: /health answers (not serving without bws)" 0 '"serving":false' \
+  curl -s http://127.0.0.1:19800/health
 run "queue-broker role: /healthz answers" 0 '"service":"queue-broker"' curl -sf http://127.0.0.1:19801/healthz
 
 # Client surface (the census gap §1): --help renders from the
@@ -480,9 +485,16 @@ run "fleet queue: --help renders the queue commands" 0 "Commands: validate" "$FU
 
 # Client -> broker wiring: health reaches the scratch queue-broker,
 # which answers with its credential failure (exit 3, broker wording).
-run "repo-queue: health reaches the broker (creds fail fast, exit 3)" 3 "secrets broker" \
+# By default a work verb that hits any primary-store failure switches
+# to the GitHub fallback (#6741: exit 6, one JSON object naming the
+# switch), so check both the default switch and, with the operator
+# escape hatch set, the plain broker exit underneath it.
+run "repo-queue: health reaches the broker (creds fail, fallback switch exit 6)" 6 '"switch_to": "github-fallback"' \
   env REPO_QUEUE_BROKER_URL=http://127.0.0.1:19801 REPO_QUEUE_TOKEN_FILE="$TMP/qb-token" \
   "$TMP/full/repo-queue" health
+run "repo-queue: health reaches the broker (creds fail fast, exit 3)" 3 "secrets broker" \
+  env REPO_QUEUE_BROKER_URL=http://127.0.0.1:19801 REPO_QUEUE_TOKEN_FILE="$TMP/qb-token" \
+  REPO_QUEUE_NO_FALLBACK_SWITCH=1 "$TMP/full/repo-queue" health
 kill "$SB_PID" "$QB_PID" 2>/dev/null
 SB_PID=""
 QB_PID=""
@@ -853,7 +865,7 @@ echo "== config-disabled domain (exit 69, config wording) =="
 printf '[domains]\nqueue = false\n' >"$TMP/fleet.toml"
 run "full with queue=false: fleet queue stubs as disabled" 69 "disabled by config" \
   env FLEET_CONFIG="$TMP/fleet.toml" "$FULL_OUT/bin/fleet" queue
-run "full with queue=false: version drops queue capabilities" 0 "proxy-serve, queue-broker" \
+run "full with queue=false: version drops queue capabilities" 0 "proxy-raw-splice, queue-broker" \
   env FLEET_CONFIG="$TMP/fleet.toml" "$FULL_OUT/bin/fleet" version
 
 echo "== runs anywhere: env -i =="

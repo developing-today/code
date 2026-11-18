@@ -88,10 +88,50 @@ export const MAX_LINKS_LIMIT = 1000;
  *  reads at 200 refs (PROJECTOR_REFS_PER_REQUEST), well under this. */
 export const MAX_REFS = 500;
 
+/** Cap on authenticated JSON write bodies (#10635). The webhook intake
+ *  already reads through `readBoundedBody` at 10MB; `POST /links` and
+ *  `POST /hot/checkpoints` used bare `req.json()`, letting one caller
+ *  buffer an unbounded body before validation. Both now share this cap
+ *  and answer 413 without reaching the store. */
+export const MAX_WRITE_BODY_BYTES = 10_000_000;
+
+/** Stored/compared string-field bounds (#10635). The body cap alone
+ *  still admits a multi-MB `note` as a persistent row, so the fields
+ *  that reach the store (or key a lookup) are bounded before any
+ *  store call; violations are 400s. */
+export const MAX_LINK_SUBJECT_CHARS = 1024;
+export const MAX_LINK_NOTE_CHARS = 20_000;
+export const MAX_LINK_RELATION_CHARS = 256;
+export const MAX_LINK_CREATED_BY_CHARS = 256;
+export const MAX_CONSUMER_CHARS = 256;
+
+/** Read a JSON write body through the shared bounded-body discipline:
+ *  413 on overflow, then JSON.parse with the caller's 400 on failure. */
+async function readBoundedJson(req: Request): Promise<{ ok: true; value: any } | { ok: false; response: Response }> {
+  let raw: Uint8Array;
+  try {
+    raw = await readBoundedBody(req.body, MAX_WRITE_BODY_BYTES);
+  } catch {
+    return { ok: false, response: jsonResponse(413, { error: "body_too_large" }) };
+  }
+  try {
+    return { ok: true, value: JSON.parse(new TextDecoder().decode(raw)) };
+  } catch {
+    return { ok: false, response: jsonResponse(400, { error: "invalid_json" }) };
+  }
+}
+
 /** Split a comma-separated `refs` parameter into a de-duplicated ref list. */
 export function parseRefs(raw: string | null): string[] {
   if (!raw) return [];
-  return [...new Set(raw.split(",").map((s) => s.trim()).filter(Boolean))];
+  return [
+    ...new Set(
+      raw
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ),
+  ];
 }
 
 /**
@@ -203,12 +243,36 @@ async function withTimeout<T>(work: Promise<T>, ms: number, label: string): Prom
   }
 }
 
+/**
+ * The service's error boundary (#10540): every route answers JSON. A
+ * store, git or reconcile failure a route does not handle itself would
+ * otherwise escape as Bun's default non-JSON 500, which clients and
+ * monitors cannot read. Routes that already answer a specific status
+ * keep it; only an escaped exception becomes this 500.
+ */
 export async function handleRequest(
   req: Request,
   db: Client,
   env: ServerEnv,
   deps: ServerDeps = {},
 ): Promise<Response> {
+  try {
+    return await routeRequest(req, db, env, deps);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    const path = (() => {
+      try {
+        return new URL(req.url).pathname;
+      } catch {
+        return "?";
+      }
+    })();
+    console.error(`projector: ${req.method} ${path} failed: ${message}`);
+    return jsonResponse(500, { error: "internal_error", message });
+  }
+}
+
+async function routeRequest(req: Request, db: Client, env: ServerEnv, deps: ServerDeps = {}): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
   const method = req.method;
@@ -360,15 +424,15 @@ export async function handleRequest(
       });
     }
     if (method === "POST" && bearerAuthorized(req, env)) {
-      let body: any;
-      try {
-        body = await req.json();
-      } catch {
-        return jsonResponse(400, { error: "invalid_json" });
-      }
+      const parsed = await readBoundedJson(req);
+      if (!parsed.ok) return parsed.response;
+      const body: any = parsed.value;
       const { subject, ref, relation = "relates", note, createdBy } = body ?? {};
       if (typeof subject !== "string" || subject.length === 0 || typeof ref !== "string" || !isStorableLinkRef(ref)) {
         return jsonResponse(400, { error: "subject (non-empty string) and ref (owner/repo#N) required" });
+      }
+      if (subject.length > MAX_LINK_SUBJECT_CHARS) {
+        return jsonResponse(400, { error: "subject too long", max: MAX_LINK_SUBJECT_CHARS });
       }
       // Validate the whole body before any store call (#2974): relation is
       // never String()-coerced (an array stored as 'a,b', an object as
@@ -377,11 +441,20 @@ export async function handleRequest(
       if (typeof relation !== "string") {
         return jsonResponse(400, { error: "relation (string) required" });
       }
+      if (relation.length > MAX_LINK_RELATION_CHARS) {
+        return jsonResponse(400, { error: "relation too long", max: MAX_LINK_RELATION_CHARS });
+      }
       if (note !== undefined && note !== null && typeof note !== "string") {
         return jsonResponse(400, { error: "note (string or null) required" });
       }
+      if (typeof note === "string" && note.length > MAX_LINK_NOTE_CHARS) {
+        return jsonResponse(400, { error: "note too long", max: MAX_LINK_NOTE_CHARS });
+      }
       if (createdBy !== undefined && createdBy !== null && typeof createdBy !== "string") {
         return jsonResponse(400, { error: "createdBy (string or null) required" });
+      }
+      if (typeof createdBy === "string" && createdBy.length > MAX_LINK_CREATED_BY_CHARS) {
+        return jsonResponse(400, { error: "createdBy too long", max: MAX_LINK_CREATED_BY_CHARS });
       }
       try {
         await store.upsertLink(db, { subject, ref, relation, note, createdBy });
@@ -449,15 +522,15 @@ export async function handleRequest(
 
   if (path === "/hot/checkpoints" && method === "POST") {
     if (!bearerAuthorized(req, env)) return jsonResponse(401, { error: "unauthorized" });
-    let body: any;
-    try {
-      body = await req.json();
-    } catch {
-      return jsonResponse(400, { error: "invalid_json" });
-    }
+    const parsed = await readBoundedJson(req);
+    if (!parsed.ok) return parsed.response;
+    const body: any = parsed.value;
     const { consumer, cursor, highWater } = body ?? {};
     if (typeof consumer !== "string" || consumer.length === 0) {
       return jsonResponse(400, { error: "consumer (non-empty string) required" });
+    }
+    if (consumer.length > MAX_CONSUMER_CHARS) {
+      return jsonResponse(400, { error: "consumer too long", max: MAX_CONSUMER_CHARS });
     }
     if (!Number.isInteger(cursor) || !Number.isInteger(highWater)) {
       return jsonResponse(400, { error: "cursor and highWater (integers) required" });

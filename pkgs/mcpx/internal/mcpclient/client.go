@@ -1865,8 +1865,14 @@ const (
 	// the error's data opened before it can proceed.
 	codeURLElicitationRequired = -32042
 	codeResourceNotFound       = -32002
-	codeInvalidParams          = -32602
-	codeInternalError          = -32603
+	// codeMissingCapability is MissingRequiredClientCapability,
+	// 2026-07-28. The ask seam mints it when no answerer is present for
+	// the audience a question routes to (#2438): the request cannot be
+	// served without an audience, so the server learns that instead of
+	// waiting out a TTL.
+	codeMissingCapability = -32021
+	codeInvalidParams     = -32602
+	codeInternalError     = -32603
 	// codeUserRejected is the code the sampling error table assigns to a
 	// person refusing a sampling request (2025-11-25 client/sampling
 	// error handling: "User rejected sampling request: -1"). It is not a
@@ -1886,6 +1892,10 @@ const (
 type CodedError struct {
 	Code    int
 	Message string
+	// Data is the JSON-RPC error data member, when the code has one the
+	// client acts on -- a -32021's requiredCapabilities (#2438). Empty
+	// for every code that carries only a sentence.
+	Data json.RawMessage
 }
 
 func (e *CodedError) Error() string { return e.Message }
@@ -1894,6 +1904,18 @@ func (e *CodedError) Error() string { return e.Message }
 // the InvalidParamsError precedent: surfaces that translate generic
 // errors check for it by interface, with no import cycle.
 func (e *CodedError) RPCCode() int { return e.Code }
+
+// RPCData is the error's data member, for the codes that carry one.
+func (e *CodedError) RPCData() json.RawMessage { return e.Data }
+
+// MissingCapabilityError is -32021 MissingRequiredClientCapability,
+// naming the capabilities the request cannot be served without. The ask
+// seam uses it when no answerer is present for the audience a question
+// routes to: an unmade request the server should not wait on (#2438).
+func MissingCapabilityError(message string, required map[string]any) *CodedError {
+	data, _ := json.Marshal(map[string]any{"requiredCapabilities": required})
+	return &CodedError{Code: codeMissingCapability, Message: message, Data: data}
+}
 
 // NewCodedError builds a CodedError for a spec-assigned code with no
 // dedicated constructor below.
@@ -1955,6 +1977,16 @@ func (c *Client) Close() error {
 	// waiting on a server being shut down sat until its own deadline.
 	c.fail(errors.New("closed by client"))
 	return c.t.Close()
+}
+
+// MarkRestartIntent marks this client's transport as closing for a daemon
+// restart rather than an explicit session end (#1414). A transport that can
+// resume its upstream session then keeps it alive for the next daemon process
+// instead of ending it in Close.
+func (c *Client) MarkRestartIntent() {
+	if m, ok := c.t.(interface{ MarkRestartIntent() }); ok {
+		m.MarkRestartIntent()
+	}
 }
 
 // CallTimeout is a convenience wrapper applying a deadline.

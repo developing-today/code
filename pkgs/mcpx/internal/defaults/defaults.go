@@ -110,6 +110,9 @@ type Defaults struct {
 		// state and are never pruned.
 		RetentionMaxAge          string `json:"retentionMaxAge"`
 		RetentionMaxTerminalRows int    `json:"retentionMaxTerminalRows"`
+		// AudienceWindow is how recent an answerer heartbeat must be for
+		// an audience to count as present (#2438).
+		AudienceWindow string `json:"audienceWindow"`
 	} `json:"elicit"`
 	// Proto governs how mcpx speaks the protocol to its own clients: which
 	// era mechanisms it offers, and how long it will hold a call open while
@@ -462,6 +465,16 @@ var (
 	// JSON has no business being larger, and an unbounded read lets a
 	// bad endpoint make the daemon allocate arbitrarily much (#4354).
 	ProviderResponseBodyLimit = mustBytes(builtin.Upstream.ResponseBodyLimit, "upstream.responseBodyLimit")
+	// OpenAPISpecBodyLimit bounds the buffered peer reads in
+	// internal/openapi: a fetched OpenAPI document (Load) and a tool
+	// call's response body (API.Call). Per contract decision 2
+	// (#4375), both are refused past this cap — read cap+1 and fail
+	// when the extra byte exists — never silently truncated: a
+	// truncated spec parses as a shorter document or fails
+	// downstream with a misleading error (#8271). A plain constant,
+	// not a builtin config key: the bound is a property of the
+	// contract, not an operator tuning knob.
+	OpenAPISpecBodyLimit = int64(32 << 20)
 	// UpstreamSSEReconnectDelay is the resume wait when a server sent no
 	// retry field.
 	UpstreamSSEReconnectDelay = mustDur(builtin.Upstream.SSEReconnectDelay, "upstream.sseReconnectDelay")
@@ -647,6 +660,13 @@ var (
 	// question is kept in the broker store before an open prunes it
 	// (#1677, design #1675 Phase 2: the recorded 30 days).
 	ElicitRetentionMaxAge = mustDur(builtin.Elicit.RetentionMaxAge, "elicit.retentionMaxAge")
+	// ElicitAudienceWindow is how recent an answerer heartbeat must be
+	// for an audience to count as present (#2438). Answerer surfaces
+	// poll on a one-second cadence (mcpx elicit watch) or per user
+	// refresh, so two minutes is generous without letting a long-gone
+	// answerer count. An internal bound: defaults.json only, absent
+	// from the settings registry.
+	ElicitAudienceWindow = mustDur(builtin.Elicit.AudienceWindow, "elicit.audienceWindow")
 	// ElicitRetentionMaxTerminalRows caps how many terminal questions
 	// the broker store keeps, oldest first out (#1677).
 	ElicitRetentionMaxTerminalRows = builtin.Elicit.RetentionMaxTerminalRows

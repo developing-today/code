@@ -37,6 +37,7 @@ records.
 - [Design: a Muse↔OpenClaw comms path that is not laptop SSH](../../doc/2026-10-29T12-09-49Z_design_openclaw_comms_path/2026-10-29T12-09-49Z_design_openclaw_comms_path.md)
 - [Refundable grants via pending transfers — premium tokens that survive a refund](../../doc/2026-10-29T12-10-00Z_design_refundable_grants_pending_transfers/2026-10-29T12-10-00Z_design_refundable_grants_pending_transfers.md)
 - [Design: currency as the centralised exception — the hosted edition's boundary to the currency service](../../doc/2026-10-29T12-20-00Z_design_currency_centralised_exception/2026-10-29T12-20-00Z_design_currency_centralised_exception.md)
+- [Hosted tenancy architecture — per-user Turso databases + a central tenancy DB (component E of #9078)](../../doc/2026-11-17T16-55-00Z_design_hosted-tenancy-architecture/2026-11-17T16-55-00Z_design_hosted-tenancy-architecture.md)
 - [Currency control plane — design: registry, account factory, gateway](../../doc/2026-10-29T12-42-21Z_design_currency_control_plane/2026-10-29T12-42-21Z_design_currency_control_plane.md)
 - [Design: ID app packaging — app manifest, folder layout, TUI/web parity](../../doc/2026-10-29T12-50-36Z_design_id_app_packaging/2026-10-29T12-50-36Z_design_id_app_packaging.md)
 - [One `/id-sync/1` handshake, and why serve's range flights moved to](../../doc/2026-10-29T16-21-00Z_design_id_sync_alpn_split/2026-10-29T16-21-00Z_design_id_sync_alpn_split.md)
@@ -66,7 +67,9 @@ records.
 - [Capability-certification exception policy](../../doc/2026-11-08T01-10-24Z_design_id_capability_certification_exceptions/2026-11-08T01-10-24Z_design_id_capability_certification_exceptions.md)
 - [OneNote import into the ID knowledge layer (#6438)](../../doc/2026-11-08T08-53-12Z_design_onenote_importer/2026-11-08T08-53-12Z_design_onenote_importer.md)
 - [ID shader asset format — v1 design](../../doc/2026-11-08T00-57-08Z_design_shader_asset_format/2026-11-08T00-57-08Z_design_shader_asset_format.md)
+- [The capability model: requested vs discovered-used sets, registry schema, custom-compiled platforms](../../doc/2026-11-08T09-15-00Z_design_id_capability_model/2026-11-08T09-15-00Z_design_id_capability_model.md)
 - [Knowledge-layer sharing and permissions](../../doc/2026-11-08T08-19-40Z_design_id_knowledge_sharing_permissions/2026-11-08T08-19-40Z_design_id_knowledge_sharing_permissions.md)
+- [The standard server baseline: reference environment, workload suite, scales, versioning](../../doc/2026-11-08T09-55-28Z_design_standard_server_baseline/2026-11-08T09-55-28Z_design_standard_server_baseline.md)
 - [Permission UX for worlds: pre-connect disclosure, grant modes, and memory](../../doc/2026-11-08T09-06-08Z_design_id_permission_ux/2026-11-08T09-06-08Z_design_id_permission_ux.md)
 - [Pure-package imports and package classes across capability tiers](../../doc/2026-11-08T17-12-39Z_design_id_package_import_policy/2026-11-08T17-12-39Z_design_id_package_import_policy.md)
 - [Explicit platform contexts for pure libraries](../../doc/2026-11-08T17-23-00Z_design_id5963_programming_model/2026-11-08T17-23-00Z_design_id5963_programming_model.md)
@@ -83,6 +86,8 @@ records.
 - [Chat anchor data model: typed links and durable part selectors](../../doc/2026-11-09T01-27-00Z_design_chat_anchor_data_model/2026-11-09T01-27-00Z_design_chat_anchor_data_model.md)
 - [Atlas chunk-boundary policy v2 — structural first](../../doc/2026-11-09T01-31-29Z_design_atlas_chunk_boundary_policy_v2/2026-11-09T01-31-29Z_design_atlas_chunk_boundary_policy_v2.md)
 - [Benchmark regression gates, waivers, and result retention](../../doc/2026-11-08T23-45-30Z_design_id5897_regression_gates/2026-11-08T23-45-30Z_design_id5897_regression_gates.md)
+- [Where agent notes live — scratch, memory, repo, Zettelkasten, or ID graph](../../doc/2026-11-08T13-55-51Z_design_agent_note_placement/2026-11-08T13-55-51Z_design_agent_note_placement.md)
+- [Capability-change diff semantics — user-meaningful classes and re-approval triggers](../../doc/2026-11-08T10-12-00Z_design_id_capability_diff_semantics/2026-11-08T10-12-00Z_design_id_capability_diff_semantics.md)
 
 ## Package architecture docs (living, with the code)
 

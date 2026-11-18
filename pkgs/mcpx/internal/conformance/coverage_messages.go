@@ -109,6 +109,14 @@ func init() {
 			"tools-schema-default-2020-12",
 			"json-schema-no-network-ref",
 		),
+		// mrtr-missing-capability-error-32021 is settled by disposition,
+		// not by the row's unconditional reading: revision-conflicts.md
+		// section E item 8 records that elicitation is never a hard
+		// requirement of a call, so the gateway brokers the question when
+		// an answerer exists and fails -32021 only when none can answer
+		// (the #2434 decision-3 rule). The daemon audience tests are the
+		// gateway-path oracle; pass-through relay is unchanged (#7845).
+		S("mrtr-missing-capability-error-32021", "daemon.TestElicitWithoutAnswererIsMissingCapability@all", "daemon.TestSampleWithoutAnswererIsMissingCapability@all", "daemon.TestAPresentAnswererKeepsTheQuestionOpen@all", "mcpserver.TestAPassThroughUpstreamsMissingCapabilityIsRelayed@all"),
 		S("json-schema-support-2020-12", "mcpclient.TestCallToolRejectsInvalidArgumentsBeforeTheTransport@all"),
 		S("json-schema-validate-per-dialect-and-error-on-unsupported", "mcpclient.TestListToolsExcludesUncompilableSchemasWithWarning@all", "schemaval.TestUnsupportedDialect@all", "schemaval.TestDeclaredDialectsCompile@all"),
 		C("json-schema-validate-per-dialect-and-error-on-unsupported", "mcpclient.TestListToolsExcludesUncompilableSchemasWithWarning@all", "schemaval.TestUnsupportedDialect@all", "schemaval.TestDeclaredDialectsCompile@all"),
@@ -124,13 +132,15 @@ func init() {
 		S("json-schema-bound-composition-cost", "schemaval.TestSchemaTooLarge@all"),
 		C("json-schema-bound-composition-cost", "schemaval.TestSchemaTooLarge@all"),
 		C("json-schema-reject-unresolved-ref", "mcpclient.TestListToolsExcludesUncompilableSchemasWithWarning@all", "schemaval.TestUnresolvedInternalRef@all", "schemaval.TestRemoteRefMakesNoRequests@all"),
+		// errors-method-not-found-for-unadvertised-capability is met by
+		// the advertised-capability gate in mcpserver (handle): the
+		// original two gated methods (#2436) plus the skills extension
+		// methods (#7844), era-split per gateEraApplies and recorded in
+		// docs/spec/revision-conflicts.md item C24.
+		S("errors-method-not-found-for-unadvertised-capability", "mcpserver.TestCapabilityGateRefusesUnadvertisedMethods@all", "mcpserver.TestCapabilityGateAdmitsAdvertisedMethods@all", "mcpserver.TestCapabilityGateReadsTheInitializeSnapshot@all", "mcpserver.TestCapabilityGateRefusesUnadvertisedSkillsExtension@all", "mcpserver.TestCapabilityGateAdmitsAdvertisedSkillsExtension@all", "mcpserver.TestCapabilityGateKeepsLegacySkillsAcceptance@all"),
 	)
 	registerGaps(
 		Gap{ID: "errors-local-errors-not-mistaken-for-peer", Side: Server, Issue: "#206",
 			Why: "an upstream server's failure reaches the client as mcpx's own isError text or -32603, indistinguishable from mcpx failing"},
-		Gap{ID: "errors-method-not-found-for-unadvertised-capability", Side: Server, Issue: "#257",
-			Why: "mcpx answers methods whatever was negotiated (accept liberally, revisions.go); the schema guidance asks for -32601"},
-		Gap{ID: "mrtr-missing-capability-error-32021", Side: Server, Issue: "#257",
-			Why: "through the gateway (mcpx_call) a call that needs input from a client that declared none goes to the broker instead of failing with -32021; the specification contradicts itself here (docs/spec/revision-conflicts.md). In pass-through mode the client's declaration is relayed and the upstream's -32021 returned (mcpserver.TestAPassThroughUpstreamsMissingCapabilityIsRelayed)"},
 	)
 }

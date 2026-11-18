@@ -35,7 +35,7 @@
 //!   group        Groups: create, policy, add, remove, set roles, list, join
 //!   delegate     Grant a delegate a scope in a group
 //!   revoke       Revoke a delegation by its grant's event ID
-//!   doc          Documents: publish a file; list events, frontier, history
+//!   doc          Documents: publish a file, fetch its bytes; list events, frontier, history
 //!   claim        Tag claims on any subject (set, clear, list, search)
 //!   writer-sets  Writer sets in the event store (show, expand, discover)
 //!   migrate-tags Migrate existing files to name/file auto-tags (alias: migrate)
@@ -104,6 +104,7 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 
 pub mod claim;
 pub mod doc;
+pub mod gallery;
 pub mod groups;
 #[cfg(feature = "sandbox")]
 pub mod match_audit;
@@ -113,17 +114,19 @@ pub mod writer_sets;
 
 pub use claim::{ClaimCommand, ClaimScope};
 pub use doc::DocCommand;
+pub use gallery::{GalleryArgs, GalleryCommand};
 pub use groups::{DelegateArgs, GroupCommand, GroupRemoveMode, GroupTemplate, RevokeArgs};
 #[cfg(feature = "sandbox")]
 pub use match_audit::MatchAuditCommand;
 pub use tag::TagCommand;
 pub use world::{
-    WorldApplyArgs, WorldCapsArgs, WorldCommand, WorldCompileArgs, WorldCrossWorldWriteArgs,
-    WorldDevArgs, WorldDiffArgs, WorldDoctorArgs, WorldDownloadArgs, WorldFileScopeArgs,
-    WorldForceCrossWorldWriteArgs, WorldInstallArgs, WorldInviteArgs, WorldIsolationArgs,
-    WorldJoinArgs, WorldListArgs, WorldLogsArgs, WorldMeasureArgs, WorldMirrorArgs,
-    WorldProfileArgs, WorldRecordArgs, WorldRecordsArgs, WorldReplayArgs, WorldReplicaArgs,
-    WorldRuntimeArgs, WorldSshTunnelArgs, WorldStatsArgs, WorldVerifyArgs, WorldVia,
+    JournalCommand, WorldApplyArgs, WorldCapsArgs, WorldCommand, WorldCompileArgs,
+    WorldCrossWorldWriteArgs, WorldDevArgs, WorldDiffArgs, WorldDoctorArgs, WorldDownloadArgs,
+    WorldFileScopeArgs, WorldForceCrossWorldWriteArgs, WorldInstallArgs, WorldInviteArgs,
+    WorldIsolationArgs, WorldJoinArgs, WorldJournalArgs, WorldListArgs, WorldLogsArgs,
+    WorldMeasureArgs, WorldMirrorArgs, WorldProfileArgs, WorldRecordArgs, WorldRecordsArgs,
+    WorldReplayArgs, WorldReplicaArgs, WorldRuntimeArgs, WorldSshTunnelArgs, WorldStatsArgs,
+    WorldVerifyArgs, WorldVia,
 };
 pub use writer_sets::WriterSetCommand;
 
@@ -469,6 +472,23 @@ pub struct ServeArgs {
     /// Browsers drop `Secure` cookies over plain HTTP, except on localhost.
     #[arg(long, env = "ID_WEB_COOKIE_SECURE")]
     pub web_cookie_secure: bool,
+    /// Serve the program gallery stored in this directory (#10003, #8281).
+    ///
+    /// The node serves it as a program registry over Iroh
+    /// (`/id-program-registry/1`: list, fetch and author-signed unpublish),
+    /// and with `--web` also answers `/api/gallery/records`,
+    /// `/api/gallery/bundles/<hash>`, `/api/gallery/search`,
+    /// `/api/gallery/authors/<key>`, `/api/gallery/collections` and
+    /// `/api/gallery/transparency`, from the verified bundle files
+    /// (`<content-hash>.idpb`) in the directory and the operator's
+    /// collections, tags and admission decisions under `operator/` (managed
+    /// with `id gallery`). Every file is verified when the server starts.
+    #[arg(long, env = "ID_GALLERY_DIR")]
+    pub gallery_dir: Option<std::path::PathBuf>,
+    /// Accept bundle publishes from any peer over Iroh. Each is verified and
+    /// then goes through the gallery's admission like any other.
+    #[arg(long, env = "ID_GALLERY_ACCEPT_PUBLISH", requires = "gallery_dir")]
+    pub gallery_accept_publish: bool,
     /// Host a multiplayer world over Iroh (and `/ws/world` with `--web`).
     #[arg(long, requires = "world_admin_token")]
     pub world: bool,
@@ -1363,6 +1383,9 @@ pub enum Command {
     /// ```
     #[command(subcommand)]
     World(Box<WorldCommand>),
+    /// Administer a program gallery directory: removals, appeals, review,
+    /// posture and operator tags, all on the public transparency list.
+    Gallery(GalleryArgs),
     /// Export and verify signed match-audit v0 logs.
     #[cfg(feature = "sandbox")]
     #[command(subcommand)]
@@ -1391,16 +1414,20 @@ pub enum Command {
     Delegate(DelegateArgs),
     /// Revoke a delegation by its grant's event ID, as `delegate` printed it (P6.7b).
     Revoke(RevokeArgs),
-    /// Documents: publish a file, and list a document's events, frontier and history (P6.7c).
+    /// Documents: publish a file, fetch a document's bytes, and list a document's events,
+    /// frontier and history (P6.7c).
     ///
     /// Each action signs one event into the event store and prints one line, or one JSON object
     /// with `--json`. The store stands in for sync: nodes that share it see each other's events.
-    /// Lists print one line per row, or one JSON array with `--json`.
+    /// Publish also stores the file's bytes in the blob store under their hash, so `content`
+    /// can fetch them back by document ID. Lists print one line per row, or one JSON array
+    /// with `--json`.
     ///
     /// # Examples
     ///
     /// ```bash
     /// id doc publish notes.md --media-type text/markdown --tag topic=plans
+    /// id doc content DOCUMENT
     /// id doc history DOCUMENT
     /// id doc frontier --json
     /// ```

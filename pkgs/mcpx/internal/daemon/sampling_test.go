@@ -31,7 +31,19 @@ func sampleRig(t *testing.T) (*Registry, *elicit.Broker) {
 	}
 	t.Cleanup(func() { _ = b.Close() })
 	r.InstallHooks(events.New(0), b, nil)
+	noteAnswerer(t, b)
 	return r, b
+}
+
+// noteAnswerer records the broadest answerer presence. Every test that
+// answers through Respond is simulating an answerer at the other end,
+// and the ask seam only opens a question when someone is present for
+// its audience (#2438).
+func noteAnswerer(t *testing.T, b *elicit.Broker) {
+	t.Helper()
+	if err := b.NoteAnswerer(""); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func pending(t *testing.T, b *elicit.Broker) []elicit.Request {

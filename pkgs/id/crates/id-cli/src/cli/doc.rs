@@ -1,4 +1,4 @@
-//! `id doc` subcommand definitions: publish, events, frontier, history.
+//! `id doc` subcommand definitions: publish, events, frontier, history, content.
 
 use std::path::PathBuf;
 
@@ -10,7 +10,8 @@ pub enum DocCommand {
     /// Publish a file as a document, and set a tag for each `--tag`.
     ///
     /// Prints `publish document=<ID>`, the document's event ID. The file's bytes are hashed, and
-    /// the event names their hash and size. The bytes are not stored in the event.
+    /// the event names their hash and size. The bytes are not stored in the event: publish stores
+    /// them in the blob store under their hash, so `id doc content` can fetch them back.
     Publish {
         /// The file to publish.
         file: PathBuf,
@@ -32,5 +33,16 @@ pub enum DocCommand {
     History {
         /// The document's event ID, as `publish` printed it.
         document: String,
+    },
+    /// Print a document's blob bytes, by document event ID.
+    ///
+    /// Resolves the `document.put` event to the content hash it names and exports the bytes
+    /// the publish step stored: to a file, or to stdout with the default `-`.
+    Content {
+        /// The document's event ID, as `publish` printed it.
+        document: String,
+        /// Output path, or "-" for stdout.
+        #[arg(default_value = "-")]
+        output: String,
     },
 }

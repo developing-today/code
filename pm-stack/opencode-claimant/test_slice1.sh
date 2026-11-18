@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Offline compatibility entry point (#8742). No arguments or live smoke mode.
 set -euo pipefail
-if (( $# != 0 )); then
+if (($# != 0)); then
   printf 'usage: %s (no arguments)\n' "${0##*/}" >&2
   exit 2
 fi

@@ -36,7 +36,10 @@ export async function resolveSupabaseProjectRef(
 ): Promise<string | null> {
   const override = env.SUPABASE_PROJECT_REF?.trim();
   if (override) return override;
-  const ref = await resolveSecret("supabase.project-ref");
+  // #6815: the canonical BWS entry is the environment-scoped
+  // `supabase.muse-dev2.project-ref`; the older unscoped pointer is kept
+  // as a first choice for deployments that still carry it.
+  const ref = (await resolveSecret("supabase.project-ref")) ?? (await resolveSecret("supabase.muse-dev2.project-ref"));
   return ref?.trim() || null;
 }
 

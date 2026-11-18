@@ -1097,4 +1097,41 @@ pub enum WorldCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Inspect or copy a durable world's journal file (F11.12 journal
+    /// format management). Local only; no host is contacted.
+    Journal(WorldJournalArgs),
+}
+
+/// The arguments of `id world journal`: a subcommand over a world
+/// directory's `journal.jsonl` (F11.12).
+#[derive(Args, Debug)]
+pub struct WorldJournalArgs {
+    #[command(subcommand)]
+    pub action: JournalCommand,
+}
+
+/// What `id world journal` does to a world directory's journal.
+#[derive(Subcommand, Debug)]
+pub enum JournalCommand {
+    /// Check a world directory's journal: report its format version and
+    /// validity, flagging a journal written in a newer format than this
+    /// binary can read. Exits nonzero when the journal is not valid.
+    Check {
+        /// Directory of the world to check (the one holding
+        /// `journal.jsonl`).
+        dir: PathBuf,
+        /// Print one JSON object instead of text lines.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Copy a world directory's journal to a backup file, byte for byte,
+    /// so the copy restores the world exactly. The journal must check
+    /// valid first, and the output file must not already exist.
+    Backup {
+        /// Directory of the world to back up (the one holding
+        /// `journal.jsonl`).
+        dir: PathBuf,
+        /// The backup file to write.
+        out: PathBuf,
+    },
 }

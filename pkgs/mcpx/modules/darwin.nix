@@ -23,7 +23,8 @@
 # The fixed file is a copy of the wrapper below, refreshed by
 # extraActivation before launchd is set up; since the plist no
 # longer changes when mcpx does, postActivation kickstarts the agent
-# whenever the copy changed.
+# whenever the copy changed, including in an earlier activation that
+# failed before reaching postActivation (a marker file carries it).
 #
 # The wrapper stops whatever already serves this config's socket
 # before starting: launchd never runs two copies of one job, so a
@@ -100,22 +101,37 @@ in
     # the agent (its plist no longer changes when mcpx does).
     # Root-owned and not user-writable, like the store copy it
     # mirrors.
+    #
+    # "Changed" is a file, not a shell variable: a variable lived only
+    # for one activation, so when anything between extraActivation and
+    # postActivation failed (a brew bundle error, a helper exit), the
+    # copy was already current on the next switch, cmp found nothing to
+    # do, and the daemon kept running the old binary and the old config
+    # indefinitely (dezren39/darwin-nix, 2026-11-17: a daemon on a config
+    # three switches stale, every client "no daemon reachable"). The
+    # marker stays until a postActivation actually restarts the agent.
     system.activationScripts.extraActivation.text = lib.mkAfter ''
-      mcpxAgentChanged=0
+      # mcpx-agent-install-begin
       if ! /usr/bin/cmp -s ${agent} ${agentPath}; then
         echo "installing ${agentPath}" >&2
         /bin/mkdir -p "$(/usr/bin/dirname ${agentPath})"
         /usr/bin/install -o root -g wheel -m 0755 ${agent} ${agentPath}.tmp
         /bin/mv -f ${agentPath}.tmp ${agentPath}
-        mcpxAgentChanged=1
+        /usr/bin/touch ${agentPath}.restart-pending
       fi
+      # mcpx-agent-install-end
     '';
 
     system.activationScripts.postActivation.text = lib.mkAfter ''
-      : "''${mcpxAgentChanged:=0}"
-      if [ "$mcpxAgentChanged" = "1" ]; then
-        /bin/launchctl kickstart -k "gui/$(/usr/bin/id -u ${config.system.primaryUser})/org.nixos.mcpx" || true
+      # mcpx-agent-restart-begin
+      if [ -e ${agentPath}.restart-pending ]; then
+        if /bin/launchctl kickstart -k "gui/$(/usr/bin/id -u ${config.system.primaryUser})/org.nixos.mcpx"; then
+          /bin/rm -f ${agentPath}.restart-pending
+        else
+          echo "mcpx: could not restart org.nixos.mcpx; will retry on the next activation" >&2
+        fi
       fi
+      # mcpx-agent-restart-end
     '';
   };
 }

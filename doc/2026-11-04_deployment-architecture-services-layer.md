@@ -196,6 +196,11 @@ installs the generation into the profile (`nix-env --profile … --set`,
 the same primitive the amd switch fallback already uses for the whole
 system), writes the unit file pointing at the profile's `current` link,
 `daemon-reload`, restarts **only that unit**, then runs the health check.
+The health check is retried every half second for a window, 120 seconds
+unless the definition sets `healthTimeoutSeconds` (1 to 3600). A 503
+"not ready" and an endpoint not yet listening are both retried until the
+window closes, because a broker answers 503 honestly while its first
+refresh runs (#11170: the secrets broker needed about 40 seconds).
 Failure at any step: the profile flips back and the unit restarts on the
 previous generation — deploy-rs's magic-rollback idea, with nix profiles
 as the mechanism instead of a bespoke one. `rollback` is the same flip
