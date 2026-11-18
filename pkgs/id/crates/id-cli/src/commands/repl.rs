@@ -650,7 +650,8 @@ impl ReplContext {
     ///
     /// Returns an error if the hash is invalid or the blob cannot be found.
     pub async fn gethash(&mut self, hash_str: &str, output: &str) -> Result<()> {
-        let hash: Hash = hash_str.parse().map_err(|e| anyhow!("invalid hash: {e}"))?;
+        let hash: Hash =
+            id_core::iroh_hash::parse_hash(hash_str).map_err(|e| anyhow!("invalid hash: {e}"))?;
 
         if self.is_connected() {
             let blobs_conn = self.blobs_conn().await?.clone();

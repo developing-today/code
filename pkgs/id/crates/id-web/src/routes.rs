@@ -1109,7 +1109,7 @@ async fn blob_handler(
     Query(query): Query<BlobQuery>,
 ) -> Response {
     // Parse the hash
-    let Ok(parsed_hash) = hash.parse::<iroh_blobs::Hash>() else {
+    let Ok(parsed_hash) = id_core::iroh_hash::parse_hash(&hash) else {
         return (StatusCode::BAD_REQUEST, "Invalid hash format").into_response();
     };
 
@@ -1868,8 +1868,7 @@ async fn get_file_name(store: &iroh_blobs::api::Store, hash: &str) -> Option<Str
 /// Returns the file content as bytes if found, or an HTML error message.
 async fn get_file_bytes(store: &iroh_blobs::api::Store, hash: &str) -> Result<Vec<u8>, String> {
     // Parse the hash
-    let hash = hash
-        .parse::<iroh_blobs::Hash>()
+    let hash = id_core::iroh_hash::parse_hash(hash)
         .map_err(|_err| "<p>Invalid hash format</p>".to_owned())?;
 
     // Read the blob content
@@ -3559,6 +3558,19 @@ mod upload_router_tests {
         let headers = response.headers().clone();
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         (status, headers, bytes.to_vec())
+    }
+
+    // `iroh_blobs::Hash::from_str` panics on text that is not 52 or 64
+    // characters long; the blob route must answer 400 instead.
+    #[tokio::test]
+    async fn blob_route_rejects_malformed_hash_text_without_panicking() {
+        let (router, _dir, _endpoint, _docs) = router().await;
+        let full = iroh_blobs::Hash::new(b"x").to_string();
+        for bad in ["abc", &full[..63], &format!("{full}0"), &"z".repeat(64)] {
+            let (status, _, body) = get_blob(router.clone(), &format!("/blob/{bad}")).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+            assert_eq!(body, b"Invalid hash format", "{bad}");
+        }
     }
 
     fn header_str<'a>(headers: &'a axum::http::HeaderMap, name: &str) -> Option<&'a str> {
