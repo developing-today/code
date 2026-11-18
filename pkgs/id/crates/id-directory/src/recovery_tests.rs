@@ -249,6 +249,47 @@ fn a_passing_recovery_names_its_successor() {
 }
 
 #[test]
+fn recovery_rejects_a_successor_admin_key_already_in_the_pinned_fold() {
+    let head = owner_head();
+    let reused_key = OWNER;
+    let request = AnnexRecord::sign(
+        &key(reused_key),
+        head.head_hash.clone(),
+        AnnexEntry::RecoveryRequest {
+            identity_id: head.identity_id.clone(),
+            keyset_head_hash: head.head_hash.clone(),
+            successor_admin_key: public(reused_key),
+            successor_device_key: public(SUCCESSOR_DEVICE),
+            created_at: CREATED_AT,
+            reason: "lost every device".to_owned(),
+        },
+    )
+    .unwrap();
+    let approvals = [
+        approval(&head, &request, 11, 11),
+        approval(&head, &request, 12, 12),
+    ];
+    let mut approval_hashes: Vec<String> = approvals.iter().map(|a| a.hash.clone()).collect();
+    approval_hashes.sort();
+    let rotation = KeysetRecord::sign(
+        &key(reused_key),
+        head.records_folded + 10,
+        head.head_hash.clone(),
+        KeysetEntry::RecoveryRotation {
+            request_id: request.hash.clone(),
+            approval_hashes,
+            successor_admin_key: public(reused_key),
+            successor_device_key: public(SUCCESSOR_DEVICE),
+        },
+        None,
+    )
+    .unwrap();
+
+    let error = check(&head, &request, &approvals, &[], &rotation).unwrap_err();
+    assert!(error.to_string().contains("already present"), "{error:#}");
+}
+
+#[test]
 fn recovery_request_id_is_content_addressed_and_single_use() {
     let head = owner_head();
     let first = request(&head, "lost every device");

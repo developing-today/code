@@ -167,7 +167,8 @@ if all of the following hold, evaluated from the fold at that head
 and the annex:
 
 1. The request exists, is unconsumed, and its `successor_*` fields
-   equal the rotation's.
+   equal the rotation's; the successor admin key has never appeared
+   in the pinned fold's admin-key map (including revoked keys).
 2. `approval_hashes` resolve to approvals for this `request_id`
    from at least `threshold` **distinct** guardian identities in
    the guardian set folded at that head, each signed by an Active
