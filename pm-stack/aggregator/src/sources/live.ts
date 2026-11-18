@@ -27,7 +27,7 @@ import {
   type SectionDiagnosis,
 } from "../feed.ts";
 import type { RepoCensus } from "../coverage.ts";
-import { isSessionRecord, mergeRecords, recordFromSessionEntry } from "../registry.ts";
+import { isSessionRecord, mergeRecords, migrateRegistryProvenance, recordFromSessionEntry } from "../registry.ts";
 import type { NewStreamEvent } from "../events.ts";
 import type { FreshnessInput } from "../freshness.ts";
 import {
@@ -1448,13 +1448,17 @@ export function liveSource(
   // is the aggregator's own data (like comments.json); a failed write
   // never breaks the read.
   let registryStore: SessionRecord[] | null = null;
+  let registryNeedsPersist = false;
   let registryWriteChain: Promise<void> = Promise.resolve();
   let registryWriteSeq = 0;
   async function loadRegistryStore(): Promise<SessionRecord[]> {
     if (registryStore) return registryStore;
     try {
       const parsed: unknown = JSON.parse(await readFile(cfg.registryFile, "utf8"));
-      registryStore = Array.isArray(parsed) ? parsed.filter(isSessionRecord) : [];
+      const loaded = Array.isArray(parsed) ? parsed.filter(isSessionRecord) : [];
+      const migration = migrateRegistryProvenance(loaded);
+      registryStore = migration.records;
+      registryNeedsPersist = migration.changed;
     } catch {
       registryStore = [];
     }
@@ -1462,8 +1466,9 @@ export function liveSource(
   }
   async function mergeIntoRegistry(incoming: SessionRecord[]): Promise<SessionRecord[]> {
     const current = await loadRegistryStore();
-    const merged = mergeRecords(current, incoming);
-    const changed = merged.length !== current.length || merged.some((r, i) => r !== current[i]);
+    const preparedIncoming = migrateRegistryProvenance(incoming).records;
+    const merged = mergeRecords(current, preparedIncoming);
+    const changed = registryNeedsPersist || merged.length !== current.length || merged.some((r, i) => r !== current[i]);
     // #1739: the session registry merge is one of the event log's
     // writers — a session entering the registry is a session outcome
     // in the cross-stack stream. Fire-and-forget: the callback the
@@ -1500,6 +1505,7 @@ export function liveSource(
       registryWriteChain = write.catch(() => {});
       try {
         await write;
+        registryNeedsPersist = false;
       } catch {
         /* durability is best-effort; the in-memory merge still serves */
       }
@@ -2394,7 +2400,7 @@ export function liveSource(
         provenance.registry = `live (${merged.length} session records · ${incoming.length} from the latest feed · feed ${feed ? feedAgeText(feed.generatedAt) : "absent"})${droppedNote}`;
         return merged;
       }
-      const store = await loadRegistryStore();
+      const store = await mergeIntoRegistry([]);
       lastRegistryMergedCount = store.length;
       provenance.registry = `store only (no live registry source reachable)${droppedNote}`;
       return store;

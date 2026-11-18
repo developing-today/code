@@ -693,17 +693,21 @@ export function commentBadge(objectRef: string, counts?: Map<string, number | Co
   return ` <a class="badge" href="/discuss/${encodeURIComponent(objectRef)}" title="${esc(title)}">💬${n ? ` ${n}` : ""}${queued}</a>`;
 }
 
-export function authorBadge(a: DashAuthor): string {
+export function authorBadge(a: DashAuthor, linkedIdentity?: { source: string; id: string }): string {
   const cls = a.kind === "drew" ? "drew" : a.kind === "muse" ? "Muse" : "agent";
   const link = a.sessionId
     ? ` <a href="/sessions?id=${encodeURIComponent(a.sessionId)}#${encodeURIComponent(a.sessionId)}" class="muted">session</a>`
     : "";
-  return `<span class="badge ${cls}">${esc(a.label)}</span>${link}`;
+  const linked = linkedIdentity
+    ? ` <a href="/sessions?id=${encodeURIComponent(linkedIdentity.id)}#${encodeURIComponent(linkedIdentity.id)}" class="muted" title="Owner-confirmed display link">linked identity</a>`
+    : "";
+  return `<span class="badge ${cls}">${esc(a.label)}</span>${link}${linked}`;
 }
 
 export function dashCommentHtml(c: DashComment, showObject = false): string {
-  const verificationChip =
-    c.authorVerified === true ? `<span class="badge">verified</span>` : `<span class="badge">unverified</span>`;
+  const verificationChip = c.provenance === "verified"
+    ? `<span class="badge">verified identity</span>`
+    : `<span class="badge">asserted-legacy — author is a claim</span>`;
   const kindChip =
     c.kind === "message"
       ? `<span class="badge msg">✉ message to Muse</span> <span class="muted">${c.triageState === "triaged" ? "triaged by the orchestrator" : "awaiting triage"}</span>`
@@ -717,7 +721,7 @@ export function dashCommentHtml(c: DashComment, showObject = false): string {
           }</span>`
         : `<span class="badge">note</span>`;
   const obj = showObject ? ` <span class="muted">on <code>${esc(c.objectRef)}</code></span>` : "";
-  return `<div class="cmt ${esc(c.kind)}">${authorBadge(c.author)} ${verificationChip} ${kindChip}${obj}<br>${esc(c.body)}<br><span class="muted">${fmtDate(c.createdAt)}</span></div>`;
+  return `<div class="cmt ${esc(c.kind)}">${authorBadge(c.author, c.linkedIdentity)} ${verificationChip} ${kindChip}${obj}<br>${esc(c.body)}<br><span class="muted">${fmtDate(c.createdAt)}</span></div>`;
 }
 
 export interface CommentFormOpts {
@@ -2213,7 +2217,10 @@ export function sessionRecordLine(
   const badges = actionBadgesHtml(act?.actions);
   const controls =
     act?.identities && sessionRecordIsLive(r) ? sessionActionsHtml(r.id, r.source, { identities: act.identities }) : "";
-  return `<div class="card session-record-line" id="${esc(r.id)}"><strong>${esc(r.label)}</strong> <span class="badge src">${esc(r.source)}</span> <span class="badge agent">${esc(r.agentLabel)}</span>${badges}<br><span class="muted session-record-meta">${esc(r.id)} · ${esc(r.status)}${r.model ? ` · ${esc(r.model)}` : ""} · started ${fmtDate(r.startedAt)} · last seen ${fmtDate(r.lastSeenAt)}${tokens}${parent}${refs}</span>${controls}</div>`;
+  const provenance = r.provenance === "verified"
+    ? `<span class="badge">verified identity</span>`
+    : `<span class="badge">asserted-legacy — identity is a claim</span>`;
+  return `<div class="card session-record-line" id="${esc(r.id)}"><strong>${esc(r.label)}</strong> <span class="badge src">${esc(r.source)}</span> <span class="badge agent">${esc(r.agentLabel)}</span> ${provenance}${badges}<br><span class="muted session-record-meta">${esc(r.id)} · ${esc(r.status)}${r.model ? ` · ${esc(r.model)}` : ""} · started ${fmtDate(r.startedAt)} · last seen ${fmtDate(r.lastSeenAt)}${tokens}${parent}${refs}</span>${controls}</div>`;
 }
 
 // --- Quota view (#851) + Usage & billing hub (design 2026-10-25) -----------
