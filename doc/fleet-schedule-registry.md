@@ -19,6 +19,8 @@ specified in the #2020 Jules investigation).
   Jules account (pilot #2265).
 - **Surface 5 — Mac launchd jobs:** timed launchd daemons and agents
   defined in `dezren39/darwin-nix` and deployed to the Mac (#11805).
+- **Surface 6 — PM-stack process intervals:** timers inside the
+  PM-stack aggregator process, live only while it runs (#9988).
 
 **This registry is an input to the placement audit** proposed in the
 #2024 framework doc
@@ -342,16 +344,6 @@ review, not silently normalised.
 | `bws-freshness` (`.github/workflows/bws-freshness.yml`)                 | developing-today/code | `23 6 * * *` (daily 06:23 UTC) + `workflow_dispatch`    | enabled (fixture tests); live check gated off pending a secure credentialed runner (`BWS_FRESHNESS_ENABLED`)                                       | issue #5451   | `.github/workflows/bws-freshness.yml`; check implementation `lib/bws-to-sops.sh --check` | not recorded | Disable the schedule if the fixture tests fail on main repeatedly or the drift-issue automation misfires | 2026-11-05 | 2026-11-05  |
 | `dispatch-health-probe` (`.github/workflows/dispatch-health-probe.yml`) | developing-today/code | `*/30 * * * *` (every 30 min UTC) + `workflow_dispatch` | enabled; outside probe of dispatch.security.cab — opens/updates one `meta/dispatch-probe` alert issue on failure, comments + closes it on recovery | issue #6992   | `.github/workflows/dispatch-health-probe.yml`                                            | not recorded | Disable the schedule if the probe misfires (repeated false alerts) or dispatch.security.cab is retired   | 2026-11-11 | 2026-11-11  |
 
-## Surface 5 — PM-stack process intervals
-
-Recurring loops owned by the PM-stack aggregator process. These are not
-external scheduler surfaces; this inventory records timers that run only
-while the service is alive.
-
-| name/id | repo/scope | cadence | state | owner / scope | prompt/brief pointer | budget | kill criteria | created | last review |
-| ------- | ---------- | ------- | ----- | ------------- | -------------------- | ------ | ------------- | ------- | ----------- |
-| SLO journal sampler (#9988) | developing-today/code | every 60 seconds | live aggregator process only | issue #9988 | `pm-stack/aggregator/src/server.ts` (`SLO_SAMPLE_INTERVAL_MS`) | not recorded | Remove/disable if the health view or append-only journal becomes unavailable; sampler is unref'd and does not keep the process alive | 2026-11-18 | 2026-11-18 |
-
 ## Surface 5 — Mac launchd jobs (3 entries)
 
 Timed launchd jobs from `dezren39/darwin-nix`, deployed to the Mac by
@@ -371,3 +363,13 @@ list, which its own comment says is empty unless root-owned repos are
 registered. The primary user's repos are maintained by git's own
 per-user launchd agents, which `git maintenance start` installs outside
 Nix; they are not recorded here until a review reads them on the Mac.
+
+## Surface 6 — PM-stack process intervals (1 entry)
+
+Recurring loops owned by the PM-stack aggregator process. These are not
+external scheduler surfaces; this inventory records timers that run only
+while the service is alive.
+
+| name/id | repo/scope | cadence | state | owner / scope | prompt/brief pointer | budget | kill criteria | created | last review |
+| ------- | ---------- | ------- | ----- | ------------- | -------------------- | ------ | ------------- | ------- | ----------- |
+| SLO journal sampler (#9988) | developing-today/code | every 60 seconds | live aggregator process only | issue #9988 | `pm-stack/aggregator/src/server.ts` (`SLO_SAMPLE_INTERVAL_MS`) | not recorded | Remove/disable if the health view or append-only journal becomes unavailable; sampler is unref'd and does not keep the process alive | 2026-11-18 | 2026-11-18 |
