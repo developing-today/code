@@ -100,6 +100,7 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor": "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":       "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":             "TestEventsHistoryBoundsTheReplay",
+	"presets":                    "TestPresetsDefinesNamedFlagBundles",
 	"catalog.budget":             "TestCatalogBudgetFitsTheSignatures",
 	"catalog.bias":               "TestCatalogBiasPicksWhatATightBudgetShows",
 	"catalog.pinnedTools":        "TestCatalogPinnedToolsAlwaysListInReactiveMode",
@@ -192,6 +193,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":        TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                 TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                          TestEventsHistoryBoundsTheReplay,
+	"TestPresetsDefinesNamedFlagBundles":                                        TestPresetsDefinesNamedFlagBundles,
 	"TestCatalogBudgetFitsTheSignatures":                                        TestCatalogBudgetFitsTheSignatures,
 	"TestCatalogBiasPicksWhatATightBudgetShows":                                 TestCatalogBiasPicksWhatATightBudgetShows,
 	"TestCatalogPinnedToolsAlwaysListInReactiveMode":                            TestCatalogPinnedToolsAlwaysListInReactiveMode,
@@ -1635,6 +1637,22 @@ func TestCatalogBiasPicksWhatATightBudgetShows(t *testing.T) {
 	e.setenv("MCPX_CATALOG_BIAS=wipe")
 	if out := e.run("catalog"); !strings.Contains(out, "demo.wipe(") {
 		t.Errorf("catalog.bias=wipe should show demo.wipe within the same budget:\n%s", out)
+	}
+}
+
+// TestPresetsDefinesNamedFlagBundles is the effect probe for presets: with
+// nothing defined, --preset j is refused as unknown; once the environment
+// defines j as ["--json"], the same command applies it and prints JSON.
+func TestPresetsDefinesNamedFlagBundles(t *testing.T) {
+	e := newEnv(t, oneServer)
+	out, err := e.try("status", "--preset", "j")
+	if err == nil || !strings.Contains(out, `no preset "j"`) {
+		t.Errorf("with no presets defined, --preset j should be refused (err %v):\n%s", err, out)
+	}
+	e.setenv(`MCPX_PRESETS={"j":["--json"]}`)
+	out, err = e.try("status", "--preset", "j")
+	if err != nil || !json.Valid([]byte(strings.TrimSpace(out))) {
+		t.Errorf("presets defining j as --json should make status print JSON (err %v):\n%s", err, out)
 	}
 }
 
