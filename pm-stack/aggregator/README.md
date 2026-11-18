@@ -184,6 +184,14 @@ agent identity from the registry — and the API refuses authorless comments.
 Privileged Drew/Muse authorship is verified by the operator token; every
 stored comment exposes `authorVerified`. A self-asserted author is not
 proof that the named person wrote the comment.
+Every new comment also carries `provenance` (#1253 split 4, #9606):
+`verified` when Cloudflare Access is configured and the author was
+derived from the validated Access JWT (the body's `author` is then
+ignored, and a body claiming Drew from a non-owner is refused), and
+`asserted-legacy` when the author is the caller's own claim (Access not
+configured). Records written before the marker existed have no
+`provenance` field and are read as `asserted-legacy`; they are never
+rewritten to look verified.
 Two kinds, visually distinct everywhere they render:
 
 - **note** — plain context; read by whoever picks the item up next.

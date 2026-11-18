@@ -1246,6 +1246,9 @@ export interface DashAuthor {
   sessionId?: string;
 }
 
+/** How a comment's author was established (#1253 §5). */
+export type CommentProvenance = "verified" | "asserted-legacy";
+
 export interface DashComment {
   id: string;
   /** The object ref the thread hangs on (see above). */
@@ -1254,6 +1257,14 @@ export interface DashComment {
   author: DashAuthor;
   /** True only when a privileged Drew/Muse author supplied the configured operator token. */
   authorVerified?: boolean;
+  /**
+   * Where the author came from (#1253 split 4, #9606): "verified" when
+   * the server derived it from a validated Cloudflare Access identity,
+   * "asserted-legacy" when it is the caller's own claim (Access not
+   * configured, or a record written before provenance existed). Absent
+   * on old records; read it through commentProvenance().
+   */
+  provenance?: CommentProvenance;
   body: string;
   createdAt: string;
   /** kind "message": the orchestrator's triage state. */

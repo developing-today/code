@@ -67,7 +67,8 @@ describe("config-gated Access author derivation (#1253)", () => {
       {},
       fakeFetch(),
     );
-    expect(result).toEqual({ ok: true, author: assertedAgent });
+    // #9606: the passed-through claim is never reported as verified.
+    expect(result).toEqual({ ok: true, author: assertedAgent, verified: false });
   });
 
   test("valid JWT verifies against team JWKS and derives non-owner identity", async () => {
@@ -94,7 +95,7 @@ describe("config-gated Access author derivation (#1253)", () => {
       accessEnv(),
       fakeFetch(),
     );
-    expect(result).toEqual({ ok: true, author: { kind: "drew", id: "drew", label: "Drew" } });
+    expect(result).toEqual({ ok: true, author: { kind: "drew", id: "drew", label: "Drew" }, verified: true });
   });
 
   test("asserted drew by a non-owner is forbidden", () => {
@@ -217,7 +218,7 @@ describe("config-gated Access author derivation (#1253)", () => {
     for (let index = 0; index < 100; index += 1) {
       const result = await enforce(index % 2 === 0 ? assertedAgent : assertedDrew);
       if (index % 2 === 0) {
-        expect(result).toMatchObject({ ok: true, author: { kind: "agent", id: NON_OWNER_SUB } });
+        expect(result).toMatchObject({ ok: true, author: { kind: "agent", id: NON_OWNER_SUB }, verified: true });
       } else {
         expect(result).toMatchObject({ ok: false, status: 403 });
       }
