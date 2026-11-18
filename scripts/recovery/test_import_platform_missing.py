@@ -7,6 +7,7 @@ class C:
 class Tests(unittest.TestCase):
  def setUp(self):
   self.c=C();self.t='agent_quota_records';self.x={'columns':['source','id','ts'],'keys':['source','id','ts'],'temporal_keys':['ts'],'rows':[['a','b','2026-11-01T00:00:00Z']],'schema':self.c.execute('SELECT type,name,tbl_name,sql FROM sqlite_master WHERE tbl_name=? ORDER BY type,name',[self.t]),'initial_count':0}
+ def tearDown(self):self.c.db.close()
  def test_missing(self):validate({self.t:self.x});preflight(self.c,{self.t:self.x})
  def test_temporal_collision(self):
   self.c.db.execute("INSERT INTO agent_quota_records VALUES ('a','b','2026-11-01 00:00:00+00')")
