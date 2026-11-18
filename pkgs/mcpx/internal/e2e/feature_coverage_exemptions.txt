@@ -50,11 +50,6 @@ setting	script.importsNetwork	no integration-test exercise yet; burn-down #8474 
 setting	script.importsOnDynamic	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
 setting	script.importsOnMissing	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
 setting	script.launcher	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
-setting	script.permissions	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
-setting	script.profiles	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
-setting	script.runtime	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
-setting	script.runtimeOrder	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
-setting	script.runtimes	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
 setting	proto.elicitationPerMinute	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
 setting	proto.samplingPerMinute	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
 setting	proto.samplingSessionPerMinute	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
