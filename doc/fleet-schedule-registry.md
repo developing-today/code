@@ -332,3 +332,13 @@ review, not silently normalised.
 | ----------------------------------------------------------------------- | --------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- | ---------------------------------------------------------------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------- | ---------- | ----------- |
 | `bws-freshness` (`.github/workflows/bws-freshness.yml`)                 | developing-today/code | `23 6 * * *` (daily 06:23 UTC) + `workflow_dispatch`    | enabled (fixture tests); live check gated off pending a secure credentialed runner (`BWS_FRESHNESS_ENABLED`)                                       | issue #5451   | `.github/workflows/bws-freshness.yml`; check implementation `lib/bws-to-sops.sh --check` | not recorded | Disable the schedule if the fixture tests fail on main repeatedly or the drift-issue automation misfires | 2026-11-05 | 2026-11-05  |
 | `dispatch-health-probe` (`.github/workflows/dispatch-health-probe.yml`) | developing-today/code | `*/30 * * * *` (every 30 min UTC) + `workflow_dispatch` | enabled; outside probe of dispatch.security.cab — opens/updates one `meta/dispatch-probe` alert issue on failure, comments + closes it on recovery | issue #6992   | `.github/workflows/dispatch-health-probe.yml`                                            | not recorded | Disable the schedule if the probe misfires (repeated false alerts) or dispatch.security.cab is retired   | 2026-11-11 | 2026-11-11  |
+
+## Surface 5 — PM-stack process intervals
+
+Recurring loops owned by the PM-stack aggregator process. These are not
+external scheduler surfaces; this inventory records timers that run only
+while the service is alive.
+
+| name/id | repo/scope | cadence | state | owner / scope | prompt/brief pointer | budget | kill criteria | created | last review |
+| ------- | ---------- | ------- | ----- | ------------- | -------------------- | ------ | ------------- | ------- | ----------- |
+| SLO journal sampler (#9988) | developing-today/code | every 60 seconds | live aggregator process only | issue #9988 | `pm-stack/aggregator/src/server.ts` (`SLO_SAMPLE_INTERVAL_MS`) | not recorded | Remove/disable if the health view or append-only journal becomes unavailable; sampler is unref'd and does not keep the process alive | 2026-11-18 | 2026-11-18 |

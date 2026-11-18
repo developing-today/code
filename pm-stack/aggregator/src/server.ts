@@ -229,6 +229,9 @@ import { dispatchStateFor, fetchRfaState, RFA_NOT_PICKED_UP } from "./sources/re
 import { TodayCache, TODAY_CACHE_TTL_MS } from "./today-cache.ts";
 import { boardJsonBody, boardJsonViewBody } from "./board-json.ts";
 import { ItemHistoryStore } from "./item-history.ts";
+import { SloJournal, groupSamplesByFacet } from "./slo-journal.ts";
+import { sampleSloFacets } from "./slo-sampler.ts";
+import { SLO_DEFINITIONS, summarizeSloFacet, type SloFacetSummary } from "./slo.ts";
 import { computeFlowAnalytics } from "./flow-analytics.ts";
 import {
   FORECAST_CONTRACT_VERSION,
@@ -255,6 +258,8 @@ const commentsStore = new CommentsStore(cfg.commentsFile);
 const roadmapAnnotationsStore = new RoadmapAnnotationsStore(cfg.roadmapAnnotationsFile);
 const coverageStore = new CoverageSnapshotStore(cfg.coverageSnapshotFile);
 const itemHistoryStore = new ItemHistoryStore(cfg.itemHistoryFile);
+const sloJournal = new SloJournal(cfg.sloJournalFile);
+let sloSummaryCache: { at: number; value: SloFacetSummary[] } | null = null;
 const spendRollupStore = new SpendRollupStore(cfg.snapshotsDir);
 /** #4824: the Projects/Roadmap spend-beside-progress view over the
  * #4823 rollup store. A failed read renders no spend block (the
@@ -580,7 +585,21 @@ async function healthContext(prime = true): Promise<HealthView> {
     comments: await commentsStore.pendingCounts().catch(() => undefined),
     conflicts: await assembleConflicts().catch(() => null),
     pushHealth: cfg.source === "fixtures" ? null : freshnessReconciler.health(new Date()),
+    slo: cfg.source === "fixtures" ? null : await sloSummaries(),
   });
+}
+
+// SLO error budgets (#9988): summaries are read from the append-only journal
+// and cached for a minute, the same cadence the sampler writes at.
+const SLO_SUMMARY_CACHE_MS = 60_000;
+async function sloSummaries(nowMs = Date.now()): Promise<SloFacetSummary[]> {
+  if (sloSummaryCache && nowMs - sloSummaryCache.at < SLO_SUMMARY_CACHE_MS) return sloSummaryCache.value;
+  const byFacet = groupSamplesByFacet(await sloJournal.readAll().catch(() => []));
+  const value = SLO_DEFINITIONS.map((definition) =>
+    summarizeSloFacet(definition, byFacet.get(definition.id) ?? [], nowMs),
+  );
+  sloSummaryCache = { at: nowMs, value };
+  return value;
 }
 
 /** The identities half of the comment form options, behind a
@@ -4453,6 +4472,30 @@ if (githubHotListConsumer) {
       `[activity] WARNING: could not persist unconfigured GitHub source status: ${error instanceof Error ? error.message : String(error)}`,
     );
   });
+}
+
+// SLO sampler (#9988): one sample per facet per minute, appended to the
+// journal from the same health view /health renders. Live mode only.
+const SLO_SAMPLE_INTERVAL_MS = 60_000;
+if (cfg.source !== "fixtures") {
+  let sloSampling = false;
+  const sampleSlo = async (): Promise<void> => {
+    if (sloSampling) return;
+    sloSampling = true;
+    try {
+      const view = await healthContext(false);
+      await sloJournal.append(sampleSloFacets(view, Date.now()));
+    } catch (error) {
+      console.error(
+        `[slo] WARNING: SLO sample failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      sloSampling = false;
+    }
+  };
+  void sampleSlo();
+  const timer = setInterval(() => void sampleSlo(), SLO_SAMPLE_INTERVAL_MS);
+  timer.unref?.();
 }
 
 // The alert throat's engine (#3676): the ~60s delivery/escalation
