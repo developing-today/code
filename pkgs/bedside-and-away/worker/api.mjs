@@ -4,11 +4,12 @@ import {transitionSteering,assertSteeringUnchanged} from './steering.mjs';
 import {validateVariantGraph,assertVariantMetadataUnchanged} from './variant-graph.mjs';
 import {variantPlan} from './variant-plan.mjs';
 import {principalFromGateway,continuityId} from './identity.mjs';
+import {name,isComment} from './text.mjs';
 const roles = ['reader','editor','admin'];
 const headers = {'content-type':'application/json; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff'};
 const json = (body,status=200)=>new Response(JSON.stringify(body),{status,headers});
 const fail = (status,message)=>{throw Object.assign(new Error(message),{status})};
-const clean = (x,max=200)=>String(x??'').normalize('NFC').replace(/[\p{Cc}\p{Cf}]/gu,'').trim().slice(0,max);
+const clean = (x,max=200)=>name(x,max);
 const ident = x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(x);
 const parse = x=>JSON.parse(x);
 const now = ()=>new Date().toISOString();
@@ -39,6 +40,7 @@ function validateNewRecords(before,after,user,name){
  for(const field of ['notes','inventory']){
   const previous=new Map(before[field].filter(x=>x?.id!=null).map(x=>[x.id,x]));
   for(const row of after[field]){const prior=previous.get(row?.id);if(prior)for(const f of provenance){if(Object.hasOwn(prior,f))row[f]=prior[f];else delete row[f]}}
+  if(field==='notes')for(const row of after[field])if(typeof row?.text==='string'&&row.text!==previous.get(row.id)?.text&&!isComment(row.text,100000))fail(400,'Comment holds an unpaired surrogate or a control character');
   for(const row of after[field])if(!previous.has(row.id)){
    if(!ident(row.id)&&!(typeof row.id==='string'&&/^receipt:[A-Za-z0-9_:-]{1,190}$/.test(row.id)))fail(400,'Record ID required');
    row.actorId=user.id;row.author=name;row.recordedAt=now();if('device' in row)row.device=continuityId(row.device);
