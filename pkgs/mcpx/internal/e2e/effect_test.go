@@ -101,6 +101,9 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"prompt.autonomy":                    "TestPromptAutonomyRunsTheMatchedRecipeFromTheEnvironment",
+	"hooks.autonomy":                     "TestHooksAutonomySkipsAConfiguredHookFromTheEnvironment",
+	"repair.autonomy":                    "TestRepairAutonomyOffDropsTheDiagnosticsFromTheEnvironment",
 	"policy.write":                       "TestPolicyWriteDeniesAnUnannotatedCallFromTheEnvironment",
 	"elicit.confirmDestructive":          "TestElicitConfirmDestructiveGatesADestructiveCallFromTheEnvironment",
 	"autonomy.max":                       "TestAutonomyMaxClampsARecipeRunFromTheEnvironment",
@@ -259,6 +262,9 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestPromptAutonomyRunsTheMatchedRecipeFromTheEnvironment":                       TestPromptAutonomyRunsTheMatchedRecipeFromTheEnvironment,
+	"TestHooksAutonomySkipsAConfiguredHookFromTheEnvironment":                        TestHooksAutonomySkipsAConfiguredHookFromTheEnvironment,
+	"TestRepairAutonomyOffDropsTheDiagnosticsFromTheEnvironment":                     TestRepairAutonomyOffDropsTheDiagnosticsFromTheEnvironment,
 	"TestPolicyWriteDeniesAnUnannotatedCallFromTheEnvironment":                       TestPolicyWriteDeniesAnUnannotatedCallFromTheEnvironment,
 	"TestElicitConfirmDestructiveGatesADestructiveCallFromTheEnvironment":            TestElicitConfirmDestructiveGatesADestructiveCallFromTheEnvironment,
 	"TestAutonomyMaxClampsARecipeRunFromTheEnvironment":                              TestAutonomyMaxClampsARecipeRunFromTheEnvironment,
@@ -3094,6 +3100,93 @@ func TestAutonomyMaxClampsARecipeRunFromTheEnvironment(t *testing.T) {
 	}
 	if !strings.Contains(out, "clamped to propose by autonomy.max") {
 		t.Fatalf("the CLI should say the request was lowered, got:\n%s", out)
+	}
+}
+
+// TestPromptAutonomyRunsTheMatchedRecipeFromTheEnvironment is the effect
+// probe for prompt.autonomy. A prompt that matches a recipe leaving a
+// file behind proposes the script by default (propose): the source comes
+// back and nothing runs. With prompt.autonomy=run the same prompt runs
+// the recipe and the file appears.
+func TestPromptAutonomyRunsTheMatchedRecipeFromTheEnvironment(t *testing.T) {
+	prompt := func(extra ...string) (string, bool) {
+		e := newEnv(t, oneServer)
+		writeRecipe(t, e, "mark", markRecipe)
+		e.setenv(extra...)
+		mark := filepath.Join(e.dir, "mark.out")
+		out := e.run("prompt", "--set", "path="+mark, "leave a mark on the filesystem")
+		_, err := os.Stat(mark)
+		return out, err == nil
+	}
+	out, marked := prompt()
+	if marked || !strings.Contains(out, "writeFileSync") {
+		t.Fatalf("oracle: by default the prompt should propose the recipe's source without running it (marked %v):\n%s", marked, out)
+	}
+	if out, marked := prompt("MCPX_PROMPT_AUTONOMY=run"); !marked || !strings.Contains(out, "marked") {
+		t.Fatalf("with prompt.autonomy=run the recipe should run and leave its mark (marked %v):\n%s", marked, out)
+	}
+}
+
+// TestHooksAutonomySkipsAConfiguredHookFromTheEnvironment is the effect
+// probe for hooks.autonomy. A hook from the environment is code the
+// command did not send. At the default (run) it runs after the body;
+// with hooks.autonomy=propose it is skipped and stderr says so.
+func TestHooksAutonomySkipsAConfiguredHookFromTheEnvironment(t *testing.T) {
+	hook := `MCPX_SCRIPT_ON_SUCCESS=console.log("configured-hook")`
+	def := newEnv(t, oneServer)
+	def.setenv(hook)
+	if out := def.run("exec", `console.log("body")`); !strings.Contains(out, "configured-hook") {
+		t.Fatalf("oracle: at the default hooks.autonomy the configured hook should run:\n%s", out)
+	}
+	e := newEnv(t, oneServer)
+	e.setenv(hook, "MCPX_HOOKS_AUTONOMY=propose")
+	out, errOut, err := e.split("exec", `console.log("body")`)
+	if err != nil {
+		t.Fatalf("%v\n%s\n%s", err, out, errOut)
+	}
+	if strings.Contains(out, "configured-hook") || !strings.Contains(out, "body") {
+		t.Fatalf("with hooks.autonomy=propose the body should run and the hook should not:\n%s", out)
+	}
+	if !strings.Contains(errOut, "hooks.autonomy is propose; not running the configured onSuccess hook") {
+		t.Fatalf("stderr should say the hook was skipped:\n%s", errOut)
+	}
+}
+
+// TestRepairAutonomyOffDropsTheDiagnosticsFromTheEnvironment is the
+// effect probe for repair.autonomy. A server's schema gains a required
+// argument, and a call made to the old shape is refused. At the default
+// (advise) the refusal carries a diagnostic naming the missing argument;
+// with repair.autonomy=off only the validator's own error comes back.
+func TestRepairAutonomyOffDropsTheDiagnosticsFromTheEnvironment(t *testing.T) {
+	refused := func(extra ...string) callErrorDoc {
+		schema := filepath.Join(t.TempDir(), "schema")
+		mustWrite(t, schema, "v1")
+		e := newEnv(t, strings.ReplaceAll(schemaServer, "VERSIONFILE", schema))
+		e.setenv(extra...)
+		e.run("refresh")
+		mustWrite(t, schema, "v2")
+		e.run("refresh")
+		resp, err := e.socketClient(t).Post("http://mcpx/v1/call", "application/json",
+			strings.NewReader(`{"server":"demo","tool":"create_issue","args":{"title":"x"}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		var got callErrorDoc
+		if err := json.Unmarshal(b, &got); err != nil || resp.StatusCode != http.StatusBadGateway {
+			t.Fatalf("the old-shape call should be refused with 502: status %d: %v\n%s", resp.StatusCode, err, b)
+		}
+		if !strings.HasPrefix(got.Error, "Invalid params") {
+			t.Fatalf("the refusal's own error should come back:\n%s", b)
+		}
+		return got
+	}
+	if got := refused(); len(got.Diagnostics) == 0 {
+		t.Fatalf("oracle: at the default repair.autonomy the refusal should carry diagnostics: %+v", got)
+	}
+	if got := refused("MCPX_REPAIR_AUTONOMY=off"); len(got.Diagnostics) != 0 {
+		t.Fatalf("with repair.autonomy=off no diagnostics should be attached: %+v", got)
 	}
 }
 
