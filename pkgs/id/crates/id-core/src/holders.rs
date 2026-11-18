@@ -282,7 +282,13 @@ mod tests {
     fn world_scoping() {
         let t = ProviderTable::new();
         let n = node(2);
-        t.record(Some("w1".into()), h(1), n, HeldRanges::Complete, Instant::now());
+        t.record(
+            Some("w1".into()),
+            h(1),
+            n,
+            HeldRanges::Complete,
+            Instant::now(),
+        );
         // different world bucket -> not found
         assert!(t.holders(Some("w2"), &h(1)).is_empty());
         assert_eq!(t.holders(Some("w1"), &h(1)).len(), 1);
@@ -329,7 +335,13 @@ mod tests {
         let now = Instant::now();
         t.record(None, h(3), a, HeldRanges::Complete, now);
         // b recorded slightly later
-        t.record(None, h(3), b, HeldRanges::Complete, now + Duration::from_secs(1));
+        t.record(
+            None,
+            h(3),
+            b,
+            HeldRanges::Complete,
+            now + Duration::from_secs(1),
+        );
         let hs = t.holders(None, &h(3));
         assert_eq!(hs[0].endpoint, b);
     }

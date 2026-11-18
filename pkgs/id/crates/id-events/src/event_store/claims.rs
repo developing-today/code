@@ -484,7 +484,7 @@ fn default_view_events(
 mod tests {
     use super::*;
     use id_core::waiting::WaitingLimits;
-    use id_store::chain::{sign, ChainExt, Event};
+    use id_store::chain::{ChainExt, Event, sign};
     use id_store::tag_claims::{CLEAR_KIND, SET_KIND};
     use p2panda_core::SigningKey;
 

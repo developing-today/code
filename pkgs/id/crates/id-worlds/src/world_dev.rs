@@ -3219,9 +3219,7 @@ mod watch_tests {
         // Cold start: discovery + first compile + session launch.
         let cold_start = Instant::now();
         let sources = discover_sources(&app_dir).unwrap();
-        let (module, _, _) = compile_sources(&sources, None, None, seed)
-            .await
-            .unwrap();
+        let (module, _, _) = compile_sources(&sources, None, None, seed).await.unwrap();
         let mut session = DevSession::launch(&module, seed, sources.snapshot_id())
             .await
             .unwrap();
@@ -3282,12 +3280,15 @@ mod watch_tests {
                 .expect("an edit must rescan as a change");
             let candidate_snapshot = changed.snapshot_id();
             let compile_start = Instant::now();
-            let (candidate, _, _) = compile_sources(&changed, None, None, seed)
-                .await
-                .unwrap();
+            let (candidate, _, _) = compile_sources(&changed, None, None, seed).await.unwrap();
             let compile_ms = compile_start.elapsed().as_millis();
             let report = session
-                .promote(&candidate, &candidate_snapshot, &candidate_snapshot, &fixtures)
+                .promote(
+                    &candidate,
+                    &candidate_snapshot,
+                    &candidate_snapshot,
+                    &fixtures,
+                )
                 .await;
             assert_eq!(
                 report.outcome,

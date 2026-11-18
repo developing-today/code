@@ -8130,8 +8130,7 @@ mod tests {
 
     async fn lease_world() -> LeaseWorld {
         let clock = Arc::new(ManualClock::new(1_000));
-        let core =
-            WorldCore::new_with_clock("w", WorldLimits::default(), clock.clone()).unwrap();
+        let core = WorldCore::new_with_clock("w", WorldLimits::default(), clock.clone()).unwrap();
         let journal = TransferJournal(Arc::new(std::sync::Mutex::new(vec![lease_header()])));
         let program_updates = Arc::new(AtomicU64::new(0));
         let handle = WorldHandle::spawn_durable(
@@ -8178,15 +8177,17 @@ mod tests {
     #[tokio::test]
     async fn do_to_native_handoff_fences_the_do_executor_and_refuses_queued_commands() {
         let w = lease_world().await;
-        w.handle.input(w.token.clone(), b"0".to_vec()).await.unwrap();
+        w.handle
+            .input(w.token.clone(), b"0".to_vec())
+            .await
+            .unwrap();
         assert_eq!(committed_inputs(&w.journal), 1);
         assert_eq!(w.program_updates.load(Ordering::SeqCst), 1);
 
         // The handoff is queued ahead of two in-flight commands: they were
         // received by the DO executor but not journaled before the boundary.
         let (handoff, first, second) = tokio::join!(
-            w.handle
-                .handoff_write_lease("native-1", 1, Some(31_000)),
+            w.handle.handoff_write_lease("native-1", 1, Some(31_000)),
             w.handle.input(w.token.clone(), b"0".to_vec()),
             w.handle.chat(w.token.clone(), "late"),
         );
@@ -8234,7 +8235,10 @@ mod tests {
     #[tokio::test]
     async fn native_to_do_handback_preserves_committed_prefix_and_refuses_uncommitted_retry() {
         let w = lease_world().await;
-        w.handle.input(w.token.clone(), b"0".to_vec()).await.unwrap();
+        w.handle
+            .input(w.token.clone(), b"0".to_vec())
+            .await
+            .unwrap();
         w.handle
             .handoff_write_lease("native-1", 1, Some(31_000))
             .await
@@ -8256,17 +8260,24 @@ mod tests {
             2
         );
         // The client retries the refused command; it commits exactly once.
-        w.handle.input(w.token.clone(), b"0".to_vec()).await.unwrap();
+        w.handle
+            .input(w.token.clone(), b"0".to_vec())
+            .await
+            .unwrap();
         assert_eq!(committed_inputs(&w.journal), 2);
 
         // The journal alone rebuilds DO-held epoch 2: replay is the oracle.
-        let restored = WorldCore::restore("w", WorldLimits::default(), w.journal.entries()).unwrap();
+        let restored =
+            WorldCore::restore("w", WorldLimits::default(), w.journal.entries()).unwrap();
         let lease = restored.core.write_lease();
         assert_eq!(lease.holder.as_deref(), Some(DO_WRITE_LEASE_HOLDER));
         assert_eq!(lease.epoch, 2);
         assert_eq!(
             lease.transitions().map(|t| t.kind).collect::<Vec<_>>(),
-            [LeaseTransitionKind::HandedOff, LeaseTransitionKind::HandedOff]
+            [
+                LeaseTransitionKind::HandedOff,
+                LeaseTransitionKind::HandedOff
+            ]
         );
     }
 
@@ -8290,11 +8301,12 @@ mod tests {
         // Expiry does not grant the DO ownership. Normal expiry recovery
         // (journaled revoke then grant) is a separate slice; a handoff cannot
         // silently turn an expired term into a live one.
-        assert!(w
-            .handle
-            .handoff_write_lease(DO_WRITE_LEASE_HOLDER, 2, None)
-            .await
-            .is_err());
+        assert!(
+            w.handle
+                .handoff_write_lease(DO_WRITE_LEASE_HOLDER, 2, None)
+                .await
+                .is_err()
+        );
         let refused_again = w.handle.input(w.token.clone(), b"0".to_vec()).await;
         assert!(refused_again.is_err());
         assert_eq!(committed_inputs(&w.journal), 0);
@@ -8351,11 +8363,8 @@ mod tests {
         }
         let clock = Arc::new(ManualClock::new(1_000));
         let core = WorldCore::new_with_clock("w", WorldLimits::default(), clock).unwrap();
-        let handle = WorldHandle::spawn_durable(
-            core,
-            Box::new(Mock::new()),
-            Some(Box::new(FailingJournal)),
-        );
+        let handle =
+            WorldHandle::spawn_durable(core, Box::new(Mock::new()), Some(Box::new(FailingJournal)));
         assert!(
             handle
                 .handoff_write_lease("native-1", 1, Some(31_000))
@@ -10941,7 +10950,6 @@ mod audit_tests {
         );
     }
 
-
     #[tokio::test]
     async fn retained_audit_log_replays_to_the_final_grants() {
         // F12.6 exit test (issue #1063), retained-log half: the admin
@@ -10971,9 +10979,7 @@ mod audit_tests {
         let records = world.audit_records();
         let admin_actions: Vec<(&str, &str)> = records
             .iter()
-            .filter(|record| {
-                matches!(record.action.as_str(), "UpdateCaps" | "SetCapsCeiling")
-            })
+            .filter(|record| matches!(record.action.as_str(), "UpdateCaps" | "SetCapsCeiling"))
             .map(|record| (record.action.as_str(), record.outcome.as_str()))
             .collect();
         assert_eq!(

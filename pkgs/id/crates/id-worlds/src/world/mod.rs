@@ -32,6 +32,7 @@ pub use crate::groups::worlds::Isolation;
 pub(crate) use crate::time::unix_ms;
 mod actor;
 mod admission_lease;
+pub(crate) mod audit;
 mod clock;
 mod coordinator;
 mod core;
@@ -39,7 +40,6 @@ mod handle;
 mod handoff_operations;
 pub mod hotness;
 mod journal;
-pub(crate) mod audit;
 mod metrics;
 mod replica;
 mod replication;
@@ -60,6 +60,7 @@ pub use admission_lease::{
     ADMISSION_LEASE_DOMAIN, ADMISSION_LEASE_VERSION, AdmissionLease, AdmissionLeaseError,
     MAX_ADMISSION_LEASE_DURATION_MS, ReplicaAdmissionGate, SignedAdmissionLease,
 };
+pub use audit::{GrantsState, WorldAuditLog, export_otlp_json, replay_grants};
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use coordinator::{
     ActiveHandoff, Coordinator, CoordinatorError, EntityInTransit, EntityOwner, ExportReceipt,
@@ -83,7 +84,6 @@ pub use journal::{
     JournalEntry, JournalSignedMove, JournalSnapshot, JournalSnapshotSource, MAX_JOURNAL_VERSION,
     TrustBasis, TrustDecision, WorldJournal, journal_version_required_by,
 };
-pub use audit::{GrantsState, WorldAuditLog, export_otlp_json, replay_grants};
 pub use metrics::{
     HistogramSnapshot, MetricsSnapshot, RegionWrites, WorldMetrics, WriteLocalitySnapshot,
 };
