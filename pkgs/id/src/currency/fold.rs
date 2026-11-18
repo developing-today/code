@@ -106,6 +106,9 @@ pub struct CurrencyFold {
     definitions: BTreeMap<Hash, (CurrencyId, CurrencyDefinition)>,
     balances: BTreeMap<(Hash, IssuerId), u128>,
     supply: BTreeMap<Hash, u128>,
+    issued: BTreeMap<Hash, u128>,
+    burned: BTreeMap<Hash, u128>,
+    frontier: BTreeMap<IssuerId, (u64, Hash)>,
     outcomes: BTreeMap<Hash, FoldOutcome>,
 }
 
@@ -129,6 +132,36 @@ impl CurrencyFold {
     #[must_use]
     pub fn supply(&self, currency: &Hash) -> u128 {
         self.supply.get(currency).copied().unwrap_or(0)
+    }
+
+    /// Total applied issuance of a currency (never reduced by burns).
+    #[must_use]
+    pub fn issued(&self, currency: &Hash) -> u128 {
+        self.issued.get(currency).copied().unwrap_or(0)
+    }
+
+    /// Total applied burns of a currency.
+    #[must_use]
+    pub fn burned(&self, currency: &Hash) -> u128 {
+        self.burned.get(currency).copied().unwrap_or(0)
+    }
+
+    /// Every holder of a currency with a non-zero balance, by key.
+    #[must_use]
+    pub fn holders(&self, currency: &Hash) -> Vec<(IssuerId, u128)> {
+        self.balances
+            .range((*currency, [0; 32])..=(*currency, [0xff; 32]))
+            .filter(|(_, balance)| **balance > 0)
+            .map(|((_, holder), balance)| (*holder, *balance))
+            .collect()
+    }
+
+    /// The decided frontier: for each author, the highest sequence number
+    /// and event id the fold reached a final verdict on. Pending events are
+    /// not covered. This is the "as of" a snapshot names.
+    #[must_use]
+    pub const fn frontier(&self) -> &BTreeMap<IssuerId, (u64, Hash)> {
+        &self.frontier
     }
 
     /// The fold's verdict for an event id, if the event was in the input.
@@ -205,6 +238,16 @@ pub fn fold_events(events: &[Event], bodies: &BTreeMap<Hash, Vec<u8>>) -> Curren
                 pending.insert(event.id);
             } else {
                 decided.insert(event.id);
+                let seq = u64::from(event.header.seq_num);
+                let head = fold
+                    .frontier
+                    .entry(signer(event))
+                    .or_insert((seq, event.id));
+                // On a fork (two events at one sequence number) the larger
+                // id is the head, so the frontier does not depend on order.
+                if (seq, event.id.as_bytes()) > (head.0, head.1.as_bytes()) {
+                    *head = (seq, event.id);
+                }
             }
         }
     }
@@ -278,6 +321,8 @@ fn apply_define(fold: &mut CurrencyFold, event: &Event, body: &[u8]) -> FoldOutc
     }
     fold.definitions.insert(compact, (id, definition));
     fold.supply.insert(compact, 0);
+    fold.issued.insert(compact, 0);
+    fold.burned.insert(compact, 0);
     FoldOutcome::Applied
 }
 
@@ -310,6 +355,9 @@ fn apply_issue(fold: &mut CurrencyFold, event: &Event, body: &[u8]) -> FoldOutco
     let supply = fold.supply(&issue.currency);
     match supply.checked_add(issue.amount) {
         Some(next) if next <= definition.supply.capped => {
+            let Some(issued) = fold.issued(&issue.currency).checked_add(issue.amount) else {
+                return FoldOutcome::Invalid(InvalidReason::Overflow);
+            };
             if fold
                 .credit(&issue.currency, &issue.to, issue.amount)
                 .is_err()
@@ -317,6 +365,7 @@ fn apply_issue(fold: &mut CurrencyFold, event: &Event, body: &[u8]) -> FoldOutco
                 return FoldOutcome::Invalid(InvalidReason::Overflow);
             }
             fold.supply.insert(issue.currency, next);
+            fold.issued.insert(issue.currency, issued);
             FoldOutcome::Applied
         }
         _ => FoldOutcome::Invalid(InvalidReason::OverCap),
@@ -366,6 +415,9 @@ fn apply_burn(fold: &mut CurrencyFold, event: &Event, body: &[u8]) -> FoldOutcom
     let supply = fold.supply(&burn.currency);
     fold.supply
         .insert(burn.currency, supply.saturating_sub(burn.amount));
+    // Burns never exceed what was issued, so this cannot saturate.
+    let burned = fold.burned(&burn.currency).saturating_add(burn.amount);
+    fold.burned.insert(burn.currency, burned);
     FoldOutcome::Applied
 }
 
