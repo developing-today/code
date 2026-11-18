@@ -30,6 +30,8 @@ zeroize = "1"
 blake3 = "1"
 cbor-core = { version = "=0.10.1", features = ["serde"] }
 futures-lite = "2"
+# IDNA host normalisation for id:// URLs (id_uri.rs, #10980).
+idna = "1"
 iroh = "1"
 iroh-base = "1"
 iroh-blobs = "0.103"
