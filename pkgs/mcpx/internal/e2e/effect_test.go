@@ -104,6 +104,7 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"prompt.runTimeout":                  "TestPromptRunTimeoutBoundsARecipeRun",
 	"daemon.roots":                       "TestDaemonRootsAnswersAnUpstreamRootsRequest",
 	"prompt.sampleTimeout":               "TestPromptSampleTimeoutBoundsASamplingQuestion",
 	"prompt.sample":                      "TestPromptSampleAskLetsAnUnmatchedPromptSeekAModel",
@@ -312,6 +313,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestPromptRunTimeoutBoundsARecipeRun":                                           TestPromptRunTimeoutBoundsARecipeRun,
 	"TestDaemonRootsAnswersAnUpstreamRootsRequest":                                   TestDaemonRootsAnswersAnUpstreamRootsRequest,
 	"TestPromptSampleTimeoutBoundsASamplingQuestion":                                 TestPromptSampleTimeoutBoundsASamplingQuestion,
 	"TestPromptSampleAskLetsAnUnmatchedPromptSeekAModel":                             TestPromptSampleAskLetsAnUnmatchedPromptSeekAModel,
@@ -4484,6 +4486,34 @@ func TestDaemonRootsAnswersAnUpstreamRootsRequest(t *testing.T) {
 	}
 	if out := call("MCPX_DAEMON_ROOTS=" + root); !strings.Contains(out, "file://"+root) {
 		t.Fatalf("with daemon.roots=%s the roots answer should list it:\n%s", root, out)
+	}
+}
+
+// napRecipe sleeps three seconds and then says so.
+const napRecipe = `// Wait a moment, then report.
+await new Promise((resolve) => setTimeout(resolve, 3000));
+console.log("woke after the nap");
+`
+
+// TestPromptRunTimeoutBoundsARecipeRun is the effect probe for
+// prompt.runTimeout. Oracle: under the default bound a recipe that sleeps
+// three seconds finishes; with prompt.runTimeout=1s the run is cut off
+// and its result says it timed out after 1s.
+func TestPromptRunTimeoutBoundsARecipeRun(t *testing.T) {
+	run := func(env ...string) string {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		writeRecipe(t, e, "nap", napRecipe)
+		e.setenv(env...)
+		e.run("ls")
+		out, _ := e.try("--json", "recipes", "run", "nap", "--autonomy", "run")
+		return out
+	}
+	if out := run(); strings.Contains(out, "timed out") || !strings.Contains(out, `"stdout"`) {
+		t.Fatalf("oracle: under the default bound the recipe should finish:\n%s", out)
+	}
+	if out := run("MCPX_PROMPT_RUN_TIMEOUT=1s"); !strings.Contains(out, "script timed out after 1s") {
+		t.Fatalf("with prompt.runTimeout=1s the recipe should be cut off:\n%s", out)
 	}
 }
 
