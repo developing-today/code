@@ -432,6 +432,10 @@ describe("GitHub hot-list consumer (#7084)", () => {
     expect((await store.gaps()).map((gap) => gap.status)).toEqual(["unrecoverable", "backfilled"]);
   });
 
+  // Explicit timeout (#10385): the 48 seeds are fixed, so the schedule
+  // never varies, but each one does many temp-file writes. The test runs
+  // in about 0.5s on an idle host and past bun's default 5s per-test limit
+  // on a loaded one, where bun aborts it partway through the seeds.
   test("generated failure/restart schedules never checkpoint undurable rows or duplicate activity", async () => {
     // Deterministic generated traces exercise sparse sequence numbers,
     // varying page sizes, repeated append failures, and process restarts.
@@ -507,7 +511,7 @@ describe("GitHub hot-list consumer (#7084)", () => {
         rows.map((row) => `activity:github:${row.event_id}`).sort(),
       );
     }
-  });
+  }, 60_000);
 
   test("a cursor past the hot-list high-water is unrecoverable, never silently reset", async () => {
     const parts = stores();
