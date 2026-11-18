@@ -1151,7 +1151,10 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
     if let Some(i) = intent.filter(|_| code == EXIT_OK) {
         let record = i.record(&gh_closure::Binding::from_env(), gh_closure::now_unix());
         if let Err(e) = gh_closure::append(&gh_closure::log_path(), &record) {
-            eprintln!("fleet gh: {} done, but the closure record was not written: {e}", i.action);
+            eprintln!(
+                "fleet gh: {} done, but the closure record was not written: {e}",
+                i.action
+            );
             return EXIT_UNRESOLVED;
         }
     }
@@ -1162,7 +1165,10 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
 /// object per line, optionally only those for one item number.
 fn run_closures(tail: &[String]) -> i32 {
     if tail.len() > 1 {
-        return usage_error(&format!("unexpected argument '{}' for 'fleet gh closures'", tail[1]));
+        return usage_error(&format!(
+            "unexpected argument '{}' for 'fleet gh closures'",
+            tail[1]
+        ));
     }
     let log = match std::fs::read_to_string(gh_closure::log_path()) {
         Ok(s) => s,
