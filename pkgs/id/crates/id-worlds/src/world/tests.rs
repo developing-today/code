@@ -1674,11 +1674,12 @@ mod tests {
                 "{entry:?}"
             );
         }
-        // The max-version pin moved to version 10 with portal grants
-        // (F12.14 wiring, code#1068), after version 9 for signed play
-        // (#4346) and version 8 for recurring schedules (#1355);
-        // the lease entries still require exactly 7.
-        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_PORTALS);
+        // The max-version pin moved to version 11 with program-bundle
+        // installs (#8280), after version 10 for portal grants (F12.14
+        // wiring, code#1068), version 9 for signed play (#4346) and
+        // version 8 for recurring schedules (#1355); the lease entries
+        // still require exactly 7.
+        assert_eq!(MAX_JOURNAL_VERSION, JOURNAL_VERSION_PROGRAM_BUNDLE);
         // A checkpoint carrying a non-bootstrap lease also requires
         // version 7; one without a lease keeps its existing version.
         let mut lease = WriteLease::bootstrap();
@@ -2697,6 +2698,101 @@ mod tests {
         core.active_module_provenance = Some(provenance.clone());
         core.active_seed = 7;
         let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+
+        let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
+        assert_eq!(
+            restored.core.active_module_provenance,
+            Some(provenance.clone())
+        );
+        assert_eq!(restored.program.unwrap().provenance, Some(provenance));
+    }
+
+    fn sample_bundle_provenance() -> ModuleProvenance {
+        let author = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let bundle = crate::program_bundle::export(
+            b"bundle payload".to_vec(),
+            crate::program_bundle::ProgramSpec {
+                name: "chess",
+                version: 1,
+                licence: None,
+            },
+            &author,
+        )
+        .unwrap();
+        ModuleProvenance::Bundle(bundle.provenance())
+    }
+
+    fn install_event(provenance: Option<ModuleProvenance>) -> WorldEvent {
+        WorldEvent {
+            sequence: 1,
+            participant_id: 0,
+            kind: WorldEventKind::ProgramInstalled {
+                module_hash: "h".to_owned(),
+                seed: 1,
+                provenance,
+                trust: None,
+            },
+        }
+    }
+
+    /// #8280: an older binary cannot parse bundle provenance, so every entry
+    /// that carries it raises the header to the program-bundle version, and
+    /// nothing else does.
+    #[test]
+    fn bundle_provenance_requires_the_program_bundle_journal_version() {
+        let bundle = sample_bundle_provenance();
+        let committed = |provenance| JournalEntry::Committed {
+            event: install_event(provenance),
+        };
+        assert_eq!(
+            journal_version_required_by(&committed(Some(bundle.clone()))),
+            JOURNAL_VERSION_PROGRAM_BUNDLE
+        );
+        assert_eq!(
+            journal_version_required_by(&committed(Some(ModuleProvenance::Artifact))),
+            JOURNAL_VERSION
+        );
+        assert_eq!(
+            journal_version_required_by(&committed(None)),
+            JOURNAL_VERSION
+        );
+        let part = JournalEntry::CheckpointEventsPart {
+            sequence: 1,
+            part_index: 0,
+            part_count: 1,
+            events: vec![install_event(Some(bundle))],
+        };
+        assert_eq!(
+            journal_version_required_by(&part),
+            JOURNAL_VERSION_PROGRAM_BUNDLE
+        );
+        let plain_part = JournalEntry::CheckpointEventsPart {
+            sequence: 1,
+            part_index: 0,
+            part_count: 1,
+            events: vec![install_event(None)],
+        };
+        assert_eq!(
+            journal_version_required_by(&plain_part),
+            JOURNAL_VERSION_CHECKPOINT_PARTS
+        );
+    }
+
+    #[test]
+    fn bundle_provenance_survives_checkpoint_compaction_and_restore() {
+        let provenance = sample_bundle_provenance();
+        let mut core = world(8);
+        core.active_module_hash = Some("h".to_owned());
+        core.active_module_provenance = Some(provenance.clone());
+        core.active_seed = 7;
+        let entries = core.checkpoint_entries("state".to_owned()).unwrap();
+        assert!(
+            entries.iter().any(|entry| matches!(
+                entry,
+                JournalEntry::Created { version, .. } if *version == JOURNAL_VERSION_PROGRAM_BUNDLE
+            )),
+            "the compacted header carries the program-bundle version: {entries:?}"
+        );
 
         let restored = WorldCore::restore("test-world", WorldLimits::default(), entries).unwrap();
         assert_eq!(

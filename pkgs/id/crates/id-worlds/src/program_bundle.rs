@@ -16,7 +16,8 @@
 //!
 //! Everything here is a pure function over bytes: export, verify and fork
 //! need no server, registry or network (invariant 1, "sideloading always
-//! works"). Importing a verified bundle into a world is the next slice.
+//! works"). `WorldService::install_bundle` (under the `sandbox` feature)
+//! sideloads a verified bundle into a world and records its provenance.
 //!
 //! # File layout
 //!
@@ -224,6 +225,18 @@ impl BundleError {
     }
 }
 
+/// Why a sideloaded bundle was not installed into a world.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum BundleInstallError {
+    /// The bundle itself failed verification; the error names the check.
+    #[error(transparent)]
+    Bundle(BundleError),
+    /// The bundle verified, but the world refused the install exactly as it
+    /// would refuse the same signed upload.
+    #[error("the verified bundle was not installed: {0:?}")]
+    Install(crate::world_session::InstallError),
+}
+
 /// A bundle whose framing, manifest, lineage, ABI, content hash and both
 /// signatures have all verified. The only way to hold one is through
 /// [`ProgramBundle::decode`], [`export`] or [`fork`].
@@ -316,6 +329,27 @@ impl ProgramBundle {
     #[must_use]
     pub fn payload(&self) -> &[u8] {
         &self.payload
+    }
+
+    /// The verified bundle signature, lower-case hex.
+    #[must_use]
+    pub fn bundle_signature(&self) -> &str {
+        &self.seal.bundle_signature
+    }
+
+    /// The install record a world keeps for this bundle (design D4). The
+    /// policy is pinned: an update is a new install decision.
+    #[must_use]
+    pub fn provenance(&self) -> crate::world::BundleProvenance {
+        crate::world::BundleProvenance {
+            schema_version: 1,
+            program: self.identity(),
+            abi: self.manifest.abi.clone(),
+            lineage: self.manifest.lineage.clone(),
+            licence: self.manifest.licence.clone(),
+            bundle_signature: self.seal.bundle_signature.clone(),
+            policy: crate::world::InstallPolicy::Pinned,
+        }
     }
 
     /// The F12.17 signature to present when installing the payload into a
