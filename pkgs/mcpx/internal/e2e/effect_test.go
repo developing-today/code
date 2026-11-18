@@ -101,6 +101,8 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"artifacts.idleTtl":                  "TestArtifactsIdleTTLRenewsAReadArtifactFromTheEnvironment",
+	"artifacts.maxAge":                   "TestArtifactsMaxAgeCapsARenewedArtifactFromTheEnvironment",
 	"artifacts.ttl":                      "TestArtifactsTTLExpiresAnArtifactFromTheEnvironment",
 	"artifacts.gcInterval":               "TestArtifactsGCIntervalSetsWhenExpiredArtifactsAreSweptFromTheEnvironment",
 	"pool.min":                           "TestPoolMinKeepsAnInstanceWarmFromTheEnvironment",
@@ -273,6 +275,8 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestArtifactsIdleTTLRenewsAReadArtifactFromTheEnvironment":                      TestArtifactsIdleTTLRenewsAReadArtifactFromTheEnvironment,
+	"TestArtifactsMaxAgeCapsARenewedArtifactFromTheEnvironment":                      TestArtifactsMaxAgeCapsARenewedArtifactFromTheEnvironment,
 	"TestArtifactsTTLExpiresAnArtifactFromTheEnvironment":                            TestArtifactsTTLExpiresAnArtifactFromTheEnvironment,
 	"TestArtifactsGCIntervalSetsWhenExpiredArtifactsAreSweptFromTheEnvironment":      TestArtifactsGCIntervalSetsWhenExpiredArtifactsAreSweptFromTheEnvironment,
 	"TestPoolMinKeepsAnInstanceWarmFromTheEnvironment":                               TestPoolMinKeepsAnInstanceWarmFromTheEnvironment,
@@ -3399,6 +3403,71 @@ func TestAutostartIdleExitStopsAnIdleDaemonFromTheEnvironment(t *testing.T) {
 	}
 	if stillThere("MCPX_AUTOSTART_IDLE_EXIT=1s") {
 		t.Fatalf("with autostart.idleExit=1s the idle daemon should have exited")
+	}
+}
+
+// readAfterRenewal stores one artifact under a 2s retention swept every
+// 200ms (plus env), reads it at 1.5s, and returns the status of a second
+// read at 3s: 200 if the first read renewed it past its expiry, 404 if
+// it was collected.
+func readAfterRenewal(t *testing.T, env ...string) int {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(append([]string{"MCPX_ARTIFACTS_TTL=2s", "MCPX_ARTIFACTS_GC_INTERVAL=200ms"}, env...)...)
+	e.run("exec", artifactScript)
+	c := e.socketClient(t)
+	get := func(path string) (int, []byte) {
+		t.Helper()
+		resp, err := c.Get("http://mcpx" + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, b
+	}
+	_, b := get("/v1/artifacts")
+	var doc struct {
+		Artifacts []struct {
+			ID string `json:"id"`
+		} `json:"artifacts"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil || len(doc.Artifacts) != 1 {
+		t.Fatalf("one artifact should be listed (%v):\n%s", err, b)
+	}
+	id := doc.Artifacts[0].ID
+	time.Sleep(1500 * time.Millisecond)
+	if code, b := get("/v1/artifacts/" + id); code != http.StatusOK {
+		t.Fatalf("the first read, inside the retention, should succeed: %d %s", code, b)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	code, _ := get("/v1/artifacts/" + id)
+	return code
+}
+
+// TestArtifactsIdleTTLRenewsAReadArtifactFromTheEnvironment is the effect
+// probe for artifacts.idleTtl. Under a 2s absolute retention an artifact
+// read at 1.5s is gone at 3s by default (no renewal); with idleTtl=3s the
+// read renews it, so the 3s read still finds it.
+func TestArtifactsIdleTTLRenewsAReadArtifactFromTheEnvironment(t *testing.T) {
+	if code := readAfterRenewal(t); code != http.StatusNotFound {
+		t.Fatalf("oracle: without renewal the artifact should have expired, got %d", code)
+	}
+	if code := readAfterRenewal(t, "MCPX_ARTIFACTS_IDLE_TTL=3s"); code != http.StatusOK {
+		t.Fatalf("with artifacts.idleTtl=3s the read should have renewed the artifact, got %d", code)
+	}
+}
+
+// TestArtifactsMaxAgeCapsARenewedArtifactFromTheEnvironment is the
+// effect probe for artifacts.maxAge. With idleTtl=3s a read at 1.5s
+// renews the artifact past 3s under the default ceiling; a 2s maxAge
+// caps the renewal at creation plus 2s, so it is gone at 3s.
+func TestArtifactsMaxAgeCapsARenewedArtifactFromTheEnvironment(t *testing.T) {
+	if code := readAfterRenewal(t, "MCPX_ARTIFACTS_IDLE_TTL=3s"); code != http.StatusOK {
+		t.Fatalf("oracle: under the default ceiling the renewed artifact should survive, got %d", code)
+	}
+	if code := readAfterRenewal(t, "MCPX_ARTIFACTS_IDLE_TTL=3s", "MCPX_ARTIFACTS_MAX_AGE=2s"); code != http.StatusNotFound {
+		t.Fatalf("with artifacts.maxAge=2s the renewal should be capped and the artifact collected, got %d", code)
 	}
 }
 
