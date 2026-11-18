@@ -104,6 +104,8 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"script.imports":                     "TestScriptImportsOffSkipsTheImportPipeline",
+	"script.importsOnDynamic":            "TestScriptImportsOnDynamicDecidesAComputedImport",
 	"prompt.runTimeout":                  "TestPromptRunTimeoutBoundsARecipeRun",
 	"daemon.roots":                       "TestDaemonRootsAnswersAnUpstreamRootsRequest",
 	"prompt.sampleTimeout":               "TestPromptSampleTimeoutBoundsASamplingQuestion",
@@ -313,6 +315,8 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestScriptImportsOffSkipsTheImportPipeline":                                     TestScriptImportsOffSkipsTheImportPipeline,
+	"TestScriptImportsOnDynamicDecidesAComputedImport":                               TestScriptImportsOnDynamicDecidesAComputedImport,
 	"TestPromptRunTimeoutBoundsARecipeRun":                                           TestPromptRunTimeoutBoundsARecipeRun,
 	"TestDaemonRootsAnswersAnUpstreamRootsRequest":                                   TestDaemonRootsAnswersAnUpstreamRootsRequest,
 	"TestPromptSampleTimeoutBoundsASamplingQuestion":                                 TestPromptSampleTimeoutBoundsASamplingQuestion,
@@ -4514,6 +4518,52 @@ func TestPromptRunTimeoutBoundsARecipeRun(t *testing.T) {
 	}
 	if out := run("MCPX_PROMPT_RUN_TIMEOUT=1s"); !strings.Contains(out, "script timed out after 1s") {
 		t.Fatalf("with prompt.runTimeout=1s the recipe should be cut off:\n%s", out)
+	}
+}
+
+// TestScriptImportsOnDynamicDecidesAComputedImport is the effect probe for
+// script.importsOnDynamic. A script whose import() specifier is computed
+// cannot be resolved statically. Oracle: by default (warn) the run names
+// the computed import and goes on; fail stops the run before it starts;
+// ignore runs it without a word.
+func TestScriptImportsOnDynamicDecidesAComputedImport(t *testing.T) {
+	const script = `const name = ["no", "such"].join("-"); try { await import(name) } catch { } console.log("ran on")`
+	run := func(env ...string) (string, error) {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		e.run("ls")
+		return e.try("exec", script)
+	}
+	if out, err := run(); err != nil || !strings.Contains(out, "computed import(name)") || !strings.Contains(out, "ran on") {
+		t.Fatalf("oracle: by default the computed import should be named and the run go on (err=%v):\n%s", err, out)
+	}
+	if out, err := run("MCPX_SCRIPT_IMPORTS_ON_DYNAMIC=fail"); err == nil || strings.Contains(out, "ran on") || !strings.Contains(out, "computed import(name)") {
+		t.Fatalf("with script.importsOnDynamic=fail the run should stop before it starts (err=%v):\n%s", err, out)
+	}
+	if out, err := run("MCPX_SCRIPT_IMPORTS_ON_DYNAMIC=ignore"); err != nil || strings.Contains(out, "computed import") || !strings.Contains(out, "ran on") {
+		t.Fatalf("with script.importsOnDynamic=ignore the run should go on silently (err=%v):\n%s", err, out)
+	}
+}
+
+// TestScriptImportsOffSkipsTheImportPipeline is the effect probe for
+// script.imports. Oracle: by default (report) the import pipeline names a
+// computed import() before the run; with script.imports=off the pipeline
+// does not run, so the same script runs with no word about its imports.
+func TestScriptImportsOffSkipsTheImportPipeline(t *testing.T) {
+	const script = `const name = ["no", "such"].join("-"); try { await import(name) } catch { } console.log("ran on")`
+	run := func(env ...string) string {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		e.run("ls")
+		return e.run("exec", script)
+	}
+	if out := run(); !strings.Contains(out, "computed import(name)") {
+		t.Fatalf("oracle: by default the import pipeline should name the computed import:\n%s", out)
+	}
+	if out := run("MCPX_SCRIPT_IMPORTS=off"); strings.Contains(out, "computed import") || !strings.Contains(out, "ran on") {
+		t.Fatalf("with script.imports=off the pipeline should not run:\n%s", out)
 	}
 }
 
