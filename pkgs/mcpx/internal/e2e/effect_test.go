@@ -101,6 +101,8 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"elicit.ttl":                         "TestElicitTTLSetsAnUpstreamQuestionsDeadlineFromTheEnvironment",
+	"elicit.maxAge":                      "TestElicitMaxAgeCapsAnUpstreamQuestionsDeadlineFromTheEnvironment",
 	"elicit.pendingLimit":                "TestElicitPendingLimitBoundsTheListingFromTheEnvironment",
 	"elicit.askTimeout":                  "TestElicitAskTimeoutBoundsTheWaitForAnAnswerFromTheEnvironment",
 	"artifacts.idleTtl":                  "TestArtifactsIdleTTLRenewsAReadArtifactFromTheEnvironment",
@@ -277,6 +279,8 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestElicitTTLSetsAnUpstreamQuestionsDeadlineFromTheEnvironment":                 TestElicitTTLSetsAnUpstreamQuestionsDeadlineFromTheEnvironment,
+	"TestElicitMaxAgeCapsAnUpstreamQuestionsDeadlineFromTheEnvironment":              TestElicitMaxAgeCapsAnUpstreamQuestionsDeadlineFromTheEnvironment,
 	"TestElicitPendingLimitBoundsTheListingFromTheEnvironment":                       TestElicitPendingLimitBoundsTheListingFromTheEnvironment,
 	"TestElicitAskTimeoutBoundsTheWaitForAnAnswerFromTheEnvironment":                 TestElicitAskTimeoutBoundsTheWaitForAnAnswerFromTheEnvironment,
 	"TestArtifactsIdleTTLRenewsAReadArtifactFromTheEnvironment":                      TestArtifactsIdleTTLRenewsAReadArtifactFromTheEnvironment,
@@ -3554,6 +3558,64 @@ func TestElicitPendingLimitBoundsTheListingFromTheEnvironment(t *testing.T) {
 	}
 	if n := listed("MCPX_ELICIT_PENDING_LIMIT=1"); n != 1 {
 		t.Fatalf("with elicit.pendingLimit=1 the listing should hold one question, got %d", n)
+	}
+}
+
+// upstreamQuestionLife raises one question from an upstream server (the
+// ask fixture's need_repo) under env, reads its listed deadline, answers
+// it and returns the deadline's distance from the question's creation.
+func upstreamQuestionLife(t *testing.T, env ...string) time.Duration {
+	t.Helper()
+	e := askWith(t, `{"sharing":"shared","scope":"global"}`)
+	e.setenv(env...)
+	e.run("refresh")
+	beAnswerer(t, e)
+	c := e.longSocketClient(t)
+	done := make(chan struct{})
+	go func() {
+		sockDo(t, c, http.MethodPost, "/v1/call", map[string]any{"server": "ask", "tool": "need_repo"})
+		close(done)
+	}()
+	ids := waitQuestions(t, e, 1)
+	var listed []struct {
+		Created   time.Time `json:"created"`
+		ExpiresAt time.Time `json:"expiresAt"`
+	}
+	out := e.run("--json", "elicit", "list")
+	if err := json.Unmarshal([]byte(out), &listed); err != nil || len(listed) != 1 {
+		t.Fatalf("one question should be listed (%v):\n%s", err, out)
+	}
+	e.run("elicit", "answer", ids[0], `{"repo":"probe"}`)
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the answered call never finished")
+	}
+	return listed[0].ExpiresAt.Sub(listed[0].Created).Round(time.Second)
+}
+
+// TestElicitTTLSetsAnUpstreamQuestionsDeadlineFromTheEnvironment is the
+// effect probe for elicit.ttl. A question an upstream server asks lives
+// the built-in two minutes by default and seven with elicit.ttl=7m.
+func TestElicitTTLSetsAnUpstreamQuestionsDeadlineFromTheEnvironment(t *testing.T) {
+	if got := upstreamQuestionLife(t); got != 2*time.Minute {
+		t.Fatalf("oracle: an upstream question should live the default 2m, got %v", got)
+	}
+	if got := upstreamQuestionLife(t, "MCPX_ELICIT_TTL=7m"); got != 7*time.Minute {
+		t.Fatalf("with elicit.ttl=7m the question should live 7m, got %v", got)
+	}
+}
+
+// TestElicitMaxAgeCapsAnUpstreamQuestionsDeadlineFromTheEnvironment is
+// the effect probe for elicit.maxAge. Under elicit.ttl=7m the question
+// lives seven minutes by default (the 30m ceiling is far off) and one
+// with elicit.maxAge=1m.
+func TestElicitMaxAgeCapsAnUpstreamQuestionsDeadlineFromTheEnvironment(t *testing.T) {
+	if got := upstreamQuestionLife(t, "MCPX_ELICIT_TTL=7m"); got != 7*time.Minute {
+		t.Fatalf("oracle: under elicit.ttl=7m the question should live 7m, got %v", got)
+	}
+	if got := upstreamQuestionLife(t, "MCPX_ELICIT_TTL=7m", "MCPX_ELICIT_MAX_AGE=1m"); got != time.Minute {
+		t.Fatalf("with elicit.maxAge=1m the question should live 1m, got %v", got)
 	}
 }
 
