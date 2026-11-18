@@ -86,6 +86,8 @@ var implementedEffectProbes = map[string]string{
 	"exec.output":                "TestExecOutputShapesTheResultFromTheEnvironment",
 	"mcp.pageSize":               "TestMCPPageSizePagesToolsListFromTheEnvironment",
 	"mcp.passthrough":            "TestMCPPassthroughServesANamespaceDirectlyFromTheEnvironment",
+	"completion.perMinute":       "TestCompletionPerMinuteLimitsOneCallerFromTheEnvironment",
+	"completion.serverPerMinute": "TestCompletionServerPerMinuteLimitsAllCallersFromTheEnvironment",
 	"proto.serveMCP":             "TestServeMCPUnmountsTheEndpointFromTheEnvironment",
 	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
 	"daemon.autostart":           "TestDaemonAutostartIsReachableFromTheEnvironment",
@@ -160,6 +162,8 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestExecOutputShapesTheResultFromTheEnvironment":                           TestExecOutputShapesTheResultFromTheEnvironment,
 	"TestMCPPageSizePagesToolsListFromTheEnvironment":                           TestMCPPageSizePagesToolsListFromTheEnvironment,
 	"TestMCPPassthroughServesANamespaceDirectlyFromTheEnvironment":              TestMCPPassthroughServesANamespaceDirectlyFromTheEnvironment,
+	"TestCompletionPerMinuteLimitsOneCallerFromTheEnvironment":                  TestCompletionPerMinuteLimitsOneCallerFromTheEnvironment,
+	"TestCompletionServerPerMinuteLimitsAllCallersFromTheEnvironment":           TestCompletionServerPerMinuteLimitsAllCallersFromTheEnvironment,
 	"TestServeMCPUnmountsTheEndpointFromTheEnvironment":                         TestServeMCPUnmountsTheEndpointFromTheEnvironment,
 	"TestDaemonAddressIsReachableFromTheEnvironment":                            TestDaemonAddressIsReachableFromTheEnvironment,
 	"TestDaemonAutostartIsReachableFromTheEnvironment":                          TestDaemonAutostartIsReachableFromTheEnvironment,
@@ -1034,6 +1038,52 @@ func TestMCPPassthroughServesANamespaceDirectlyFromTheEnvironment(t *testing.T) 
 	}
 	if !listsEcho("MCPX_MCP_PASSTHROUGH=demo") {
 		t.Fatal("mcp.passthrough=demo should list the demo server's echo tool directly")
+	}
+}
+
+// completionStatuses sends one /v1/complete per session name, in order,
+// to the fake server, and returns each HTTP status.
+func completionStatuses(t *testing.T, env []string, sessions ...string) []int {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(env...)
+	e.run("refresh")
+	client := e.socketClient(t)
+	var out []int
+	for _, sess := range sessions {
+		body := fmt.Sprintf(`{"server":"demo","ref":{"type":"ref/prompt","name":"s"},"argument":{"name":"x","value":"sum"},"session":%q}`, sess)
+		resp, err := client.Post("http://mcpx/v1/complete", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		out = append(out, resp.StatusCode)
+	}
+	return out
+}
+
+// completion.perMinute bounds completions per caller and server.
+// Oracle: two completions from one session both succeed at the default;
+// with MCPX_COMPLETION_PER_MINUTE=1 the second is refused with 429.
+func TestCompletionPerMinuteLimitsOneCallerFromTheEnvironment(t *testing.T) {
+	if got := completionStatuses(t, nil, "one", "one"); got[0] != http.StatusOK || got[1] != http.StatusOK {
+		t.Fatalf("at the default completion.perMinute two completions should both succeed, got %v", got)
+	}
+	if got := completionStatuses(t, []string{"MCPX_COMPLETION_PER_MINUTE=1"}, "one", "one"); got[0] != http.StatusOK || got[1] != http.StatusTooManyRequests {
+		t.Fatalf("completion.perMinute=1 should refuse the same caller's second completion with 429, got %v", got)
+	}
+}
+
+// completion.serverPerMinute bounds completions per server across callers.
+// Oracle: completions from two different sessions both succeed at the
+// default; with MCPX_COMPLETION_SERVER_PER_MINUTE=1 the second is refused
+// with 429 although it is another caller's first.
+func TestCompletionServerPerMinuteLimitsAllCallersFromTheEnvironment(t *testing.T) {
+	if got := completionStatuses(t, nil, "one", "two"); got[0] != http.StatusOK || got[1] != http.StatusOK {
+		t.Fatalf("at the default completion.serverPerMinute two callers' completions should both succeed, got %v", got)
+	}
+	if got := completionStatuses(t, []string{"MCPX_COMPLETION_SERVER_PER_MINUTE=1"}, "one", "two"); got[0] != http.StatusOK || got[1] != http.StatusTooManyRequests {
+		t.Fatalf("completion.serverPerMinute=1 should refuse a second caller's completion with 429, got %v", got)
 	}
 }
 
