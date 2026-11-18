@@ -708,3 +708,20 @@ func TestTransportStdioDrainBoundsServeShutdown(t *testing.T) {
 		t.Fatal("transport.stdioDrain=100ms should cancel a 1.5s in-flight call when stdin closes, not answer it")
 	}
 }
+
+// http.streamBufferMax also bounds a streamed remote run: `mcpx exec` with
+// exec.where=remote and exec.output=stream reads the daemon's NDJSON frames
+// with the same configured ceiling `mcpx events` uses. It used the built-in
+// 8MiB whatever the setting said, so a lower ceiling never bound it.
+func TestHTTPStreamBufferMaxBoundsAStreamedRemoteRun(t *testing.T) {
+	e := newEnv(t, oneServer)
+	e.setenv("MCPX_EXEC_WHERE=remote", "MCPX_EXEC_OUTPUT=stream", "MCPX_HTTP_STREAM_BUFFER_INIT=64")
+	script := `console.log("y".repeat(4000))`
+	if out, err := e.try("exec", script); err != nil || strings.Count(out, "y") < 4000 {
+		t.Fatalf("oracle: at the default http.streamBufferMax a 4000-byte line should stream back whole (err %v):\n%s", err, firstN(out, 300))
+	}
+	out, err := e.withEnv("MCPX_HTTP_STREAM_BUFFER_MAX=1024").try("exec", script)
+	if err == nil || !strings.Contains(out, "token too long") {
+		t.Fatalf("http.streamBufferMax=1024 should end a streamed run whose frame is longer (err %v):\n%s", err, firstN(out, 300))
+	}
+}
