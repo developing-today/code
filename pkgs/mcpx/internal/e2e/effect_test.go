@@ -101,6 +101,8 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor": "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":       "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":             "TestEventsHistoryBoundsTheReplay",
+	"logging.trace":              "TestLoggingTraceLogsEachCall",
+	"exec.where":                 "TestExecWhereRemoteRunsOnTheDaemon",
 	"paths.adapters":             "TestPathsAdaptersFindsADeclarationFile",
 	"paths.apis":                 "TestPathsAPIsFindsADeclarationFile",
 	"script.runtime":             "TestScriptRuntimeSelectsTheRuntime",
@@ -225,6 +227,8 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":        TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                 TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                          TestEventsHistoryBoundsTheReplay,
+	"TestLoggingTraceLogsEachCall":                                              TestLoggingTraceLogsEachCall,
+	"TestExecWhereRemoteRunsOnTheDaemon":                                        TestExecWhereRemoteRunsOnTheDaemon,
 	"TestPathsAdaptersFindsADeclarationFile":                                    TestPathsAdaptersFindsADeclarationFile,
 	"TestPathsAPIsFindsADeclarationFile":                                        TestPathsAPIsFindsADeclarationFile,
 	"TestScriptRuntimeSelectsTheRuntime":                                        TestScriptRuntimeSelectsTheRuntime,
@@ -2285,6 +2289,48 @@ func TestPathsAPIsFindsADeclarationFile(t *testing.T) {
 	e.setenv("MCPX_PATHS_APIS=" + file)
 	if out := e.run("api", "list"); !strings.Contains(out, "probeapi") || !strings.Contains(out, "1 operations") {
 		t.Errorf("paths.apis should declare probeapi with its one operation:\n%s", out)
+	}
+}
+
+// TestLoggingTraceLogsEachCall is the effect probe for logging.trace: the
+// daemon's log names the server and tool of a call only when tracing is on.
+func TestLoggingTraceLogsEachCall(t *testing.T) {
+	traced := func(on string) bool {
+		e := newEnv(t, oneServer)
+		e.setenv("MCPX_TRACE=" + on)
+		e.run("call", "demo.echo", `{"message":"x"}`)
+		b, _ := os.ReadFile(filepath.Join(e.dir, "state", "daemon.log"))
+		return strings.Contains(string(b), "call demo.echo")
+	}
+	if traced("false") {
+		t.Error("with logging.trace off the daemon log should not trace the call")
+	}
+	if !traced("true") {
+		t.Error("logging.trace should log the call to demo.echo in the daemon log")
+	}
+}
+
+// TestExecWhereRemoteRunsOnTheDaemon is the effect probe for exec.where:
+// a local run is a child of each short-lived mcpx process, so two runs see
+// different parents, while a remote run is a child of the one daemon.
+func TestExecWhereRemoteRunsOnTheDaemon(t *testing.T) {
+	parents := func(where string) (string, string) {
+		e := newEnv(t, oneServer)
+		e.setenv("MCPX_EXEC_WHERE=" + where)
+		script := filepath.Join(e.dir, "where.ts")
+		mustWrite(t, script, `console.log(process.ppid)`)
+		a, _, err := e.split("run", script)
+		if err != nil {
+			t.Fatalf("run (%s): %v", where, err)
+		}
+		b, _, _ := e.split("run", script)
+		return strings.TrimSpace(a), strings.TrimSpace(b)
+	}
+	if a, b := parents("local"); a == b {
+		t.Errorf("exec.where=local should run each script under its own mcpx process, both had parent %s", a)
+	}
+	if a, b := parents("remote"); a != b || a == "" {
+		t.Errorf("exec.where=remote should run both scripts under the daemon, got parents %q and %q", a, b)
 	}
 }
 
