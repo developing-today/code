@@ -101,6 +101,8 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"elicit.disambiguate":                "TestElicitDisambiguateAsksWhichInstanceFromTheEnvironment",
+	"elicit.disambiguateDefault":         "TestElicitDisambiguateDefaultPicksTheRecentInstanceFromTheEnvironment",
 	"elicit.ttl":                         "TestElicitTTLSetsAnUpstreamQuestionsDeadlineFromTheEnvironment",
 	"elicit.maxAge":                      "TestElicitMaxAgeCapsAnUpstreamQuestionsDeadlineFromTheEnvironment",
 	"elicit.pendingLimit":                "TestElicitPendingLimitBoundsTheListingFromTheEnvironment",
@@ -279,6 +281,8 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestElicitDisambiguateAsksWhichInstanceFromTheEnvironment":                      TestElicitDisambiguateAsksWhichInstanceFromTheEnvironment,
+	"TestElicitDisambiguateDefaultPicksTheRecentInstanceFromTheEnvironment":          TestElicitDisambiguateDefaultPicksTheRecentInstanceFromTheEnvironment,
 	"TestElicitTTLSetsAnUpstreamQuestionsDeadlineFromTheEnvironment":                 TestElicitTTLSetsAnUpstreamQuestionsDeadlineFromTheEnvironment,
 	"TestElicitMaxAgeCapsAnUpstreamQuestionsDeadlineFromTheEnvironment":              TestElicitMaxAgeCapsAnUpstreamQuestionsDeadlineFromTheEnvironment,
 	"TestElicitPendingLimitBoundsTheListingFromTheEnvironment":                       TestElicitPendingLimitBoundsTheListingFromTheEnvironment,
@@ -3616,6 +3620,75 @@ func TestElicitMaxAgeCapsAnUpstreamQuestionsDeadlineFromTheEnvironment(t *testin
 	}
 	if got := upstreamQuestionLife(t, "MCPX_ELICIT_TTL=7m", "MCPX_ELICIT_MAX_AGE=1m"); got != time.Minute {
 		t.Fatalf("with elicit.maxAge=1m the question should live 1m, got %v", got)
+	}
+}
+
+// exclusiveThree is a demo server leased one exclusive instance per
+// session, with no elicit block, so the disambiguation settings come
+// from the environment alone.
+const exclusiveThree = `{
+  "mcpServers": {
+    "demo": { "command": "FAKE", "mcpx": { "sharing": "exclusive", "scope": "session", "max": 4 } }
+  }
+}`
+
+// thirdSessionCall leaves two sessions holding demo instances, then
+// makes a call from a third session that names neither. It reports
+// whether a question was raised while that call waited, and the call's
+// output once it finished unanswered.
+func thirdSessionCall(t *testing.T, env ...string) (asked bool, out string) {
+	t.Helper()
+	e := newEnv(t, exclusiveThree)
+	e.setenv(append([]string{"MCPX_ELICIT_ASK_TIMEOUT=3s"}, env...)...)
+	e.run("call", "--session", "work", "demo.open", `{"value":"work"}`)
+	e.run("call", "--session", "scratch", "demo.open", `{"value":"scratch"}`)
+	done := make(chan string, 1)
+	go func() {
+		o, _ := e.try("call", "--session", "third", "demo.state", "{}")
+		done <- o
+	}()
+	for {
+		select {
+		case o := <-done:
+			return asked, o
+		case <-time.After(150 * time.Millisecond):
+			if !asked && len(pendingQuestions(t, e)) > 0 {
+				asked = true
+			}
+		case <-time.After(60 * time.Second):
+			t.Fatal("the third session's call never finished")
+		}
+	}
+}
+
+// TestElicitDisambiguateAsksWhichInstanceFromTheEnvironment is the
+// effect probe for elicit.disambiguate. With two live exclusive
+// instances and a caller naming neither, no question is raised by
+// default (never); with elicit.disambiguate=ask one is.
+func TestElicitDisambiguateAsksWhichInstanceFromTheEnvironment(t *testing.T) {
+	if asked, out := thirdSessionCall(t); asked {
+		t.Fatalf("oracle: by default no disambiguation question should be raised:\n%s", out)
+	}
+	if asked, out := thirdSessionCall(t, "MCPX_ELICIT_DISAMBIGUATE=ask"); !asked {
+		t.Fatalf("with elicit.disambiguate=ask a question should have been raised:\n%s", out)
+	}
+}
+
+// TestElicitDisambiguateDefaultPicksTheRecentInstanceFromTheEnvironment
+// is the effect probe for elicit.disambiguateDefault. When the
+// disambiguation question goes unanswered, the default (new) starts a
+// fresh instance that holds neither session's value; with
+// elicit.disambiguateDefault=recent the call lands on the most recently
+// used live instance. Idle time is counted in whole seconds, so which of
+// the two sessions' instances wins a tie is not asserted.
+func TestElicitDisambiguateDefaultPicksTheRecentInstanceFromTheEnvironment(t *testing.T) {
+	_, out := thirdSessionCall(t, "MCPX_ELICIT_DISAMBIGUATE=ask")
+	if strings.Contains(out, "work") || strings.Contains(out, "scratch") {
+		t.Fatalf("oracle: unanswered, the default should start a fresh instance:\n%s", out)
+	}
+	_, out = thirdSessionCall(t, "MCPX_ELICIT_DISAMBIGUATE=ask", "MCPX_ELICIT_DISAMBIGUATE_DEFAULT=recent")
+	if !strings.Contains(out, "work") && !strings.Contains(out, "scratch") {
+		t.Fatalf("with elicit.disambiguateDefault=recent the call should land on a live instance:\n%s", out)
 	}
 }
 
