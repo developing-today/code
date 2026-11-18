@@ -31,7 +31,7 @@ const RECURSION_LIMIT: u16 = 16;
 const LENGTH_LIMIT: u64 = 512;
 const OOM_MITIGATION: usize = 64;
 
-mod key_bytes {
+pub(super) mod key_bytes {
     use std::fmt;
 
     use serde::de::{Error, Visitor};
@@ -443,7 +443,7 @@ pub fn sign_burn(
     sign_body(key, seq_num, backlink, &body, BURN_KIND, after)
 }
 
-fn sign_body(
+pub(super) fn sign_body(
     key: &SigningKey,
     seq_num: SeqNum,
     backlink: Option<Hash>,
@@ -481,12 +481,12 @@ fn validate_amount(amount: u128) -> Result<(), TokenError> {
     Ok(())
 }
 
-fn canonical_body<T: Serialize>(value: &T) -> Result<Vec<u8>, BodyError> {
+pub(super) fn canonical_body<T: Serialize>(value: &T) -> Result<Vec<u8>, BodyError> {
     let value = Value::serialized(value).map_err(|error| BodyError::Schema(error.to_string()))?;
     Ok(value.encode())
 }
 
-fn decode_body<T>(bytes: &[u8]) -> Result<T, BodyError>
+pub(super) fn decode_body<T>(bytes: &[u8]) -> Result<T, BodyError>
 where
     T: DeserializeOwned + Serialize,
 {
