@@ -40,9 +40,14 @@ last run) and the planned `actions` (`file` / `update` / `none`).
 
 Run it on the CI watch's normal cadence as a sibling probe to the
 failure watch (the main-ci watch pass adds one step:
-`check_silence.py --apply` after its failure detection; its exit is
-always 0 on a completed evaluation — silence is a finding in the
-output, not a probe failure). Thresholds live in
+`check_silence.py --apply` after its failure detection). It exits 0
+on a completed pass whatever it found: silence is a finding in the
+output, not a probe failure. Every `gh` call is bounded by
+`GH_TIMEOUT_S` (60s). A repo whose read fails or times out gets
+`status: "error"` with the reason, no tracking action, and the other
+repos are still evaluated and acted on; a failed tracking write is
+listed under `apply_errors`. Either one makes the exit 1, so a wired-in
+step never reads a partial pass as clean (code#11468). Thresholds live in
 `REPO_THRESHOLDS_HOURS`; widen a repo's entry there when its normal
 quiet gap grows, rather than ignoring its alerts.
 
