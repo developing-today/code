@@ -89,6 +89,9 @@ var implementedEffectProbes = map[string]string{
 	"completion.perMinute":       "TestCompletionPerMinuteLimitsOneCallerFromTheEnvironment",
 	"completion.serverPerMinute": "TestCompletionServerPerMinuteLimitsAllCallersFromTheEnvironment",
 	"logstore.queryLimit":        "TestLogstoreQueryLimitBoundsALogQueryFromTheEnvironment",
+	"recipes.minScore":           "TestRecipesMinScoreRefusesAWeakMatchFromTheEnvironment",
+	"recipes.matchMargin":        "TestRecipesMatchMarginSettlesATieFromTheEnvironment",
+	"recipes.limit":              "TestRecipesLimitBoundsTheRankingFromTheEnvironment",
 	"proto.serveMCP":             "TestServeMCPUnmountsTheEndpointFromTheEnvironment",
 	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
 	"daemon.autostart":           "TestDaemonAutostartIsReachableFromTheEnvironment",
@@ -166,6 +169,9 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestCompletionPerMinuteLimitsOneCallerFromTheEnvironment":                  TestCompletionPerMinuteLimitsOneCallerFromTheEnvironment,
 	"TestCompletionServerPerMinuteLimitsAllCallersFromTheEnvironment":           TestCompletionServerPerMinuteLimitsAllCallersFromTheEnvironment,
 	"TestLogstoreQueryLimitBoundsALogQueryFromTheEnvironment":                   TestLogstoreQueryLimitBoundsALogQueryFromTheEnvironment,
+	"TestRecipesMinScoreRefusesAWeakMatchFromTheEnvironment":                    TestRecipesMinScoreRefusesAWeakMatchFromTheEnvironment,
+	"TestRecipesMatchMarginSettlesATieFromTheEnvironment":                       TestRecipesMatchMarginSettlesATieFromTheEnvironment,
+	"TestRecipesLimitBoundsTheRankingFromTheEnvironment":                        TestRecipesLimitBoundsTheRankingFromTheEnvironment,
 	"TestServeMCPUnmountsTheEndpointFromTheEnvironment":                         TestServeMCPUnmountsTheEndpointFromTheEnvironment,
 	"TestDaemonAddressIsReachableFromTheEnvironment":                            TestDaemonAddressIsReachableFromTheEnvironment,
 	"TestDaemonAutostartIsReachableFromTheEnvironment":                          TestDaemonAutostartIsReachableFromTheEnvironment,
@@ -1116,6 +1122,75 @@ func TestLogstoreQueryLimitBoundsALogQueryFromTheEnvironment(t *testing.T) {
 	}
 	if n := records("MCPX_LOGSTORE_QUERY_LIMIT=2"); n != 2 {
 		t.Fatalf("logstore.queryLimit=2 should return exactly two records, got %d", n)
+	}
+}
+
+// promptWithRecipes saves the say recipe under each name and runs
+// `mcpx prompt` for "echo a message back" with the message filled in.
+func promptWithRecipes(t *testing.T, env []string, names ...string) string {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(env...)
+	e.withoutModelCLIs(t)
+	for _, name := range names {
+		writeRecipe(t, e, name, sayRecipe)
+	}
+	e.run("ls")
+	return e.run("prompt", "--set", "message=hello", "echo a message back")
+}
+
+// recipes.minScore is the score below which no recipe counts as a match.
+// Oracle: with one saved recipe, `mcpx prompt` uses it at the default;
+// with MCPX_RECIPES_MIN_SCORE=100000 nothing matches.
+func TestRecipesMinScoreRefusesAWeakMatchFromTheEnvironment(t *testing.T) {
+	if got := promptWithRecipes(t, nil, "say"); !strings.Contains(got, "recipe say") {
+		t.Fatalf("at the default recipes.minScore the say recipe should be used:\n%s", got)
+	}
+	if got := promptWithRecipes(t, []string{"MCPX_RECIPES_MIN_SCORE=100000"}, "say"); !strings.Contains(got, "no recipe matched") {
+		t.Fatalf("recipes.minScore=100000 should leave nothing matched:\n%s", got)
+	}
+}
+
+// recipes.matchMargin is how far ahead the best recipe must be. Two
+// identical recipes tie.
+// Oracle: at the default a tie is no match; with
+// MCPX_RECIPES_MATCH_MARGIN=0 the first of the tied recipes is used.
+func TestRecipesMatchMarginSettlesATieFromTheEnvironment(t *testing.T) {
+	if got := promptWithRecipes(t, nil, "say", "shout"); !strings.Contains(got, "no recipe matched") {
+		t.Fatalf("at the default recipes.matchMargin two tied recipes should not match:\n%s", got)
+	}
+	if got := promptWithRecipes(t, []string{"MCPX_RECIPES_MATCH_MARGIN=0"}, "say", "shout"); !strings.Contains(got, "recipe say") {
+		t.Fatalf("recipes.matchMargin=0 should use the first of two tied recipes:\n%s", got)
+	}
+}
+
+// recipes.limit is how many ranked recipes are returned.
+// Oracle: `mcpx recipes match` lists all three matching recipes at the
+// default and only one with MCPX_RECIPES_LIMIT=1.
+func TestRecipesLimitBoundsTheRankingFromTheEnvironment(t *testing.T) {
+	listed := func(env ...string) int {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		for _, name := range []string{"say", "shout", "speak"} {
+			writeRecipe(t, e, name, sayRecipe)
+		}
+		e.run("ls")
+		out := e.run("recipes", "match", "echo a message")
+		n := 0
+		for _, name := range []string{" say ", " shout ", " speak "} {
+			if strings.Contains(out, name) {
+				n++
+			}
+		}
+		return n
+	}
+
+	if n := listed(); n != 3 {
+		t.Fatalf("at the default recipes.limit all three recipes should be ranked, got %d", n)
+	}
+	if n := listed("MCPX_RECIPES_LIMIT=1"); n != 1 {
+		t.Fatalf("recipes.limit=1 should rank one recipe, got %d", n)
 	}
 }
 
