@@ -354,6 +354,15 @@ pub fn serve<B: Backend + 'static>(backend: B, bind: &str) -> i32 {
             return 3;
         }
     };
+    serve_listener(backend, listener, bind)
+}
+
+/// The daemon body of [`serve`] over an already-bound listener: run
+/// the accept loop and block until it breaks. Split out so a test can
+/// bind port 0 and keep the listener, rather than probe a port, drop
+/// it and race every other process for it before `serve` re-binds
+/// (code#11296). `label` names the listener in the failure line.
+pub fn serve_listener<B: Backend + 'static>(backend: B, listener: TcpListener, label: &str) -> i32 {
     let (_cache, accept) = serve_on(backend, listener);
     // serve_on's accept loop runs on its own thread and serve_on
     // returns at once; the daemon must not return while that loop
@@ -364,7 +373,7 @@ pub fn serve<B: Backend + 'static>(backend: B, bind: &str) -> i32 {
     // thread instead: serve() returns only when the loop actually
     // breaks, which is the only way to reach the failure exit.
     let _ = accept.join();
-    eprintln!("fleet gh cache-serve: listener on '{bind}' failed; exiting");
+    eprintln!("fleet gh cache-serve: listener on '{label}' failed; exiting");
     1
 }
 
@@ -723,18 +732,19 @@ mod tests {
     }
 
     // Oracle: the daemon ENTRY POINT (serve, what `fleet gh
-    // cache-serve` actually runs) stays up and serves: it binds,
-    // answers real TCP clients, and caches across connections.
-    // serve_on alone passing is not proof — serve() once delegated
-    // to serve_on's spawned thread and exited immediately (task
-    // 17509, 2026-11-16), leaving no daemon listening at all.
+    // cache-serve` actually runs) stays up and serves: it answers
+    // real TCP clients and caches across connections. serve_on alone
+    // passing is not proof — serve() once delegated to serve_on's
+    // spawned thread and exited immediately (task 17509, 2026-11-16),
+    // leaving no daemon listening at all. The test drives
+    // serve_listener, which is serve() after its bind, over a
+    // listener it keeps: probing a port, dropping it and letting
+    // serve() re-bind raced other processes for the port and flaked
+    // the amd toplevel build (code#11296).
     #[test]
     fn serve_entry_point_stays_up_and_caches() {
-        // Pick a free port the same way the loopback test picks its
-        // listener, then hand the address to serve() as a string.
-        let probe = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = probe.local_addr().unwrap().port();
-        drop(probe);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
         struct ServeCounting {
             mints: std::sync::Arc<AtomicUsize>,
         }
@@ -757,8 +767,9 @@ mod tests {
         let backend = ServeCounting {
             mints: std::sync::Arc::clone(&counter),
         };
-        let server = std::thread::spawn(move || serve(backend, &format!("127.0.0.1:{port}")));
         let addr = format!("127.0.0.1:{port}");
+        let label = addr.clone();
+        let server = std::thread::spawn(move || serve_listener(backend, listener, &label));
         let req = request("personal", None, None, Some("s"));
         // Bounded retry until the daemon thread binds and answers.
         let mut resp = None;
@@ -782,5 +793,32 @@ mod tests {
             !server.is_finished(),
             "serve() returned while its listener was healthy"
         );
+    }
+
+    // serve()'s own bind step: an address it cannot bind is a loud
+    // exit 3, never a daemon that looks up but listens nowhere. The
+    // port is held by this test for the whole call, so there is no
+    // window for another process to change the outcome.
+    #[test]
+    fn serve_exits_3_when_it_cannot_bind() {
+        struct Never;
+        impl Backend for Never {
+            fn resolve_secret(&self, _n: &str) -> Result<String, String> {
+                unreachable!()
+            }
+            fn sign_jwt(&self, _a: &str) -> Result<(String, u64), String> {
+                unreachable!()
+            }
+            fn list_installations(&self, _a: &str) -> Result<Vec<(String, i64)>, String> {
+                unreachable!()
+            }
+            fn mint_token(&self, _a: &str, _i: i64) -> Result<(String, u64), String> {
+                unreachable!()
+            }
+        }
+        let held = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = held.local_addr().unwrap().to_string();
+        assert_eq!(serve(Never, &addr), 3);
+        drop(held);
     }
 }
