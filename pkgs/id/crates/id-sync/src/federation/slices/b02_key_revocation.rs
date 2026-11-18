@@ -506,11 +506,18 @@ impl RevocationRegistry {
         }
         let recorded_at = record.recorded_at;
         let from = record.effective_from;
+        let until = record.effective_until;
         let subject = record.subject.clone();
         self.revocations.push(record);
         let mut affected = Vec::new();
         for rec in &mut self.records {
             if !subject_matches(&subject, &rec.key, &rec.peer_id) {
+                continue;
+            }
+            // A bounded interval ends at its exclusive `until`: a record
+            // admitted then or later was admitted after the revocation
+            // stopped applying, so the sweep leaves it alone.
+            if until.is_some_and(|until| rec.admitted_at >= until) {
                 continue;
             }
             let escalate =
