@@ -101,6 +101,10 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"artifacts.ttl":                      "TestArtifactsTTLExpiresAnArtifactFromTheEnvironment",
+	"artifacts.gcInterval":               "TestArtifactsGCIntervalSetsWhenExpiredArtifactsAreSweptFromTheEnvironment",
+	"pool.min":                           "TestPoolMinKeepsAnInstanceWarmFromTheEnvironment",
+	"autostart.idleExit":                 "TestAutostartIdleExitStopsAnIdleDaemonFromTheEnvironment",
 	"daemon.warm":                        "TestDaemonWarmReadsTheServersAtStartupFromTheEnvironment",
 	"pool.idleTimeout":                   "TestPoolIdleTimeoutReapsAnIdleInstanceFromTheEnvironment",
 	"daemon.reapInterval":                "TestDaemonReapIntervalSetsWhenIdleInstancesAreReapedFromTheEnvironment",
@@ -269,6 +273,10 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestArtifactsTTLExpiresAnArtifactFromTheEnvironment":                            TestArtifactsTTLExpiresAnArtifactFromTheEnvironment,
+	"TestArtifactsGCIntervalSetsWhenExpiredArtifactsAreSweptFromTheEnvironment":      TestArtifactsGCIntervalSetsWhenExpiredArtifactsAreSweptFromTheEnvironment,
+	"TestPoolMinKeepsAnInstanceWarmFromTheEnvironment":                               TestPoolMinKeepsAnInstanceWarmFromTheEnvironment,
+	"TestAutostartIdleExitStopsAnIdleDaemonFromTheEnvironment":                       TestAutostartIdleExitStopsAnIdleDaemonFromTheEnvironment,
 	"TestDaemonWarmReadsTheServersAtStartupFromTheEnvironment":                       TestDaemonWarmReadsTheServersAtStartupFromTheEnvironment,
 	"TestPoolIdleTimeoutReapsAnIdleInstanceFromTheEnvironment":                       TestPoolIdleTimeoutReapsAnIdleInstanceFromTheEnvironment,
 	"TestDaemonReapIntervalSetsWhenIdleInstancesAreReapedFromTheEnvironment":         TestDaemonReapIntervalSetsWhenIdleInstancesAreReapedFromTheEnvironment,
@@ -3306,6 +3314,91 @@ func TestDaemonEndpointNamesTheDaemonToReachFromTheEnvironment(t *testing.T) {
 	}
 	if !strings.Contains(out, "will not start a local one") {
 		t.Fatalf("the failure should say no local daemon is started instead, got:\n%s", out)
+	}
+}
+
+// artifactsLeft stores one artifact under env, waits 2.5s, and returns
+// how many artifacts the daemon still lists.
+func artifactsLeft(t *testing.T, env ...string) int {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(env...)
+	e.run("exec", artifactScript)
+	time.Sleep(2500 * time.Millisecond)
+	resp, err := e.socketClient(t).Get("http://mcpx/v1/artifacts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var doc struct {
+		Artifacts []json.RawMessage `json:"artifacts"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		t.Fatal(err)
+	}
+	return len(doc.Artifacts)
+}
+
+// TestArtifactsTTLExpiresAnArtifactFromTheEnvironment is the effect probe
+// for artifacts.ttl. With the collector sweeping every 200ms, a script's
+// artifact is still listed 2.5s later under the default retention and
+// has been collected under a 1s one.
+func TestArtifactsTTLExpiresAnArtifactFromTheEnvironment(t *testing.T) {
+	if n := artifactsLeft(t, "MCPX_ARTIFACTS_GC_INTERVAL=200ms"); n != 1 {
+		t.Fatalf("oracle: under the default retention the artifact should still be listed, got %d", n)
+	}
+	if n := artifactsLeft(t, "MCPX_ARTIFACTS_GC_INTERVAL=200ms", "MCPX_ARTIFACTS_TTL=1s"); n != 0 {
+		t.Fatalf("with artifacts.ttl=1s the artifact should have been collected, got %d", n)
+	}
+}
+
+// TestArtifactsGCIntervalSetsWhenExpiredArtifactsAreSweptFromTheEnvironment
+// is the effect probe for artifacts.gcInterval. Under a 1s retention, a
+// collector sweeping every 200ms has removed the artifact 2.5s later;
+// one sweeping hourly has not run yet, so it is still listed.
+func TestArtifactsGCIntervalSetsWhenExpiredArtifactsAreSweptFromTheEnvironment(t *testing.T) {
+	if n := artifactsLeft(t, "MCPX_ARTIFACTS_TTL=1s", "MCPX_ARTIFACTS_GC_INTERVAL=200ms"); n != 0 {
+		t.Fatalf("oracle: a 200ms sweep should have collected the expired artifact, got %d", n)
+	}
+	if n := artifactsLeft(t, "MCPX_ARTIFACTS_TTL=1s", "MCPX_ARTIFACTS_GC_INTERVAL=1h"); n != 1 {
+		t.Fatalf("with artifacts.gcInterval=1h no sweep should have run yet, got %d", n)
+	}
+}
+
+// TestPoolMinKeepsAnInstanceWarmFromTheEnvironment is the effect probe
+// for pool.min. Under a 200ms idle bound and a 100ms reaper, a call's
+// instance is reaped 1.5s later by default (min 0); with pool.min=1 it
+// survives the idle timeout.
+func TestPoolMinKeepsAnInstanceWarmFromTheEnvironment(t *testing.T) {
+	reap := []string{"MCPX_POOL_IDLE_TIMEOUT=200ms", "MCPX_DAEMON_REAP_INTERVAL=100ms"}
+	if live := idleAfterACall(t, reap...); live != "0" {
+		t.Fatalf("oracle: by default the idle instance should be reaped, LIVE=%s", live)
+	}
+	if live := idleAfterACall(t, append(reap, "MCPX_POOL_MIN=1")...); live != "1" {
+		t.Fatalf("with pool.min=1 the instance should survive the idle timeout, LIVE=%s", live)
+	}
+}
+
+// TestAutostartIdleExitStopsAnIdleDaemonFromTheEnvironment is the effect
+// probe for autostart.idleExit. With instances reaped after 200ms, an
+// auto-started daemon soon has nothing to do. Under the harness's 60s
+// bound it is still there 4s later, so ls with autostart off reaches
+// it; under a 1s bound it has exited, and the same ls fails.
+func TestAutostartIdleExitStopsAnIdleDaemonFromTheEnvironment(t *testing.T) {
+	stillThere := func(extra ...string) bool {
+		e := newEnv(t, oneServer)
+		e.setenv(append([]string{"MCPX_POOL_IDLE_TIMEOUT=200ms", "MCPX_DAEMON_REAP_INTERVAL=100ms"}, extra...)...)
+		e.run("ls")
+		time.Sleep(4 * time.Second)
+		e.setenv("MCPX_DAEMON_AUTOSTART=false")
+		_, err := e.try("ls")
+		return err == nil
+	}
+	if !stillThere() {
+		t.Fatalf("oracle: under the harness's idle bound the daemon should still be running")
+	}
+	if stillThere("MCPX_AUTOSTART_IDLE_EXIT=1s") {
+		t.Fatalf("with autostart.idleExit=1s the idle daemon should have exited")
 	}
 }
 
