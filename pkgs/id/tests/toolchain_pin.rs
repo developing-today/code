@@ -105,6 +105,70 @@ fn test_roc_examples_and_nix_package_share_the_compiler_pin() {
     }
 }
 
+/// The directories listed in `scripts/rebuild-roc-examples.sh`, which the
+/// `roc-examples` flake check runs before its tests.
+fn rebuilt_example_dirs(script: &str) -> Vec<String> {
+    let mut dirs = Vec::new();
+    let mut inside = false;
+    for line in script.lines() {
+        let line = line.split('#').next().unwrap_or_default().trim();
+        if !inside {
+            if line.starts_with("examples=(") {
+                inside = true;
+            }
+            continue;
+        }
+        if line.starts_with(')') {
+            break;
+        }
+        let entry = line.trim_end_matches(')').trim();
+        if !entry.is_empty() {
+            dirs.push(entry.to_owned());
+        }
+    }
+    assert!(inside, "rebuild-roc-examples.sh has no `examples=(` list");
+    dirs
+}
+
+/// Two enumerations of "the Roc examples" live in this crate: the rebuild list
+/// that CI actually builds, and `ROC_EXAMPLE_BUILDS` that the pin tests read.
+/// They silently disagreed once — roc-text-counter was pinned and load-bearing
+/// but never rebuilt (#7909) — so a new example must now land in both.
+#[test]
+fn rebuild_script_and_pinned_build_list_cover_the_same_examples() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let script = fs::read_to_string(root.join("scripts/rebuild-roc-examples.sh")).unwrap();
+
+    let mut rebuilt = rebuilt_example_dirs(&script);
+    rebuilt.sort();
+    rebuilt.dedup();
+
+    let mut pinned: Vec<String> = ROC_EXAMPLE_BUILDS
+        .iter()
+        .map(|build_script| {
+            build_script
+                .strip_suffix("/build.sh")
+                .expect("ROC_EXAMPLE_BUILDS entries name a build.sh")
+                .to_owned()
+        })
+        .collect();
+    pinned.sort();
+    pinned.dedup();
+
+    assert_eq!(
+        rebuilt, pinned,
+        "scripts/rebuild-roc-examples.sh and ROC_EXAMPLE_BUILDS disagree; \
+         every example must be in both so CI rebuilds what the pin tests cover"
+    );
+
+    for dir in &rebuilt {
+        assert!(
+            root.join(dir).join("build.sh").is_file(),
+            "{dir} is listed as a Roc example but has no build.sh"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn test_example_build_refuses_a_different_roc_before_building() {
