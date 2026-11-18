@@ -1,97 +1,88 @@
 version: 2
+# One weekly PR per ecosystem (Drew, 2026-11-17). Ungrouped daily/weekly
+# bumps piled up as dozens of single-package PRs, and each Go bump on its
+# own breaks the nix build (vendorHash) until someone refreshes it. A
+# grouped PR collects the week's bumps so the hash is refreshed once.
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      github-actions:
+        patterns: ["*"]
   - package-ecosystem: "npm"
     directory: "/"
     schedule:
-      interval: "daily"
+      interval: "weekly"
     exclude-paths:
       - "pkgs/grok-cli/**"
       - "pm-stack/voice-line-worker/**"
+    groups:
+      npm:
+        patterns: ["*"]
   - package-ecosystem: "bun"
     directory: "/pm-stack/voice-line-worker"
     schedule:
       interval: "weekly"
+    groups:
+      bun:
+        patterns: ["*"]
   - package-ecosystem: "docker"
     directory: "/pkgs/identity/web"
     schedule:
       interval: "weekly"
+    groups:
+      docker:
+        patterns: ["*"]
   - package-ecosystem: "cargo"
-    directory: "/pkgs/id"
+    directories:
+      - "/pkgs/id"
+      - "/pkgs/fleet"
+      - "/pkgs/atlas-search"
+      - "/pkgs/note-submission"
+      - "/pkgs/dht"
     schedule:
       interval: "weekly"
-  - package-ecosystem: "cargo"
-    directory: "/pkgs/fleet"
-    schedule:
-      interval: "weekly"
-  - package-ecosystem: "cargo"
-    directory: "/pkgs/atlas-search"
-    schedule:
-      interval: "weekly"
-  - package-ecosystem: "cargo"
-    directory: "/pkgs/note-submission"
-    schedule:
-      interval: "weekly"
-  - package-ecosystem: "cargo"
-    directory: "/pkgs/dht"
-    schedule:
-      interval: "weekly"
+    groups:
+      cargo:
+        patterns: ["*"]
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      pip:
+        patterns: ["*"]
   - package-ecosystem: "gomod"
-    directory: "/pkgs/chat"
+    directories:
+      - "/pkgs/chat"
+      - "/pkgs/database"
+      - "/pkgs/fleet/placement"
+      - "/pkgs/graph"
+      - "/pkgs/identity"
+      - "/pkgs/import"
+      - "/pkgs/launcher"
+      - "/pkgs/map"
+      - "/pkgs/mcpx"
+      - "/pkgs/roc/platforms/go-basic-cli"
+      - "/pkgs/tea"
     schedule:
       interval: "weekly"
-  - package-ecosystem: "gomod"
-    directory: "/pkgs/database"
-    schedule:
-      interval: "weekly"
-  - package-ecosystem: "gomod"
-    directory: "/pkgs/fleet/placement"
-    schedule:
-      interval: "weekly"
-  - package-ecosystem: "gomod"
-    directory: "/pkgs/graph"
-    schedule:
-      interval: "weekly"
-  - package-ecosystem: "gomod"
-    directory: "/pkgs/identity"
-    schedule:
-      interval: "weekly"
-  - package-ecosystem: "gomod"
-    directory: "/pkgs/import"
-    schedule:
-      interval: "weekly"
-  - package-ecosystem: "gomod"
-    directory: "/pkgs/launcher"
-    schedule:
-      interval: "weekly"
-  - package-ecosystem: "gomod"
-    directory: "/pkgs/map"
-    schedule:
-      interval: "weekly"
-  - package-ecosystem: "gomod"
-    directory: "/pkgs/mcpx"
-    schedule:
-      interval: "weekly"
-  - package-ecosystem: "gomod"
-    directory: "/pkgs/roc/platforms/go-basic-cli"
-    schedule:
-      interval: "weekly"
-  - package-ecosystem: "gomod"
-    directory: "/pkgs/tea"
-    schedule:
-      interval: "weekly"
+    groups:
+      gomod:
+        patterns: ["*"]
   - package-ecosystem: "terraform"
     directory: "/infra/dns"
     schedule:
       interval: "weekly"
+    groups:
+      terraform:
+        patterns: ["*"]
   - package-ecosystem: "nuget"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      nuget:
+        patterns: ["*"]
