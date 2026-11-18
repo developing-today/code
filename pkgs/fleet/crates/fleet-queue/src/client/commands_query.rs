@@ -326,6 +326,117 @@ pub(super) fn cmd_list(rest: &[String]) -> i32 {
     0
 }
 
+/// Show one task's rich current broker row and the tail of its audit
+/// timeline. The broker's rich /list row is the source of truth for
+/// mutable state; events are intentionally limited only after the
+/// same normalization and ordering used by `timeline`.
+pub(super) fn cmd_show(rest: &[String]) -> i32 {
+    let args = parse_verb_args("show", rest, &["limit"], &["json"]);
+    reject_extra_pos("show", &args, 1);
+    let task_id = args.pos_i64(0, "task_id");
+    let limit = match list_limit_or_default(args.get_i64("limit").or(Some(10))) {
+        Ok(limit) => limit as usize,
+        Err(e) => die(2, &e),
+    };
+    let resp = unwrap_ok(call(
+        "/list",
+        &json!({"rich": true, "task": task_id, "limit": 1}),
+    ));
+    let rows = match list_rows(&resp) {
+        Ok(rows) => rows,
+        Err(e) => die(3, &e),
+    };
+    let Some(task) = rows
+        .into_iter()
+        .find(|r| r.get("id").and_then(Value::as_i64) == Some(task_id))
+    else {
+        eprint(&format!("repo-queue show: task {task_id} not found\n"));
+        return 1;
+    };
+    let mut events = Vec::new();
+    for kind in [
+        "claimed",
+        "session_bound",
+        "lane_session_bound",
+        "model_stamp",
+        "session_unbound",
+        "session_binding_cleared",
+        "completed",
+        "lease_expired",
+        "lease_expired_at_cap",
+        "claim_refused",
+        "released",
+        "parked",
+        "failed",
+        "cancelled",
+    ] {
+        let response = call(
+            "/events-list",
+            &json!({"task_id": task_id, "kind": kind, "limit": 1000}),
+        );
+        if response.get("ok").and_then(Value::as_bool) != Some(true) {
+            eprint("repo-queue show: broker does not serve /events-list yet\n");
+            return 3;
+        }
+        if let Some(rows) = response
+            .get("row")
+            .and_then(|r| r.get("rows"))
+            .and_then(Value::as_array)
+        {
+            events.extend(rows.iter().filter_map(timeline_event));
+        }
+    }
+    events.sort_by_key(|event| event.id);
+    let events = collapse_timeline(events);
+    let start = events.len().saturating_sub(limit);
+    let history = &events[start..];
+    if args.has("json") {
+        print_json(&json!({
+            "task": task,
+            "history": history.iter().map(|ev| json!({
+                "id": ev.id, "kind": ev.kind, "created_at": ev.created_at,
+                "session_id": ev.session_id, "provider": ev.provider,
+                "model": ev.model, "variant": ev.variant, "trigger": ev.trigger,
+            })).collect::<Vec<_>>(),
+        }));
+        return 0;
+    }
+    println!("task {task_id}");
+    for key in [
+        "status",
+        "kind",
+        "queue",
+        "pool",
+        "attempts",
+        "max_attempts",
+        "worker_id",
+        "lease_until",
+        "wait_kind",
+        "ready_condition",
+        "not_before",
+        "blocker",
+        "lane_id",
+        "lane_reason",
+        "platform",
+        "claim_provider",
+        "claim_model",
+        "claim_variant",
+        "claim_session_id",
+        "issue",
+        "pr",
+        "progress",
+    ] {
+        if let Some(value) = task.get(key) {
+            println!("{key}: {}", value);
+        }
+    }
+    println!("history ({} most recent events):", history.len());
+    for event in history {
+        println!("{}  {}", event.created_at, event.kind);
+    }
+    0
+}
+
 /// The /claim-flow request invariants (#5757-A), checked before
 /// any step runs, on both broker backends (the broker is the
 /// trust boundary; the client mirrors the same rules in
