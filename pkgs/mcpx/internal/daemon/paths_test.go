@@ -474,3 +474,23 @@ func TestInfoFileNamesBothDigests(t *testing.T) {
 		t.Fatalf("round trip = %+v, want schemaHash/daemonKey preserved", got)
 	}
 }
+
+// #11205: a relative XDG_STATE_HOME is ignored, as the XDG spec requires,
+// rather than resolving state against the working directory. The plugin's
+// stateDir makes the same choice, so both sides find the same daemon.
+func TestDefaultStateDirIgnoresARelativeXDGStateHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("MCPX_STATE_DIR", "")
+	for _, xdg := range []string{"relative/state", "./state", ""} {
+		t.Setenv("XDG_STATE_HOME", xdg)
+		if got, want := daemon.DefaultStateDir(), filepath.Join(home, ".local", "state", "mcpx"); got != want {
+			t.Errorf("XDG_STATE_HOME=%q: DefaultStateDir = %q, want %q", xdg, got, want)
+		}
+	}
+	abs := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", abs)
+	if got, want := daemon.DefaultStateDir(), filepath.Join(abs, "mcpx"); got != want {
+		t.Errorf("absolute XDG_STATE_HOME: DefaultStateDir = %q, want %q", got, want)
+	}
+}

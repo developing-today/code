@@ -30,9 +30,9 @@
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { homePath } from './home-dir.mjs';
 
 export const OWNER_FILE = 'scratch-worktree-owner';
 
@@ -78,7 +78,7 @@ const ownerFile = (worktree) => {
 export const add = ({ repo, prefix, root, base = 'origin/main', fetch = true, now, random }) => {
   if (!repo) throw new ScratchError(2, '--repo is required');
   validatePrefix(prefix);
-  const scratchRoot = root ?? path.join(os.homedir(), 'git', 'fleet');
+  const scratchRoot = root ?? homePath(process.env, 'scratch-worktree (default --root)', 'git', 'fleet');
   const target = scratchPath(scratchRoot, prefix, runId(now, random));
   if (fs.existsSync(target)) {
     throw new ScratchError(3, `refusing to adopt existing scratch path ${target}`);

@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
+import { resolveHome } from './home-dir.mjs';
 
 // #2953 (define, don't assign): store an externally-spelled key with
 // define semantics, so "__proto__" becomes an own property instead of
@@ -39,11 +40,11 @@ const ROOT_DIR = path.resolve(import.meta.dirname, '..');
 // is the only home resolution. The old `|| '/home/user'` fallback was
 // a hardcoded-user substitute directory; unset/empty HOME now fails
 // loudly naming HOME instead of syncing another user's config/state.
-const HOME_DIR = process.env.HOME;
-if (!HOME_DIR) {
-  console.error(
-    '[sync-models] Error: HOME is not set or is empty: sync-models requires a non-empty HOME to resolve its config/state paths (home-resolution contract, issues #5762/#5763)',
-  );
+let HOME_DIR;
+try {
+  HOME_DIR = resolveHome(process.env, 'sync-models (config/state paths)');
+} catch (err) {
+  console.error(`[sync-models] Error: ${err.message}`);
   process.exit(2);
 }
 // Config resolution (#591, #4544): the model catalogs this script maintains
@@ -190,7 +191,10 @@ async function discoverAntigravityModels() {
 
   // Try 2: agy CLI models command
   try {
-    const agyOut = execSync('HOME=/home/user/.gemini/agy-proxy-env agy models 2>&1', { encoding: 'utf-8' });
+    const agyOut = execSync('agy models 2>&1', {
+      encoding: 'utf-8',
+      env: { ...process.env, HOME: path.join(HOME_DIR, '.gemini', 'agy-proxy-env') },
+    });
     const lines = agyOut.split('\n');
     for (const line of lines) {
       const trimmed = line.trim();

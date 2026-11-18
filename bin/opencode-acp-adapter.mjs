@@ -79,10 +79,9 @@
 // unreachable, session/new fails with the connection error.
 
 import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import process from 'node:process';
+import { homePath } from './home-dir.mjs';
 
 const PROTOCOL_VERSION = 1;
 const AGENT_NAME = 'opencode-acp-adapter';
@@ -178,7 +177,7 @@ function serverPassword() {
   }
   const authFile =
     process.env.OPENCODE_AUTH_FILE ||
-    join(homedir(), '.local', 'state', 'opencode', 'service-prod.json');
+    homePath(process.env, 'opencode-acp-adapter (default OPENCODE_AUTH_FILE)', '.local', 'state', 'opencode', 'service-prod.json');
   let raw;
   try {
     raw = readFileSync(authFile, 'utf8');

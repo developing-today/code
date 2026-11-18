@@ -59,6 +59,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { homePath } from './home-dir.mjs';
 
 // #2953 (define, don't assign): store an externally-spelled key with
 // define semantics, so "__proto__" becomes an own property instead of
@@ -906,13 +907,9 @@ export function parseArgs(argv) {
 // `process.env.HOME || '/home/user'` fallback was a hardcoded-user
 // substitute directory; unset/empty HOME is a named error here.
 export function defaultRuntimeConfigPath(env) {
-  if (!env.HOME) {
-    throw new Error(
-      'HOME is not set or is empty: provider-catalog-sync requires a non-empty HOME to resolve the default runtime config path (home-resolution contract, issues #5762/#5763)',
-    );
-  }
-  return path.join(
-    env.HOME,
+  return homePath(
+    env,
+    'provider-catalog-sync (default runtime config path)',
     '.local/state/opencode/opencode-runtime.jsonc',
   );
 }
