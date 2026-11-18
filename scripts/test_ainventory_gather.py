@@ -45,6 +45,16 @@ class Gatherer(unittest.TestCase):
  def test_empty_live_run_never_writes_batch(self):
   with tempfile.TemporaryDirectory() as d, patch.object(sys,'argv',['gather','--live','--out',d]), patch.object(g,'Turso',return_value=self.db), patch.object(g,'fetch',side_effect=['', '{}']), patch.object(self.db,'batch',side_effect=AssertionError('unexpected write')):
    self.assertEqual(g.main(),0)
+ def test_live_batch_explicit_timestamps(self):
+  # Oracle: legacy deployed parent has no SQL defaults. Both timestamps required.
+  known=[{'name':'model','provider':'OpenAI'}]
+  aa={'release_name':'model','release_slug':'model','effort':'high','intelligence_index':10,'cost_per_task_usd':None,'output_tokens_per_task':None,'ttft_seconds':None,'output_tps_short':None,'source_ref':'https://example.invalid','price_input_per_1m':None}
+  with tempfile.TemporaryDirectory() as d, patch.object(sys,'argv',['gather','--live','--out',d]), patch.object(g,'Turso',return_value=self.db), patch.object(g,'read_current',return_value=(known,[],[],[])), patch.object(g,'fetch',side_effect=['', '{}']), patch.object(g,'parse_aa_models',return_value=[aa]), patch.object(g,'persist_events') as persist:
+   self.assertEqual(g.main(),0)
+   batch=persist.call_args.args[1]
+   self.assertRegex(batch['ran_at'],r'^\d{4}-\d{2}-\d{2}T.*Z$')
+   self.assertEqual(batch['created_at'],batch['ran_at'])
+   self.assertEqual(batch['inserted_counts'],{'measurement_events':1,'price_events':0})
  def test_numeric_column_name(self):
   sql,args=g.insert_statement('price_events',[{'input_usd_per_1m':1.25}])
   self.assertIn('input_usd_per_1m',sql);self.assertEqual(args,[1.25])

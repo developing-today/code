@@ -26,7 +26,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
@@ -363,8 +363,11 @@ def main():
     inserted = {"measurement_events": 0, "price_events": 0}
     if live and (aa_meas or aa_price or md_price):
         batch_id = str(uuid.uuid4())
+        timestamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         batch = {
             "id": batch_id,
+            "ran_at": timestamp,
+            "created_at": timestamp,
             "source_kind": "gatherer",
             "source_ref": "task 16876 / issue #9999 Phase 2 slice 1 live gatherer",
             "inserted_counts": {},
