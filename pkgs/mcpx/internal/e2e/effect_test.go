@@ -100,6 +100,10 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor": "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":       "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":             "TestEventsHistoryBoundsTheReplay",
+	"script.before":              "TestScriptPhasesRunFromTheEnvironment",
+	"script.onSuccess":           "TestScriptPhasesRunFromTheEnvironment",
+	"script.onError":             "TestScriptPhasesRunFromTheEnvironment",
+	"script.suffix":              "TestScriptPhasesRunFromTheEnvironment",
 	"hooks":                      "TestHooksRunOnTheirEvent",
 	"hooks.timeout":              "TestHooksTimeoutStopsASlowHook",
 	"daemon.ui":                  "TestDaemonUITurnsTheDashboardOff",
@@ -213,6 +217,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":        TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                 TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                          TestEventsHistoryBoundsTheReplay,
+	"TestScriptPhasesRunFromTheEnvironment":                                     TestScriptPhasesRunFromTheEnvironment,
 	"TestHooksRunOnTheirEvent":                                                  TestHooksRunOnTheirEvent,
 	"TestHooksTimeoutStopsASlowHook":                                            TestHooksTimeoutStopsASlowHook,
 	"TestDaemonUITurnsTheDashboardOff":                                          TestDaemonUITurnsTheDashboardOff,
@@ -2078,6 +2083,58 @@ func TestDaemonUIDirOverridesTheDashboard(t *testing.T) {
 	}
 	if code, body := dashboard(t, "MCPX_DAEMON_UI_DIR="+ui); code != http.StatusOK || body != "custom-ui-page" {
 		t.Errorf("daemon.uiDir should serve its own index.html, got %d %q", code, body)
+	}
+}
+
+// phaseRun `mcpx run`s a script that succeeds, or throws when fail is set,
+// with env, and returns everything it printed.
+func phaseRun(t *testing.T, fail bool, env ...string) string {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(env...)
+	script := filepath.Join(e.dir, "phases.ts")
+	body := "export default function () { return \"done\" }\n"
+	if fail {
+		body = "throw new Error(\"script-boom\")\n"
+	}
+	mustWrite(t, script, body)
+	out, _ := e.try("run", script)
+	return out
+}
+
+// TestScriptPhasesRunFromTheEnvironment is the effect probe for
+// script.before, script.onSuccess, script.onError and script.suffix: none
+// of their markers print by default, and each prints on the path it
+// belongs to once the environment sets it.
+func TestScriptPhasesRunFromTheEnvironment(t *testing.T) {
+	phases := []string{
+		`MCPX_SCRIPT_BEFORE=console.info("phase-before")`,
+		`MCPX_SCRIPT_ON_SUCCESS=console.info("phase-success")`,
+		`MCPX_SCRIPT_ON_ERROR=console.info("phase-error")`,
+		`MCPX_SCRIPT_SUFFIX=console.info("phase-suffix")`,
+	}
+	for _, fail := range []bool{false, true} {
+		if out := phaseRun(t, fail); strings.Contains(out, "phase-") {
+			t.Errorf("no phase should run by default (fail=%v):\n%s", fail, out)
+		}
+	}
+	ok := phaseRun(t, false, phases...)
+	for _, want := range []string{"phase-before", "phase-success", "phase-suffix"} {
+		if !strings.Contains(ok, want) {
+			t.Errorf("a succeeding script should run %s:\n%s", want, ok)
+		}
+	}
+	if strings.Contains(ok, "phase-error") {
+		t.Errorf("a succeeding script should not run script.onError:\n%s", ok)
+	}
+	bad := phaseRun(t, true, phases...)
+	for _, want := range []string{"phase-before", "phase-error", "phase-suffix", "script-boom"} {
+		if !strings.Contains(bad, want) {
+			t.Errorf("a throwing script should show %s:\n%s", want, bad)
+		}
+	}
+	if strings.Contains(bad, "phase-success") {
+		t.Errorf("a throwing script should not run script.onSuccess:\n%s", bad)
 	}
 }
 
