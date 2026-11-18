@@ -100,6 +100,10 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor": "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":       "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":             "TestEventsHistoryBoundsTheReplay",
+	"hooks":                      "TestHooksRunOnTheirEvent",
+	"hooks.timeout":              "TestHooksTimeoutStopsASlowHook",
+	"daemon.ui":                  "TestDaemonUITurnsTheDashboardOff",
+	"daemon.uiDir":               "TestDaemonUIDirOverridesTheDashboard",
 	"logging.level":              "TestLoggingLevelShowsDebugRecords",
 	"logging.format":             "TestLoggingFormatRendersJSON",
 	"logging.source":             "TestLoggingSourceAddsTheCallSite",
@@ -209,6 +213,10 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":        TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                 TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                          TestEventsHistoryBoundsTheReplay,
+	"TestHooksRunOnTheirEvent":                                                  TestHooksRunOnTheirEvent,
+	"TestHooksTimeoutStopsASlowHook":                                            TestHooksTimeoutStopsASlowHook,
+	"TestDaemonUITurnsTheDashboardOff":                                          TestDaemonUITurnsTheDashboardOff,
+	"TestDaemonUIDirOverridesTheDashboard":                                      TestDaemonUIDirOverridesTheDashboard,
 	"TestLoggingLevelShowsDebugRecords":                                         TestLoggingLevelShowsDebugRecords,
 	"TestLoggingFormatRendersJSON":                                              TestLoggingFormatRendersJSON,
 	"TestLoggingSourceAddsTheCallSite":                                          TestLoggingSourceAddsTheCallSite,
@@ -1955,6 +1963,121 @@ func TestLoggingKeepPrunesRotatedFiles(t *testing.T) {
 	}
 	if _, dir, _ := loggedRun(t, "MCPX_LOGGING_MAX_LINES=1", "MCPX_LOGGING_KEEP=1"); len(logFiles(t, dir)) > 2 {
 		t.Errorf("logging.keep=1 should prune to one rotated file: %v", logFiles(t, dir))
+	}
+}
+
+// touchHook declares one call.finished hook that waits a second and then
+// creates mark, so whether mark appears says whether the hook ran to the end.
+func touchHook(mark string) string {
+	return `MCPX_HOOKS=[{"on":"call.finished","run":["/usr/bin/env","bash","-c","sleep 1; touch ` + mark + `"]}]`
+}
+
+// appears polls for path for up to wait.
+func appears(path string, wait time.Duration) bool {
+	for deadline := time.Now().Add(wait); time.Now().Before(deadline); {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return false
+}
+
+// TestHooksRunOnTheirEvent is the effect probe for hooks: with no hooks a
+// call leaves nothing behind, and a call.finished hook declared in the
+// environment runs after the call.
+func TestHooksRunOnTheirEvent(t *testing.T) {
+	mark := filepath.Join(t.TempDir(), "mark")
+	e := newEnv(t, oneServer)
+	e.run("call", "demo.echo", `{"message":"x"}`)
+	if appears(mark, 2*time.Second) {
+		t.Fatal("with no hooks declared, nothing should create the mark")
+	}
+	e2 := newEnv(t, oneServer)
+	e2.setenv(touchHook(mark))
+	e2.run("call", "demo.echo", `{"message":"x"}`)
+	if !appears(mark, 10*time.Second) {
+		t.Error("a declared call.finished hook should run after the call")
+	}
+}
+
+// TestHooksTimeoutStopsASlowHook is the effect probe for hooks.timeout: a
+// hook that takes a second finishes under the default timeout, and is
+// stopped, with a hook.failed event, under a 200ms one.
+func TestHooksTimeoutStopsASlowHook(t *testing.T) {
+	mark := filepath.Join(t.TempDir(), "mark")
+	e := newEnv(t, oneServer)
+	e.setenv(touchHook(mark))
+	e.run("call", "demo.echo", `{"message":"x"}`)
+	if !appears(mark, 10*time.Second) {
+		t.Fatal("a one-second hook should finish under the default hooks.timeout")
+	}
+
+	slow := filepath.Join(t.TempDir(), "mark")
+	e2 := newEnv(t, oneServer)
+	e2.setenv(touchHook(slow), "MCPX_HOOKS_TIMEOUT=200ms")
+	e2.run("call", "demo.echo", `{"message":"x"}`)
+	c := *e2.socketClient(t)
+	c.Timeout = 5 * time.Second
+	resp, err := c.Get("http://mcpx/v1/events?kinds=hook&since=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	buf := make([]byte, 8192)
+	n, _ := io.ReadAtLeast(resp.Body, buf, 64)
+	for !strings.Contains(string(buf[:n]), "timed out") && n < len(buf) {
+		m, rerr := resp.Body.Read(buf[n:])
+		n += m
+		if rerr != nil {
+			break
+		}
+	}
+	if !strings.Contains(string(buf[:n]), "hook timed out after 200ms") {
+		t.Errorf("hooks.timeout=200ms should fail the hook as timed out:\n%s", buf[:n])
+	}
+	if appears(slow, 2*time.Second) {
+		t.Error("a hook stopped by hooks.timeout should not finish its work")
+	}
+}
+
+// dashboard fetches /dashboard from a daemon started with env.
+func dashboard(t *testing.T, env ...string) (int, string) {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(env...)
+	e.run("ls")
+	resp, err := e.socketClient(t).Get("http://mcpx/dashboard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(b)
+}
+
+// TestDaemonUITurnsTheDashboardOff is the effect probe for daemon.ui: the
+// loopback daemon serves its dashboard by default and 404s it at false.
+func TestDaemonUITurnsTheDashboardOff(t *testing.T) {
+	if code, _ := dashboard(t); code != http.StatusOK {
+		t.Errorf("the default daemon.ui should serve the dashboard, got %d", code)
+	}
+	if code, _ := dashboard(t, "MCPX_DAEMON_UI=false"); code != http.StatusNotFound {
+		t.Errorf("daemon.ui=false should 404 the dashboard, got %d", code)
+	}
+}
+
+// TestDaemonUIDirOverridesTheDashboard is the effect probe for
+// daemon.uiDir: the embedded page by default, and the named directory's
+// index.html once the environment sets it.
+func TestDaemonUIDirOverridesTheDashboard(t *testing.T) {
+	ui := t.TempDir()
+	mustWrite(t, filepath.Join(ui, "index.html"), "custom-ui-page")
+	if _, body := dashboard(t); strings.Contains(body, "custom-ui-page") {
+		t.Errorf("the default daemon.uiDir should serve the embedded page")
+	}
+	if code, body := dashboard(t, "MCPX_DAEMON_UI_DIR="+ui); code != http.StatusOK || body != "custom-ui-page" {
+		t.Errorf("daemon.uiDir should serve its own index.html, got %d %q", code, body)
 	}
 }
 
