@@ -231,7 +231,6 @@ pub use id_directory::directory_log;
 pub use id_directory::directory_mail;
 #[cfg(feature = "world")]
 pub use id_directory::directory_view;
-#[cfg(feature = "world")]
 pub use id_directory::keyset;
 pub use id_sync::dht;
 pub mod didit;
