@@ -1187,6 +1187,27 @@ fn file_store_with_recorded_intent(
 type PathBufForTests = std::path::PathBuf;
 
 #[test]
+fn an_intent_file_with_a_duplicated_key_is_unreadable() {
+    let (dir, store, _backend) = file_store_with_recorded_intent("dupkey");
+    let path = std::fs::read_dir(&dir)
+        .expect("list intents")
+        .map(|entry| entry.expect("intent entry").path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .expect("the recorded intent");
+    let text = std::fs::read_to_string(&path).expect("read intent");
+    let rest = text.strip_prefix('{').expect("an object");
+    // A lenient decode keeps the last value and lists the intent (#8794).
+    std::fs::write(&path, format!("{{\"x\":1,\"x\":2,{rest}")).expect("rewrite intent");
+
+    let listed = store.unresolved().expect("listing skips the file");
+    assert!(listed.is_empty());
+    let unreadable = store.unreadable_entries();
+    assert_eq!(unreadable.len(), 1);
+    assert_eq!(unreadable[0].path, path);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn recovery_continues_past_a_corrupt_sibling_file() {
     let (dir, mut store, mut backend) = file_store_with_recorded_intent("corrupt");
     let corrupt = dir.join("deadbeef.json");

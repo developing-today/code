@@ -505,19 +505,7 @@ pub async fn cmd_world(command: WorldCommand) -> Result<()> {
             // --ceiling / --profile flags; without them the checks report
             // that none is configured (they are not silently passed off as
             // a live world's values).
-            let profile = match profile {
-                Some(path) => {
-                    let text = std::fs::read_to_string(&path)
-                        .with_context(|| format!("read execution profile {}", path.display()))?;
-                    Some(
-                        serde_json::from_str::<id_caps::world_limits::WorldExecutionProfile>(&text)
-                            .with_context(|| {
-                                format!("parse execution profile {}", path.display())
-                            })?,
-                    )
-                }
-                None => None,
-            };
+            let profile = profile.as_deref().map(read_execution_profile).transpose()?;
             let inputs = id_worlds::world_doctor::DoctorInputs {
                 roc_bin,
                 roc_resolved: None,
@@ -2300,14 +2288,39 @@ fn pump_plain(line: &str) -> PumpLine {
     }
 }
 
+/// The execution profile in the file at `path`, for `id world doctor`.
+///
+/// A duplicated key is refused rather than read as its last value
+/// (#8794).
+fn read_execution_profile(
+    path: &std::path::Path,
+) -> Result<id_caps::world_limits::WorldExecutionProfile> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("read execution profile {}", path.display()))?;
+    id_core::json_unique::from_slice_without_duplicate_keys(text.as_bytes())
+        .with_context(|| format!("parse execution profile {}", path.display()))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
         PumpLine, check_contract, check_journal_bytes, journal_backup, local_transcript_record,
-        print_journal_check, pump_command, scaffold_world, step_is_applied, world_list_plain_row,
-        world_provenance,
+        print_journal_check, pump_command, read_execution_profile, scaffold_world, step_is_applied,
+        world_list_plain_row, world_provenance,
     };
+
+    #[test]
+    fn an_execution_profile_with_a_duplicated_key_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("profile.json");
+        std::fs::write(&path, r#"{"wasm_fuel":1000000}"#).unwrap();
+        assert!(read_execution_profile(&path).is_ok());
+        // A lenient decode would keep the last value of the key.
+        std::fs::write(&path, r#"{"x":1,"x":2,"wasm_fuel":1000000}"#).unwrap();
+        let error = format!("{:#}", read_execution_profile(&path).unwrap_err());
+        assert!(error.contains("parse execution profile"), "{error}");
+    }
 
     /// #3089: a world name containing LF must not forge an extra row in
     /// plain output — the rendered row is one physical line with exactly
