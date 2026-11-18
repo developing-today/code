@@ -102,6 +102,7 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"daemon.idleExit":                    "TestDaemonIdleExitStopsAnIdleDaemonFromTheEnvironment",
 	"daemon.port":                        "TestDaemonPortBindsTheChosenPortFromTheEnvironment",
 	"daemon.saveInterval":                "TestDaemonSaveIntervalWritesTheLeaseTableFromTheEnvironment",
 	"autostart.pollInterval":             "TestAutostartPollIntervalPacesTheReadinessPollFromTheEnvironment",
@@ -286,6 +287,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestDaemonIdleExitStopsAnIdleDaemonFromTheEnvironment":                          TestDaemonIdleExitStopsAnIdleDaemonFromTheEnvironment,
 	"TestDaemonPortBindsTheChosenPortFromTheEnvironment":                             TestDaemonPortBindsTheChosenPortFromTheEnvironment,
 	"TestDaemonSaveIntervalWritesTheLeaseTableFromTheEnvironment":                    TestDaemonSaveIntervalWritesTheLeaseTableFromTheEnvironment,
 	"TestAutostartPollIntervalPacesTheReadinessPollFromTheEnvironment":               TestAutostartPollIntervalPacesTheReadinessPollFromTheEnvironment,
@@ -3835,6 +3837,32 @@ func TestDaemonPortBindsTheChosenPortFromTheEnvironment(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("the chosen port answered %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestDaemonIdleExitStopsAnIdleDaemonFromTheEnvironment is the effect
+// probe for daemon.idleExit, the daemon's own idle bound (the one a
+// daemon started without --idle-exit uses). autostart.idleExit is
+// zeroed so the auto-started daemon gets no flag, and instances are
+// reaped after 200ms. With daemon.idleExit at its 0s default the daemon
+// never exits, so ls with autostart off reaches it 4s later; with
+// daemon.idleExit=1s it has exited, and the same ls fails.
+func TestDaemonIdleExitStopsAnIdleDaemonFromTheEnvironment(t *testing.T) {
+	stillThere := func(extra ...string) bool {
+		e := newEnv(t, oneServer)
+		e.setenv(append([]string{"MCPX_AUTOSTART_IDLE_EXIT=0s",
+			"MCPX_POOL_IDLE_TIMEOUT=200ms", "MCPX_DAEMON_REAP_INTERVAL=100ms"}, extra...)...)
+		e.run("ls")
+		time.Sleep(4 * time.Second)
+		e.setenv("MCPX_DAEMON_AUTOSTART=false")
+		_, err := e.try("ls")
+		return err == nil
+	}
+	if !stillThere() {
+		t.Fatalf("oracle: with no idle bound the daemon should still be running")
+	}
+	if stillThere("MCPX_DAEMON_IDLE_EXIT=1s") {
+		t.Fatalf("with daemon.idleExit=1s the idle daemon should have exited")
 	}
 }
 
