@@ -83,10 +83,11 @@ pub(crate) use journal::JournalAdminHistory;
 pub use journal::{
     CoordinatorJournalEntry, JOURNAL_VERSION, JOURNAL_VERSION_CHECKPOINT_PARTS,
     JOURNAL_VERSION_EXECUTION_PROFILE, JOURNAL_VERSION_OPEN_PRESENCE, JOURNAL_VERSION_PORTALS,
-    JOURNAL_VERSION_REGION_HANDOFF, JOURNAL_VERSION_SCHEDULE_RECURRENCE,
-    JOURNAL_VERSION_SIGNED_PLAY, JOURNAL_VERSION_WORLD_BUDGET, JOURNAL_VERSION_WRITE_LEASE,
-    JournalEntry, JournalSignedMove, JournalSnapshot, JournalSnapshotSource, MAX_JOURNAL_VERSION,
-    TrustBasis, TrustDecision, WorldJournal, journal_version_required_by,
+    JOURNAL_VERSION_PROGRAM_BUNDLE, JOURNAL_VERSION_REGION_HANDOFF,
+    JOURNAL_VERSION_SCHEDULE_RECURRENCE, JOURNAL_VERSION_SIGNED_PLAY, JOURNAL_VERSION_WORLD_BUDGET,
+    JOURNAL_VERSION_WRITE_LEASE, JournalEntry, JournalSignedMove, JournalSnapshot,
+    JournalSnapshotSource, MAX_JOURNAL_VERSION, TrustBasis, TrustDecision, WorldJournal,
+    journal_version_required_by,
 };
 pub use metrics::{
     HistogramSnapshot, MetricsSnapshot, RegionWrites, WorldMetrics, WriteLocalitySnapshot,
@@ -339,6 +340,54 @@ pub enum ModuleProvenance {
     /// The module was forked from another world: the world's state and module
     /// were copied at the fork point, with the origin recorded.
     Fork(ForkProvenance),
+    /// The module was sideloaded from a verified program bundle (#8280,
+    /// design D4): the install record names the bundle's identity, ABI,
+    /// lineage and signature. Journals carrying it need
+    /// [`JOURNAL_VERSION_PROGRAM_BUNDLE`].
+    Bundle(BundleProvenance),
+}
+
+impl ModuleProvenance {
+    /// Whether this provenance is a program-bundle install, which an older
+    /// binary cannot read.
+    #[must_use]
+    pub const fn is_bundle(&self) -> bool {
+        matches!(self, Self::Bundle(_))
+    }
+}
+
+/// How a bundle install follows later versions of its program (D4). Only
+/// pinned exists today: an update is a new install decision.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallPolicy {
+    /// Exactly this content hash; nothing changes without a new install.
+    #[default]
+    Pinned,
+}
+
+/// The install record of a sideloaded program bundle (#8280).
+///
+/// It keeps what the verified bundle stated with the install event, so the
+/// world's history says which program, by whom, forked from what, is
+/// running.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BundleProvenance {
+    /// Provenance record schema, independent of the world journal version.
+    pub schema_version: u8,
+    /// The program's D1 identity; its content hash is the module hash.
+    pub program: crate::program_bundle::ProgramIdentity,
+    /// The guest ABI the bundle declared.
+    pub abi: crate::program_bundle::AbiDescriptor,
+    /// Ancestors, oldest first; empty for an original.
+    pub lineage: Vec<crate::program_bundle::ProgramIdentity>,
+    /// The author's licence statement, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub licence: Option<String>,
+    /// The verified bundle signature, lower-case hex.
+    pub bundle_signature: String,
+    /// How this install follows later versions.
+    pub policy: InstallPolicy,
 }
 
 /// Provenance recorded when one world is forked from another (F12.2). It

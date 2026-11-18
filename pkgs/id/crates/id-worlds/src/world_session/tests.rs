@@ -3366,6 +3366,117 @@ mod tests {
         );
     }
 
+    /// #8280 slice 2: a bundle exported and forked offline sideloads into a
+    /// fresh trust-listed world, runs, and the install record matches the
+    /// bundle; tampered and untrusted bundles install nothing.
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn sideloaded_bundle_installs_with_its_identity_lineage_and_signature() {
+        use crate::program_bundle::{BundleInstallError, ProgramSpec, export, fork};
+        use iroh_blobs::store::mem::MemStore;
+
+        let wasm = include_bytes!("../../../../examples/roc-counter/counter.wasm").to_vec();
+        let original_author = SigningKey::from_bytes(&[41; 32]);
+        let forker = SigningKey::from_bytes(&[42; 32]);
+        let spec = |name| ProgramSpec {
+            name,
+            version: 1,
+            licence: Some("MIT"),
+        };
+        let parent = export(wasm.clone(), spec("counter"), &original_author).unwrap();
+        let bundle = fork(&parent, wasm.clone(), spec("counter-plus"), &forker).unwrap();
+        let file = bundle.to_bytes();
+
+        let journal = CapturingJournal::default();
+        let world = WorldHandle::spawn_durable(
+            WorldCore::new("sideload", WorldLimits::default()).unwrap(),
+            Box::new(NoProgram),
+            Some(Box::new(journal.clone())),
+        );
+        let service = WorldService::new(world, Some("admin".to_owned()))
+            .with_blob_store(MemStore::new().into())
+            .with_module_trust_keys(vec![forker.verifying_key().to_bytes()]);
+
+        let mut tampered = file.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 1;
+        match service.install_bundle(Some("admin"), &tampered, 5).await {
+            Err(BundleInstallError::Bundle(error)) => {
+                assert_eq!(error.check(), "content_hash", "{error}");
+            }
+            other => panic!("a tampered bundle must fail verification: {other:?}"),
+        }
+        assert_eq!(
+            service
+                .install_bundle(Some("admin"), &parent.to_bytes(), 5)
+                .await,
+            Err(BundleInstallError::Install(InstallError::UntrustedModule)),
+            "the trust list still governs whose bundles install"
+        );
+        assert_eq!(
+            service.install_bundle(Some("wrong"), &file, 5).await,
+            Err(BundleInstallError::Install(InstallError::Unauthorized))
+        );
+        let installs = |entries: &[crate::world::JournalEntry]| {
+            entries
+                .iter()
+                .filter(|entry| {
+                    matches!(
+                        entry,
+                        crate::world::JournalEntry::Committed { event }
+                            if matches!(event.kind, crate::world::WorldEventKind::ProgramInstalled { .. })
+                    )
+                })
+                .count()
+        };
+        assert_eq!(installs(&journal.entries()), 0, "refusals install nothing");
+
+        let (hash, _) = service
+            .install_bundle(Some("admin"), &file, 5)
+            .await
+            .expect("a verified bundle from a trusted author installs offline");
+        assert_eq!(hash, bundle.identity().content_hash);
+
+        let entries = journal.entries();
+        let recorded = entries
+            .iter()
+            .find_map(|entry| match entry {
+                crate::world::JournalEntry::Committed { event } => match &event.kind {
+                    crate::world::WorldEventKind::ProgramInstalled {
+                        module_hash,
+                        provenance: Some(crate::world::ModuleProvenance::Bundle(provenance)),
+                        trust,
+                        ..
+                    } => Some((
+                        module_hash.clone(),
+                        provenance.clone(),
+                        trust.clone(),
+                        entry,
+                    )),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("the install event records bundle provenance");
+        let (module_hash, provenance, trust, entry) = recorded;
+        assert_eq!(module_hash, hash);
+        assert_eq!(provenance, bundle.provenance());
+        assert_eq!(provenance.program, bundle.identity());
+        assert_eq!(provenance.lineage, vec![parent.identity()]);
+        assert_eq!(provenance.bundle_signature, bundle.bundle_signature());
+        assert_eq!(provenance.policy, crate::world::InstallPolicy::Pinned);
+        let trust = trust.expect("the trust decision rides on the install event");
+        assert_eq!(trust.basis, crate::world::TrustBasis::SignatureVerified);
+        assert_eq!(
+            trust.publisher.as_deref(),
+            Some(provenance.program.author.as_str())
+        );
+        assert_eq!(
+            crate::world::journal_version_required_by(entry),
+            crate::world::JOURNAL_VERSION_PROGRAM_BUNDLE
+        );
+    }
+
     #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn joined_guest_install_is_actor_denied_and_journals_nothing() {
