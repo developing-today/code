@@ -8,6 +8,36 @@
 //! copy metadata, and delete left metadata behind). This module is the single
 //! implementation; every entry point calls it.
 //!
+//! # Contract: one name, one owner
+//!
+//! The three rules below are the recorded contract from the design of record
+//! (#4766). Every entry point honours them; the notes on each rule say where.
+//!
+//! 1. **One canonical name.** A stored name is exactly what the caller passed,
+//!    or it is refused. [`FileOps::validate_name`] is the single gate: a name
+//!    with leading/trailing whitespace, a rooted or traversal shape, or an
+//!    archive shape is **refused**, never trimmed or rewritten here (trimming at
+//!    the store would silently rename a user's file; surfaces that want to be
+//!    forgiving trim before calling, as the web handlers do).
+//! 2. **The archive namespace is reserved at the writer.** Any name for which
+//!    [`is_archive_tag_name`] holds (`<name>.archive.<unsigned digits>`, the
+//!    spelling the readers use) is refused with
+//!    [`FileOpError::ReservedArchiveName`]. Non-numeric lookalikes such as
+//!    `a.archive.notes` remain valid user files. Reservation is one check at the
+//!    one gate every surface funnels through, so a user name can never be
+//!    mistaken for an archive or overwrite a genuine one (#4720).
+//! 3. **Archive references are ownership; ownership moves only when the source
+//!    name ceases to exist.** `archive.rename`/`archive.replace` (and the
+//!    `archive.owner` back-reference) name the archives a future delete of the
+//!    live file must also remove. [`FileOps::rename`] moves them with the file
+//!    (the source name is gone — correct); [`FileOps::copy`] excludes them, so
+//!    the copy starts with no archive references except the `archive.replace`
+//!    for a file the copy itself replaced (#4761); [`FileOps::archive_existing`]
+//!    keeps them off the archive and restores them to the live name (#4574).
+//!    [`ARCHIVE_IDENTITY_TAG_KEYS`] is the exclusion set, beside which the next
+//!    metadata-duplicating operation should ask this question rather than
+//!    reintroduce the bug.
+//!
 //! # Semantics
 //!
 //! - [`FileOps::put`] verifies that the blob is present **before** creating the
@@ -162,7 +192,13 @@ async fn free_archive_name(store: &Store, name: &str, ts: u64) -> Result<String>
 }
 
 /// Whether `name` has the archive tag shape used by FileOps.
-fn is_archive_tag_name(name: &str) -> bool {
+///
+/// This is the readers' and the writer-gate's spelling: the shape FileOps
+/// mints (`<name>.archive.<unsigned digits>`) and the one
+/// [`FileOps::validate_name`] refuses as a user name. The web listing's
+/// `classify_tag` decides the same question from a name; a test pins the two
+/// against one probe set (#4767(d)).
+pub fn is_archive_tag_name(name: &str) -> bool {
     let Some((file_name, suffix)) = name.rsplit_once(".archive.") else {
         return false;
     };
@@ -824,6 +860,7 @@ mod archive_name_tests {
             assert!(FileOps::validate_name(name).is_ok(), "{name:?}");
         }
     }
+
 
     /// Two replaces of one name within the same second must not share an
     /// archive tag (#1612): the second archive is bumped to the next free

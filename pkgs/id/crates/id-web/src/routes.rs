@@ -5065,6 +5065,28 @@ mod tests {
     }
 
     #[test]
+    fn test_fileops_archive_name_predicate_matches_classifier_probe_set() {
+        // These are the canonical, signed, padded and non-numeric spellings
+        // at the writer/reader boundary. Empty-base and u64-overflow
+        // divergences are tracked separately in the #4767 audit.
+        for name in [
+            "report.archive.123",
+            "report.archive.0123",
+            "report.archive.+123",
+            "report.archive.notes",
+            "a.archive.+1",
+            "a.archive.١",
+        ] {
+            let (kind, _) = classify_tag(name);
+            assert_eq!(
+                id_sync::fileops::is_archive_tag_name(name),
+                kind == FileKind::Archive,
+                "writer/reader disagreement for {name:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_parse_iso_timestamp_valid() {
         // 2026-03-12T06:42:30.015Z → should produce a valid timestamp
         let ts = parse_iso_timestamp("2026-03-12T06:42:30.015Z");

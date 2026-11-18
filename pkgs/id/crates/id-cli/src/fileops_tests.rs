@@ -477,6 +477,80 @@ mod delete_tests {
         assert!(node.blobs().tags().get(&second).await.unwrap().is_none());
         node.shutdown().await.unwrap();
     }
+
+    #[tokio::test]
+    async fn delete_collects_archive_for_name_with_nonnumeric_archive_component() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "source", b"new content").await;
+        put(&node, "a.archive.notes", b"old content").await;
+
+        let outcome = node
+            .ops()
+            .rename("source", "a.archive.notes", false)
+            .await
+            .unwrap();
+        let archive = outcome.archived_replaced.unwrap();
+        assert!(archive.starts_with("a.archive.notes.archive."), "{archive}");
+
+        let deleted = node.ops().delete("a.archive.notes").await.unwrap();
+        assert_eq!(deleted.archives_removed, 1);
+        assert!(node.blobs().tags().get(&archive).await.unwrap().is_none());
+
+        node.shutdown().await.unwrap();
+    }
+
+    /// Direct single-archive deletion is not supported (#4767(e)): `delete`
+    /// holds the archive namespace reserved, so an archive name cannot be
+    /// deleted on its own. Pinned as current contract.
+    #[tokio::test]
+    async fn delete_refuses_to_name_an_archive_directly() {
+        let node = LocalNode::open(true).await.unwrap();
+        put(&node, "before", b"original").await;
+        let rename = node.ops().rename("before", "after", true).await.unwrap();
+        let archive = rename.archived_original.unwrap();
+
+        assert!(matches!(
+            node.ops().delete(&archive).await,
+            Err(FileOpError::ReservedArchiveName(name)) if name == archive
+        ));
+        assert!(node.blobs().tags().get(&archive).await.unwrap().is_some());
+
+        node.shutdown().await.unwrap();
+    }
+
+    /// Legacy archive-shaped user files (#4767(d)): the writer refuses to
+    /// mint them now, but a file created before the reservation can be moved
+    /// to a legal name because `rename` validates only its destination.
+    #[tokio::test]
+    async fn legacy_archive_shaped_file_can_be_renamed_to_a_legal_name() {
+        let node = LocalNode::open(true).await.unwrap();
+        let guard = node
+            .blobs()
+            .add_bytes(b"legacy".to_vec())
+            .temp_tag()
+            .await
+            .unwrap();
+        // Pre-reservation write path: set the filename tag directly.
+        node.blobs()
+            .tags()
+            .set("report.archive.999", guard.hash())
+            .await
+            .unwrap();
+
+        node.ops()
+            .rename("report.archive.999", "report.txt", false)
+            .await
+            .unwrap();
+        assert!(
+            node.blobs()
+                .tags()
+                .get("report.txt")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        node.shutdown().await.unwrap();
+    }
 }
 
 #[cfg(test)]
