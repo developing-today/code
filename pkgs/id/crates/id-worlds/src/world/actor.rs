@@ -1168,7 +1168,7 @@ impl WorldActor {
                     let _ = reply.send(false);
                     return;
                 }
-                let revoked = self.core.revoke_tree(participant_id);
+                let revoked = self.core.revoke_tree_by(participant_id, by);
                 let was_active = !revoked.is_empty();
                 if was_active {
                     // Fail-closed: surface a persist failure rather than
@@ -1211,7 +1211,7 @@ impl WorldActor {
                             );
                             Ok(false)
                         } else {
-                            let revoked = self.core.revoke_tree(participant_id);
+                            let revoked = self.core.revoke_tree_by(participant_id, Some(by));
                             let was_active = !revoked.is_empty();
                             if was_active {
                                 // Fail-closed: the in-memory revocation and
