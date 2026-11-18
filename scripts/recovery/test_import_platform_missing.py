@@ -1,6 +1,6 @@
 """Oracle: SQLite state, exact key/temporal equivalence, rejected invalid input."""
 import unittest,sqlite3,copy
-from import_platform_missing import validate,check_absent,preflight
+from import_platform_missing import validate,check_absent,preflight,check_unique_indexes
 class C:
  def __init__(self):self.db=sqlite3.connect(':memory:');self.db.execute('CREATE TABLE agent_quota_records(source TEXT,id TEXT,ts TEXT,PRIMARY KEY(source,id,ts))')
  def execute(self,s,args=()):return [[str(v) if isinstance(v,int) else v for v in r] for r in self.db.execute(s,args)]
@@ -40,6 +40,17 @@ class Tests(unittest.TestCase):
  def test_equivalent_duplicate(self):
   self.x['rows'].append(['a','b','2026-11-01 00:00:00+00'])
   with self.assertRaises(ValueError):validate({self.t:self.x})
+ def test_alternate_unique_collision(self):
+  self.c.db.execute('CREATE UNIQUE INDEX uq_id ON agent_quota_records(id)')
+  self.c.db.execute("INSERT INTO agent_quota_records VALUES ('different','b','2020-01-01Z')")
+  with self.assertRaises(ValueError):check_unique_indexes(self.c,self.t,self.x)
+ def test_candidate_unique_collision(self):
+  self.c.db.execute('CREATE UNIQUE INDEX uq_id ON agent_quota_records(id)')
+  self.x['rows'].append(['other','b','2025-01-01T00:00:00Z'])
+  with self.assertRaises(ValueError):check_unique_indexes(self.c,self.t,self.x)
+ def test_partial_unique_rejected(self):
+  self.c.db.execute("CREATE UNIQUE INDEX uq_partial ON agent_quota_records(id) WHERE source='a'")
+  with self.assertRaises(ValueError):check_unique_indexes(self.c,self.t,self.x)
  def test_many_keys(self):
   self.x['rows']=[['a',str(i),'2026-11-01T00:00:00Z'] for i in range(1200)];check_absent(self.c,self.t,self.x)
 if __name__=='__main__':unittest.main()
