@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // Effect probes, grouped by surface (#1971, Approach C).
@@ -100,6 +101,11 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor": "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":       "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":             "TestEventsHistoryBoundsTheReplay",
+	"script.runtime":             "TestScriptRuntimeSelectsTheRuntime",
+	"script.runtimeOrder":        "TestScriptRuntimeOrderRanksTheAutoPick",
+	"script.permissions":         "TestScriptPermissionsSandboxesNode",
+	"script.profiles":            "TestScriptProfilesDefinesAProfile",
+	"script.runtimes":            "TestScriptRuntimesDeclaresARuntime",
 	"script.before":              "TestScriptPhasesRunFromTheEnvironment",
 	"script.onSuccess":           "TestScriptPhasesRunFromTheEnvironment",
 	"script.onError":             "TestScriptPhasesRunFromTheEnvironment",
@@ -217,6 +223,11 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":        TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                 TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                          TestEventsHistoryBoundsTheReplay,
+	"TestScriptRuntimeSelectsTheRuntime":                                        TestScriptRuntimeSelectsTheRuntime,
+	"TestScriptRuntimeOrderRanksTheAutoPick":                                    TestScriptRuntimeOrderRanksTheAutoPick,
+	"TestScriptPermissionsSandboxesNode":                                        TestScriptPermissionsSandboxesNode,
+	"TestScriptProfilesDefinesAProfile":                                         TestScriptProfilesDefinesAProfile,
+	"TestScriptRuntimesDeclaresARuntime":                                        TestScriptRuntimesDeclaresARuntime,
 	"TestScriptPhasesRunFromTheEnvironment":                                     TestScriptPhasesRunFromTheEnvironment,
 	"TestHooksRunOnTheirEvent":                                                  TestHooksRunOnTheirEvent,
 	"TestHooksTimeoutStopsASlowHook":                                            TestHooksTimeoutStopsASlowHook,
@@ -2135,6 +2146,106 @@ func TestScriptPhasesRunFromTheEnvironment(t *testing.T) {
 	}
 	if strings.Contains(bad, "phase-success") {
 		t.Errorf("a throwing script should not run script.onSuccess:\n%s", bad)
+	}
+}
+
+// runtimeOf runs a script with --json and returns the runtime it reports.
+func runtimeOf(t *testing.T, e *env, args ...string) string {
+	t.Helper()
+	var doc struct {
+		Runtime string `json:"runtime"`
+	}
+	out := e.run(append(append([]string{"exec", "--json"}, args...), `console.log("hi")`)...)
+	if err := json.Unmarshal([]byte(jsonOf(t, out)), &doc); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	return doc.Runtime
+}
+
+// TestScriptRuntimeSelectsTheRuntime is the effect probe for
+// script.runtime: scripts run on bun by default and on node once the
+// environment names it.
+func TestScriptRuntimeSelectsTheRuntime(t *testing.T) {
+	testsupport.RequireBinary(t, "node")
+	e := newEnv(t, oneServer)
+	if rt := runtimeOf(t, e); rt != "bun" {
+		t.Errorf("the default script.runtime should pick bun, got %q", rt)
+	}
+	e.setenv("MCPX_SCRIPT_RUNTIME=node")
+	if rt := runtimeOf(t, e); rt != "node" {
+		t.Errorf("script.runtime=node should run on node, got %q", rt)
+	}
+}
+
+// TestScriptRuntimeOrderRanksTheAutoPick is the effect probe for
+// script.runtimeOrder: the automatic pick is bun by default and node once
+// the environment ranks node first.
+func TestScriptRuntimeOrderRanksTheAutoPick(t *testing.T) {
+	testsupport.RequireBinary(t, "node")
+	e := newEnv(t, oneServer)
+	if rt := runtimeOf(t, e); rt != "bun" {
+		t.Errorf("the default script.runtimeOrder should pick bun, got %q", rt)
+	}
+	e.setenv("MCPX_SCRIPT_RUNTIME_ORDER=node,bun")
+	if rt := runtimeOf(t, e); rt != "node" {
+		t.Errorf("script.runtimeOrder=node,bun should pick node, got %q", rt)
+	}
+}
+
+// nodeWrite runs, on node, a script that tries to write a file and prints
+// WROTE or DENIED.
+func nodeWrite(t *testing.T, e *env, args ...string) string {
+	t.Helper()
+	target := filepath.Join(t.TempDir(), "w")
+	probe := `import { writeFileSync } from "node:fs";
+try { writeFileSync(` + jsonQuote(target) + `, "1"); console.log("WROTE"); } catch (e) { console.log("DENIED " + e.code); }`
+	out, _ := e.try(append(append([]string{"exec", "--runtime", "node"}, args...), probe)...)
+	return out
+}
+
+// TestScriptPermissionsSandboxesNode is the effect probe for
+// script.permissions: node writes freely at the default, and the readnet
+// profile named in the environment makes node refuse the write.
+func TestScriptPermissionsSandboxesNode(t *testing.T) {
+	testsupport.RequireBinary(t, "node")
+	e := newEnv(t, oneServer)
+	if out := nodeWrite(t, e); !strings.Contains(out, "WROTE") {
+		t.Errorf("the default script.permissions should let node write:\n%s", out)
+	}
+	e.setenv("MCPX_SCRIPT_PERMISSIONS=readnet")
+	if out := nodeWrite(t, e); !strings.Contains(out, "DENIED ERR_ACCESS_DENIED") {
+		t.Errorf("script.permissions=readnet should make node refuse the write:\n%s", out)
+	}
+}
+
+// TestScriptProfilesDefinesAProfile is the effect probe for script.profiles:
+// --permissions ro names no profile by default, and once the environment
+// defines ro with node's read-only flags, node refuses the write under it.
+func TestScriptProfilesDefinesAProfile(t *testing.T) {
+	testsupport.RequireBinary(t, "node")
+	e := newEnv(t, oneServer)
+	if out := nodeWrite(t, e, "--permissions", "ro"); strings.Contains(out, "WROTE") || strings.Contains(out, "DENIED") {
+		t.Errorf("with no profile ro defined, the script should not run:\n%s", out)
+	}
+	e.setenv(`MCPX_SCRIPT_PROFILES={"ro":{"node":["--permission","--allow-fs-read=*"]}}`)
+	if out := nodeWrite(t, e, "--permissions", "ro"); !strings.Contains(out, "DENIED ERR_ACCESS_DENIED") {
+		t.Errorf("script.profiles defining ro should make node refuse the write:\n%s", out)
+	}
+}
+
+// TestScriptRuntimesDeclaresARuntime is the effect probe for
+// script.runtimes: --runtime engine is unknown by default, and runs on
+// node once the environment declares engine as a node binary.
+func TestScriptRuntimesDeclaresARuntime(t *testing.T) {
+	node := testsupport.RequireBinary(t, "node")
+	e := newEnv(t, oneServer)
+	src := `console.log("kind=" + process.env.MCPX_RUNTIME)`
+	if out, err := e.try("exec", "--runtime", "engine", src); err == nil || strings.Contains(out, "kind=node") {
+		t.Errorf("with nothing declared, --runtime engine should fail: %v\n%s", err, out)
+	}
+	e.setenv(`MCPX_SCRIPT_RUNTIMES={"engine":{"kind":"node","bin":` + jsonQuote(node) + `}}`)
+	if out, err := e.try("exec", "--runtime", "engine", src); err != nil || !strings.Contains(out, "kind=node") {
+		t.Errorf("script.runtimes should declare engine as node: %v\n%s", err, out)
 	}
 }
 
