@@ -1,0 +1,1457 @@
+{
+  "tables": {
+    "agent.checkpoints": {
+      "archive_rows": 2,
+      "archive_exact": true,
+      "status": "alternate-queue-key-reconciled-no-stale-replay",
+      "target": "checkpoints",
+      "destination": "fleet-queue",
+      "destination_rows": 9271,
+      "evidence": "queue-key-coverage.json (parent)",
+      "source_rows": 2,
+      "present_keys": 2,
+      "missing_keys": 0,
+      "reason": "Archived prior queue/control state is not replayed; key coverage only, no rowvalue parity"
+    },
+    "agent.events": {
+      "archive_rows": 215529,
+      "archive_exact": true,
+      "status": "alternate-queue-key-reconciled-no-stale-replay",
+      "target": "events",
+      "destination": "fleet-queue",
+      "destination_rows": 307555,
+      "evidence": "queue-key-coverage.json (parent)",
+      "source_rows": 215529,
+      "present_keys": 215440,
+      "missing_keys": 89,
+      "reason": "Archived prior queue/control state is not replayed; key coverage only, no rowvalue parity"
+    },
+    "agent.external_comms": {
+      "archive_rows": 69,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "agent_external_comms",
+      "comparison": {
+        "target": "agent_external_comms",
+        "keys": [
+          "id"
+        ],
+        "source_rows": 69,
+        "present_keys": 69,
+        "missing_keys": 0,
+        "same_key_different_values": 69,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "agent.lanes": {
+      "archive_rows": 45,
+      "archive_exact": true,
+      "status": "alternate-queue-key-reconciled-no-stale-replay",
+      "target": "lanes",
+      "destination": "fleet-queue",
+      "destination_rows": 174,
+      "evidence": "queue-key-coverage.json (parent)",
+      "source_rows": 45,
+      "present_keys": 30,
+      "missing_keys": 15,
+      "reason": "Archived prior queue/control state is not replayed; key coverage only, no rowvalue parity"
+    },
+    "agent.leases": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "agent.mirror_agent_agents": {
+      "archive_rows": 47640,
+      "archive_exact": true,
+      "status": "operational-missing-rows-restored-existing-preserved",
+      "target": "agent_mirror_agent_agents",
+      "recovered_rows": 1593,
+      "evidence": "platform-v2-production-verification.json",
+      "remaining_missing_keys": 0,
+      "pre_recovery_comparison": {
+        "target": "agent_mirror_agent_agents",
+        "keys": [
+          "agent_id"
+        ],
+        "source_rows": 47640,
+        "present_keys": 46047,
+        "missing_keys": 1593,
+        "same_key_different_values": 35,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "agent.mirror_agent_sessions": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "agent.mirror_compaction_stats_daily": {
+      "archive_rows": 444,
+      "archive_exact": true,
+      "status": "operational-missing-rows-restored-existing-preserved",
+      "target": "agent_mirror_compaction_stats_daily",
+      "recovered_rows": 6,
+      "evidence": "platform-v2-production-verification.json",
+      "remaining_missing_keys": 0,
+      "pre_recovery_comparison": {
+        "target": "agent_mirror_compaction_stats_daily",
+        "keys": [
+          "day",
+          "grain",
+          "key"
+        ],
+        "source_rows": 444,
+        "present_keys": 438,
+        "missing_keys": 6,
+        "same_key_different_values": 263,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "agent.mirror_concurrency_hourly": {
+      "archive_rows": 730,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "agent_mirror_concurrency_hourly",
+      "comparison": {
+        "target": "agent_mirror_concurrency_hourly",
+        "keys": [
+          "hour"
+        ],
+        "source_rows": 730,
+        "present_keys": 730,
+        "missing_keys": 0,
+        "same_key_different_values": 0,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "agent.mirror_conversation_stats_daily": {
+      "archive_rows": 210,
+      "archive_exact": true,
+      "status": "operational-missing-rows-restored-existing-preserved",
+      "target": "agent_mirror_conversation_stats_daily",
+      "recovered_rows": 2,
+      "evidence": "platform-v2-production-verification.json",
+      "remaining_missing_keys": 0,
+      "pre_recovery_comparison": {
+        "target": "agent_mirror_conversation_stats_daily",
+        "keys": [
+          "day",
+          "chat_id"
+        ],
+        "source_rows": 210,
+        "present_keys": 208,
+        "missing_keys": 2,
+        "same_key_different_values": 31,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "agent.mirror_distincts_daily": {
+      "archive_rows": 1042,
+      "archive_exact": true,
+      "status": "operational-missing-rows-restored-existing-preserved",
+      "target": "agent_mirror_distincts_daily",
+      "recovered_rows": 18,
+      "evidence": "platform-v2-production-verification.json",
+      "remaining_missing_keys": 0,
+      "pre_recovery_comparison": {
+        "target": "agent_mirror_distincts_daily",
+        "keys": [
+          "day",
+          "grain",
+          "key"
+        ],
+        "source_rows": 1042,
+        "present_keys": 1024,
+        "missing_keys": 18,
+        "same_key_different_values": 158,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "agent.mirror_export_state": {
+      "archive_rows": 22,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "agent_mirror_export_state",
+      "comparison": {
+        "target": "agent_mirror_export_state",
+        "keys": [
+          "table_name"
+        ],
+        "source_rows": 22,
+        "present_keys": 22,
+        "missing_keys": 0,
+        "same_key_different_values": 19,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "agent.mirror_goals_goals": {
+      "archive_rows": 51,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "agent_mirror_goals_goals",
+      "comparison": {
+        "target": "agent_mirror_goals_goals",
+        "keys": [
+          "goal_id"
+        ],
+        "source_rows": 51,
+        "present_keys": 51,
+        "missing_keys": 0,
+        "same_key_different_values": 12,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "agent.mirror_goals_updates": {
+      "archive_rows": 10870,
+      "archive_exact": true,
+      "status": "operational-missing-rows-restored-existing-preserved",
+      "target": "agent_mirror_goals_updates",
+      "recovered_rows": 309,
+      "evidence": "platform-v2-production-verification.json",
+      "remaining_missing_keys": 0,
+      "pre_recovery_comparison": {
+        "target": "agent_mirror_goals_updates",
+        "keys": [
+          "update_id"
+        ],
+        "source_rows": 10870,
+        "present_keys": 10561,
+        "missing_keys": 309,
+        "same_key_different_values": 0,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "agent.mirror_histograms_daily": {
+      "archive_rows": 15868,
+      "archive_exact": true,
+      "status": "operational-missing-rows-restored-existing-preserved",
+      "target": "agent_mirror_histograms_daily",
+      "recovered_rows": 125,
+      "evidence": "platform-v2-production-verification.json",
+      "remaining_missing_keys": 0,
+      "pre_recovery_comparison": {
+        "target": "agent_mirror_histograms_daily",
+        "keys": [
+          "day",
+          "grain",
+          "key",
+          "metric",
+          "bucket_lo"
+        ],
+        "source_rows": 15868,
+        "present_keys": 15743,
+        "missing_keys": 125,
+        "same_key_different_values": 5075,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "agent.mirror_history_agent_agents": {
+      "archive_rows": 941,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "agent_mirror_history_agent_agents",
+      "destination": "fleet-mirror",
+      "reason": "Target absent or empty per parent/nonPM",
+      "evidence": "mirror-history-production-verification.json (nonPM direct fresh readback)"
+    },
+    "agent.mirror_history_agent_sessions": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "agent.mirror_history_goals_goals": {
+      "archive_rows": 299,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "agent_mirror_history_goals_goals",
+      "destination": "fleet-mirror",
+      "reason": "Target absent or empty per parent/nonPM",
+      "evidence": "mirror-history-production-verification.json (nonPM direct fresh readback)"
+    },
+    "agent.mirror_history_goals_updates": {
+      "archive_rows": 1,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "agent_mirror_history_goals_updates",
+      "destination": "fleet-mirror",
+      "reason": "Target absent or empty per parent/nonPM",
+      "evidence": "mirror-history-production-verification.json (nonPM direct fresh readback)"
+    },
+    "agent.mirror_history_scheduler_jobs": {
+      "archive_rows": 2354,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "agent_mirror_history_scheduler_jobs",
+      "destination": "fleet-mirror",
+      "reason": "Target absent or empty per parent/nonPM",
+      "evidence": "mirror-history-production-verification.json (nonPM direct fresh readback)"
+    },
+    "agent.mirror_message_token_stats_daily": {
+      "archive_rows": 1042,
+      "archive_exact": true,
+      "status": "operational-missing-rows-restored-existing-preserved",
+      "target": "agent_mirror_message_token_stats_daily",
+      "recovered_rows": 18,
+      "evidence": "platform-v2-production-verification.json",
+      "remaining_missing_keys": 0,
+      "pre_recovery_comparison": {
+        "target": "agent_mirror_message_token_stats_daily",
+        "keys": [
+          "day",
+          "grain",
+          "key"
+        ],
+        "source_rows": 1042,
+        "present_keys": 1024,
+        "missing_keys": 18,
+        "same_key_different_values": 696,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "agent.mirror_run_stats_daily": {
+      "archive_rows": 1396,
+      "archive_exact": true,
+      "status": "operational-missing-rows-restored-existing-preserved",
+      "target": "agent_mirror_run_stats_daily",
+      "recovered_rows": 24,
+      "evidence": "platform-v2-production-verification.json",
+      "remaining_missing_keys": 0,
+      "pre_recovery_comparison": {
+        "target": "agent_mirror_run_stats_daily",
+        "keys": [
+          "day",
+          "job_id"
+        ],
+        "source_rows": 1396,
+        "present_keys": 1372,
+        "missing_keys": 24,
+        "same_key_different_values": 668,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "agent.mirror_scheduler_job_definitions": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "agent.mirror_scheduler_job_runs": {
+      "archive_rows": 17719,
+      "archive_exact": true,
+      "status": "operational-missing-rows-restored-existing-preserved",
+      "target": "agent_mirror_scheduler_job_runs",
+      "recovered_rows": 544,
+      "evidence": "platform-v2-production-verification.json",
+      "remaining_missing_keys": 0,
+      "pre_recovery_comparison": {
+        "target": "agent_mirror_scheduler_job_runs",
+        "keys": [
+          "run_id"
+        ],
+        "source_rows": 17719,
+        "present_keys": 17175,
+        "missing_keys": 544,
+        "same_key_different_values": 529,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "agent.mirror_scheduler_jobs": {
+      "archive_rows": 226,
+      "archive_exact": true,
+      "status": "operational-missing-rows-restored-existing-preserved",
+      "target": "agent_mirror_scheduler_jobs",
+      "recovered_rows": 1,
+      "evidence": "platform-v2-production-verification.json",
+      "remaining_missing_keys": 0,
+      "pre_recovery_comparison": {
+        "target": "agent_mirror_scheduler_jobs",
+        "keys": [
+          "job_id"
+        ],
+        "source_rows": 226,
+        "present_keys": 225,
+        "missing_keys": 1,
+        "same_key_different_values": 122,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "agent.mirror_session_activity_hourly": {
+      "archive_rows": 734,
+      "archive_exact": true,
+      "status": "operational-missing-rows-restored-existing-preserved",
+      "target": "agent_mirror_session_activity_hourly",
+      "recovered_rows": 6,
+      "evidence": "platform-v2-production-verification.json",
+      "remaining_missing_keys": 0,
+      "pre_recovery_comparison": {
+        "target": "agent_mirror_session_activity_hourly",
+        "keys": [
+          "hour"
+        ],
+        "source_rows": 734,
+        "present_keys": 728,
+        "missing_keys": 6,
+        "same_key_different_values": 2,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "agent.mirror_session_stats_daily": {
+      "archive_rows": 1046,
+      "archive_exact": true,
+      "status": "operational-missing-rows-restored-existing-preserved",
+      "target": "agent_mirror_session_stats_daily",
+      "recovered_rows": 17,
+      "evidence": "platform-v2-production-verification.json",
+      "remaining_missing_keys": 0,
+      "pre_recovery_comparison": {
+        "target": "agent_mirror_session_stats_daily",
+        "keys": [
+          "day",
+          "grain",
+          "key"
+        ],
+        "source_rows": 1046,
+        "present_keys": 1029,
+        "missing_keys": 17,
+        "same_key_different_values": 685,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "agent.mirror_sessions": {
+      "archive_rows": 45177,
+      "archive_exact": true,
+      "status": "operational-missing-rows-restored-existing-preserved",
+      "target": "agent_mirror_sessions",
+      "recovered_rows": 1454,
+      "evidence": "platform-v2-production-verification.json",
+      "remaining_missing_keys": 0,
+      "pre_recovery_comparison": {
+        "target": "agent_mirror_sessions",
+        "keys": [
+          "session_id"
+        ],
+        "source_rows": 45177,
+        "present_keys": 43723,
+        "missing_keys": 1454,
+        "same_key_different_values": 284,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "agent.mirror_subagent_stats_daily": {
+      "archive_rows": 25,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "agent_mirror_subagent_stats_daily",
+      "comparison": {
+        "target": "agent_mirror_subagent_stats_daily",
+        "keys": [
+          "day"
+        ],
+        "source_rows": 25,
+        "present_keys": 25,
+        "missing_keys": 0,
+        "same_key_different_values": 11,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "agent.mirror_token_usage_daily": {
+      "archive_rows": 34931,
+      "archive_exact": true,
+      "status": "operational-missing-rows-restored-existing-preserved",
+      "target": "agent_mirror_token_usage_daily",
+      "recovered_rows": 1089,
+      "evidence": "platform-v2-production-verification.json",
+      "remaining_missing_keys": 0,
+      "pre_recovery_comparison": {
+        "target": "agent_mirror_token_usage_daily",
+        "keys": [
+          "day",
+          "dimension",
+          "key"
+        ],
+        "source_rows": 34931,
+        "present_keys": 33842,
+        "missing_keys": 1089,
+        "same_key_different_values": 11867,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "agent.mirror_token_usage_hourly": {
+      "archive_rows": 46229,
+      "archive_exact": true,
+      "status": "operational-missing-rows-restored-existing-preserved",
+      "target": "agent_mirror_token_usage_hourly",
+      "recovered_rows": 1484,
+      "evidence": "platform-v2-production-verification.json",
+      "remaining_missing_keys": 0,
+      "pre_recovery_comparison": {
+        "target": "agent_mirror_token_usage_hourly",
+        "keys": [
+          "hour",
+          "dimension",
+          "key"
+        ],
+        "source_rows": 46229,
+        "present_keys": 44745,
+        "missing_keys": 1484,
+        "same_key_different_values": 15482,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "agent.mirror_tool_stats_daily": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "agent.mirror_top_daily": {
+      "archive_rows": 393,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "agent_mirror_top_daily",
+      "comparison": {
+        "target": "agent_mirror_top_daily",
+        "keys": [
+          "day",
+          "kind",
+          "rank"
+        ],
+        "source_rows": 393,
+        "present_keys": 393,
+        "missing_keys": 0,
+        "same_key_different_values": 80,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "agent.quota_records": {
+      "archive_rows": 11418,
+      "archive_exact": true,
+      "status": "operational-missing-rows-restored-existing-preserved",
+      "target": "agent_quota_records",
+      "recovered_rows": 196,
+      "evidence": "platform-v2-production-verification.json",
+      "remaining_missing_keys": 0,
+      "pre_recovery_comparison": {
+        "target": "agent_quota_records",
+        "keys": [
+          "source",
+          "id",
+          "ts"
+        ],
+        "source_rows": 11418,
+        "present_keys": 11222,
+        "missing_keys": 196,
+        "same_key_different_values": 8907,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "agent.repo_snapshots": {
+      "archive_rows": 7,
+      "archive_exact": true,
+      "status": "alternate-queue-key-reconciled-no-stale-replay",
+      "target": "agent_repo_snapshots",
+      "destination": "fleet-queue",
+      "destination_rows": 4,
+      "evidence": "queue-key-coverage.json (parent)",
+      "source_rows": 7,
+      "present_keys": 4,
+      "missing_keys": 3,
+      "reason": "Archived prior queue/control state is not replayed; key coverage only, no rowvalue parity"
+    },
+    "agent.repo_task_lane_ledger": {
+      "archive_rows": 3702,
+      "archive_exact": true,
+      "status": "alternate-queue-key-reconciled-no-stale-replay",
+      "target": "repo_task_lane_ledger",
+      "destination": "fleet-queue",
+      "destination_rows": 9669,
+      "evidence": "queue-key-coverage.json (parent)",
+      "source_rows": 3702,
+      "present_keys": 3313,
+      "missing_keys": 389,
+      "reason": "Archived prior queue/control state is not replayed; key coverage only, no rowvalue parity"
+    },
+    "agent.tasks": {
+      "archive_rows": 9028,
+      "archive_exact": true,
+      "status": "alternate-queue-key-reconciled-no-stale-replay",
+      "target": "tasks",
+      "destination": "fleet-queue",
+      "destination_rows": 17792,
+      "evidence": "queue-key-coverage.json (parent)",
+      "source_rows": 9028,
+      "present_keys": 9023,
+      "missing_keys": 5,
+      "reason": "Archived prior queue/control state is not replayed; key coverage only, no rowvalue parity"
+    },
+    "agent.token_expirations": {
+      "archive_rows": 10,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "agent_token_expirations",
+      "comparison": {
+        "target": "agent_token_expirations",
+        "keys": [
+          "id"
+        ],
+        "source_rows": 10,
+        "present_keys": 10,
+        "missing_keys": 0,
+        "same_key_different_values": 0,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "agent.watermarks": {
+      "archive_rows": 5,
+      "archive_exact": true,
+      "status": "alternate-queue-key-reconciled-no-stale-replay",
+      "target": "agent_watermarks",
+      "destination": "fleet-queue",
+      "destination_rows": 6,
+      "evidence": "queue-key-coverage.json (parent)",
+      "source_rows": 5,
+      "present_keys": 2,
+      "missing_keys": 3,
+      "reason": "Archived prior queue/control state is not replayed; key coverage only, no rowvalue parity"
+    },
+    "agent.workers": {
+      "archive_rows": 34,
+      "archive_exact": true,
+      "status": "alternate-queue-key-reconciled-no-stale-replay",
+      "target": "workers",
+      "destination": "fleet-queue",
+      "destination_rows": 65,
+      "evidence": "queue-key-coverage.json (parent)",
+      "source_rows": 34,
+      "present_keys": 0,
+      "missing_keys": 34,
+      "reason": "Archived prior queue/control state is not replayed; key coverage only, no rowvalue parity"
+    },
+    "ainventory.findings": {
+      "archive_rows": 6,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "ainventory_findings",
+      "evidence": "runtime-v5/production-verification.json"
+    },
+    "ainventory.ingest_batches": {
+      "archive_rows": 36,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "ainventory_ingest_batches",
+      "evidence": "runtime-v5/production-verification.json"
+    },
+    "ainventory.interpretation_runs": {
+      "archive_rows": 6,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "ainventory_interpretation_runs",
+      "evidence": "runtime-v5/production-verification.json"
+    },
+    "ainventory.measurement_events": {
+      "archive_rows": 1444,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "ainventory_measurement_events",
+      "evidence": "runtime-v5/production-verification.json"
+    },
+    "ainventory.models": {
+      "archive_rows": 107,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "ainventory_models",
+      "evidence": "runtime-v5/production-verification.json"
+    },
+    "ainventory.notes": {
+      "archive_rows": 7,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "ainventory_notes",
+      "evidence": "runtime-v5/production-verification.json"
+    },
+    "ainventory.price_events": {
+      "archive_rows": 222,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "ainventory_price_events",
+      "evidence": "runtime-v5/production-verification.json"
+    },
+    "ainventory.provider_policies": {
+      "archive_rows": 8,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "ainventory_provider_policies",
+      "evidence": "runtime-v5/production-verification.json"
+    },
+    "ainventory.sheet_rows": {
+      "archive_rows": 85450,
+      "archive_exact": true,
+      "status": "operational-missing-rows-restored-existing-preserved",
+      "target": "ainventory_sheet_rows",
+      "evidence": "aa-production-verification.json"
+    },
+    "ainventory.sources": {
+      "archive_rows": 45,
+      "archive_exact": true,
+      "status": "operational-missing-rows-restored-existing-preserved",
+      "target": "ainventory_sources",
+      "evidence": "aa-production-verification.json"
+    },
+    "alerts.incident_events": {
+      "archive_rows": 390,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "alerts_incident_events",
+      "evidence": "runtime-v5/production-verification.json"
+    },
+    "alerts.incidents": {
+      "archive_rows": 196,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "alerts_incidents",
+      "evidence": "runtime-v5/production-verification.json"
+    },
+    "alerts.notification_sends": {
+      "archive_rows": 271,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "alerts_notification_sends",
+      "evidence": "runtime-v5/production-verification.json"
+    },
+    "alerts.push_subscriptions": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "alerts_push_subscriptions",
+      "evidence": "runtime-v5/production-verification.json"
+    },
+    "auth.audit_log_entries": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "auth.custom_oauth_providers": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "auth.flow_state": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "auth.identities": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "auth.instances": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "auth.mfa_amr_claims": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "auth.mfa_challenges": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "auth.mfa_factors": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "auth.mfa_recovery_code_sets": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "auth.mfa_recovery_codes": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "auth.oauth_authorizations": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "auth.oauth_client_states": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "auth.oauth_clients": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "auth.oauth_consents": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "auth.one_time_tokens": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "auth.refresh_tokens": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "auth.saml_providers": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "auth.saml_relay_states": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "auth.schema_migrations": {
+      "archive_rows": 84,
+      "archive_exact": true,
+      "status": "archive-only-supabase-system",
+      "reason": "Provider-specific state retained in archive; cron job intent still needs consumer inventory"
+    },
+    "auth.scim_tokens": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "auth.scim_users": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "auth.sessions": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "auth.sso_domains": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "auth.sso_providers": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "auth.users": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "auth.webauthn_challenges": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "auth.webauthn_credentials": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "automation.events": {
+      "archive_rows": 5439,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "automation_events",
+      "comparison": {
+        "target": "automation_events",
+        "keys": [
+          "id"
+        ],
+        "source_rows": 5439,
+        "present_keys": 5439,
+        "missing_keys": 0,
+        "same_key_different_values": 5439,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "automation.ingest_batches": {
+      "archive_rows": 83,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "automation_ingest_batches",
+      "comparison": {
+        "target": "automation_ingest_batches",
+        "keys": [
+          "id"
+        ],
+        "source_rows": 83,
+        "present_keys": 83,
+        "missing_keys": 0,
+        "same_key_different_values": 0,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "automation.sheet_rows": {
+      "archive_rows": 1853,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "automation_sheet_rows",
+      "comparison": {
+        "target": "automation_sheet_rows",
+        "keys": [
+          "id"
+        ],
+        "source_rows": 1853,
+        "present_keys": 1853,
+        "missing_keys": 0,
+        "same_key_different_values": 0,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "automation.sources": {
+      "archive_rows": 2,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "automation_sources",
+      "destination": "fleet-platform",
+      "evidence": "config-production-verification.json"
+    },
+    "ci.events": {
+      "archive_rows": 11203,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "ci_events",
+      "semantic_duplicate_retained": 1,
+      "remaining_uncovered_events": 0,
+      "evidence": "ci-collision-report.json: different ID, equal dedupe key/content and timestamp instants; existing row retained",
+      "pre_recovery_comparison": {
+        "target": "ci_events",
+        "keys": [
+          "id"
+        ],
+        "source_rows": 11203,
+        "present_keys": 11202,
+        "missing_keys": 1,
+        "same_key_different_values": 3,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "cron.job": {
+      "archive_rows": 4,
+      "archive_exact": true,
+      "status": "archive-only-supabase-system",
+      "reason": "Provider-specific state retained in archive; cron job intent still needs consumer inventory"
+    },
+    "cron.job_run_details": {
+      "archive_rows": 22552,
+      "archive_exact": true,
+      "status": "archive-only-supabase-system",
+      "reason": "Provider-specific state retained in archive; cron job intent still needs consumer inventory"
+    },
+    "engineering.events": {
+      "archive_rows": 20,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "engineering_events",
+      "comparison": {
+        "target": "engineering_events",
+        "keys": [
+          "id"
+        ],
+        "source_rows": 20,
+        "present_keys": 20,
+        "missing_keys": 0,
+        "same_key_different_values": 0,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "engineering.ingest_batches": {
+      "archive_rows": 4,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "engineering_ingest_batches",
+      "comparison": {
+        "target": "engineering_ingest_batches",
+        "keys": [
+          "id"
+        ],
+        "source_rows": 4,
+        "present_keys": 4,
+        "missing_keys": 0,
+        "same_key_different_values": 0,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "engineering.records": {
+      "archive_rows": 672,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "engineering_records",
+      "comparison": {
+        "target": "engineering_records",
+        "keys": [
+          "id"
+        ],
+        "source_rows": 672,
+        "present_keys": 672,
+        "missing_keys": 0,
+        "same_key_different_values": 0,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "engineering.sheet_rows": {
+      "archive_rows": 830,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "engineering_sheet_rows",
+      "comparison": {
+        "target": "engineering_sheet_rows",
+        "keys": [
+          "id"
+        ],
+        "source_rows": 830,
+        "present_keys": 830,
+        "missing_keys": 0,
+        "same_key_different_values": 0,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "engineering.sources": {
+      "archive_rows": 2,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "engineering_sources",
+      "comparison": {
+        "target": "engineering_sources",
+        "keys": [
+          "id"
+        ],
+        "source_rows": 2,
+        "present_keys": 2,
+        "missing_keys": 0,
+        "same_key_different_values": 0,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "finance.events": {
+      "archive_rows": 177,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "finance_events",
+      "comparison": {
+        "target": "finance_events",
+        "keys": [
+          "id"
+        ],
+        "source_rows": 177,
+        "present_keys": 177,
+        "missing_keys": 0,
+        "same_key_different_values": 177,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "finance.ingest_batches": {
+      "archive_rows": 5,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "finance_ingest_batches",
+      "comparison": {
+        "target": "finance_ingest_batches",
+        "keys": [
+          "id"
+        ],
+        "source_rows": 5,
+        "present_keys": 5,
+        "missing_keys": 0,
+        "same_key_different_values": 0,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "finance.sheet_rows": {
+      "archive_rows": 185,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "finance_sheet_rows",
+      "comparison": {
+        "target": "finance_sheet_rows",
+        "keys": [
+          "id"
+        ],
+        "source_rows": 185,
+        "present_keys": 185,
+        "missing_keys": 0,
+        "same_key_different_values": 0,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "finance.sources": {
+      "archive_rows": 1,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "finance_sources",
+      "destination": "fleet-platform",
+      "evidence": "config-production-verification.json"
+    },
+    "home.events": {
+      "archive_rows": 28,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "home_events",
+      "comparison": {
+        "target": "home_events",
+        "keys": [
+          "id"
+        ],
+        "source_rows": 28,
+        "present_keys": 28,
+        "missing_keys": 0,
+        "same_key_different_values": 28,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "home.ingest_batches": {
+      "archive_rows": 2,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "home_ingest_batches",
+      "comparison": {
+        "target": "home_ingest_batches",
+        "keys": [
+          "id"
+        ],
+        "source_rows": 2,
+        "present_keys": 2,
+        "missing_keys": 0,
+        "same_key_different_values": 0,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "home.sheet_rows": {
+      "archive_rows": 32,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "home_sheet_rows",
+      "comparison": {
+        "target": "home_sheet_rows",
+        "keys": [
+          "id"
+        ],
+        "source_rows": 32,
+        "present_keys": 32,
+        "missing_keys": 0,
+        "same_key_different_values": 0,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "home.sources": {
+      "archive_rows": 1,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "home_sources",
+      "destination": "fleet-platform",
+      "evidence": "config-production-verification.json"
+    },
+    "ideas.ideas": {
+      "archive_rows": 554,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "ideas_ideas",
+      "comparison": {
+        "target": "ideas_ideas",
+        "keys": [
+          "id"
+        ],
+        "source_rows": 554,
+        "present_keys": 554,
+        "missing_keys": 0,
+        "same_key_different_values": 554,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "ideas.sources": {
+      "archive_rows": 3,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "ideas_sources",
+      "comparison": {
+        "target": "ideas_sources",
+        "keys": [
+          "id"
+        ],
+        "source_rows": 3,
+        "present_keys": 3,
+        "missing_keys": 0,
+        "same_key_different_values": 0,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "public.agg_actions": {
+      "archive_rows": 18,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "agg_actions",
+      "evidence": "runtime-v5/production-verification.json"
+    },
+    "public.agg_activity_gaps": {
+      "archive_rows": 1505,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "agg_activity_gaps",
+      "evidence": "runtime-v5/production-verification.json"
+    },
+    "public.agg_activity_ingestion": {
+      "archive_rows": 3,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "agg_activity_ingestion",
+      "evidence": "runtime-v5/production-verification.json"
+    },
+    "public.agg_store_documents": {
+      "archive_rows": 1,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "agg_store_documents",
+      "evidence": "runtime-v5/production-verification.json"
+    },
+    "public.agg_usage_snapshots": {
+      "archive_rows": 18093,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "agg_usage_snapshots",
+      "evidence": "runtime-v5/production-verification.json"
+    },
+    "public.muse_notes": {
+      "archive_rows": 2,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "public_muse_notes",
+      "comparison": {
+        "target": "public_muse_notes",
+        "keys": [
+          "id"
+        ],
+        "source_rows": 2,
+        "present_keys": 2,
+        "missing_keys": 0,
+        "same_key_different_values": 0,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "public.orch_items": {
+      "archive_rows": 41,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "orch_items",
+      "evidence": "runtime-v5/production-verification.json"
+    },
+    "public.orch_runs": {
+      "archive_rows": 49,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "orch_runs",
+      "evidence": "runtime-v5/production-verification.json"
+    },
+    "public.shared_events": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "realtime.schema_migrations": {
+      "archive_rows": 91,
+      "archive_exact": true,
+      "status": "archive-only-supabase-system",
+      "reason": "Provider-specific state retained in archive; cron job intent still needs consumer inventory"
+    },
+    "realtime.subscription": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "research.events": {
+      "archive_rows": 1543,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "research_events",
+      "comparison": {
+        "target": "research_events",
+        "keys": [
+          "id"
+        ],
+        "source_rows": 1543,
+        "present_keys": 1543,
+        "missing_keys": 0,
+        "same_key_different_values": 1543,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "research.ingest_batches": {
+      "archive_rows": 49,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "research_ingest_batches",
+      "comparison": {
+        "target": "research_ingest_batches",
+        "keys": [
+          "id"
+        ],
+        "source_rows": 49,
+        "present_keys": 49,
+        "missing_keys": 0,
+        "same_key_different_values": 0,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "research.sheet_rows": {
+      "archive_rows": 945,
+      "archive_exact": true,
+      "status": "existing-destination-compared",
+      "target": "research_sheet_rows",
+      "comparison": {
+        "target": "research_sheet_rows",
+        "keys": [
+          "id"
+        ],
+        "source_rows": 945,
+        "present_keys": 945,
+        "missing_keys": 0,
+        "same_key_different_values": 0,
+        "policy": "insert missing only; retain existing values; conflicts need temporal review"
+      }
+    },
+    "research.sources": {
+      "archive_rows": 1,
+      "archive_exact": true,
+      "status": "operational-restored-and-verified",
+      "target": "research_sources",
+      "destination": "fleet-platform",
+      "evidence": "config-production-verification.json"
+    },
+    "storage.bucket_lifecycle_states": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "storage.buckets": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "storage.buckets_analytics": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "storage.buckets_vectors": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "storage.lifecycle_abandoned_artifacts": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "storage.migrations": {
+      "archive_rows": 80,
+      "archive_exact": true,
+      "status": "archive-only-supabase-system",
+      "reason": "Provider-specific state retained in archive; cron job intent still needs consumer inventory"
+    },
+    "storage.objects": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "storage.s3_multipart_uploads": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "storage.s3_multipart_uploads_parts": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "storage.vector_indexes": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "vault.secrets": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    },
+    "realtime.messages": {
+      "archive_rows": 0,
+      "archive_exact": true,
+      "status": "archive-only-empty",
+      "reason": "No backup records; no claim that application functionality is replaced"
+    }
+  },
+  "class_counts": {
+    "alternate-queue-key-reconciled-no-stale-replay": 8,
+    "existing-destination-compared": 28,
+    "archive-only-empty": 44,
+    "operational-missing-rows-restored-existing-preserved": 18,
+    "operational-restored-and-verified": 27,
+    "archive-only-supabase-system": 5
+  },
+  "note": "All130tables/623584records retained in exact archive.47existing platform tables compared.33031rows inserted operationally without overwriting existing values.538prior queue/control keys retained only in archive rather than reactivating stale state. One CI event already existed under different ID. Existing same-key values preserved, not proven equal to backup.",
+  "operational_inserted_rows": 33031,
+  "verification_limits": [
+    "Archive TEXT/NULL rows preserve original precision; live PostgreSQL engine features are not reproduced by archive.",
+    "Runtime values are compared to reviewed typed candidates with timestamps/arrays normalized, not original PG lexemes. Numeric comparison checks finite REAL values independently <=1 ULP before optional normalized hashes.",
+    "No full prior-value hash for all existing platform rows; preservation based on INSERT-only audited SQL and verified schema/trigger guards, including the audited ingest-parent unique-index addition.",
+    "Queue coverage compares keys, not full value equality; intentionally no replay of stale live controls.",
+    "Backup contains zero push subscriptions; phone delivery not verified.",
+    "Remote Muse runtime coverage is not established by this database receipt."
+  ],
+  "archive_verification": "Exact local decoded COPY value hashes independently reproduced; imported cloud archive all130table counts verified."
+}
