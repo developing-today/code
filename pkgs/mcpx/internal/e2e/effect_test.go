@@ -104,6 +104,7 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"prompt.sampleTimeout":               "TestPromptSampleTimeoutBoundsASamplingQuestion",
 	"prompt.sample":                      "TestPromptSampleAskLetsAnUnmatchedPromptSeekAModel",
 	"prompt.catalogBudget":               "TestPromptCatalogBudgetBoundsTheCatalogSentToTheModel",
 	"search.semantic":                    "TestSearchSemanticRanksWithTheConfiguredEmbedder",
@@ -310,6 +311,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestPromptSampleTimeoutBoundsASamplingQuestion":                                 TestPromptSampleTimeoutBoundsASamplingQuestion,
 	"TestPromptSampleAskLetsAnUnmatchedPromptSeekAModel":                             TestPromptSampleAskLetsAnUnmatchedPromptSeekAModel,
 	"TestPromptCatalogBudgetBoundsTheCatalogSentToTheModel":                          TestPromptCatalogBudgetBoundsTheCatalogSentToTheModel,
 	"TestSearchSemanticRanksWithTheConfiguredEmbedder":                               TestSearchSemanticRanksWithTheConfiguredEmbedder,
@@ -4411,6 +4413,52 @@ func TestPromptCatalogBudgetBoundsTheCatalogSentToTheModel(t *testing.T) {
 	def, tiny := size(), size("MCPX_PROMPT_CATALOG_BUDGET=1")
 	if tiny >= def {
 		t.Fatalf("prompt.catalogBudget=1 should send the model less than the default (%d bytes vs %d)", tiny, def)
+	}
+}
+
+// samplingQuestionLife sends an unmatched prompt to a daemon whose model
+// provider is sampling through the caller, with model.timeout unset and
+// env on top, and returns how long the sampling question it raises lives.
+func samplingQuestionLife(t *testing.T, env ...string) time.Duration {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(append([]string{"MCPX_MODEL_PROVIDER=sampling", "MCPX_MODEL_TIMEOUT=0s"}, env...)...)
+	e.run("ls")
+	beAnswerer(t, e)
+	c := e.longSocketClient(t)
+	// The intent call waits on the question; it is left to be cut off
+	// when the test's daemon stops, so it reports nothing to t.
+	go func() {
+		resp, err := c.Post("http://mcpx/v1/intent", "application/json",
+			strings.NewReader(`{"prompt":"compose a haiku about the moon"}`))
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	waitQuestions(t, e, 1)
+	var listed []struct {
+		Created   time.Time `json:"created"`
+		ExpiresAt time.Time `json:"expiresAt"`
+	}
+	out := e.run("--json", "elicit", "list")
+	if err := json.Unmarshal([]byte(out), &listed); err != nil || len(listed) != 1 {
+		t.Fatalf("one sampling question should be listed (%v):\n%s", err, out)
+	}
+	return listed[0].ExpiresAt.Sub(listed[0].Created)
+}
+
+// TestPromptSampleTimeoutBoundsASamplingQuestion is the effect probe for
+// prompt.sampleTimeout: with model.timeout unset, the sampling question a
+// generation raises lives for prompt.sampleTimeout, so setting it to an
+// hour moves the question's expiry from the default to an hour out.
+func TestPromptSampleTimeoutBoundsASamplingQuestion(t *testing.T) {
+	def := samplingQuestionLife(t)
+	if def <= 0 || def > 30*time.Minute {
+		t.Fatalf("oracle: by default the question should live for the built-in sample timeout, lived %v", def)
+	}
+	got := samplingQuestionLife(t, "MCPX_PROMPT_SAMPLE_TIMEOUT=1h")
+	if got < 59*time.Minute || got > 61*time.Minute {
+		t.Fatalf("with prompt.sampleTimeout=1h the question should live an hour, lived %v (default %v)", got, def)
 	}
 }
 
