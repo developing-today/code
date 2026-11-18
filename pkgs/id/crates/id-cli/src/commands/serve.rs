@@ -1282,6 +1282,14 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let key = load_or_create_keypair(KEY_FILE).await?;
     let node_id: EndpointId = key.public();
     info!("serve: {}", node_id);
+    match id_directory::restored_key::pending(
+        id_directory::restored_key::RESTORED_KEY_FILE,
+        id_directory::keyset_file::KEYSET_FILE,
+    ) {
+        Ok(Some(public)) => warn!("serve: {}", id_directory::restored_key::warning(&public)),
+        Ok(None) => {}
+        Err(error) => warn!(%error, "serve: could not read the restore flag"),
+    }
 
     // Who may modify this store: this node, this machine's client key (so the
     // local CLI/REPL work with no setup), `--allow-node`, and `.iroh-allowed`.

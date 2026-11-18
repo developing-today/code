@@ -28,4 +28,5 @@ pub mod invite;
 pub mod invites;
 pub mod keyset;
 pub mod keyset_file;
+pub mod restored_key;
 pub mod seitan;
