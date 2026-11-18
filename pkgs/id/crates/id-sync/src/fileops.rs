@@ -180,12 +180,21 @@ async fn free_archive_name(store: &Store, name: &str, ts: u64) -> Result<String>
     }
 }
 
+/// The archive timestamp of `name` when it has the archive tag shape used by
+/// FileOps: `{stem}.archive.{ts}` with a non-empty stem and an unsigned
+/// decimal `ts` that fits in u64. Readers that classify archives must use this
+/// same rule so writer and reader never disagree on a name.
+pub fn archive_tag_timestamp(name: &str) -> Option<u64> {
+    let (file_name, suffix) = name.rsplit_once(".archive.")?;
+    if file_name.is_empty() || suffix.is_empty() || !suffix.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    suffix.parse::<u64>().ok()
+}
+
 /// Whether `name` has the archive tag shape used by FileOps.
 fn is_archive_tag_name(name: &str) -> bool {
-    let Some((file_name, suffix)) = name.rsplit_once(".archive.") else {
-        return false;
-    };
-    !file_name.is_empty() && !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())
+    archive_tag_timestamp(name).is_some()
 }
 
 /// Resolve a free archive name for `name` at `ts` and claim it for
@@ -795,6 +804,27 @@ fn is_owned_archive_tag_name(name: &str, archive_name: &str) -> bool {
     archive_name
         .strip_prefix(&format!("{name}.archive."))
         .is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()))
+}
+
+#[cfg(test)]
+mod archive_tag_shape_tests {
+    use super::archive_tag_timestamp;
+
+    #[test]
+    fn archive_tag_timestamp_matches_writer_and_reader_rule() {
+        assert_eq!(archive_tag_timestamp("x.archive.5"), Some(5));
+        assert_eq!(
+            archive_tag_timestamp("x.archive.18446744073709551615"),
+            Some(u64::MAX)
+        );
+        assert_eq!(archive_tag_timestamp(".archive.5"), None);
+        assert_eq!(
+            archive_tag_timestamp("x.archive.18446744073709551616"),
+            None
+        );
+        assert_eq!(archive_tag_timestamp("x.archive.+5"), None);
+        assert_eq!(archive_tag_timestamp("x.archive.notes"), None);
+    }
 }
 
 #[cfg(test)]
