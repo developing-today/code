@@ -6,7 +6,7 @@
 //! authorization position-dependent: revoked keys cannot authorize later
 //! records by replaying a different branch.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use anyhow::{Context, Result, ensure};
 use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
@@ -385,8 +385,10 @@ impl KeysetState {
 /// anchors the fold, so a replica cannot reset authorization by injecting
 /// a new root after an admin rotation. The trusted hash must be persisted outside the
 /// mergeable log (for example, alongside the identity's initial keyset).
-/// Invalid/unauthorized continuations and their descendants are excluded; the
-/// smallest valid `(lamport, author, hash)` continuation wins each fork.
+/// Invalid/unauthorized continuations and their descendants are excluded. At
+/// a fork, a branch that rotates away or revokes the author of a sibling wins
+/// (revocation priority); otherwise the smallest valid `(lamport, author,
+/// hash)` continuation wins.
 /// `Checkpoint` records are snapshot attestations (ADR Decision 4 rule 6):
 /// they never authorise anything and never advance the chain head, so a
 /// device checkpoint can neither displace an admin record at a fork nor
@@ -422,7 +424,7 @@ pub fn fold(log: &Log, trusted_genesis_hash: &str) -> Result<KeysetState> {
         anyhow::bail!("selected keyset root is not a genesis record");
     };
     let (admin_key, device_key, label) = (admin_key.clone(), device_key.clone(), label.clone());
-    let mut state = KeysetState {
+    let state = KeysetState {
         identity_id: admin_key.clone(),
         admin_keys: BTreeMap::from([(admin_key, AdminKeyState::Active)]),
         devices: BTreeMap::from([(
@@ -438,40 +440,113 @@ pub fn fold(log: &Log, trusted_genesis_hash: &str) -> Result<KeysetState> {
         head_hash: genesis.hash.clone(),
         records_folded: 1,
     };
-    let mut head_lamport = genesis.lamport;
+    let mut branches = HashMap::new();
+    Ok(extend(log, state, genesis.lamport, &mut branches)?.state)
+}
 
-    loop {
-        let next = log
-            .records
-            .values()
-            .filter(|record| {
-                record.prev_hash == state.head_hash
-                    && record.lamport > head_lamport
-                    && !matches!(
-                        &record.entry,
-                        KeysetEntry::Genesis { .. } | KeysetEntry::Checkpoint { .. }
-                    )
-            })
-            .filter(|record| state.is_admin(&record.author))
-            .filter_map(|record| {
-                let mut candidate = state.clone();
-                apply_entry(&mut candidate, record)
-                    .ok()
-                    .map(|()| (record, candidate))
-            })
-            .min_by_key(|(record, _)| record.key());
-        let Some((record, mut next_state)) = next else {
-            break;
-        };
-        next_state.head_hash = record.hash.clone();
-        next_state.records_folded = next_state
-            .records_folded
-            .checked_add(1)
-            .context("keyset record count overflow")?;
-        head_lamport = record.lamport;
-        state = next_state;
+/// Where a branch of the chain leads: the state its canonical
+/// continuation folds to, and every key a record on it took authority
+/// from (an admin key rotated away, or a device key revoked).
+#[derive(Clone)]
+struct Branch {
+    state: KeysetState,
+    removed: BTreeSet<String>,
+}
+
+/// Folds the canonical continuation of `state`, whose head was folded
+/// at `head_lamport`. At a fork, a branch that rotates away or revokes
+/// the key that authored a sibling wins regardless of merge key
+/// (revocation priority, ADR Decision 4 rule 5): otherwise a key still
+/// authorised at the shared parent could sign a sibling that sorts
+/// first and erase its own revocation. When no branch revokes another,
+/// or branches revoke each other, the smallest merge key wins.
+/// `branches` memoises each record's continuation, so a log folds in
+/// time proportional to its records however its forks nest.
+fn extend(
+    log: &Log,
+    state: KeysetState,
+    head_lamport: u64,
+    branches: &mut HashMap<String, Branch>,
+) -> Result<Branch> {
+    let candidates: Vec<(&KeysetRecord, KeysetState)> = log
+        .records
+        .values()
+        .filter(|record| {
+            record.prev_hash == state.head_hash
+                && record.lamport > head_lamport
+                && !matches!(
+                    &record.entry,
+                    KeysetEntry::Genesis { .. } | KeysetEntry::Checkpoint { .. }
+                )
+        })
+        .filter(|record| state.is_admin(&record.author))
+        .filter_map(|record| {
+            let mut candidate = state.clone();
+            apply_entry(&mut candidate, record)
+                .ok()
+                .map(|()| (record, candidate))
+        })
+        .collect();
+    if candidates.is_empty() {
+        return Ok(Branch {
+            state,
+            removed: BTreeSet::new(),
+        });
     }
-    Ok(state)
+    let mut followed = Vec::with_capacity(candidates.len());
+    for (record, mut next_state) in candidates {
+        let branch = if let Some(branch) = branches.get(&record.hash) {
+            branch.clone()
+        } else {
+            let mut removed = removed_by(&state, &next_state);
+            next_state.head_hash.clone_from(&record.hash);
+            next_state.records_folded = next_state
+                .records_folded
+                .checked_add(1)
+                .context("keyset record count overflow")?;
+            let tail = extend(log, next_state, record.lamport, branches)?;
+            removed.extend(tail.removed);
+            let branch = Branch {
+                state: tail.state,
+                removed,
+            };
+            branches.insert(record.hash.clone(), branch.clone());
+            branch
+        };
+        followed.push((record, branch));
+    }
+    let revoked = |index: usize| {
+        followed.iter().enumerate().any(|(other, (_, branch))| {
+            other != index && branch.removed.contains(&followed[index].0.author)
+        })
+    };
+    let standing: Vec<usize> = (0..followed.len())
+        .filter(|index| !revoked(*index))
+        .collect();
+    let pool: Vec<usize> = if standing.is_empty() {
+        (0..followed.len()).collect()
+    } else {
+        standing
+    };
+    let chosen = pool
+        .into_iter()
+        .min_by_key(|index| followed[*index].0.key())
+        .context("keyset fork with no candidate")?;
+    Ok(followed.swap_remove(chosen).1)
+}
+
+/// The keys one record took authority from: admin keys that were active
+/// before it and are not after, and devices it revoked.
+fn removed_by(before: &KeysetState, after: &KeysetState) -> BTreeSet<String> {
+    let admins = before
+        .admin_keys
+        .keys()
+        .filter(|key| before.is_admin(key) && !after.is_admin(key));
+    let devices = before
+        .devices
+        .keys()
+        .filter(|key| before.is_device(key) && !after.is_device(key));
+    admins.chain(devices).cloned().collect()
 }
 
 fn apply_entry(state: &mut KeysetState, record: &KeysetRecord) -> Result<()> {
@@ -671,6 +746,114 @@ mod tests {
         assert!(state.is_admin(&public(1)));
         assert!(!state.is_device(&public(2)));
         assert_eq!(state.devices[&public(2)].enrolled_at, 2);
+    }
+
+    /// Lamport 2 at the genesis head, with the rotation's merge key
+    /// forced to sort after the sibling's: varying the label until it
+    /// does is exactly the grinding the ADR warns about.
+    fn sibling_sorting_before(rotation: &KeysetRecord, parent: &KeysetRecord) -> KeysetRecord {
+        let admin = key(1);
+        (0..)
+            .map(|n| {
+                append(
+                    parent,
+                    &admin,
+                    rotation.lamport,
+                    KeysetEntry::IdpBindingBound {
+                        binding_id: format!("attacker-{n}"),
+                    },
+                    None,
+                )
+            })
+            .find(|sibling| sibling.key() < rotation.key())
+            .unwrap()
+    }
+
+    #[test]
+    fn a_rotation_beats_a_sibling_from_the_key_it_rotates_away() {
+        let first = genesis();
+        let rotation = append(
+            &first,
+            &key(1),
+            2,
+            KeysetEntry::AdminKeyRotated {
+                new_admin_key: public(5),
+            },
+            Some(&key(5)),
+        );
+        let sibling = sibling_sorting_before(&rotation, &first);
+        let mut log = Log::default();
+        for record in [&first, &rotation, &sibling] {
+            log.insert(record.clone()).unwrap();
+        }
+        let state = fold(&log, &first.hash).unwrap();
+        assert_eq!(state.head_hash, rotation.hash);
+        assert!(state.is_admin(&public(5)));
+        assert!(state.idp_bindings.is_empty(), "the sibling must not fold");
+    }
+
+    #[test]
+    fn a_rotation_deeper_in_the_branch_still_wins_the_fork() {
+        let first = genesis();
+        let enrolled = append(
+            &first,
+            &key(1),
+            2,
+            KeysetEntry::DeviceEnrolled {
+                device_key: public(2),
+                label: "phone".to_owned(),
+            },
+            Some(&key(2)),
+        );
+        let rotation = append(
+            &enrolled,
+            &key(1),
+            3,
+            KeysetEntry::AdminKeyRotated {
+                new_admin_key: public(5),
+            },
+            Some(&key(5)),
+        );
+        let sibling = sibling_sorting_before(&enrolled, &first);
+        let mut log = Log::default();
+        for record in [&first, &enrolled, &rotation, &sibling] {
+            log.insert(record.clone()).unwrap();
+        }
+        let state = fold(&log, &first.hash).unwrap();
+        assert_eq!(state.head_hash, rotation.hash);
+        assert!(state.is_device(&public(2)));
+        assert!(state.idp_bindings.is_empty());
+    }
+
+    #[test]
+    fn mutual_rotations_fall_back_to_merge_key_order() {
+        let first = genesis();
+        let to_five = append(
+            &first,
+            &key(1),
+            2,
+            KeysetEntry::AdminKeyRotated {
+                new_admin_key: public(5),
+            },
+            Some(&key(5)),
+        );
+        let to_six = append(
+            &first,
+            &key(1),
+            2,
+            KeysetEntry::AdminKeyRotated {
+                new_admin_key: public(6),
+            },
+            Some(&key(6)),
+        );
+        let mut log = Log::default();
+        for record in [&first, &to_five, &to_six] {
+            log.insert(record.clone()).unwrap();
+        }
+        let winner = if to_five.key() < to_six.key() { 5 } else { 6 };
+        let state = fold(&log, &first.hash).unwrap();
+        assert!(state.is_admin(&public(winner)));
+        assert_eq!(state.records_folded, 2);
     }
 
     #[test]
