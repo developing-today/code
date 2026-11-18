@@ -81,6 +81,9 @@ var implementedEffectProbes = map[string]string{
 	"spec.first":                 "TestTheRevisionPolicyDecidesWhetherProgressKeepsItsMessage",
 	"spec.lenient":               "TestTheRevisionPolicyDecidesWhetherAServerInitiatedRequestIsAnswered",
 	"spec.precedence":            "TestSpecPrecedenceDecidesWhetherProgressKeepsItsMessageFromTheEnvironment",
+	"exec.maxOutputBytes":        "TestExecMaxOutputBytesCapsStdoutFromTheEnvironment",
+	"exec.timeout":               "TestExecTimeoutStopsALongScriptFromTheEnvironment",
+	"exec.output":                "TestExecOutputShapesTheResultFromTheEnvironment",
 	"proto.serveMCP":             "TestServeMCPUnmountsTheEndpointFromTheEnvironment",
 	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
 	"daemon.autostart":           "TestDaemonAutostartIsReachableFromTheEnvironment",
@@ -150,6 +153,9 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestTheRevisionPolicyDecidesWhetherProgressKeepsItsMessage":                TestTheRevisionPolicyDecidesWhetherProgressKeepsItsMessage,
 	"TestTheRevisionPolicyDecidesWhetherAServerInitiatedRequestIsAnswered":      TestTheRevisionPolicyDecidesWhetherAServerInitiatedRequestIsAnswered,
 	"TestSpecPrecedenceDecidesWhetherProgressKeepsItsMessageFromTheEnvironment": TestSpecPrecedenceDecidesWhetherProgressKeepsItsMessageFromTheEnvironment,
+	"TestExecMaxOutputBytesCapsStdoutFromTheEnvironment":                        TestExecMaxOutputBytesCapsStdoutFromTheEnvironment,
+	"TestExecTimeoutStopsALongScriptFromTheEnvironment":                         TestExecTimeoutStopsALongScriptFromTheEnvironment,
+	"TestExecOutputShapesTheResultFromTheEnvironment":                           TestExecOutputShapesTheResultFromTheEnvironment,
 	"TestServeMCPUnmountsTheEndpointFromTheEnvironment":                         TestServeMCPUnmountsTheEndpointFromTheEnvironment,
 	"TestDaemonAddressIsReachableFromTheEnvironment":                            TestDaemonAddressIsReachableFromTheEnvironment,
 	"TestDaemonAutostartIsReachableFromTheEnvironment":                          TestDaemonAutostartIsReachableFromTheEnvironment,
@@ -886,6 +892,81 @@ func TestSpecPrecedenceDecidesWhetherProgressKeepsItsMessageFromTheEnvironment(t
 	}
 	if kept("MCPX_SPEC_PRECEDENCE=2024-11-05") {
 		t.Fatal("spec.precedence=2024-11-05 should strip the progress message for a 2024-11-05 client")
+	}
+}
+
+// exec.maxOutputBytes caps the stdout a run returns, with a marker. A
+// script prints 2000 bytes and the run is returned as one structured
+// document (text output streams to the terminal as it is printed, so the
+// returned stdout is what the cap bounds).
+// Oracle: at the default (64KiB) all of it comes back unmarked; with
+// MCPX_EXEC_MAX_OUTPUT_BYTES=500 it is cut, marked and flagged
+// stdoutTruncated.
+func TestExecMaxOutputBytesCapsStdoutFromTheEnvironment(t *testing.T) {
+	result := func(env ...string) map[string]any {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		e.setenv(append([]string{"MCPX_EXEC_OUTPUT=structured"}, env...)...)
+		got := e.run("exec", `console.log("x".repeat(2000))`)
+		var doc map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimSpace(got)), &doc); err != nil {
+			t.Fatalf("a structured run should print one JSON document, got %v:\n%s", err, firstN(got, 300))
+		}
+		return doc
+	}
+
+	if doc := result(); strings.Count(doc["stdout"].(string), "x") < 2000 || doc["stdoutTruncated"] == true {
+		t.Fatalf("at the default exec.maxOutputBytes 2000 bytes should come back whole:\n%s", firstN(dumpJSON(t, doc), 300))
+	}
+	doc := result("MCPX_EXEC_MAX_OUTPUT_BYTES=500")
+	if out, _ := doc["stdout"].(string); len(out) > 500 || !strings.Contains(out, "stdout truncated") || doc["stdoutTruncated"] != true {
+		t.Fatalf("exec.maxOutputBytes=500 should cut the stdout to 500 bytes and mark it:\n%s", firstN(dumpJSON(t, doc), 800))
+	}
+}
+
+// exec.timeout kills a script after this long. A script sleeps four
+// seconds and then prints.
+// Oracle: at the default (120s) it prints and succeeds; with
+// MCPX_EXEC_TIMEOUT=1s it is stopped before printing and the run fails.
+func TestExecTimeoutStopsALongScriptFromTheEnvironment(t *testing.T) {
+	run := func(env ...string) (string, error) {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		return e.try("exec", `await new Promise((r) => setTimeout(r, 4000)); console.log("woke")`)
+	}
+
+	if got, err := run(); err != nil || !strings.Contains(got, "woke") {
+		t.Fatalf("at the default exec.timeout a four-second script should finish, got err=%v:\n%s", err, got)
+	}
+	if got, err := run("MCPX_EXEC_TIMEOUT=1s"); err == nil || strings.Contains(got, "woke") {
+		t.Fatalf("exec.timeout=1s should stop a four-second script before it prints, got err=%v:\n%s", err, got)
+	}
+}
+
+// exec.output picks the shape of what a run returns. A script prints one
+// line.
+// Oracle: at the default (text) the CLI prints the line bare; with
+// MCPX_EXEC_OUTPUT=structured it prints one JSON document whose stdout
+// field holds the line.
+func TestExecOutputShapesTheResultFromTheEnvironment(t *testing.T) {
+	out := func(env ...string) string {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		return e.run("exec", `console.log("shaped")`)
+	}
+
+	if got := strings.TrimSpace(out()); got != "shaped" {
+		t.Fatalf("at the default exec.output the CLI should print the line bare, got:\n%s", got)
+	}
+	got := out("MCPX_EXEC_OUTPUT=structured")
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(got)), &doc); err != nil {
+		t.Fatalf("exec.output=structured should print one JSON document, got %v:\n%s", err, got)
+	}
+	if s, _ := doc["stdout"].(string); !strings.Contains(s, "shaped") {
+		t.Fatalf("the structured document should carry the line in stdout, got:\n%s", got)
 	}
 }
 
