@@ -78,8 +78,12 @@ func (a *App) CmdElicit(ctx context.Context, args []string) error {
 
 	switch sub {
 	case "", "list":
+		// The daemon's /v1/elicit listing honours elicit.pendingLimit;
+		// this one read the store with no limit and so always got the
+		// built-in default, whatever the setting said.
 		pending, err := b.Pending(elicit.Filter{
 			Session: *session, Audience: elicit.Audience(*audience),
+			Limit: a.Settings().Int("elicit.pendingLimit"),
 		})
 		if err != nil {
 			return err
