@@ -101,6 +101,7 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"daemon.saveInterval":                "TestDaemonSaveIntervalWritesTheLeaseTableFromTheEnvironment",
 	"autostart.pollInterval":             "TestAutostartPollIntervalPacesTheReadinessPollFromTheEnvironment",
 	"daemon.leaseTTL":                    "TestDaemonLeaseTTLForgetsASilentCallerFromTheEnvironment",
 	"elicit.disambiguate":                "TestElicitDisambiguateAsksWhichInstanceFromTheEnvironment",
@@ -283,6 +284,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestDaemonSaveIntervalWritesTheLeaseTableFromTheEnvironment":                    TestDaemonSaveIntervalWritesTheLeaseTableFromTheEnvironment,
 	"TestAutostartPollIntervalPacesTheReadinessPollFromTheEnvironment":               TestAutostartPollIntervalPacesTheReadinessPollFromTheEnvironment,
 	"TestDaemonLeaseTTLForgetsASilentCallerFromTheEnvironment":                       TestDaemonLeaseTTLForgetsASilentCallerFromTheEnvironment,
 	"TestElicitDisambiguateAsksWhichInstanceFromTheEnvironment":                      TestElicitDisambiguateAsksWhichInstanceFromTheEnvironment,
@@ -3757,6 +3759,44 @@ func TestAutostartPollIntervalPacesTheReadinessPollFromTheEnvironment(t *testing
 	}
 	if slow := autostartTook(t, "MCPX_AUTOSTART_POLL_INTERVAL=4s"); slow < 4*time.Second {
 		t.Fatalf("with autostart.pollInterval=4s the autostart should wait at least one 4s interval, took %v", slow)
+	}
+}
+
+// leaseSavedWithin makes one call under a fixed caller id and reports
+// whether the daemon's sessions.json names that caller 1.5s later,
+// while the daemon is still running.
+func leaseSavedWithin(t *testing.T, env ...string) bool {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(env...)
+	e.run("ls")
+	req, err := http.NewRequest(http.MethodPost, "http://mcpx/v1/call",
+		strings.NewReader(`{"server":"demo","tool":"echo","args":{"message":"saved"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Mcpx-Call", "periodically-saved-caller")
+	resp, err := e.socketClient(t).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	time.Sleep(1500 * time.Millisecond)
+	b, _ := os.ReadFile(filepath.Join(e.dir, "state", "sessions.json"))
+	return strings.Contains(string(b), "periodically-saved-caller")
+}
+
+// TestDaemonSaveIntervalWritesTheLeaseTableFromTheEnvironment is the
+// effect probe for daemon.saveInterval. A caller's lease reaches
+// sessions.json only when the daemon saves: not within 1.5s under the
+// default five-minute interval, and within it at
+// daemon.saveInterval=200ms.
+func TestDaemonSaveIntervalWritesTheLeaseTableFromTheEnvironment(t *testing.T) {
+	if leaseSavedWithin(t) {
+		t.Fatal("oracle: under the default save interval the lease should not be on disk yet")
+	}
+	if !leaseSavedWithin(t, "MCPX_DAEMON_SAVE_INTERVAL=200ms") {
+		t.Fatal("with daemon.saveInterval=200ms the lease should have been saved to sessions.json")
 	}
 }
 
