@@ -130,6 +130,10 @@ export interface ActivityCounts {
   /** INFERRED fleet binary use from shell tool-call inputs. */
   fleetInferred: { subcommand: string; count: number }[];
   fleetInferredTotal: number;
+  /** Source selected for fleet CLI counts. */
+  fleetSource: "recorded" | "inferred";
+  fleetRecorded: { subcommand: string; count: number }[];
+  fleetRecordedTotal: number;
 }
 
 export interface QuotaAnalytics {
@@ -676,7 +680,54 @@ export function readMcpxCallLedger(dir: string, now: number): ActivityCounts["mc
   };
 }
 
-function activityComputePlan(db: Database, now: number, ledgerDir: string): { steps: Array<() => void>; assemble: () => ActivityCounts } {
+export function readFleetInvocationLedger(file: string, now: number): {
+  readable: boolean;
+  total: number;
+  byCommand: { subcommand: string; count: number }[];
+} {
+  const texts: string[] = [];
+  for (const candidate of [file, ...[1, 2, 3, 4].map((index) => `${file}.${index}`)]) {
+    try {
+      texts.push(readFileSync(candidate, "utf8"));
+    } catch {
+      // Rotated segments are optional; one readable segment is enough to
+      // establish that the ledger is available rather than inferred.
+    }
+  }
+  if (texts.length === 0) return { readable: false, total: 0, byCommand: [] };
+  const cutoff = now - 7 * DAY_MS;
+  const counts = new Map<string, number>();
+  let total = 0;
+  for (const line of texts.join("\n").split("\n")) {
+    if (!line) continue;
+    try {
+      const row = JSON.parse(line) as {
+        schema?: unknown;
+        at_unix_ms?: unknown;
+        command?: unknown;
+        subcommand?: unknown;
+        sub_subcommand?: unknown;
+        exit_code?: unknown;
+      };
+      if (row.schema !== "fleet-invocation/v1" || typeof row.at_unix_ms !== "number" ||
+          row.at_unix_ms < cutoff || row.at_unix_ms > now + 60_000 || typeof row.exit_code !== "number") continue;
+      const command = [row.command, row.subcommand, row.sub_subcommand]
+        .filter((part): part is string => typeof part === "string" && part.length > 0)
+        .join(" ") || "(root)";
+      total++;
+      counts.set(command, (counts.get(command) ?? 0) + 1);
+    } catch {
+      // Ignore torn or malformed JSONL lines.
+    }
+  }
+  return {
+    readable: true,
+    total,
+    byCommand: [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([subcommand, count]) => ({ subcommand, count })),
+  };
+}
+
+function activityComputePlan(db: Database, now: number, ledgerDir: string, fleetLedgerFile: string): { steps: Array<() => void>; assemble: () => ActivityCounts } {
   const since = now - 7 * DAY_MS;
   const until = now + 1;
   const toolCounts = new Map<string, number>();
@@ -686,6 +737,7 @@ function activityComputePlan(db: Database, now: number, ledgerDir: string): { st
   let sessionRow: { total: number; roots: number; subs: number } = { total: 0, roots: 0, subs: 0 };
   let turnCount = 0;
   let mcpxDaemon: ActivityCounts["mcpxDaemon"] = { calls: 0, errors: 0, topTools: [] };
+  const fleetLedger = readFleetInvocationLedger(fleetLedgerFile, now);
   const steps: Array<() => void> = [];
   for (const [from, to] of chunkBounds(since, until, ACTIVITY_SLICE_MS)) {
     steps.push(() => {
@@ -787,19 +839,22 @@ function activityComputePlan(db: Database, now: number, ledgerDir: string): { st
         .slice(0, 12)
         .map(([subcommand, count]) => ({ subcommand, count })),
       fleetInferredTotal: fleetTotal,
+      fleetSource: fleetLedger.readable ? "recorded" : "inferred",
+      fleetRecorded: fleetLedger.byCommand,
+      fleetRecordedTotal: fleetLedger.total,
     };
   };
   return { steps, assemble };
 }
 
-function startActivityCompute(db: Database, ledgerDir: string): void {
+function startActivityCompute(db: Database, ledgerDir: string, fleetLedgerFile: string): void {
   activityComputing = true;
-  const { steps, assemble } = activityComputePlan(db, Date.now(), ledgerDir);
+  const { steps, assemble } = activityComputePlan(db, Date.now(), ledgerDir, fleetLedgerFile);
   let idx = 0;
   const step = (): void => {
     if (idx >= steps.length) {
       try {
-        activityCache = { at: Date.now(), ledgerDir, data: assemble() };
+        activityCache = { at: Date.now(), ledgerDir: `${ledgerDir}|${fleetLedgerFile}`, data: assemble() };
       } catch {
         // fail-soft: leave the cache as-is; a later call retries
       } finally {
@@ -819,10 +874,11 @@ function startActivityCompute(db: Database, ledgerDir: string): void {
   setTimeout(step, 0);
 }
 
-function loadActivity(db: Database, now: number, ledgerDir: string): ActivityCounts | null {
-  if (activityCache && activityCache.ledgerDir === ledgerDir && now - activityCache.at < ACTIVITY_TTL_MS) return activityCache.data;
-  if (!activityComputing) startActivityCompute(db, ledgerDir);
-  return activityCache?.ledgerDir === ledgerDir ? activityCache.data : null;
+function loadActivity(db: Database, now: number, ledgerDir: string, fleetLedgerFile: string): ActivityCounts | null {
+  const cacheKey = `${ledgerDir}|${fleetLedgerFile}`;
+  if (activityCache && activityCache.ledgerDir === cacheKey && now - activityCache.at < ACTIVITY_TTL_MS) return activityCache.data;
+  if (!activityComputing) startActivityCompute(db, ledgerDir, fleetLedgerFile);
+  return activityCache?.ledgerDir === cacheKey ? activityCache.data : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -943,6 +999,7 @@ export function buildQuotaAnalytics(args: {
   quotaCurrentPath: string;
   opencodeDbPath?: string;
   mcpxCallLedgerDir?: string;
+  fleetInvocationLedgerFile?: string;
   now?: number;
 }): QuotaAnalytics {
   const now = args.now ?? Date.now();
@@ -1129,7 +1186,12 @@ export function buildQuotaAnalytics(args: {
       } satisfies PoolAnalytics;
     });
 
-    base.activity7d = loadActivity(db, now, args.mcpxCallLedgerDir ?? join(homedir(), ".local", "state", "mcpx", "call-ledger"));
+    base.activity7d = loadActivity(
+      db,
+      now,
+      args.mcpxCallLedgerDir ?? join(homedir(), ".local", "state", "mcpx", "call-ledger"),
+      args.fleetInvocationLedgerFile ?? join(homedir(), ".local", "state", "fleet", "invocations.jsonl"),
+    );
     return base;
   } catch {
     // Schema drift or a locked DB must never break /quota: the

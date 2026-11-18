@@ -495,6 +495,7 @@ impl WorldCore {
                 scopes,
                 parent,
                 revoked: false,
+                revoked_by: None,
                 bounds,
                 used: 0,
                 subject,
@@ -523,6 +524,19 @@ impl WorldCore {
                     .filter(|child| child.parent == Some(id))
                     .map(|child| child.participant.id),
             );
+        }
+        revoked
+    }
+
+    /// [`Self::revoke_tree`], recording `by` (the moderator participant
+    /// who ordered it; `None` for the admin) on the revoked root so a
+    /// checkpoint keeps the audit actor (#11778).
+    pub fn revoke_tree_by(&mut self, participant_id: u64, by: Option<u64>) -> Vec<u64> {
+        let revoked = self.revoke_tree(participant_id);
+        if !revoked.is_empty()
+            && let Some(record) = self.capabilities.get_mut(&participant_id)
+        {
+            record.revoked_by = by;
         }
         revoked
     }

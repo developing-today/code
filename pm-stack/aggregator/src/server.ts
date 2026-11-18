@@ -2873,7 +2873,7 @@ async function handler(req: Request): Promise<Response> {
       source.usage().catch(() => emptyUsageView()),
     ]);
     try {
-      return json(buildQuotaAnalytics({ quota, usage, quotaCurrentPath: cfg.quotaCurrentFile, mcpxCallLedgerDir: cfg.mcpxCallLedgerDir }));
+      return json(buildQuotaAnalytics({ quota, usage, quotaCurrentPath: cfg.quotaCurrentFile, mcpxCallLedgerDir: cfg.mcpxCallLedgerDir, fleetInvocationLedgerFile: cfg.fleetInvocationLedgerFile }));
     } catch {
       return json({ error: "analytics unavailable" }, 503);
     }
@@ -2891,7 +2891,7 @@ async function handler(req: Request): Promise<Response> {
     // quota page down with it (the builder itself also degrades).
     let analytics: QuotaAnalytics | null = null;
     try {
-      analytics = buildQuotaAnalytics({ quota, usage, quotaCurrentPath: cfg.quotaCurrentFile, mcpxCallLedgerDir: cfg.mcpxCallLedgerDir });
+      analytics = buildQuotaAnalytics({ quota, usage, quotaCurrentPath: cfg.quotaCurrentFile, mcpxCallLedgerDir: cfg.mcpxCallLedgerDir, fleetInvocationLedgerFile: cfg.fleetInvocationLedgerFile });
     } catch {
       analytics = null;
     }

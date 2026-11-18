@@ -740,6 +740,7 @@ impl WorldCore {
                             scopes: validated_scopes,
                             parent,
                             revoked: revoked_by_ancestor,
+                            revoked_by: None,
                             bounds: CapabilityBounds { expires_at, uses },
                             used,
                             subject,
@@ -749,10 +750,10 @@ impl WorldCore {
                         inherited_revocations.insert(issued_participant_id);
                     }
                 }
-                JournalEntry::Revoked { participant_id, .. } => {
+                JournalEntry::Revoked { participant_id, by } => {
                     if !inherited_revocations.remove(&participant_id) {
                         ensure!(
-                            !core.revoke_tree(participant_id).is_empty(),
+                            !core.revoke_tree_by(participant_id, by).is_empty(),
                             "journal revokes unknown or revoked participant {participant_id}"
                         );
                     }
@@ -1639,7 +1640,10 @@ impl WorldCore {
             {
                 entries.push(JournalEntry::Revoked {
                     participant_id: id,
-                    by: None,
+                    by: self
+                        .capabilities
+                        .get(&id)
+                        .and_then(|record| record.revoked_by),
                 });
             }
         }

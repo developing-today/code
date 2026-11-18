@@ -91,11 +91,28 @@ describe("reset horizon (#9553)", () => {
       executeGateway: 0,
       fleetInferred: [],
       fleetInferredTotal: 0,
+      fleetSource: "inferred",
+      fleetRecorded: [],
+      fleetRecordedTotal: 0,
     } satisfies ActivityCounts;
     const html = analyticsSectionHtml(a, (n) => n);
     expect(html).toContain("mcpx daemon-recorded calls (7d)");
     expect(html).toContain("mcpx calls seen in OpenCode transcripts (7d, subset)");
     expect(html).toContain("srv.tool 5");
+  });
+
+  test("labels fleet invocation-ledger counts as recorded", () => {
+    const a = analytics();
+    a.activity7d = {
+      rangeLabel: "7d", sessions: 0, rootSessions: 0, subSessions: 0, turns: 0,
+      toolCallsTotal: 0, topTools: [], skillTotal: 0, topSkills: [], mcpx: [],
+      mcpxDaemon: { calls: 0, errors: 0, topTools: [] }, executeGateway: 0,
+      fleetInferred: [{ subcommand: "queue", count: 99 }], fleetInferredTotal: 99,
+      fleetSource: "recorded", fleetRecorded: [{ subcommand: "queue", count: 2 }], fleetRecordedTotal: 2,
+    } satisfies ActivityCounts;
+    const html = analyticsSectionHtml(a, (n) => n);
+    expect(html).toContain("fleet binary (7d, <strong>recorded</strong>): <strong>2</strong>");
+    expect(html).not.toContain("<strong>inferred</strong> from shell inputs");
   });
 
   test("weekly window steps -3d..+35d from the recorded reset", () => {
