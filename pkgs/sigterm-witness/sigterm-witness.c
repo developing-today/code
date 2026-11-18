@@ -30,9 +30,10 @@
 // argument contract: the only wrapper options are --log FILE,
 // --log=FILE, and the -- terminator, all before the command, and
 // all validated before any side effect (no pipe, no fork, no log
-// record). Anything else starting with -- in the option prefix is
-// a usage error (exit 64) naming the option. A command whose name
-// starts with -- is run after an explicit --.
+// record). Any other token starting with - before the command is
+// a usage error (exit 64) naming the token, so a mistyped option is
+// never exec'd as a command. A command whose name starts with - is
+// run after an explicit --.
 //
 // Usage: sigterm-witness --log FILE -- CMD [ARGS...]
 //        (log path may also come from SIGTERM_WITNESS_LOG)
@@ -70,8 +71,15 @@ static int selfpipe[2];
  * the running total so the loss is itself a matter of record. */
 static volatile sig_atomic_t dropped_events = 0;
 
+/* Deliveries not yet forwarded to the child, per signal number. The
+ * handler bumps this for every caught delivery before it touches the
+ * self-pipe, so forwarding never depends on the receipt getting
+ * queued: a full pipe loses the receipt, never the signal. */
+static volatile sig_atomic_t pending_fwd[NSIG];
+
 static void handler(int sig, siginfo_t *info, void *uctx) {
   (void)uctx;
+  if (sig > 0 && sig < NSIG) pending_fwd[sig]++;
   struct evt e;
   e.sig = sig;
   e.sender_pid = info ? info->si_pid : -1;
@@ -183,8 +191,6 @@ static void logline(const char *logpath, const char *fmt, ...) {
   va_start(ap, fmt);
   vsnprintf(buf, sizeof buf, fmt, ap);
   va_end(ap);
-  int fd = open(logpath, O_WRONLY | O_CREAT | O_APPEND, 0644);
-  if (fd < 0) return;
   char line[2300];
   time_t now = time(NULL);
   struct tm tmv;
@@ -192,9 +198,39 @@ static void logline(const char *logpath, const char *fmt, ...) {
   char ts[32];
   strftime(ts, sizeof ts, "%Y-%m-%dT%H:%M:%SZ", &tmv);
   int n = snprintf(line, sizeof line, "%s %s\n", ts, buf);
+  if (n < 0) return;
+  if ((size_t)n >= sizeof line) n = sizeof line - 1;
+  int fd = open(logpath, O_WRONLY | O_CREAT | O_APPEND, 0644);
+  if (fd < 0) {
+    fprintf(stderr, "sigterm-witness: cannot open log %s (%s); receipt: %s",
+            logpath, strerror(errno), line);
+    return;
+  }
   ssize_t r = write(fd, line, (size_t)n);
-  (void)r;
+  if (r != (ssize_t)n)
+    fprintf(stderr, "sigterm-witness: cannot write log %s (%s); receipt: %s",
+            logpath, strerror(errno), line);
   close(fd);
+}
+
+/* Forward every delivery counted since the last call. The caught
+ * signals are blocked while the counters are taken, so a delivery
+ * landing mid-update is neither lost nor counted twice. */
+static void forward_pending(pid_t child) {
+  sigset_t caught_set, old;
+  sigemptyset(&caught_set);
+  for (size_t k = 0; k < sizeof caught / sizeof caught[0]; k++)
+    sigaddset(&caught_set, caught[k]);
+  sigprocmask(SIG_BLOCK, &caught_set, &old);
+  int take[sizeof caught / sizeof caught[0]];
+  for (size_t k = 0; k < sizeof caught / sizeof caught[0]; k++) {
+    take[k] = pending_fwd[caught[k]];
+    pending_fwd[caught[k]] = 0;
+  }
+  sigprocmask(SIG_SETMASK, &old, NULL);
+  for (size_t k = 0; k < sizeof caught / sizeof caught[0]; k++)
+    for (int j = 0; j < take[k]; j++)
+      kill(child, caught[k]);
 }
 
 /* Render the handler-snapshotted raw cmdline: NULs -> spaces. Empty
@@ -258,7 +294,7 @@ int main(int argc, char **argv) {
       i++;
       continue;
     }
-    if (argv[i][0] == '-' && argv[i][1] == '-') {
+    if (argv[i][0] == '-') {
       fprintf(stderr, "sigterm-witness: unknown option %s\n"
                       "usage: sigterm-witness --log FILE -- CMD [ARGS...]\n",
               argv[i]);
@@ -312,6 +348,7 @@ int main(int argc, char **argv) {
   char rbuf[sizeof(struct evt) * 8];
   while (!child_done) {
     /* Drain any pending signal events (non-blocking read). */
+    forward_pending(child); /* the service must feel every delivery */
     fcntl(selfpipe[0], F_SETFL, O_NONBLOCK);
     ssize_t n;
     while ((n = read(selfpipe[0], rbuf, sizeof rbuf)) > 0) {
@@ -325,7 +362,6 @@ int main(int argc, char **argv) {
                 signame(e.sig), e.sig, (int)e.sender_pid, (int)e.sender_uid,
                 e.si_code, e.sender_comm, (int)e.sender_ppid,
                 e.sender_starttime, cmd, (int)child);
-        kill(child, e.sig); /* forward — the service must feel it */
       }
     }
     if (dropped_events != dropped_reported) {
