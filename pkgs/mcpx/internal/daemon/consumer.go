@@ -1362,7 +1362,14 @@ func (s *Server) brokerSamplerFor(session string, provider string) model.SampleF
 		if err != nil {
 			return model.Response{}, err
 		}
-		ttl := s.policyFor(ctx).ModelTimeout
+		// model.timeout bounds the question; with it unset (0) the
+		// question falls back to prompt.sampleTimeout, the setting that
+		// names how long a generation waits on a sampling answerer.
+		pol := s.policyFor(ctx)
+		ttl := pol.ModelTimeout
+		if ttl <= 0 {
+			ttl = pol.PromptSampleTimeout
+		}
 		if ttl <= 0 {
 			ttl = defaults.PromptSampleTimeout
 		}
