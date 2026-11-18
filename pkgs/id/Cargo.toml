@@ -127,9 +127,9 @@ iroh = "1"
 iroh-mdns-address-lookup = "0.6"
 iroh-base = "1"
 iroh-tickets = "1"
-iroh-blobs = "0.103"
+iroh-blobs = "0.105"
 iroh-docs = "0.101"
-iroh-gossip = { version = "0.101", features = ["net"] }
+iroh-gossip = { version = "0.102", features = ["net"] }
 p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
 # Store traits only. The default features would pull in SQLite (explainers section 14).
 p2panda-store = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", default-features = false }
@@ -146,8 +146,8 @@ p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b9526
 # declared there now, with the same features.
 postcard = { version = "1", features = ["alloc"] }
 rand = "0.10"
-redb = "=4.3.0"
-rustyline = "18"
+redb = "=4.6.0"
+rustyline = "19"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
@@ -164,10 +164,10 @@ unicode-width = "0.2"
 
 # Web feature dependencies (optional)
 argon2 = "0.6"
-chacha20poly1305 = "0.10"
+chacha20poly1305 = "0.11"
 zeroize = "1"
 rpassword = "7"
-base64 = "0.22"
+base64 = "0.23"
 blake3 = "1"
 # Turso/libsql HTTP adapter v1 (#7577, decision record #5806): raw HTTP
 # pipeline client in src/foreign_libsql.rs. rustls, tokio-rustls and
@@ -211,9 +211,9 @@ id-sync = { path = "crates/id-sync", default-features = false, features = [
   "test-utils",
 ] }
 # SQLite for the bridge PoC's DO-shaped hosted store (#2276). Bundled, so no system SQLite is needed.
-rusqlite = { version = "0.32", features = ["bundled"] }
-wat = "=1.261.0"
-tokio-tungstenite = "0.29"
+rusqlite = { version = "0.42", features = ["bundled"] }
+wat = "=1.263.0"
+tokio-tungstenite = "0.30"
 # vt100 moved to id-worlds (dev) with world_ssh in step 5c (#4408).
 # The CLI integration tests drive an SSH client against the world SSH
 # server; the server side (and its russh) lives in id-worlds since
@@ -236,7 +236,7 @@ crypto_secretbox = "0.1"
 # Reads the vector's msgpack byte strings (P6.1 known-answer test). Dev only; already in the lock.
 serde_bytes = "0.11"
 # Decodes the Keybase vector constants as published (P6.1 known-answer test). Dev only; already in the lock.
-base64 = "0.22"
+base64 = "0.23"
 
 # The DHT testnet test needs the `dht` feature (P7.3).
 [[test]]

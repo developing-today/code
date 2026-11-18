@@ -8,4 +8,4 @@ description = "Typed note submission envelope, staging, and human-gated promotio
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-sha2 = "0.10"
+sha2 = "0.11"

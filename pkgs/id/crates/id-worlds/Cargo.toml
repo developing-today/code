@@ -64,9 +64,9 @@ id-store = { path = "../id-store", default-features = false }
 id-sync = { path = "../id-sync", default-features = false }
 iroh = "1"
 iroh-base = "1"
-iroh-blobs = "0.103"
+iroh-blobs = "0.105"
 iroh-docs = "0.101"
-iroh-gossip = { version = "0.101", features = ["net"] }
+iroh-gossip = { version = "0.102", features = ["net"] }
 libc = "0.2"
 p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
 postcard = { version = "1", features = ["alloc"] }
@@ -80,7 +80,7 @@ tempfile = "3"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
-wasmtime = { version = "=48.0.7", default-features = false, features = [
+wasmtime = { version = "=49.0.6", default-features = false, features = [
   "cranelift",
   "runtime",
   "std",
@@ -98,8 +98,8 @@ id-sync = { path = "../id-sync", default-features = false, features = [
 proptest = "1.12"
 tokio = { version = "1", features = ["test-util"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-vt100 = "=0.16.2"
-wat = "=1.261.0"
+vt100 = "=0.18.1"
+wat = "=1.263.0"
 
 [lints.rust]
 unsafe_code = "warn"
