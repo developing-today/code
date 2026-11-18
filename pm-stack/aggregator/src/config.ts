@@ -139,6 +139,8 @@ export interface Config {
    * 2026-10-29, which left attention single-legged on the collector
    * feed until the 2026-11-10 fixture incident. */
   opencodeServerStateFile: string;
+  /** Read-only directory containing mcpx daemon's rotated call ledger. */
+  mcpxCallLedgerDir: string;
   kaneo: {
     baseUrl: string;
     /** Kaneo's client URL — the Origin its auth accepts (better-auth). */
@@ -290,6 +292,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     opencodeServerStateFile: s(
       env.PM_AGG_OPENCODE_SERVER_STATE,
       join(homedir(), ".local", "state", "opencode", "service-prod.json"),
+    ),
+    mcpxCallLedgerDir: s(
+      env.PM_AGG_MCPX_CALL_LEDGER_DIR,
+      join(homedir(), ".local", "state", "mcpx", "call-ledger"),
     ),
     kaneo: {
       baseUrl: s(env.KANEO_URL, "http://127.0.0.1:5173"),

@@ -341,7 +341,9 @@ export function analyticsSectionHtml(a: QuotaAnalytics, display: (n: string) => 
     ? `<div>sessions (7d): <strong>${fmtN(act.sessions)}</strong> · root ${fmtN(act.rootSessions)} · sub-sessions ${fmtN(act.subSessions)} · user turns ${fmtN(act.turns)}</div>` +
       `<div>tool calls (7d): <strong>${fmtN(act.toolCallsTotal)}</strong> · ${act.topTools.map((t) => `${esc(t.name)} ${fmtN(t.count)}`).join(" · ")}</div>` +
       `<div>skill use (7d): <strong>${fmtN(act.skillTotal)}</strong>${act.topSkills.length ? ` · ${act.topSkills.map((s) => `${esc(s.name)} ${fmtN(s.count)}`).join(" · ")}` : ""}</div>` +
-      `<div>mcpx (7d): ${act.mcpx.length ? act.mcpx.map((m) => `${esc(m.name)} ${fmtN(m.count)}`).join(" · ") : "no direct mcpx tool calls"} · <span class="muted">execute gateway (code-tool calls): ${fmtN(act.executeGateway)}</span></div>` +
+      `<div>mcpx daemon-recorded calls (7d): <strong>${fmtN(act.mcpxDaemon.calls)}</strong> · errors ${fmtN(act.mcpxDaemon.errors)}` +
+      `${act.mcpxDaemon.topTools.length ? ` · ${act.mcpxDaemon.topTools.map((m) => `${esc(m.name)} ${fmtN(m.count)}`).join(" · ")}` : ""}</div>` +
+      `<div>mcpx calls seen in OpenCode transcripts (7d, subset): ${act.mcpx.length ? act.mcpx.map((m) => `${esc(m.name)} ${fmtN(m.count)}`).join(" · ") : "none"} · <span class="muted">execute gateway (code-tool calls): ${fmtN(act.executeGateway)}</span></div>` +
       `<div>fleet binary (7d, <strong>inferred</strong> from shell inputs — no invocation ledger exists): <strong>${fmtN(act.fleetInferredTotal)}</strong>${act.fleetInferred.length ? ` · ${act.fleetInferred.map((f) => `fleet ${esc(f.subcommand)} ${fmtN(f.count)}`).join(" · ")}` : ""}</div>`
     : `<div class="muted">activity scan (sessions, tools, skills, mcpx, fleet) is still computing — reload in about a minute.</div>`;
   const dowNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];

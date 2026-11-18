@@ -151,7 +151,7 @@ func (s *Server) handleCallReporting(w http.ResponseWriter, r *http.Request, req
 			// report the completed call here: an exec run whose calls
 			// ask questions is still a run whose calls belong in its
 			// stream.
-			s.reportCallFrame(callCtx, req.Server, req.Tool, args, start, res, err)
+			s.reportCallFrame(callCtx, req.Server, req.Tool, cc.SessionID, args, start, res, err)
 			done <- outcome{res, err}
 			if err != nil {
 				return nil, &tasks.Fault{Code: failureStatus(err), Message: err.Error()}

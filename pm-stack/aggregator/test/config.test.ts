@@ -9,6 +9,15 @@ describe("loadConfig projector hot-list credentials", () => {
   });
 });
 
+describe("loadConfig mcpx call ledger", () => {
+  test("uses the state-directory default and accepts an explicit directory", () => {
+    const home = process.env.HOME ?? "/home/test";
+    expect(loadConfig({ PM_AGG_DEV: "1" }).mcpxCallLedgerDir).toBe(`${home}/.local/state/mcpx/call-ledger`);
+    expect(loadConfig({ PM_AGG_DEV: "1", PM_AGG_MCPX_CALL_LEDGER_DIR: "/var/lib/mcpx/ledger" }).mcpxCallLedgerDir)
+      .toBe("/var/lib/mcpx/ledger");
+  });
+});
+
 describe("loadConfig PM_AGG_PORT", () => {
   test("keeps the existing default for unset and empty values", () => {
     expect(loadConfig({ PM_AGG_DEV: "1" }).port).toBe(4870);
