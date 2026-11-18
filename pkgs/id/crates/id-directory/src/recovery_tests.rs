@@ -1152,3 +1152,125 @@ mod flow {
         );
     }
 }
+
+mod view {
+    use super::*;
+    use crate::recovery_flow::{self, Progress};
+    use crate::recovery_relay::{RecoveryRelay, RelayedRecord};
+    use crate::recovery_view::{RelayView, Status};
+
+    /// A relay holding the owner's and every guardian's keyset, all
+    /// first seen at time 0, and nothing else.
+    fn published() -> (tempfile::TempDir, RecoveryRelay) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut relay = RecoveryRelay::open(dir.path().join("relay.jsonl")).unwrap();
+        let mut logs = vec![owner_identity().0];
+        logs.extend(GUARDIANS.iter().map(|seed| identity(*seed, vec![]).0));
+        for log in logs {
+            for record in log.records() {
+                relay
+                    .relay(RelayedRecord::Keyset(record.clone()), 0)
+                    .unwrap();
+            }
+        }
+        (dir, relay)
+    }
+
+    fn relay_annex(relay: &mut RecoveryRelay, record: AnnexRecord, now: u64) {
+        relay.relay(RelayedRecord::Annex(record), now).unwrap();
+    }
+
+    #[test]
+    fn a_relay_view_carries_a_recovery_from_request_to_completion() {
+        let (_dir, mut relay) = published();
+        let head = RelayView::new(&relay, &public(OWNER))
+            .unwrap()
+            .head()
+            .unwrap();
+        assert_eq!(head, owner_head());
+        let request = recovery_flow::request(
+            &key(SUCCESSOR),
+            &public(SUCCESSOR_DEVICE),
+            &head,
+            CREATED_AT,
+            "lost every device",
+        )
+        .unwrap();
+        relay_annex(&mut relay, request.clone(), CREATED_AT);
+        for guardian in [11, 12] {
+            let approval =
+                recovery_flow::approve(&key(guardian), &public(guardian), &request, 2_000).unwrap();
+            relay_annex(&mut relay, approval, CREATED_AT + 1);
+        }
+        let view = RelayView::new(&relay, &public(OWNER)).unwrap();
+        assert!(matches!(
+            view.status(&request.hash, AFTER_DELAY - 1).unwrap(),
+            Status::Open(Progress::Waiting { approvals: 2, .. })
+        ));
+        let approval_hashes = match view.status(&request.hash, AFTER_DELAY).unwrap() {
+            Status::Open(Progress::Ready { approval_hashes }) => Some(approval_hashes),
+            _ => None,
+        }
+        .expect("the recovery is ready");
+        let lamport = view.next_lamport().unwrap();
+        assert_eq!(lamport, 4);
+        let rotation =
+            recovery_flow::rotate(&key(SUCCESSOR), &request, approval_hashes, lamport).unwrap();
+        relay
+            .relay(RelayedRecord::Keyset(rotation), AFTER_DELAY)
+            .unwrap();
+        let view = RelayView::new(&relay, &public(OWNER)).unwrap();
+        assert_eq!(
+            view.status(&request.hash, AFTER_DELAY).unwrap(),
+            Status::Completed
+        );
+        let recovered = view.head().unwrap();
+        assert!(recovered.is_admin(&public(SUCCESSOR)));
+        assert!(recovered.is_device(&public(SUCCESSOR_DEVICE)));
+    }
+
+    #[test]
+    fn a_request_is_moot_once_the_keyset_moves_on() {
+        let (_dir, mut relay) = published();
+        let head = owner_head();
+        let request = recovery_flow::request(
+            &key(SUCCESSOR),
+            &public(SUCCESSOR_DEVICE),
+            &head,
+            CREATED_AT,
+            "lost every device",
+        )
+        .unwrap();
+        relay_annex(&mut relay, request.clone(), CREATED_AT);
+        // A surviving admin key keeps using the keyset.
+        let next = KeysetRecord::sign(
+            &key(OWNER),
+            4,
+            head.head_hash,
+            KeysetEntry::DeviceRevoked {
+                device_key: public(OWNER_DEVICE),
+                reason: "lost".to_owned(),
+            },
+            None,
+        )
+        .unwrap();
+        relay
+            .relay(RelayedRecord::Keyset(next), CREATED_AT + 5)
+            .unwrap();
+        let view = RelayView::new(&relay, &public(OWNER)).unwrap();
+        assert_eq!(
+            view.status(&request.hash, AFTER_DELAY).unwrap(),
+            Status::Moot
+        );
+        assert_eq!(view.next_lamport().unwrap(), 5);
+    }
+
+    #[test]
+    fn a_relay_view_needs_the_identitys_genesis_and_its_requests() {
+        let (_dir, relay) = published();
+        assert!(RelayView::new(&relay, &public(SUCCESSOR)).is_err());
+        let view = RelayView::new(&relay, &public(OWNER)).unwrap();
+        assert!(view.status(&"0".repeat(64), CREATED_AT).is_err());
+        assert!(view.request(&"0".repeat(64)).is_none());
+    }
+}

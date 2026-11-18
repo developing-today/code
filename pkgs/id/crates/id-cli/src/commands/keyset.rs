@@ -30,7 +30,15 @@ use id_store::store::load_or_create_keypair;
 /// Fails if the identity key or keyset log cannot be read or written,
 /// or the keyset refuses the change.
 pub async fn cmd_keyset(command: KeysetCommand) -> Result<()> {
+    let command = match command {
+        KeysetCommand::Recovery { command } => {
+            return super::keyset_recovery::cmd_recovery(command).await;
+        }
+        other => other,
+    };
     let client = match &command {
+        // Handled above; recovery opens keys and keysets as it needs.
+        KeysetCommand::Recovery { .. } => false,
         KeysetCommand::Show { client }
         | KeysetCommand::Enrol { client, .. }
         | KeysetCommand::Revoke { client, .. }
@@ -53,7 +61,6 @@ pub async fn cmd_keyset(command: KeysetCommand) -> Result<()> {
         );
     }
     match command {
-        KeysetCommand::Show { .. } => {}
         KeysetCommand::Enrol {
             device_key_file,
             label,
@@ -119,6 +126,7 @@ pub async fn cmd_keyset(command: KeysetCommand) -> Result<()> {
             )?;
             println!("Updated the guardian set.");
         }
+        KeysetCommand::Show { .. } | KeysetCommand::Recovery { .. } => {}
         KeysetCommand::Checkpoint { .. } => {
             let head = file.checkpoint(&key)?;
             println!("Checkpointed head {head}; it is final here.");

@@ -1756,11 +1756,97 @@ pub enum KeysetCommand {
         #[arg(long)]
         client: bool,
     },
+    /// Guardian recovery of an identity whose keys are all lost. Records
+    /// go through a recovery relay file, which attests when it first saw
+    /// each one; share that file among the devices and guardians taking
+    /// part.
+    Recovery {
+        /// The recovery step.
+        #[command(subcommand)]
+        command: RecoveryCommand,
+    },
     /// Checkpoint the current keyset head with this identity's key, which
     /// must be an active device key. The head becomes final here: a
     /// fork that later arrives can no longer displace it.
     Checkpoint {
         /// Checkpoint the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+}
+
+/// Subcommands for `id keyset recovery` (#2382). Each signs with this
+/// device's identity key, or the client key with `--client`.
+#[derive(Subcommand, Debug)]
+pub enum RecoveryCommand {
+    /// Copy this identity's keyset records into the relay, so a
+    /// successor can pin its head and its approvals can be checked.
+    /// Owners and guardians both publish.
+    Publish {
+        /// The recovery relay file.
+        #[arg(long)]
+        relay: PathBuf,
+        /// Publish the client identity's keyset instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+    /// From a new device, ask the guardians of `identity` to recover it.
+    /// This device's key becomes the identity's admin and device key
+    /// once enough guardians approve and the recovery delay has passed.
+    Request {
+        /// The identity to recover (its hex identity ID).
+        identity: String,
+        /// The recovery relay file.
+        #[arg(long)]
+        relay: PathBuf,
+        /// Why, shown to every device and guardian told of the request.
+        #[arg(long, default_value = "lost every key")]
+        reason: String,
+        /// Sign with the client key instead of the server key.
+        #[arg(long)]
+        client: bool,
+    },
+    /// As a guardian, approve a recovery request. Also publishes this
+    /// guardian identity's keyset, so the approval can be checked.
+    Approve {
+        /// The request ID, as `request` printed it.
+        request: String,
+        /// The recovery relay file.
+        #[arg(long)]
+        relay: PathBuf,
+        /// Approve as the client identity instead of the server's.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Cancel a recovery request with any surviving admin or device key
+    /// of the identity being recovered.
+    Cancel {
+        /// The request ID.
+        request: String,
+        /// The recovery relay file.
+        #[arg(long)]
+        relay: PathBuf,
+        /// Sign with the client key instead of the server key.
+        #[arg(long)]
+        client: bool,
+    },
+    /// Show where a recovery request stands.
+    Status {
+        /// The request ID.
+        request: String,
+        /// The recovery relay file.
+        #[arg(long)]
+        relay: PathBuf,
+    },
+    /// On the requesting device, complete a recovery that is ready by
+    /// relaying the rotation to the successor keys.
+    Complete {
+        /// The request ID.
+        request: String,
+        /// The recovery relay file.
+        #[arg(long)]
+        relay: PathBuf,
+        /// Sign with the client key instead of the server key.
         #[arg(long)]
         client: bool,
     },
