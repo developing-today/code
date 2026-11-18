@@ -8,6 +8,12 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # dtolnay/rust-toolchain's tag is the Rust version it installs, not an
+    # action release, and the repo carries tags for versions that are not
+    # out yet (Dependabot proposed 1.120.0 over 1.99.1). The toolchain pin
+    # moves deliberately, with the code it builds.
+    ignore:
+      - dependency-name: "dtolnay/rust-toolchain"
     groups:
       github-actions:
         patterns: ["*"]
