@@ -2797,6 +2797,8 @@
         // the group's variant intersection is the same set the
         // API-leg seating was written against.
         "targets": [
+          // Drew, 2026-11-18: promotion quota first on Go; retain DeepSeek fallback tiers.
+          "opencode-go-plans/glm-5.3",
           {
             "model": "opencode-go-plans/deepseek-v4.1-flash",
             "variants": { "medium": "high", "xhigh": "max" }
@@ -2824,6 +2826,7 @@
         // stack note above. Higher tier serves first; rotation is
         // even within a tier.
         "weights": {
+          "opencode-go-plans/glm-5.3": 4,
           "opencode-go-plans/deepseek-v4.1-flash": 2,
           "opendesign/deepseek-v4.1-flash": 1,
           "_commandcode/deepseek/deepseek-v4.1-flash": 1
@@ -2872,6 +2875,8 @@
         // same pass — Pro's II band sits below the specialist chain); it
         // remains the named pool for direct calls.
         "targets": [
+          // Drew, 2026-11-18: promotion quota first on Go; retain DeepSeek fallback tiers.
+          "opencode-go-plans/glm-5.3",
           {
             "model": "opencode-go-plans/deepseek-v4-pro",
             "variants": { "medium": "high", "xhigh": "max" }
@@ -2899,6 +2904,7 @@
         // opendesign legs were missing from this map — an unweighted
         // leg's tier placement is undefined. Weighted as minor legs.
         "weights": {
+          "opencode-go-plans/glm-5.3": 4,
           "opencode-go-plans/deepseek-v4-pro": 3,
           "_commandcode/deepseek/deepseek-v4-pro": 0.5,
           "opendesign/deepseek-v4-pro": 1
