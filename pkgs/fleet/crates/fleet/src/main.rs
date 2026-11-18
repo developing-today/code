@@ -50,6 +50,7 @@ mod gh;
 
 #[cfg(feature = "gh")]
 mod gh_cache;
+mod gh_closure;
 
 #[allow(dead_code)]
 // the derivation runs in build.rs (which includes this module by path); the binary itself consumes only the baked FLEET_DERIVED_VERSION value, plus these unit tests

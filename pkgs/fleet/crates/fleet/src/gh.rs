@@ -100,6 +100,7 @@
 //!                       (default 127.0.0.1:4802)
 
 use crate::gh_cache;
+use crate::gh_closure;
 use fleet_config::{Config, DEFAULT_GH_CACHE_PORT};
 use fleet_secrets::Resolver;
 use std::io::Write;
@@ -1128,11 +1129,60 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
     if args.first().is_some_and(|a| a == "cache-status") {
         return run_cache_status(&args[1..], &cache_addrs(config, &flags));
     }
+    if args.first().is_some_and(|a| a == "closures") {
+        return run_closures(&args[1..]);
+    }
+    let intent = match gh_closure::parse(args) {
+        Ok(intent) => intent,
+        Err(e) => {
+            eprintln!("{e}");
+            return EXIT_USAGE;
+        }
+    };
+    let call_args = match &intent {
+        Some(i) => i.gh_args_with_reason(),
+        None => args.clone(),
+    };
     let gh_bin = std::env::var("FLEET_GH_BIN").unwrap_or_else(|_| "gh".to_string());
-    let sources = rotation(args);
+    let sources = rotation(&call_args);
     let trace = std::env::var("FLEET_GH_TRACE").is_ok_and(|v| v == "1");
     let mut provider = FleetTokenProvider::new(config, cache_addrs(config, &flags));
-    run_with_provider(&mut provider, &gh_bin, args, &sources, trace)
+    let code = run_with_provider(&mut provider, &gh_bin, &call_args, &sources, trace);
+    if let Some(i) = intent.filter(|_| code == EXIT_OK) {
+        let record = i.record(&gh_closure::Binding::from_env(), gh_closure::now_unix());
+        if let Err(e) = gh_closure::append(&gh_closure::log_path(), &record) {
+            eprintln!(
+                "fleet gh: {} done, but the closure record was not written: {e}",
+                i.action
+            );
+            return EXIT_UNRESOLVED;
+        }
+    }
+    code
+}
+
+/// `fleet gh closures [<item>]`: print closure records, one JSON
+/// object per line, optionally only those for one item number.
+fn run_closures(tail: &[String]) -> i32 {
+    if tail.len() > 1 {
+        return usage_error(&format!(
+            "unexpected argument '{}' for 'fleet gh closures'",
+            tail[1]
+        ));
+    }
+    let log = match std::fs::read_to_string(gh_closure::log_path()) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            eprintln!("fleet gh closures: cannot read the closure log: {e}");
+            return EXIT_UNRESOLVED;
+        }
+    };
+    let item = tail.first().map(|s| s.trim_start_matches('#'));
+    for r in gh_closure::query(&log, item) {
+        println!("{r}");
+    }
+    EXIT_OK
 }
 
 /// Leading cache flags (code#10742): `--cache-addr <addr>`
