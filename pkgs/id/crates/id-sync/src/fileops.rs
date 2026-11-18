@@ -18,6 +18,25 @@
 //!   and the `name`/`file` identity tags are refreshed to the new name.
 //! - [`FileOps::delete`] is a *hard* delete: the name, its metadata and its
 //!   archive tags are removed. The blob bytes stay until garbage collected.
+//!
+//! # Name and archive contract
+//!
+//! - **One canonical name.** Every entry point resolves names through
+//!   [`FileOps::validate_name`] / [`FileOps::validate_target`]. A stored name
+//!   is never padded: leading or trailing whitespace is refused with
+//!   [`FileOpError::InvalidName`], never trimmed at the store. Surfaces that
+//!   want to be forgiving trim before calling in.
+//! - **The archive namespace is reserved at the writer.** A name for which
+//!   `is_archive_tag_name` holds (`{stem}.archive.{digits}`, unsigned ASCII
+//!   digits) is refused with [`FileOpError::ReservedArchiveName`]. Non-numeric
+//!   lookalikes such as `a.archive.notes` remain valid user files.
+//! - **Archive references are ownership.** `archive.rename` and
+//!   `archive.replace` on a live file name the archives it owns; `archive.owner`
+//!   on an archive names the file it belongs to. These stay on the live name
+//!   when its metadata moves onto an archive, move with the name on
+//!   [`FileOps::rename`] (the source name ceases to exist), and are never copied
+//!   by [`FileOps::copy`], which sets only the `archive.replace` it creates
+//!   itself for a file it replaces.
 
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
@@ -603,7 +622,7 @@ impl<'a> FileOps<'a> {
                 ns,
                 from.as_bytes(),
                 to.as_bytes(),
-                &[b"archive.rename", b"archive.replace"],
+                &[b"archive.rename", b"archive.replace", b"archive.owner"],
             )
             .await
         {
