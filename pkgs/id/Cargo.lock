@@ -4870,6 +4870,7 @@ dependencies = [
  "id-worlds",
  "iroh",
  "iroh-blobs",
+ "libc",
  "serde_json",
  "tokio",
  "tracing",

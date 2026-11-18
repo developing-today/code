@@ -243,7 +243,7 @@ impl FileReadExecutor {
                 Err(error)
                     if matches!(
                         error.raw_os_error(),
-                        Some(libc::EXDEV | libc::ELOOP | libc::ENOSYS | libc::EAGAIN)
+                        Some(libc::EXDEV | libc::ELOOP | libc::ENOSYS | libc::EPERM | libc::EAGAIN)
                     ) => {}
                 Err(_) => return Err(REFUSAL_IO.to_owned()),
             }
@@ -257,13 +257,24 @@ impl FileReadExecutor {
             .strip_prefix(&self.root)
             .map_err(|_| REFUSAL_INVALID_PATH.to_owned())?;
         #[cfg(target_os = "linux")]
-        let opened = File::open(&self.root).and_then(|root_dir| {
-            open_beneath(
-                &root_dir,
-                suffix,
-                libc::RESOLVE_BENEATH | libc::RESOLVE_NO_MAGICLINKS | libc::RESOLVE_NO_SYMLINKS,
-            )
-        });
+        let opened = File::open(&self.root)
+            .and_then(|root_dir| {
+                open_beneath(
+                    &root_dir,
+                    suffix,
+                    libc::RESOLVE_BENEATH | libc::RESOLVE_NO_MAGICLINKS | libc::RESOLVE_NO_SYMLINKS,
+                )
+            })
+            .or_else(|error| {
+                // A kernel without openat2 (before 5.6), or a seccomp
+                // filter that refuses it, gets the canonical open the
+                // non-Linux targets use, rather than refusing every read.
+                if matches!(error.raw_os_error(), Some(libc::ENOSYS | libc::EPERM)) {
+                    File::open(&canonical)
+                } else {
+                    Err(error)
+                }
+            });
         #[cfg(not(target_os = "linux"))]
         let opened = File::open(&canonical);
         opened.map_err(|_| REFUSAL_IO.to_owned())
