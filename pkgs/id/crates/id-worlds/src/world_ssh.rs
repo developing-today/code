@@ -3152,7 +3152,7 @@ mod tests {
 
         let session = connect(port, &"0".repeat(64)).await;
         let mut channel = shell(&session).await;
-        let mut terminal = vt100::Parser::new(24, 80, 0);
+        let mut terminal = vt100::Parser::default();
         read_until(&mut channel, &mut terminal, "join denied").await;
         server.abort();
     }
@@ -3183,7 +3183,7 @@ mod tests {
         let (port, server) = start(hub).await;
         let session = connect_as(port, "cmd:", &capability).await;
         let mut channel = shell(&session).await;
-        let mut terminal = vt100::Parser::new(24, 80, 0);
+        let mut terminal = vt100::Parser::default();
         read_until(&mut channel, &mut terminal, "world>").await;
 
         channel.data(&b"hello from SSH\r"[..]).await.unwrap();
@@ -4371,7 +4371,7 @@ mod tests {
         let (port, server) = start_with_store(hub, store).await;
         let session = connect_as(port, "cmd:", &capability).await;
         let mut channel = shell(&session).await;
-        let mut terminal = vt100::Parser::new(24, 80, 0);
+        let mut terminal = vt100::Parser::default();
         read_until(&mut channel, &mut terminal, "world>").await;
         channel.data(&b"/documents guide\r"[..]).await.unwrap();
         read_until(&mut channel, &mut terminal, "guide.md").await;
@@ -4413,7 +4413,7 @@ mod tests {
 
         let session = connect(port, &capability).await;
         let mut channel = shell(&session).await;
-        let mut terminal = vt100::Parser::new(24, 80, 0);
+        let mut terminal = vt100::Parser::default();
         let initial = read_until_bytes(&mut channel, &mut terminal, "count=0").await;
         assert!(initial.windows(3).any(|window| window == b"[2J"));
         channel.data(&b"inc"[..]).await.unwrap();
@@ -4469,7 +4469,7 @@ mod tests {
         let (port, server) = start(hub).await;
         let session = connect(port, capability.expose()).await;
         let mut channel = shell(&session).await;
-        let mut terminal = vt100::Parser::new(24, 80, 0);
+        let mut terminal = vt100::Parser::default();
         // The pty opens at 80x24, so the whole 4x2 screen is shown first.
         read_until(&mut channel, &mut terminal, "wxyz").await;
         assert!(terminal.screen().contents().contains("abcd"));
@@ -4529,7 +4529,7 @@ mod tests {
 
         let session = connect_as(port, "cmd:", &capability).await;
         let mut channel = shell(&session).await;
-        let mut terminal = vt100::Parser::new(24, 80, 0);
+        let mut terminal = vt100::Parser::default();
         read_until(&mut channel, &mut terminal, "count=0").await;
         channel.data(&b"/input 696e63\r"[..]).await.unwrap();
         read_until(&mut channel, &mut terminal, "count=1").await;

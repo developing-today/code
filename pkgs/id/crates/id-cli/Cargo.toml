@@ -45,7 +45,7 @@ p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b9526
 postcard = { version = "1", features = ["alloc"] }
 rand = "0.10"
 rpassword = "7"
-rustyline = "18"
+rustyline = "19"
 tempfile = "3"
 thiserror = "2"
 toml = "1"

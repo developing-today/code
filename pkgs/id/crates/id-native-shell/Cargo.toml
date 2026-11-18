@@ -17,7 +17,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 anyhow = "1"
-bevy = { version = "0.17", default-features = false, features = [
+bevy = { version = "0.19", default-features = false, features = [
   "std",
   "bevy_core_pipeline",
   "bevy_render",

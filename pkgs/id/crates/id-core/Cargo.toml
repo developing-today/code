@@ -20,7 +20,7 @@ test-provider = []
 [dependencies]
 anyhow = "1"
 argon2 = "0.6"
-chacha20poly1305 = "0.10"
+chacha20poly1305 = "0.11"
 # Signed transport advertisements (transport_advertisement.rs, #8214).
 ed25519-dalek = { version = "3", features = ["rand_core"] }
 rand = "0.10"
@@ -57,7 +57,7 @@ rqrr = { version = "0.11.0", default-features = false }
 # but their test-only dependencies stayed behind in the parent crate's
 # dev-dependencies, so this crate's test targets did not compile on
 # their own. Same pins as the parent crate. Dev only; no runtime effect.
-vt100 = "=0.16.2"
+vt100 = "=0.18.1"
 iroh = { version = "1", features = ["test-utils"] }
 # Narrowing-only property test for boundary composition (boundary.rs, #7782).
 proptest = "1.12"

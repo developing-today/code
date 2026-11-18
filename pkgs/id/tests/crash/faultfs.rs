@@ -4,7 +4,7 @@
 //! keeps the durable bytes plus the unsynced operations that `Survive` selects, applied in issue
 //! order (`Keep`, `Random`) or shuffled (`Reorder`). The write in flight at the cut can be torn:
 //! only a prefix of its bytes lands. After the cut every call returns `Ok` and does nothing, as
-//! redb's own `CrashBackend` does (`src/db.rs` in redb 4.3.0). The caller must stop counting work
+//! redb's own `CrashBackend` does (`src/db.rs` in redb 4.6.0). The caller must stop counting work
 //! once `cut()` is true, because the process it models is dead.
 
 use redb::StorageBackend;
