@@ -730,12 +730,25 @@ impl GhDepProbe {
     }
 
     fn get_json(&self, path: &str) -> Result<Value, crate::turso_queue::DepObs> {
+        self.get_json_within(path, None)
+    }
+
+    /// get_json with an optional per-request timeout (#10626: the
+    /// claim-time staleness lookup must never queue a claim behind
+    /// a slow GitHub).
+    fn get_json_within(
+        &self,
+        path: &str,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<Value, crate::turso_queue::DepObs> {
         use crate::turso_queue::DepObs;
         let tok = self.token().map_err(DepObs::Failed)?;
         let url = format!("https://api.github.com{path}");
-        let mut resp = match self
-            .agent
-            .get(&url)
+        let mut req = self.agent.get(&url);
+        if let Some(limit) = timeout {
+            req = req.config().timeout_global(Some(limit)).build();
+        }
+        let mut resp = match req
             .header("Authorization", &format!("Bearer {tok}"))
             .header("Accept", "application/vnd.github+json")
             .header("User-Agent", "fleet-queue-broker")
@@ -802,6 +815,25 @@ impl crate::turso_queue::DepProbe for GhDepProbe {
         }
     }
 
+    fn probe_landing(
+        &self,
+        kind: crate::turso_queue::LinkKind,
+        repo: &str,
+        number: i64,
+    ) -> crate::turso_queue::Landing {
+        use crate::turso_queue::{Landing, LinkKind};
+        let path = match kind {
+            LinkKind::Issue => format!("/repos/{repo}/issues/{number}"),
+            LinkKind::Pr => format!("/repos/{repo}/pulls/{number}"),
+        };
+        let v =
+            match self.get_json_within(&path, Some(crate::turso_queue::STALENESS_LOOKUP_TIMEOUT)) {
+                Ok(v) => v,
+                Err(o) => return Landing::Unknown(format!("{o:?}")),
+            };
+        landing_from_json(kind, &v)
+    }
+
     fn probe_ci(&self, repo: &str, run_id: i64) -> crate::turso_queue::DepObs {
         use crate::turso_queue::DepObs;
         match self.get_json(&format!("/repos/{repo}/actions/runs/{run_id}")) {
@@ -819,6 +851,44 @@ impl crate::turso_queue::DepProbe for GhDepProbe {
             }
             Err(o) => o,
         }
+    }
+}
+
+/// #10626: a GitHub issue or pull JSON as a staleness landing. An
+/// issue landed when it closed (any reason: no work remains); a PR
+/// landed only when it merged — a PR closed unmerged leaves the work
+/// open. A terminal state without its timestamp infers nothing.
+pub(crate) fn landing_from_json(
+    kind: crate::turso_queue::LinkKind,
+    v: &Value,
+) -> crate::turso_queue::Landing {
+    use crate::turso_queue::{Landing, LinkKind};
+    let field = |k: &str| v.get(k).and_then(|s| s.as_str()).unwrap_or("").to_string();
+    match kind {
+        LinkKind::Issue => match field("state").as_str() {
+            "closed" => match field("closed_at") {
+                at if at.is_empty() => {
+                    Landing::Unknown("closed issue with no closed_at".to_string())
+                }
+                at => Landing::Landed {
+                    state: match field("state_reason") {
+                        r if r.is_empty() => "closed".to_string(),
+                        r => format!("closed ({r})"),
+                    },
+                    at,
+                },
+            },
+            "open" => Landing::Open,
+            other => Landing::Unknown(format!("issue state {other:?}")),
+        },
+        LinkKind::Pr => match field("merged_at") {
+            at if !at.is_empty() => Landing::Landed {
+                state: "merged".to_string(),
+                at,
+            },
+            _ if matches!(field("state").as_str(), "open" | "closed") => Landing::Open,
+            _ => Landing::Unknown(format!("pr state {:?}", field("state"))),
+        },
     }
 }
 
@@ -1652,6 +1722,48 @@ pub fn run() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn landing_from_json_10626() {
+        use crate::turso_queue::{Landing, LinkKind};
+        let closed = json!({"state": "closed", "closed_at": "2026-10-25T00:00:00Z", "state_reason": "completed"});
+        assert_eq!(
+            landing_from_json(LinkKind::Issue, &closed),
+            Landing::Landed {
+                state: "closed (completed)".into(),
+                at: "2026-10-25T00:00:00Z".into()
+            }
+        );
+        assert_eq!(
+            landing_from_json(LinkKind::Issue, &json!({"state": "open"})),
+            Landing::Open
+        );
+        assert!(matches!(
+            landing_from_json(LinkKind::Issue, &json!({"state": "closed"})),
+            Landing::Unknown(_)
+        ));
+        assert!(matches!(
+            landing_from_json(LinkKind::Issue, &json!({})),
+            Landing::Unknown(_)
+        ));
+        let merged = json!({"state": "closed", "merged_at": "2026-11-01T00:00:00Z"});
+        assert_eq!(
+            landing_from_json(LinkKind::Pr, &merged),
+            Landing::Landed {
+                state: "merged".into(),
+                at: "2026-11-01T00:00:00Z".into()
+            }
+        );
+        // Closed unmerged leaves the work open.
+        assert_eq!(
+            landing_from_json(LinkKind::Pr, &json!({"state": "closed", "merged_at": null})),
+            Landing::Open
+        );
+        assert_eq!(
+            landing_from_json(LinkKind::Pr, &json!({"state": "open"})),
+            Landing::Open
+        );
+    }
 
     #[test]
     fn claim_flow_post_commit_failures_are_partial_not_errors_5757() {

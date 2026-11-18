@@ -334,6 +334,7 @@ pub(crate) fn claim_pick_once(
     let mut id: i64;
     let mut skipped = 0usize;
     let mut quarantined = 0usize;
+    let mut retired = 0usize;
     loop {
         // #7617: pick the candidate id FIRST, then claim THAT row by
         // id, and read it back by id. The previous shape claimed via
@@ -440,6 +441,21 @@ pub(crate) fn claim_pick_once(
                 return Ok(None);
             }
             continue;
+        }
+        // #10626: a default pick whose linked issue already closed
+        // (or PR already merged) is retired here as already_done,
+        // before any lease, binding or claimed event, and the pick
+        // moves on. Fails open: no probe, no linkage or a failed
+        // lookup claims the row exactly as before.
+        if !handoff_pick {
+            if let Some(stale) = stale_pick(t, &candidate) {
+                retire_stale(t, &worker, &candidate, &stale)?;
+                retired += 1;
+                if retired >= MAX_STALENESS_RETIRES_PER_CALL {
+                    return Ok(None);
+                }
+                continue;
+            }
         }
         id = candidate.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
         row = candidate;
