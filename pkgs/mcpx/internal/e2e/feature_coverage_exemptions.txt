@@ -35,7 +35,6 @@ setting	daemon.takeoverTimeout	no integration-test exercise yet; burn-down #8468
 setting	daemon.tsnet.hostname	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.tsnetUpTimeout	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.warm	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
-setting	daemon.warmTimeout	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.watchConfig	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	http.idleConnTimeout	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
 setting	http.idleConns	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
@@ -104,10 +103,8 @@ setting	artifacts.ttl	no integration-test exercise yet; burn-down #8470 (setting
 setting	autonomy.max	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	autostart.args	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	autostart.bin	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
-setting	autostart.connectTimeout	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	autostart.idleExit	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	autostart.logTail	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
-setting	autostart.pingTimeout	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	autostart.pollInterval	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	deps.autoInstall	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	events.reconnect	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
