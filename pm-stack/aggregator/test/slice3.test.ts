@@ -904,7 +904,10 @@ describe("slice-3 routes", () => {
     const ref = "gh:developing-today/code#906";
     const note = await post({ objectRef: ref, kind: "note", author, body: "a plain note" });
     expect(note.status).toBe(201);
-    expect(((await note.json()) as { comment: { authorVerified: boolean } }).comment.authorVerified).toBe(false);
+    const noteComment = ((await note.json()) as { comment: { authorVerified: boolean; provenance: string } }).comment;
+    expect(noteComment.authorVerified).toBe(false);
+    // #9606: no Access configured here, so the body author is a claim.
+    expect(noteComment.provenance).toBe("asserted-legacy");
     const msg = await post({ objectRef: ref, kind: "message", author, body: "Muse: please check X" });
     const msgBody = (await msg.json()) as { comment: { id: string } };
     const ghRes = await post({

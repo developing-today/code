@@ -196,7 +196,14 @@ export function deriveAuthorFromAccess(
   };
 }
 
-type AuthorEnforcement = { ok: true; author: DashAuthor } | { ok: false; status: 401 | 403; error: string };
+/**
+ * verified is true only when the author was derived from a validated
+ * Access JWT; with Access unconfigured the caller's claim passes through
+ * and verified is false (#1253 split 4: the write is asserted-legacy).
+ */
+type AuthorEnforcement =
+  | { ok: true; author: DashAuthor; verified: boolean }
+  | { ok: false; status: 401 | 403; error: string };
 
 /**
  * Build the Access author enforcer for ONE HTTP request. The JWT is
@@ -219,7 +226,7 @@ export function createAccessAuthorEnforcer(
     { ok: true; verified: VerifiedAccessIdentity } | { ok: false; status: 401; error: string }
   > | null = null;
   return async (asserted: DashAuthor): Promise<AuthorEnforcement> => {
-    if (!config) return { ok: true, author: asserted };
+    if (!config) return { ok: true, author: asserted, verified: false };
     if (!verification) {
       verification = (async () => {
         const token = req.headers.get(ACCESS_JWT_HEADER) ?? "";
@@ -240,7 +247,8 @@ export function createAccessAuthorEnforcer(
     }
     const outcome = await verification;
     if (!outcome.ok) return outcome;
-    return deriveAuthorFromAccess(outcome.verified, asserted, config.ownerIds);
+    const decision = deriveAuthorFromAccess(outcome.verified, asserted, config.ownerIds);
+    return decision.ok ? { ...decision, verified: true } : decision;
   };
 }
 
