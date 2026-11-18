@@ -18,6 +18,7 @@ Usage: gather_events.py [--live] [--out DIR]   (default out: ./dry_runs)
 Auth: fleet-platform Turso credential via fleet secrets; never printed.
 Canonicalized from task 16876 standalone gatherer. Live writes are one transaction.
 """
+
 import argparse
 import uuid
 import json
@@ -38,18 +39,31 @@ NEW_MODEL_WINDOW_DAYS = 60
 
 # ainventory.models provider label -> models.dev provider id
 PROVIDER_MAP = {
-    "OpenAI": "openai", "Anthropic": "anthropic", "DeepSeek": "deepseek",
-    "Google": "google", "Meta": "meta", "Xiaomi": "xiaomi",
-    "MiniMax": "minimax", "Mistral": "mistral", "Z AI": "zai",
-    "Alibaba": "alibaba", "Kimi": "moonshotai", "SpaceXAI": "xai",
-    "Inception": "inception", "NVIDIA": "nvidia", "Upstage": "upstage",
+    "OpenAI": "openai",
+    "Anthropic": "anthropic",
+    "DeepSeek": "deepseek",
+    "Google": "google",
+    "Meta": "meta",
+    "Xiaomi": "xiaomi",
+    "MiniMax": "minimax",
+    "Mistral": "mistral",
+    "Z AI": "zai",
+    "Alibaba": "alibaba",
+    "Kimi": "moonshotai",
+    "SpaceXAI": "xai",
+    "Inception": "inception",
+    "NVIDIA": "nvidia",
+    "Upstage": "upstage",
 }
 
 
 def fetch(url):
     out = subprocess.run(
         ["curl", "-sS", "-m", "120", "-A", UA, url],
-        capture_output=True, text=True, check=True).stdout
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
     return out
 
 
@@ -67,30 +81,44 @@ CURRENT_PRICES = """SELECT * FROM (
 
 
 def read_current(db):
-    return (db.query("SELECT name,provider FROM ainventory_models"),
-            db.query("SELECT model_name,model_variant_key,effort,benchmark,benchmark_version,value_num,ingested_at FROM ainventory_measurement_events ORDER BY ingested_at DESC,id DESC"),
-            db.query(CURRENT_MEASUREMENTS), db.query(CURRENT_PRICES))
+    return (
+        db.query("SELECT name,provider FROM ainventory_models"),
+        db.query(
+            "SELECT model_name,model_variant_key,effort,benchmark,benchmark_version,value_num,ingested_at FROM ainventory_measurement_events ORDER BY ingested_at DESC,id DESC"
+        ),
+        db.query(CURRENT_MEASUREMENTS),
+        db.query(CURRENT_PRICES),
+    )
 
 
 def insert_statement(table, rows):
     # Table names and fields come only from this program, never CLI/data URLs.
-    if table not in {'ingest_batches','measurement_events','price_events'}:
-        raise ValueError('unsupported event table')
-    columns=list(rows[0])
-    if not all(re.fullmatch(r'[a-z_][a-z_0-9]*', c) for c in columns):
-        raise ValueError('invalid event column')
-    if any(list(row)!=columns for row in rows):raise ValueError('mixed event columns')
-    values=','.join('('+','.join('?' for _ in columns)+')' for _ in rows)
-    return ('INSERT INTO ainventory_'+table+' ('+','.join(columns)+') VALUES '+values,
-            [value for row in rows for value in row.values()])
+    if table not in {"ingest_batches", "measurement_events", "price_events"}:
+        raise ValueError("unsupported event table")
+    columns = list(rows[0])
+    if not all(re.fullmatch(r"[a-z_][a-z_0-9]*", c) for c in columns):
+        raise ValueError("invalid event column")
+    if any(list(row) != columns for row in rows):
+        raise ValueError("mixed event columns")
+    values = ",".join("(" + ",".join("?" for _ in columns) + ")" for _ in rows)
+    return (
+        "INSERT INTO ainventory_"
+        + table
+        + " ("
+        + ",".join(columns)
+        + ") VALUES "
+        + values,
+        [value for row in rows for value in row.values()],
+    )
 
 
 def persist_events(db, batch, measurements, prices):
     """No retries after uncertain network outcomes; UUID appears in local intent first."""
-    statements=[insert_statement('ingest_batches',[batch])]
-    for table, rows in [('measurement_events',measurements),('price_events',prices)]:
-        for i in range(0,len(rows),100):statements.append(insert_statement(table,rows[i:i+100]))
-    db.batch(statements,transaction=True)
+    statements = [insert_statement("ingest_batches", [batch])]
+    for table, rows in [("measurement_events", measurements), ("price_events", prices)]:
+        for i in range(0, len(rows), 100):
+            statements.append(insert_statement(table, rows[i : i + 100]))
+    db.batch(statements, transaction=True)
 
 
 def num_or_none(v):
@@ -121,8 +149,7 @@ def norm(s):
 def parse_aa_models(html):
     """Extract the embedded per-variant JSON objects from the AA page."""
     u = html.replace('\\"', '"').replace("\\\\", "\\")
-    starts = [m.start() for m in
-              re.finditer(r'\{"id":"[0-9a-f-]{36}","slug":"', u)]
+    starts = [m.start() for m in re.finditer(r'\{"id":"[0-9a-f-]{36}","slug":"', u)]
 
     def extract(i):
         depth, instr, esc = 0, False, False
@@ -143,7 +170,7 @@ def parse_aa_models(html):
                 elif c == "}":
                     depth -= 1
                     if depth == 0:
-                        return u[i:j + 1]
+                        return u[i : j + 1]
         return None
 
     variants = []
@@ -167,36 +194,38 @@ def parse_aa_models(html):
         cpt = o.get("intelligenceIndexCostPerTask")
         if isinstance(cpt, dict):  # current AA payload: {cost: {total, ...}}
             cpt = (cpt.get("cost") or {}).get("total")
-        variants.append({
-            "release_slug": o["release"]["slug"],
-            "release_name": o["release"]["name"],
-            "creator_slug": (o.get("creator") or {}).get("slug"),
-            "variant_slug": o.get("slug"),
-            "effort": (o.get("effort") or {}).get("slug"),
-            "release_date": o.get("releaseDate"),
-            "intelligence_index": o.get("intelligenceIndex"),
-            "cost_per_task_usd": cpt,
-            "output_tokens_per_task": o.get("intelligenceIndexOutputTokensPerTask"),
-            "ttft_seconds": ttft.get("total") if isinstance(ttft, dict) else None,
-            "output_tps_short": speed,
-            "price_input_per_1m": o.get("price1mInputTokens"),
-            "price_output_per_1m": o.get("price1mOutputTokens"),
-            "price_cached_input_per_1m": o.get("cacheHitPrice"),
-            "source_ref": f"https://artificialanalysis.ai/models/{o['release']['slug']}",
-        })
+        variants.append(
+            {
+                "release_slug": o["release"]["slug"],
+                "release_name": o["release"]["name"],
+                "creator_slug": (o.get("creator") or {}).get("slug"),
+                "variant_slug": o.get("slug"),
+                "effort": (o.get("effort") or {}).get("slug"),
+                "release_date": o.get("releaseDate"),
+                "intelligence_index": o.get("intelligenceIndex"),
+                "cost_per_task_usd": cpt,
+                "output_tokens_per_task": o.get("intelligenceIndexOutputTokensPerTask"),
+                "ttft_seconds": ttft.get("total") if isinstance(ttft, dict) else None,
+                "output_tps_short": speed,
+                "price_input_per_1m": o.get("price1mInputTokens"),
+                "price_output_per_1m": o.get("price1mOutputTokens"),
+                "price_cached_input_per_1m": o.get("cacheHitPrice"),
+                "source_ref": f"https://artificialanalysis.ai/models/{o['release']['slug']}",
+            }
+        )
     return variants
 
 
 def main():
-    parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--live',action='store_true')
-    parser.add_argument('--out',default=os.path.join(HERE,'dry_runs'))
-    args=parser.parse_args() # Parse before filesystem/credential/network effects.
-    out_dir=args.out
-    os.makedirs(out_dir,exist_ok=True)
-    today=date.today().isoformat()
-    db=Turso()
-    models,events,current,prices=read_current(db)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--live", action="store_true")
+    parser.add_argument("--out", default=os.path.join(HERE, "dry_runs"))
+    args = parser.parse_args()  # Parse before filesystem/credential/network effects.
+    out_dir = args.out
+    os.makedirs(out_dir, exist_ok=True)
+    today = date.today().isoformat()
+    db = Turso()
+    models, events, current, prices = read_current(db)
 
     # ---- known identities (normalized model segment / display name)
     known = set()
@@ -215,17 +244,26 @@ def main():
     cur_ii = {}
     for c in current:
         if c["benchmark"] == II_BENCHMARK and c["benchmark_version"] == II_VERSION:
-            ident = norm((c.get("model_variant_key") or "").split("|")[1]
-                         if c.get("model_variant_key") else c["model_name"])
+            ident = norm(
+                (c.get("model_variant_key") or "").split("|")[1]
+                if c.get("model_variant_key")
+                else c["model_name"]
+            )
             cur_ii[(ident, norm(c.get("effort")))] = c
     # events arrive newest-first; the first row per key is the log's
     # current value for that (identity, effort), and it overrides the
     # view's row for the same key.
     seen_latest = set()
     for e in events:
-        if e.get("benchmark") == II_BENCHMARK and e.get("benchmark_version") == II_VERSION:
-            ident = norm((e.get("model_variant_key") or "").split("|")[1]
-                         if e.get("model_variant_key") else e.get("model_name"))
+        if (
+            e.get("benchmark") == II_BENCHMARK
+            and e.get("benchmark_version") == II_VERSION
+        ):
+            ident = norm(
+                (e.get("model_variant_key") or "").split("|")[1]
+                if e.get("model_variant_key")
+                else e.get("model_name")
+            )
             key = (ident, norm(e.get("effort")))
             if key not in seen_latest:
                 seen_latest.add(key)
@@ -235,8 +273,7 @@ def main():
     for p in prices:
         if p.get("window_kind") == "flat" and not p.get("provider"):
             cur_price[norm(p["model_name"])] = p
-            cur_bands[(norm(p["model_name"]),
-                       p.get("context_min_tokens") or 0)] = p
+            cur_bands[(norm(p["model_name"]), p.get("context_min_tokens") or 0)] = p
 
     # ---- AA pull + diff
     aa = parse_aa_models(fetch(AA_MODELS_URL))
@@ -246,11 +283,17 @@ def main():
     for v in aa:
         ident = norm(v["release_name"])
         if ident not in known and norm(v["release_slug"]) not in known:
-            seen_releases.setdefault(v["release_slug"], {
-                "model": v["release_name"], "creator": v["creator_slug"],
-                "release_date": v["release_date"], "source": "aa",
-                "source_ref": v["source_ref"],
-                "best_intelligence_index": v["intelligence_index"]})
+            seen_releases.setdefault(
+                v["release_slug"],
+                {
+                    "model": v["release_name"],
+                    "creator": v["creator_slug"],
+                    "release_date": v["release_date"],
+                    "source": "aa",
+                    "source_ref": v["source_ref"],
+                    "best_intelligence_index": v["intelligence_index"],
+                },
+            )
             prev = seen_releases[v["release_slug"]]
             if (v["intelligence_index"] or 0) > (prev["best_intelligence_index"] or 0):
                 prev["best_intelligence_index"] = v["intelligence_index"]
@@ -259,30 +302,42 @@ def main():
             continue  # release-level entry duplicates the featured variant
         cur = cur_ii.get((ident, norm(v["effort"])))
         if cur is None or abs((cur["value_num"] or 0) - v["intelligence_index"]) > 0.05:
-            aa_meas.append({
-                "model": v["release_name"], "effort": v["effort"],
-                "benchmark": II_BENCHMARK, "benchmark_version": II_VERSION,
-                "intelligence_index": v["intelligence_index"],
-                "cost_per_task_usd": v["cost_per_task_usd"],
-                "output_tokens_per_task": v["output_tokens_per_task"],
-                "ttft_seconds": v["ttft_seconds"],
-                "output_tps_short": v["output_tps_short"],
-                "current_value": None if cur is None else cur["value_num"],
-                "source_kind": "aa", "source_ref": v["source_ref"],
-                "source_date": today})
+            aa_meas.append(
+                {
+                    "model": v["release_name"],
+                    "effort": v["effort"],
+                    "benchmark": II_BENCHMARK,
+                    "benchmark_version": II_VERSION,
+                    "intelligence_index": v["intelligence_index"],
+                    "cost_per_task_usd": v["cost_per_task_usd"],
+                    "output_tokens_per_task": v["output_tokens_per_task"],
+                    "ttft_seconds": v["ttft_seconds"],
+                    "output_tps_short": v["output_tps_short"],
+                    "current_value": None if cur is None else cur["value_num"],
+                    "source_kind": "aa",
+                    "source_ref": v["source_ref"],
+                    "source_date": today,
+                }
+            )
         else:
             unchanged += 1
         cp = cur_bands.get((ident, 0)) or cur_price.get(ident)
         if v["price_input_per_1m"] is not None and (
-                cp is None or cp.get("input_usd_per_1m") != v["price_input_per_1m"]
-                or cp.get("output_usd_per_1m") != v["price_output_per_1m"]):
-            aa_price.append({
-                "model": v["release_name"],
-                "input_usd_per_1m": v["price_input_per_1m"],
-                "output_usd_per_1m": v["price_output_per_1m"],
-                "cached_input_usd_per_1m": v["price_cached_input_per_1m"],
-                "source_kind": "aa", "source_ref": v["source_ref"],
-                "source_date": today})
+            cp is None
+            or cp.get("input_usd_per_1m") != v["price_input_per_1m"]
+            or cp.get("output_usd_per_1m") != v["price_output_per_1m"]
+        ):
+            aa_price.append(
+                {
+                    "model": v["release_name"],
+                    "input_usd_per_1m": v["price_input_per_1m"],
+                    "output_usd_per_1m": v["price_output_per_1m"],
+                    "cached_input_usd_per_1m": v["price_cached_input_per_1m"],
+                    "source_kind": "aa",
+                    "source_ref": v["source_ref"],
+                    "source_date": today,
+                }
+            )
     new_models.extend(seen_releases.values())
 
     # ---- models.dev pull + diff (tracked providers only)
@@ -302,8 +357,7 @@ def main():
                 # price for ITS band: the view returns one row per
                 # band, and comparing the base price against the top
                 # band re-inserted every tiered price on every run.
-                keys = [norm(f"{md_provider}/{mid}"), ident,
-                        norm(m.get("name"))]
+                keys = [norm(f"{md_provider}/{mid}"), ident, norm(m.get("name"))]
 
                 def band(ctx_min, _keys=keys):
                     for k in _keys:
@@ -313,46 +367,66 @@ def main():
                     return None
 
                 def differs(row, pin, pout):
-                    return (row is None or row.get("input_usd_per_1m") != pin
-                            or row.get("output_usd_per_1m") != pout)
+                    return (
+                        row is None
+                        or row.get("input_usd_per_1m") != pin
+                        or row.get("output_usd_per_1m") != pout
+                    )
 
                 pin, pout = cost.get("input"), cost.get("output")
                 ctx_limit = (m.get("limit") or {}).get("context")
                 # Context-band dimension: a context tier splits the
                 # price into [0, size) and [size, limit] bands.
-                tiers = [t for t in (cost.get("tiers") or [])
-                         if (t.get("tier") or {}).get("type") == "context"]
+                tiers = [
+                    t
+                    for t in (cost.get("tiers") or [])
+                    if (t.get("tier") or {}).get("type") == "context"
+                ]
                 base_max = tiers[0]["tier"]["size"] if tiers else ctx_limit
                 if pin is not None and differs(band(0), pin, pout):
-                    md_price.append({
-                        "model": f"{md_provider}/{mid}",
-                        "input_usd_per_1m": pin, "output_usd_per_1m": pout,
-                        "cached_input_usd_per_1m": cost.get("cache_read"),
-                        "cache_write_usd_per_1m": cost.get("cache_write"),
-                        "context_min_tokens": 0,
-                        "context_max_tokens": base_max,
-                        "source_kind": "modelsdev",
-                        "source_ref": MODELSDEV_URL, "source_date": today})
+                    md_price.append(
+                        {
+                            "model": f"{md_provider}/{mid}",
+                            "input_usd_per_1m": pin,
+                            "output_usd_per_1m": pout,
+                            "cached_input_usd_per_1m": cost.get("cache_read"),
+                            "cache_write_usd_per_1m": cost.get("cache_write"),
+                            "context_min_tokens": 0,
+                            "context_max_tokens": base_max,
+                            "source_kind": "modelsdev",
+                            "source_ref": MODELSDEV_URL,
+                            "source_date": today,
+                        }
+                    )
                 for t in tiers:
                     tmin = t["tier"]["size"]
                     if differs(band(tmin), t.get("input"), t.get("output")):
-                        md_price.append({
-                            "model": f"{md_provider}/{mid}",
-                            "input_usd_per_1m": t.get("input"),
-                            "output_usd_per_1m": t.get("output"),
-                            "cached_input_usd_per_1m": t.get("cache_read"),
-                            "cache_write_usd_per_1m": t.get("cache_write"),
-                            "context_min_tokens": tmin,
-                            "context_max_tokens": ctx_limit,
-                            "source_kind": "modelsdev",
-                            "source_ref": MODELSDEV_URL, "source_date": today})
+                        md_price.append(
+                            {
+                                "model": f"{md_provider}/{mid}",
+                                "input_usd_per_1m": t.get("input"),
+                                "output_usd_per_1m": t.get("output"),
+                                "cached_input_usd_per_1m": t.get("cache_read"),
+                                "cache_write_usd_per_1m": t.get("cache_write"),
+                                "context_min_tokens": tmin,
+                                "context_max_tokens": ctx_limit,
+                                "source_kind": "modelsdev",
+                                "source_ref": MODELSDEV_URL,
+                                "source_date": today,
+                            }
+                        )
             else:
                 rd = m.get("release_date") or ""
                 if rd >= cutoff:
-                    md_new.append({
-                        "model": m.get("name") or mid,
-                        "creator": md_provider, "release_date": rd,
-                        "source": "modelsdev", "source_ref": MODELSDEV_URL})
+                    md_new.append(
+                        {
+                            "model": m.get("name") or mid,
+                            "creator": md_provider,
+                            "release_date": rd,
+                            "source": "modelsdev",
+                            "source_ref": MODELSDEV_URL,
+                        }
+                    )
     # de-dupe models.dev new flags against AA flags by normalized name
     aa_new_norms = {norm(n["model"]) for n in new_models}
     md_new = [n for n in md_new if norm(n["model"]) not in aa_new_norms]
@@ -363,7 +437,11 @@ def main():
     inserted = {"measurement_events": 0, "price_events": 0}
     if live and (aa_meas or aa_price or md_price):
         batch_id = str(uuid.uuid4())
-        timestamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        timestamp = (
+            datetime.now(timezone.utc)
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z")
+        )
         batch = {
             "id": batch_id,
             "ran_at": timestamp,
@@ -371,45 +449,67 @@ def main():
             "source_kind": "gatherer",
             "source_ref": "task 16876 / issue #9999 Phase 2 slice 1 live gatherer",
             "inserted_counts": {},
-            "note": ("Live gatherer batch (insert-only). New models flagged: "
-                     f"{len(new_models)}: "
-                     + ", ".join(n["model"] for n in new_models)[:1500]),
+            "note": (
+                "Live gatherer batch (insert-only). New models flagged: "
+                f"{len(new_models)}: "
+                + ", ".join(n["model"] for n in new_models)[:1500]
+            ),
         }
-        meas_rows = [{
-            "model_name": r["model"], "effort": r["effort"],
-            "benchmark": r["benchmark"],
-            "benchmark_version": r["benchmark_version"],
-            "metric": "intelligence_index",
-            "value_num": r["intelligence_index"],
-            "intelligence_index": r["intelligence_index"],
-            "ttft_seconds": num_or_none(r["ttft_seconds"]),
-            "output_tps": num_or_none(r["output_tps_short"]),
-            "output_tokens_per_task": num_or_none(r["output_tokens_per_task"]),
-            "cost_per_task_usd": num_or_none(r["cost_per_task_usd"]),
-            "source_kind": r["source_kind"], "source_ref": r["source_ref"],
-            "source_date": r["source_date"], "ingest_batch_id": batch_id,
-            "raw": r,
-        } for r in aa_meas]
-        price_rows = [{
-            "model_name": r["model"], "provider": None,
-            "input_usd_per_1m": r["input_usd_per_1m"],
-            "output_usd_per_1m": r["output_usd_per_1m"],
-            "cached_input_usd_per_1m": r["cached_input_usd_per_1m"],
-            "cache_write_usd_per_1m": r.get("cache_write_usd_per_1m"),
-            "context_min_tokens": r.get("context_min_tokens", 0),
-            "context_max_tokens": r.get("context_max_tokens"),
-            "window_kind": "flat",
-            "source_kind": r["source_kind"], "source_ref": r["source_ref"],
-            "source_date": r["source_date"], "ingest_batch_id": batch_id,
-            "raw": r,
-        } for r in aa_price + md_price]
-        inserted = {"measurement_events": len(meas_rows), "price_events": len(price_rows)}
-        batch['inserted_counts']=inserted
+        meas_rows = [
+            {
+                "model_name": r["model"],
+                "effort": r["effort"],
+                "benchmark": r["benchmark"],
+                "benchmark_version": r["benchmark_version"],
+                "metric": "intelligence_index",
+                "value_num": r["intelligence_index"],
+                "intelligence_index": r["intelligence_index"],
+                "ttft_seconds": num_or_none(r["ttft_seconds"]),
+                "output_tps": num_or_none(r["output_tps_short"]),
+                "output_tokens_per_task": num_or_none(r["output_tokens_per_task"]),
+                "cost_per_task_usd": num_or_none(r["cost_per_task_usd"]),
+                "source_kind": r["source_kind"],
+                "source_ref": r["source_ref"],
+                "source_date": r["source_date"],
+                "ingest_batch_id": batch_id,
+                "raw": r,
+            }
+            for r in aa_meas
+        ]
+        price_rows = [
+            {
+                "model_name": r["model"],
+                "provider": None,
+                "input_usd_per_1m": r["input_usd_per_1m"],
+                "output_usd_per_1m": r["output_usd_per_1m"],
+                "cached_input_usd_per_1m": r["cached_input_usd_per_1m"],
+                "cache_write_usd_per_1m": r.get("cache_write_usd_per_1m"),
+                "context_min_tokens": r.get("context_min_tokens", 0),
+                "context_max_tokens": r.get("context_max_tokens"),
+                "window_kind": "flat",
+                "source_kind": r["source_kind"],
+                "source_ref": r["source_ref"],
+                "source_date": r["source_date"],
+                "ingest_batch_id": batch_id,
+                "raw": r,
+            }
+            for r in aa_price + md_price
+        ]
+        inserted = {
+            "measurement_events": len(meas_rows),
+            "price_events": len(price_rows),
+        }
+        batch["inserted_counts"] = inserted
         # Private local intent permits exact UUID read-back after an uncertain response.
-        intent_path=os.path.join(out_dir,'intent-'+batch_id+'.json')
-        fd=os.open(intent_path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
-        with os.fdopen(fd,'w') as f:json.dump({'batch':batch,'measurements':meas_rows,'prices':price_rows},f,allow_nan=False)
-        persist_events(db,batch,meas_rows,price_rows)
+        intent_path = os.path.join(out_dir, "intent-" + batch_id + ".json")
+        fd = os.open(intent_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(
+                {"batch": batch, "measurements": meas_rows, "prices": price_rows},
+                f,
+                allow_nan=False,
+            )
+        persist_events(db, batch, meas_rows, price_rows)
 
     diff = {
         "dry_run": not live,
@@ -434,16 +534,20 @@ def main():
         json.dump(diff, f, indent=2)
     print(json.dumps(diff["counts"], indent=2))
     if live:
-        print(f"\nLIVE — batch {batch_id}: inserted {inserted}. Full diff: {out_path}"
-              if batch_id else
-              f"\nLIVE — empty diff, zero writes (no batch row). Full diff: {out_path}")
+        print(
+            f"\nLIVE — batch {batch_id}: inserted {inserted}. Full diff: {out_path}"
+            if batch_id
+            else f"\nLIVE — empty diff, zero writes (no batch row). Full diff: {out_path}"
+        )
     else:
         print(f"\nDRY RUN — no rows inserted. Full diff: {out_path}")
     if new_models:
         print("\nNEW MODELS FLAGGED:")
         for n in new_models:
-            print(f"  - {n['model']} ({n['creator']}, {n['release_date']}, "
-                  f"via {n['source']})")
+            print(
+                f"  - {n['model']} ({n['creator']}, {n['release_date']}, "
+                f"via {n['source']})"
+            )
     return 0
 
 

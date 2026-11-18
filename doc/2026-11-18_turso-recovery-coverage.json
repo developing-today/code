@@ -33,9 +33,7 @@
       "target": "agent_external_comms",
       "comparison": {
         "target": "agent_external_comms",
-        "keys": [
-          "id"
-        ],
+        "keys": ["id"],
         "source_rows": 69,
         "present_keys": 69,
         "missing_keys": 0,
@@ -72,9 +70,7 @@
       "remaining_missing_keys": 0,
       "pre_recovery_comparison": {
         "target": "agent_mirror_agent_agents",
-        "keys": [
-          "agent_id"
-        ],
+        "keys": ["agent_id"],
         "source_rows": 47640,
         "present_keys": 46047,
         "missing_keys": 1593,
@@ -98,11 +94,7 @@
       "remaining_missing_keys": 0,
       "pre_recovery_comparison": {
         "target": "agent_mirror_compaction_stats_daily",
-        "keys": [
-          "day",
-          "grain",
-          "key"
-        ],
+        "keys": ["day", "grain", "key"],
         "source_rows": 444,
         "present_keys": 438,
         "missing_keys": 6,
@@ -117,9 +109,7 @@
       "target": "agent_mirror_concurrency_hourly",
       "comparison": {
         "target": "agent_mirror_concurrency_hourly",
-        "keys": [
-          "hour"
-        ],
+        "keys": ["hour"],
         "source_rows": 730,
         "present_keys": 730,
         "missing_keys": 0,
@@ -137,10 +127,7 @@
       "remaining_missing_keys": 0,
       "pre_recovery_comparison": {
         "target": "agent_mirror_conversation_stats_daily",
-        "keys": [
-          "day",
-          "chat_id"
-        ],
+        "keys": ["day", "chat_id"],
         "source_rows": 210,
         "present_keys": 208,
         "missing_keys": 2,
@@ -158,11 +145,7 @@
       "remaining_missing_keys": 0,
       "pre_recovery_comparison": {
         "target": "agent_mirror_distincts_daily",
-        "keys": [
-          "day",
-          "grain",
-          "key"
-        ],
+        "keys": ["day", "grain", "key"],
         "source_rows": 1042,
         "present_keys": 1024,
         "missing_keys": 18,
@@ -177,9 +160,7 @@
       "target": "agent_mirror_export_state",
       "comparison": {
         "target": "agent_mirror_export_state",
-        "keys": [
-          "table_name"
-        ],
+        "keys": ["table_name"],
         "source_rows": 22,
         "present_keys": 22,
         "missing_keys": 0,
@@ -194,9 +175,7 @@
       "target": "agent_mirror_goals_goals",
       "comparison": {
         "target": "agent_mirror_goals_goals",
-        "keys": [
-          "goal_id"
-        ],
+        "keys": ["goal_id"],
         "source_rows": 51,
         "present_keys": 51,
         "missing_keys": 0,
@@ -214,9 +193,7 @@
       "remaining_missing_keys": 0,
       "pre_recovery_comparison": {
         "target": "agent_mirror_goals_updates",
-        "keys": [
-          "update_id"
-        ],
+        "keys": ["update_id"],
         "source_rows": 10870,
         "present_keys": 10561,
         "missing_keys": 309,
@@ -234,13 +211,7 @@
       "remaining_missing_keys": 0,
       "pre_recovery_comparison": {
         "target": "agent_mirror_histograms_daily",
-        "keys": [
-          "day",
-          "grain",
-          "key",
-          "metric",
-          "bucket_lo"
-        ],
+        "keys": ["day", "grain", "key", "metric", "bucket_lo"],
         "source_rows": 15868,
         "present_keys": 15743,
         "missing_keys": 125,
@@ -300,11 +271,7 @@
       "remaining_missing_keys": 0,
       "pre_recovery_comparison": {
         "target": "agent_mirror_message_token_stats_daily",
-        "keys": [
-          "day",
-          "grain",
-          "key"
-        ],
+        "keys": ["day", "grain", "key"],
         "source_rows": 1042,
         "present_keys": 1024,
         "missing_keys": 18,
@@ -322,10 +289,7 @@
       "remaining_missing_keys": 0,
       "pre_recovery_comparison": {
         "target": "agent_mirror_run_stats_daily",
-        "keys": [
-          "day",
-          "job_id"
-        ],
+        "keys": ["day", "job_id"],
         "source_rows": 1396,
         "present_keys": 1372,
         "missing_keys": 24,
@@ -349,9 +313,7 @@
       "remaining_missing_keys": 0,
       "pre_recovery_comparison": {
         "target": "agent_mirror_scheduler_job_runs",
-        "keys": [
-          "run_id"
-        ],
+        "keys": ["run_id"],
         "source_rows": 17719,
         "present_keys": 17175,
         "missing_keys": 544,
@@ -369,9 +331,7 @@
       "remaining_missing_keys": 0,
       "pre_recovery_comparison": {
         "target": "agent_mirror_scheduler_jobs",
-        "keys": [
-          "job_id"
-        ],
+        "keys": ["job_id"],
         "source_rows": 226,
         "present_keys": 225,
         "missing_keys": 1,
@@ -389,9 +349,7 @@
       "remaining_missing_keys": 0,
       "pre_recovery_comparison": {
         "target": "agent_mirror_session_activity_hourly",
-        "keys": [
-          "hour"
-        ],
+        "keys": ["hour"],
         "source_rows": 734,
         "present_keys": 728,
         "missing_keys": 6,
@@ -409,11 +367,7 @@
       "remaining_missing_keys": 0,
       "pre_recovery_comparison": {
         "target": "agent_mirror_session_stats_daily",
-        "keys": [
-          "day",
-          "grain",
-          "key"
-        ],
+        "keys": ["day", "grain", "key"],
         "source_rows": 1046,
         "present_keys": 1029,
         "missing_keys": 17,
@@ -431,9 +385,7 @@
       "remaining_missing_keys": 0,
       "pre_recovery_comparison": {
         "target": "agent_mirror_sessions",
-        "keys": [
-          "session_id"
-        ],
+        "keys": ["session_id"],
         "source_rows": 45177,
         "present_keys": 43723,
         "missing_keys": 1454,
@@ -448,9 +400,7 @@
       "target": "agent_mirror_subagent_stats_daily",
       "comparison": {
         "target": "agent_mirror_subagent_stats_daily",
-        "keys": [
-          "day"
-        ],
+        "keys": ["day"],
         "source_rows": 25,
         "present_keys": 25,
         "missing_keys": 0,
@@ -468,11 +418,7 @@
       "remaining_missing_keys": 0,
       "pre_recovery_comparison": {
         "target": "agent_mirror_token_usage_daily",
-        "keys": [
-          "day",
-          "dimension",
-          "key"
-        ],
+        "keys": ["day", "dimension", "key"],
         "source_rows": 34931,
         "present_keys": 33842,
         "missing_keys": 1089,
@@ -490,11 +436,7 @@
       "remaining_missing_keys": 0,
       "pre_recovery_comparison": {
         "target": "agent_mirror_token_usage_hourly",
-        "keys": [
-          "hour",
-          "dimension",
-          "key"
-        ],
+        "keys": ["hour", "dimension", "key"],
         "source_rows": 46229,
         "present_keys": 44745,
         "missing_keys": 1484,
@@ -515,11 +457,7 @@
       "target": "agent_mirror_top_daily",
       "comparison": {
         "target": "agent_mirror_top_daily",
-        "keys": [
-          "day",
-          "kind",
-          "rank"
-        ],
+        "keys": ["day", "kind", "rank"],
         "source_rows": 393,
         "present_keys": 393,
         "missing_keys": 0,
@@ -537,11 +475,7 @@
       "remaining_missing_keys": 0,
       "pre_recovery_comparison": {
         "target": "agent_quota_records",
-        "keys": [
-          "source",
-          "id",
-          "ts"
-        ],
+        "keys": ["source", "id", "ts"],
         "source_rows": 11418,
         "present_keys": 11222,
         "missing_keys": 196,
@@ -595,9 +529,7 @@
       "target": "agent_token_expirations",
       "comparison": {
         "target": "agent_token_expirations",
-        "keys": [
-          "id"
-        ],
+        "keys": ["id"],
         "source_rows": 10,
         "present_keys": 10,
         "missing_keys": 0,
@@ -898,9 +830,7 @@
       "target": "automation_events",
       "comparison": {
         "target": "automation_events",
-        "keys": [
-          "id"
-        ],
+        "keys": ["id"],
         "source_rows": 5439,
         "present_keys": 5439,
         "missing_keys": 0,
@@ -915,9 +845,7 @@
       "target": "automation_ingest_batches",
       "comparison": {
         "target": "automation_ingest_batches",
-        "keys": [
-          "id"
-        ],
+        "keys": ["id"],
         "source_rows": 83,
         "present_keys": 83,
         "missing_keys": 0,
@@ -932,9 +860,7 @@
       "target": "automation_sheet_rows",
       "comparison": {
         "target": "automation_sheet_rows",
-        "keys": [
-          "id"
-        ],
+        "keys": ["id"],
         "source_rows": 1853,
         "present_keys": 1853,
         "missing_keys": 0,
@@ -960,9 +886,7 @@
       "evidence": "ci-collision-report.json: different ID, equal dedupe key/content and timestamp instants; existing row retained",
       "pre_recovery_comparison": {
         "target": "ci_events",
-        "keys": [
-          "id"
-        ],
+        "keys": ["id"],
         "source_rows": 11203,
         "present_keys": 11202,
         "missing_keys": 1,
@@ -989,9 +913,7 @@
       "target": "engineering_events",
       "comparison": {
         "target": "engineering_events",
-        "keys": [
-          "id"
-        ],
+        "keys": ["id"],
         "source_rows": 20,
         "present_keys": 20,
         "missing_keys": 0,
@@ -1006,9 +928,7 @@
       "target": "engineering_ingest_batches",
       "comparison": {
         "target": "engineering_ingest_batches",
-        "keys": [
-          "id"
-        ],
+        "keys": ["id"],
         "source_rows": 4,
         "present_keys": 4,
         "missing_keys": 0,
@@ -1023,9 +943,7 @@
       "target": "engineering_records",
       "comparison": {
         "target": "engineering_records",
-        "keys": [
-          "id"
-        ],
+        "keys": ["id"],
         "source_rows": 672,
         "present_keys": 672,
         "missing_keys": 0,
@@ -1040,9 +958,7 @@
       "target": "engineering_sheet_rows",
       "comparison": {
         "target": "engineering_sheet_rows",
-        "keys": [
-          "id"
-        ],
+        "keys": ["id"],
         "source_rows": 830,
         "present_keys": 830,
         "missing_keys": 0,
@@ -1057,9 +973,7 @@
       "target": "engineering_sources",
       "comparison": {
         "target": "engineering_sources",
-        "keys": [
-          "id"
-        ],
+        "keys": ["id"],
         "source_rows": 2,
         "present_keys": 2,
         "missing_keys": 0,
@@ -1074,9 +988,7 @@
       "target": "finance_events",
       "comparison": {
         "target": "finance_events",
-        "keys": [
-          "id"
-        ],
+        "keys": ["id"],
         "source_rows": 177,
         "present_keys": 177,
         "missing_keys": 0,
@@ -1091,9 +1003,7 @@
       "target": "finance_ingest_batches",
       "comparison": {
         "target": "finance_ingest_batches",
-        "keys": [
-          "id"
-        ],
+        "keys": ["id"],
         "source_rows": 5,
         "present_keys": 5,
         "missing_keys": 0,
@@ -1108,9 +1018,7 @@
       "target": "finance_sheet_rows",
       "comparison": {
         "target": "finance_sheet_rows",
-        "keys": [
-          "id"
-        ],
+        "keys": ["id"],
         "source_rows": 185,
         "present_keys": 185,
         "missing_keys": 0,
@@ -1133,9 +1041,7 @@
       "target": "home_events",
       "comparison": {
         "target": "home_events",
-        "keys": [
-          "id"
-        ],
+        "keys": ["id"],
         "source_rows": 28,
         "present_keys": 28,
         "missing_keys": 0,
@@ -1150,9 +1056,7 @@
       "target": "home_ingest_batches",
       "comparison": {
         "target": "home_ingest_batches",
-        "keys": [
-          "id"
-        ],
+        "keys": ["id"],
         "source_rows": 2,
         "present_keys": 2,
         "missing_keys": 0,
@@ -1167,9 +1071,7 @@
       "target": "home_sheet_rows",
       "comparison": {
         "target": "home_sheet_rows",
-        "keys": [
-          "id"
-        ],
+        "keys": ["id"],
         "source_rows": 32,
         "present_keys": 32,
         "missing_keys": 0,
@@ -1192,9 +1094,7 @@
       "target": "ideas_ideas",
       "comparison": {
         "target": "ideas_ideas",
-        "keys": [
-          "id"
-        ],
+        "keys": ["id"],
         "source_rows": 554,
         "present_keys": 554,
         "missing_keys": 0,
@@ -1209,9 +1109,7 @@
       "target": "ideas_sources",
       "comparison": {
         "target": "ideas_sources",
-        "keys": [
-          "id"
-        ],
+        "keys": ["id"],
         "source_rows": 3,
         "present_keys": 3,
         "missing_keys": 0,
@@ -1261,9 +1159,7 @@
       "target": "public_muse_notes",
       "comparison": {
         "target": "public_muse_notes",
-        "keys": [
-          "id"
-        ],
+        "keys": ["id"],
         "source_rows": 2,
         "present_keys": 2,
         "missing_keys": 0,
@@ -1310,9 +1206,7 @@
       "target": "research_events",
       "comparison": {
         "target": "research_events",
-        "keys": [
-          "id"
-        ],
+        "keys": ["id"],
         "source_rows": 1543,
         "present_keys": 1543,
         "missing_keys": 0,
@@ -1327,9 +1221,7 @@
       "target": "research_ingest_batches",
       "comparison": {
         "target": "research_ingest_batches",
-        "keys": [
-          "id"
-        ],
+        "keys": ["id"],
         "source_rows": 49,
         "present_keys": 49,
         "missing_keys": 0,
@@ -1344,9 +1236,7 @@
       "target": "research_sheet_rows",
       "comparison": {
         "target": "research_sheet_rows",
-        "keys": [
-          "id"
-        ],
+        "keys": ["id"],
         "source_rows": 945,
         "present_keys": 945,
         "missing_keys": 0,

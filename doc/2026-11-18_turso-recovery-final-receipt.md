@@ -22,14 +22,14 @@ Supabase engine feature or remote application has been reproduced.
 
 No existing row was updated or replaced by these recovery importers.
 
-| Phase | Destination | Inserted rows |
-| --- | --- | ---: |
-| Typed runtime tables and 18 missing ingest parents | fleet-platform | 22,385 |
-| Three missing AA sources and 157 missing sheet rows | fleet-platform | 160 |
-| Four source-configuration tables | fleet-platform | 5 |
-| Four historical mirror tables | fleet-mirror | 3,595 |
-| Missing historical mirror/quota records in 16 existing tables | fleet-platform | 6,886 |
-| **Total** | | **33,031** |
+| Phase                                                         | Destination    | Inserted rows |
+| ------------------------------------------------------------- | -------------- | ------------: |
+| Typed runtime tables and 18 missing ingest parents            | fleet-platform |        22,385 |
+| Three missing AA sources and 157 missing sheet rows           | fleet-platform |           160 |
+| Four source-configuration tables                              | fleet-platform |             5 |
+| Four historical mirror tables                                 | fleet-mirror   |         3,595 |
+| Missing historical mirror/quota records in 16 existing tables | fleet-platform |         6,886 |
+| **Total**                                                     |                |    **33,031** |
 
 Fresh-connection verification checked every imported value against its
 reviewed typed candidate, whose timestamps and arrays were normalized for

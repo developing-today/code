@@ -12,12 +12,12 @@ This page records the byte formats that already exist in `pkgs/id`, the vectors 
 
 Pinned in `pkgs/id/crates/id-core/tests/legacy_hash_vectors.rs` with the published BLAKE3 test vectors (input byte `i` is `i % 251`):
 
-| Input length | BLAKE3-256 |
-| --- | --- |
-| 0 | `af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262` |
-| 1 | `2d3adedff11b61f14c886e35afa036736dcd87a74d27b5c1510225d0f592e213` |
-| 1023 | `10108970eeda3eb932baac1428c7a2163b0e924c9a9e25b35bba72b28f70bd11` |
-| 1024 | `42214739f095a406f3fc83deb889744ac00df831c10daa55189b5d121c855af7` |
+| Input length | BLAKE3-256                                                         |
+| ------------ | ------------------------------------------------------------------ |
+| 0            | `af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262` |
+| 1            | `2d3adedff11b61f14c886e35afa036736dcd87a74d27b5c1510225d0f592e213` |
+| 1023         | `10108970eeda3eb932baac1428c7a2163b0e924c9a9e25b35bba72b28f70bd11` |
+| 1024         | `42214739f095a406f3fc83deb889744ac00df831c10daa55189b5d121c855af7` |
 
 ## Signed artifacts (`id_sync::artifact`)
 
@@ -30,9 +30,9 @@ The format as the code writes it:
 
 Pinned in `pkgs/id/crates/id-sync/tests/legacy_artifact_vectors.rs`. The vectors were computed outside the codebase (Python `hashlib` and `cryptography`) from a hand-written preimage, with the RFC 8032 section 7.1 TEST 1 key (seed `9d61b19d…7f60`, public key `d75a9801…511a`):
 
-| Artifact | SHA-256 `hash` |
-| --- | --- |
-| seq 1, `document` | `afab18aed3d6447b6b33fb3441d43f9e1ea909c4d3ef0335674670bbe412bc37` |
+| Artifact              | SHA-256 `hash`                                                     |
+| --------------------- | ------------------------------------------------------------------ |
+| seq 1, `document`     | `afab18aed3d6447b6b33fb3441d43f9e1ea909c4d3ef0335674670bbe412bc37` |
 | seq 2, `tag` on seq 1 | `1932e31b0e5829b03621f21fc0bdb164f48d2058f5b872b7f65838b02b96a26d` |
 
 The full preimages and signatures are in the test file.

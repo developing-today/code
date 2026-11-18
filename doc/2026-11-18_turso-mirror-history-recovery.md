@@ -3,12 +3,12 @@
 On November 18, 2026, the reviewed insert-only recovery restored 3,595
 archived history records to their canonical `fleet-mirror` Turso database:
 
-| Target table | Recovered rows |
-| --- | ---: |
-| `agent_mirror_history_agent_agents` | 941 |
-| `agent_mirror_history_goals_goals` | 299 |
-| `agent_mirror_history_goals_updates` | 1 |
-| `agent_mirror_history_scheduler_jobs` | 2,354 |
+| Target table                          | Recovered rows |
+| ------------------------------------- | -------------: |
+| `agent_mirror_history_agent_agents`   |            941 |
+| `agent_mirror_history_goals_goals`    |            299 |
+| `agent_mirror_history_goals_updates`  |              1 |
+| `agent_mirror_history_scheduler_jobs` |          2,354 |
 
 The first three targets were absent. The scheduler history target already
 existed but was empty, with its canonical nonunique lookup index. No

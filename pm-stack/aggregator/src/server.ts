@@ -351,7 +351,12 @@ async function coverageSnapshot(
 // ingestion, usage snapshots, aa-last-good) move to muse-dev2 when
 // PM_AGG_STORE_BACKEND=supabase. Exactly one backend is active: with
 // "file" (the default) no remote exists and no database call is made.
-const storeRemotes = cfg.storeBackend === "turso" ? createSupabaseRemotes(getTursoStoreClient) : cfg.storeBackend === "supabase" ? createSupabaseRemotes() : null;
+const storeRemotes =
+  cfg.storeBackend === "turso"
+    ? createSupabaseRemotes(getTursoStoreClient)
+    : cfg.storeBackend === "supabase"
+      ? createSupabaseRemotes()
+      : null;
 const actionsStore = new ActionsStore(cfg.actionsFile, undefined, storeRemotes?.actions);
 const viewsStore = new ViewsStore(cfg.viewsFile);
 const eventsStore = new EventsStore(cfg.eventsFile);

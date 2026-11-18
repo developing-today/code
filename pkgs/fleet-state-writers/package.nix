@@ -1,5 +1,9 @@
 # Preserve the relative helper imports when deploying either operator writer.
-{ stdenvNoCC, python3, makeWrapper }:
+{
+  stdenvNoCC,
+  python3,
+  makeWrapper,
+}:
 stdenvNoCC.mkDerivation {
   pname = "fleet-state-writers";
   version = "2026-11-18";

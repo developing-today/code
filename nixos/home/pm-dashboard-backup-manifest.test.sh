@@ -493,11 +493,11 @@ done
 STUBEOF
 chmod +x "$EXPORTER"
 PATH="$BIN:$PATH" HOME="$RUN_HOME" BWS_ACCESS_TOKEN=fake-token \
- RCLONE_STUB_DIR="$TMP_ROOT/turso-export/rclone-store" \
- RCLONE_CALLS_LOG="$TMP_ROOT/turso-export/rclone-calls.log" \
- PM_DB_DUMP_SCRIPT="$DUMP_SCRIPT_ARG" PM_AGG_STORE_BACKEND=turso \
- PM_AGG_TURSO_EXPORT_BIN="$EXPORTER" \
- bash "$SCRIPT" 2026-10-28 >"$TMP_ROOT/turso-export.log" 2>&1
+  RCLONE_STUB_DIR="$TMP_ROOT/turso-export/rclone-store" \
+  RCLONE_CALLS_LOG="$TMP_ROOT/turso-export/rclone-calls.log" \
+  PM_DB_DUMP_SCRIPT="$DUMP_SCRIPT_ARG" PM_AGG_STORE_BACKEND=turso \
+  PM_AGG_TURSO_EXPORT_BIN="$EXPORTER" \
+  bash "$SCRIPT" 2026-10-28 >"$TMP_ROOT/turso-export.log" 2>&1
 RC=$?
 if [[ $RC -eq 0 ]]; then ok "turso-export: completed"; else fail "turso-export: rc=$RC $(cat "$TMP_ROOT/turso-export.log")"; fi
 assert_member turso-export turso/agg_actions.json required present
@@ -506,11 +506,11 @@ assert_member turso-export turso/orch_runs.json required present
 
 setup_home turso-missing
 PATH="$BIN:$PATH" HOME="$RUN_HOME" BWS_ACCESS_TOKEN=fake-token \
- RCLONE_STUB_DIR="$TMP_ROOT/turso-missing/rclone-store" \
- RCLONE_CALLS_LOG="$TMP_ROOT/turso-missing/rclone-calls.log" \
- PM_DB_DUMP_SCRIPT="$DUMP_SCRIPT_ARG" PM_AGG_STORE_BACKEND=turso \
- PM_AGG_TURSO_EXPORT_BIN=/nonexistent/turso-exporter \
- bash "$SCRIPT" 2026-10-28 >"$TMP_ROOT/turso-missing.log" 2>&1
+  RCLONE_STUB_DIR="$TMP_ROOT/turso-missing/rclone-store" \
+  RCLONE_CALLS_LOG="$TMP_ROOT/turso-missing/rclone-calls.log" \
+  PM_DB_DUMP_SCRIPT="$DUMP_SCRIPT_ARG" PM_AGG_STORE_BACKEND=turso \
+  PM_AGG_TURSO_EXPORT_BIN=/nonexistent/turso-exporter \
+  bash "$SCRIPT" 2026-10-28 >"$TMP_ROOT/turso-missing.log" 2>&1
 RC=$?
 if [[ $RC -ne 0 ]] && no_upload turso-missing; then ok "turso-missing: fails without uploading"; else fail "turso-missing: did not fail closed"; fi
 

@@ -95,7 +95,17 @@ import {
   isAaSection,
   type AaRawPayload,
 } from "../src/aa.ts";
-import { AA_BATCH_INDEX_SQL, AA_PAYLOAD_SQL_REVISION, AA_PRICES_SQL, aaPayloadSql, aaNumericInputsSql, assertAaNumericInputs, aaSectionQueries, aaRankingValuesSql, rankAaValues } from "../src/aa-turso-sql.ts";
+import {
+  AA_BATCH_INDEX_SQL,
+  AA_PAYLOAD_SQL_REVISION,
+  AA_PRICES_SQL,
+  aaPayloadSql,
+  aaNumericInputsSql,
+  assertAaNumericInputs,
+  aaSectionQueries,
+  aaRankingValuesSql,
+  rankAaValues,
+} from "../src/aa-turso-sql.ts";
 import {
   aaBatchFingerprint,
   aaCacheFileName,
@@ -470,7 +480,11 @@ const aaLastGoodPath = join(dirname(outPath), "aa-last-good.json");
  *  then neither read nor written. */
 const aaLastGoodStore = new AaLastGoodStore(
   aaLastGoodPath,
-  parseStoreBackend() === "turso" ? createSupabaseDocumentRemote(getTursoStoreClient) : parseStoreBackend() === "supabase" ? createSupabaseDocumentRemote() : undefined,
+  parseStoreBackend() === "turso"
+    ? createSupabaseDocumentRemote(getTursoStoreClient)
+    : parseStoreBackend() === "supabase"
+      ? createSupabaseDocumentRemote()
+      : undefined,
 );
 // #1116: last-good attention entries, carried across runs whose server
 // read fails (restart churn) so one bad read cannot zero the feed.
@@ -570,17 +584,19 @@ async function fetchAaPayload(batch: string | null): Promise<AaRawPayload> {
   // Pin one batch before independent section reads so an import during the
   // request cannot mix different workbook versions into one cache entry.
   if (batch === null) {
-    const latest = await storeQuery("select import_batch from ainventory_sources where kind='drive-workbook' order by imported_at desc limit 1") as {import_batch: string}[];
+    const latest = (await storeQuery(
+      "select import_batch from ainventory_sources where kind='drive-workbook' order by imported_at desc limit 1",
+    )) as { import_batch: string }[];
     if (!latest[0]?.import_batch) throw new Error("Turso returned no AA workbook batch");
     batch = latest[0].import_batch;
   }
-  assertAaNumericInputs(await storeQuery(aaNumericInputsSql(batch)) as {cell: unknown}[]);
-  const payload: Record<string,unknown> = {};
+  assertAaNumericInputs((await storeQuery(aaNumericInputsSql(batch))) as { cell: unknown }[]);
+  const payload: Record<string, unknown> = {};
   for (const [key, sql] of Object.entries(aaSectionQueries(batch))) {
     if (key === "rankings") {
-      payload[key] = rankAaValues(await storeQuery(aaRankingValuesSql(batch)) as Record<string,unknown>[]);
+      payload[key] = rankAaValues((await storeQuery(aaRankingValuesSql(batch))) as Record<string, unknown>[]);
     } else {
-      const rows = await storeQuery(sql) as {section: unknown}[];
+      const rows = (await storeQuery(sql)) as { section: unknown }[];
       if (rows.length !== 1) throw new Error(`Turso returned no AA ${key} section`);
       payload[key] = key === "batch" ? rows[0].section : JSON.parse(rows[0].section as string);
     }
@@ -638,7 +654,6 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     cacheMeta.set(section.batch, { fingerprint: contentFingerprint, cached });
     return section;
   };
-
 
   // The workbook index is the complete sources register; ingest_batches is
   // optional metadata and a missing join row does not hide a batch.

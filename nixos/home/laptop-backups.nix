@@ -310,7 +310,11 @@ in
           Service = {
             Type = "oneshot";
             ExecStart = "${dashboardPkg}/bin/pm-dashboard-backup";
-            Environment = [ "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin" "PM_AGG_STORE_BACKEND=turso" "PM_AGG_TURSO_EXPORT_BIN=${pmAggregator}/bin/pm-aggregator-export-turso-stores" ];
+            Environment = [
+              "PATH=${servicePath}:${home}/tools/bin:/run/current-system/sw/bin"
+              "PM_AGG_STORE_BACKEND=turso"
+              "PM_AGG_TURSO_EXPORT_BIN=${pmAggregator}/bin/pm-aggregator-export-turso-stores"
+            ];
           };
         };
       })

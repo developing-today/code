@@ -1,16 +1,20 @@
 {
   "$id": "repo-task/v1",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "allOf": [{
-    "if": {
-      "required": ["risk"],
-      "properties": {"risk": {
-        "required": ["flags"],
-        "properties": {"flags": {"contains": {"const": "cross-repo-change"}}}
-      }}
-    },
-    "then": {"required": ["implementation_repo"]}
-  }],
+  "allOf": [
+    {
+      "if": {
+        "required": ["risk"],
+        "properties": {
+          "risk": {
+            "required": ["flags"],
+            "properties": { "flags": { "contains": { "const": "cross-repo-change" } } }
+          }
+        }
+      },
+      "then": { "required": ["implementation_repo"] }
+    }
+  ],
   "$defs": {
     "completion_telemetry": {
       "type": "object",

@@ -21,7 +21,8 @@ export function isBatchUuid(value: unknown): value is string {
 
 /** The batch expression the payload is scoped to: latest when null. */
 export function batchExpression(batch: string | null): string {
-  if (batch === null) return "(select import_batch from (select import_batch from ainventory_sources where kind = 'drive-workbook' order by imported_at desc limit 1))";
+  if (batch === null)
+    return "(select import_batch from (select import_batch from ainventory_sources where kind = 'drive-workbook' order by imported_at desc limit 1))";
   if (!isBatchUuid(batch)) throw new Error("aa payload: invalid batch uuid");
   return `'${batch}'`;
 }
@@ -690,12 +691,14 @@ export function aaNumericInputsSql(batch: string | null): string {
       (s.sheet_name='Threshold_Metrics' and s.row_index>=2 and j.key in (3,4))
     )`;
 }
-export function assertAaNumericInputs(rows: readonly {cell: unknown}[]): void {
-  for (const {cell} of rows) {
+export function assertAaNumericInputs(rows: readonly { cell: unknown }[]): void {
+  for (const { cell } of rows) {
     if (cell === null || cell === undefined || cell === "") continue;
-    if ((typeof cell !== "string" && typeof cell !== "number") ||
-        !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(String(cell).trim()) ||
-        !Number.isFinite(Number(cell))) {
+    if (
+      (typeof cell !== "string" && typeof cell !== "number") ||
+      !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(String(cell).trim()) ||
+      !Number.isFinite(Number(cell))
+    ) {
       throw new Error("AA workbook contains a malformed numeric input");
     }
   }
@@ -710,71 +713,135 @@ export function aaSectionQueries(batch: string): Record<string, string> {
   const end = sql.lastIndexOf(") as aa");
   const body = sql.slice(start, end);
   const parts: string[] = [];
-  let depth = 0, quoted = false, mark = 0;
+  let depth = 0,
+    quoted = false,
+    mark = 0;
   for (let i = 0; i < body.length; i++) {
     const ch = body[i];
     if (ch === "'") {
-      if (quoted && body[i + 1] === "'") { i++; continue; }
-      quoted = !quoted; continue;
+      if (quoted && body[i + 1] === "'") {
+        i++;
+        continue;
+      }
+      quoted = !quoted;
+      continue;
     }
     if (quoted) continue;
     if (ch === "(") depth++;
     else if (ch === ")") depth--;
-    else if (ch === "," && depth === 0) { parts.push(body.slice(mark, i).trim()); mark = i + 1; }
+    else if (ch === "," && depth === 0) {
+      parts.push(body.slice(mark, i).trim());
+      mark = i + 1;
+    }
   }
   parts.push(body.slice(mark).trim());
   if (quoted || depth !== 0 || parts.length !== 16) throw new Error("invalid generated AA section SQL");
-  const out: Record<string,string> = {};
+  const out: Record<string, string> = {};
   for (let i = 0; i < parts.length; i += 2) {
-    const name = parts[i].slice(1,-1);
-    if (!["batch","sources","rankings","thresholds","configs","testRunRows","cai","prices"].includes(name)) throw new Error("unknown AA section");
+    const name = parts[i].slice(1, -1);
+    if (!["batch", "sources", "rankings", "thresholds", "configs", "testRunRows", "cai", "prices"].includes(name))
+      throw new Error("unknown AA section");
     out[name] = `select ${parts[i + 1]} as section`;
   }
   return out;
 }
 export function aaRankingValuesSql(batch: string): string {
- const body=RANKINGS_BODY.replace("{{BATCH}}",batchExpression(batch));
- return body.slice(0,body.lastIndexOf("\n SELECT row_index,"))+" SELECT * FROM valued";
+  const body = RANKINGS_BODY.replace("{{BATCH}}", batchExpression(batch));
+  return body.slice(0, body.lastIndexOf("\n SELECT row_index,")) + " SELECT * FROM valued";
 }
 
 /** Last ranking stage in JS avoids Turso MVCC's failing multiple rank/window
  * plan. Oracle is RANKINGS_BODY's rank()+tie-row_number()-1 expression: within
  * each partition this equals stable ordinal position, with row_index ties. */
 export function rankAaValues(rows: Record<string, unknown>[]): Record<string, unknown>[] {
- const ranks = new Map<unknown, Record<string, number>>();
- for(const row of rows) {
-  if (!Number.isSafeInteger(row.row_index) || ranks.has(row.row_index)) throw new Error("invalid or duplicate AA ranking row_index");
-  if (row.eligible !== 0 && row.eligible !== 1) throw new Error("invalid AA ranking eligibility");
-  for (const field of ["balanced_value","smart_value","speed_value","adjusted_score","cost_task"]) {
-   const value=row[field];
-   if (value !== null && (typeof value !== "number" || !Number.isFinite(value))) throw new Error("invalid AA ranking numeric value");
+  const ranks = new Map<unknown, Record<string, number>>();
+  for (const row of rows) {
+    if (!Number.isSafeInteger(row.row_index) || ranks.has(row.row_index))
+      throw new Error("invalid or duplicate AA ranking row_index");
+    if (row.eligible !== 0 && row.eligible !== 1) throw new Error("invalid AA ranking eligibility");
+    for (const field of ["balanced_value", "smart_value", "speed_value", "adjusted_score", "cost_task"]) {
+      const value = row[field];
+      if (value !== null && (typeof value !== "number" || !Number.isFinite(value)))
+        throw new Error("invalid AA ranking numeric value");
+    }
+    ranks.set(row.row_index, {});
   }
-  ranks.set(row.row_index,{});
- }
- const rank=(field:string,key:string,ascending=false,partition:(r:Record<string,unknown>)=>unknown=()=>true) => {
-  const groups=new Map<unknown,Record<string,unknown>[]>();
-  for(const r of rows){const k=partition(r);if(!groups.has(k))groups.set(k,[]);groups.get(k)!.push(r);}
-  for(const group of groups.values()){
-   group.sort((a,b)=>{
-    const x=a[field],y=b[field];
-    if(x===null && y!==null)return 1;if(y===null && x!==null)return -1;
-    return (x===null?0:(Number(x)-Number(y))*(ascending?1:-1)) || Number(a.row_index)-Number(b.row_index);
-   });
-   group.forEach((r,i)=>{ranks.get(r.row_index)![key]=i+1;});
-  }
- };
- rank('balanced_value','rankBalanced');rank('smart_value','rankSmart');rank('speed_value','rankSpeed');
- rank('adjusted_score','rankIntelligence',false,r=>r.eligible);
- rank('cost_task','rankLowCost',true,r=>r.eligible===1 && Number(r.cost_task)>0);
- const fields:Record<string,string>={rowIndex:'row_index',testRunKey:'test_run_key',modelVariantKey:'model_variant_key',family:'family',creator:'creator',effort:'effort',benchmarkVersionKey:'benchmark_version_key',rawScore:'raw_score',adjustedScore:'adjusted_score',costTask:'cost_task',timeTaskSec:'time_task_sec',speedTps:'speed_tps',qualStatus:'qual_status',availability:'availability',intelEffPerUsd:'intel_eff_per_usd',usdPerUsableUnit:'usd_per_usable_unit',pointsPerDollar:'points_per_dollar',pointsPerSecond:'points_per_second',balancedValue:'balanced_value',smartValue:'smart_value',speedValue:'speed_value'};
- const result=rows.map(r=>{
-  const out:Record<string,unknown>=Object.fromEntries(Object.entries(fields).map(([key,value])=>[key,r[value]]));
-  out.eligible=r.eligible===1;
-  for(const [key,field] of [['rankBalanced','balanced_value'],['rankSmart','smart_value'],['rankSpeed','speed_value']] as const)out[key]=r[field]===null?null:ranks.get(r.row_index)![key];
-  out.rankIntelligence=r.eligible!==1 || r.adjusted_score===null?null:ranks.get(r.row_index)!.rankIntelligence;
-  out.rankLowCost=r.eligible!==1 || r.cost_task===null || r.cost_task===0?null:ranks.get(r.row_index)!.rankLowCost;
-  return out;
- });
- result.sort((a,b)=>(a.rankBalanced===null?Infinity:Number(a.rankBalanced))-(b.rankBalanced===null?Infinity:Number(b.rankBalanced)) || Number(a.rowIndex)-Number(b.rowIndex));
- return result;
+  const rank = (
+    field: string,
+    key: string,
+    ascending = false,
+    partition: (r: Record<string, unknown>) => unknown = () => true,
+  ) => {
+    const groups = new Map<unknown, Record<string, unknown>[]>();
+    for (const r of rows) {
+      const k = partition(r);
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k)!.push(r);
+    }
+    for (const group of groups.values()) {
+      group.sort((a, b) => {
+        const x = a[field],
+          y = b[field];
+        if (x === null && y !== null) return 1;
+        if (y === null && x !== null) return -1;
+        return (
+          (x === null ? 0 : (Number(x) - Number(y)) * (ascending ? 1 : -1)) || Number(a.row_index) - Number(b.row_index)
+        );
+      });
+      group.forEach((r, i) => {
+        ranks.get(r.row_index)![key] = i + 1;
+      });
+    }
+  };
+  rank("balanced_value", "rankBalanced");
+  rank("smart_value", "rankSmart");
+  rank("speed_value", "rankSpeed");
+  rank("adjusted_score", "rankIntelligence", false, (r) => r.eligible);
+  rank("cost_task", "rankLowCost", true, (r) => r.eligible === 1 && Number(r.cost_task) > 0);
+  const fields: Record<string, string> = {
+    rowIndex: "row_index",
+    testRunKey: "test_run_key",
+    modelVariantKey: "model_variant_key",
+    family: "family",
+    creator: "creator",
+    effort: "effort",
+    benchmarkVersionKey: "benchmark_version_key",
+    rawScore: "raw_score",
+    adjustedScore: "adjusted_score",
+    costTask: "cost_task",
+    timeTaskSec: "time_task_sec",
+    speedTps: "speed_tps",
+    qualStatus: "qual_status",
+    availability: "availability",
+    intelEffPerUsd: "intel_eff_per_usd",
+    usdPerUsableUnit: "usd_per_usable_unit",
+    pointsPerDollar: "points_per_dollar",
+    pointsPerSecond: "points_per_second",
+    balancedValue: "balanced_value",
+    smartValue: "smart_value",
+    speedValue: "speed_value",
+  };
+  const result = rows.map((r) => {
+    const out: Record<string, unknown> = Object.fromEntries(
+      Object.entries(fields).map(([key, value]) => [key, r[value]]),
+    );
+    out.eligible = r.eligible === 1;
+    for (const [key, field] of [
+      ["rankBalanced", "balanced_value"],
+      ["rankSmart", "smart_value"],
+      ["rankSpeed", "speed_value"],
+    ] as const)
+      out[key] = r[field] === null ? null : ranks.get(r.row_index)![key];
+    out.rankIntelligence =
+      r.eligible !== 1 || r.adjusted_score === null ? null : ranks.get(r.row_index)!.rankIntelligence;
+    out.rankLowCost =
+      r.eligible !== 1 || r.cost_task === null || r.cost_task === 0 ? null : ranks.get(r.row_index)!.rankLowCost;
+    return out;
+  });
+  result.sort(
+    (a, b) =>
+      (a.rankBalanced === null ? Infinity : Number(a.rankBalanced)) -
+        (b.rankBalanced === null ? Infinity : Number(b.rankBalanced)) || Number(a.rowIndex) - Number(b.rowIndex),
+  );
+  return result;
 }

@@ -64,8 +64,10 @@ import sys
 from pathlib import Path
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, parse_qs
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fleet_turso import Turso
+
 NOTE_KIND = "agent_note"
 
 
@@ -190,17 +192,24 @@ def rest(db, method, path, payload=None, prefer="return=representation"):
     if method == "GET":
         if parsed.path == "/v_batches_awaiting_interpretation":
             limit = int(params["limit"][0])
-            rows = db.query("""SELECT b.id,b.source_kind,b.source_ref,b.ran_at,b.inserted_counts,b.note
+            rows = db.query(
+                """SELECT b.id,b.source_kind,b.source_ref,b.ran_at,b.inserted_counts,b.note
               FROM ainventory_ingest_batches b WHERE b.source_kind='gatherer'
               AND EXISTS (SELECT 1 FROM json_each(b.inserted_counts) e
                 WHERE e.key IN ('measurement_events','price_events','provider_policies')
                 AND CAST(e.value AS REAL)>0)
               AND NOT EXISTS (SELECT 1 FROM ainventory_interpretation_runs r WHERE r.ingest_batch_id=b.id)
-              ORDER BY b.ran_at ASC LIMIT ?""", [limit])
+              ORDER BY b.ran_at ASC LIMIT ?""",
+                [limit],
+            )
         elif parsed.path == "/ingest_batches":
             value = params["id"][0]
-            if not value.startswith("eq."): raise ValueError("unsupported batch filter")
-            rows = db.query("SELECT id,inserted_counts FROM ainventory_ingest_batches WHERE id=?", [value[3:]])
+            if not value.startswith("eq."):
+                raise ValueError("unsupported batch filter")
+            rows = db.query(
+                "SELECT id,inserted_counts FROM ainventory_ingest_batches WHERE id=?",
+                [value[3:]],
+            )
         elif parsed.path == "/findings":
             rows = db.query("SELECT source_ref FROM ainventory_findings")
         else:
@@ -209,7 +218,11 @@ def rest(db, method, path, payload=None, prefer="return=representation"):
             if isinstance(row.get("inserted_counts"), str):
                 row["inserted_counts"] = json.loads(row["inserted_counts"])
         return rows
-    if method != "POST" or parsed.path not in ("/notes", "/findings", "/interpretation_runs"):
+    if method != "POST" or parsed.path not in (
+        "/notes",
+        "/findings",
+        "/interpretation_runs",
+    ):
         raise ValueError("unsupported write")
     table = "ainventory_" + parsed.path[1:]
     statements = []
@@ -217,10 +230,19 @@ def rest(db, method, path, payload=None, prefer="return=representation"):
         row = {**source, "created_at": datetime.now(timezone.utc).isoformat()}
         if not all(re.fullmatch(r"[a-z_]+", key) for key in row):
             raise ValueError("invalid column")
-        columns = ",".join('"'+key+'"' for key in row)
-        statements.append((f"INSERT INTO {table} ({columns}) VALUES ({','.join('?' for _ in row)}) RETURNING id", list(row.values())))
+        columns = ",".join('"' + key + '"' for key in row)
+        statements.append(
+            (
+                f"INSERT INTO {table} ({columns}) VALUES ({','.join('?' for _ in row)}) RETURNING id",
+                list(row.values()),
+            )
+        )
     results = db.batch(statements, transaction=True)
-    return [row for group in results for row in group] if prefer != "return=minimal" else None
+    return (
+        [row for group in results for row in group]
+        if prefer != "return=minimal"
+        else None
+    )
 
 
 # ------------------------------------------------------------------ verbs
