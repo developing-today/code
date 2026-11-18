@@ -17,17 +17,19 @@
 //!    its canonical bytes) and appends `ReportCreated` to the audit log
 //!    in the same step. An object has more than one head exactly when
 //!    it has an open report, and that report names exactly its heads.
-//! 2. **No silent resolution.** A version that joins two or more of a
-//!    conflicted object's heads is a resolution. It is refused unless
-//!    its signed header names the conflict it resolves: the
-//!    [`ConflictKey`] of exactly the heads it joins. A header that names
-//!    any other key, or names one without joining heads, is refused too.
-//!    The key depends only on the conflicting versions, never on when or
-//!    from where a replica saw them, so one signed resolution means the
-//!    same thing on every replica that holds the same versions, while
-//!    each replica's report stays its own durable record. Because two
-//!    heads always come with an open report, a resolution is always a
-//!    new signed event that comes after a report covering what it joins.
+//! 2. **No silent resolution.** A version with two or more parents is a
+//!    merge. It is refused unless its signed header names the conflict
+//!    it resolves, the [`ConflictKey`] of exactly its parents, and its
+//!    parents are pairwise concurrent (none descends from another). A
+//!    version with fewer than two parents must name no conflict. These
+//!    checks read only the signed version and the fixed ancestry of its
+//!    parents, never the store's current heads, so every replica that
+//!    holds the parents makes the same decision whatever order versions
+//!    arrived in; each replica's report stays its own durable record.
+//!    Report first still holds: when the later of two concurrent
+//!    versions is applied, each of their branches leaves a head, so the
+//!    store has already reported the divergence before any merge of
+//!    them is recorded.
 //! 3. **Reports are immutable.** When a conflicted object's heads
 //!    change but stay plural, a new report supersedes the old one,
 //!    whose status becomes `Superseded`; when they collapse to one, the
@@ -404,20 +406,21 @@ pub enum IngestError {
     MalformedVersion,
     /// A parent belongs to a different object.
     ForeignParent(EventId),
-    /// The version joins heads of a conflicted object without naming
-    /// the conflict it resolves.
+    /// The version merges two or more parents without naming the
+    /// conflict it resolves.
     ResolutionRequired {
-        /// The object's open report.
-        open: ReportId,
-        /// The key the version would have to name.
+        /// The key the version would have to name: that of its parents.
         key: ConflictKey,
     },
     /// The version names a conflict it does not resolve: not the key of
-    /// exactly the heads it joins, or named without joining heads.
+    /// exactly its parents, or named with fewer than two parents.
     NotAResolution {
         /// The key the version named.
         named: ConflictKey,
     },
+    /// A merge names a parent that descends from another of its
+    /// parents, so it resolves nothing between them.
+    RedundantParents,
 }
 
 /// The key of a set of conflicting versions: SHA-256 of
@@ -587,6 +590,7 @@ impl ConflictStore {
             body_len: header.body.len() as u64,
         };
         self.check_parents(&version)?;
+        Self::check_merge(&version)?;
         if version
             .parents
             .iter()
@@ -642,22 +646,9 @@ impl ConflictStore {
             .get(&version.object_id)
             .cloned()
             .unwrap_or_default();
-        let joined: Vec<EventId> = version
-            .parents
-            .iter()
-            .filter(|p| state.heads.contains(*p))
-            .copied()
-            .collect();
-        match (state.open, version.resolves) {
-            (Some(_), Some(named)) if joined.len() >= 2 && named == conflict_key(&joined) => {}
-            (Some(open), None) if joined.len() >= 2 => {
-                return Err(IngestError::ResolutionRequired {
-                    open,
-                    key: conflict_key(&joined),
-                });
-            }
-            (_, Some(named)) => return Err(IngestError::NotAResolution { named }),
-            _ => {}
+        Self::check_merge(&version)?;
+        if version.parents.len() >= 2 && !self.pairwise_concurrent(&version.parents) {
+            return Err(IngestError::RedundantParents);
         }
 
         let object_id = version.object_id;
@@ -739,6 +730,28 @@ impl ConflictStore {
             supersedes,
         });
         report_id
+    }
+
+    /// The checks on a version's own signed header: a merge names the
+    /// key of its parents, anything else names none.
+    fn check_merge(version: &VersionRef) -> Result<(), IngestError> {
+        let key = conflict_key(&version.parents);
+        match (version.parents.len() >= 2, version.resolves) {
+            (true, Some(named)) if named == key => Ok(()),
+            (true, None) => Err(IngestError::ResolutionRequired { key }),
+            (_, Some(named)) => Err(IngestError::NotAResolution { named }),
+            (false, None) => Ok(()),
+        }
+    }
+
+    /// Whether no parent descends from another.
+    fn pairwise_concurrent(&self, parents: &[EventId]) -> bool {
+        parents.iter().all(|parent| {
+            let ancestry = self.ancestry(*parent);
+            parents
+                .iter()
+                .all(|other| other == parent || !ancestry.contains(other))
+        })
     }
 
     /// Every stored version `event_id` descends from, itself included.

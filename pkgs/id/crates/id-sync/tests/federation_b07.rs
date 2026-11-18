@@ -212,7 +212,7 @@ fn step_strategy() -> impl Strategy<Value = Step> {
     (
         0_u8..3,
         0..SIGNERS.len(),
-        0_u8..5,
+        0_u8..6,
         0_u8..4,
         0..5_usize,
         any::<u8>(),
@@ -256,16 +256,23 @@ fn run(
                 .copied()
                 .into_iter()
                 .collect(),
-            _ => heads.iter().rev().take(2).copied().collect(),
+            4 => heads.iter().rev().take(2).copied().collect(),
+            // A version and a head: concurrent or not, by chance.
+            _ => all
+                .get(usize::from(step.body) % all.len().max(1))
+                .copied()
+                .into_iter()
+                .chain(heads.first().copied())
+                .collect(),
         };
-        let open = store.open_report(&object_id);
-        let joined: Vec<EventId> = parents
-            .iter()
-            .filter(|p| heads.contains(p))
-            .copied()
+        let parents: Vec<EventId> = parents
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect();
+        let open = store.open_report(&object_id);
         let resolves = match step.resolves {
-            1 => Some(key_of(&joined)),
+            1 => Some(key_of(&parents)),
             2 => Some(key_of(&heads)),
             3 => Some([0x5A; 32]),
             _ => None,
@@ -275,14 +282,17 @@ fn run(
 
         // Predict.
         let conflicted = heads.len() > 1;
-        let expect_err = match (open, resolves) {
-            (Some(_), Some(r)) if joined.len() >= 2 && r == key_of(&joined) => None,
+        let merge_key = key_of(&parents);
+        let concurrent = parents.iter().all(|p| {
+            let ancestry = reference.ancestry(&object_id, *p);
+            parents.iter().all(|q| q == p || !ancestry.contains(q))
+        });
+        let expect_err = match (parents.len() >= 2, resolves) {
+            (true, Some(r)) if r == merge_key && !concurrent => Some(IngestError::RedundantParents),
+            (true, Some(r)) if r == merge_key => None,
+            (true, None) => Some(IngestError::ResolutionRequired { key: merge_key }),
             (_, Some(r)) => Some(IngestError::NotAResolution { named: r }),
-            (Some(o), None) if joined.len() >= 2 => Some(IngestError::ResolutionRequired {
-                open: o,
-                key: key_of(&joined),
-            }),
-            _ => None,
+            (false, None) => None,
         };
         assert_eq!(conflicted, open.is_some(), "open report iff diverged");
 
@@ -409,38 +419,27 @@ fn check_audit_order(store: &ConflictStore) {
                 created.insert(*report_id);
             }
             AuditEntry::Resolved { report_id, .. } => assert!(created.contains(report_id)),
-            AuditEntry::Recorded { event_id, .. } => {
+            AuditEntry::Recorded {
+                object_id,
+                event_id,
+            } => {
                 let version = store.version(event_id).unwrap();
                 if let Some(named) = version.resolves {
-                    // The next entry closes a report that was created
-                    // earlier and that holds exactly what was resolved.
-                    let closed = match audit.get(i + 1).copied() {
-                        Some(
-                            AuditEntry::Resolved { report_id, .. }
-                            | AuditEntry::ReportCreated {
-                                supersedes: Some(report_id),
-                                ..
-                            },
-                        ) => report_id,
-                        other => panic!("resolution followed by {other:?}"),
-                    };
-                    assert!(created.contains(&closed), "resolution before its report");
-                    let covered: BTreeSet<EventId> = store
-                        .report(&closed)
-                        .unwrap()
-                        .report
-                        .versions
-                        .iter()
-                        .map(|v| v.event_id)
-                        .collect();
-                    let joined: Vec<EventId> = version
-                        .parents
-                        .iter()
-                        .filter(|p| covered.contains(*p))
-                        .copied()
-                        .collect();
-                    assert!(joined.len() >= 2);
-                    assert_eq!(key_of(&joined), named);
+                    // A merge names exactly its parents, comes after a
+                    // report on its object, and changes the report.
+                    assert!(version.parents.len() >= 2);
+                    assert_eq!(key_of(&version.parents), named);
+                    assert!(
+                        audit[..i].iter().any(|e| matches!(
+                            e,
+                            AuditEntry::ReportCreated { object_id: o, .. } if o == object_id
+                        )),
+                        "merge before any report on its object"
+                    );
+                    assert!(matches!(
+                        audit.get(i + 1),
+                        Some(AuditEntry::Resolved { .. } | AuditEntry::ReportCreated { .. })
+                    ));
                 }
             }
             AuditEntry::Held { .. } | AuditEntry::Refused { .. } => {}
@@ -516,7 +515,7 @@ fn divergence_reports_versions_signers_sources_and_disputed_data() {
     let silent = envelope(2, event(4), doc, None, &[event(2), event(3)], b"merged");
     assert_eq!(
         store.ingest(IngressPath::Remote, &silent, "peer-c", NOW),
-        Err(IngestError::ResolutionRequired { open: id, key })
+        Err(IngestError::ResolutionRequired { key })
     );
     let wrong = envelope(
         2,
@@ -531,6 +530,20 @@ fn divergence_reports_versions_signers_sources_and_disputed_data() {
         Err(IngestError::NotAResolution { named: [1; 32] })
     );
     assert_eq!(store.open_report(&doc), Some(id));
+
+    // A merge of a version and its own ancestor resolves nothing.
+    let redundant = envelope(
+        2,
+        event(7),
+        doc,
+        Some(key_of(&[event(1), event(2)])),
+        &[event(1), event(2)],
+        b"merged",
+    );
+    assert_eq!(
+        store.ingest(IngressPath::Remote, &redundant, "peer-c", NOW),
+        Err(IngestError::RedundantParents)
+    );
 
     let resolution = envelope(
         2,
