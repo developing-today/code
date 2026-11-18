@@ -1737,8 +1737,8 @@ pub fn parse_fuzz_decl(text: &str) -> Result<FuzzDecl> {
         text.len() <= MAX_FUZZ_DECL_BYTES,
         "fuzz declaration exceeds {MAX_FUZZ_DECL_BYTES} bytes"
     );
-    let decl: FuzzDecl =
-        serde_json::from_str(text).context("parse the fuzz declaration as version-1 JSON")?;
+    let decl: FuzzDecl = id_core::json_unique::from_slice_without_duplicate_keys(text.as_bytes())
+        .context("parse the fuzz declaration as version-1 JSON")?;
     ensure!(
         decl.version == 1,
         "unsupported fuzz declaration version {}",
@@ -2237,6 +2237,18 @@ mod fuzz_tests {
             inputs: vec!["inc".to_owned(), "dec".to_owned(), "bogus".to_owned()],
             invariants,
         }
+    }
+
+    #[test]
+    fn parse_fuzz_decl_refuses_a_duplicated_key() {
+        // A lenient parse keeps the last "version" and accepts it (#8794).
+        let err =
+            parse_fuzz_decl(r#"{"version": 2, "version": 1, "inputs": ["inc"], "invariants": []}"#)
+                .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("duplicate JSON object key"),
+            "{err:#}"
+        );
     }
 
     #[test]
