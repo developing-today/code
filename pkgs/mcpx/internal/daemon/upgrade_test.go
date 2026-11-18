@@ -142,8 +142,10 @@ func TestUpgradeSuccessorThatDoesNotDialBackIsReaped(t *testing.T) {
 	// forked child may not run its first line for well over 300ms, and
 	// the abandon path kills it when the window closes — a successor
 	// that has not written its pid file by then never will (dezren39/nix#435).
-	// 3s is still far under the 15s production default.
-	srv.set = srv.set.WithOverrides(map[string]string{"daemon.takeoverTimeout": "3s"}, "test")
+	// 3s was still too short on a darwin nix build at load average ~40
+	// (dezren39/darwin-nix, 2026-11-18): the successor was killed before
+	// it wrote its pid. 10s is still under the 15s production default.
+	srv.set = srv.set.WithOverrides(map[string]string{"daemon.takeoverTimeout": "10s"}, "test")
 	code, out := postUpgrade(t, client, next)
 	msg, _ := out["error"].(string)
 	if code != http.StatusInternalServerError || !strings.Contains(msg, "did not dial back") || !strings.Contains(msg, "still serving") {
@@ -156,7 +158,7 @@ func TestUpgradeSuccessorThatDoesNotDialBackIsReaped(t *testing.T) {
 	// the file and writing the pid leaves it empty, so poll until
 	// the content parses, not merely until the file appears.
 	var pid int
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for {
 		raw, err := os.ReadFile(pidFile)
 		if err == nil {
