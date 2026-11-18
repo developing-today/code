@@ -1609,7 +1609,24 @@ mod tests {
              exit 0\n",
             log = log.display()
         );
-        std::fs::write(&script, script_text).unwrap();
+        // The script must never be open for writing in this process.
+        // Tests run on parallel threads, and any of them may fork to
+        // spawn a child; until that child execs it holds a copy of
+        // every descriptor this process has open, including one we are
+        // writing the script through. Exec'ing the script in that
+        // window fails with ETXTBSY (#11834, seen under the Nix build
+        // sandbox). So the text goes to a side file this test never
+        // runs, and a separate `cp` process, which has exited by the
+        // time we go on, writes the file that is executed.
+        let source = dir.join("fake-gh.src");
+        std::fs::write(&source, script_text).unwrap();
+        let _ = std::fs::remove_file(&script);
+        let copied = std::process::Command::new("cp")
+            .arg(&source)
+            .arg(&script)
+            .status()
+            .expect("run cp to place the fake gh");
+        assert!(copied.success(), "cp of the fake gh failed: {copied}");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1701,8 +1718,8 @@ mod tests {
     // oracle: the same contract, at the exec boundary — raw mode
     // runs the real gh exactly once and hands it NO token: the
     // fake gh logs the GH_TOKEN it saw, and raw must log an empty
-    // one (ambient test env carries no GH_TOKEN), where every
-    // rotated call above logs a tok-* value.
+    // one, or the ambient GH_TOKEN untouched when the test runner
+    // carries one, where every rotated call above logs a tok-* value.
     #[test]
     fn raw_mode_runs_gh_without_token() {
         let (dir, script) = fake_gh("raw");
@@ -1711,8 +1728,10 @@ mod tests {
         let code = run_raw(&script, &args);
         assert_eq!(code, 0);
         let calls = std::fs::read_to_string(&log).unwrap();
+        let ambient = std::env::var("GH_TOKEN").unwrap_or_default();
         assert_eq!(
-            calls, "\n",
+            calls,
+            format!("{ambient}\n"),
             "exactly one call, with no token injected: {calls:?}"
         );
     }
