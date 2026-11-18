@@ -101,6 +101,8 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor": "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":       "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":             "TestEventsHistoryBoundsTheReplay",
+	"plumbing.validatePaths":     "TestPlumbingValidatePathsChecksTheLogDirUpFront",
+	"script.language":            "TestScriptLanguageRunsPython",
 	"logging.trace":              "TestLoggingTraceLogsEachCall",
 	"exec.where":                 "TestExecWhereRemoteRunsOnTheDaemon",
 	"paths.adapters":             "TestPathsAdaptersFindsADeclarationFile",
@@ -227,6 +229,8 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":        TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                 TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                          TestEventsHistoryBoundsTheReplay,
+	"TestPlumbingValidatePathsChecksTheLogDirUpFront":                           TestPlumbingValidatePathsChecksTheLogDirUpFront,
+	"TestScriptLanguageRunsPython":                                              TestScriptLanguageRunsPython,
 	"TestLoggingTraceLogsEachCall":                                              TestLoggingTraceLogsEachCall,
 	"TestExecWhereRemoteRunsOnTheDaemon":                                        TestExecWhereRemoteRunsOnTheDaemon,
 	"TestPathsAdaptersFindsADeclarationFile":                                    TestPathsAdaptersFindsADeclarationFile,
@@ -2331,6 +2335,48 @@ func TestExecWhereRemoteRunsOnTheDaemon(t *testing.T) {
 	}
 	if a, b := parents("remote"); a != b || a == "" {
 		t.Errorf("exec.where=remote should run both scripts under the daemon, got parents %q and %q", a, b)
+	}
+}
+
+// TestPlumbingValidatePathsChecksTheLogDirUpFront is the effect probe for
+// plumbing.validatePaths: a logging.dir that is a file stops a run before
+// it starts, and with the check off the run goes ahead.
+func TestPlumbingValidatePathsChecksTheLogDirUpFront(t *testing.T) {
+	run := func(env ...string) (string, string, error) {
+		e := newEnv(t, oneServer)
+		notADir := filepath.Join(t.TempDir(), "notadir")
+		mustWrite(t, notADir, "x")
+		e.setenv(append([]string{"MCPX_LOGGING_DIR=" + notADir}, env...)...)
+		script := filepath.Join(e.dir, "validate.ts")
+		mustWrite(t, script, `console.log("ran")`)
+		return e.split("run", script)
+	}
+	if _, se, err := run(); err == nil || !strings.Contains(se, "logging.dir") {
+		t.Errorf("by default a file as logging.dir should stop the run: err=%v\n%s", err, se)
+	}
+	if out, se, err := run("MCPX_PLUMBING_VALIDATE_PATHS=false"); err != nil || !strings.Contains(out, "ran") {
+		t.Errorf("with plumbing.validatePaths off the run should go ahead: err=%v\n%s%s", err, out, se)
+	}
+}
+
+// TestScriptLanguageRunsPython is the effect probe for script.language: a
+// file with no extension runs under the TypeScript runtime by default, so a
+// Python print fails, and runs under Python when the language says so.
+func TestScriptLanguageRunsPython(t *testing.T) {
+	testsupport.RequireBinary(t, "python3")
+	run := func(env ...string) (string, error) {
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		script := filepath.Join(e.dir, "noext")
+		mustWrite(t, script, `print("ran-" + "py")`)
+		out, _, err := e.split("run", script)
+		return out, err
+	}
+	if out, err := run(); err == nil && strings.Contains(out, "ran-py") {
+		t.Errorf("by default the extensionless script should not run as Python:\n%s", out)
+	}
+	if out, err := run("MCPX_SCRIPT_LANGUAGE=python"); err != nil || !strings.Contains(out, "ran-py") {
+		t.Errorf("script.language=python should run the script under Python: err=%v\n%s", err, out)
 	}
 }
 
