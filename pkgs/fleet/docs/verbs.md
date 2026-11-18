@@ -14,7 +14,7 @@ Invocation: `fleet <domain> <verb> [args]`, or the domain's alias as argv0
 
 | Verb | Contract |
 |------|----------|
-| `init` | Initialise fleet configuration. |
+| `init` | Autostart this host's fleet roles (named by the `[host]` manifest in fleet config) if they are not running. |
 | `version`, `--version`, `-V` | Print the version. |
 | `capabilities` | List available domains and their state. |
 | `help [domain]` | Print help for the binary or one domain. |
