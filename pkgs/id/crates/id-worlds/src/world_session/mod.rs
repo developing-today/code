@@ -95,9 +95,22 @@ pub fn module_hash(wasm: &[u8]) -> String {
     Hash::new(wasm).to_string()
 }
 
+/// The exact message a [`ModuleSignature`] signs for `wasm`.
+///
+/// It is `b"developing-today/id-world-module/v1\0"` followed by the 32-byte
+/// BLAKE3 digest of the module bytes. Program bundles (#8280) sign their
+/// payload with this same message so a bundle installs into a trust-listed
+/// world.
+#[must_use]
+pub fn module_signing_message(wasm: &[u8]) -> Vec<u8> {
+    let mut message = b"developing-today/id-world-module/v1\0".to_vec();
+    message.extend_from_slice(blake3::hash(wasm).as_bytes());
+    message
+}
+
 /// Verify an upload against the configured publisher trust list. Signatures
 /// cover a domain-separated BLAKE3 digest, not a transport-specific encoding.
-fn verify_module_signature(
+pub(crate) fn verify_module_signature(
     trusted_keys: &[[u8; 32]],
     wasm: &[u8],
     signature: Option<&ModuleSignature>,
@@ -120,10 +133,7 @@ fn verify_module_signature(
     let key = ed25519_dalek::VerifyingKey::from_bytes(&public_key)
         .map_err(|_| InstallError::UntrustedModule)?;
     let signature = ed25519_dalek::Signature::from_bytes(&signature_bytes);
-    let digest = blake3::hash(wasm);
-    let mut message = b"developing-today/id-world-module/v1\0".to_vec();
-    message.extend_from_slice(digest.as_bytes());
-    key.verify_strict(&message, &signature)
+    key.verify_strict(&module_signing_message(wasm), &signature)
         .map_err(|_| InstallError::UntrustedModule)
 }
 
