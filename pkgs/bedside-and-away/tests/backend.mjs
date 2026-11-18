@@ -147,3 +147,12 @@ console.log('PASS: nullable allocation collection accepted; malformed elements r
 const restricted=(await call('stores/'+sid))[1];
 assert.equal((await call('stores/'+sid+'/variants',{data:{expectedVersion:restricted.version,commandId:'acl_variant',ids:['one'],options:{action:'group',name:'Unsafe family'}}}))[0],403);
 console.log('PASS: scoped variant commands fail closed for administrators as well as editors.');
+{const lid=(await call('stores',{data:{name:'L1',type:'private',initialState:state}}))[1].store.id,base=(await call('stores/'+lid))[1],note={id:'note_l1',targets:[],text:'hi',part:'General',pref:'',at:'2026-01-01T00:00:00Z',author:'Mallory',actorId:'mallory',device:'mallory'};
+ [code,r]=await call('stores/'+lid+'/events',{data:{expectedVersion:base.version,event:{id:'ev_l1',label:'Note',device:'mallory',actorId:'mallory',principal:{id:'mallory'},after:{...base.state,notes:[note]}}}});
+ assert.equal(code,200);assert.equal(r.event.actorId,'alice');assert.equal(r.event.device,'');
+ const stored=(await call('stores/'+lid))[1].state.notes.find(x=>x.id==='note_l1');assert.equal(stored.actorId,'alice');assert.equal(stored.device,'');assert.notEqual(stored.author,'Mallory');
+ const uuid=crypto.randomUUID();[code,r]=await call('stores/'+lid+'/events',{data:{expectedVersion:base.version+1,event:{id:'ev_l1b',label:'Note',device:uuid,after:{...base.state,notes:[note,{...note,id:'note_l1b',device:uuid}]}}}});
+ assert.equal(code,200);assert.equal(r.event.device,uuid);assert.equal((await call('stores/'+lid))[1].state.notes.find(x=>x.id==='note_l1b').device,uuid);
+ const kept=(await call('stores/'+lid))[1].state.notes.find(x=>x.id==='note_l1');assert.equal(kept.actorId,'alice');assert.equal(kept.author,stored.author);assert.equal(kept.device,'');
+ assert.equal((await call('stores/'+lid,{user:'bob',headers:{'x-bedaway-actor':'alice'}}))[0],404);}
+console.log('PASS: principal is the gateway account; body actor fields and non-UUID installation IDs are dropped.');

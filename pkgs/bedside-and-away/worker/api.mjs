@@ -3,6 +3,7 @@ import {evaluateAccess,projectSnapshot,projectEvents,assertSnapshotMutation,vali
 import {transitionSteering,assertSteeringUnchanged} from './steering.mjs';
 import {validateVariantGraph,assertVariantMetadataUnchanged} from './variant-graph.mjs';
 import {variantPlan} from './variant-plan.mjs';
+import {principalFromGateway,continuityId} from './identity.mjs';
 const roles = ['reader','editor','admin'];
 const headers = {'content-type':'application/json; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff'};
 const json = (body,status=200)=>new Response(JSON.stringify(body),{status,headers});
@@ -32,12 +33,15 @@ function validateState(s) {
  try{validateVariantGraph(s.items)}catch(e){fail(400,e.message)}
  return s;
 }
+// Who recorded a row is the server's word, fixed when the row is first written (BA-W01 L1).
+const provenance=['actorId','author','recordedAt','device'];
 function validateNewRecords(before,after,user,name){
  for(const field of ['notes','inventory']){
-  const previous=new Set(before[field].map(x=>x.id));
+  const previous=new Map(before[field].filter(x=>x?.id!=null).map(x=>[x.id,x]));
+  for(const row of after[field]){const prior=previous.get(row?.id);if(prior)for(const f of provenance){if(Object.hasOwn(prior,f))row[f]=prior[f];else delete row[f]}}
   for(const row of after[field])if(!previous.has(row.id)){
    if(!ident(row.id)&&!(typeof row.id==='string'&&/^receipt:[A-Za-z0-9_:-]{1,190}$/.test(row.id)))fail(400,'Record ID required');
-   row.actorId=user.id;row.author=name;row.recordedAt=now();
+   row.actorId=user.id;row.author=name;row.recordedAt=now();if('device' in row)row.device=continuityId(row.device);
    if(field==='inventory'){
     if(!['Bought','Consumed','Stock adjustment','Expense'].includes(row.mode)||!Number.isFinite(row.qty)||(row.mode!=='Stock adjustment'&&row.qty<0))fail(400,'Invalid inventory quantity or mode');
     if(row.totalMinor!==undefined&&row.totalMinor!==null&&(!Number.isSafeInteger(row.totalMinor)||row.totalMinor<0))fail(400,'Invalid integer minor-unit total');
@@ -89,9 +93,9 @@ export async function api(request,env){
  try{
   const url=new URL(request.url),path=url.pathname.split('/').filter(Boolean),method=request.method;
   if(path[0]!=='api')return json({error:'Not found'},404);
-  const id=request.headers.get('oai-authenticated-user-id'),email=clean(request.headers.get('oai-authenticated-user-email'),320).toLowerCase();
-  if(!id)return json({error:'Sign in with ChatGPT to use your private database',signIn:'/signin-with-chatgpt?returnTo=/'},401);
-  const user={id,email};
+  const user=principalFromGateway(request.headers);
+  if(!user)return json({error:'Sign in with ChatGPT to use your private database',signIn:'/signin-with-chatgpt?returnTo=/'},401);
+  const {id,email}=user;
   if(!env.DB)fail(503,'Dedicated database binding is not available');
   const db=env.DB;
   if(!['GET','POST'].includes(method))fail(405,'Method not allowed');
@@ -230,7 +234,7 @@ export async function api(request,env){
    if(!dedicated){if(source.access&&!hasScopedAccess(source)&&!Object.hasOwn(event.after??{},'access'))event.after={...event.after,access:source.access};if(event.operation&&event.operation!=='change')fail(400,'Use the dedicated command endpoint');if(canonical(source.access??null)!==canonical(event.after?.access??null))fail(403,'Use the administrator policy endpoint');if(hasScopedAccess(source))fail(403,'Scoped stores require per-entity commands; snapshot editing is read-only');assertSnapshotMutation(source,event.after,context);assertSteeringUnchanged(source,event.after);try{assertVariantMetadataUnchanged(source.items,event.after.items)}catch(e){fail(400,e.message)}}
    const after=validateState(structuredClone(event.after)),settings=await getSettings(db,user),version=s.version+1;
    if(sub!=='history')validateNewRecords(source,after,user,settings.nickname||email||'Signed-in user');
-   const accepted={intent,...(requestResult?{requestResult}:{}),id:event.id,at:now(),actor:settings.nickname||email||'Signed-in user',actorId:id,device:clean(event.device,100),label:clean(event.label,300)||'Edited tracker',operation:clean(event.operation,32)||'change',target:clean(event.target,100),before:parse(s.state_json),after,version};
+   const accepted={intent,...(requestResult?{requestResult}:{}),id:event.id,at:now(),actor:settings.nickname||email||'Signed-in user',actorId:id,device:continuityId(event.device),label:clean(event.label,300)||'Edited tracker',operation:clean(event.operation,32)||'change',target:clean(event.target,100),before:parse(s.state_json),after,version};
    const encoded=JSON.stringify(accepted);
    const results=await db.batch([
     db.prepare("INSERT OR IGNORE INTO events(id,store_id,version,actor_id,actor_email,actor_name,at,payload_json) SELECT ?,id,?,?,?,?,?,? FROM stores WHERE id=? AND version=? AND archived=0 AND (type='shared' OR owner_id=?) AND EXISTS(SELECT 1 FROM memberships WHERE store_id=stores.id AND user_id=? AND (role='admin' OR (?!='policy' AND role='editor')))").bind(event.id,version,id,email,accepted.actor,accepted.at,encoded,sid,s.version,id,id,sub),
