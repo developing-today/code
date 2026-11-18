@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -104,6 +105,7 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"daemon.takeoverTimeout":             "TestDaemonTakeoverTimeoutBoundsTheHandoverFromTheEnvironment",
 	"daemon.socketProbeTimeout":          "TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale",
 	"logging.maxAge":                     "TestLoggingMaxAgeRotatesAnAgedFile",
 	"logstore.followBacklog":             "TestFollowBacklogCapsWhatOneFollowPollEmits",
@@ -319,6 +321,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestDaemonTakeoverTimeoutBoundsTheHandoverFromTheEnvironment":                   TestDaemonTakeoverTimeoutBoundsTheHandoverFromTheEnvironment,
 	"TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale":                   TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale,
 	"TestLoggingMaxAgeRotatesAnAgedFile":                                             TestLoggingMaxAgeRotatesAnAgedFile,
 	"TestFollowBacklogCapsWhatOneFollowPollEmits":                                    TestFollowBacklogCapsWhatOneFollowPollEmits,
@@ -4699,6 +4702,43 @@ func TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale(t *testing.T) 
 	out := second("MCPX_DAEMON_SOCKET_PROBE_TIMEOUT=1ns")
 	if !strings.Contains(out, "removing stale socket") || !strings.Contains(out, " listening on ") {
 		t.Fatalf("daemon.socketProbeTimeout=1ns should take the live socket for stale and listen on it:\n%s", out)
+	}
+}
+
+// TestDaemonTakeoverTimeoutBoundsTheHandoverFromTheEnvironment is the
+// effect probe for daemon.takeoverTimeout. A successor started with
+// `mcpx daemon --takeover` dials the running daemon and exchanges the
+// handover within this bound. Oracle: by default the successor takes over
+// and serves; with a 1ns bound its dial cannot finish, so it gives up and
+// the old daemon keeps serving with the same server child.
+func TestDaemonTakeoverTimeoutBoundsTheHandoverFromTheEnvironment(t *testing.T) {
+	e := newEnv(t, oneServer)
+	e.setenv("MCPX_DAEMON_WATCH_CONFIG=false")
+	e.run("call", "demo.echo", `{"message":"before"}`)
+	s := startSuccessor(t, e)
+	if after := e.awaitSuccessor(t, s); after.PID != s.cmd.Process.Pid {
+		t.Fatalf("at the default daemon.takeoverTimeout the successor should take over")
+	}
+
+	e = newEnv(t, oneServer)
+	e.setenv("MCPX_DAEMON_WATCH_CONFIG=false", "MCPX_DAEMON_TAKEOVER_TIMEOUT=1ns")
+	e.run("call", "demo.echo", `{"message":"before"}`)
+	before := e.daemonState(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, e.mcpx, "daemon", "--takeover")
+	cmd.Dir = e.dir
+	cmd.Env = append([]string{}, e.envVars...)
+	out, err := cmd.CombinedOutput()
+	if err == nil || ctx.Err() != nil || !strings.Contains(string(out), "i/o timeout") {
+		t.Fatalf("daemon.takeoverTimeout=1ns should make the successor give up on its dial (err %v):\n%s", err, out)
+	}
+	after := e.daemonState(t)
+	if after.PID != before.PID || after.childOf("demo") != before.childOf("demo") {
+		t.Fatalf("the old daemon should keep serving after a failed takeover: pid %d -> %d", before.PID, after.PID)
+	}
+	if got := e.run("call", "demo.echo", `{"message":"after"}`); !strings.Contains(got, "after") {
+		t.Fatalf("the old daemon should still answer:\n%s", got)
 	}
 }
 
