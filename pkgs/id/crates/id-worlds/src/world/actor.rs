@@ -80,6 +80,7 @@ impl WorldCommand {
             Self::DelegateToFriend { .. } => "DelegateToFriend",
             Self::Directory { .. } => "Directory",
             Self::ApplyDirectory { .. } => "ApplyDirectory",
+            Self::DirectoryAccount { .. } => "DirectoryAccount",
             Self::Revoke { .. } => "Revoke",
             Self::RevokeAuthorized { .. } => "RevokeAuthorized",
             Self::ParticipantId { .. } => "ParticipantId",
@@ -172,6 +173,14 @@ pub(crate) enum WorldCommand {
     ApplyDirectory {
         entry: crate::directory::DirectoryEntry,
         reply: oneshot::Sender<Result<()>>,
+    },
+    /// Whether the world's directory holds `account`, and if so
+    /// whether it is verified (#8538). Refused on a replica, like
+    /// `ApplyDirectory`: the answer exists so a caller can apply an
+    /// entry next, and a replica never applies one.
+    DirectoryAccount {
+        account: String,
+        reply: oneshot::Sender<Result<Option<bool>>>,
     },
     Revoke {
         participant_id: u64,
@@ -1124,6 +1133,15 @@ impl WorldActor {
                 let result = self
                     .check_not_replica()
                     .and_then(|()| self.core.directory_mut().apply(&entry));
+                let _ = reply.send(result);
+            }
+            WorldCommand::DirectoryAccount { account, reply } => {
+                let result = self.check_not_replica().map(|()| {
+                    let directory = self.core.directory();
+                    directory
+                        .account(&account)
+                        .map(|_| directory.is_verified(&account))
+                });
                 let _ = reply.send(result);
             }
             WorldCommand::Revoke {

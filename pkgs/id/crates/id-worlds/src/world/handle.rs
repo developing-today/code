@@ -1381,6 +1381,24 @@ impl WorldHandle {
             .context("world actor dropped directory apply response")?
     }
 
+    /// Whether this world's directory holds `account` — `None` when it
+    /// does not, otherwise whether the account is verified (#8538). This
+    /// is the directory capability authorization consults. Fails on a
+    /// read-only replica, which never applies a local directory entry.
+    pub async fn directory_account(&self, account: impl Into<String>) -> Result<Option<bool>> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(WorldCommand::DirectoryAccount {
+                account: account.into(),
+                reply,
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("world actor is closed"))?;
+        response
+            .await
+            .context("world actor dropped directory account response")?
+    }
+
     /// Revoke an active capability and everything delegated from it.
     pub async fn revoke(&self, participant_id: u64) -> Result<bool> {
         self.revoke_by(participant_id, None).await
