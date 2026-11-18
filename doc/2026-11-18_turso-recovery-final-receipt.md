@@ -31,8 +31,9 @@ No existing row was updated or replaced by these recovery importers.
 | Missing historical mirror/quota records in 16 existing tables | fleet-platform | 6,886 |
 | **Total** | | **33,031** |
 
-Fresh-connection verification checked every imported value. TEXT, INTEGER
-and NULL values matched exactly. Five analytical measurement REAL cells
+Fresh-connection verification checked every imported value against its
+reviewed typed candidate, whose timestamps and arrays were normalized for
+the runtime. Candidate TEXT, INTEGER and NULL values matched exactly. Five analytical measurement REAL cells
 in the initial runtime import and three quota REAL cells in the final
 historical import differed by at most one IEEE-754 ULP each. The verifier
 checks finite values and the per-value ULP bound independently; a
@@ -41,8 +42,9 @@ source values remain in the archive.
 
 The 18 original ingest-parent rows and all 42 preexisting AA source rows
 were independently compared and unchanged. Broader existing-row
-preservation is supported by audited INSERT-only SQL, unchanged target
-schemas and absence of target mutation triggers, not a full before/after
+preservation is supported by audited INSERT-only SQL and verified
+schema/trigger guards (including the audited ingest-parent unique-index
+addition), not a full before/after
 hash of every old row. Existing same-key differences were retained.
 All 18 operational append-only trigger definitions match the reviewed
 candidate token-for-token; their behavior was tested on staging, not by

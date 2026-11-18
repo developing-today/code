@@ -1447,8 +1447,8 @@
   "operational_inserted_rows": 33031,
   "verification_limits": [
     "Archive TEXT/NULL rows preserve original precision; live PostgreSQL engine features are not reproduced by archive.",
-    "Runtime numeric comparison checks finite REAL values independently <=1 ULP before optional normalized hashes.",
-    "No full prior-value hash for all existing platform rows; preservation based on INSERT-only audited SQL, unchanged schema and no target triggers.",
+    "Runtime values are compared to reviewed typed candidates with timestamps/arrays normalized, not original PG lexemes. Numeric comparison checks finite REAL values independently <=1 ULP before optional normalized hashes.",
+    "No full prior-value hash for all existing platform rows; preservation based on INSERT-only audited SQL and verified schema/trigger guards, including the audited ingest-parent unique-index addition.",
     "Queue coverage compares keys, not full value equality; intentionally no replay of stale live controls.",
     "Backup contains zero push subscriptions; phone delivery not verified.",
     "Remote Muse runtime coverage is not established by this database receipt."
