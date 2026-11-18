@@ -68,9 +68,6 @@ setting	protoTasks.cancelGrace	no integration-test exercise yet; burn-down #8473
 setting	protoTasks.maxPerRequestor	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
 setting	protoTasks.maxTTL	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
 setting	protoTasks.perMinute	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
-setting	spec.first	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
-setting	spec.lenient	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
-setting	spec.precedence	no integration-test exercise yet; burn-down #8473 (settings proto family); needs an EffectProbes entry + e2e test
 setting	plugin.annotate	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
 setting	plugin.backend	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
 setting	plugin.bin	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
