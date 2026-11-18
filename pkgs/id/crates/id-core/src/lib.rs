@@ -39,6 +39,7 @@ pub mod id_shape;
 pub mod id_uri;
 pub mod intranet;
 pub mod ip_evidence;
+pub mod iroh_hash;
 pub mod json_unique;
 pub mod key_envelope;
 pub mod membership;
