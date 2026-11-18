@@ -12281,3 +12281,12 @@ mod projection_guard_tests {
         }
     }
 }
+
+#[test]
+fn presence_change_refuses_a_duplicated_key() {
+    let text = presence_event(7, "ann", true);
+    assert_eq!(presence_change(&text), Some((7, true)));
+    // A lenient parse keeps the last "event" and reads a join (#8794).
+    let duplicated = text.replacen('{', r#"{"event":"left","#, 1);
+    assert_eq!(presence_change(&duplicated), None);
+}

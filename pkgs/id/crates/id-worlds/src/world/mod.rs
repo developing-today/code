@@ -1210,7 +1210,7 @@ pub(crate) fn presence_event(participant: u64, name: &str, joined: bool) -> Stri
 }
 
 pub(crate) fn presence_change(text: &str) -> Option<(u64, bool)> {
-    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let value = id_core::json_unique::parse_json_without_duplicate_keys(text).ok()?;
     if value.get("cap")?.as_str()? != "players" {
         return None;
     }
