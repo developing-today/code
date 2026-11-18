@@ -2398,8 +2398,8 @@ func TestArtifactsInterceptImagesStoresAnEmittedImage(t *testing.T) {
 		}
 		return out
 	}
-	if out := run(); !strings.Contains(out, `"name": "image.png"`) {
-		t.Errorf("by default an emitted image should become an artifact:\n%s", out)
+	if out := run(); !strings.Contains(out, `"name": "image.png"`) || strings.Contains(out, "iVBORw0KGgo=") {
+		t.Errorf("by default an emitted image should become an artifact, and its body leave the results:\n%s", out)
 	}
 	if out := run("MCPX_ARTIFACTS_INTERCEPT_IMAGES=false"); strings.Contains(out, `"name": "image.png"`) {
 		t.Errorf("with artifacts.interceptImages off the image should not be stored:\n%s", out)
