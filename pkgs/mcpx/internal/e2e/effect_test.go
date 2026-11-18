@@ -101,6 +101,9 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"daemon.warmTimeout":                 "TestDaemonWarmTimeoutBoundsTheStartupWarm",
+	"autostart.connectTimeout":           "TestAutostartConnectTimeoutBoundsTheWaitForADaemon",
+	"autostart.pingTimeout":              "TestAutostartPingTimeoutBoundsEachReadinessPing",
 	"pool.callTimeout":                   "TestPoolCallTimeoutBoundsASlowCall",
 	"pool.startTimeout":                  "TestPoolStartTimeoutBoundsServerStart",
 	"daemon.refreshTimeout":              "TestDaemonRefreshTimeoutBoundsARefresh",
@@ -246,6 +249,9 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":        TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                 TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                          TestEventsHistoryBoundsTheReplay,
+	"TestDaemonWarmTimeoutBoundsTheStartupWarm":                                 TestDaemonWarmTimeoutBoundsTheStartupWarm,
+	"TestAutostartConnectTimeoutBoundsTheWaitForADaemon":                        TestAutostartConnectTimeoutBoundsTheWaitForADaemon,
+	"TestAutostartPingTimeoutBoundsEachReadinessPing":                           TestAutostartPingTimeoutBoundsEachReadinessPing,
 	"TestPoolCallTimeoutBoundsASlowCall":                                        TestPoolCallTimeoutBoundsASlowCall,
 	"TestPoolStartTimeoutBoundsServerStart":                                     TestPoolStartTimeoutBoundsServerStart,
 	"TestDaemonRefreshTimeoutBoundsARefresh":                                    TestDaemonRefreshTimeoutBoundsARefresh,
@@ -2768,6 +2774,75 @@ func TestDaemonRefreshTimeoutBoundsARefresh(t *testing.T) {
 	}
 	if out := refresh("MCPX_DAEMON_REFRESH_TIMEOUT=1ns"); !strings.Contains(out, "deadline exceeded") {
 		t.Errorf("daemon.refreshTimeout=1ns should cut the refresh off:\n%s", out)
+	}
+}
+
+// TestDaemonWarmTimeoutBoundsTheStartupWarm is the effect probe for
+// daemon.warmTimeout: the daemon's startup warm reaches the fake server at
+// the default bound, and fails it at a one-nanosecond bound.
+func TestDaemonWarmTimeoutBoundsTheStartupWarm(t *testing.T) {
+	warmLine := func(env ...string) string {
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		e.run("ls")
+		_, _ = e.try("daemon", "stop")
+		b, _ := os.ReadFile(filepath.Join(e.dir, "state", "daemon.log"))
+		for _, line := range strings.Split(string(b), "\n") {
+			if strings.Contains(line, "warm complete") {
+				return line
+			}
+		}
+		t.Fatalf("no warm line in the daemon log:\n%s", b)
+		return ""
+	}
+	if line := warmLine(); !strings.Contains(line, "(0 failed)") {
+		t.Errorf("at the default daemon.warmTimeout the warm should succeed: %s", line)
+	}
+	if line := warmLine("MCPX_DAEMON_WARM_TIMEOUT=1ns"); !strings.Contains(line, "(1 failed)") {
+		t.Errorf("daemon.warmTimeout=1ns should fail the warm: %s", line)
+	}
+}
+
+// autostartFails reports whether the first command in a fresh env fails to
+// start its daemon under the given environment.
+func autostartFails(t *testing.T, env ...string) (bool, string) {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	saved := e.envVars
+	e.setenv(env...)
+	out, err := e.try("ls")
+	// The daemon that was given up on still starts. Reach it with the
+	// default bounds, so the env's cleanup can find and stop it rather than
+	// leaving it running past the suite.
+	e.envVars = saved
+	_, _ = e.try("ls")
+	return err != nil && strings.Contains(out, "did not become ready"), out
+}
+
+// TestAutostartConnectTimeoutBoundsTheWaitForADaemon is the effect probe
+// for autostart.connectTimeout: an auto-started daemon is waited for at the
+// default bound, and given up on at a one-nanosecond bound.
+func TestAutostartConnectTimeoutBoundsTheWaitForADaemon(t *testing.T) {
+	if failed, out := autostartFails(t); failed {
+		t.Errorf("at the default autostart.connectTimeout the daemon should start:\n%s", out)
+	}
+	if failed, out := autostartFails(t, "MCPX_AUTOSTART_CONNECT_TIMEOUT=1ns"); !failed {
+		t.Errorf("autostart.connectTimeout=1ns should give up on the daemon:\n%s", out)
+	}
+}
+
+// TestAutostartPingTimeoutBoundsEachReadinessPing is the effect probe for
+// autostart.pingTimeout: the readiness ping answers at the default bound,
+// and none can at a one-nanosecond bound, so the start is given up on. Both
+// cases wait two seconds for the daemon, not the default, to stay quick;
+// two seconds is ample for it to start, as the first case shows.
+func TestAutostartPingTimeoutBoundsEachReadinessPing(t *testing.T) {
+	const wait = "MCPX_AUTOSTART_CONNECT_TIMEOUT=2s"
+	if failed, out := autostartFails(t, wait); failed {
+		t.Errorf("at the default autostart.pingTimeout the daemon should start:\n%s", out)
+	}
+	if failed, out := autostartFails(t, wait, "MCPX_AUTOSTART_PING_TIMEOUT=1ns"); !failed {
+		t.Errorf("autostart.pingTimeout=1ns should leave every ping unanswered:\n%s", out)
 	}
 }
 
