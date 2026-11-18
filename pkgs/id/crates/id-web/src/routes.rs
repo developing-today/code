@@ -367,22 +367,11 @@ fn classify_tag(name: &str) -> (FileKind, Option<u64>) {
         }
     }
 
-    // Check for archive: "{name}.archive.{unix_timestamp}"
-    // Only an archive when the suffix actually parses as a unix
-    // timestamp (#2793) — the same rule #809 applied to the "auto-"
-    // prefix above. An ordinary file that merely contains ".archive."
-    // (notes.archive.txt) is Primary. No producer mints a non-numeric
-    // suffix: the archive claim path always formats a u64.
-    if let Some(pos) = name.rfind(".archive.") {
-        let ts_str = &name[pos + ".archive.".len()..];
-        // The producer's Display form is unsigned decimal digits only:
-        // parse::<u64>() would also accept a leading '+', a spelling no
-        // producer mints (#4329).
-        if !ts_str.is_empty() && ts_str.bytes().all(|b| b.is_ascii_digit()) {
-            if let Ok(ts) = ts_str.parse::<u64>() {
-                return (FileKind::Archive, Some(ts));
-            }
-        }
+    // Check for archive: "{name}.archive.{unix_timestamp}". The shared
+    // FileOps rule decides it, so the writer's reservation and this reader
+    // classify every name the same way (#2793, #4329, #11790).
+    if let Some(ts) = id_sync::fileops::archive_tag_timestamp(name) {
+        return (FileKind::Archive, Some(ts));
     }
 
     (FileKind::Primary, None)
@@ -5455,6 +5444,20 @@ mod tests {
             assert_eq!(kind, FileKind::Primary, "{name}");
             assert!(ts.is_none(), "{name}");
         }
+    }
+
+    #[test]
+    fn test_classify_tag_archive_matches_writer_rule() {
+        // Regression (#11790): the reader must agree with the FileOps writer
+        // on empty-stem and u64-overflow archive suffixes.
+        for name in [".archive.5", "x.archive.18446744073709551616"] {
+            let (kind, ts) = classify_tag(name);
+            assert_eq!(kind, FileKind::Primary, "{name}");
+            assert!(ts.is_none(), "{name}");
+        }
+        let (kind, ts) = classify_tag("x.archive.18446744073709551615");
+        assert_eq!(kind, FileKind::Archive);
+        assert_eq!(ts, Some(u64::MAX));
     }
 
     #[test]
