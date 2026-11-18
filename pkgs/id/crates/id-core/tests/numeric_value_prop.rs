@@ -389,6 +389,7 @@ proptest! {
         let x = BigInt::from_be_magnitude(negative, &magnitude);
         let first = magnitude.iter().position(|&b| b != 0).unwrap_or(magnitude.len());
         prop_assert_eq!(x.magnitude_be_bytes(), magnitude[first..].to_vec());
+        prop_assert_eq!(x.magnitude_len(), magnitude.len() - first);
         prop_assert_eq!(BigInt::parse(&x.to_decimal_string()), Some(x.clone()));
         let y = BigInt::from_be_magnitude(!negative, &other);
         // (x + y) + (-y) == x and addition commutes.
