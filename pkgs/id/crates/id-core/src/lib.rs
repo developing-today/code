@@ -23,6 +23,7 @@
 pub mod abuse;
 pub mod access;
 pub mod append_list;
+pub mod append_list_client;
 pub mod block_list;
 pub mod boundary;
 pub mod boundary_surfaces;
