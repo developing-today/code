@@ -220,20 +220,19 @@ pub mod conversion;
 pub mod currency;
 pub mod currency_poc;
 pub mod device_bridge;
+pub use id_core::discovery;
 #[cfg(feature = "world")]
 pub use id_directory::directory;
 #[cfg(feature = "world")]
 pub use id_directory::directory_auth;
 #[cfg(feature = "world")]
 pub use id_directory::directory_log;
-pub use id_sync::dht;
-#[cfg(feature = "world")]
-pub mod keyset;
-pub use id_core::discovery;
 #[cfg(feature = "world")]
 pub use id_directory::directory_mail;
 #[cfg(feature = "world")]
 pub use id_directory::directory_view;
+pub use id_directory::keyset;
+pub use id_sync::dht;
 pub mod didit;
 pub use id_store::documents;
 pub use id_store::media;
@@ -353,7 +352,7 @@ pub use discovery::{
     MAX_PEERS, PeerAnnouncement, PeerDiscovery, PeerInfo, ResolvedConfig, STALE_CHECK_INTERVAL,
     STALE_THRESHOLD, defaults, parse_defaults, resolve_config,
 };
-pub use id_cli::cli::{Cli, Command, KeyCommand, TagCommand};
+pub use id_cli::cli::{Cli, Command, KeyCommand, KeysetCommand, TagCommand};
 pub use id_cli::commands::{
     PeekOptions, PeersOptions, ReplContext, ReplContextInner, SearchOptions, ServeInfo,
     ServeOptions, cmd_find, cmd_find_matches, cmd_get_local, cmd_get_multi, cmd_get_one,

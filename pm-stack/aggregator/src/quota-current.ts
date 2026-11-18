@@ -22,6 +22,7 @@ import { poolState } from "./derive.ts";
 import { isProviderAuthAlert, reevaluateProviderAuth } from "./provider-auth-alerts.ts";
 import { lifecycleForEntry, safeProviderReason } from "./credential-lifecycle.ts";
 import { computeChoices } from "./quota-guidance.ts";
+import { resolveTursoLimits, type TursoLimits } from "./quota-gather-map.ts";
 import type {
   GathererSummary,
   PoolFreshness,
@@ -582,6 +583,28 @@ const TURSO_WINDOW_META: Record<string, { label: string; unit: UsageUnit; limit:
   sync: { label: "Sync / month", unit: "gb", limit: 3 },
 };
 
+/** The card limit for a Turso window under the read's plan (#10436),
+ * in the card's units (storage and sync in decimal GB, as billed). */
+function tursoCardLimit(name: string, limits: TursoLimits, fallback: number): number {
+  switch (name) {
+    case "databases":
+      return limits.databases;
+    case "storage":
+      return limits.storageBytes / 1e9;
+    case "rows-read":
+      return limits.rowsRead;
+    case "rows-written":
+      return limits.rowsWritten;
+    case "sync":
+      return limits.bytesSynced / 1e9;
+    default:
+      return fallback;
+  }
+}
+
+/** "scaler" -> "Scaler": the API's plan name, as a card label. */
+const titleCase = (plan: string): string => plan.charAt(0).toUpperCase() + plan.slice(1);
+
 /**
  * Apply the gatherer's Turso entry (#1049) to the SaaS services —
  * the usage() counterpart of overlayQuotaCurrent, with the same
@@ -606,6 +629,13 @@ export function overlayTursoUsage(services: SaasService[], file: QuotaCurrentFil
   if (freshOk.length > 0) {
     const entry = freshOk[0];
     const prev = new Map(svc.metrics.map((m) => [m.id, m]));
+    // The plan is part of the read (#10436): the card's label and the
+    // limits it shows follow the read's plan, as the metrics do, rather
+    // than the dated local record (which said Starter Free while the
+    // org read Scaler). A read with no plan keeps the record's label
+    // and the Starter limits the windows were divided by.
+    const livePlan = entry.planLabel?.trim() || undefined;
+    const planLimits = livePlan ? resolveTursoLimits(livePlan, null) : null;
     const metrics: UsageMetric[] = [];
     for (const w of entry.windows) {
       const meta = Object.hasOwn(TURSO_WINDOW_META, w.name) ? TURSO_WINDOW_META[w.name] : undefined;
@@ -614,7 +644,7 @@ export function overlayTursoUsage(services: SaasService[], file: QuotaCurrentFil
         id: w.name,
         label: prev.get(w.name)?.label ?? meta.label,
         used: w.value,
-        limit: meta.limit,
+        limit: planLimits ? tursoCardLimit(w.name, planLimits, meta.limit) : meta.limit,
         unit: meta.unit,
         ...(usablePct(w.pctOfLimit) ? { percent: w.pctOfLimit } : {}),
         highlight: prev.get(w.name)?.highlight ?? true,
@@ -640,7 +670,10 @@ export function overlayTursoUsage(services: SaasService[], file: QuotaCurrentFil
       metrics,
       measuredAt: entry.measuredAt,
       sourceClass: "api",
-      sourceNote: `${svc.sourceNote} · live gatherer read (turso-api) at ${entry.measuredAt}`,
+      ...(livePlan ? { plan: `${titleCase(livePlan)} (live read)` } : {}),
+      sourceNote: livePlan
+        ? `${svc.sourceNote} · live gatherer read (turso-api) at ${entry.measuredAt}; plan and limits from the read (${livePlan})`
+        : `${svc.sourceNote} · live gatherer read (turso-api) at ${entry.measuredAt}`,
       ...(resetsAt ? { nextDate: `cycle ends ${resetsAt.slice(0, 10)}` } : {}),
     };
     return out;

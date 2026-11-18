@@ -267,6 +267,17 @@ impl Registry {
     /// The records matching `query`, ordered by author, name and version.
     #[must_use]
     pub fn list(&self, query: &ListQuery) -> Vec<BundleRecord> {
+        self.list_where(query, |_| true)
+    }
+
+    /// The records matching `query` whose manifest `keep` accepts, in the
+    /// same order as [`Self::list`].
+    #[must_use]
+    pub fn list_where(
+        &self,
+        query: &ListQuery,
+        keep: impl Fn(&BundleManifest) -> bool,
+    ) -> Vec<BundleRecord> {
         self.versions
             .iter()
             .filter(|((author, name, _), _)| {
@@ -274,8 +285,18 @@ impl Registry {
                     && query.name.as_ref().is_none_or(|wanted| wanted == name)
             })
             .filter_map(|(_, hash)| self.bundles.get(hash))
+            .filter(|bundle| keep(bundle.manifest()))
             .map(ProgramBundle::record)
             .collect()
+    }
+
+    /// The record and identity of the bundle with this content hash, if
+    /// held.
+    #[must_use]
+    pub fn get(&self, content_hash: &str) -> Option<(BundleRecord, ProgramIdentity)> {
+        self.bundles
+            .get(content_hash)
+            .map(|bundle| (bundle.record(), bundle.identity()))
     }
 
     /// The bundle file with this content hash, if listed.
@@ -494,6 +515,8 @@ mod tests {
                 name,
                 version,
                 licence: None,
+                description: None,
+                categories: &[],
             },
             author,
         )
@@ -706,6 +729,8 @@ mod tests {
                 name: "chess",
                 version: 1,
                 licence: None,
+                description: None,
+                categories: &[],
             },
             &bob(),
         )

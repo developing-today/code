@@ -54,7 +54,7 @@ Rationale, from what is already there:
   world directory uses. Declarations need no new durability story.
 - A declaration is **content-addressed and immutable** (`BoundaryDeclaration::id`
   is BLAKE3 over the canonical body, `boundary.rs:216-236`). Residence therefore
-  stores *which* id is effective per scope, not a mutable blob: replacing a
+  stores _which_ id is effective per scope, not a mutable blob: replacing a
   boundary means naming a different id, and `ensure_supersedes`
   (`boundary.rs:342`) checks monotone version per scope.
 
@@ -63,11 +63,11 @@ Rationale, from what is already there:
 The config keys are the operator's own names for those scopes, so no new
 namespace is introduced:
 
-| Scope | Config identity | Effective at |
-| --- | --- | --- |
-| server | the config's own server name | every surface point the declaration lists |
-| world | the world id the config provisions / serves | that world's membership and blob points |
-| account | the account key (`UserSpec::key`, `mod.rs:89-91`) | that account's signup/login points |
+| Scope   | Config identity                                   | Effective at                              |
+| ------- | ------------------------------------------------- | ----------------------------------------- |
+| server  | the config's own server name                      | every surface point the declaration lists |
+| world   | the world id the config provisions / serves       | that world's membership and blob points   |
+| account | the account key (`UserSpec::key`, `mod.rs:89-91`) | that account's signup/login points        |
 
 The **effective boundary for one check** is `boundary::effective(server, world,
 account)`
@@ -97,13 +97,13 @@ follows the #9141 acceptance rule already landed as a conformance oracle
 
 The four sources the issue names map onto components that already exist:
 
-| Evidence covers | Issuer (signs) | Where the hop happens | Plane |
-| --- | --- | --- | --- |
-| (a) account store | the serving process that wrote the account record | `Directory` writes: `sign_up` / `sign_up_keyed` / `authenticate` (`pkgs/id/crates/id-directory/src/directory.rs:613,655`) | storage |
-| (b) serving connection | the listener that accepted the connection | serve startup / connection accept (`pkgs/id/crates/id-cli/src/commands/serve.rs`) | transport |
-| (c) world blob stores | the world store that persisted the blob | `world_store.rs` (`open`/`load`, `:202,662`) | storage |
-| (c) world turn hosts | the world session host that ran the turn | `world_session/service.rs` | processing |
-| (d) federation peers/relays | the peer or relay itself, about its own endpoint | federation ingress/egress (`id-sync` envelope, `envelope.rs:125`) | transport |
+| Evidence covers             | Issuer (signs)                                    | Where the hop happens                                                                                                     | Plane      |
+| --------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| (a) account store           | the serving process that wrote the account record | `Directory` writes: `sign_up` / `sign_up_keyed` / `authenticate` (`pkgs/id/crates/id-directory/src/directory.rs:613,655`) | storage    |
+| (b) serving connection      | the listener that accepted the connection         | serve startup / connection accept (`pkgs/id/crates/id-cli/src/commands/serve.rs`)                                         | transport  |
+| (c) world blob stores       | the world store that persisted the blob           | `world_store.rs` (`open`/`load`, `:202,662`)                                                                              | storage    |
+| (c) world turn hosts        | the world session host that ran the turn          | `world_session/service.rs`                                                                                                | processing |
+| (d) federation peers/relays | the peer or relay itself, about its own endpoint  | federation ingress/egress (`id-sync` envelope, `envelope.rs:125`)                                                         | transport  |
 
 **Peer-asserted claims are graded, never trusted by default.** A peer's claim
 about a subject's location enters the same `&[SubjectEvidence]` list but is
@@ -122,7 +122,7 @@ satisfies a bar — the safe direction, and already tested
 (`boundary_surfaces.rs:778` `peer_claim_is_self_grade_until_the_peer_is_a_trust_root`).
 
 **Why not a separate evidence service.** A fifth process that attests for others
-would have to be trusted *and* able to observe the hops, i.e. it would become
+would have to be trusted _and_ able to observe the hops, i.e. it would become
 every component's proxy. Self-signed per-hop evidence keeps the attester and the
 actor identical, which is the property the design's "a signature proves
 authorship, not physical location" (`residency.rs:15`) and the assurance model
@@ -188,10 +188,10 @@ already returns `Allow` for that shape (`boundary_surfaces.rs:344-348`) — so
 ## 6. Rejected alternatives
 
 - **Declarations in the world record / blob store** (a world carries its own
-  boundary): rejected as the *primary* residence because a boundary the world
+  boundary): rejected as the _primary_ residence because a boundary the world
   itself supplies cannot bind a hostile world. World-scoped declarations are
   expressed as `ScopeRef::World` entries in the operator config; the operator
-  remains the author. A world may *propose* a boundary in future work, but
+  remains the author. A world may _propose_ a boundary in future work, but
   accepting it is an operator action, not a load-time one.
 - **A new `boundaries.toml` beside the config**: rejected — a second operator
   artifact to keep consistent with `ServerConfig`, with no added expressiveness.

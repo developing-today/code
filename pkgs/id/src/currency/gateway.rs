@@ -189,6 +189,7 @@ pub enum GatewayError {
     rename_all = "snake_case",
     deny_unknown_fields
 )]
+/// A currency operation a caller can submit through the gateway.
 pub enum CurrencyOp {
     /// Register a new currency under the caller's account.
     RegisterCurrency(RegisterCurrency),

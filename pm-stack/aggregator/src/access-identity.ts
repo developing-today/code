@@ -247,7 +247,7 @@ function denialLine(req: Request, status: number, error: string, claim: string, 
  * and verified is false (#1253 split 4: the write is asserted-legacy).
  */
 type AuthorEnforcement =
-  | { ok: true; author: DashAuthor; verified: boolean }
+  | { ok: true; author: DashAuthor; verified: boolean; identity?: VerifiedAccessIdentity }
   | { ok: false; status: 401 | 403; error: string };
 
 /**
@@ -308,7 +308,7 @@ export function createAccessAuthorEnforcer(
       logDenial(denialLine(req, decision.status, decision.error, verifiedClaim(outcome.verified), asserted));
       return decision;
     }
-    return { ...decision, verified: true };
+    return { ...decision, verified: true, identity: outcome.verified };
   };
 }
 

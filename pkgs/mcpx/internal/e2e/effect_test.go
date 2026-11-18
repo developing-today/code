@@ -1,6 +1,8 @@
 package e2e_test
 
 import (
+	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -64,7 +66,9 @@ var implementedEffectProbes = map[string]string{
 	"tasks.maxAge":               "TestTasksMaxAgeIsReachableFromEnvironment",
 	"stats.top":                  "TestStatsTopLimitsTheRowsTheStatsAPIReports",
 	"proto.askPoll":              "TestAskPollCeilingIsReachableFromTheEnvironment",
+	"proto.askRounds":            "TestAskRoundsLimitIsReachableFromTheEnvironment",
 	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
+	"daemon.autostart":           "TestDaemonAutostartIsReachableFromTheEnvironment",
 	"http.bodyLimit":             "TestHTTPBodyLimitsRejectOversizedBodies",
 	"http.callBodyLimit":         "TestHTTPBodyLimitsRejectOversizedBodies",
 	"http.controlBodyLimit":      "TestHTTPBodyLimitsRejectOversizedBodies",
@@ -117,7 +121,9 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestTasksMaxAgeIsReachableFromEnvironment":              TestTasksMaxAgeIsReachableFromEnvironment,
 	"TestStatsTopLimitsTheRowsTheStatsAPIReports":            TestStatsTopLimitsTheRowsTheStatsAPIReports,
 	"TestAskPollCeilingIsReachableFromTheEnvironment":        TestAskPollCeilingIsReachableFromTheEnvironment,
+	"TestAskRoundsLimitIsReachableFromTheEnvironment":        TestAskRoundsLimitIsReachableFromTheEnvironment,
 	"TestDaemonAddressIsReachableFromTheEnvironment":         TestDaemonAddressIsReachableFromTheEnvironment,
+	"TestDaemonAutostartIsReachableFromTheEnvironment":       TestDaemonAutostartIsReachableFromTheEnvironment,
 	"TestHTTPBodyLimitsRejectOversizedBodies":                TestHTTPBodyLimitsRejectOversizedBodies,
 	"TestHTTPEventStreamSettingsChangeTheStream":             TestHTTPEventStreamSettingsChangeTheStream,
 	"TestHTTPReadHeaderTimeoutClosesSlowClients":             TestHTTPReadHeaderTimeoutClosesSlowClients,
@@ -302,6 +308,78 @@ func TestAskPollCeilingIsReachableFromTheEnvironment(t *testing.T) {
 	}
 }
 
+// proto.askRounds limits how many times one MCP request may ask its client
+// for input. The fake upstream asks twice in one tool call; default settings
+// complete both rounds, while a configured limit of one rejects the second.
+// Oracle: the default returns a complete result containing the second answer;
+// a limit of one returns the ask-round exhaustion error instead.
+func TestAskRoundsLimitIsReachableFromTheEnvironment(t *testing.T) {
+	call := func(env ...string) string {
+		t.Helper()
+		e := askEnv(t)
+		e.setenv(env...)
+		e.run("refresh")
+		ep := e.endpoint(t)
+		meta := map[string]any{
+			"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+			"io.modelcontextprotocol/clientCapabilities": map[string]any{
+				"elicitation": map[string]any{"form": map[string]any{}},
+			},
+		}
+		params := map[string]any{
+			"name":      "mcpx_call",
+			"arguments": map[string]any{"namespace": "ask", "tool": "need_repo_twice"},
+			"_meta":     meta,
+		}
+		for attempt := 0; attempt < 3; attempt++ {
+			resp := mcpPost(t, ep, "", map[string]any{
+				"jsonrpc": "2.0", "id": attempt + 1, "method": "tools/call", "params": params,
+			})
+			var frame map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&frame); err != nil {
+				_ = resp.Body.Close()
+				t.Fatal(err)
+			}
+			_ = resp.Body.Close()
+			if frame["error"] != nil {
+				return dumpJSON(t, frame)
+			}
+			result, _ := frame["result"].(map[string]any)
+			if result["resultType"] == "complete" {
+				return dumpJSON(t, frame)
+			}
+			if result["resultType"] != "input_required" {
+				t.Fatalf("expected input_required or complete, got %s", dumpJSON(t, frame))
+			}
+			state, _ := result["requestState"].(string)
+			requests, _ := result["inputRequests"].(map[string]any)
+			if state == "" || len(requests) != 1 {
+				t.Fatalf("expected one resumable elicitation request, got %s", dumpJSON(t, result))
+			}
+			responses := map[string]any{}
+			for id := range requests {
+				responses[id] = map[string]any{
+					"action":  "accept",
+					"content": map[string]any{"repo": fmt.Sprintf("me/round%d", attempt+1)},
+				}
+			}
+			params["requestState"] = state
+			params["inputResponses"] = responses
+		}
+		t.Fatal("two-round call did not complete or hit its configured limit")
+		return ""
+	}
+
+	defaultResult := call()
+	if !strings.Contains(defaultResult, `"resultType":"complete"`) || !strings.Contains(defaultResult, "me/round2") {
+		t.Fatalf("default proto.askRounds should complete both rounds, got %s", defaultResult)
+	}
+	limitedResult := call("MCPX_PROTO_ASK_ROUNDS=1")
+	if !strings.Contains(limitedResult, "still asking for input after 1 rounds") {
+		t.Fatalf("proto.askRounds=1 should stop the second round, got %s", limitedResult)
+	}
+}
+
 // TestDaemonAddressIsReachableFromTheEnvironment is the effect probe
 // for daemon.address (#8468 chain 1). The exemption it replaced said
 // a bind address is a network identity the harness cannot vary
@@ -348,5 +426,40 @@ func TestDaemonAddressIsReachableFromTheEnvironment(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("oracle: the widened endpoint answered %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestDaemonAutostartIsReachableFromTheEnvironment is the effect probe
+// for daemon.autostart (#8468 chain 2). The exemption it replaced said
+// daemon lifecycle cannot be varied deterministically; it can: with no
+// daemon running, the same command either starts one and leaves its
+// socket behind, or refuses and names the disabled rung.
+//
+// Oracle: the CLI's own no-daemon diagnosis. With autostart off, `ls`
+// fails and names "disabled by daemon.autostart" and no socket
+// appears; at the default, `ls` succeeds and leaves a socket.
+func TestDaemonAutostartIsReachableFromTheEnvironment(t *testing.T) {
+	socketsIn := func(e *env) []string {
+		socks, _ := filepath.Glob(filepath.Join(e.dir, "state", "*.sock"))
+		return socks
+	}
+
+	off := newEnv(t, oneServer)
+	off.setenv("MCPX_DAEMON_AUTOSTART=false")
+	out, err := off.try("ls")
+	if err == nil {
+		t.Fatalf("oracle: with daemon.autostart=false and no daemon, ls should fail; got:\n%s", out)
+	}
+	if !strings.Contains(out, "disabled by daemon.autostart") {
+		t.Fatalf("oracle: the refusal should name the disabled autostart rung, got:\n%s", out)
+	}
+	if socks := socketsIn(off); len(socks) > 0 {
+		t.Fatalf("oracle: no daemon socket should appear with autostart off: %v", socks)
+	}
+
+	on := newEnv(t, oneServer)
+	on.run("ls")
+	if socks := socketsIn(on); len(socks) == 0 {
+		t.Fatalf("oracle: with the default daemon.autostart, ls should start a daemon and leave its socket")
 	}
 }

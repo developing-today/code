@@ -1,6 +1,6 @@
 # Fleet schedule registry
 
-One record for every recurring schedule the fleet runs, across all three
+One record for every recurring schedule the fleet runs, across every
 schedule surfaces — the unified registry required by #4988, from the
 placement-framework v1 synthesis on #2024 (registry requirement first
 specified in the #2020 Jules investigation).
@@ -17,6 +17,8 @@ specified in the #2020 Jules investigation).
   section lists the units as they exist today.
 - **Surface 3 — Jules schedules:** web-UI CRUD on the one collected
   Jules account (pilot #2265).
+- **Surface 5 — Mac launchd jobs:** timed launchd daemons and agents
+  defined in `dezren39/darwin-nix` and deployed to the Mac (#11805).
 
 **This registry is an input to the placement audit** proposed in the
 #2024 framework doc
@@ -73,6 +75,13 @@ disabled `opencode-quota-freshness-summary.timer` was added and
 marked disabled per the inclusion policy now stated in the Surface
 2b intro, and the section count was corrected to 39 rows
 (38 enabled + 1 disabled) for issue #5661.
+
+Surface 5 added 2026-11-18 for issue #11805 from `dezren39/darwin-nix`
+main at `6af58a6`: every `StartCalendarInterval` / `StartInterval` in
+the repo's Nix files (three jobs). Read from the Nix definitions, not
+from `launchctl` on the Mac, so the rows say what is configured, not
+what is loaded. Long-running launchd services with no timer
+(`openchamber`, the mcpx daemon) are not schedules and are not listed.
 
 Surface 1 amended 2026-11-16 by queue task 17512 (lane any-n) for
 issue #10748: `closure-watchdog` and `id-atlas-refresh` rows added.
@@ -342,3 +351,23 @@ while the service is alive.
 | name/id | repo/scope | cadence | state | owner / scope | prompt/brief pointer | budget | kill criteria | created | last review |
 | ------- | ---------- | ------- | ----- | ------------- | -------------------- | ------ | ------------- | ------- | ----------- |
 | SLO journal sampler (#9988) | developing-today/code | every 60 seconds | live aggregator process only | issue #9988 | `pm-stack/aggregator/src/server.ts` (`SLO_SAMPLE_INTERVAL_MS`) | not recorded | Remove/disable if the health view or append-only journal becomes unavailable; sampler is unref'd and does not keep the process alive | 2026-11-18 | 2026-11-18 |
+
+## Surface 5 — Mac launchd jobs (3 entries)
+
+Timed launchd jobs from `dezren39/darwin-nix`, deployed to the Mac by
+`darwin-rebuild`. Cadence is the job's own `StartCalendarInterval`
+(local time) or `StartInterval` (seconds). The prompt/brief pointer is
+the Nix file that defines the job. Rows were read from the repo at
+`6af58a6`, not from `launchctl list` on the Mac (#11805).
+
+| job                                         | kind               | cadence                                        | runs                                                                                                     | owner / scope                                          | prompt/brief pointer                       | budget       | kill criteria | created               | last review |
+| ------------------------------------------- | ------------------ | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ | ------------------------------------------ | ------------ | ------------- | --------------------- | ----------- |
+| `launchd.daemons.git-maintenance`           | daemon (root)      | `StartCalendarInterval` daily 03:30            | `git for-each-repo --keep-going --config=maintenance.repo maintenance run --schedule=daily`              | Mac (darwin-nix); root's repo list, empty today        | `configuration.nix` (`git-maintenance`)    | not recorded | not recorded  | not recorded          | 2026-11-18  |
+| `launchd.user.agents.opencode-prune-report` | user agent         | `StartCalendarInterval` daily 04:15            | dry-run report of both opencode pruners; log `~/Library/Logs/opencode-prune-report.log`                  | Mac (darwin-nix); darwin-nix #659                      | `opencode-prune-report.nix`                | not recorded | not recorded  | not recorded (PR #1419) | 2026-11-18  |
+| `launchd.user.agents.opencode-tmp-guard`    | user agent         | `StartInterval = 21600` (every 6 h)            | sweeps `~/.local/share/opencode/tmp` past its TTL; log `~/Library/Logs/opencode-tmp-guard.log`           | Mac (darwin-nix)                                       | `opencode-tmp-guard.nix`                   | not recorded | not recorded  | not recorded          | 2026-11-18  |
+
+The root `git-maintenance` daemon iterates root's `maintenance.repo`
+list, which its own comment says is empty unless root-owned repos are
+registered. The primary user's repos are maintained by git's own
+per-user launchd agents, which `git maintenance start` installs outside
+Nix; they are not recorded here until a review reads them on the Mac.

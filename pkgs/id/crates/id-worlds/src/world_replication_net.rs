@@ -125,7 +125,8 @@ async fn serve_stream(
             .context("timed out waiting for replication request")??
             .context("replication stream closed before request")?;
     let request: ReplicationRequest =
-        serde_json::from_slice(&request_bytes).context("decode replication request")?;
+        id_core::json_unique::from_slice_without_duplicate_keys(&request_bytes)
+            .context("decode replication request")?;
     let _ = recv.stop(0_u32.into());
     ensure_nonce(&request.session_nonce)?;
     if request.admin_token.len() > MAX_ADMIN_TOKEN_BYTES {

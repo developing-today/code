@@ -2066,6 +2066,40 @@ fn test_cli_parse_web_cookie_secure() {
 }
 
 #[test]
+fn test_cli_parse_gallery_dir_and_publish() {
+    match Cli::parse_from(["id", "serve", "--web", "--gallery-dir", "/srv/gallery"]).command {
+        Some(Command::Serve(args)) => assert_eq!(
+            args.gallery_dir.as_deref(),
+            Some(std::path::Path::new("/srv/gallery"))
+        ),
+        _ => panic!("Expected Serve command"),
+    }
+    match Cli::parse_from(["id", "serve", "--web"]).command {
+        Some(Command::Serve(args)) => assert!(args.gallery_dir.is_none()),
+        _ => panic!("Expected Serve command"),
+    }
+    match Cli::parse_from([
+        "id",
+        "serve",
+        "--gallery-dir",
+        "/srv/gallery",
+        "--gallery-accept-publish",
+    ])
+    .command
+    {
+        Some(Command::Serve(args)) => {
+            assert!(
+                args.gallery_dir.is_some(),
+                "the Iroh registry needs no --web"
+            );
+            assert!(args.gallery_accept_publish);
+        }
+        _ => panic!("Expected Serve command"),
+    }
+    assert!(Cli::try_parse_from(["id", "serve", "--gallery-accept-publish"]).is_err());
+}
+
+#[test]
 fn test_cli_parse_world_boot_window() {
     let cli = Cli::parse_from([
         "id",
@@ -3032,4 +3066,163 @@ fn test_every_verb_is_documented_and_dispatchable() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+#[test]
+fn test_cli_parse_gallery_admin() {
+    use id_worlds::program_gallery_admission::{AdmissionPosture, ReasonClass};
+
+    let hash = "a".repeat(64);
+    match Cli::parse_from([
+        "id",
+        "gallery",
+        "--dir",
+        "/srv/gallery",
+        "remove",
+        &hash,
+        "--reason",
+        "malware",
+        "--note",
+        "reported",
+    ])
+    .command
+    {
+        Some(Command::Gallery(GalleryArgs {
+            dir,
+            command:
+                GalleryCommand::Remove {
+                    content_hash,
+                    reason,
+                    note,
+                },
+        })) => {
+            assert_eq!(dir, std::path::Path::new("/srv/gallery"));
+            assert_eq!(content_hash, hash);
+            assert_eq!(reason, ReasonClass::Malware);
+            assert_eq!(note.as_deref(), Some("reported"));
+        }
+        _ => panic!("Expected gallery remove"),
+    }
+    match Cli::parse_from(["id", "gallery", "--dir", "/g", "posture", "reviewed"]).command {
+        Some(Command::Gallery(GalleryArgs {
+            command: GalleryCommand::Posture { posture },
+            ..
+        })) => assert_eq!(posture, AdmissionPosture::Reviewed),
+        _ => panic!("Expected gallery posture"),
+    }
+    assert!(
+        Cli::try_parse_from([
+            "id", "gallery", "--dir", "/g", "remove", &hash, "--reason", "rude"
+        ])
+        .is_err()
+    );
+    assert!(Cli::try_parse_from(["id", "gallery", "--dir", "/g", "tag", "board"]).is_err());
+}
+
+#[test]
+fn test_cli_parse_keyset_commands() {
+    let show = Cli::parse_from(["id", "keyset", "show", "--client"]);
+    assert!(matches!(
+        show.command,
+        Some(Command::Keyset {
+            command: KeysetCommand::Show { client: true }
+        })
+    ));
+    let enrol = Cli::parse_from(["id", "keyset", "enrol", "laptop.key", "--label", "laptop"]);
+    assert!(matches!(
+        enrol.command,
+        Some(Command::Keyset {
+            command: KeysetCommand::Enrol { client: false, .. }
+        })
+    ));
+    let revoke = Cli::parse_from(["id", "keyset", "revoke", "ab12"]);
+    let Some(Command::Keyset {
+        command: KeysetCommand::Revoke { reason, .. },
+    }) = revoke.command
+    else {
+        panic!("expected keyset revoke");
+    };
+    assert_eq!(reason, "revoked");
+    let rotate = Cli::parse_from(["id", "keyset", "rotate", "new-admin.key"]);
+    assert!(matches!(
+        rotate.command,
+        Some(Command::Keyset {
+            command: KeysetCommand::Rotate { client: false, .. }
+        })
+    ));
+    let guardians = Cli::parse_from(["id", "keyset", "guardians", "aa", "bb", "--threshold", "2"]);
+    let Some(Command::Keyset {
+        command:
+            KeysetCommand::Guardians {
+                guardians,
+                threshold,
+                client: false,
+            },
+    }) = guardians.command
+    else {
+        panic!("expected keyset guardians");
+    };
+    assert_eq!((guardians.len(), threshold), (2, 2));
+    assert!(Cli::try_parse_from(["id", "keyset", "guardians", "--threshold", "1"]).is_err());
+    let checkpoint = Cli::parse_from(["id", "keyset", "checkpoint", "--client"]);
+    assert!(matches!(
+        checkpoint.command,
+        Some(Command::Keyset {
+            command: KeysetCommand::Checkpoint { client: true }
+        })
+    ));
+}
+
+#[test]
+fn test_cli_parse_keyset_recovery_commands() {
+    let request = Cli::parse_from([
+        "id",
+        "keyset",
+        "recovery",
+        "request",
+        "ab12",
+        "--relay",
+        "relay.jsonl",
+    ]);
+    let Some(Command::Keyset {
+        command:
+            KeysetCommand::Recovery {
+                command:
+                    RecoveryCommand::Request {
+                        identity,
+                        reason,
+                        client: false,
+                        ..
+                    },
+            },
+    }) = request.command
+    else {
+        panic!("expected keyset recovery request");
+    };
+    assert_eq!(
+        (identity.as_str(), reason.as_str()),
+        ("ab12", "lost every key")
+    );
+    for step in ["approve", "cancel", "complete", "status"] {
+        let parsed = Cli::parse_from(["id", "keyset", "recovery", step, "cd34", "--relay", "r"]);
+        assert!(matches!(
+            parsed.command,
+            Some(Command::Keyset {
+                command: KeysetCommand::Recovery { .. }
+            })
+        ));
+    }
+    // Every step needs the relay file.
+    assert!(Cli::try_parse_from(["id", "keyset", "recovery", "status", "cd34"]).is_err());
+    let publish = Cli::parse_from([
+        "id", "keyset", "recovery", "publish", "--relay", "r", "--client",
+    ]);
+    assert!(matches!(
+        publish.command,
+        Some(Command::Keyset {
+            command: KeysetCommand::Recovery {
+                command: RecoveryCommand::Publish { client: true, .. }
+            }
+        })
+    ));
 }

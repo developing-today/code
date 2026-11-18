@@ -57,6 +57,16 @@ make_fixture "$MUT"
 sed -i '/pkgs\/fleet\/\*\*/d' "$MUT/.github/workflows/fleet-smoke.yml"
 expect_fail "$MUT" "workflow without the pkgs/fleet path filter"
 
+MUT="$TMP/no-lock-guard"
+make_fixture "$MUT"
+sed -i '/bash .github\/scripts\/check-fleet-lock.sh/d' "$MUT/.github/workflows/fleet-smoke.yml"
+expect_fail "$MUT" "workflow without the fleet lock guard"
+
+MUT="$TMP/no-atlas-paths"
+make_fixture "$MUT"
+sed -i '/pkgs\/atlas-search\/crates/d' "$MUT/.github/workflows/fleet-smoke.yml"
+expect_fail "$MUT" "workflow without the atlas-search path filter"
+
 MUT="$TMP/pr-trigger"
 make_fixture "$MUT"
 sed -i 's/^  workflow_dispatch:/  pull_request:\n  workflow_dispatch:/' "$MUT/.github/workflows/fleet-smoke.yml"

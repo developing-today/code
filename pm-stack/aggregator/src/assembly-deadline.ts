@@ -1,3 +1,6 @@
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
 const ASSEMBLY_DEADLINE_MS = 10_000;
 // #5082 (2026-11-14): the last-good staleness cap was 5 minutes, but
 // the bounded routes' steadiest reader is an hourly watch — at that
@@ -9,6 +12,15 @@ const ASSEMBLY_DEADLINE_MS = 10_000;
 // JSON bodies), so a 30-minute cap stays honest while covering the
 // observed failure windows; anything older still 503s.
 const MAX_STALE_AGE_MS = 30 * 60_000;
+// #10383: a restart empties the in-memory last-good, so a cold first
+// request whose assembly outlived the deadline had nothing to serve and
+// 503'd or timed out (steward runs 387/393). Each last-good response is
+// now also written to disk, and a key with nothing in memory reads its
+// disk copy once. A copy that predates this process may be older than
+// the ordinary stale cap — the restart is usually a deploy after an
+// hourly watch — so it gets a longer cap of its own. It is marked stale
+// like any other fallback, with its age in the notice.
+const MAX_DISK_STALE_AGE_MS = 6 * 60 * 60_000;
 const MAX_CACHED_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_CACHE_ENTRIES = 128;
 
@@ -30,6 +42,17 @@ interface CachedResponse {
   headers: Headers;
   status: number;
   storedAt: number;
+  /** Read back from disk after a restart (#10383). */
+  fromDisk?: boolean;
+}
+
+/** The on-disk form of one last-good response (#10383). */
+interface PersistedResponse {
+  key: string;
+  status: number;
+  headers: [string, string][];
+  storedAt: number;
+  body: string;
 }
 
 interface DeadlineOptions {
@@ -38,6 +61,15 @@ interface DeadlineOptions {
   maxCachedResponseBytes?: number;
   maxCacheEntries?: number;
   now?: () => number;
+  /** #10383: keep each last-good response here too, for the first
+   *  request after a restart. Unset keeps the cache in memory only. */
+  persistDir?: string;
+  maxDiskStaleAgeMs?: number;
+}
+
+/** A filesystem-safe file name for one bounded key. */
+function persistName(key: string): string {
+  return `${encodeURIComponent(key).replace(/%/g, "_").slice(0, 200)}.json`;
 }
 
 /**
@@ -51,7 +83,43 @@ export function createDashboardResponseDeadline(options: DeadlineOptions = {}) {
   const maxCachedResponseBytes = options.maxCachedResponseBytes ?? MAX_CACHED_RESPONSE_BYTES;
   const maxCacheEntries = options.maxCacheEntries ?? MAX_CACHE_ENTRIES;
   const now = options.now ?? Date.now;
+  const persistDir = options.persistDir;
+  const maxDiskStaleAgeMs = options.maxDiskStaleAgeMs ?? MAX_DISK_STALE_AGE_MS;
   const lastGood = new Map<string, CachedResponse>();
+  // Keys whose disk copy was already looked for in this process: the
+  // disk is read at most once per key, on its first fallback.
+  const diskChecked = new Set<string>();
+  let writeSeq = 0;
+
+  async function persist(key: string, entry: CachedResponse): Promise<void> {
+    if (!persistDir) return;
+    const record: PersistedResponse = {
+      key,
+      status: entry.status,
+      headers: headerPairs(entry.headers),
+      storedAt: entry.storedAt,
+      body: Buffer.from(entry.body).toString("base64"),
+    };
+    await mkdir(persistDir, { recursive: true });
+    const file = join(persistDir, persistName(key));
+    const tmp = `${file}.tmp-${process.pid}-${++writeSeq}`;
+    await writeFile(tmp, JSON.stringify(record));
+    await rename(tmp, file);
+  }
+
+  async function fromDisk(key: string): Promise<CachedResponse | undefined> {
+    if (!persistDir || diskChecked.has(key)) return undefined;
+    diskChecked.add(key);
+    try {
+      const record = JSON.parse(await readFile(join(persistDir, persistName(key)), "utf8")) as PersistedResponse;
+      if (record.key !== key || typeof record.storedAt !== "number" || typeof record.body !== "string") return undefined;
+      const body = new Uint8Array(Buffer.from(record.body, "base64"));
+      if (body.byteLength === 0 || body.byteLength > maxCachedResponseBytes) return undefined;
+      return { body, headers: new Headers(record.headers), status: record.status, storedAt: record.storedAt, fromDisk: true };
+    } catch {
+      return undefined;
+    }
+  }
   // Single-flight (#7065): one in-flight assemble() run per bounded key,
   // shared by every overlapping waiter. The entry lives until the run
   // settles AND its last-good seeding has finished, so a request that
@@ -71,7 +139,11 @@ export function createDashboardResponseDeadline(options: DeadlineOptions = {}) {
     headers.delete("content-encoding");
     headers.delete("etag");
     lastGood.delete(key);
-    lastGood.set(key, { body, headers, status: response.status, storedAt: now() });
+    const entry: CachedResponse = { body, headers, status: response.status, storedAt: now() };
+    lastGood.set(key, entry);
+    diskChecked.add(key);
+    // Best-effort: a failed write leaves the in-memory cache as it is.
+    await persist(key, entry).catch(() => {});
     while (lastGood.size > maxCacheEntries) {
       const oldest = lastGood.keys().next().value;
       if (oldest === undefined) break;
@@ -133,9 +205,16 @@ export function createDashboardResponseDeadline(options: DeadlineOptions = {}) {
     // This waiter is out of time, but the shared run keeps going: it seeds
     // the last-good cache on settle (once, in the shared wrapper above),
     // improving the next request without delaying this bounded fallback.
-    const cached = lastGood.get(key);
-    if (cached && now() - cached.storedAt <= maxStaleAgeMs) {
-      return staleResponse(url.pathname, cached, timeoutMs);
+    let cached = lastGood.get(key);
+    if (!cached) {
+      cached = await fromDisk(key);
+      // A run that settled while the disk was read wins over the copy.
+      if (cached && !lastGood.has(key)) lastGood.set(key, cached);
+      cached = lastGood.get(key);
+    }
+    const cap = cached?.fromDisk ? maxDiskStaleAgeMs : maxStaleAgeMs;
+    if (cached && now() - cached.storedAt <= cap) {
+      return staleResponse(url.pathname, cached, timeoutMs, now());
     }
     if (cached) lastGood.delete(key);
     return timeoutResponse(url.pathname, timeoutMs);
@@ -167,12 +246,13 @@ function timeoutResponse(path: string, timeoutMs: number): Response {
   );
 }
 
-function staleResponse(path: string, cached: CachedResponse, timeoutMs: number): Response {
+function staleResponse(path: string, cached: CachedResponse, timeoutMs: number, at: number): Response {
   const headers = new Headers(cached.headers);
   headers.set("x-aggregator-stale", "true");
   headers.set("cache-control", "no-store");
   const text = new TextDecoder().decode(cached.body);
-  const notice = `Showing the last successful dashboard response; the latest assembly timed out after ${formatDuration(timeoutMs)}.`;
+  const age = cached.fromDisk ? ` It was saved before the dashboard restarted, ${formatAge(at - cached.storedAt)} ago.` : "";
+  const notice = `Showing the last successful dashboard response; the latest assembly timed out after ${formatDuration(timeoutMs)}.${age}`;
 
   if ((headers.get("content-type") ?? "").includes("application/json")) {
     let body: unknown;
@@ -202,6 +282,19 @@ function staleResponse(path: string, cached: CachedResponse, timeoutMs: number):
   return new Response(marked, { status: cached.status, headers });
 }
 
+function formatAge(ms: number): string {
+  const minutes = Math.max(0, Math.round(ms / 60_000));
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours} h ${minutes % 60} min`;
+}
+
 function formatDuration(timeoutMs: number): string {
   return timeoutMs % 1000 === 0 ? `${timeoutMs / 1000} seconds` : `${timeoutMs} ms`;
+}
+
+function headerPairs(headers: Headers): [string, string][] {
+  const pairs: [string, string][] = [];
+  headers.forEach((value, name) => pairs.push([name, value]));
+  return pairs;
 }

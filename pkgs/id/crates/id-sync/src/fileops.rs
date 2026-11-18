@@ -18,6 +18,25 @@
 //!   and the `name`/`file` identity tags are refreshed to the new name.
 //! - [`FileOps::delete`] is a *hard* delete: the name, its metadata and its
 //!   archive tags are removed. The blob bytes stay until garbage collected.
+//!
+//! # Name and archive contract
+//!
+//! - **One canonical name.** Every entry point resolves names through
+//!   [`FileOps::validate_name`] / [`FileOps::validate_target`]. A stored name
+//!   is never padded: leading or trailing whitespace is refused with
+//!   [`FileOpError::InvalidName`], never trimmed at the store. Surfaces that
+//!   want to be forgiving trim before calling in.
+//! - **The archive namespace is reserved at the writer.** A name for which
+//!   `is_archive_tag_name` holds (`{stem}.archive.{digits}`, unsigned ASCII
+//!   digits) is refused with [`FileOpError::ReservedArchiveName`]. Non-numeric
+//!   lookalikes such as `a.archive.notes` remain valid user files.
+//! - **Archive references are ownership.** `archive.rename` and
+//!   `archive.replace` on a live file name the archives it owns; `archive.owner`
+//!   on an archive names the file it belongs to. These stay on the live name
+//!   when its metadata moves onto an archive, move with the name on
+//!   [`FileOps::rename`] (the source name ceases to exist), and are never copied
+//!   by [`FileOps::copy`], which sets only the `archive.replace` it creates
+//!   itself for a file it replaces.
 
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
@@ -161,12 +180,21 @@ async fn free_archive_name(store: &Store, name: &str, ts: u64) -> Result<String>
     }
 }
 
+/// The archive timestamp of `name` when it has the archive tag shape used by
+/// FileOps: `{stem}.archive.{ts}` with a non-empty stem and an unsigned
+/// decimal `ts` that fits in u64. Readers that classify archives must use this
+/// same rule so writer and reader never disagree on a name.
+pub fn archive_tag_timestamp(name: &str) -> Option<u64> {
+    let (file_name, suffix) = name.rsplit_once(".archive.")?;
+    if file_name.is_empty() || suffix.is_empty() || !suffix.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    suffix.parse::<u64>().ok()
+}
+
 /// Whether `name` has the archive tag shape used by FileOps.
 fn is_archive_tag_name(name: &str) -> bool {
-    let Some((file_name, suffix)) = name.rsplit_once(".archive.") else {
-        return false;
-    };
-    !file_name.is_empty() && !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())
+    archive_tag_timestamp(name).is_some()
 }
 
 /// Resolve a free archive name for `name` at `ts` and claim it for
@@ -603,7 +631,7 @@ impl<'a> FileOps<'a> {
                 ns,
                 from.as_bytes(),
                 to.as_bytes(),
-                &[b"archive.rename", b"archive.replace"],
+                &[b"archive.rename", b"archive.replace", b"archive.owner"],
             )
             .await
         {
@@ -776,6 +804,27 @@ fn is_owned_archive_tag_name(name: &str, archive_name: &str) -> bool {
     archive_name
         .strip_prefix(&format!("{name}.archive."))
         .is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()))
+}
+
+#[cfg(test)]
+mod archive_tag_shape_tests {
+    use super::archive_tag_timestamp;
+
+    #[test]
+    fn archive_tag_timestamp_matches_writer_and_reader_rule() {
+        assert_eq!(archive_tag_timestamp("x.archive.5"), Some(5));
+        assert_eq!(
+            archive_tag_timestamp("x.archive.18446744073709551615"),
+            Some(u64::MAX)
+        );
+        assert_eq!(archive_tag_timestamp(".archive.5"), None);
+        assert_eq!(
+            archive_tag_timestamp("x.archive.18446744073709551616"),
+            None
+        );
+        assert_eq!(archive_tag_timestamp("x.archive.+5"), None);
+        assert_eq!(archive_tag_timestamp("x.archive.notes"), None);
+    }
 }
 
 #[cfg(test)]

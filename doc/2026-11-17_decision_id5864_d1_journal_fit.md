@@ -87,10 +87,10 @@ any specific shard (#5867, consuming the flags §5 declares).
    observed ordinals 1, 2, 3 in append order **[spike]**.
 3. **Fork refusal is a uniqueness fact plus a typed refusal.**
    The journal table's primary key is `(journal, seq)`. An
-   append whose `seq` is already occupied by a *different*
+   append whose `seq` is already occupied by a _different_
    signed entry fails the insert; the adapter surfaces contract
    §2.1's typed `fork` refusal carrying both entries — it never
-   overwrites, and it never treats a same-`seq` *identical*
+   overwrites, and it never treats a same-`seq` _identical_
    entry (a retried append of the writer's own entry) as a
    fork: that is an idempotent no-op returning the existing
    sequence. Exercising the fork path against a real adapter is
@@ -111,8 +111,8 @@ any specific shard (#5867, consuming the flags §5 declares).
    bookmark is an opaque platform token asserting "reads in
    this session see at least the state I was taken at". The two
    must never be conflated (the spike's own caveat, now a rule):
-   the bookmark proves *freshness against D1's own replication*;
-   the stream cursor proves *position in the signed journal*.
+   the bookmark proves _freshness against D1's own replication_;
+   the stream cursor proves _position in the signed journal_.
    A reader's position is always named by the stream cursor /
    contract watermark; the bookmark is only the mechanism that
    makes D1 honour it.
@@ -126,9 +126,9 @@ any specific shard (#5867, consuming the flags §5 declares).
    writer must not read its own appends from a possibly-lagging
    replica and call the result current.
 3. **Read-at-watermark (contract §2.3) maps onto sessions.**
-   A read at watermark *N* is served by a session whose
-   bookmark is at-or-past the append that assigned *N*; if the
-   session cannot reach *N*, the adapter returns the contract's
+   A read at watermark _N_ is served by a session whose
+   bookmark is at-or-past the append that assigned _N_; if the
+   session cannot reach _N_, the adapter returns the contract's
    typed `unavailable` refusal carrying the store's current
    watermark — never silently stale data (§2.3: "replica lag is
    expressed only as a lower watermark"). Snapshot reads are
@@ -137,7 +137,7 @@ any specific shard (#5867, consuming the flags §5 declares).
    **[spike]**, which is contract §3.2's snapshot + delta pair
    in D1 dress. Measuring watermark behaviour under real
    production-D1 replica lag (the spike ran on the local
-   runtime) is **[spike-owed]** (§7); the *semantics* are
+   runtime) is **[spike-owed]** (§7); the _semantics_ are
    decided here regardless of the numbers.
 4. **Followers read with watermarks, never with trust.** D1
    replicas are eventually consistent **[documented]**; the
@@ -155,8 +155,8 @@ any specific shard (#5867, consuming the flags §5 declares).
    the synthesis/#5865 rule, applied to D1 unchanged. Every
    movement of journal data across a trust boundary is #806
    replication of exact signed bytes. D1's platform
-   replication moves *rows inside one deployment's trust
-   domain* to make reads available and geographically close;
+   replication moves _rows inside one deployment's trust
+   domain_ to make reads available and geographically close;
    it confers no journal authority, carries no signatures, and
    cannot detect a fork (§2.3's fork is detectable from the
    stream alone, on either store).
@@ -165,10 +165,10 @@ any specific shard (#5867, consuming the flags §5 declares).
    replicated over the signed stream, platform replication is
    its only durability; #5869's export cadence bounds the loss
    window identically on both backends (synthesis §6.1). D1
-   Time Travel / point-in-time restore is a *platform* backup
+   Time Travel / point-in-time restore is a _platform_ backup
    of a materialisation: it is never a journal recovery path —
    recovery is snapshot + delta replay-in (contract §3.2–§3.3),
-   because a platform restore can move a store *backwards*,
+   because a platform restore can move a store _backwards_,
    and backwards convergence is precisely the fork shape the
    journal layer exists to detect (§2.3, #5865 §3).
 3. **No embedded replica, and that is declared, not
@@ -200,7 +200,7 @@ any specific shard (#5867, consuming the flags §5 declares).
   **[documented]**; #5868's row-scan discipline is what keeps
   the meter honest on this backend.
 - Exceeding a declared limit is the typed `limit` refusal
-  (contract §5.1). Behaviour *at* the ceiling in a real
+  (contract §5.1). Behaviour _at_ the ceiling in a real
   deployment is **[spike-owed]** (§7) — declared here so the
   refusal, not a silent truncation, is the specified outcome.
 
@@ -222,7 +222,7 @@ Wrangler/Miniflare D1, Node 24.21.0 / Wrangler 4.147.0):
 
 Scope honesty: the spike is a local-runtime probe, not a
 production-D1 measurement and not a D1 adapter. It proves the
-*shape* (§2–§3 mechanisms compose as specified); production
+_shape_ (§2–§3 mechanisms compose as specified); production
 replica-lag numbers and adapter-level refusal behaviour remain
 owed (§7). The spike was Drew-owned and is consumed here as
 evidence, untouched.

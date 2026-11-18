@@ -1058,7 +1058,7 @@ func (s *Server) handleCallPath(w http.ResponseWriter, r *http.Request) {
 	} else {
 		res, err = s.reg.Call(callCtx, r.PathValue("server"), r.PathValue("tool"), cc, args)
 	}
-	s.reportCallFrame(callCtx, r.PathValue("server"), r.PathValue("tool"), args, start, res, err)
+	s.reportCallFrame(callCtx, r.PathValue("server"), r.PathValue("tool"), cc.SessionID, args, start, res, err)
 	if err != nil {
 		writeJSON(w, failureStatus(err), map[string]any{"ok": false, "error": err.Error()})
 		return

@@ -3369,6 +3369,89 @@ mod tests {
     /// #8280 slice 2: a bundle exported and forked offline sideloads into a
     /// fresh trust-listed world, runs, and the install record matches the
     /// bundle; tampered and untrusted bundles install nothing.
+    /// #8281 acceptance: a bundle published to a self-hosted registry is
+    /// listed and fetched by a second host over iroh and installs through
+    /// the same verification path as a sideloaded file.
+    #[cfg(feature = "sandbox")]
+    #[tokio::test]
+    async fn a_bundle_fetched_from_a_registry_over_iroh_installs_like_a_sideload() {
+        use crate::program_bundle::{ProgramSpec, export};
+        use crate::program_gallery::Gallery;
+        use crate::program_registry::{AdmitAll, ListQuery, Registry};
+        use crate::program_registry_net::{REGISTRY_ALPN, RegistryProtocol, fetch, list, publish};
+        use iroh::{Endpoint, EndpointAddr, RelayMode, TransportAddr, endpoint::presets};
+        use iroh_blobs::store::mem::MemStore;
+
+        async fn endpoint() -> Endpoint {
+            Endpoint::builder(presets::Minimal)
+                .relay_mode(RelayMode::Disabled)
+                .bind()
+                .await
+                .unwrap()
+        }
+        let wasm = include_bytes!("../../../../examples/roc-counter/counter.wasm").to_vec();
+        let author = SigningKey::from_bytes(&[43; 32]);
+        let bundle = export(
+            wasm,
+            ProgramSpec {
+                name: "counter",
+                version: 1,
+                licence: Some("MIT"),
+                description: None,
+                categories: &[],
+            },
+            &author,
+        )
+        .unwrap();
+
+        let gallery = Arc::new(std::sync::RwLock::new(Gallery::new(Registry::in_memory(
+            AdmitAll,
+        ))));
+        let registry_host = endpoint().await;
+        let addr = EndpointAddr::from_parts(
+            registry_host.id(),
+            registry_host.bound_sockets().iter().map(|addr| {
+                TransportAddr::Ip(std::net::SocketAddr::new(
+                    std::net::Ipv4Addr::LOCALHOST.into(),
+                    addr.port(),
+                ))
+            }),
+        );
+        let _router = iroh::protocol::Router::builder(registry_host)
+            .accept(
+                REGISTRY_ALPN,
+                RegistryProtocol::new(gallery).accepting_publish(),
+            )
+            .spawn();
+        let publisher = endpoint().await;
+        publish(&publisher, addr.clone(), &bundle.to_bytes())
+            .await
+            .unwrap();
+
+        let second_host = endpoint().await;
+        let records = list(&second_host, addr.clone(), &ListQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(records, vec![bundle.record()]);
+        let fetched = fetch(&second_host, addr, &bundle.identity().content_hash)
+            .await
+            .unwrap();
+
+        let world = WorldHandle::spawn_durable(
+            WorldCore::new("from-registry", WorldLimits::default()).unwrap(),
+            Box::new(NoProgram),
+            None,
+        );
+        let service = WorldService::new(world, Some("admin".to_owned()))
+            .with_blob_store(MemStore::new().into())
+            .with_module_trust_keys(vec![author.verifying_key().to_bytes()]);
+        let (hash, _) = service
+            .install_bundle(Some("admin"), &fetched.to_bytes(), 5)
+            .await
+            .expect("a bundle fetched over iroh installs like a sideloaded file");
+        assert_eq!(hash, bundle.identity().content_hash);
+    }
+
     #[cfg(feature = "sandbox")]
     #[tokio::test]
     async fn sideloaded_bundle_installs_with_its_identity_lineage_and_signature() {
@@ -3382,6 +3465,8 @@ mod tests {
             name,
             version: 1,
             licence: Some("MIT"),
+            description: None,
+            categories: &[],
         };
         let parent = export(wasm.clone(), spec("counter"), &original_author).unwrap();
         let bundle = fork(&parent, wasm.clone(), spec("counter-plus"), &forker).unwrap();

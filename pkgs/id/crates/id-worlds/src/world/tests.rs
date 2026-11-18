@@ -2715,6 +2715,8 @@ mod tests {
                 name: "chess",
                 version: 1,
                 licence: None,
+                description: None,
+                categories: &[],
             },
             &author,
         )
@@ -9842,6 +9844,107 @@ mod schedule_tests {
         );
     }
 
+    /// The ids of the journal's `ScheduleFired` entries, in journal order:
+    /// the fire history an operator reads from the world's journal.
+    fn journaled_fires(journal: &Recorded) -> Vec<String> {
+        journal
+            .entries()
+            .into_iter()
+            .filter_map(|entry| match entry {
+                JournalEntry::ScheduleFired { id } => Some(id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// #8342 (#796 item 10-2, the firing ceiling): a firing storm cannot
+    /// exceed [`crate::world_caps::MAX_SCHEDULE_FIRES_PER_WAKEUP`] fires in
+    /// one wakeup.
+    ///
+    /// Oracle: that declared constant, checked against the journal's
+    /// `ScheduleFired` entries (the visible fire history). No live path can
+    /// pend more schedules than the bound, because
+    /// [`crate::world_caps::MAX_PENDING_SCHEDULES`] is no larger, so the
+    /// storm is planted directly to exercise the truncation itself: the
+    /// earliest due fire first, and the rest fire on the next wakeup with
+    /// none lost.
+    #[tokio::test]
+    async fn a_firing_storm_is_bounded_per_wakeup_and_the_rest_fire_next() {
+        let bound = crate::world_caps::MAX_SCHEDULE_FIRES_PER_WAKEUP;
+        assert!(
+            crate::world_caps::MAX_PENDING_SCHEDULES <= bound,
+            "a world's pending cap fits in one wakeup"
+        );
+        let extra = 8;
+        let (mut actor, clock, _token, journal) =
+            scheduling_actor("sched-storm", &["schedule.at"], false);
+        for index in 0..bound + extra {
+            let at = EPOCH_MS + u64::try_from(index).unwrap();
+            actor
+                .core
+                .schedules
+                .insert(format!("s{index:03}"), PendingSchedule::one_shot(at));
+        }
+        clock.advance(u64::try_from(bound + extra).unwrap());
+
+        actor.fire_schedules().await;
+        let first = journaled_fires(&journal);
+        assert_eq!(first.len(), bound, "one wakeup fires at most the bound");
+        let earliest: Vec<String> = (0..bound).map(|index| format!("s{index:03}")).collect();
+        assert_eq!(first, earliest, "the earliest due schedules fire first");
+        assert_eq!(
+            schedule_fires(&actor).len(),
+            bound,
+            "the program received exactly the journaled fires"
+        );
+        assert_eq!(actor.core.schedules.len(), extra, "the rest stay pending");
+
+        actor.fire_schedules().await;
+        assert_eq!(journaled_fires(&journal).len(), bound + extra);
+        assert!(actor.core.schedules.is_empty(), "no fire was lost");
+        actor.fire_schedules().await;
+        assert_eq!(
+            journaled_fires(&journal).len(),
+            bound + extra,
+            "nothing fires twice"
+        );
+    }
+
+    /// #8342: a recurring schedule that fell many intervals behind (a host
+    /// asleep, say) fires once per wakeup, never a catch-up burst, and its
+    /// series still ends at its count. Oracle: one journaled `ScheduleFired`
+    /// per wakeup and the schedule's `remaining` count.
+    #[tokio::test]
+    async fn a_recurring_schedule_far_behind_fires_once_per_wakeup() {
+        let (mut actor, clock, _token, journal) =
+            scheduling_actor("sched-behind", &["schedule.at"], false);
+        let remaining = 3;
+        actor.core.schedules.insert(
+            "r".to_owned(),
+            PendingSchedule {
+                at_ms: EPOCH_MS + 10,
+                interval_ms: Some(10),
+                remaining,
+                target: None,
+            },
+        );
+        clock.advance(10_000);
+        for wakeup in 1..=remaining {
+            actor.fire_schedules().await;
+            assert_eq!(
+                journaled_fires(&journal).len(),
+                usize::try_from(wakeup).unwrap(),
+                "wakeup {wakeup} fires the overdue series once"
+            );
+        }
+        assert!(actor.core.schedules.is_empty(), "the series ended");
+        actor.fire_schedules().await;
+        assert_eq!(
+            journaled_fires(&journal),
+            vec!["r".to_owned(); usize::try_from(remaining).unwrap()]
+        );
+    }
+
     /// Item 10-2 (#796/#5239): a schedule fire never reaches joiners.
     /// The fire is a host `System` event delivered to the program; a
     /// joiner's catch-up page (`events_after`) must not carry it, while a
@@ -12177,4 +12280,13 @@ mod projection_guard_tests {
             other => panic!("unexpected kind: {other:?}"),
         }
     }
+}
+
+#[test]
+fn presence_change_refuses_a_duplicated_key() {
+    let text = presence_event(7, "ann", true);
+    assert_eq!(presence_change(&text), Some((7, true)));
+    // A lenient parse keeps the last "event" and reads a join (#8794).
+    let duplicated = text.replacen('{', r#"{"event":"left","#, 1);
+    assert_eq!(presence_change(&duplicated), None);
 }

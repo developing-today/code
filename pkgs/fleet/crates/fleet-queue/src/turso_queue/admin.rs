@@ -12,7 +12,7 @@ pub(crate) fn verb_block(t: &TursoBackend, req: &Value) -> Value {
     let worker = req_str(req, "worker").unwrap_or("").to_string();
     let reason_class = req_str(req, "reason_class").unwrap_or("").to_string();
     let blocker = req_str(req, "blocker").unwrap_or("").to_string();
-    let row = match claimed_by(t, task_id, &worker, "block_task") {
+    let row = match claimed_by(t, task_id, &worker, "block_task", req) {
         Ok(r) => r,
         Err(v) => return v,
     };
@@ -775,7 +775,7 @@ pub(crate) fn verb_fail(t: &TursoBackend, req: &Value) -> Value {
     let reason_class = req_str(req, "reason_class")
         .unwrap_or("transient")
         .to_string();
-    let row = match claimed_by(t, task_id, &worker, "fail_repo_task") {
+    let row = match claimed_by(t, task_id, &worker, "fail_repo_task", req) {
         Ok(r) => r,
         Err(v) => return v,
     };
@@ -918,12 +918,43 @@ pub(crate) enum TriageOutcome {
     ExitAlreadySolved,
 }
 
+/// What the completion gate knows about the row being completed.
+pub(crate) struct GateContext<'a> {
+    /// The completing task's id.
+    pub(crate) task_id: i64,
+    /// The issue the packet is for, when it names one (#10611).
+    pub(crate) expected_issue: Option<i64>,
+    /// Whether a triage follow-on has a fix-family key to land on,
+    /// so the broker itself guarantees a live successor.
+    pub(crate) fix_follow_on: bool,
+    /// Looks up a follow-up task id in the queue.
+    pub(crate) lookup:
+        &'a mut dyn FnMut(i64) -> Result<Option<crate::disposition::SuccessorTask>, String>,
+}
+
 /// The broker-side completion gate. Err = the completion is
 /// rejected and the task stays claimed.
+///
+/// #10611: a terminal exit that claims the issue is finished must
+/// carry the verified disposition readback (`result.disposition`),
+/// so a shape-only evidence string can no longer end an item while
+/// the issue is open and a linked draft still carries work. A
+/// recorded follow-up task is checked against the queue: it must
+/// exist, be live and be for the same issue.
 pub(crate) fn gate_completion(
     class: &CompletionClass,
+    ctx: &mut GateContext<'_>,
     result: &Value,
 ) -> Result<Option<TriageOutcome>, String> {
+    let verified = |result: &Value, ctx: &mut GateContext<'_>| {
+        crate::disposition::require_verified(
+            result,
+            ctx.expected_issue,
+            now_unix(),
+            ctx.task_id,
+            ctx.lookup,
+        )
+    };
     match class {
         CompletionClass::Ungated => Ok(None),
         CompletionClass::Fix => {
@@ -933,6 +964,7 @@ pub(crate) fn gate_completion(
                      verified-closure note); the task remains claimed"
                     .to_string());
             }
+            verified(result, ctx)?;
             Ok(None)
         }
         CompletionClass::Triage => {
@@ -941,7 +973,34 @@ pub(crate) fn gate_completion(
                 .and_then(|v| v.as_str())
                 .unwrap_or("follow_on");
             match outcome {
-                "follow_on" => Ok(Some(TriageOutcome::FollowOn)),
+                // A follow-on whose key has a fix counterpart lands
+                // on a live fix task the broker finds or creates.
+                // One without (the 15345 shape: `done` with outcome
+                // `triaged`, no fix follow-on enqueued) would end an
+                // issue's queue item with no live successor, so it
+                // must record a verified handoff instead.
+                "follow_on" if ctx.fix_follow_on || ctx.expected_issue.is_none() => {
+                    Ok(Some(TriageOutcome::FollowOn))
+                }
+                "follow_on" => {
+                    let record = verified(result, ctx).map_err(|e| {
+                        format!(
+                            "{e} (this triage key has no fix follow-on, so the \
+                             handoff must be on the record)"
+                        )
+                    })?;
+                    if record.issue_state == "open" && record.follow_up.is_none() {
+                        return Err(format!(
+                            "complete_task: triage of open issue #{} enqueues no fix \
+                             follow-on for its key and records no follow_up; name the \
+                             live task or open issue that owns the work (`repo-queue \
+                             verify-disposition --follow-up-task|--follow-up-issue`); \
+                             the task remains claimed",
+                            record.issue_number
+                        ));
+                    }
+                    Ok(Some(TriageOutcome::FollowOn))
+                }
                 "invalid" => {
                     // The validation note is the evidence for this
                     // exit; a bare verdict is not enough.
@@ -966,6 +1025,7 @@ pub(crate) fn gate_completion(
                              remains claimed"
                             .to_string());
                     }
+                    verified(result, ctx)?;
                     Ok(Some(TriageOutcome::ExitAlreadySolved))
                 }
                 other => Err(format!(
@@ -975,6 +1035,19 @@ pub(crate) fn gate_completion(
             }
         }
     }
+}
+
+/// The issue a task is for: its packet's `issue.number`, else the
+/// issue its repo-health dedupe key names under the packet's repo.
+pub(crate) fn task_issue(payload: &Value, dedupe_key: &str) -> Option<i64> {
+    payload
+        .get("issue")
+        .and_then(|i| i.get("number"))
+        .and_then(|n| n.as_i64())
+        .or_else(|| {
+            let repo = payload.get("repo").and_then(|r| r.as_str())?;
+            issue_number_for_repo(dedupe_key, repo)
+        })
 }
 
 /// The follow-on fix key for a triage key: same family shape with
@@ -991,7 +1064,7 @@ pub(crate) fn follow_on_key(triage_key: &str) -> Option<String> {
 pub(crate) fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
     let task_id = req_i64(req, "task_id").unwrap_or(0);
     let worker = req_str(req, "worker").unwrap_or("").to_string();
-    let row = match claimed_by(t, task_id, &worker, "complete_task") {
+    let row = match claimed_by(t, task_id, &worker, "complete_task", req) {
         Ok(r) => r,
         Err(v) => return v,
     };
@@ -1000,7 +1073,40 @@ pub(crate) fn verb_complete(t: &TursoBackend, req: &Value) -> Value {
     let payload = row.get("payload").cloned().unwrap_or(json!({}));
     let class = completion_class(&payload);
     let gate_result = req.get("result").cloned().unwrap_or(json!({}));
-    let triage_outcome = match gate_completion(&class, &gate_result) {
+    let dedupe_key = row
+        .get("dedupe_key")
+        .and_then(|k| k.as_str())
+        .unwrap_or("")
+        .to_string();
+    // The issue a completion must match: the packet's own `issue`
+    // object, else the repo-health dedupe key the broker already
+    // trusts for coverage (#10611).
+    let expected_issue = task_issue(&payload, &dedupe_key);
+    let mut lookup = |id: i64| -> Result<Option<crate::disposition::SuccessorTask>, String> {
+        let found = get_task(t, id).map_err(|e| format!("{e:?}"))?;
+        Ok(found.map(|r| {
+            let status = r
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let key = r.get("dedupe_key").and_then(|k| k.as_str()).unwrap_or("");
+            let p = r.get("payload").cloned().unwrap_or(json!({}));
+            crate::disposition::SuccessorTask {
+                id,
+                live: LIVE_STATUSES.contains(&status.as_str()),
+                status,
+                issue: task_issue(&p, key),
+            }
+        }))
+    };
+    let mut ctx = GateContext {
+        task_id,
+        expected_issue,
+        fix_follow_on: follow_on_key(&dedupe_key).is_some(),
+        lookup: &mut lookup,
+    };
+    let triage_outcome = match gate_completion(&class, &mut ctx, &gate_result) {
         Ok(o) => o,
         Err(e) => return fail(2, e),
     };

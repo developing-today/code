@@ -167,7 +167,8 @@ if all of the following hold, evaluated from the fold at that head
 and the annex:
 
 1. The request exists, is unconsumed, and its `successor_*` fields
-   equal the rotation's.
+   equal the rotation's; the successor admin key has never appeared
+   in the pinned fold's admin-key map (including revoked keys).
 2. `approval_hashes` resolve to approvals for this `request_id`
    from at least `threshold` **distinct** guardian identities in
    the guardian set folded at that head, each signed by an Active
@@ -393,3 +394,40 @@ When (1)–(3) land, #2382's remaining acceptance item (delay +
 cancel + notify implemented with tests, including the eviction
 case) is discharged by tests 7–10 above; this record discharges
 the specification items.
+
+**Implementation status (2026-11-18).** Records and Rule R:
+`pkgs/id/crates/id-directory/src/recovery.rs` (`check_rotation`,
+`apply_rotation`, `notify_targets`). Item 2: `RecoveryEvidence` is a
+`keyset::RecoveryRule`, and `keyset::fold_with_recovery` folds a
+rotation that passes Rule R into the chain. At a fork it never
+displaces a checkpoint-final head, and it takes no revocation
+priority: an ordinary continuation of the pinned head wins, which is
+Decision 3's "request is moot" case. A checkpoint taken after the
+rotation (`checkpoint_final_heads_with_recovery`) makes it final, so a
+late surviving-key sibling cannot undo it. Decision 6: a
+`GuardianSetUpdated` that removes a guardian or lowers the threshold
+is held as `KeysetState::pending_guardian_set` and replaces the set
+only once the next record (or the recovery request) is first seen at
+least `RECOVERY_DELAY_SECONDS` after the change was. Widening changes
+apply at once, and a later update replaces or cancels the pending one.
+The plain `fold` has no timestamps, so there a removal stays pending
+and the old set keeps counting; `RecoveryEvidence::keyset_first_seen`
+supplies the times. Relay: `recovery_relay::RecoveryRelay` stores
+annex and keyset records and attests each one's first-seen time once,
+in an append-only JSONL file. It refuses any record that does not
+verify, never moves a time it attested, and never attests a request
+before its `created_at`, so it can only lengthen a delay. Its `annex`
+and `keyset_first_seen` feed `RecoveryEvidence` directly. Client
+flow: `recovery_flow` builds the request, approval, cancellation and
+rotation records, and `recovery_flow::progress` says whether a request
+is waiting (approvals so far, threshold, earliest rotation time),
+cancelled, or ready, with the approval hashes the rotation should
+name. `id keyset guardians` names the guardians. `recovery_view::RelayView` folds one identity
+from a relay (anchored at the genesis its own key signed, with every
+other relayed identity folded as a possible guardian) and says whether
+a request is open, moot because the keyset moved on, or complete.
+`id keyset recovery publish|request|approve|cancel|status|complete`
+runs the flow through a shared relay file and prints who must be told
+of a request. Still open: serving the relay over the directory's
+network API, and delivering the notifications rather than printing
+their targets.

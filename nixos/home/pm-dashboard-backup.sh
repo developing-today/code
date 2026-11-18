@@ -361,6 +361,15 @@ required file aggregator/coverage-snapshot.json
 required file aggregator/aa-last-good.json
 optional file aggregator/views.json
 optional tree aggregator/charge-inputs
+required file aggregator/decisions.json
+required file aggregator/decision-events.jsonl
+optional file aggregator/decision-events-outbox.jsonl.sync-state.json
+optional file aggregator/decision-events-outbox.jsonl
+optional file aggregator/needs-drew.json
+optional file aggregator/notifications.jsonl
+optional file aggregator/issue_pr_links.json
+optional file aggregator/prefix-program.json
+optional tree aggregator/digests
 optional file meta-quota-export/latest.json
 optional file meta-quota-export/history.jsonl
 conditional file supabase/agg_actions.json
@@ -373,6 +382,15 @@ conditional file projector/pmp_links.sql
 optional tree aggregator/snapshots
 optional file journals/pm-aggregator.log
 optional file journals/quota-gatherer.log"
+
+# Derived state (#10293): files in the aggregator state directory that
+# are rebuilt from canonical sources on the next refresh, so they are
+# deliberately NOT archived. Named here so the drift check in the
+# manifest step can tell them from a state file nobody classified.
+#   board.json, attention-last-good.json — rendered board/attention caches
+#   stack-health.json, host-health.json  — re-observed health readings
+#   last-good-pages/                     — dashboard fallback copies (#10383)
+AGG_DERIVED="board.json attention-last-good.json stack-health.json host-health.json last-good-pages"
 
 # --- data set (explicit list only; the aggregator .env is deliberately NOT
 # --- included — no config/secret files belong in this archive) ---
@@ -409,6 +427,27 @@ for f in actions.json comments.json fleet-feed.json quota-current.json \
       fail "dataset copy failed: $AGG/$f"
   else echo "pm-dashboard-backup: WARN missing $AGG/$f" >&2; fi
 done
+# Decisions ledger (#10293): decisions.json is the ledger state and
+# decision-events.jsonl its event journal; both are canonical and
+# REQUIRED (a missing one fails the run at verify). The outbox's sync
+# cursor is copied BEFORE the outbox, so a restored cursor can lag the
+# restored outbox (records re-sent, which the sync dedupes by event id)
+# but never run ahead of it (records skipped). needs-drew.json holds
+# Drew's answers, notifications.jsonl the notification history (its
+# dedupe memory), issue_pr_links.json and prefix-program.json hand-kept
+# state, digests/ the daily digest archive: none can be rebuilt from
+# GitHub or the projector, so all ride the archive. They are optional:
+# each appears only once its feature has written to it.
+for f in decisions.json decision-events.jsonl \
+  decision-events-outbox.jsonl.sync-state.json decision-events-outbox.jsonl \
+  needs-drew.json notifications.jsonl issue_pr_links.json prefix-program.json; do
+  if [ -f "$AGG/$f" ]; then
+    cp -a "$AGG/$f" "$STAGE/aggregator/$f" ||
+      fail "dataset copy failed: $AGG/$f"
+  else echo "pm-dashboard-backup: WARN missing $AGG/$f" >&2; fi
+done
+if [ -d "$AGG/digests" ]; then cp -a "$AGG/digests" "$STAGE/aggregator/digests" ||
+  fail "dataset copy failed: $AGG/digests"; fi
 if [ -d "$AGG/snapshots" ]; then cp -a "$AGG/snapshots" "$STAGE/aggregator/snapshots" ||
   fail "dataset copy failed: $AGG/snapshots"; fi
 if [ -d "$AGG/charge-inputs" ]; then cp -a "$AGG/charge-inputs" "$STAGE/aggregator/charge-inputs" ||
@@ -646,6 +685,7 @@ for svc in pm-aggregator quota-gatherer; do
 done
 
 # --- manifest (files as staged + the expected set's per-member status) ---
+AGG_DIR="$AGG" AGG_DERIVED="$AGG_DERIVED" \
 EXPECTED_SET="$EXPECTED_SET" DUMP_RAN="$DUMP_RAN" PMP_RAN="$PMP_RAN" \
   SUPA_RAN="$SUPA_RAN" \
   python3 - "$STAGE" "$DATE" "$CREATED_AT" <<'PYEOF'
@@ -697,10 +737,33 @@ for line in os.environ.get("EXPECTED_SET", "").splitlines():
     else:
         member["status"] = "missing"
     expected.append(member)
+# Drift (#10293): every top-level entry of the live aggregator state
+# directory must be either an expected member or named derived in
+# AGG_DERIVED. Anything else is a state file no backup class covers,
+# the way decisions.json went unbacked for weeks: it is named in the
+# log and recorded in the manifest's "unclassified" list. Write temps
+# (.tmp-), quarantined originals (.corrupt-) and dotfiles are skipped.
+agg = os.environ.get("AGG_DIR", "")
+classified = {m["path"].split("/", 1)[1] for m in expected
+              if m["path"].startswith("aggregator/")}
+derived = set(os.environ.get("AGG_DERIVED", "").split())
+unclassified = []
+if agg and os.path.isdir(agg):
+    for name in sorted(os.listdir(agg)):
+        if name in classified or name in derived or name.startswith("."):
+            continue
+        if ".tmp-" in name or ".corrupt-" in name:
+            continue
+        unclassified.append(name)
+for name in unclassified:
+    print(f"pm-dashboard-backup: WARN unclassified state file {agg}/{name}: "
+          "in no backup class; add it to EXPECTED_SET or AGG_DERIVED (#10293)",
+          file=sys.stderr)
 with open(os.path.join(stage, "manifest.json"), "w") as fh:
     json.dump({"archive": f"dashboard-{date}", "created_at": created,
                "host": os.uname().nodename, "scope": "laptop",
-               "files": files, "expected": expected}, fh, indent=2)
+               "files": files, "expected": expected,
+               "unclassified": unclassified}, fh, indent=2)
 missing_req = [m["path"] for m in expected
                if m["status"] == "missing" and m["class"] == "required"]
 print(f"pm-dashboard-backup: manifest covers {len(files)} files, "

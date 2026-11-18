@@ -634,6 +634,22 @@
       "reason": "Active Python workflow tests do not include worker/."
     },
     {
+      "id": "decision-events-worker",
+      "paths": [
+        "pm-stack/decision-events-worker/test/events.test.ts",
+        "pm-stack/decision-events-worker/test/pagination.test.ts"
+      ],
+      "invocation": "cd pm-stack/decision-events-worker && bun test",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test decision-events-worker suite",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [9860]
+    },
+    {
       "id": "opencode-claimant.install",
       "paths": ["pm-stack/opencode-claimant/test/install.test.mjs"],
       "invocation": "cd pm-stack/opencode-claimant && bun test test/install.test.mjs",
@@ -1357,29 +1373,44 @@
     {
       "id": "mcpx.scripts.spec-parity",
       "paths": ["pkgs/mcpx/scripts/test_spec_parity.py"],
-      "invocation": "python3 pkgs/mcpx/scripts/test_spec_parity.py (candidate; no venue invocation found)",
-      "venue": null,
-      "status": "uncovered-in-fact",
-      "phase2_issue": 10330,
-      "reason": "Named by no registry entry and no workflow invocation found in the #6188 inventory (2026-11-14). #10330 owns proving or wiring it."
+      "invocation": "python3 -m unittest discover -s pkgs/mcpx/scripts -p 'test_spec_parity.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/mcpx-test.yml",
+        "job_step": "Spec-parity regressions (#10330)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [10330],
+      "reason": "Wired into mcpx-test.yml by #10330. Local run passed (16 tests, OK) at origin/main 82aa1ea6; CI run pending."
     },
     {
       "id": "mcpx.scripts.test-seed",
       "paths": ["pkgs/mcpx/scripts/tests/test_mcpx_test_seed.py"],
-      "invocation": "python3 -m unittest (candidate; the scripts-test.yml discovery steps are pattern-scoped to other suites and do not reach this file)",
-      "venue": null,
-      "status": "uncovered-in-fact",
-      "phase2_issue": 10330,
-      "reason": "Named by no registry entry and no venue invocation found in the #6188 inventory (2026-11-14). #10330 owns proving or wiring it."
+      "invocation": "python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_mcpx_test_seed.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/mcpx-test.yml",
+        "job_step": "Run-seed wrapper regressions (#1949)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [10330],
+      "reason": "mcpx-test.yml runs this suite (step 'Run-seed wrapper regressions (#1949)'). Row was stale; updated by #10330 triage."
     },
     {
       "id": "mcpx.scripts.e2e-shard-packer-test",
       "paths": ["pkgs/mcpx/scripts/tests/test_e2e_shard_packer.py"],
-      "invocation": "python3 -m unittest (candidate; mcpx-test.yml runs the packer script itself, not this test)",
-      "venue": null,
-      "status": "uncovered-in-fact",
-      "phase2_issue": 10330,
-      "reason": "Named by no registry entry and no venue invocation found in the #6188 inventory (2026-11-14). #10330 owns proving or wiring it."
+      "invocation": "python3 -m unittest discover -s pkgs/mcpx/scripts/tests -p 'test_e2e_shard_packer.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/mcpx-test.yml",
+        "job_step": "Shard-packer discovery regressions (#6906)",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [10330],
+      "reason": "mcpx-test.yml runs this suite (step 'Shard-packer discovery regressions (#6906)'). Row was stale; updated by #10330 triage."
     },
     {
       "id": "fleet.queue-reconcile.check-coverage",

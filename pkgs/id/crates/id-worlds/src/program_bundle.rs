@@ -66,6 +66,16 @@ pub const MAX_NAME_BYTES: usize = 128;
 /// Longest licence statement, in bytes.
 pub const MAX_LICENCE_BYTES: usize = 4096;
 
+/// Longest discovery description, in bytes.
+pub const MAX_DESCRIPTION_BYTES: usize = 4096;
+
+/// Most categories one manifest may assert.
+pub const MAX_CATEGORIES: usize = 8;
+
+/// Longest category, in bytes. A category is lower-case ASCII letters,
+/// digits and `-`, so it reads the same in every registry's taxonomy.
+pub const MAX_CATEGORY_BYTES: usize = 64;
+
 /// The guest ABI family programs target today (F12.7, `examples/roc-world/ABI.md`).
 pub const PLAZA_ABI_FAMILY: &str = "plaza";
 
@@ -85,6 +95,15 @@ pub struct ProgramIdentity {
     pub version: u64,
     /// BLAKE3 of the payload, lower-case hex (the world install hash).
     pub content_hash: String,
+}
+
+impl ProgramIdentity {
+    /// The update channel is the author's program name; version and content
+    /// hash identify a particular release, not a different channel.
+    #[must_use]
+    pub fn same_channel(&self, other: &Self) -> bool {
+        self.author == other.author && self.name == other.name
+    }
 }
 
 /// The F12.7 guest ABI a payload targets.
@@ -128,6 +147,14 @@ pub struct BundleManifest {
     /// The author's licence statement, recorded but not adjudicated (D3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub licence: Option<String>,
+    /// Discovery metadata: the author's description, signed with the
+    /// manifest, so a registry may index it but never alter it (v2 §1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Discovery metadata: the author's categories, signed with the
+    /// manifest. An operator's own tags are a separate overlay (v3 G2).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<String>,
 }
 
 impl BundleManifest {
@@ -166,6 +193,10 @@ pub struct ProgramSpec<'a> {
     pub version: u64,
     /// An optional licence statement.
     pub licence: Option<&'a str>,
+    /// An optional discovery description.
+    pub description: Option<&'a str>,
+    /// Discovery categories, each lower-case ASCII letters, digits and `-`.
+    pub categories: &'a [&'a str],
 }
 
 /// The check a bundle failed. Every refusal names exactly one.
@@ -480,6 +511,8 @@ fn seal(
         abi: AbiDescriptor::plaza_v1(),
         lineage,
         licence: spec.licence.map(str::to_owned),
+        description: spec.description.map(str::to_owned),
+        categories: spec.categories.iter().map(|c| (*c).to_owned()).collect(),
     };
     check_manifest(&manifest)?;
     check_payload(&payload)?;
@@ -551,7 +584,7 @@ fn push_segment(out: &mut Vec<u8>, segment: &[u8]) {
 }
 
 /// Canonical lower-case hex of exactly `N` bytes.
-fn parse_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
+pub(crate) fn parse_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
     let bytes: [u8; N] = decode_hex(text)?.try_into().ok()?;
     (encode_hex(&bytes) == text).then_some(bytes)
 }
@@ -560,7 +593,7 @@ fn parse_signature(text: &str) -> Option<Signature> {
     parse_hex::<64>(text).map(|bytes| Signature::from_bytes(&bytes))
 }
 
-fn check_identity(identity: &ProgramIdentity) -> Result<VerifyingKey, String> {
+pub(crate) fn check_identity(identity: &ProgramIdentity) -> Result<VerifyingKey, String> {
     let author = parse_hex::<32>(&identity.author)
         .ok_or_else(|| "author is not 32 bytes of lower-case hex".to_owned())?;
     let author = VerifyingKey::from_bytes(&author)
@@ -593,6 +626,7 @@ fn check_manifest(manifest: &BundleManifest) -> Result<VerifyingKey, BundleError
             licence.len()
         )));
     }
+    check_discovery(manifest).map_err(BundleError::Manifest)?;
     if manifest.abi != AbiDescriptor::plaza_v1() {
         return Err(BundleError::Abi(format!(
             "the payload targets {} v{}; this build hosts {PLAZA_ABI_FAMILY} v{PLAZA_ABI_VERSION}",
@@ -616,6 +650,49 @@ fn check_manifest(manifest: &BundleManifest) -> Result<VerifyingKey, BundleError
         }
     }
     Ok(author)
+}
+
+/// Whether `category` is in the portable form every registry's taxonomy
+/// reads the same: 1 to [`MAX_CATEGORY_BYTES`] lower-case ASCII letters,
+/// digits and `-`. Operator tags (v3 G2) use the same form.
+#[must_use]
+pub fn is_portable_category(category: &str) -> bool {
+    !category.is_empty()
+        && category.len() <= MAX_CATEGORY_BYTES
+        && category
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// The discovery metadata's bounds: a description within
+/// [`MAX_DESCRIPTION_BYTES`], and at most [`MAX_CATEGORIES`] distinct
+/// categories in the portable form.
+fn check_discovery(manifest: &BundleManifest) -> Result<(), String> {
+    if let Some(description) = &manifest.description
+        && description.len() > MAX_DESCRIPTION_BYTES
+    {
+        return Err(format!(
+            "description is {} bytes; the limit is {MAX_DESCRIPTION_BYTES}",
+            description.len()
+        ));
+    }
+    if manifest.categories.len() > MAX_CATEGORIES {
+        return Err(format!(
+            "{} categories; the limit is {MAX_CATEGORIES}",
+            manifest.categories.len()
+        ));
+    }
+    for (index, category) in manifest.categories.iter().enumerate() {
+        if !is_portable_category(category) {
+            return Err(format!(
+                "category {index} must be 1 to {MAX_CATEGORY_BYTES} lower-case ASCII letters, digits or '-'"
+            ));
+        }
+        if manifest.categories[..index].contains(category) {
+            return Err(format!("category {category:?} is repeated"));
+        }
+    }
+    Ok(())
 }
 
 fn check_payload(payload: &[u8]) -> Result<(), BundleError> {
@@ -651,11 +728,58 @@ mod tests {
             name,
             version,
             licence: Some("MIT"),
+            description: None,
+            categories: &[],
         }
     }
 
     fn original() -> ProgramBundle {
         export(PAYLOAD.to_vec(), spec("chess", 3), &alice()).unwrap()
+    }
+
+    #[test]
+    fn install_policy_defaults_to_pinned_and_pinned_does_not_track() {
+        let provenance = original().provenance();
+        assert_eq!(provenance.policy, crate::world::InstallPolicy::Pinned);
+        let mut later = provenance.program.clone();
+        later.version += 1;
+        later.content_hash = "later-hash".to_owned();
+        assert!(!provenance.tracks(&later));
+    }
+
+    #[test]
+    fn tracking_is_scoped_to_the_exact_author_name_line_not_fork_lineage() {
+        let mut provenance = original().provenance();
+        provenance.policy = crate::world::InstallPolicy::Tracking;
+
+        let mut later_release = provenance.program.clone();
+        later_release.version += 1;
+        later_release.content_hash = "later-hash".to_owned();
+        assert!(provenance.tracks(&later_release));
+
+        let mut other_author = later_release.clone();
+        other_author.author = "different-author".to_owned();
+        assert!(!provenance.tracks(&other_author));
+
+        let mut fork = later_release;
+        fork.name = "chess-fork".to_owned();
+        assert!(!provenance.tracks(&fork));
+
+        let mut fork_provenance = provenance.clone();
+        fork_provenance.program = fork.clone();
+        assert!(!fork_provenance.tracks(&provenance.program));
+        let mut later_fork_release = fork;
+        later_fork_release.version += 1;
+        assert!(fork_provenance.tracks(&later_fork_release));
+    }
+
+    #[test]
+    fn missing_policy_in_older_install_records_defaults_to_pinned() {
+        let provenance = original().provenance();
+        let mut value = serde_json::to_value(provenance).unwrap();
+        value.as_object_mut().unwrap().remove("policy");
+        let restored: crate::world::BundleProvenance = serde_json::from_value(value).unwrap();
+        assert_eq!(restored.policy, crate::world::InstallPolicy::Pinned);
     }
 
     /// Offsets of the manifest and payload inside an encoded bundle.
@@ -844,6 +968,60 @@ mod tests {
     }
 
     #[test]
+    fn discovery_metadata_is_signed_and_bounded() {
+        let key = alice();
+        let with = |description: Option<&str>, categories: &[&str]| {
+            export(
+                PAYLOAD.to_vec(),
+                ProgramSpec {
+                    description,
+                    categories,
+                    ..spec("chess", 1)
+                },
+                &key,
+            )
+        };
+        let bundle = with(Some("The classic board game."), &["board", "two-player"]).unwrap();
+        let decoded = ProgramBundle::decode(&bundle.to_bytes()).unwrap();
+        assert_eq!(
+            decoded.manifest().description.as_deref(),
+            Some("The classic board game.")
+        );
+        assert_eq!(decoded.manifest().categories, ["board", "two-player"]);
+        let bytes = bundle.to_bytes();
+        let edited = String::from_utf8_lossy(&bytes).replacen("two-player", "one-player", 1);
+        assert_eq!(
+            ProgramBundle::decode(edited.as_bytes())
+                .unwrap_err()
+                .check(),
+            "bundle_signature",
+            "a registry cannot alter signed discovery metadata"
+        );
+        assert!(
+            !String::from_utf8_lossy(&spec_bundle_bytes()).contains("categories"),
+            "absent metadata is not serialised"
+        );
+
+        let check = |description: Option<&str>, categories: &[&str]| {
+            with(description, categories).unwrap_err().check()
+        };
+        let long = "x".repeat(MAX_DESCRIPTION_BYTES + 1);
+        assert_eq!(check(Some(&long), &[]), "manifest");
+        assert_eq!(check(None, &["Board"]), "manifest");
+        assert_eq!(check(None, &[""]), "manifest");
+        assert_eq!(check(None, &["board", "board"]), "manifest");
+        let many: Vec<String> = (0..=MAX_CATEGORIES).map(|i| format!("c{i}")).collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        assert_eq!(check(None, &many), "manifest");
+    }
+
+    fn spec_bundle_bytes() -> Vec<u8> {
+        export(PAYLOAD.to_vec(), spec("chess", 1), &alice())
+            .unwrap()
+            .to_bytes()
+    }
+
+    #[test]
     fn a_fork_of_a_fork_carries_the_whole_ordered_chain() {
         let parent = original();
         let child = fork(
@@ -853,6 +1031,8 @@ mod tests {
                 name: "chess-variant",
                 version: 1,
                 licence: None,
+                description: None,
+                categories: &[],
             },
             &bob(),
         )

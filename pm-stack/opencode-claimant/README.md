@@ -417,12 +417,25 @@ Logs written to `~/.local/state/opencode-claimant/fires.jsonl`:
 {
   "timestamp": "2026-11-06T23:35:00Z",
   "mode": "shadow",
+  "mode_source": {
+    "path": "/home/user/.local/state/opencode-claimant/mode",
+    "state": "missing",
+    "file_mtime": null,
+    "dir_mtime": "2026-11-14T14:45:12+00:00",
+    "pid": 41234
+  },
   "candidates_seen": [...],
   "sessions_launched": [...],
   "cap_room": 36,
   "skips": [...]
 }
 ```
+
+`mode_source` (#10332) says where the fire's mode came from. `state` is
+`ok`, `missing`, `unreadable` or `invalid`; every state but `ok` means the
+fire fell back to shadow. A deletion changes the state directory's mtime,
+so for a `missing` read `dir_mtime` bounds when the file went, and a
+live-to-shadow flip can be dated from the log alone.
 
 ## Constants
 

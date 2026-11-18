@@ -262,7 +262,9 @@ both installs. If the build fails in the cargo vendor step with
 'atlas-core'` (or another atlas crate), `pkgs/fleet/Cargo.lock` has
 drifted from the atlas-search path dependencies again — the fleet
 lock covers their external dependencies too (see `default.nix`).
-Regenerate it before building:
+`bash .github/scripts/check-fleet-lock.sh` names that drift in
+seconds without building anything (fleet-smoke runs it on atlas-search
+manifest changes too, #10363). Regenerate the lock before building:
 
 ```sh
 (cd pkgs/fleet && cargo update --workspace)

@@ -68,6 +68,8 @@ export interface Config {
   viewsFile: string;
   /** Cross-stack event log store (#1739) — one chronological stream. */
   eventsFile: string;
+  /** Identity-to-role registry (#9604), separate from the session registry. */
+  identityRegistryFile: string;
   /** Source freshness invalidation journal, separate from #1739/#3321. */
   freshnessFile: string;
   /** Loopback-only publisher listener; never included in PM_AGG_HOSTS. */
@@ -104,6 +106,9 @@ export interface Config {
    * (#10141): claimant mode + PM unit states the watchdog derives
    * silent-failure tier items from. Read-only for the aggregator. */
   hostHealthFile: string;
+  /** #10383: where the bounded dashboard routes keep their last good
+   *  response, so the first request after a restart can serve it. */
+  lastGoodDir: string;
   /** Versioned item-history JSONL (#3981) the forecast contract
    * (#3984) derives from: one cutoff per line, read via
    * ItemHistoryStore. */
@@ -140,6 +145,8 @@ export interface Config {
    * 2026-10-29, which left attention single-legged on the collector
    * feed until the 2026-11-10 fixture incident. */
   opencodeServerStateFile: string;
+  /** Read-only directory containing mcpx daemon's rotated call ledger. */
+  mcpxCallLedgerDir: string;
   kaneo: {
     baseUrl: string;
     /** Kaneo's client URL — the Origin its auth accepts (better-auth). */
@@ -211,6 +218,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     actionsFile: s(env.PM_AGG_ACTIONS_FILE, join(process.cwd(), "actions.json")),
     viewsFile: s(env.PM_AGG_VIEWS_FILE, join(process.cwd(), "views.json")),
     eventsFile: s(env.PM_AGG_EVENTS_FILE, join(process.cwd(), "events.json")),
+    identityRegistryFile: s(
+      env.PM_AGG_IDENTITY_REGISTRY_FILE,
+      join(homedir(), ".local", "state", "pm-aggregator", "identity-registry.json"),
+    ),
     freshnessFile: s(env.PM_AGG_FRESHNESS_FILE, join(homedir(), ".local", "state", "pm-aggregator", "freshness.json")),
     freshnessPort: parseAggregatorPort(env.PM_AGG_FRESHNESS_PORT, "PM_AGG_FRESHNESS_PORT", "4871"),
     queueBrokerUrl: s(env.PM_AGG_QUEUE_BROKER_URL, "http://100.99.113.103:4801"),
@@ -253,6 +264,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       env.PM_AGG_HOST_HEALTH_FILE,
       join(homedir(), ".local", "state", "pm-aggregator", "host-health.json"),
     ),
+    lastGoodDir: s(env.PM_AGG_LAST_GOOD_DIR, join(homedir(), ".local", "state", "pm-aggregator", "last-good-pages")),
     quotaViewFile: s(
       env.PM_AGG_QUOTA_VIEW,
       join(
@@ -291,6 +303,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     opencodeServerStateFile: s(
       env.PM_AGG_OPENCODE_SERVER_STATE,
       join(homedir(), ".local", "state", "opencode", "service-prod.json"),
+    ),
+    mcpxCallLedgerDir: s(
+      env.PM_AGG_MCPX_CALL_LEDGER_DIR,
+      join(homedir(), ".local", "state", "mcpx", "call-ledger"),
     ),
     kaneo: {
       baseUrl: s(env.KANEO_URL, "http://127.0.0.1:5173"),

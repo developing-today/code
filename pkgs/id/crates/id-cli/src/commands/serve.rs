@@ -320,6 +320,11 @@ pub struct ServeOptions {
     pub web_token: Option<String>,
     /// Mark the directory explorer's session cookies `Secure` (HTTPS in front).
     pub web_cookie_secure: bool,
+    /// Serve the program gallery stored in this directory (#10003): over
+    /// Iroh as a program registry (#8281), and over the web with `--web`.
+    pub gallery_dir: Option<std::path::PathBuf>,
+    /// Accept registry publishes from any peer over Iroh.
+    pub gallery_accept_publish: bool,
     /// Host a multiplayer world (durable unless `ephemeral`).
     pub world: bool,
     /// Admin secret required to mint world guest capabilities.
@@ -1108,6 +1113,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         port_explicit,
         web_token,
         web_cookie_secure,
+        gallery_dir,
+        gallery_accept_publish,
         world,
         world_admin_token,
         world_module,
@@ -1275,6 +1282,14 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let key = load_or_create_keypair(KEY_FILE).await?;
     let node_id: EndpointId = key.public();
     info!("serve: {}", node_id);
+    match id_directory::restored_key::pending(
+        id_directory::restored_key::RESTORED_KEY_FILE,
+        id_directory::keyset_file::KEYSET_FILE,
+    ) {
+        Ok(Some(public)) => warn!("serve: {}", id_directory::restored_key::warning(&public)),
+        Ok(None) => {}
+        Err(error) => warn!(%error, "serve: could not read the restore flag"),
+    }
 
     // Who may modify this store: this node, this machine's client key (so the
     // local CLI/REPL work with no setup), `--allow-node`, and `.iroh-allowed`.
@@ -1602,6 +1617,37 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     // operator control with the already-registered handler.
     #[cfg(feature = "web")]
     let meta_handle = Arc::clone(&meta);
+    // #10003/#8281: the program gallery, from verified bundle files and
+    // operator data in --gallery-dir. A file that no longer verifies stops
+    // the start rather than being served or skipped. The same gallery backs
+    // the Iroh registry protocol here and the web read surface below.
+    let gallery: Option<id_worlds::program_registry_net::SharedGallery> = match &gallery_dir {
+        Some(dir) => {
+            let gallery = id_worlds::program_gallery::Gallery::open_dir(
+                dir,
+                id_worlds::program_registry::AdmitAll,
+            )
+            .map_err(|error| anyhow::anyhow!("open the gallery in {}: {error:#}", dir.display()))?;
+            status!(
+                "gallery: {} program bundles ({} listed, {} admission), {} featured collections and {} transparency entries from {}; registry over Iroh{}",
+                gallery.registry().len(),
+                gallery
+                    .list(&id_worlds::program_registry::ListQuery::default())
+                    .len(),
+                gallery.admission().config().posture.as_str(),
+                gallery.collections().count(),
+                gallery.admission().list().len(),
+                dir.display(),
+                if gallery_accept_publish {
+                    ", accepting publishes"
+                } else {
+                    ", read-only"
+                }
+            );
+            Some(Arc::new(std::sync::RwLock::new(gallery)))
+        }
+        None => None,
+    };
     let router_builder = Router::builder(endpoint.clone())
         .accept(META_ALPN, meta)
         .accept(BLOBS_ALPN, blobs)
@@ -1645,6 +1691,21 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     };
     #[cfg(all(feature = "world", feature = "ssh"))]
     let router_builder = router_builder.accept(id_worlds::world_ssh::SSH_TUNNEL_ALPN, ssh_tunnel);
+    let router_builder = match &gallery {
+        Some(gallery) => {
+            let registry =
+                id_worlds::program_registry_net::RegistryProtocol::new(Arc::clone(gallery));
+            router_builder.accept(
+                id_worlds::program_registry_net::REGISTRY_ALPN,
+                if gallery_accept_publish {
+                    registry.accepting_publish()
+                } else {
+                    registry
+                },
+            )
+        }
+        None => router_builder,
+    };
     let router = router_builder.spawn();
     info!("serve startup: router spawned (#190 breadcrumb)");
 
@@ -1982,6 +2043,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 });
                 minter
             };
+            let gallery = gallery.clone();
             let (web_routers, surface) = id_web::web_routers_with_surface(
                 store_handle.clone(),
                 Some(peer_discovery.clone()),
@@ -1998,6 +2060,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 seitan_state,
                 Some(endpoint.clone()),
                 Some(std::sync::Arc::clone(&transport_ad_minter)),
+                gallery,
             )
             .await?;
             publication_surface = Some(surface);

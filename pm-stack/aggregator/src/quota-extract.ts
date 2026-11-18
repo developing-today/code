@@ -669,6 +669,15 @@ const SHELL_POOLS: QuotaPool[] = [
     note: "No dated read. Live windows arrive through the quota gatherer (the OpenRouter credential, read by the OpenChamber quota module) and are overlaid onto this pool by overlayQuotaCurrent. Registered as a shell pool on 2026-11-16 (#10575): the free-tier door was enabled 2026-11-15 and its read carries a real monthly window, so it is a pool in its own right, not a synthesized unmapped row.",
     extractionHealth: { status: "intentional", matched: null, reason: "uninstrumented", count: 0 },
   },
+  {
+    id: "opencode-go.0x111dev",
+    provider: "OpenCode Go",
+    plan: "0x111dev account",
+    state: "healthy",
+    windows: [],
+    note: "No dated read. Live windows arrive through the quota gatherer; the OpenCode Zen door aliases this same workspace meter.",
+    extractionHealth: { status: "intentional", matched: null, reason: "uninstrumented", count: 0 },
+  },
 ];
 
 /**
