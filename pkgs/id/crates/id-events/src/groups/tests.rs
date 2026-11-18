@@ -8,6 +8,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use p2panda_core::Hash;
 use proptest::prelude::*;
 
+/// The saved friendship counterexample for the properties below (#9578).
+///
+/// These tests lived in `pkgs/id/src/friendship.rs` when the seed was written;
+/// the crate split (#4405) moved them to `crates/id-events/src/groups/tests.rs`,
+/// so proptest's default `SourceParallel` resolution now looks under
+/// `crates/id-events/` and the file left in `pkgs/id/proptest-regressions/` was
+/// never read again. Pin the path so the seed stays live; the guard test
+/// `groups_proptest_seed_is_where_proptest_reads_it` fails if it is moved.
+const GROUPS_SEED_FILE: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/proptest-regressions/groups/tests.txt");
+
 use super::policy::{
     Delegation, Join, OnMemberRemoved, Policy, Removal, RemoveModeKind, RemovePolicy, RoleRules,
     SuccessorKind, Template,
@@ -1777,7 +1788,15 @@ fn delegation_build(script: &[(u8, u8, u8, u8, u8, u8)]) -> Vec<Event> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(ProptestConfig {
+        cases: 256,
+        // Read the pinned seed file (#9578) rather than `SourceParallel`,
+        // which would look beside the current crate root.
+        failure_persistence: Some(Box::new(
+            proptest::test_runner::FileFailurePersistence::Direct(GROUPS_SEED_FILE),
+        )),
+        ..ProptestConfig::default()
+    })]
 
     #[test]
     fn prop_delegation_outcomes_do_not_depend_on_the_arrival_order(
@@ -2008,7 +2027,15 @@ fn build(script: &[(u8, u8, u8, u8, u8, u8)]) -> Vec<Event> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(ProptestConfig {
+        cases: 256,
+        // Read the pinned seed file (#9578) rather than `SourceParallel`,
+        // which would look beside the current crate root.
+        failure_persistence: Some(Box::new(
+            proptest::test_runner::FileFailurePersistence::Direct(GROUPS_SEED_FILE),
+        )),
+        ..ProptestConfig::default()
+    })]
 
     #[test]
     fn prop_the_final_state_does_not_depend_on_the_order_the_events_arrive_in(
@@ -2041,6 +2068,20 @@ proptest! {
             }
         }
     }
+}
+
+/// The saved friendship counterexample must sit exactly where proptest reads
+/// it (#9578). Decidable half of the guard: if the seed file is moved,
+/// renamed or emptied, this fails instead of the seed silently ceasing to be
+/// replayed.
+#[test]
+fn groups_proptest_seed_is_where_proptest_reads_it() {
+    let body = std::fs::read_to_string(GROUPS_SEED_FILE)
+        .unwrap_or_else(|error| panic!("read {GROUPS_SEED_FILE}: {error}"));
+    assert!(
+        body.lines().any(|line| line.starts_with("cc ")),
+        "the seed file must hold a saved counterexample: {body}"
+    );
 }
 
 // ----- Review of Phase 2 [P2-review] -----

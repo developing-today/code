@@ -1487,6 +1487,18 @@ mod tests {
     };
     use iroh_base::SecretKey;
     use proptest::prelude::*;
+    /// The saved paging counterexample for the property below (#9578).
+    ///
+    /// proptest's default `SourceParallel` resolution derives the seed file
+    /// from the crate that owns the test's source file. The crate split
+    /// (#4406) moved this test from `pkgs/id/src/artifact.rs` to
+    /// `crates/id-sync/src/artifact.rs` without moving the seed, so the file
+    /// left in `pkgs/id/proptest-regressions/` was never read again. Pin the
+    /// path explicitly so the seed cannot silently drift a second time; the
+    /// guard test `artifact_proptest_seed_is_where_proptest_reads_it` fails
+    /// if this file is moved or emptied.
+    const ARTIFACT_SEED_FILE: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/proptest-regressions/artifact.txt");
     fn key(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])
     }
@@ -2215,7 +2227,15 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(24))]
+        #![proptest_config(ProptestConfig {
+            cases: 24,
+            // Read the pinned seed file (#9578) instead of relying on
+            // `SourceParallel`, which would look beside the current crate root.
+            failure_persistence: Some(Box::new(
+                proptest::test_runner::FileFailurePersistence::Direct(ARTIFACT_SEED_FILE),
+            )),
+            ..ProptestConfig::default()
+        })]
 
         /// Random record sizes, mostly small with some near the limit: every page
         /// fits the byte budget unless it holds one artifact, and paging returns
@@ -2262,6 +2282,21 @@ mod tests {
             );
         }
     }
+
+    /// The saved paging counterexample must sit exactly where proptest reads
+    /// it (#9578). This is the decidable half of the guard: if the seed file is
+    /// ever moved, renamed or emptied, this test fails instead of the seed
+    /// silently ceasing to be replayed.
+    #[test]
+    fn artifact_proptest_seed_is_where_proptest_reads_it() {
+        let body = std::fs::read_to_string(ARTIFACT_SEED_FILE)
+            .unwrap_or_else(|error| panic!("read {ARTIFACT_SEED_FILE}: {error}"));
+        assert!(
+            body.lines().any(|line| line.starts_with("cc ")),
+            "the seed file must hold a saved counterexample: {body}"
+        );
+    }
+
     async fn endpoint() -> Endpoint {
         Endpoint::builder(presets::Minimal)
             .relay_mode(RelayMode::Disabled)
