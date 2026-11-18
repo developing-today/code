@@ -39,6 +39,7 @@ pub mod local_events {
     pub use id_events::local_events::LocalEvents;
 }
 pub mod app_manifest;
+pub mod boundary_evidence;
 pub mod chat_presence;
 pub mod cli;
 pub mod commands;
