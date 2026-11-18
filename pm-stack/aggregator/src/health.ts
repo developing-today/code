@@ -31,6 +31,7 @@ import {
 import type { GhItem, ProvenanceDetail, QuotaView, RefKey } from "./model.ts";
 import type { PushHealthView } from "./freshness-reconcile.ts";
 import { PAGES } from "./pages.ts";
+import type { SloFacetSummary } from "./slo.ts";
 import { buildServices, type ServiceDef } from "./topology.ts";
 import {
   fetchRfaState,
@@ -254,6 +255,9 @@ export interface HealthView {
    *  quiet source is not an outage. Null when the caller did not
    *  assemble it (fixtures mode, older call sites) — never invented. */
   push: PushHealthView | null;
+  /** #9988: per-facet error-budget summaries read from the SLO journal.
+   *  Null when the caller did not assemble them (fixtures mode). */
+  slo: SloFacetSummary[] | null;
 }
 
 // --- Render registry -------------------------------------------------------
@@ -413,6 +417,8 @@ export interface HealthInputs {
   /** #3976: the reconciler's current push-health view (server.ts
    *  supplies it in live mode); absent/null renders as unassembled. */
   pushHealth?: PushHealthView | null;
+  /** #9988: SLO budget summaries from the journal (server.ts supplies them in live mode). */
+  slo?: SloFacetSummary[] | null;
 }
 
 export interface HealthDeps {
@@ -601,6 +607,7 @@ export async function buildHealth(inputs: HealthInputs, deps: HealthDeps = {}): 
     pages: pageHealth(now),
     rfa,
     push: inputs.pushHealth ?? null,
+    slo: inputs.slo ?? null,
     facets: inputs.detail ?? null,
     itemsCoverage: inputs.itemsCoverage ?? null,
     comments: inputs.comments ?? { pendingMessages: 0, pendingGithub: 0, total: 0 },

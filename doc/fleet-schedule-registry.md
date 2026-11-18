@@ -19,6 +19,8 @@ specified in the #2020 Jules investigation).
   Jules account (pilot #2265).
 - **Surface 5 — Mac launchd jobs:** timed launchd daemons and agents
   defined in `dezren39/darwin-nix` and deployed to the Mac (#11805).
+- **Surface 6 — PM-stack process intervals:** timers inside the
+  PM-stack aggregator process, live only while it runs (#9988).
 
 **This registry is an input to the placement audit** proposed in the
 #2024 framework doc
@@ -361,3 +363,13 @@ list, which its own comment says is empty unless root-owned repos are
 registered. The primary user's repos are maintained by git's own
 per-user launchd agents, which `git maintenance start` installs outside
 Nix; they are not recorded here until a review reads them on the Mac.
+
+## Surface 6 — PM-stack process intervals (1 entry)
+
+Recurring loops owned by the PM-stack aggregator process. These are not
+external scheduler surfaces; this inventory records timers that run only
+while the service is alive.
+
+| name/id | repo/scope | cadence | state | owner / scope | prompt/brief pointer | budget | kill criteria | created | last review |
+| ------- | ---------- | ------- | ----- | ------------- | -------------------- | ------ | ------------- | ------- | ----------- |
+| SLO journal sampler (#9988) | developing-today/code | every 60 seconds | live aggregator process only | issue #9988 | `pm-stack/aggregator/src/server.ts` (`SLO_SAMPLE_INTERVAL_MS`) | not recorded | Remove/disable if the health view or append-only journal becomes unavailable; sampler is unref'd and does not keep the process alive | 2026-11-18 | 2026-11-18 |

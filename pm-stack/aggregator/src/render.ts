@@ -6508,6 +6508,27 @@ export function renderHealth(view: HealthView, provenance: Provenance): string {
 <div class="card"><span class="dot ${push.state === "up" ? "up" : push.state === "down" ? "down" : "stale"}"></span><strong>${esc(push.state)}</strong> \u2014 ${esc(push.detail)}<br>last event ${push.lastEventAt ? esc(ageMsText(Math.max(0, nowMs - Date.parse(push.lastEventAt)))) : "none recorded"} \u00b7 last successful reconcile ${push.lastSuccessfulReconcileAt ? esc(ageMsText(Math.max(0, nowMs - Date.parse(push.lastSuccessfulReconcileAt)))) : "never in this process"} \u00b7 journal cursor <code>${push.cursor ?? "unknown"}</code> \u00b7 gaps: <strong>${push.gaps.open} open</strong> \u00b7 ${push.gaps.repairedTotal} repaired by reconciliation \u00b7 ${push.gaps.resetsTotal} journal reset(s)${push.gaps.lastResetAt ? ` (last ${esc(push.gaps.lastResetAt)})` : ""}</div>
 <div class="tblwrap"><table class="table table-zebra"><caption>Push sources \u2014 freshness is per source; a quiet source is silent, not an outage</caption><tr><th scope="col">Source</th><th scope="col">State</th><th scope="col">Last event</th><th scope="col">Age</th><th scope="col">Lag</th><th scope="col">Notices</th></tr>${push.sources.map((s) => `<tr><td><code>${esc(s.source)}</code></td><td>${esc(s.state)}${s.missingNotice ? ' \u00b7 <span class="badge stale">notice missing \u2014 gap open</span>' : ""}</td><td>${s.lastEventAt ? esc(s.lastEventAt) : "\u2014"}</td><td>${s.ageMs !== null ? esc(ageMsText(s.ageMs)) : "\u2014"}</td><td>${s.lagMs !== null ? esc(ageMsText(s.lagMs)) : "\u2014"}</td><td>${s.notices}</td></tr>`).join("")}</table></div>`
     : `<h2 id="push-health">Push health \u2014 event-driven freshness (#3976)</h2>\n<p class="muted">Push health is not assembled in this mode \u2014 no state is invented for it.</p>`;
+  const sloRows = (view.slo ?? [])
+    .map((s) => {
+      const current = !s.sourced
+        ? `<span class="muted">unknown / no signal source</span>`
+        : s.currentValue !== null
+          ? esc(ageMsText(s.currentValue))
+          : s.latestBad === null
+            ? `<span class="muted">\u2014</span>`
+            : s.latestBad
+              ? "down"
+              : "up";
+      const remaining = s.budgetRemainingPercent === null ? "\u2014" : `${s.budgetRemainingPercent.toFixed(1)}%`;
+      const burn = s.burnRate1h === null ? "\u2014" : s.burnRate1h.toFixed(2);
+      return `<tr><td>${esc(s.label)}</td><td>${esc(s.target)}</td><td>${current}</td><td>${remaining}</td><td>${burn}</td><td>${esc(s.state)}</td></tr>`;
+    })
+    .join("");
+  const sloSection = view.slo
+    ? `<h2 id="slo-budget">SLO error budgets (#9988)</h2>
+<p class="muted">Each minute the health view is sampled into an append-only journal. Budgets are computed over each facet's rolling window; a facet with no signal source is shown as unknown, never as good.</p>
+<div class="tblwrap"><table class="table table-zebra"><caption>SLO error budgets \u2014 remaining budget and 1-hour burn rate per facet</caption><tr><th scope="col">Facet</th><th scope="col">Target</th><th scope="col">Current</th><th scope="col">Budget remaining</th><th scope="col">1h burn</th><th scope="col">State</th></tr>${sloRows}</table></div>`
+    : "";
   const cov = view.itemsCoverage;
   const coverageLine =
     cov && cov.total > 0
@@ -6543,6 +6564,7 @@ ${degraded}${modeNote}
 <div class="tblwrap"><table class="table table-zebra"><caption>Services, ports, and topology</caption><tr><th scope="col">Service</th><th scope="col">Port</th><th scope="col">Bind</th><th scope="col">Runs as</th><th scope="col">State</th><th scope="col">Consumed by</th><th scope="col">If it is down</th></tr>${serviceRows}</table></div>
 ${rfaSection}
 ${pushSection}
+${sloSection}
 <h2>Feed sections</h2>
 <div class="tblwrap"><table><caption>Feed sections — presence, age, lag, and last sync</caption><tr><th scope="col">Section</th><th scope="col">Present</th><th scope="col">Age</th><th scope="col">Behind by</th><th scope="col">Last sync</th><th scope="col">Lag note</th><th scope="col">Note</th></tr>${sectionRows}</table></div>
 <h2>Quota gatherer sources</h2>
