@@ -1625,9 +1625,10 @@ pub(crate) fn validate_filter(expr: &FilterExpr) -> Result<(), String> {
     }
 }
 
-/// SQL for the task's repo identity (see the section comment):
-/// the payload's declared repo, else the stream-derived repo.
-pub(crate) const REPO_IDENTITY_SQL: &str = "COALESCE(NULLIF(json_extract(payload, '$.repo'), ''), \
+// A tracking issue may live in code while its deliverable lives elsewhere.
+// Keep tracking identity (and work-identity dedupe) separate from eligibility.
+pub(crate) const IMPLEMENTATION_REPO_SQL: &str = "COALESCE(NULLIF(json_extract(payload, '$.implementation_repo'), ''), \
+    NULLIF(json_extract(payload, '$.repo'), ''), \
     CASE WHEN queue LIKE 'repo-health-%' \
          THEN replace(replace(replace(queue, 'repo-health-', ''), '-pilot', ''), '-shadow', '') \
          ELSE queue END)";
@@ -1635,7 +1636,7 @@ pub(crate) const REPO_IDENTITY_SQL: &str = "COALESCE(NULLIF(json_extract(payload
 pub(crate) fn repo_eq_sql(v: &str, args: &mut Vec<Arg>) -> String {
     args.push(Arg::Text(v.to_string()));
     args.push(Arg::Text(v.to_string()));
-    format!("({REPO_IDENTITY_SQL} = ? OR {REPO_IDENTITY_SQL} LIKE '%/' || ?)")
+    format!("({IMPLEMENTATION_REPO_SQL} = ? OR {IMPLEMENTATION_REPO_SQL} LIKE '%/' || ?)")
 }
 
 pub(crate) fn label_eq_sql(v: &str, args: &mut Vec<Arg>) -> String {
@@ -1880,7 +1881,7 @@ pub(crate) fn task_payload(row: &Value) -> Value {
     }
 }
 
-/// The task's repo identity (mirrors REPO_IDENTITY_SQL): the
+/// The task's tracking repo identity (not implementation eligibility): the
 /// payload's declared repo when present and non-empty, else the
 /// stream name with the repo-health- prefix and -pilot / -shadow
 /// suffixes stripped.
@@ -1896,6 +1897,16 @@ pub fn task_repo_identity(row: &Value) -> String {
         Some(rest) => rest.replace("-pilot", "").replace("-shadow", ""),
         None => queue.to_string(),
     }
+}
+
+/// Claim filters use the explicit implementation target, not the issue host.
+pub fn task_implementation_repo(row: &Value) -> String {
+    task_payload(row)
+        .get("implementation_repo")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| task_repo_identity(row))
 }
 
 pub(crate) fn repo_value_matches(identity: &str, value: &str) -> bool {
@@ -1918,7 +1929,7 @@ pub(crate) fn cmp_matches(field: FilterField, op: CmpOp, values: &[String], row:
     let payload = task_payload(row);
     match field {
         FilterField::Repo => {
-            let identity = task_repo_identity(row);
+            let identity = task_implementation_repo(row);
             let any = values.iter().any(|v| repo_value_matches(&identity, v));
             match op {
                 CmpOp::Eq | CmpOp::In => any,
