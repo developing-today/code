@@ -34,6 +34,11 @@ class ArchiveTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d)
             with self.assertRaisesRegex(ValueError,'source changed'):convert(Changing(),p/'d',p/'r')
+    def test_unsupported_or_truncated_ddl_rejected(self):
+        for text in ['CREATE TABLE public."T" (\n    id text\n);\n','CREATE TABLE public.t (\n    id text\n']:
+            with tempfile.TemporaryDirectory() as d:
+                p=Path(d);s=p/'s';s.write_text(text)
+                with self.assertRaises(ValueError):convert(s,p/'d',p/'r')
     def test_truncated_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d);s=p/'s';s.write_text('COPY public.t (id) FROM stdin;\n1\n')

@@ -70,6 +70,7 @@ def convert(src,dst,report):
             for line in f:
                 second_hash.update(line.encode('utf8'))
                 match=re.fullmatch(r'CREATE TABLE ([\w]+\.[\w]+) \(\n',line)
+                if line.startswith('CREATE TABLE ') and not match: raise ValueError('unsupported CREATE TABLE header')
                 if match: ddl_name=match[1];ddl_cols=[]
                 elif ddl_name:
                     if line.startswith(')'):
@@ -81,6 +82,7 @@ def convert(src,dst,report):
                     elif line.startswith('    ') and not line.lstrip().startswith(('CONSTRAINT ', 'PRIMARY ', 'FOREIGN ', 'CHECK ', 'UNIQUE ')):
                         col=re.match(r'    ("(?:[^"]|"")+"|[a-zA-Z_][a-zA-Z_0-9]*) ',line)
                         if col: ddl_cols.append(col[1].strip('"'))
+        if ddl_name is not None: raise ValueError('unterminated CREATE TABLE')
         if second_hash.hexdigest()!=source_hash.hexdigest(): raise ValueError('source changed between passes')
         db.commit()
         for name,item in manifest['tables'].items():
