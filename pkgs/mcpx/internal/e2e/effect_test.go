@@ -101,6 +101,7 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"autostart.pollInterval":             "TestAutostartPollIntervalPacesTheReadinessPollFromTheEnvironment",
 	"daemon.leaseTTL":                    "TestDaemonLeaseTTLForgetsASilentCallerFromTheEnvironment",
 	"elicit.disambiguate":                "TestElicitDisambiguateAsksWhichInstanceFromTheEnvironment",
 	"elicit.disambiguateDefault":         "TestElicitDisambiguateDefaultPicksTheRecentInstanceFromTheEnvironment",
@@ -282,6 +283,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestAutostartPollIntervalPacesTheReadinessPollFromTheEnvironment":               TestAutostartPollIntervalPacesTheReadinessPollFromTheEnvironment,
 	"TestDaemonLeaseTTLForgetsASilentCallerFromTheEnvironment":                       TestDaemonLeaseTTLForgetsASilentCallerFromTheEnvironment,
 	"TestElicitDisambiguateAsksWhichInstanceFromTheEnvironment":                      TestElicitDisambiguateAsksWhichInstanceFromTheEnvironment,
 	"TestElicitDisambiguateDefaultPicksTheRecentInstanceFromTheEnvironment":          TestElicitDisambiguateDefaultPicksTheRecentInstanceFromTheEnvironment,
@@ -3728,6 +3730,33 @@ func TestDaemonLeaseTTLForgetsASilentCallerFromTheEnvironment(t *testing.T) {
 	}
 	if live := liveAfterASilentCaller(t, "MCPX_DAEMON_LEASE_TTL=500ms"); live != "0" {
 		t.Fatalf("with daemon.leaseTTL=500ms the silent caller's instance should be released, LIVE=%s", live)
+	}
+}
+
+// autostartTook times the first ls in a fresh environment, which starts
+// the daemon and polls until it answers. Warming is off so the time is
+// the start and nothing else.
+func autostartTook(t *testing.T, env ...string) time.Duration {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(append([]string{"MCPX_DAEMON_WARM=false"}, env...)...)
+	start := time.Now()
+	e.run("ls")
+	return time.Since(start)
+}
+
+// TestAutostartPollIntervalPacesTheReadinessPollFromTheEnvironment is
+// the effect probe for autostart.pollInterval. A freshly spawned daemon
+// never answers the very first ping, so the client waits one interval
+// before its next: well under a second by default, at least 4s with
+// autostart.pollInterval=4s.
+func TestAutostartPollIntervalPacesTheReadinessPollFromTheEnvironment(t *testing.T) {
+	fast := autostartTook(t)
+	if fast >= 3*time.Second {
+		t.Fatalf("oracle: a default autostart should take well under 3s, took %v", fast)
+	}
+	if slow := autostartTook(t, "MCPX_AUTOSTART_POLL_INTERVAL=4s"); slow < 4*time.Second {
+		t.Fatalf("with autostart.pollInterval=4s the autostart should wait at least one 4s interval, took %v", slow)
 	}
 }
 
