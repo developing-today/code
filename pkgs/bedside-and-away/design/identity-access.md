@@ -26,6 +26,10 @@ The `*` policy is the store read gate. A deny there denies the entire view; use 
 
 `principalFromGateway` in `identity.mjs` is the one place a request's principal comes from: the account headers the Worker rebuilds after verifying the gateway signature (`external/worker.mjs`), as `{kind:'account',id,email}`. A request with none is refused. No body field (`actor`, `actorId`, `principal`, `author`) names a principal: events take `actorId` from it, new notes and inventory rows are stamped with it, and an existing row keeps the `actorId`, `author`, `recordedAt` and `device` it was first stamped with whatever a later snapshot says. The browser's installation ID is continuity metadata only: `continuityId` keeps it when it is a UUID and drops anything else, and nothing reads it for a decision.
 
+## Text classes (BA-046, BA-W01 L6)
+
+`worker/text.mjs` defines three structural classes, checked on the server; `tests/unicode-corpus.json` is the golden corpus. An identifier is well-formed with no control or format character, so zero-width and bidirectional override characters are refused there. A name (store name, label, nickname) is cleaned: control and format characters and unpaired surrogates are dropped, except inside an emoji sequence (ZWJ families, tag flags) and a zero-width non-joiner between letters. A comment is refused only for an unpaired surrogate or a control character other than tab, line feed and carriage return. The browser's blanket zero-width-joiner removal is gone; its clean-up now keeps emoji sequences too, and is a convenience, never the check.
+
 ## Guest/account proof design
 
 `identity.mjs` supplies random UUID installation IDs and 256-bit guest-claim token primitives. Only the SHA-256 hash is persisted; token is returned once. Claims bind guest ID and store ID, expire in at most ten minutes, and reject consumed records, changed stores, invalid tokens and absent authenticated accounts. These primitives do not create sessions or authenticate accounts.

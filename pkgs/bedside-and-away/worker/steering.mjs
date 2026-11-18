@@ -1,9 +1,10 @@
+import {visible} from './text.mjs';
 // Pure, server-owned state machine. Persist returned state and audit atomically using store CAS.
 const clone=x=>structuredClone(x);
 const stable=x=>JSON.stringify(x,(k,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.entries(v).sort(([a],[b])=>a.localeCompare(b))):v);
 const error=(status,message)=>{throw Object.assign(new Error(message),{status})};
 const id=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(x);
-const prose=(s,max=12000)=>typeof s==='string'?s.normalize('NFC').replace(/[\p{Cc}\p{Cf}]/gu,' ').trim().slice(0,max):'';
+const prose=(s,max=12000)=>typeof s==='string'?visible(s.normalize('NFC'),' ').trim().slice(0,max):'';
 const collection=(s,kind)=>kind==='item'?s.items:kind==='category'?s.tags:null;
 const key=t=>t.kind+':'+t.id;
 export const STEERING_REPORTS=Object.freeze({spend:'Spending',inventory:'Inventory',activity:'Activity',defaults:'Defaults', 'buying-guide':'Buying guide'});
