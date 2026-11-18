@@ -393,3 +393,16 @@ When (1)–(3) land, #2382's remaining acceptance item (delay +
 cancel + notify implemented with tests, including the eviction
 case) is discharged by tests 7–10 above; this record discharges
 the specification items.
+
+**Implementation status (2026-11-18).** Records and Rule R:
+`pkgs/id/crates/id-directory/src/recovery.rs` (`check_rotation`,
+`apply_rotation`, `notify_targets`). Item 2: `RecoveryEvidence` is a
+`keyset::RecoveryRule`, and `keyset::fold_with_recovery` folds a
+rotation that passes Rule R into the chain. At a fork it never
+displaces a checkpoint-final head, and it takes no revocation
+priority: an ordinary continuation of the pinned head wins, which is
+Decision 3's "request is moot" case. A checkpoint taken after the
+rotation (`checkpoint_final_heads_with_recovery`) makes it final, so a
+late surviving-key sibling cannot undo it. Still open: delayed guardian
+removals (Decision 6, needs timestamps in the fold), the directory
+relay and the client flow.

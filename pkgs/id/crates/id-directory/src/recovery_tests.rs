@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
-use crate::keyset::{Log, fold};
+use crate::keyset::{Log, checkpoint_final_heads_with_recovery, fold, fold_with_recovery};
 
 fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
@@ -60,6 +60,10 @@ fn guardian_set(seeds: &[u8], threshold: u32) -> KeysetEntry {
 
 /// The owner's identity: a second device, then guardians 2-of-3.
 fn owner_head() -> KeysetState {
+    owner_identity().1
+}
+
+fn owner_identity() -> (Log, KeysetState) {
     identity(
         OWNER,
         vec![
@@ -73,7 +77,6 @@ fn owner_head() -> KeysetState {
             (guardian_set(&GUARDIANS, 2), None),
         ],
     )
-    .1
 }
 
 fn guardian_folds() -> BTreeMap<String, KeysetState> {
@@ -530,4 +533,193 @@ fn shamir_material_is_never_accepted() {
     let round_trip: AnnexRecord =
         serde_json::from_value(serde_json::to_value(&request).unwrap()).unwrap();
     round_trip.verify().unwrap();
+}
+
+// Folding a rotation (the design's split, item 2).
+
+/// The owner's log with a passing recovery rotation in it: the log, its
+/// genesis hash, the pinned head, the annex and the rotation.
+fn recovered() -> (Log, String, KeysetState, Vec<AnnexRecord>, KeysetRecord) {
+    let (mut log, head) = owner_identity();
+    let genesis = log
+        .records()
+        .find(|record| record.prev_hash.is_empty())
+        .unwrap()
+        .hash
+        .clone();
+    let request = request(&head, "lost");
+    let approvals = [
+        approval(&head, &request, 11, 11),
+        approval(&head, &request, 12, 12),
+    ];
+    let rotation = rotation(&head, &request, &[&approvals[0], &approvals[1]]);
+    log.insert(rotation.clone()).unwrap();
+    let [first, second] = approvals;
+    (log, genesis, head, vec![request, first, second], rotation)
+}
+
+/// Folds with every annex record first seen at its creation and the
+/// rotation first seen at `rotation_seen`.
+fn fold_recovering(
+    log: &Log,
+    genesis: &str,
+    annex: &[AnnexRecord],
+    rotation: &KeysetRecord,
+    rotation_seen: u64,
+    finals: &BTreeSet<String>,
+) -> KeysetState {
+    let seen: Vec<Seen<'_>> = annex
+        .iter()
+        .map(|record| Seen {
+            record,
+            first_seen: CREATED_AT,
+        })
+        .collect();
+    let folds = guardian_folds();
+    let first_seen = BTreeMap::from([(rotation.hash.clone(), rotation_seen)]);
+    let evidence = RecoveryEvidence {
+        annex: &seen,
+        guardian_folds: &folds,
+        rotation_first_seen: &first_seen,
+    };
+    fold_with_recovery(log, genesis, finals, &evidence).unwrap()
+}
+
+const AFTER_DELAY: u64 = CREATED_AT + RECOVERY_DELAY_SECONDS;
+
+#[test]
+fn a_recovery_rotation_folds_with_its_evidence() {
+    let (mut log, genesis, head, annex, rotation) = recovered();
+    let none = BTreeSet::new();
+    let after = fold_recovering(&log, &genesis, &annex, &rotation, AFTER_DELAY, &none);
+    let successor = Successor {
+        admin_key: public(SUCCESSOR),
+        device_key: public(SUCCESSOR_DEVICE),
+    };
+    assert_eq!(after, apply_rotation(&head, &rotation, &successor).unwrap());
+    // Without the evidence nothing folds it.
+    assert_eq!(fold(&log, &genesis).unwrap(), head);
+    // The successor's records continue it; the old admin's do not.
+    let next = KeysetRecord::sign(
+        &key(SUCCESSOR),
+        rotation.lamport + 1,
+        rotation.hash.clone(),
+        KeysetEntry::IdpBindingBound {
+            binding_id: "after".to_owned(),
+        },
+        None,
+    )
+    .unwrap();
+    let stale = KeysetRecord::sign(
+        &key(OWNER),
+        rotation.lamport + 1,
+        rotation.hash.clone(),
+        KeysetEntry::IdpBindingBound {
+            binding_id: "stale".to_owned(),
+        },
+        None,
+    )
+    .unwrap();
+    log.insert(next.clone()).unwrap();
+    log.insert(stale).unwrap();
+    let folded = fold_recovering(&log, &genesis, &annex, &rotation, AFTER_DELAY, &none);
+    assert_eq!(folded.head_hash, next.hash);
+}
+
+#[test]
+fn a_rotation_folds_only_once_rule_r_holds() {
+    let (log, genesis, head, annex, rotation) = recovered();
+    let none = BTreeSet::new();
+    let early = fold_recovering(&log, &genesis, &annex, &rotation, AFTER_DELAY - 1, &none);
+    assert_eq!(early, head);
+    let no_request = fold_recovering(&log, &genesis, &annex[1..], &rotation, AFTER_DELAY, &none);
+    assert_eq!(no_request, head);
+    let mut cancelled = annex.clone();
+    cancelled.push(cancellation(
+        &head,
+        &annex[0],
+        OWNER_DEVICE,
+        CANCELLED_BY_SURVIVING_KEY,
+    ));
+    let state = fold_recovering(&log, &genesis, &cancelled, &rotation, AFTER_DELAY, &none);
+    assert_eq!(state, head);
+}
+
+#[test]
+fn a_surviving_admin_continuation_makes_the_recovery_moot() {
+    let (mut log, genesis, head, annex, rotation) = recovered();
+    // The owner's own sibling sorts after the rotation and is revoked by
+    // it, yet a surviving key acting at the pinned head wins.
+    let sibling = KeysetRecord::sign(
+        &key(OWNER),
+        rotation.lamport + 50,
+        head.head_hash,
+        KeysetEntry::IdpBindingBound {
+            binding_id: "alive".to_owned(),
+        },
+        None,
+    )
+    .unwrap();
+    log.insert(sibling.clone()).unwrap();
+    let state = fold_recovering(
+        &log,
+        &genesis,
+        &annex,
+        &rotation,
+        AFTER_DELAY,
+        &BTreeSet::new(),
+    );
+    assert_eq!(state.head_hash, sibling.hash);
+    assert!(state.is_admin(&public(OWNER)));
+    assert!(!state.is_admin(&public(SUCCESSOR)));
+}
+
+#[test]
+fn a_checkpointed_recovery_outranks_a_late_surviving_sibling() {
+    let (mut log, genesis, head, annex, rotation) = recovered();
+    let none = BTreeSet::new();
+    let recovered = fold_recovering(&log, &genesis, &annex, &rotation, AFTER_DELAY, &none);
+    let checkpoint = KeysetRecord::sign(
+        &key(SUCCESSOR_DEVICE),
+        rotation.lamport + 1,
+        rotation.hash.clone(),
+        KeysetEntry::Checkpoint {
+            state_hash: recovered.state_hash().unwrap(),
+            record_count: recovered.records_folded,
+        },
+        None,
+    )
+    .unwrap();
+    log.insert(checkpoint).unwrap();
+    let seen: Vec<Seen<'_>> = annex
+        .iter()
+        .map(|record| Seen {
+            record,
+            first_seen: CREATED_AT,
+        })
+        .collect();
+    let folds = guardian_folds();
+    let first_seen = BTreeMap::from([(rotation.hash.clone(), AFTER_DELAY)]);
+    let evidence = RecoveryEvidence {
+        annex: &seen,
+        guardian_folds: &folds,
+        rotation_first_seen: &first_seen,
+    };
+    let finals = checkpoint_final_heads_with_recovery(&log, &genesis, &none, &evidence).unwrap();
+    assert!(finals.contains(&rotation.hash));
+    let sibling = KeysetRecord::sign(
+        &key(OWNER),
+        rotation.lamport + 50,
+        head.head_hash,
+        KeysetEntry::IdpBindingBound {
+            binding_id: "late".to_owned(),
+        },
+        None,
+    )
+    .unwrap();
+    log.insert(sibling.clone()).unwrap();
+    let pinned = fold_recovering(&log, &genesis, &annex, &rotation, AFTER_DELAY, &finals);
+    assert_eq!(pinned, recovered);
+    let unpinned = fold_recovering(&log, &genesis, &annex, &rotation, AFTER_DELAY, &none);
+    assert_eq!(unpinned.head_hash, sibling.hash);
 }

@@ -16,10 +16,12 @@
 //! ordinary Ed25519 signatures (Decision 5): no key is ever split or
 //! reconstructed, and no record carries key material.
 //!
-//! What is not here yet: folding a rotation into the chain (now that
-//! checkpoint finality exists, `crate::keyset::fold_with_finality`),
-//! and delayed guardian removals (Decision 6), which wait on directory
-//! timestamps in the fold. The directory relay is a separate slice.
+//! [`RecoveryEvidence`] folds a passing rotation into the chain through
+//! `crate::keyset::fold_with_recovery`, under checkpoint finality: a
+//! rotation never displaces a final head, and yields to any ordinary
+//! continuation of the head it pins. Not here yet: delayed guardian
+//! removals (Decision 6), which wait on directory timestamps in the
+//! fold, and the directory relay.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -29,8 +31,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::keyset::{
-    AdminKeyState, DeviceState, KeysetEntry, KeysetRecord, KeysetState, validate_hash_or_empty,
-    verify_signature, verifying_key,
+    AdminKeyState, DeviceState, KeysetEntry, KeysetRecord, KeysetState, RecoveryRule,
+    validate_hash_or_empty, verify_signature, verifying_key,
 };
 use id_core::hex::hex_encode;
 
@@ -422,6 +424,21 @@ pub fn apply_rotation(
     rotation: &KeysetRecord,
     successor: &Successor,
 ) -> Result<KeysetState> {
+    let mut state = rotated_state(head, rotation, successor);
+    state.head_hash.clone_from(&rotation.hash);
+    state.records_folded = state
+        .records_folded
+        .checked_add(1)
+        .context("keyset record count overflow")?;
+    Ok(state)
+}
+
+/// [`apply_rotation`] before the head advances.
+fn rotated_state(
+    head: &KeysetState,
+    rotation: &KeysetRecord,
+    successor: &Successor,
+) -> KeysetState {
     let mut state = head.clone();
     for admin in state.admin_keys.values_mut() {
         *admin = AdminKeyState::Revoked;
@@ -440,12 +457,79 @@ pub fn apply_rotation(
             revoked: false,
         },
     );
-    state.head_hash.clone_from(&rotation.hash);
-    state.records_folded = state
-        .records_folded
-        .checked_add(1)
-        .context("keyset record count overflow")?;
-    Ok(state)
+    state
+}
+
+/// The recovery evidence a replica holds for one identity.
+///
+/// That is every annex record it has with its directory first-seen
+/// time, each guardian identity's current fold, and when each
+/// `RecoveryRotation` record was first seen, by record hash. As a
+/// [`RecoveryRule`] it folds exactly the rotations Rule R accepts.
+#[derive(Clone, Copy, Debug)]
+pub struct RecoveryEvidence<'a> {
+    pub annex: &'a [Seen<'a>],
+    pub guardian_folds: &'a BTreeMap<String, KeysetState>,
+    pub rotation_first_seen: &'a BTreeMap<String, u64>,
+}
+
+impl RecoveryEvidence<'_> {
+    /// Rule R for `rotation` continuing the fold `head`.
+    ///
+    /// Single use needs no consumed set here: a rotation must continue
+    /// the head its request pins, so two rotations of one request are
+    /// siblings and at most one folds.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the evidence lacks the request or the rotation's
+    /// first-seen time, or when [`check_rotation`] does.
+    pub fn check(&self, head: &KeysetState, rotation: &KeysetRecord) -> Result<Successor> {
+        let KeysetEntry::RecoveryRotation { request_id, .. } = &rotation.entry else {
+            bail!("not a recovery rotation");
+        };
+        let request = self
+            .annex
+            .iter()
+            .find(|seen| {
+                seen.record.hash == *request_id
+                    && matches!(seen.record.entry, AnnexEntry::RecoveryRequest { .. })
+            })
+            .with_context(|| format!("recovery request {request_id} is not available"))?;
+        let rotation_first_seen = *self
+            .rotation_first_seen
+            .get(&rotation.hash)
+            .context("the rotation has no first-seen time")?;
+        let approvals: Vec<AnnexRecord> = self
+            .annex
+            .iter()
+            .filter(|seen| matches!(seen.record.entry, AnnexEntry::RecoveryApproval { .. }))
+            .map(|seen| seen.record.clone())
+            .collect();
+        let cancellations: Vec<Seen<'_>> = self
+            .annex
+            .iter()
+            .filter(|seen| matches!(seen.record.entry, AnnexEntry::RecoveryCancellation { .. }))
+            .cloned()
+            .collect();
+        check_rotation(&RotationCheck {
+            head,
+            request: request.clone(),
+            approvals: &approvals,
+            guardian_folds: self.guardian_folds,
+            cancellations: &cancellations,
+            consumed: &BTreeSet::new(),
+            rotation,
+            rotation_first_seen,
+        })
+    }
+}
+
+impl RecoveryRule for RecoveryEvidence<'_> {
+    fn rotate(&self, head: &KeysetState, record: &KeysetRecord) -> Option<KeysetState> {
+        let successor = self.check(head, record).ok()?;
+        Some(rotated_state(head, record, &successor))
+    }
 }
 
 /// Who must hear of every request, approval, cancellation and rotation

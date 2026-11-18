@@ -457,9 +457,58 @@ pub fn fold_with_finality(
     trusted_genesis_hash: &str,
     final_heads: &BTreeSet<String>,
 ) -> Result<KeysetState> {
+    fold_with_recovery(log, trusted_genesis_hash, final_heads, &NoRecovery)
+}
+
+/// How a fold judges `RecoveryRotation` records.
+///
+/// Guardian recovery's Rule R weighs annex records and directory
+/// first-seen times that live beside the log, so the log alone cannot
+/// say whether a rotation folds. [`fold`] and [`fold_with_finality`]
+/// judge none (no rotation folds); [`fold_with_recovery`] takes a rule,
+/// such as `crate::recovery::RecoveryEvidence`.
+pub trait RecoveryRule {
+    /// The state the `RecoveryRotation` `record` installs when it
+    /// continues the fold `head`, before the head advances, or `None`
+    /// when it must not fold.
+    fn rotate(&self, head: &KeysetState, record: &KeysetRecord) -> Option<KeysetState>;
+}
+
+/// The rule that folds no recovery rotation.
+struct NoRecovery;
+
+impl RecoveryRule for NoRecovery {
+    fn rotate(&self, _head: &KeysetState, _record: &KeysetRecord) -> Option<KeysetState> {
+        None
+    }
+}
+
+/// [`fold_with_finality`] with recovery rotations judged by `rule`.
+///
+/// A rotation that `rule` accepts continues its pinned head like any
+/// admin record, with two limits at a fork (the guardian recovery
+/// design's split, item 2). It never outranks a final head. And it
+/// takes no revocation priority: when the pinned head has another valid
+/// continuation, a surviving key is still acting, so that branch wins
+/// and the recovery is moot (any surviving key could cancel it anyway).
+///
+/// # Errors
+///
+/// Fails if the trusted genesis is missing or malformed.
+pub fn fold_with_recovery(
+    log: &Log,
+    trusted_genesis_hash: &str,
+    final_heads: &BTreeSet<String>,
+    rule: &dyn RecoveryRule,
+) -> Result<KeysetState> {
     let (state, lamport) = genesis_state(log, trusted_genesis_hash)?;
     let mut branches = HashMap::new();
-    Ok(extend(log, state, lamport, final_heads, &mut branches)?.state)
+    let fold = Fold {
+        log,
+        final_heads,
+        rule,
+    };
+    Ok(fold.extend(state, lamport, &mut branches)?.state)
 }
 
 /// Heads on the canonical chain (folded under `final_heads`) that a
@@ -478,6 +527,22 @@ pub fn checkpoint_final_heads(
     trusted_genesis_hash: &str,
     final_heads: &BTreeSet<String>,
 ) -> Result<BTreeSet<String>> {
+    checkpoint_final_heads_with_recovery(log, trusted_genesis_hash, final_heads, &NoRecovery)
+}
+
+/// [`checkpoint_final_heads`] over the chain [`fold_with_recovery`]
+/// picks, so a checkpoint taken after a recovery can finalize it.
+///
+/// # Errors
+///
+/// Fails if the trusted genesis is missing or malformed, or the
+/// canonical chain cannot be replayed.
+pub fn checkpoint_final_heads_with_recovery(
+    log: &Log,
+    trusted_genesis_hash: &str,
+    final_heads: &BTreeSet<String>,
+    rule: &dyn RecoveryRule,
+) -> Result<BTreeSet<String>> {
     let checkpoints: Vec<&KeysetRecord> = log
         .records
         .values()
@@ -487,7 +552,7 @@ pub fn checkpoint_final_heads(
     if checkpoints.is_empty() {
         return Ok(covered);
     }
-    for prefix in canonical_prefixes(log, trusted_genesis_hash, final_heads)? {
+    for prefix in canonical_prefixes(log, trusted_genesis_hash, final_heads, rule)? {
         let verified = checkpoints.iter().any(|record| {
             record.prev_hash == prefix.head_hash && apply_entry(&mut prefix.clone(), record).is_ok()
         });
@@ -504,8 +569,9 @@ fn canonical_prefixes(
     log: &Log,
     trusted_genesis_hash: &str,
     final_heads: &BTreeSet<String>,
+    rule: &dyn RecoveryRule,
 ) -> Result<Vec<KeysetState>> {
-    let head = fold_with_finality(log, trusted_genesis_hash, final_heads)?;
+    let head = fold_with_recovery(log, trusted_genesis_hash, final_heads, rule)?;
     let by_hash: HashMap<&str, &KeysetRecord> = log
         .records
         .values()
@@ -523,7 +589,13 @@ fn canonical_prefixes(
     let (mut state, _) = genesis_state(log, trusted_genesis_hash)?;
     let mut prefixes = vec![state.clone()];
     for record in chain.into_iter().rev() {
-        apply_entry(&mut state, record)?;
+        if is_recovery(record) {
+            state = rule
+                .rotate(&state, record)
+                .context("canonical recovery rotation no longer folds")?;
+        } else {
+            apply_entry(&mut state, record)?;
+        }
         state.head_hash.clone_from(&record.hash);
         state.records_folded = state
             .records_folded
@@ -596,96 +668,139 @@ struct Branch {
     pinned: bool,
 }
 
-/// Folds the canonical continuation of `state`, whose head was folded
-/// at `head_lamport`. At a fork, a branch that rotates away or revokes
-/// the key that authored a sibling wins regardless of merge key
-/// (revocation priority, ADR Decision 4 rule 5): otherwise a key still
-/// authorised at the shared parent could sign a sibling that sorts
-/// first and erase its own revocation. When no branch revokes another,
-/// or branches revoke each other, the smallest merge key wins.
-/// `branches` memoises each record's continuation, so a log folds in
-/// time proportional to its records however its forks nest.
-fn extend(
-    log: &Log,
-    state: KeysetState,
-    head_lamport: u64,
-    final_heads: &BTreeSet<String>,
-    branches: &mut HashMap<String, Branch>,
-) -> Result<Branch> {
-    let candidates: Vec<(&KeysetRecord, KeysetState)> = log
-        .records
-        .values()
-        .filter(|record| {
-            record.prev_hash == state.head_hash
-                && record.lamport > head_lamport
-                && !matches!(
-                    &record.entry,
-                    KeysetEntry::Genesis { .. } | KeysetEntry::Checkpoint { .. }
-                )
-        })
-        .filter(|record| state.is_admin(&record.author))
-        .filter_map(|record| {
-            let mut candidate = state.clone();
-            apply_entry(&mut candidate, record)
-                .ok()
-                .map(|()| (record, candidate))
-        })
-        .collect();
-    if candidates.is_empty() {
-        return Ok(Branch {
-            state,
-            removed: BTreeSet::new(),
-            pinned: false,
-        });
+const fn is_recovery(record: &KeysetRecord) -> bool {
+    matches!(record.entry, KeysetEntry::RecoveryRotation { .. })
+}
+
+/// One fold's fixed inputs.
+struct Fold<'a> {
+    log: &'a Log,
+    final_heads: &'a BTreeSet<String>,
+    rule: &'a dyn RecoveryRule,
+}
+
+impl Fold<'_> {
+    /// The state a valid continuation of `state` installs, if `record`
+    /// is one.
+    fn continuation(&self, state: &KeysetState, record: &KeysetRecord) -> Option<KeysetState> {
+        if is_recovery(record) {
+            return self.rule.rotate(state, record);
+        }
+        if !state.is_admin(&record.author) {
+            return None;
+        }
+        let mut candidate = state.clone();
+        apply_entry(&mut candidate, record).ok().map(|()| candidate)
     }
-    let mut followed = Vec::with_capacity(candidates.len());
-    for (record, mut next_state) in candidates {
-        let branch = if let Some(branch) = branches.get(&record.hash) {
-            branch.clone()
-        } else {
-            let mut removed = removed_by(&state, &next_state);
-            next_state.head_hash.clone_from(&record.hash);
-            next_state.records_folded = next_state
-                .records_folded
-                .checked_add(1)
-                .context("keyset record count overflow")?;
-            let tail = extend(log, next_state, record.lamport, final_heads, branches)?;
-            removed.extend(tail.removed);
-            let branch = Branch {
-                state: tail.state,
-                removed,
-                pinned: tail.pinned || final_heads.contains(&record.hash),
+
+    /// Folds the canonical continuation of `state`, whose head was folded
+    /// at `head_lamport`. At a fork, a branch that rotates away or revokes
+    /// the key that authored a sibling wins regardless of merge key
+    /// (revocation priority, ADR Decision 4 rule 5): otherwise a key still
+    /// authorised at the shared parent could sign a sibling that sorts
+    /// first and erase its own revocation. When no branch revokes another,
+    /// or branches revoke each other, the smallest merge key wins.
+    /// `branches` memoises each record's continuation, so a log folds in
+    /// time proportional to its records however its forks nest.
+    fn extend(
+        &self,
+        state: KeysetState,
+        head_lamport: u64,
+        branches: &mut HashMap<String, Branch>,
+    ) -> Result<Branch> {
+        let candidates: Vec<(&KeysetRecord, KeysetState)> = self
+            .log
+            .records
+            .values()
+            .filter(|record| {
+                record.prev_hash == state.head_hash
+                    && record.lamport > head_lamport
+                    && !matches!(
+                        &record.entry,
+                        KeysetEntry::Genesis { .. } | KeysetEntry::Checkpoint { .. }
+                    )
+            })
+            .filter_map(|record| {
+                self.continuation(&state, record)
+                    .map(|candidate| (record, candidate))
+            })
+            .collect();
+        if candidates.is_empty() {
+            return Ok(Branch {
+                state,
+                removed: BTreeSet::new(),
+                pinned: false,
+            });
+        }
+        let mut followed = Vec::with_capacity(candidates.len());
+        for (record, mut next_state) in candidates {
+            let branch = if let Some(branch) = branches.get(&record.hash) {
+                branch.clone()
+            } else {
+                let mut removed = removed_by(&state, &next_state);
+                next_state.head_hash.clone_from(&record.hash);
+                next_state.records_folded = next_state
+                    .records_folded
+                    .checked_add(1)
+                    .context("keyset record count overflow")?;
+                let tail = self.extend(next_state, record.lamport, branches)?;
+                removed.extend(tail.removed);
+                let branch = Branch {
+                    state: tail.state,
+                    removed,
+                    pinned: tail.pinned || self.final_heads.contains(&record.hash),
+                };
+                branches.insert(record.hash.clone(), branch.clone());
+                branch
             };
-            branches.insert(record.hash.clone(), branch.clone());
-            branch
-        };
-        followed.push((record, branch));
+            followed.push((record, branch));
+        }
+        let chosen = choose(&followed).context("keyset fork with no candidate")?;
+        Ok(followed.swap_remove(chosen).1)
     }
-    // Checkpoint finality outranks every other rule: a branch through
-    // a final head is the chain.
-    let pinned: Vec<usize> = (0..followed.len())
+}
+
+/// Fork choice among followed continuations. Checkpoint finality
+/// outranks every other rule: a branch through a final head is the
+/// chain. Otherwise a recovery rotation yields to any ordinary sibling,
+/// then revocation priority, then the smallest merge key.
+fn choose(followed: &[(&KeysetRecord, Branch)]) -> Option<usize> {
+    let all: Vec<usize> = (0..followed.len()).collect();
+    let pinned: Vec<usize> = all
+        .iter()
+        .copied()
         .filter(|index| followed[*index].1.pinned)
         .collect();
-    let revoked = |index: usize| {
-        followed.iter().enumerate().any(|(other, (_, branch))| {
-            other != index && branch.removed.contains(&followed[index].0.author)
-        })
-    };
-    let standing: Vec<usize> = (0..followed.len())
-        .filter(|index| !revoked(*index))
-        .collect();
-    let pool: Vec<usize> = if !pinned.is_empty() {
-        pinned
-    } else if standing.is_empty() {
-        (0..followed.len()).collect()
+    let pool = if pinned.is_empty() {
+        let ordinary: Vec<usize> = all
+            .iter()
+            .copied()
+            .filter(|index| !is_recovery(followed[*index].0))
+            .collect();
+        let contenders = if ordinary.is_empty() { all } else { ordinary };
+        let standing: Vec<usize> = contenders
+            .iter()
+            .copied()
+            .filter(|index| {
+                !contenders.iter().any(|other| {
+                    other != index
+                        && followed[*other]
+                            .1
+                            .removed
+                            .contains(&followed[*index].0.author)
+                })
+            })
+            .collect();
+        if standing.is_empty() {
+            contenders
+        } else {
+            standing
+        }
     } else {
-        standing
+        pinned
     };
-    let chosen = pool
-        .into_iter()
+    pool.into_iter()
         .min_by_key(|index| followed[*index].0.key())
-        .context("keyset fork with no candidate")?;
-    Ok(followed.swap_remove(chosen).1)
 }
 
 /// The keys one record took authority from: admin keys that were active
