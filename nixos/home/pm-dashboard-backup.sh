@@ -686,7 +686,7 @@ done
 
 # --- manifest (files as staged + the expected set's per-member status) ---
 AGG_DIR="$AGG" AGG_DERIVED="$AGG_DERIVED" \
-EXPECTED_SET="$EXPECTED_SET" DUMP_RAN="$DUMP_RAN" PMP_RAN="$PMP_RAN" \
+  EXPECTED_SET="$EXPECTED_SET" DUMP_RAN="$DUMP_RAN" PMP_RAN="$PMP_RAN" \
   SUPA_RAN="$SUPA_RAN" \
   python3 - "$STAGE" "$DATE" "$CREATED_AT" <<'PYEOF'
 import hashlib, json, os, sys

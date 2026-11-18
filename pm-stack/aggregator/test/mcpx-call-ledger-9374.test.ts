@@ -19,12 +19,15 @@ describe("mcpx daemon call ledger (#9374)", () => {
     const dir = ledgerDir();
     const now = Date.parse("2026-11-18T12:00:00.000Z");
     const day = "2026-11-18";
-    writeFileSync(join(dir, `mcpx-${day}.jsonl`), [
-      JSON.stringify({ ts: "2026-11-18T11:00:00.000Z", server: "github", tool: "issues", outcome: "success" }),
-      JSON.stringify({ ts: "2026-11-18T11:30:00.000Z", server: "github", tool: "issues", outcome: "error" }),
-      JSON.stringify({ ts: "2026-11-01T11:00:00.000Z", server: "old", tool: "ignored", outcome: "success" }),
-      "{torn",
-    ].join("\n"));
+    writeFileSync(
+      join(dir, `mcpx-${day}.jsonl`),
+      [
+        JSON.stringify({ ts: "2026-11-18T11:00:00.000Z", server: "github", tool: "issues", outcome: "success" }),
+        JSON.stringify({ ts: "2026-11-18T11:30:00.000Z", server: "github", tool: "issues", outcome: "error" }),
+        JSON.stringify({ ts: "2026-11-01T11:00:00.000Z", server: "old", tool: "ignored", outcome: "success" }),
+        "{torn",
+      ].join("\n"),
+    );
     expect(readMcpxCallLedger(dir, now)).toEqual({
       calls: 2,
       errors: 1,

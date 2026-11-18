@@ -60,7 +60,10 @@ export class IdentityRegistryStore {
   private cachedAt = 0;
   private chain: Promise<void> = Promise.resolve();
 
-  constructor(private readonly file: string, private readonly cacheTtlMs = IDENTITY_MAPPING_CACHE_TTL_MS) {
+  constructor(
+    private readonly file: string,
+    private readonly cacheTtlMs = IDENTITY_MAPPING_CACHE_TTL_MS,
+  ) {
     if (!Number.isFinite(cacheTtlMs) || cacheTtlMs < 0 || cacheTtlMs > IDENTITY_MAPPING_CACHE_TTL_MS) {
       throw new Error("identity mapping cache TTL must be between 0 and 5 minutes");
     }
@@ -134,13 +137,17 @@ export class IdentityRegistryStore {
     let raw: string;
     try {
       raw = await readFile(this.file, "utf8");
-    }
-    catch (error) {
+    } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, revision: 0, mappings: [] };
       throw error;
     }
     const parsed = JSON.parse(raw) as IdentityRegistryFile;
-    if (parsed.version !== 1 || !Number.isSafeInteger(parsed.revision) || parsed.revision < 0 || !Array.isArray(parsed.mappings)) {
+    if (
+      parsed.version !== 1 ||
+      !Number.isSafeInteger(parsed.revision) ||
+      parsed.revision < 0 ||
+      !Array.isArray(parsed.mappings)
+    ) {
       throw new Error(`invalid identity registry file: ${this.file}`);
     }
     for (const row of parsed.mappings) {

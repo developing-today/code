@@ -15,14 +15,20 @@ if [ -z "$bin" ]; then
 fi
 fail=0
 ok() { echo "ok   - $1"; }
-bad() { echo "FAIL - $1"; fail=1; }
+bad() {
+  echo "FAIL - $1"
+  fail=1
+}
 
 # (3) argument rules
-"$bin" --log "$tmp/a.log" -x -- true 2>/dev/null; rc=$?
+"$bin" --log "$tmp/a.log" -x -- true 2>/dev/null
+rc=$?
 [ "$rc" = 64 ] && [ ! -e "$tmp/a.log" ] && ok "single-dash option rejected pre-fork (exit 64, no log)" || bad "single-dash option rc=$rc"
-"$bin" --log "$tmp/b.log" -- -definitely-not-a-command 2>/dev/null; rc=$?
+"$bin" --log "$tmp/b.log" -- -definitely-not-a-command 2>/dev/null
+rc=$?
 [ "$rc" = 127 ] && ok "dash-led command after -- is exec'd (127: not found)" || bad "after-- rc=$rc"
-"$bin" --log "$tmp/c.log" -- sh -c 'exit 3'; rc=$?
+"$bin" --log "$tmp/c.log" -- sh -c 'exit 3'
+rc=$?
 [ "$rc" = 3 ] && ok "child exit code passes through" || bad "exit passthrough rc=$rc"
 
 # (2) unwritable log: diagnostic on stderr, child still runs and gets TERM
@@ -43,7 +49,9 @@ blog="$tmp/burst.log"
 wp=$!
 sleep 0.5
 for _ in $(seq 1 400); do
-  kill -USR1 "$wp"; kill -USR2 "$wp"; kill -HUP "$wp"
+  kill -USR1 "$wp"
+  kill -USR2 "$wp"
+  kill -HUP "$wp"
 done
 sleep 0.5
 kill -TERM "$wp"

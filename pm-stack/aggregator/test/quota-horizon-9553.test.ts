@@ -104,11 +104,23 @@ describe("reset horizon (#9553)", () => {
   test("labels fleet invocation-ledger counts as recorded", () => {
     const a = analytics();
     a.activity7d = {
-      rangeLabel: "7d", sessions: 0, rootSessions: 0, subSessions: 0, turns: 0,
-      toolCallsTotal: 0, topTools: [], skillTotal: 0, topSkills: [], mcpx: [],
-      mcpxDaemon: { calls: 0, errors: 0, topTools: [] }, executeGateway: 0,
-      fleetInferred: [{ subcommand: "queue", count: 99 }], fleetInferredTotal: 99,
-      fleetSource: "recorded", fleetRecorded: [{ subcommand: "queue", count: 2 }], fleetRecordedTotal: 2,
+      rangeLabel: "7d",
+      sessions: 0,
+      rootSessions: 0,
+      subSessions: 0,
+      turns: 0,
+      toolCallsTotal: 0,
+      topTools: [],
+      skillTotal: 0,
+      topSkills: [],
+      mcpx: [],
+      mcpxDaemon: { calls: 0, errors: 0, topTools: [] },
+      executeGateway: 0,
+      fleetInferred: [{ subcommand: "queue", count: 99 }],
+      fleetInferredTotal: 99,
+      fleetSource: "recorded",
+      fleetRecorded: [{ subcommand: "queue", count: 2 }],
+      fleetRecordedTotal: 2,
     } satisfies ActivityCounts;
     const html = analyticsSectionHtml(a, (n) => n);
     expect(html).toContain("fleet binary (7d, <strong>recorded</strong>): <strong>2</strong>");

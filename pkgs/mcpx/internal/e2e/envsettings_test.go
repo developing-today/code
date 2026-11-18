@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // The variables #172 found read by hand and declared nowhere. Each is now a
@@ -69,6 +71,10 @@ func TestLoggingTraceIsReachableFromEverySurface(t *testing.T) {
 // script.permissions key were parsed, reported by `mcpx settings`, and
 // ignored.
 func TestScriptPermissionsIsReachableFromEverySurface(t *testing.T) {
+	// The probe is a Deno API and "strict" defines flags for deno only, so
+	// without deno every denied case fails with "no usable runtime" rather
+	// than testing the setting.
+	testsupport.RequireBinary(t, "deno")
 	const probe = `try { await Deno.readTextFile("/etc/hosts"); console.log("ALLOWED"); }
 		catch (err) { console.log("denied:", (err as Error).name); }`
 	base := newEnv(t, oneServer)

@@ -1,12 +1,15 @@
 package e2e_test
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -14,6 +17,7 @@ import (
 	"time"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
 
 // Effect probes, grouped by surface (#1971, Approach C).
@@ -68,6 +72,80 @@ var implementedEffectProbes = map[string]string{
 	"proto.askPoll":              "TestAskPollCeilingIsReachableFromTheEnvironment",
 	"proto.askRounds":            "TestAskRoundsLimitIsReachableFromTheEnvironment",
 	"proto.askTTL":               "TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment",
+	"proto.askTimeout":           "TestAskTimeoutReleasesAHeldRequestFromTheEnvironment",
+	"proto.stateTTL":             "TestStateTTLExpiresAResumableRequestFromTheEnvironment",
+	"proto.sessionIdle":          "TestSessionIdleReapsAnUnusedSessionFromTheEnvironment",
+	"proto.mcpPath":              "TestMCPPathMovesTheEndpointFromTheEnvironment",
+	"proto.native":               "TestNativeAsksTheCallingClientFromTheEnvironment",
+	"protoMessages.listMaxAge":   "TestListMaxAgeSetsTheListCacheHintFromTheEnvironment",
+	"protoMessages.readMaxAge":   "TestReadMaxAgeSetsTheReadCacheHintFromTheEnvironment",
+	"protoMessages.taskAfter":    "TestTaskAfterHandsASlowCallATaskFromTheEnvironment",
+	"protoTasks.pollInterval":    "TestTaskPollIntervalSetsTheTaskPollHintFromTheEnvironment",
+	"spec.first":                 "TestTheRevisionPolicyDecidesWhetherProgressKeepsItsMessage",
+	"spec.lenient":               "TestTheRevisionPolicyDecidesWhetherAServerInitiatedRequestIsAnswered",
+	"spec.precedence":            "TestSpecPrecedenceDecidesWhetherProgressKeepsItsMessageFromTheEnvironment",
+	"exec.maxOutputBytes":        "TestExecMaxOutputBytesCapsStdoutFromTheEnvironment",
+	"exec.timeout":               "TestExecTimeoutStopsALongScriptFromTheEnvironment",
+	"exec.output":                "TestExecOutputShapesTheResultFromTheEnvironment",
+	"mcp.pageSize":               "TestMCPPageSizePagesToolsListFromTheEnvironment",
+	"mcp.passthrough":            "TestMCPPassthroughServesANamespaceDirectlyFromTheEnvironment",
+	"completion.perMinute":       "TestCompletionPerMinuteLimitsOneCallerFromTheEnvironment",
+	"completion.serverPerMinute": "TestCompletionServerPerMinuteLimitsAllCallersFromTheEnvironment",
+	"logstore.queryLimit":        "TestLogstoreQueryLimitBoundsALogQueryFromTheEnvironment",
+	"recipes.minScore":           "TestRecipesMinScoreRefusesAWeakMatchFromTheEnvironment",
+	"recipes.matchMargin":        "TestRecipesMatchMarginSettlesATieFromTheEnvironment",
+	"recipes.limit":              "TestRecipesLimitBoundsTheRankingFromTheEnvironment",
+	"tasks.ttl":                  "TestTasksTTLSetsAnExecTasksRetentionFromTheEnvironment",
+	"tasks.resultWait":           "TestTasksResultWaitBoundsCollectingAResultFromTheEnvironment",
+	"protoTasks.maxTTL":          "TestProtoTasksMaxTTLClampsATasksRetentionFromTheEnvironment",
+	"protoTasks.maxPerRequestor": "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
+	"protoTasks.perMinute":       "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
+	"events.history":             "TestEventsHistoryBoundsTheReplay",
+	"artifacts.interceptImages":  "TestArtifactsInterceptImagesStoresAnEmittedImage",
+	"plumbing.indexOnQuery":      "TestPlumbingIndexOnQueryIngestsBeforeALogQuery",
+	"plumbing.validatePaths":     "TestPlumbingValidatePathsChecksTheLogDirUpFront",
+	"script.language":            "TestScriptLanguageRunsPython",
+	"logging.trace":              "TestLoggingTraceLogsEachCall",
+	"exec.where":                 "TestExecWhereRemoteRunsOnTheDaemon",
+	"paths.adapters":             "TestPathsAdaptersFindsADeclarationFile",
+	"paths.apis":                 "TestPathsAPIsFindsADeclarationFile",
+	"script.runtime":             "TestScriptRuntimeSelectsTheRuntime",
+	"script.runtimeOrder":        "TestScriptRuntimeOrderRanksTheAutoPick",
+	"script.permissions":         "TestScriptPermissionsSandboxesNode",
+	"script.profiles":            "TestScriptProfilesDefinesAProfile",
+	"script.runtimes":            "TestScriptRuntimesDeclaresARuntime",
+	"script.before":              "TestScriptPhasesRunFromTheEnvironment",
+	"script.onSuccess":           "TestScriptPhasesRunFromTheEnvironment",
+	"script.onError":             "TestScriptPhasesRunFromTheEnvironment",
+	"script.suffix":              "TestScriptPhasesRunFromTheEnvironment",
+	"hooks":                      "TestHooksRunOnTheirEvent",
+	"hooks.timeout":              "TestHooksTimeoutStopsASlowHook",
+	"daemon.ui":                  "TestDaemonUITurnsTheDashboardOff",
+	"daemon.uiDir":               "TestDaemonUIDirOverridesTheDashboard",
+	"logging.level":              "TestLoggingLevelShowsDebugRecords",
+	"logging.format":             "TestLoggingFormatRendersJSON",
+	"logging.source":             "TestLoggingSourceAddsTheCallSite",
+	"logging.dir":                "TestLoggingDirHoldsTheDurableLog",
+	"logging.include":            "TestLoggingIncludeChoosesTheAmbientBlocks",
+	"logging.maxLines":           "TestLoggingMaxLinesRotatesTheFile",
+	"logging.maxBytes":           "TestLoggingMaxBytesRotatesTheFile",
+	"logging.keep":               "TestLoggingKeepPrunesRotatedFiles",
+	"artifacts.enabled":          "TestArtifactsEnabledGatesTheStore",
+	"artifacts.maxBytes":         "TestArtifactsMaxBytesRefusesALargeArtifact",
+	"artifacts.quota":            "TestArtifactsQuotaBoundsTheStore",
+	"artifacts.delivery":         "TestArtifactsDeliveryInlinesTheBody",
+	"artifacts.inlineMaxBytes":   "TestArtifactsInlineMaxBytesBoundsAnInlinedBody",
+	"artifacts.dir":              "TestArtifactsDirReceivesTheRunsArtifacts",
+	"preset":                     "TestPresetSelectsADefinedBundle",
+	"serve.mode":                 "TestServeModeSelectsTheServedSurface",
+	"presets":                    "TestPresetsDefinesNamedFlagBundles",
+	"catalog.budget":             "TestCatalogBudgetFitsTheSignatures",
+	"catalog.bias":               "TestCatalogBiasPicksWhatATightBudgetShows",
+	"catalog.pinnedTools":        "TestCatalogPinnedToolsAlwaysListInReactiveMode",
+	"retention.maxTools":         "TestRetentionMaxToolsCapsTheReactiveWorkingSet",
+	"diagnose.history":           "TestDiagnoseHistoryCapsRecordedSchemaChanges",
+	"diagnose.preflight":         "TestDiagnosePreflightStopsAMismatchedScript",
+	"proto.serveMCP":             "TestServeMCPUnmountsTheEndpointFromTheEnvironment",
 	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
 	"daemon.autostart":           "TestDaemonAutostartIsReachableFromTheEnvironment",
 	"http.bodyLimit":             "TestHTTPBodyLimitsRejectOversizedBodies",
@@ -94,49 +172,120 @@ var implementedEffectProbes = map[string]string{
 // implemented probe name to appear here, so a declared probe must
 // really exist -- not just be spelled the same in two maps.
 var effectProbeFuncs = map[string]func(*testing.T){
-	"TestLoggingFileOffWritesNoDurableLog":                   TestLoggingFileOffWritesNoDurableLog,
-	"TestOutputJSONIsReachableFromTheEnvironment":            TestOutputJSONIsReachableFromTheEnvironment,
-	"TestPathsConfigFileChangesWhichConfigLoads":             TestPathsConfigFileChangesWhichConfigLoads,
-	"TestPathsScriptsFindsRecipesThatLiveOnlyThere":          TestPathsScriptsFindsRecipesThatLiveOnlyThere,
-	"TestPathsCacheChangesTheDoctorDirectory":                TestPathsCacheChangesTheDoctorDirectory,
-	"TestPathsPluginsDiscoversAPluginThatLivesOnlyThere":     TestPathsPluginsDiscoversAPluginThatLivesOnlyThere,
-	"TestProxyUpstreamTimeoutIsReachableFromTheEnvironment":  TestProxyUpstreamTimeoutIsReachableFromTheEnvironment,
-	"TestPoolDefaultsAreReachableFromTheEnvironment":         TestPoolDefaultsAreReachableFromTheEnvironment,
-	"TestRegistryLimitReachesTheCLI":                         TestRegistryLimitReachesTheCLI,
-	"TestRegistryPageSizeChangesWhatTheCLIAsksFor":           TestRegistryPageSizeChangesWhatTheCLIAsksFor,
-	"TestScriptCaptureConsoleOffDropsConsoleOutput":          TestScriptCaptureConsoleOffDropsConsoleOutput,
-	"TestScriptCwdIsReachableFromTheEnvironment":             TestScriptCwdIsReachableFromTheEnvironment,
-	"TestScriptInterpreterIsReachableFromTheEnvironment":     TestScriptInterpreterIsReachableFromTheEnvironment,
-	"TestScriptEnvIsReachableFromTheEnvironment":             TestScriptEnvIsReachableFromTheEnvironment,
-	"TestScriptDevshellIsReachableFromTheEnvironment":        TestScriptDevshellIsReachableFromTheEnvironment,
-	"TestScriptPrefixIsReachableFromTheEnvironment":          TestScriptPrefixIsReachableFromTheEnvironment,
-	"TestScriptTypecheckOnRefusesATypeError":                 TestScriptTypecheckOnRefusesATypeError,
-	"TestSearchLimitCapsTheResults":                          TestSearchLimitCapsTheResults,
-	"TestStateDirectoryIsReachableAsASetting":                TestStateDirectoryIsReachableAsASetting,
-	"TestStrictUnknownKeysRefusesATypo":                      TestStrictUnknownKeysRefusesATypo,
-	"TestTheRegistryPageCapSaysItStoppedEarly":               TestTheRegistryPageCapSaysItStoppedEarly,
-	"TestDepsSourceNoneDropsTheManifestLayer":                TestDepsSourceNoneDropsTheManifestLayer,
-	"TestDepsManifestNamesTheManifestResolutionReads":        TestDepsManifestNamesTheManifestResolutionReads,
-	"TestDepsPackagesPinContradictingTheManifestFailsTheRun": TestDepsPackagesPinContradictingTheManifestFailsTheRun,
-	"TestPathsDepsExtendsManifestDiscovery":                  TestPathsDepsExtendsManifestDiscovery,
-	"TestTasksMaxAgeIsReachableFromEnvironment":              TestTasksMaxAgeIsReachableFromEnvironment,
-	"TestStatsTopLimitsTheRowsTheStatsAPIReports":            TestStatsTopLimitsTheRowsTheStatsAPIReports,
-	"TestAskPollCeilingIsReachableFromTheEnvironment":        TestAskPollCeilingIsReachableFromTheEnvironment,
-	"TestAskRoundsLimitIsReachableFromTheEnvironment":        TestAskRoundsLimitIsReachableFromTheEnvironment,
-	"TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment":  TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment,
-	"TestDaemonAddressIsReachableFromTheEnvironment":         TestDaemonAddressIsReachableFromTheEnvironment,
-	"TestDaemonAutostartIsReachableFromTheEnvironment":       TestDaemonAutostartIsReachableFromTheEnvironment,
-	"TestHTTPBodyLimitsRejectOversizedBodies":                TestHTTPBodyLimitsRejectOversizedBodies,
-	"TestHTTPEventStreamSettingsChangeTheStream":             TestHTTPEventStreamSettingsChangeTheStream,
-	"TestHTTPReadHeaderTimeoutClosesSlowClients":             TestHTTPReadHeaderTimeoutClosesSlowClients,
-	"TestHTTPRequestTimeoutBoundsAClientCall":                TestHTTPRequestTimeoutBoundsAClientCall,
-	"TestHTTPShutdownGraceBoundsHowLongAStopWaits":           TestHTTPShutdownGraceBoundsHowLongAStopWaits,
-	"TestHTTPStreamBufferMaxEndsAnOversizedEventLine":        TestHTTPStreamBufferMaxEndsAnOversizedEventLine,
-	"TestTransportAllowedOriginsAreServed":                   TestTransportAllowedOriginsAreServed,
-	"TestTransportBearerTokenGatesTheDaemon":                 TestTransportBearerTokenGatesTheDaemon,
-	"TestTransportSSEKeepAliveCommentsOnAQuietStream":        TestTransportSSEKeepAliveCommentsOnAQuietStream,
-	"TestTransportSessionMetaKeysNameTheSession":             TestTransportSessionMetaKeysNameTheSession,
-	"TestTransportStdioDrainBoundsServeShutdown":             TestTransportStdioDrainBoundsServeShutdown,
+	"TestLoggingFileOffWritesNoDurableLog":                                      TestLoggingFileOffWritesNoDurableLog,
+	"TestOutputJSONIsReachableFromTheEnvironment":                               TestOutputJSONIsReachableFromTheEnvironment,
+	"TestPathsConfigFileChangesWhichConfigLoads":                                TestPathsConfigFileChangesWhichConfigLoads,
+	"TestPathsScriptsFindsRecipesThatLiveOnlyThere":                             TestPathsScriptsFindsRecipesThatLiveOnlyThere,
+	"TestPathsCacheChangesTheDoctorDirectory":                                   TestPathsCacheChangesTheDoctorDirectory,
+	"TestPathsPluginsDiscoversAPluginThatLivesOnlyThere":                        TestPathsPluginsDiscoversAPluginThatLivesOnlyThere,
+	"TestProxyUpstreamTimeoutIsReachableFromTheEnvironment":                     TestProxyUpstreamTimeoutIsReachableFromTheEnvironment,
+	"TestPoolDefaultsAreReachableFromTheEnvironment":                            TestPoolDefaultsAreReachableFromTheEnvironment,
+	"TestRegistryLimitReachesTheCLI":                                            TestRegistryLimitReachesTheCLI,
+	"TestRegistryPageSizeChangesWhatTheCLIAsksFor":                              TestRegistryPageSizeChangesWhatTheCLIAsksFor,
+	"TestScriptCaptureConsoleOffDropsConsoleOutput":                             TestScriptCaptureConsoleOffDropsConsoleOutput,
+	"TestScriptCwdIsReachableFromTheEnvironment":                                TestScriptCwdIsReachableFromTheEnvironment,
+	"TestScriptInterpreterIsReachableFromTheEnvironment":                        TestScriptInterpreterIsReachableFromTheEnvironment,
+	"TestScriptEnvIsReachableFromTheEnvironment":                                TestScriptEnvIsReachableFromTheEnvironment,
+	"TestScriptDevshellIsReachableFromTheEnvironment":                           TestScriptDevshellIsReachableFromTheEnvironment,
+	"TestScriptPrefixIsReachableFromTheEnvironment":                             TestScriptPrefixIsReachableFromTheEnvironment,
+	"TestScriptTypecheckOnRefusesATypeError":                                    TestScriptTypecheckOnRefusesATypeError,
+	"TestSearchLimitCapsTheResults":                                             TestSearchLimitCapsTheResults,
+	"TestStateDirectoryIsReachableAsASetting":                                   TestStateDirectoryIsReachableAsASetting,
+	"TestStrictUnknownKeysRefusesATypo":                                         TestStrictUnknownKeysRefusesATypo,
+	"TestTheRegistryPageCapSaysItStoppedEarly":                                  TestTheRegistryPageCapSaysItStoppedEarly,
+	"TestDepsSourceNoneDropsTheManifestLayer":                                   TestDepsSourceNoneDropsTheManifestLayer,
+	"TestDepsManifestNamesTheManifestResolutionReads":                           TestDepsManifestNamesTheManifestResolutionReads,
+	"TestDepsPackagesPinContradictingTheManifestFailsTheRun":                    TestDepsPackagesPinContradictingTheManifestFailsTheRun,
+	"TestPathsDepsExtendsManifestDiscovery":                                     TestPathsDepsExtendsManifestDiscovery,
+	"TestTasksMaxAgeIsReachableFromEnvironment":                                 TestTasksMaxAgeIsReachableFromEnvironment,
+	"TestStatsTopLimitsTheRowsTheStatsAPIReports":                               TestStatsTopLimitsTheRowsTheStatsAPIReports,
+	"TestAskPollCeilingIsReachableFromTheEnvironment":                           TestAskPollCeilingIsReachableFromTheEnvironment,
+	"TestAskRoundsLimitIsReachableFromTheEnvironment":                           TestAskRoundsLimitIsReachableFromTheEnvironment,
+	"TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment":                     TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment,
+	"TestAskTimeoutReleasesAHeldRequestFromTheEnvironment":                      TestAskTimeoutReleasesAHeldRequestFromTheEnvironment,
+	"TestStateTTLExpiresAResumableRequestFromTheEnvironment":                    TestStateTTLExpiresAResumableRequestFromTheEnvironment,
+	"TestSessionIdleReapsAnUnusedSessionFromTheEnvironment":                     TestSessionIdleReapsAnUnusedSessionFromTheEnvironment,
+	"TestMCPPathMovesTheEndpointFromTheEnvironment":                             TestMCPPathMovesTheEndpointFromTheEnvironment,
+	"TestNativeAsksTheCallingClientFromTheEnvironment":                          TestNativeAsksTheCallingClientFromTheEnvironment,
+	"TestListMaxAgeSetsTheListCacheHintFromTheEnvironment":                      TestListMaxAgeSetsTheListCacheHintFromTheEnvironment,
+	"TestReadMaxAgeSetsTheReadCacheHintFromTheEnvironment":                      TestReadMaxAgeSetsTheReadCacheHintFromTheEnvironment,
+	"TestTaskAfterHandsASlowCallATaskFromTheEnvironment":                        TestTaskAfterHandsASlowCallATaskFromTheEnvironment,
+	"TestTaskPollIntervalSetsTheTaskPollHintFromTheEnvironment":                 TestTaskPollIntervalSetsTheTaskPollHintFromTheEnvironment,
+	"TestTheRevisionPolicyDecidesWhetherProgressKeepsItsMessage":                TestTheRevisionPolicyDecidesWhetherProgressKeepsItsMessage,
+	"TestTheRevisionPolicyDecidesWhetherAServerInitiatedRequestIsAnswered":      TestTheRevisionPolicyDecidesWhetherAServerInitiatedRequestIsAnswered,
+	"TestSpecPrecedenceDecidesWhetherProgressKeepsItsMessageFromTheEnvironment": TestSpecPrecedenceDecidesWhetherProgressKeepsItsMessageFromTheEnvironment,
+	"TestExecMaxOutputBytesCapsStdoutFromTheEnvironment":                        TestExecMaxOutputBytesCapsStdoutFromTheEnvironment,
+	"TestExecTimeoutStopsALongScriptFromTheEnvironment":                         TestExecTimeoutStopsALongScriptFromTheEnvironment,
+	"TestExecOutputShapesTheResultFromTheEnvironment":                           TestExecOutputShapesTheResultFromTheEnvironment,
+	"TestMCPPageSizePagesToolsListFromTheEnvironment":                           TestMCPPageSizePagesToolsListFromTheEnvironment,
+	"TestMCPPassthroughServesANamespaceDirectlyFromTheEnvironment":              TestMCPPassthroughServesANamespaceDirectlyFromTheEnvironment,
+	"TestCompletionPerMinuteLimitsOneCallerFromTheEnvironment":                  TestCompletionPerMinuteLimitsOneCallerFromTheEnvironment,
+	"TestCompletionServerPerMinuteLimitsAllCallersFromTheEnvironment":           TestCompletionServerPerMinuteLimitsAllCallersFromTheEnvironment,
+	"TestLogstoreQueryLimitBoundsALogQueryFromTheEnvironment":                   TestLogstoreQueryLimitBoundsALogQueryFromTheEnvironment,
+	"TestRecipesMinScoreRefusesAWeakMatchFromTheEnvironment":                    TestRecipesMinScoreRefusesAWeakMatchFromTheEnvironment,
+	"TestRecipesMatchMarginSettlesATieFromTheEnvironment":                       TestRecipesMatchMarginSettlesATieFromTheEnvironment,
+	"TestRecipesLimitBoundsTheRankingFromTheEnvironment":                        TestRecipesLimitBoundsTheRankingFromTheEnvironment,
+	"TestTasksTTLSetsAnExecTasksRetentionFromTheEnvironment":                    TestTasksTTLSetsAnExecTasksRetentionFromTheEnvironment,
+	"TestTasksResultWaitBoundsCollectingAResultFromTheEnvironment":              TestTasksResultWaitBoundsCollectingAResultFromTheEnvironment,
+	"TestProtoTasksMaxTTLClampsATasksRetentionFromTheEnvironment":               TestProtoTasksMaxTTLClampsATasksRetentionFromTheEnvironment,
+	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":        TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
+	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                 TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
+	"TestEventsHistoryBoundsTheReplay":                                          TestEventsHistoryBoundsTheReplay,
+	"TestArtifactsInterceptImagesStoresAnEmittedImage":                          TestArtifactsInterceptImagesStoresAnEmittedImage,
+	"TestPlumbingIndexOnQueryIngestsBeforeALogQuery":                            TestPlumbingIndexOnQueryIngestsBeforeALogQuery,
+	"TestPlumbingValidatePathsChecksTheLogDirUpFront":                           TestPlumbingValidatePathsChecksTheLogDirUpFront,
+	"TestScriptLanguageRunsPython":                                              TestScriptLanguageRunsPython,
+	"TestLoggingTraceLogsEachCall":                                              TestLoggingTraceLogsEachCall,
+	"TestExecWhereRemoteRunsOnTheDaemon":                                        TestExecWhereRemoteRunsOnTheDaemon,
+	"TestPathsAdaptersFindsADeclarationFile":                                    TestPathsAdaptersFindsADeclarationFile,
+	"TestPathsAPIsFindsADeclarationFile":                                        TestPathsAPIsFindsADeclarationFile,
+	"TestScriptRuntimeSelectsTheRuntime":                                        TestScriptRuntimeSelectsTheRuntime,
+	"TestScriptRuntimeOrderRanksTheAutoPick":                                    TestScriptRuntimeOrderRanksTheAutoPick,
+	"TestScriptPermissionsSandboxesNode":                                        TestScriptPermissionsSandboxesNode,
+	"TestScriptProfilesDefinesAProfile":                                         TestScriptProfilesDefinesAProfile,
+	"TestScriptRuntimesDeclaresARuntime":                                        TestScriptRuntimesDeclaresARuntime,
+	"TestScriptPhasesRunFromTheEnvironment":                                     TestScriptPhasesRunFromTheEnvironment,
+	"TestHooksRunOnTheirEvent":                                                  TestHooksRunOnTheirEvent,
+	"TestHooksTimeoutStopsASlowHook":                                            TestHooksTimeoutStopsASlowHook,
+	"TestDaemonUITurnsTheDashboardOff":                                          TestDaemonUITurnsTheDashboardOff,
+	"TestDaemonUIDirOverridesTheDashboard":                                      TestDaemonUIDirOverridesTheDashboard,
+	"TestLoggingLevelShowsDebugRecords":                                         TestLoggingLevelShowsDebugRecords,
+	"TestLoggingFormatRendersJSON":                                              TestLoggingFormatRendersJSON,
+	"TestLoggingSourceAddsTheCallSite":                                          TestLoggingSourceAddsTheCallSite,
+	"TestLoggingDirHoldsTheDurableLog":                                          TestLoggingDirHoldsTheDurableLog,
+	"TestLoggingIncludeChoosesTheAmbientBlocks":                                 TestLoggingIncludeChoosesTheAmbientBlocks,
+	"TestLoggingMaxLinesRotatesTheFile":                                         TestLoggingMaxLinesRotatesTheFile,
+	"TestLoggingMaxBytesRotatesTheFile":                                         TestLoggingMaxBytesRotatesTheFile,
+	"TestLoggingKeepPrunesRotatedFiles":                                         TestLoggingKeepPrunesRotatedFiles,
+	"TestArtifactsEnabledGatesTheStore":                                         TestArtifactsEnabledGatesTheStore,
+	"TestArtifactsMaxBytesRefusesALargeArtifact":                                TestArtifactsMaxBytesRefusesALargeArtifact,
+	"TestArtifactsQuotaBoundsTheStore":                                          TestArtifactsQuotaBoundsTheStore,
+	"TestArtifactsDeliveryInlinesTheBody":                                       TestArtifactsDeliveryInlinesTheBody,
+	"TestArtifactsInlineMaxBytesBoundsAnInlinedBody":                            TestArtifactsInlineMaxBytesBoundsAnInlinedBody,
+	"TestArtifactsDirReceivesTheRunsArtifacts":                                  TestArtifactsDirReceivesTheRunsArtifacts,
+	"TestPresetSelectsADefinedBundle":                                           TestPresetSelectsADefinedBundle,
+	"TestServeModeSelectsTheServedSurface":                                      TestServeModeSelectsTheServedSurface,
+	"TestPresetsDefinesNamedFlagBundles":                                        TestPresetsDefinesNamedFlagBundles,
+	"TestCatalogBudgetFitsTheSignatures":                                        TestCatalogBudgetFitsTheSignatures,
+	"TestCatalogBiasPicksWhatATightBudgetShows":                                 TestCatalogBiasPicksWhatATightBudgetShows,
+	"TestCatalogPinnedToolsAlwaysListInReactiveMode":                            TestCatalogPinnedToolsAlwaysListInReactiveMode,
+	"TestRetentionMaxToolsCapsTheReactiveWorkingSet":                            TestRetentionMaxToolsCapsTheReactiveWorkingSet,
+	"TestDiagnoseHistoryCapsRecordedSchemaChanges":                              TestDiagnoseHistoryCapsRecordedSchemaChanges,
+	"TestDiagnosePreflightStopsAMismatchedScript":                               TestDiagnosePreflightStopsAMismatchedScript,
+	"TestServeMCPUnmountsTheEndpointFromTheEnvironment":                         TestServeMCPUnmountsTheEndpointFromTheEnvironment,
+	"TestDaemonAddressIsReachableFromTheEnvironment":                            TestDaemonAddressIsReachableFromTheEnvironment,
+	"TestDaemonAutostartIsReachableFromTheEnvironment":                          TestDaemonAutostartIsReachableFromTheEnvironment,
+	"TestHTTPBodyLimitsRejectOversizedBodies":                                   TestHTTPBodyLimitsRejectOversizedBodies,
+	"TestHTTPEventStreamSettingsChangeTheStream":                                TestHTTPEventStreamSettingsChangeTheStream,
+	"TestHTTPReadHeaderTimeoutClosesSlowClients":                                TestHTTPReadHeaderTimeoutClosesSlowClients,
+	"TestHTTPRequestTimeoutBoundsAClientCall":                                   TestHTTPRequestTimeoutBoundsAClientCall,
+	"TestHTTPShutdownGraceBoundsHowLongAStopWaits":                              TestHTTPShutdownGraceBoundsHowLongAStopWaits,
+	"TestHTTPStreamBufferMaxEndsAnOversizedEventLine":                           TestHTTPStreamBufferMaxEndsAnOversizedEventLine,
+	"TestTransportAllowedOriginsAreServed":                                      TestTransportAllowedOriginsAreServed,
+	"TestTransportBearerTokenGatesTheDaemon":                                    TestTransportBearerTokenGatesTheDaemon,
+	"TestTransportSSEKeepAliveCommentsOnAQuietStream":                           TestTransportSSEKeepAliveCommentsOnAQuietStream,
+	"TestTransportSessionMetaKeysNameTheSession":                                TestTransportSessionMetaKeysNameTheSession,
+	"TestTransportStdioDrainBoundsServeShutdown":                                TestTransportStdioDrainBoundsServeShutdown,
 }
 
 func TestEffectProbeDeclarationsMatchTheProbesThatExist(t *testing.T) {
@@ -425,6 +574,1857 @@ func TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment(t *testing.T) {
 	took, _ := script["durationMs"].(float64)
 	if bounded["done"] != true || script["timedOut"] != true || took <= 0 || took >= 4000 {
 		t.Fatalf("proto.askTTL=1s should stop the call at its deadline, got %v", bounded)
+	}
+}
+
+// proto.askTimeout bounds how long the daemon's /mcp holds one request
+// while the question it put to its client goes unanswered. A 2025-11-25
+// client that declared form elicitation calls a tool that asks; it is sent
+// elicitation/create on the stream and never answers.
+// Oracle: at the default (10m) the stream carries no final frame within
+// six seconds; with MCPX_PROTO_ASK_TIMEOUT=1s it ends inside that window
+// with the stopped-waiting error.
+func TestAskTimeoutReleasesAHeldRequestFromTheEnvironment(t *testing.T) {
+	final := func(env ...string) string {
+		t.Helper()
+		e := askEnv(t)
+		e.setenv(env...)
+		e.run("refresh")
+		ep := e.endpoint(t)
+		init := mcpPost(t, ep, "", map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "initialize",
+			"params": map[string]any{
+				"protocolVersion": "2025-11-25",
+				"capabilities":    map[string]any{"elicitation": map[string]any{"form": map[string]any{}}},
+			},
+		})
+		session := init.Header.Get("Mcp-Session-Id")
+		_ = init.Body.Close()
+		if session == "" {
+			t.Fatal("a legacy client needs a session")
+		}
+		resp := mcpPost(t, ep, session, map[string]any{
+			"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+			"params": map[string]any{"name": "mcpx_call",
+				"arguments": map[string]any{"namespace": "ask", "tool": "need_repo"}},
+		})
+		frames := make(chan map[string]any, 8)
+		go func() {
+			defer close(frames)
+			sc := bufio.NewScanner(resp.Body)
+			for sc.Scan() {
+				var frame map[string]any
+				if line := sc.Text(); strings.HasPrefix(line, "data: ") &&
+					json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &frame) == nil {
+					frames <- frame
+				}
+			}
+		}()
+		defer func() { _ = resp.Body.Close() }()
+		asked := false
+		stop := time.After(6 * time.Second)
+		for {
+			select {
+			case frame, open := <-frames:
+				if !open {
+					t.Fatalf("the stream ended without a final frame (asked: %v)", asked)
+				}
+				if frame["method"] == "elicitation/create" {
+					asked = true // and never answered
+					continue
+				}
+				if frame["id"] != nil && (frame["result"] != nil || frame["error"] != nil) {
+					if !asked {
+						t.Fatalf("the call ended before its client was asked: %s", dumpJSON(t, frame))
+					}
+					return dumpJSON(t, frame)
+				}
+			case <-stop:
+				if !asked {
+					t.Fatal("the client was never asked")
+				}
+				return ""
+			}
+		}
+	}
+
+	if got := final(); got != "" {
+		t.Fatalf("at the default proto.askTimeout the request should still be held after six seconds, got %s", got)
+	}
+	if got := final("MCPX_PROTO_ASK_TIMEOUT=1s"); !strings.Contains(got, "did not finish before mcpx stopped waiting") {
+		t.Fatalf("proto.askTimeout=1s should end the request with the stopped-waiting error, got %q", got)
+	}
+}
+
+// proto.stateTTL is how long a requestState handed to a modern client
+// stays resumable. The client is asked for a repository, waits three
+// seconds, then resumes with its answer.
+// Oracle: at the default (30m) the resumed call completes with the answer;
+// with MCPX_PROTO_STATE_TTL=1s the resume is refused as expired.
+func TestStateTTLExpiresAResumableRequestFromTheEnvironment(t *testing.T) {
+	resume := func(env ...string) string {
+		t.Helper()
+		e := askEnv(t)
+		e.setenv(env...)
+		e.run("refresh")
+		ep := e.endpoint(t)
+		params := map[string]any{
+			"name":      "mcpx_call",
+			"arguments": map[string]any{"namespace": "ask", "tool": "need_repo"},
+			"_meta": map[string]any{
+				"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+				"io.modelcontextprotocol/clientCapabilities": map[string]any{
+					"elicitation": map[string]any{"form": map[string]any{}},
+				},
+			},
+		}
+		post := func(id int) map[string]any {
+			resp := mcpPost(t, ep, "", map[string]any{"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": params})
+			defer func() { _ = resp.Body.Close() }()
+			var frame map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&frame); err != nil {
+				t.Fatal(err)
+			}
+			return frame
+		}
+		first := post(1)
+		result, _ := first["result"].(map[string]any)
+		state, _ := result["requestState"].(string)
+		requests, _ := result["inputRequests"].(map[string]any)
+		if result["resultType"] != "input_required" || state == "" || len(requests) != 1 {
+			t.Fatalf("expected one resumable question, got %s", dumpJSON(t, first))
+		}
+		answers := map[string]any{}
+		for id := range requests {
+			answers[id] = map[string]any{"action": "accept", "content": map[string]any{"repo": "me/late"}}
+		}
+		time.Sleep(3 * time.Second)
+		params["requestState"] = state
+		params["inputResponses"] = answers
+		return dumpJSON(t, post(2))
+	}
+
+	if got := resume(); !strings.Contains(got, `"resultType":"complete"`) || !strings.Contains(got, "me/late") {
+		t.Fatalf("at the default proto.stateTTL a resume after three seconds should complete, got %s", got)
+	}
+	if got := resume("MCPX_PROTO_STATE_TTL=1s"); !strings.Contains(got, "requestState expired") {
+		t.Fatalf("proto.stateTTL=1s should refuse a resume after three seconds, got %s", got)
+	}
+}
+
+// proto.sessionIdle is how long an unused legacy Streamable HTTP session
+// is kept. Idle sessions are reaped when a new one is opened, so the probe
+// opens a session, leaves it alone for three seconds, opens a second one
+// and then asks to end the first.
+// Oracle: at the default (30m) the first session still exists and DELETE
+// ends it (204); with MCPX_PROTO_SESSION_IDLE=1s it was reaped and DELETE
+// answers 404.
+func TestSessionIdleReapsAnUnusedSessionFromTheEnvironment(t *testing.T) {
+	endStatus := func(env ...string) int {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		e.run("ls")
+		ep := endpointOf(t, e)
+		first := mcpInit(t, ep)
+		time.Sleep(3 * time.Second)
+		_ = mcpInit(t, ep)
+		req, err := http.NewRequest(http.MethodDelete, ep+"/mcp", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Mcp-Session-Id", first)
+		resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if got := endStatus(); got != http.StatusNoContent {
+		t.Fatalf("at the default proto.sessionIdle a session idle for three seconds should still end with 204, got %d", got)
+	}
+	if got := endStatus("MCPX_PROTO_SESSION_IDLE=1s"); got != http.StatusNotFound {
+		t.Fatalf("proto.sessionIdle=1s should reap a session idle for three seconds, so DELETE should answer 404, got %d", got)
+	}
+}
+
+// initializeStatus posts an initialize to path on the daemon and returns
+// the HTTP status, so a probe can tell where MCP is mounted.
+func initializeStatus(t *testing.T, ep, path string) int {
+	t.Helper()
+	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`
+	req, err := http.NewRequest(http.MethodPost, ep+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode
+}
+
+// proto.mcpPath is where the daemon mounts MCP.
+// Oracle: at the default an initialize to /mcp succeeds and one to
+// /tools/mcp does not; with MCPX_PROTO_MCP_PATH=/tools/mcp it is the
+// other way round.
+func TestMCPPathMovesTheEndpointFromTheEnvironment(t *testing.T) {
+	statuses := func(env ...string) (atMCP, atMoved int) {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		e.run("ls")
+		ep := endpointOf(t, e)
+		return initializeStatus(t, ep, "/mcp"), initializeStatus(t, ep, "/tools/mcp")
+	}
+
+	if atMCP, atMoved := statuses(); atMCP != http.StatusOK || atMoved == http.StatusOK {
+		t.Fatalf("at the default proto.mcpPath MCP should answer at /mcp only, got /mcp=%d /tools/mcp=%d", atMCP, atMoved)
+	}
+	if atMCP, atMoved := statuses("MCPX_PROTO_MCP_PATH=/tools/mcp"); atMoved != http.StatusOK || atMCP == http.StatusOK {
+		t.Fatalf("proto.mcpPath=/tools/mcp should move MCP there, got /mcp=%d /tools/mcp=%d", atMCP, atMoved)
+	}
+}
+
+// proto.serveMCP mounts mcpx's own MCP server on the daemon.
+// Oracle: at the default an initialize to /mcp succeeds; with
+// MCPX_PROTO_SERVE_MCP=false the daemon still answers /v1 but not /mcp.
+func TestServeMCPUnmountsTheEndpointFromTheEnvironment(t *testing.T) {
+	status := func(env ...string) int {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		e.run("ls")
+		got := initializeStatus(t, endpointOf(t, e), "/mcp")
+		t.Logf("serveMCP env=%v status=%d", env, got)
+		return got
+	}
+
+	if got := status(); got != http.StatusOK {
+		t.Fatalf("at the default proto.serveMCP the daemon should answer MCP at /mcp, got %d", got)
+	}
+	if got := status("MCPX_PROTO_SERVE_MCP=false"); got == http.StatusOK {
+		t.Fatalf("proto.serveMCP=false should leave /mcp unmounted, got %d", got)
+	}
+}
+
+// proto.native puts an upstream server's question to the client that made
+// the call. A modern client that declared elicitation calls a tool whose
+// server asks for a repository.
+// Oracle: at the default the call comes back input_required with the
+// question for the client to answer; with MCPX_PROTO_NATIVE=false the
+// question goes to the broker instead, which has no answerer in the
+// harness, so the call fails with the broker's refusal rather than coming
+// back input_required.
+func TestNativeAsksTheCallingClientFromTheEnvironment(t *testing.T) {
+	first := func(env ...string) string {
+		t.Helper()
+		e := askEnv(t)
+		e.setenv(env...)
+		e.run("refresh")
+		ep := e.endpoint(t)
+		resp := mcpPost(t, ep, "", map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{
+			"name":      "mcpx_call",
+			"arguments": map[string]any{"namespace": "ask", "tool": "need_repo"},
+			"_meta": map[string]any{
+				"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+				"io.modelcontextprotocol/clientCapabilities": map[string]any{
+					"elicitation": map[string]any{"form": map[string]any{}},
+				},
+			},
+		}})
+		defer func() { _ = resp.Body.Close() }()
+		var frame map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&frame); err != nil {
+			t.Fatal(err)
+		}
+		return dumpJSON(t, frame)
+	}
+
+	if got := first(); !strings.Contains(got, `"resultType":"input_required"`) {
+		t.Fatalf("at the default proto.native the client should be asked, got %s", got)
+	}
+	if got := first("MCPX_PROTO_NATIVE=false"); strings.Contains(got, `"resultType":"input_required"`) || !strings.Contains(got, "no agent answerer") {
+		t.Fatalf("proto.native=false should send the question to the broker, not the client, got %s", got)
+	}
+}
+
+// modernTTL sends one 2026-07-28 request to the daemon and returns the
+// ttlMs cache hint on its result.
+func modernTTL(t *testing.T, method string, params map[string]any, env ...string) any {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(env...)
+	e.run("refresh")
+	ep := e.endpoint(t)
+	p := map[string]any{"_meta": modernMeta()}
+	for k, v := range params {
+		p[k] = v
+	}
+	r := mcpPost(t, ep, "", map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": p})
+	doc := decodeJSON(t, r.Body)
+	_ = r.Body.Close()
+	res, _ := doc["result"].(map[string]any)
+	if res == nil {
+		t.Fatalf("%s returned no result:\n%s", method, dumpJSON(t, doc))
+	}
+	return res["ttlMs"]
+}
+
+// protoMessages.listMaxAge is the ttlMs on list results sent to a
+// 2026-07-28 client.
+// Oracle: resources/list carries ttlMs 60000 at the default (1m) and 7000
+// with MCPX_PROTO_MESSAGES_LIST_MAX_AGE=7s.
+func TestListMaxAgeSetsTheListCacheHintFromTheEnvironment(t *testing.T) {
+	if got := modernTTL(t, "resources/list", nil); got != float64(60000) {
+		t.Fatalf("at the default protoMessages.listMaxAge resources/list should carry ttlMs 60000, got %v", got)
+	}
+	if got := modernTTL(t, "resources/list", nil, "MCPX_PROTO_MESSAGES_LIST_MAX_AGE=7s"); got != float64(7000) {
+		t.Fatalf("protoMessages.listMaxAge=7s should carry ttlMs 7000, got %v", got)
+	}
+}
+
+// protoMessages.readMaxAge is the ttlMs on resources/read results sent to
+// a 2026-07-28 client.
+// Oracle: reading one of mcpx's own skill resources carries ttlMs 0 at the
+// default and 9000 with MCPX_PROTO_MESSAGES_READ_MAX_AGE=9s.
+func TestReadMaxAgeSetsTheReadCacheHintFromTheEnvironment(t *testing.T) {
+	read := map[string]any{"uri": "skill://mcpx/mcpx-basics/SKILL.md"}
+	if got := modernTTL(t, "resources/read", read); got != float64(0) {
+		t.Fatalf("at the default protoMessages.readMaxAge resources/read should carry ttlMs 0, got %v", got)
+	}
+	if got := modernTTL(t, "resources/read", read, "MCPX_PROTO_MESSAGES_READ_MAX_AGE=9s"); got != float64(9000) {
+		t.Fatalf("protoMessages.readMaxAge=9s should carry ttlMs 9000, got %v", got)
+	}
+}
+
+// protoMessages.taskAfter is how long a tools/call runs in line before a
+// 2026-07-28 client that declared the tasks extension is handed a task.
+// The client runs a script that takes one second.
+// Oracle: at the default (2s) the call is answered directly with
+// resultType complete; with MCPX_PROTO_MESSAGES_TASK_AFTER=200ms it comes
+// back as a task (resultType task with a taskId).
+func TestTaskAfterHandsASlowCallATaskFromTheEnvironment(t *testing.T) {
+	call := func(env ...string) map[string]any { t.Helper(); return slowTaskCall(t, env...) }
+
+	if got := call(); got["resultType"] != "complete" || !strings.Contains(dumpJSON(t, got), "slept") {
+		t.Fatalf("at the default protoMessages.taskAfter a one-second call should be answered in line, got %s", dumpJSON(t, got))
+	}
+	if got := call("MCPX_PROTO_MESSAGES_TASK_AFTER=200ms"); got["resultType"] != "task" || got["taskId"] == nil {
+		t.Fatalf("protoMessages.taskAfter=200ms should hand a one-second call a task, got %s", dumpJSON(t, got))
+	}
+}
+
+// protoTasks.pollInterval is the pollIntervalMs a task mcpx hands out
+// carries. A one-second call is made into a task (taskAfter 200ms).
+// Oracle: the task carries pollIntervalMs 1000 at the default (1s) and 250
+// with MCPX_PROTO_TASKS_POLL_INTERVAL=250ms.
+func TestTaskPollIntervalSetsTheTaskPollHintFromTheEnvironment(t *testing.T) {
+	poll := func(env ...string) any {
+		t.Helper()
+		got := slowTaskCall(t, append([]string{"MCPX_PROTO_MESSAGES_TASK_AFTER=200ms"}, env...)...)
+		if got["resultType"] != "task" {
+			t.Fatalf("a one-second call past a 200ms threshold should be a task, got %s", dumpJSON(t, got))
+		}
+		return got["pollIntervalMs"]
+	}
+
+	if got := poll(); got != float64(1000) {
+		t.Fatalf("at the default protoTasks.pollInterval a task should carry pollIntervalMs 1000, got %v", got)
+	}
+	if got := poll("MCPX_PROTO_TASKS_POLL_INTERVAL=250ms"); got != float64(250) {
+		t.Fatalf("protoTasks.pollInterval=250ms should carry pollIntervalMs 250, got %v", got)
+	}
+}
+
+// slowTaskCall has a 2026-07-28 client that declared the tasks extension
+// run a script that takes one second, and returns the tools/call result.
+func slowTaskCall(t *testing.T, env ...string) map[string]any {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(env...)
+	e.run("refresh")
+	ep := e.endpoint(t)
+	resp := mcpPost(t, ep, "", map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{
+		"name":      "mcpx_exec",
+		"arguments": map[string]any{"source": "await new Promise((r) => setTimeout(r, 1000)); console.log(\"slept\")"},
+		"_meta": map[string]any{
+			"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+			"io.modelcontextprotocol/clientCapabilities": map[string]any{
+				"extensions": map[string]any{"io.modelcontextprotocol/tasks": map[string]any{}},
+			},
+		},
+	}})
+	defer func() { _ = resp.Body.Close() }()
+	doc := decodeJSON(t, resp.Body)
+	res, _ := doc["result"].(map[string]any)
+	if res == nil {
+		t.Fatalf("no result: %s", dumpJSON(t, doc))
+	}
+	return res
+}
+
+// spec.precedence orders the MCP revisions whose rules win a conflict. A
+// 2024-11-05 client is relayed an upstream's progress, which carries a
+// message 2024-11-05 does not define.
+// Oracle: at the default (2026-07-28 first) the message is kept; with
+// MCPX_SPEC_PRECEDENCE=2024-11-05 that revision's rule governs and the
+// message is stripped. TestTheRevisionPolicyDecidesWhetherProgressKeepsItsMessage
+// makes the same decision through spec.first.
+func TestSpecPrecedenceDecidesWhetherProgressKeepsItsMessageFromTheEnvironment(t *testing.T) {
+	kept := func(env ...string) bool {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		e.run("refresh")
+		notes, res := relaySessionAs(t, e, "2024-11-05", nil,
+			map[string]any{}, "info", map[string]any{"progressToken": "precedence-tok"})
+		if res["result"] == nil {
+			t.Fatalf("the call should still answer:\n%s", dumpJSON(t, res))
+		}
+		progress, withMessage := 0, 0
+		for _, n := range notes {
+			if n["method"] != "notifications/progress" {
+				continue
+			}
+			progress++
+			if p, _ := n["params"].(map[string]any); p["message"] != nil {
+				withMessage++
+			}
+		}
+		if progress == 0 {
+			t.Fatalf("no progress was relayed: %v", notes)
+		}
+		return withMessage == progress
+	}
+
+	if !kept() {
+		t.Fatal("at the default spec.precedence a relayed progress message should be kept for a 2024-11-05 client")
+	}
+	if kept("MCPX_SPEC_PRECEDENCE=2024-11-05") {
+		t.Fatal("spec.precedence=2024-11-05 should strip the progress message for a 2024-11-05 client")
+	}
+}
+
+// exec.maxOutputBytes caps the stdout a run returns, with a marker. A
+// script prints 2000 bytes and the run is returned as one structured
+// document (text output streams to the terminal as it is printed, so the
+// returned stdout is what the cap bounds).
+// Oracle: at the default (64KiB) all of it comes back unmarked; with
+// MCPX_EXEC_MAX_OUTPUT_BYTES=500 it is cut, marked and flagged
+// stdoutTruncated.
+func TestExecMaxOutputBytesCapsStdoutFromTheEnvironment(t *testing.T) {
+	result := func(env ...string) map[string]any {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		e.setenv(append([]string{"MCPX_EXEC_OUTPUT=structured"}, env...)...)
+		got := e.run("exec", `console.log("x".repeat(2000))`)
+		var doc map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimSpace(got)), &doc); err != nil {
+			t.Fatalf("a structured run should print one JSON document, got %v:\n%s", err, firstN(got, 300))
+		}
+		return doc
+	}
+
+	if doc := result(); strings.Count(doc["stdout"].(string), "x") < 2000 || doc["stdoutTruncated"] == true {
+		t.Fatalf("at the default exec.maxOutputBytes 2000 bytes should come back whole:\n%s", firstN(dumpJSON(t, doc), 300))
+	}
+	doc := result("MCPX_EXEC_MAX_OUTPUT_BYTES=500")
+	if out, _ := doc["stdout"].(string); len(out) > 500 || !strings.Contains(out, "stdout truncated") || doc["stdoutTruncated"] != true {
+		t.Fatalf("exec.maxOutputBytes=500 should cut the stdout to 500 bytes and mark it:\n%s", firstN(dumpJSON(t, doc), 800))
+	}
+}
+
+// exec.timeout kills a script after this long. A script sleeps four
+// seconds and then prints.
+// Oracle: at the default (120s) it prints and succeeds; with
+// MCPX_EXEC_TIMEOUT=1s it is stopped before printing and the run fails.
+func TestExecTimeoutStopsALongScriptFromTheEnvironment(t *testing.T) {
+	run := func(env ...string) (string, error) {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		return e.try("exec", `await new Promise((r) => setTimeout(r, 4000)); console.log("woke")`)
+	}
+
+	if got, err := run(); err != nil || !strings.Contains(got, "woke") {
+		t.Fatalf("at the default exec.timeout a four-second script should finish, got err=%v:\n%s", err, got)
+	}
+	if got, err := run("MCPX_EXEC_TIMEOUT=1s"); err == nil || strings.Contains(got, "woke") {
+		t.Fatalf("exec.timeout=1s should stop a four-second script before it prints, got err=%v:\n%s", err, got)
+	}
+}
+
+// exec.output picks the shape of what a run returns. A script prints one
+// line.
+// Oracle: at the default (text) the CLI prints the line bare; with
+// MCPX_EXEC_OUTPUT=structured it prints one JSON document whose stdout
+// field holds the line.
+func TestExecOutputShapesTheResultFromTheEnvironment(t *testing.T) {
+	out := func(env ...string) string {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		return e.run("exec", `console.log("shaped")`)
+	}
+
+	if got := strings.TrimSpace(out()); got != "shaped" {
+		t.Fatalf("at the default exec.output the CLI should print the line bare, got:\n%s", got)
+	}
+	got := out("MCPX_EXEC_OUTPUT=structured")
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(got)), &doc); err != nil {
+		t.Fatalf("exec.output=structured should print one JSON document, got %v:\n%s", err, got)
+	}
+	if s, _ := doc["stdout"].(string); !strings.Contains(s, "shaped") {
+		t.Fatalf("the structured document should carry the line in stdout, got:\n%s", got)
+	}
+}
+
+// daemonToolsList returns the first tools/list page the daemon's /mcp
+// gives a 2025-11-25 session, under the given environment.
+func daemonToolsList(t *testing.T, env ...string) map[string]any {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(env...)
+	e.run("refresh")
+	ep := e.endpoint(t)
+	sid := mcpInit(t, ep)
+	frame, _ := mcpRoundTrip(t, ep, `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`, sid)
+	res, _ := frame["result"].(map[string]any)
+	if res == nil {
+		t.Fatalf("tools/list returned no result:\n%s", dumpJSON(t, frame))
+	}
+	return res
+}
+
+// mcp.pageSize is how many tools one tools/list reply carries.
+// Oracle: at the default (100) mcpx's handful of tools fit on one page
+// with no nextCursor; with MCPX_MCP_PAGE_SIZE=2 the page holds two tools
+// and a nextCursor.
+func TestMCPPageSizePagesToolsListFromTheEnvironment(t *testing.T) {
+	page := func(env ...string) (int, bool) {
+		t.Helper()
+		res := daemonToolsList(t, env...)
+		tools, _ := res["tools"].([]any)
+		cursor, _ := res["nextCursor"].(string)
+		return len(tools), cursor != ""
+	}
+
+	if n, more := page(); n <= 2 || more {
+		t.Fatalf("at the default mcp.pageSize every tool should fit on one page, got %d tools, nextCursor=%v", n, more)
+	}
+	if n, more := page("MCPX_MCP_PAGE_SIZE=2"); n != 2 || !more {
+		t.Fatalf("mcp.pageSize=2 should give a two-tool page with a nextCursor, got %d tools, nextCursor=%v", n, more)
+	}
+}
+
+// mcp.passthrough lists the namespaces whose tools mcpx serves directly
+// rather than only behind its gateway tools.
+// Oracle: at the default the fake server's echo tool is not on the
+// daemon's tools/list; with MCPX_MCP_PASSTHROUGH=demo it is.
+func TestMCPPassthroughServesANamespaceDirectlyFromTheEnvironment(t *testing.T) {
+	listsEcho := func(env ...string) bool {
+		t.Helper()
+		res := daemonToolsList(t, env...)
+		tools, _ := res["tools"].([]any)
+		for _, tool := range tools {
+			if m, _ := tool.(map[string]any); m["name"] == "echo" {
+				return true
+			}
+		}
+		return false
+	}
+
+	if listsEcho() {
+		t.Fatal("at the default mcp.passthrough the demo server's echo tool should not be listed directly")
+	}
+	if !listsEcho("MCPX_MCP_PASSTHROUGH=demo") {
+		t.Fatal("mcp.passthrough=demo should list the demo server's echo tool directly")
+	}
+}
+
+// completionStatuses sends one /v1/complete per session name, in order,
+// to the fake server, and returns each HTTP status.
+func completionStatuses(t *testing.T, env []string, sessions ...string) []int {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(env...)
+	e.run("refresh")
+	client := e.socketClient(t)
+	var out []int
+	for _, sess := range sessions {
+		body := fmt.Sprintf(`{"server":"demo","ref":{"type":"ref/prompt","name":"s"},"argument":{"name":"x","value":"sum"},"session":%q}`, sess)
+		resp, err := client.Post("http://mcpx/v1/complete", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		out = append(out, resp.StatusCode)
+	}
+	return out
+}
+
+// completion.perMinute bounds completions per caller and server.
+// Oracle: two completions from one session both succeed at the default;
+// with MCPX_COMPLETION_PER_MINUTE=1 the second is refused with 429.
+func TestCompletionPerMinuteLimitsOneCallerFromTheEnvironment(t *testing.T) {
+	if got := completionStatuses(t, nil, "one", "one"); got[0] != http.StatusOK || got[1] != http.StatusOK {
+		t.Fatalf("at the default completion.perMinute two completions should both succeed, got %v", got)
+	}
+	if got := completionStatuses(t, []string{"MCPX_COMPLETION_PER_MINUTE=1"}, "one", "one"); got[0] != http.StatusOK || got[1] != http.StatusTooManyRequests {
+		t.Fatalf("completion.perMinute=1 should refuse the same caller's second completion with 429, got %v", got)
+	}
+}
+
+// completion.serverPerMinute bounds completions per server across callers.
+// Oracle: completions from two different sessions both succeed at the
+// default; with MCPX_COMPLETION_SERVER_PER_MINUTE=1 the second is refused
+// with 429 although it is another caller's first.
+func TestCompletionServerPerMinuteLimitsAllCallersFromTheEnvironment(t *testing.T) {
+	if got := completionStatuses(t, nil, "one", "two"); got[0] != http.StatusOK || got[1] != http.StatusOK {
+		t.Fatalf("at the default completion.serverPerMinute two callers' completions should both succeed, got %v", got)
+	}
+	if got := completionStatuses(t, []string{"MCPX_COMPLETION_SERVER_PER_MINUTE=1"}, "one", "two"); got[0] != http.StatusOK || got[1] != http.StatusTooManyRequests {
+		t.Fatalf("completion.serverPerMinute=1 should refuse a second caller's completion with 429, got %v", got)
+	}
+}
+
+// logstore.queryLimit is how many records GET /v1/log returns when the
+// caller names no limit. Two calls leave well over two records.
+// Oracle: at the default (100) the query returns more than two records;
+// with MCPX_LOGSTORE_QUERY_LIMIT=2 it returns exactly two.
+func TestLogstoreQueryLimitBoundsALogQueryFromTheEnvironment(t *testing.T) {
+	records := func(env ...string) int {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		e.run("refresh")
+		e.run("call", "demo.echo", `{"message":"a"}`)
+		e.run("call", "demo.echo", `{"message":"b"}`)
+		resp, err := e.socketClient(t).Get("http://mcpx/v1/log")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		doc := decodeJSON(t, resp.Body)
+		recs, _ := doc["records"].([]any)
+		return len(recs)
+	}
+
+	if n := records(); n <= 2 {
+		t.Fatalf("at the default logstore.queryLimit the query should return every record of two calls (more than two), got %d", n)
+	}
+	if n := records("MCPX_LOGSTORE_QUERY_LIMIT=2"); n != 2 {
+		t.Fatalf("logstore.queryLimit=2 should return exactly two records, got %d", n)
+	}
+}
+
+// promptWithRecipes saves the say recipe under each name and runs
+// `mcpx prompt` for "echo a message back" with the message filled in.
+func promptWithRecipes(t *testing.T, env []string, names ...string) string {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(env...)
+	e.withoutModelCLIs(t)
+	for _, name := range names {
+		writeRecipe(t, e, name, sayRecipe)
+	}
+	e.run("ls")
+	return e.run("prompt", "--set", "message=hello", "echo a message back")
+}
+
+// recipes.minScore is the score below which no recipe counts as a match.
+// Oracle: with one saved recipe, `mcpx prompt` uses it at the default;
+// with MCPX_RECIPES_MIN_SCORE=100000 nothing matches.
+func TestRecipesMinScoreRefusesAWeakMatchFromTheEnvironment(t *testing.T) {
+	if got := promptWithRecipes(t, nil, "say"); !strings.Contains(got, "recipe say") {
+		t.Fatalf("at the default recipes.minScore the say recipe should be used:\n%s", got)
+	}
+	if got := promptWithRecipes(t, []string{"MCPX_RECIPES_MIN_SCORE=100000"}, "say"); !strings.Contains(got, "no recipe matched") {
+		t.Fatalf("recipes.minScore=100000 should leave nothing matched:\n%s", got)
+	}
+}
+
+// recipes.matchMargin is how far ahead the best recipe must be. Two
+// identical recipes tie.
+// Oracle: at the default a tie is no match; with
+// MCPX_RECIPES_MATCH_MARGIN=0 the first of the tied recipes is used.
+func TestRecipesMatchMarginSettlesATieFromTheEnvironment(t *testing.T) {
+	if got := promptWithRecipes(t, nil, "say", "shout"); !strings.Contains(got, "no recipe matched") {
+		t.Fatalf("at the default recipes.matchMargin two tied recipes should not match:\n%s", got)
+	}
+	if got := promptWithRecipes(t, []string{"MCPX_RECIPES_MATCH_MARGIN=0"}, "say", "shout"); !strings.Contains(got, "recipe say") {
+		t.Fatalf("recipes.matchMargin=0 should use the first of two tied recipes:\n%s", got)
+	}
+}
+
+// recipes.limit is how many ranked recipes are returned.
+// Oracle: `mcpx recipes match` lists all three matching recipes at the
+// default and only one with MCPX_RECIPES_LIMIT=1.
+func TestRecipesLimitBoundsTheRankingFromTheEnvironment(t *testing.T) {
+	listed := func(env ...string) int {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		for _, name := range []string{"say", "shout", "speak"} {
+			writeRecipe(t, e, name, sayRecipe)
+		}
+		e.run("ls")
+		out := e.run("recipes", "match", "echo a message")
+		n := 0
+		for _, name := range []string{" say ", " shout ", " speak "} {
+			if strings.Contains(out, name) {
+				n++
+			}
+		}
+		return n
+	}
+
+	if n := listed(); n != 3 {
+		t.Fatalf("at the default recipes.limit all three recipes should be ranked, got %d", n)
+	}
+	if n := listed("MCPX_RECIPES_LIMIT=1"); n != 1 {
+		t.Fatalf("recipes.limit=1 should rank one recipe, got %d", n)
+	}
+}
+
+// startExecTask starts an /v1/exec script as a task on a fresh daemon
+// and returns the socket client and the task the daemon handed back.
+func startExecTask(t *testing.T, source string, env ...string) (*http.Client, map[string]any) {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(env...)
+	e.run("ls")
+	c := e.socketClient(t)
+	body, _ := json.Marshal(map[string]any{"source": source, "options": map[string]any{"task": map[string]any{}}})
+	code, doc := postJSON(t, c, "/v1/exec", string(body))
+	task, _ := doc["task"].(map[string]any)
+	if code != http.StatusAccepted || task["taskId"] == nil {
+		t.Fatalf("an exec task should be accepted with a handle, got %d %v", code, doc)
+	}
+	return c, task
+}
+
+// tasks.ttl is how long a finished task's result is kept, when the caller
+// names no retention.
+// Oracle: an /v1/exec task carries ttl 600000 (10m) at the default and
+// 7000 with MCPX_TASKS_TTL=7s.
+func TestTasksTTLSetsAnExecTasksRetentionFromTheEnvironment(t *testing.T) {
+	ttl := func(env ...string) any {
+		t.Helper()
+		_, task := startExecTask(t, `console.log("kept")`, env...)
+		return task["ttl"]
+	}
+
+	if got := ttl(); got != float64(600000) {
+		t.Fatalf("at the default tasks.ttl an exec task should carry ttl 600000, got %v", got)
+	}
+	if got := ttl("MCPX_TASKS_TTL=7s"); got != float64(7000) {
+		t.Fatalf("tasks.ttl=7s should give an exec task ttl 7000, got %v", got)
+	}
+}
+
+// tasks.resultWait is how long collecting a task's result blocks when the
+// caller names no wait. The task's script takes three seconds.
+// Oracle: at the default (2m) the result request waits and gets the
+// script's output; with MCPX_TASKS_RESULT_WAIT=500ms it gives up first
+// with 408.
+func TestTasksResultWaitBoundsCollectingAResultFromTheEnvironment(t *testing.T) {
+	collect := func(env ...string) (int, string) {
+		t.Helper()
+		c, task := startExecTask(t, `await new Promise((r) => setTimeout(r, 3000)); console.log("collected")`, env...)
+		// The socket client's own timeout is shorter than the script.
+		patient := *c
+		patient.Timeout = 30 * time.Second
+		resp, err := patient.Get("http://mcpx/v1/tasks/" + task["taskId"].(string) + "/result")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		raw, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(raw)
+	}
+
+	if code, body := collect(); code != http.StatusOK || !strings.Contains(body, "collected") {
+		t.Fatalf("at the default tasks.resultWait the result request should wait for the script, got %d:\n%s", code, body)
+	}
+	if code, body := collect("MCPX_TASKS_RESULT_WAIT=500ms"); code != http.StatusRequestTimeout {
+		t.Fatalf("tasks.resultWait=500ms should give up before a three-second script finishes with 408, got %d:\n%s", code, body)
+	}
+}
+
+// tasksClient is a 2026-07-28 client that declared the tasks extension,
+// against a daemon that hands any call over 100ms a task.
+func tasksClient(t *testing.T, env ...string) func(method string, params map[string]any) map[string]any {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(append([]string{"MCPX_PROTO_MESSAGES_TASK_AFTER=100ms"}, env...)...)
+	e.run("refresh")
+	ep := e.endpoint(t)
+	id := 0
+	return func(method string, params map[string]any) map[string]any {
+		t.Helper()
+		id++
+		params["_meta"] = map[string]any{
+			"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+			"io.modelcontextprotocol/clientCapabilities": map[string]any{
+				"extensions": map[string]any{"io.modelcontextprotocol/tasks": map[string]any{}},
+			},
+		}
+		resp := mcpPost(t, ep, "", map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+		defer func() { _ = resp.Body.Close() }()
+		return decodeJSON(t, resp.Body)
+	}
+}
+
+// startSlowTask calls a two-second script, which the 100ms threshold
+// turns into a task, and returns the reply.
+func startSlowTask(t *testing.T, rpc func(string, map[string]any) map[string]any) map[string]any {
+	t.Helper()
+	return rpc("tools/call", map[string]any{"name": "mcpx_exec",
+		"arguments": map[string]any{"source": "await new Promise((r) => setTimeout(r, 2000))"}})
+}
+
+// protoTasks.maxTTL clamps the retention of a task mcpx hands out.
+// Oracle: the task carries ttlMs 600000 at the default and 5000 with
+// MCPX_PROTO_TASKS_MAX_TTL=5s.
+func TestProtoTasksMaxTTLClampsATasksRetentionFromTheEnvironment(t *testing.T) {
+	ttl := func(env ...string) any {
+		t.Helper()
+		doc := startSlowTask(t, tasksClient(t, env...))
+		res, _ := doc["result"].(map[string]any)
+		if res["resultType"] != "task" {
+			t.Fatalf("a two-second call past a 100ms threshold should be a task:\n%s", dumpJSON(t, doc))
+		}
+		return res["ttlMs"]
+	}
+
+	if got := ttl(); got != float64(600000) {
+		t.Fatalf("at the default protoTasks.maxTTL a task should carry ttlMs 600000, got %v", got)
+	}
+	if got := ttl("MCPX_PROTO_TASKS_MAX_TTL=5s"); got != float64(5000) {
+		t.Fatalf("protoTasks.maxTTL=5s should clamp a task to ttlMs 5000, got %v", got)
+	}
+}
+
+// protoTasks.maxPerRequestor caps one requestor's unfinished tasks.
+// Oracle: two slow calls both become tasks at the default; with
+// MCPX_PROTO_TASKS_MAX_PER_REQUESTOR=1 the second is refused.
+func TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment(t *testing.T) {
+	second := func(env ...string) string {
+		t.Helper()
+		rpc := tasksClient(t, env...)
+		startSlowTask(t, rpc)
+		return dumpJSON(t, startSlowTask(t, rpc))
+	}
+
+	if got := second(); !strings.Contains(got, `"resultType":"task"`) {
+		t.Fatalf("at the default protoTasks.maxPerRequestor a second slow call should still become a task:\n%s", got)
+	}
+	if got := second("MCPX_PROTO_TASKS_MAX_PER_REQUESTOR=1"); !strings.Contains(got, "per-requestor task cap reached") {
+		t.Fatalf("protoTasks.maxPerRequestor=1 should refuse a second unfinished task:\n%s", got)
+	}
+}
+
+// protoTasks.perMinute is the per-requestor admission window for tasks/*
+// calls. A task is started and then read twice with tasks/get.
+// Oracle: both reads succeed at the default; with
+// MCPX_PROTO_TASKS_PER_MINUTE=1 the second is refused.
+func TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment(t *testing.T) {
+	secondRead := func(env ...string) string {
+		t.Helper()
+		rpc := tasksClient(t, env...)
+		res, _ := startSlowTask(t, rpc)["result"].(map[string]any)
+		id, _ := res["taskId"].(string)
+		if id == "" {
+			t.Fatalf("no task was started: %v", res)
+		}
+		rpc("tasks/get", map[string]any{"taskId": id})
+		return dumpJSON(t, rpc("tasks/get", map[string]any{"taskId": id}))
+	}
+
+	if got := secondRead(); !strings.Contains(got, `"taskId"`) || strings.Contains(got, "admission window") {
+		t.Fatalf("at the default protoTasks.perMinute a second tasks/get should succeed:\n%s", got)
+	}
+	if got := secondRead("MCPX_PROTO_TASKS_PER_MINUTE=1"); !strings.Contains(got, "admission window") {
+		t.Fatalf("protoTasks.perMinute=1 should refuse a second tasks/get:\n%s", got)
+	}
+}
+
+// replayFromStart reads what /v1/events replays from sequence zero. The
+// stream stays open for live events, so it reads until the client's short
+// deadline and keeps whatever arrived.
+func replayFromStart(t *testing.T, e *env) string {
+	t.Helper()
+	c := *e.socketClient(t)
+	c.Timeout = 1500 * time.Millisecond
+	resp, err := c.Get("http://mcpx/v1/events?kinds=call&since=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	return string(body)
+}
+
+// TestEventsHistoryBoundsTheReplay is the effect probe for events.history:
+// the bus keeps that many events for reconnecting subscribers. At the
+// default a from-the-start replay is whole; kept to one event, the same
+// replay starts past what was trimmed and says so with a gap notice.
+func TestEventsHistoryBoundsTheReplay(t *testing.T) {
+	calls := func(e *env) {
+		for _, m := range []string{"a", "b", "c"} {
+			e.run("call", "demo.echo", `{"message":"`+m+`"}`)
+		}
+	}
+
+	whole := newEnv(t, oneServer)
+	calls(whole)
+	body := replayFromStart(t, whole)
+	if strings.Contains(body, "event: gap") {
+		t.Errorf("the default history should replay from the start without a gap:\n%s", body)
+	}
+	if n := strings.Count(body, "event: call.finished"); n < 3 {
+		t.Errorf("the default history should replay all 3 calls, got %d:\n%s", n, body)
+	}
+
+	short := newEnv(t, oneServer)
+	short.setenv("MCPX_EVENTS_HISTORY=1")
+	calls(short)
+	body = replayFromStart(t, short)
+	if !strings.Contains(body, "event: gap") {
+		t.Errorf("events.history=1 should trim the replay and report the gap:\n%s", body)
+	}
+	if n := strings.Count(body, "event: call.finished"); n > 1 {
+		t.Errorf("events.history=1 should keep at most one event, replayed %d calls:\n%s", n, body)
+	}
+}
+
+// churnedSchemaServer starts a daemon over the schema fixture and flips
+// demo.create_issue's schema three times, so the catalog history has three
+// recorded changes to keep or trim. env pairs reach the daemon at start.
+func churnedSchemaServer(t *testing.T, env ...string) *env {
+	t.Helper()
+	schema := filepath.Join(t.TempDir(), "schema")
+	mustWrite(t, schema, "v1")
+	e := newEnv(t, strings.ReplaceAll(schemaServer, "VERSIONFILE", schema))
+	e.setenv(env...)
+	e.run("refresh")
+	for _, v := range []string{"v2", "v1", "v2"} {
+		mustWrite(t, schema, v)
+		e.run("refresh")
+	}
+	return e
+}
+
+// recordedChanges counts the schema changes the daemon keeps for one tool.
+func recordedChanges(t *testing.T, e *env, tool string) int {
+	t.Helper()
+	resp, err := e.socketClient(t).Get("http://mcpx/v1/catalog/history?tool=" + tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var doc struct {
+		Changes map[string][]json.RawMessage `json:"changes"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		t.Fatal(err)
+	}
+	return len(doc.Changes[tool])
+}
+
+// TestDiagnoseHistoryCapsRecordedSchemaChanges is the effect probe for
+// diagnose.history: how many schema changes the daemon remembers per tool.
+// Three flips are all kept at the default and trimmed to one at 1.
+func TestDiagnoseHistoryCapsRecordedSchemaChanges(t *testing.T) {
+	if n := recordedChanges(t, churnedSchemaServer(t), "demo.create_issue"); n != 3 {
+		t.Errorf("the default diagnose.history should keep all 3 changes, kept %d", n)
+	}
+	if n := recordedChanges(t, churnedSchemaServer(t, "MCPX_DIAGNOSE_HISTORY=1"), "demo.create_issue"); n != 1 {
+		t.Errorf("diagnose.history=1 should keep one change, kept %d", n)
+	}
+}
+
+// TestDiagnosePreflightStopsAMismatchedScript is the effect probe for
+// diagnose.preflight: a script calling a tool whose schema moved under it is
+// stopped before it runs by default, and runs (catching the tool's own
+// error) when the environment turns preflight off.
+func TestDiagnosePreflightStopsAMismatchedScript(t *testing.T) {
+	e := churnedSchemaServer(t)
+	const script = `try { await demo.create_issue({ title: "x" }); } catch (err) {}
+console.log("script ran");`
+
+	out, err := e.try("exec", script)
+	if err == nil || strings.Contains(out, "script ran") || !strings.Contains(out, "does not match the tools it calls") {
+		t.Errorf("default diagnose.preflight should stop the script before it runs (err %v):\n%s", err, out)
+	}
+
+	e.setenv("MCPX_DIAGNOSE_PREFLIGHT=false")
+	out, err = e.try("exec", script)
+	if err != nil || !strings.Contains(out, "script ran") {
+		t.Errorf("diagnose.preflight=false should let the script run (err %v):\n%s", err, out)
+	}
+}
+
+// reactiveTools opens one `mcpx serve --mode reactive` stdio session,
+// optionally asks request_tools for query first, and returns the names the
+// session then lists. Frames go one at a time and each waits for its own
+// answer: the server handles requests concurrently, so a pipelined
+// tools/list could be answered before the request_tools it follows.
+func reactiveTools(t *testing.T, e *env, query string) map[string]bool {
+	t.Helper()
+	return servedTools(t, e, query, "--mode", "reactive")
+}
+
+// servedTools is reactiveTools for any `mcpx serve` arguments.
+func servedTools(t *testing.T, e *env, query string, args ...string) map[string]bool {
+	t.Helper()
+	cmd := exec.Command(e.mcpx, append([]string{"serve"}, args...)...)
+	cmd.Dir = e.dir
+	cmd.Env = e.envVars
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	dec := json.NewDecoder(bufio.NewReaderSize(stdout, 1<<20))
+	id := 0
+	rpc := func(method string, params any) json.RawMessage {
+		t.Helper()
+		id++
+		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+		if _, err := stdin.Write(append(b, '\n')); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			var f struct {
+				ID     *int            `json:"id"`
+				Result json.RawMessage `json:"result"`
+				Error  json.RawMessage `json:"error"`
+			}
+			if err := dec.Decode(&f); err != nil {
+				t.Fatalf("read %s: %v", method, err)
+			}
+			if f.ID != nil && *f.ID == id {
+				if len(f.Error) > 0 {
+					t.Fatalf("%s failed: %s", method, f.Error)
+				}
+				return f.Result
+			}
+		}
+	}
+	rpc("initialize", map[string]any{})
+	if query != "" {
+		rpc("tools/call", map[string]any{"name": "request_tools",
+			"arguments": map[string]any{"query": query, "limit": 5}})
+	}
+	var list struct {
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(rpc("tools/list", map[string]any{}), &list); err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, tool := range list.Tools {
+		names[tool.Name] = true
+	}
+	return names
+}
+
+// TestCatalogPinnedToolsAlwaysListInReactiveMode is the effect probe for
+// catalog.pinnedTools: a fresh reactive session lists only its meta tools,
+// and a tool pinned from the environment is listed from the start.
+func TestCatalogPinnedToolsAlwaysListInReactiveMode(t *testing.T) {
+	e := newEnv(t, oneServer)
+	e.run("ls")
+	if got := reactiveTools(t, e, ""); got["mcpx_status"] {
+		t.Errorf("a fresh reactive session should not list mcpx_status unpinned: %v", got)
+	}
+	e.setenv("MCPX_CATALOG_PINNED_TOOLS=mcpx_status")
+	if got := reactiveTools(t, e, ""); !got["mcpx_status"] {
+		t.Errorf("catalog.pinnedTools=mcpx_status should list it from the start: %v", got)
+	}
+}
+
+// TestRetentionMaxToolsCapsTheReactiveWorkingSet is the effect probe for
+// retention.maxTools: request_tools activates five tools, all of which the
+// default working set keeps; capped at two, only two stay listed.
+func TestRetentionMaxToolsCapsTheReactiveWorkingSet(t *testing.T) {
+	retained := func(names map[string]bool) int {
+		n := 0
+		for name := range names {
+			if name != "request_tools" && name != "batch_call" {
+				n++
+			}
+		}
+		return n
+	}
+	e := newEnv(t, oneServer)
+	e.run("ls")
+	if n := retained(reactiveTools(t, e, "echo")); n != 5 {
+		t.Errorf("the default retention.maxTools should keep all 5 activated tools, kept %d", n)
+	}
+	e.setenv("MCPX_RETENTION_MAX_TOOLS=2")
+	if n := retained(reactiveTools(t, e, "echo")); n != 2 {
+		t.Errorf("retention.maxTools=2 should keep 2 activated tools, kept %d", n)
+	}
+}
+
+// shownSignatures counts the tool signatures `mcpx catalog` printed.
+func shownSignatures(out string) int { return strings.Count(out, "  - demo.") }
+
+// TestCatalogBudgetFitsTheSignatures is the effect probe for catalog.budget:
+// the default budget shows every demo signature, and a 20-token budget from
+// the environment shows none of them while still naming the namespace.
+func TestCatalogBudgetFitsTheSignatures(t *testing.T) {
+	e := newEnv(t, oneServer)
+	if out := e.run("catalog"); shownSignatures(out) != 9 {
+		t.Errorf("the default catalog.budget should show all 9 demo signatures:\n%s", out)
+	}
+	e.setenv("MCPX_CATALOG_BUDGET=20")
+	if out := e.run("catalog"); shownSignatures(out) != 0 || !strings.Contains(out, "none shown") {
+		t.Errorf("catalog.budget=20 should show no signatures:\n%s", out)
+	}
+}
+
+// TestCatalogBiasPicksWhatATightBudgetShows is the effect probe for
+// catalog.bias: at a budget that fits two signatures, demo.wipe is not
+// among them unbiased and is once the environment biases toward it.
+func TestCatalogBiasPicksWhatATightBudgetShows(t *testing.T) {
+	e := newEnv(t, oneServer)
+	e.setenv("MCPX_CATALOG_BUDGET=60")
+	if out := e.run("catalog"); strings.Contains(out, "demo.wipe(") {
+		t.Errorf("unbiased, a 60-token catalog should not reach demo.wipe:\n%s", out)
+	}
+	e.setenv("MCPX_CATALOG_BIAS=wipe")
+	if out := e.run("catalog"); !strings.Contains(out, "demo.wipe(") {
+		t.Errorf("catalog.bias=wipe should show demo.wipe within the same budget:\n%s", out)
+	}
+}
+
+// TestPresetsDefinesNamedFlagBundles is the effect probe for presets: with
+// nothing defined, --preset j is refused as unknown; once the environment
+// defines j as ["--json"], the same command applies it and prints JSON.
+func TestPresetsDefinesNamedFlagBundles(t *testing.T) {
+	e := newEnv(t, oneServer)
+	out, err := e.try("status", "--preset", "j")
+	if err == nil || !strings.Contains(out, `no preset "j"`) {
+		t.Errorf("with no presets defined, --preset j should be refused (err %v):\n%s", err, out)
+	}
+	e.setenv(`MCPX_PRESETS={"j":["--json"]}`)
+	out, err = e.try("status", "--preset", "j")
+	if err != nil || !json.Valid([]byte(strings.TrimSpace(out))) {
+		t.Errorf("presets defining j as --json should make status print JSON (err %v):\n%s", err, out)
+	}
+}
+
+// TestPresetSelectsADefinedBundle is the effect probe for preset: with j
+// defined as ["--json"], plain `mcpx status` prints text, and naming j in
+// MCPX_PRESET applies it without the flag.
+func TestPresetSelectsADefinedBundle(t *testing.T) {
+	e := newEnv(t, oneServer)
+	e.setenv(`MCPX_PRESETS={"j":["--json"]}`)
+	if out := e.run("status"); json.Valid([]byte(strings.TrimSpace(out))) {
+		t.Errorf("with no preset selected, status should print text:\n%s", out)
+	}
+	e.setenv("MCPX_PRESET=j")
+	if out := e.run("status"); !json.Valid([]byte(strings.TrimSpace(out))) {
+		t.Errorf("preset=j should make status print JSON:\n%s", out)
+	}
+}
+
+// TestServeModeSelectsTheServedSurface is the effect probe for serve.mode:
+// plain `mcpx serve` is code mode and lists no request_tools; with
+// MCPX_SERVE_MODE=reactive the same command serves the reactive surface.
+func TestServeModeSelectsTheServedSurface(t *testing.T) {
+	e := newEnv(t, oneServer)
+	e.run("ls")
+	if got := servedTools(t, e, ""); got["request_tools"] || !got["mcpx_exec"] {
+		t.Errorf("the default serve.mode should serve code mode: %v", got)
+	}
+	e.setenv("MCPX_SERVE_MODE=reactive")
+	if got := servedTools(t, e, ""); !got["request_tools"] || got["mcpx_exec"] {
+		t.Errorf("serve.mode=reactive should serve the reactive surface: %v", got)
+	}
+}
+
+// artifactScript stores one four-byte artifact and prints "done".
+const artifactScript = `await artifact("n.txt", new Uint8Array([104, 105, 104, 105]));
+console.log("done");`
+
+// runArtifactScript runs artifactScript with --json in a fresh env carrying
+// env, and returns what it printed and whether it failed.
+func runArtifactScript(t *testing.T, env ...string) (string, error) {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(env...)
+	return e.try("exec", "--json", artifactScript)
+}
+
+// TestArtifactsEnabledGatesTheStore is the effect probe for
+// artifacts.enabled: a script's artifact is stored at the default and
+// refused once the environment disables the store.
+func TestArtifactsEnabledGatesTheStore(t *testing.T) {
+	if out, err := runArtifactScript(t); err != nil || !strings.Contains(out, `"name": "n.txt"`) {
+		t.Errorf("artifacts are on by default (err %v):\n%s", err, out)
+	}
+	if out, err := runArtifactScript(t, "MCPX_ARTIFACTS_ENABLED=false"); err == nil || !strings.Contains(out, "artifacts are disabled") {
+		t.Errorf("artifacts.enabled=false should refuse the artifact (err %v):\n%s", err, out)
+	}
+}
+
+// TestArtifactsMaxBytesRefusesALargeArtifact is the effect probe for
+// artifacts.maxBytes: four bytes fit the default and not a 2-byte limit.
+func TestArtifactsMaxBytesRefusesALargeArtifact(t *testing.T) {
+	if out, err := runArtifactScript(t); err != nil {
+		t.Errorf("four bytes should fit the default artifacts.maxBytes (err %v):\n%s", err, out)
+	}
+	if out, err := runArtifactScript(t, "MCPX_ARTIFACTS_MAX_BYTES=2"); err == nil || !strings.Contains(out, "artifacts.maxBytes") {
+		t.Errorf("artifacts.maxBytes=2 should refuse four bytes (err %v):\n%s", err, out)
+	}
+}
+
+// TestArtifactsQuotaBoundsTheStore is the effect probe for artifacts.quota:
+// four bytes fit the default quota and not a 2-byte one.
+func TestArtifactsQuotaBoundsTheStore(t *testing.T) {
+	if out, err := runArtifactScript(t); err != nil {
+		t.Errorf("four bytes should fit the default artifacts.quota (err %v):\n%s", err, out)
+	}
+	if out, err := runArtifactScript(t, "MCPX_ARTIFACTS_QUOTA=2"); err == nil || !strings.Contains(out, "artifacts.quota") {
+		t.Errorf("artifacts.quota=2 should refuse four bytes (err %v):\n%s", err, out)
+	}
+}
+
+// TestArtifactsDeliveryInlinesTheBody is the effect probe for
+// artifacts.delivery: the default hands back a reference only, and inline
+// carries the base64 body in the result.
+func TestArtifactsDeliveryInlinesTheBody(t *testing.T) {
+	const body = `"data": "aGloaQ=="`
+	if out, err := runArtifactScript(t); err != nil || strings.Contains(out, body) {
+		t.Errorf("the default delivery should not inline the body (err %v):\n%s", err, out)
+	}
+	if out, err := runArtifactScript(t, "MCPX_ARTIFACTS_DELIVERY=inline"); err != nil || !strings.Contains(out, body) {
+		t.Errorf("artifacts.delivery=inline should carry the body (err %v):\n%s", err, out)
+	}
+}
+
+// TestArtifactsInlineMaxBytesBoundsAnInlinedBody is the effect probe for
+// artifacts.inlineMaxBytes: with inline delivery, four bytes are inlined
+// under the default bound and left as a reference under a 1-byte bound.
+func TestArtifactsInlineMaxBytesBoundsAnInlinedBody(t *testing.T) {
+	const body = `"data": "aGloaQ=="`
+	if out, err := runArtifactScript(t, "MCPX_ARTIFACTS_DELIVERY=inline"); err != nil || !strings.Contains(out, body) {
+		t.Errorf("four bytes should inline under the default bound (err %v):\n%s", err, out)
+	}
+	out, err := runArtifactScript(t, "MCPX_ARTIFACTS_DELIVERY=inline", "MCPX_ARTIFACTS_INLINE_MAX_BYTES=1")
+	if err != nil || strings.Contains(out, body) || !strings.Contains(out, `"name": "n.txt"`) {
+		t.Errorf("artifacts.inlineMaxBytes=1 should keep the body out of the result (err %v):\n%s", err, out)
+	}
+}
+
+// TestArtifactsDirReceivesTheRunsArtifacts is the effect probe for
+// artifacts.dir: by default nothing lands in the directory, and naming it
+// in the environment copies the run's artifact there.
+func TestArtifactsDirReceivesTheRunsArtifacts(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "out")
+	e := newEnv(t, oneServer)
+	e.run("exec", artifactScript)
+	if _, err := os.Stat(filepath.Join(dir, "n.txt")); err == nil {
+		t.Fatal("with no artifacts.dir, nothing should be written to the directory")
+	}
+	e.setenv("MCPX_ARTIFACTS_DIR=" + dir)
+	e.run("exec", artifactScript)
+	if b, err := os.ReadFile(filepath.Join(dir, "n.txt")); err != nil || string(b) != "hihi" {
+		t.Errorf("artifacts.dir should receive n.txt with its body, got %q (%v)", b, err)
+	}
+}
+
+// loggedRun starts a daemon with env and its durable log in a fresh
+// directory, then `mcpx run`s a script that logs at debug and at info. It
+// returns the run's stderr, the log directory, and the daemon.start record.
+func loggedRun(t *testing.T, env ...string) (stderr, dir, start string) {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	dir = filepath.Join(t.TempDir(), "logs")
+	e.setenv(append([]string{"MCPX_LOGGING_DIR=" + dir}, env...)...)
+	e.run("ls")
+	script := filepath.Join(e.dir, "logged.ts")
+	mustWrite(t, script, `log.debug("debug-line"); log.info("info-a"); log.info("info-b"); log.info("info-c");`)
+	_, stderr, err := e.split("run", script)
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, stderr)
+	}
+	for _, f := range logFiles(t, dir) {
+		b, _ := os.ReadFile(filepath.Join(dir, f))
+		for _, line := range strings.Split(string(b), "\n") {
+			if strings.Contains(line, `"event":"daemon.start"`) {
+				start = line
+			}
+		}
+	}
+	return stderr, dir, start
+}
+
+// logFiles lists the JSONL files in a log directory.
+func logFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	ents, _ := os.ReadDir(dir)
+	var out []string
+	for _, ent := range ents {
+		if strings.HasSuffix(ent.Name(), ".jsonl") {
+			out = append(out, ent.Name())
+		}
+	}
+	return out
+}
+
+// TestLoggingLevelShowsDebugRecords is the effect probe for logging.level:
+// a script's debug record is hidden at the default level and shown at debug.
+func TestLoggingLevelShowsDebugRecords(t *testing.T) {
+	if se, _, _ := loggedRun(t); strings.Contains(se, "debug-line") || !strings.Contains(se, "info-a") {
+		t.Errorf("the default logging.level should show info and hide debug:\n%s", se)
+	}
+	if se, _, _ := loggedRun(t, "MCPX_LOGGING_LEVEL=debug"); !strings.Contains(se, "debug-line") {
+		t.Errorf("logging.level=debug should show the debug record:\n%s", se)
+	}
+}
+
+// TestLoggingFormatRendersJSON is the effect probe for logging.format: the
+// default renders a script's record as text, and json renders it as JSON.
+func TestLoggingFormatRendersJSON(t *testing.T) {
+	const asJSON = `"msg":"info-a"`
+	if se, _, _ := loggedRun(t); strings.Contains(se, asJSON) || !strings.Contains(se, "info-a") {
+		t.Errorf("the default logging.format should render text:\n%s", se)
+	}
+	if se, _, _ := loggedRun(t, "MCPX_LOGGING_FORMAT=json"); !strings.Contains(se, asJSON) {
+		t.Errorf("logging.format=json should render the record as JSON:\n%s", se)
+	}
+}
+
+// TestLoggingSourceAddsTheCallSite is the effect probe for logging.source:
+// a script's record carries no source location at the default, and does
+// at logging.source=debug.
+func TestLoggingSourceAddsTheCallSite(t *testing.T) {
+	if se, _, _ := loggedRun(t); strings.Contains(se, "source.file=") {
+		t.Errorf("the default logging.source should add no call site:\n%s", se)
+	}
+	if se, _, _ := loggedRun(t, "MCPX_LOGGING_SOURCE=debug"); !strings.Contains(se, "source.file=") {
+		t.Errorf("logging.source=debug should add the call site:\n%s", se)
+	}
+}
+
+// TestLoggingDirHoldsTheDurableLog is the effect probe for logging.dir: the
+// durable log lands in the directory the environment names, and nowhere
+// in it before then.
+func TestLoggingDirHoldsTheDurableLog(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "logs")
+	e := newEnv(t, oneServer)
+	e.run("ls")
+	if got := logFiles(t, dir); len(got) != 0 {
+		t.Fatalf("with no logging.dir, nothing should be logged to %s: %v", dir, got)
+	}
+	e2 := newEnv(t, oneServer)
+	e2.setenv("MCPX_LOGGING_DIR=" + dir)
+	e2.run("ls")
+	if got := logFiles(t, dir); len(got) == 0 {
+		t.Errorf("logging.dir should hold the daemon's durable log")
+	}
+}
+
+// TestLoggingIncludeChoosesTheAmbientBlocks is the effect probe for
+// logging.include: daemon.start carries host but not network facts at the
+// default, none at "none", and network ones too at "all".
+func TestLoggingIncludeChoosesTheAmbientBlocks(t *testing.T) {
+	if _, _, start := loggedRun(t); !strings.Contains(start, `"host.name"`) || strings.Contains(start, `"net.`) {
+		t.Errorf("the default logging.include should carry host and not network facts:\n%s", start)
+	}
+	if _, _, start := loggedRun(t, "MCPX_LOGGING_INCLUDE=none"); start == "" || strings.Contains(start, `"host.name"`) {
+		t.Errorf("logging.include=none should drop the host block:\n%s", start)
+	}
+	if _, _, start := loggedRun(t, "MCPX_LOGGING_INCLUDE=all"); !strings.Contains(start, `"net.`) {
+		t.Errorf("logging.include=all should add the network block:\n%s", start)
+	}
+}
+
+// TestLoggingMaxLinesRotatesTheFile is the effect probe for
+// logging.maxLines: the default keeps one file, and one line per file
+// rotates into several.
+func TestLoggingMaxLinesRotatesTheFile(t *testing.T) {
+	if _, dir, _ := loggedRun(t); len(logFiles(t, dir)) != 1 {
+		t.Errorf("the default logging.maxLines should keep one file: %v", logFiles(t, dir))
+	}
+	if _, dir, _ := loggedRun(t, "MCPX_LOGGING_MAX_LINES=1"); len(logFiles(t, dir)) < 3 {
+		t.Errorf("logging.maxLines=1 should rotate into several files: %v", logFiles(t, dir))
+	}
+}
+
+// TestLoggingMaxBytesRotatesTheFile is the effect probe for
+// logging.maxBytes: the default keeps one file, and a 10-byte bound
+// rotates into several.
+func TestLoggingMaxBytesRotatesTheFile(t *testing.T) {
+	if _, dir, _ := loggedRun(t); len(logFiles(t, dir)) != 1 {
+		t.Errorf("the default logging.maxBytes should keep one file: %v", logFiles(t, dir))
+	}
+	if _, dir, _ := loggedRun(t, "MCPX_LOGGING_MAX_BYTES=10"); len(logFiles(t, dir)) < 3 {
+		t.Errorf("logging.maxBytes=10 should rotate into several files: %v", logFiles(t, dir))
+	}
+}
+
+// TestLoggingKeepPrunesRotatedFiles is the effect probe for logging.keep:
+// rotating every line keeps many rotated files at the default, and at most
+// one besides the live file at keep=1.
+func TestLoggingKeepPrunesRotatedFiles(t *testing.T) {
+	if _, dir, _ := loggedRun(t, "MCPX_LOGGING_MAX_LINES=1"); len(logFiles(t, dir)) < 3 {
+		t.Errorf("the default logging.keep should keep several rotated files: %v", logFiles(t, dir))
+	}
+	if _, dir, _ := loggedRun(t, "MCPX_LOGGING_MAX_LINES=1", "MCPX_LOGGING_KEEP=1"); len(logFiles(t, dir)) > 2 {
+		t.Errorf("logging.keep=1 should prune to one rotated file: %v", logFiles(t, dir))
+	}
+}
+
+// touchHook declares one call.finished hook that waits a second and then
+// creates mark, so whether mark appears says whether the hook ran to the end.
+func touchHook(mark string) string {
+	return `MCPX_HOOKS=[{"on":"call.finished","run":["/usr/bin/env","bash","-c","sleep 1; touch ` + mark + `"]}]`
+}
+
+// appears polls for path for up to wait.
+func appears(path string, wait time.Duration) bool {
+	for deadline := time.Now().Add(wait); time.Now().Before(deadline); {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return false
+}
+
+// TestHooksRunOnTheirEvent is the effect probe for hooks: with no hooks a
+// call leaves nothing behind, and a call.finished hook declared in the
+// environment runs after the call.
+func TestHooksRunOnTheirEvent(t *testing.T) {
+	mark := filepath.Join(t.TempDir(), "mark")
+	e := newEnv(t, oneServer)
+	e.run("call", "demo.echo", `{"message":"x"}`)
+	if appears(mark, 2*time.Second) {
+		t.Fatal("with no hooks declared, nothing should create the mark")
+	}
+	e2 := newEnv(t, oneServer)
+	e2.setenv(touchHook(mark))
+	e2.run("call", "demo.echo", `{"message":"x"}`)
+	if !appears(mark, 10*time.Second) {
+		t.Error("a declared call.finished hook should run after the call")
+	}
+}
+
+// TestHooksTimeoutStopsASlowHook is the effect probe for hooks.timeout: a
+// hook that takes a second finishes under the default timeout, and is
+// stopped, with a hook.failed event, under a 200ms one.
+func TestHooksTimeoutStopsASlowHook(t *testing.T) {
+	mark := filepath.Join(t.TempDir(), "mark")
+	e := newEnv(t, oneServer)
+	e.setenv(touchHook(mark))
+	e.run("call", "demo.echo", `{"message":"x"}`)
+	if !appears(mark, 10*time.Second) {
+		t.Fatal("a one-second hook should finish under the default hooks.timeout")
+	}
+
+	slow := filepath.Join(t.TempDir(), "mark")
+	e2 := newEnv(t, oneServer)
+	e2.setenv(touchHook(slow), "MCPX_HOOKS_TIMEOUT=200ms")
+	e2.run("call", "demo.echo", `{"message":"x"}`)
+	c := *e2.socketClient(t)
+	c.Timeout = 5 * time.Second
+	resp, err := c.Get("http://mcpx/v1/events?kinds=hook&since=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	buf := make([]byte, 8192)
+	n, _ := io.ReadAtLeast(resp.Body, buf, 64)
+	for !strings.Contains(string(buf[:n]), "timed out") && n < len(buf) {
+		m, rerr := resp.Body.Read(buf[n:])
+		n += m
+		if rerr != nil {
+			break
+		}
+	}
+	if !strings.Contains(string(buf[:n]), "hook timed out after 200ms") {
+		t.Errorf("hooks.timeout=200ms should fail the hook as timed out:\n%s", buf[:n])
+	}
+	if appears(slow, 2*time.Second) {
+		t.Error("a hook stopped by hooks.timeout should not finish its work")
+	}
+}
+
+// dashboard fetches /dashboard from a daemon started with env.
+func dashboard(t *testing.T, env ...string) (int, string) {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(env...)
+	e.run("ls")
+	resp, err := e.socketClient(t).Get("http://mcpx/dashboard")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(b)
+}
+
+// TestDaemonUITurnsTheDashboardOff is the effect probe for daemon.ui: the
+// loopback daemon serves its dashboard by default and 404s it at false.
+func TestDaemonUITurnsTheDashboardOff(t *testing.T) {
+	if code, _ := dashboard(t); code != http.StatusOK {
+		t.Errorf("the default daemon.ui should serve the dashboard, got %d", code)
+	}
+	if code, _ := dashboard(t, "MCPX_DAEMON_UI=false"); code != http.StatusNotFound {
+		t.Errorf("daemon.ui=false should 404 the dashboard, got %d", code)
+	}
+}
+
+// TestDaemonUIDirOverridesTheDashboard is the effect probe for
+// daemon.uiDir: the embedded page by default, and the named directory's
+// index.html once the environment sets it.
+func TestDaemonUIDirOverridesTheDashboard(t *testing.T) {
+	ui := t.TempDir()
+	mustWrite(t, filepath.Join(ui, "index.html"), "custom-ui-page")
+	if _, body := dashboard(t); strings.Contains(body, "custom-ui-page") {
+		t.Errorf("the default daemon.uiDir should serve the embedded page")
+	}
+	if code, body := dashboard(t, "MCPX_DAEMON_UI_DIR="+ui); code != http.StatusOK || body != "custom-ui-page" {
+		t.Errorf("daemon.uiDir should serve its own index.html, got %d %q", code, body)
+	}
+}
+
+// phaseRun `mcpx run`s a script that succeeds, or throws when fail is set,
+// with env, and returns everything it printed.
+func phaseRun(t *testing.T, fail bool, env ...string) string {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(env...)
+	script := filepath.Join(e.dir, "phases.ts")
+	body := "export default function () { return \"done\" }\n"
+	if fail {
+		body = "throw new Error(\"script-boom\")\n"
+	}
+	mustWrite(t, script, body)
+	out, _ := e.try("run", script)
+	return out
+}
+
+// TestScriptPhasesRunFromTheEnvironment is the effect probe for
+// script.before, script.onSuccess, script.onError and script.suffix: none
+// of their markers print by default, and each prints on the path it
+// belongs to once the environment sets it.
+func TestScriptPhasesRunFromTheEnvironment(t *testing.T) {
+	phases := []string{
+		`MCPX_SCRIPT_BEFORE=console.info("phase-before")`,
+		`MCPX_SCRIPT_ON_SUCCESS=console.info("phase-success")`,
+		`MCPX_SCRIPT_ON_ERROR=console.info("phase-error")`,
+		`MCPX_SCRIPT_SUFFIX=console.info("phase-suffix")`,
+	}
+	for _, fail := range []bool{false, true} {
+		if out := phaseRun(t, fail); strings.Contains(out, "phase-") {
+			t.Errorf("no phase should run by default (fail=%v):\n%s", fail, out)
+		}
+	}
+	ok := phaseRun(t, false, phases...)
+	for _, want := range []string{"phase-before", "phase-success", "phase-suffix"} {
+		if !strings.Contains(ok, want) {
+			t.Errorf("a succeeding script should run %s:\n%s", want, ok)
+		}
+	}
+	if strings.Contains(ok, "phase-error") {
+		t.Errorf("a succeeding script should not run script.onError:\n%s", ok)
+	}
+	bad := phaseRun(t, true, phases...)
+	for _, want := range []string{"phase-before", "phase-error", "phase-suffix", "script-boom"} {
+		if !strings.Contains(bad, want) {
+			t.Errorf("a throwing script should show %s:\n%s", want, bad)
+		}
+	}
+	if strings.Contains(bad, "phase-success") {
+		t.Errorf("a throwing script should not run script.onSuccess:\n%s", bad)
+	}
+}
+
+// runtimeOf runs a script with --json and returns the runtime it reports.
+func runtimeOf(t *testing.T, e *env, args ...string) string {
+	t.Helper()
+	var doc struct {
+		Runtime string `json:"runtime"`
+	}
+	out := e.run(append(append([]string{"exec", "--json"}, args...), `console.log("hi")`)...)
+	if err := json.Unmarshal([]byte(jsonOf(t, out)), &doc); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	return doc.Runtime
+}
+
+// TestScriptRuntimeSelectsTheRuntime is the effect probe for
+// script.runtime: scripts run on bun by default and on node once the
+// environment names it.
+func TestScriptRuntimeSelectsTheRuntime(t *testing.T) {
+	testsupport.RequireBinary(t, "node")
+	e := newEnv(t, oneServer)
+	if rt := runtimeOf(t, e); rt != "bun" {
+		t.Errorf("the default script.runtime should pick bun, got %q", rt)
+	}
+	e.setenv("MCPX_SCRIPT_RUNTIME=node")
+	if rt := runtimeOf(t, e); rt != "node" {
+		t.Errorf("script.runtime=node should run on node, got %q", rt)
+	}
+}
+
+// TestScriptRuntimeOrderRanksTheAutoPick is the effect probe for
+// script.runtimeOrder: the automatic pick is bun by default and node once
+// the environment ranks node first.
+func TestScriptRuntimeOrderRanksTheAutoPick(t *testing.T) {
+	testsupport.RequireBinary(t, "node")
+	e := newEnv(t, oneServer)
+	if rt := runtimeOf(t, e); rt != "bun" {
+		t.Errorf("the default script.runtimeOrder should pick bun, got %q", rt)
+	}
+	e.setenv("MCPX_SCRIPT_RUNTIME_ORDER=node,bun")
+	if rt := runtimeOf(t, e); rt != "node" {
+		t.Errorf("script.runtimeOrder=node,bun should pick node, got %q", rt)
+	}
+}
+
+// nodeWrite runs, on node, a script that tries to write a file and prints
+// WROTE or DENIED.
+func nodeWrite(t *testing.T, e *env, args ...string) string {
+	t.Helper()
+	target := filepath.Join(t.TempDir(), "w")
+	probe := `import { writeFileSync } from "node:fs";
+try { writeFileSync(` + jsonQuote(target) + `, "1"); console.log("WROTE"); } catch (e) { console.log("DENIED " + e.code); }`
+	out, _ := e.try(append(append([]string{"exec", "--runtime", "node"}, args...), probe)...)
+	return out
+}
+
+// TestScriptPermissionsSandboxesNode is the effect probe for
+// script.permissions: node writes freely at the default, and the readnet
+// profile named in the environment makes node refuse the write.
+func TestScriptPermissionsSandboxesNode(t *testing.T) {
+	testsupport.RequireBinary(t, "node")
+	e := newEnv(t, oneServer)
+	if out := nodeWrite(t, e); !strings.Contains(out, "WROTE") {
+		t.Errorf("the default script.permissions should let node write:\n%s", out)
+	}
+	e.setenv("MCPX_SCRIPT_PERMISSIONS=readnet")
+	if out := nodeWrite(t, e); !strings.Contains(out, "DENIED ERR_ACCESS_DENIED") {
+		t.Errorf("script.permissions=readnet should make node refuse the write:\n%s", out)
+	}
+}
+
+// TestScriptProfilesDefinesAProfile is the effect probe for script.profiles:
+// --permissions ro names no profile by default, and once the environment
+// defines ro with node's read-only flags, node refuses the write under it.
+func TestScriptProfilesDefinesAProfile(t *testing.T) {
+	testsupport.RequireBinary(t, "node")
+	e := newEnv(t, oneServer)
+	if out := nodeWrite(t, e, "--permissions", "ro"); strings.Contains(out, "WROTE") || strings.Contains(out, "DENIED") {
+		t.Errorf("with no profile ro defined, the script should not run:\n%s", out)
+	}
+	e.setenv(`MCPX_SCRIPT_PROFILES={"ro":{"node":["--permission","--allow-fs-read=*"]}}`)
+	if out := nodeWrite(t, e, "--permissions", "ro"); !strings.Contains(out, "DENIED ERR_ACCESS_DENIED") {
+		t.Errorf("script.profiles defining ro should make node refuse the write:\n%s", out)
+	}
+}
+
+// TestScriptRuntimesDeclaresARuntime is the effect probe for
+// script.runtimes: --runtime engine is unknown by default, and runs on
+// node once the environment declares engine as a node binary.
+func TestScriptRuntimesDeclaresARuntime(t *testing.T) {
+	node := testsupport.RequireBinary(t, "node")
+	e := newEnv(t, oneServer)
+	src := `console.log("kind=" + process.env.MCPX_RUNTIME)`
+	if out, err := e.try("exec", "--runtime", "engine", src); err == nil || strings.Contains(out, "kind=node") {
+		t.Errorf("with nothing declared, --runtime engine should fail: %v\n%s", err, out)
+	}
+	e.setenv(`MCPX_SCRIPT_RUNTIMES={"engine":{"kind":"node","bin":` + jsonQuote(node) + `}}`)
+	if out, err := e.try("exec", "--runtime", "engine", src); err != nil || !strings.Contains(out, "kind=node") {
+		t.Errorf("script.runtimes should declare engine as node: %v\n%s", err, out)
+	}
+}
+
+// TestPathsAdaptersFindsADeclarationFile is the effect probe for
+// paths.adapters: `mcpx adapter list` declares nothing by default, and
+// lists the adapter in the file the environment points it at.
+func TestPathsAdaptersFindsADeclarationFile(t *testing.T) {
+	e := newEnv(t, oneServer)
+	if out := e.run("adapter", "list"); !strings.Contains(out, "No adapters declared") {
+		t.Errorf("by default no adapters should be declared:\n%s", out)
+	}
+	file := filepath.Join(t.TempDir(), "adapters.json")
+	mustWrite(t, file, `{"adapters":[{"name":"probeadapter","command":"echo","tools":[{"name":"say","params":[{"name":"text"}]}]}]}`)
+	e.setenv("MCPX_PATHS_ADAPTERS=" + file)
+	if out := e.run("adapter", "list"); !strings.Contains(out, "probeadapter") {
+		t.Errorf("paths.adapters should declare probeadapter:\n%s", out)
+	}
+}
+
+// TestPathsAPIsFindsADeclarationFile is the effect probe for paths.apis:
+// `mcpx api list` declares nothing by default, and lists the API in the
+// file the environment points it at.
+func TestPathsAPIsFindsADeclarationFile(t *testing.T) {
+	e := newEnv(t, oneServer)
+	if out := e.run("api", "list"); !strings.Contains(out, "No API specifications declared") {
+		t.Errorf("by default no APIs should be declared:\n%s", out)
+	}
+	dir := t.TempDir()
+	spec := filepath.Join(dir, "spec.json")
+	mustWrite(t, spec, `{"openapi":"3.0.0","info":{"title":"P","version":"1"},"servers":[{"url":"http://127.0.0.1:9"}],"paths":{"/w":{"get":{"operationId":"listwidgets","responses":{"200":{"description":"ok"}}}}}}`)
+	file := filepath.Join(dir, "apis.json")
+	mustWrite(t, file, `{"apis":[{"name":"probeapi","spec":`+jsonQuote(spec)+`}]}`)
+	e.setenv("MCPX_PATHS_APIS=" + file)
+	if out := e.run("api", "list"); !strings.Contains(out, "probeapi") || !strings.Contains(out, "1 operations") {
+		t.Errorf("paths.apis should declare probeapi with its one operation:\n%s", out)
+	}
+}
+
+// TestLoggingTraceLogsEachCall is the effect probe for logging.trace: the
+// daemon's log names the server and tool of a call only when tracing is on.
+func TestLoggingTraceLogsEachCall(t *testing.T) {
+	traced := func(on string) bool {
+		e := newEnv(t, oneServer)
+		e.setenv("MCPX_TRACE=" + on)
+		e.run("call", "demo.echo", `{"message":"x"}`)
+		b, _ := os.ReadFile(filepath.Join(e.dir, "state", "daemon.log"))
+		return strings.Contains(string(b), "call demo.echo")
+	}
+	if traced("false") {
+		t.Error("with logging.trace off the daemon log should not trace the call")
+	}
+	if !traced("true") {
+		t.Error("logging.trace should log the call to demo.echo in the daemon log")
+	}
+}
+
+// TestExecWhereRemoteRunsOnTheDaemon is the effect probe for exec.where:
+// a local run is a child of each short-lived mcpx process, so two runs see
+// different parents, while a remote run is a child of the one daemon.
+func TestExecWhereRemoteRunsOnTheDaemon(t *testing.T) {
+	parents := func(where string) (string, string) {
+		e := newEnv(t, oneServer)
+		e.setenv("MCPX_EXEC_WHERE=" + where)
+		script := filepath.Join(e.dir, "where.ts")
+		mustWrite(t, script, `console.log(process.ppid)`)
+		a, _, err := e.split("run", script)
+		if err != nil {
+			t.Fatalf("run (%s): %v", where, err)
+		}
+		b, _, _ := e.split("run", script)
+		return strings.TrimSpace(a), strings.TrimSpace(b)
+	}
+	if a, b := parents("local"); a == b {
+		t.Errorf("exec.where=local should run each script under its own mcpx process, both had parent %s", a)
+	}
+	if a, b := parents("remote"); a != b || a == "" {
+		t.Errorf("exec.where=remote should run both scripts under the daemon, got parents %q and %q", a, b)
+	}
+}
+
+// TestPlumbingValidatePathsChecksTheLogDirUpFront is the effect probe for
+// plumbing.validatePaths: a logging.dir that is a file stops a run before
+// it starts, and with the check off the run goes ahead.
+func TestPlumbingValidatePathsChecksTheLogDirUpFront(t *testing.T) {
+	run := func(env ...string) (string, string, error) {
+		e := newEnv(t, oneServer)
+		notADir := filepath.Join(t.TempDir(), "notadir")
+		mustWrite(t, notADir, "x")
+		e.setenv(append([]string{"MCPX_LOGGING_DIR=" + notADir}, env...)...)
+		script := filepath.Join(e.dir, "validate.ts")
+		mustWrite(t, script, `console.log("ran")`)
+		return e.split("run", script)
+	}
+	if _, se, err := run(); err == nil || !strings.Contains(se, "logging.dir") {
+		t.Errorf("by default a file as logging.dir should stop the run: err=%v\n%s", err, se)
+	}
+	if out, se, err := run("MCPX_PLUMBING_VALIDATE_PATHS=false"); err != nil || !strings.Contains(out, "ran") {
+		t.Errorf("with plumbing.validatePaths off the run should go ahead: err=%v\n%s%s", err, out, se)
+	}
+}
+
+// TestScriptLanguageRunsPython is the effect probe for script.language: a
+// file with no extension runs under the TypeScript runtime by default, so a
+// Python print fails, and runs under Python when the language says so.
+func TestScriptLanguageRunsPython(t *testing.T) {
+	testsupport.RequireBinary(t, "python3")
+	run := func(env ...string) (string, error) {
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		script := filepath.Join(e.dir, "noext")
+		mustWrite(t, script, `print("ran-" + "py")`)
+		out, _, err := e.split("run", script)
+		return out, err
+	}
+	if out, err := run(); err == nil && strings.Contains(out, "ran-py") {
+		t.Errorf("by default the extensionless script should not run as Python:\n%s", out)
+	}
+	if out, err := run("MCPX_SCRIPT_LANGUAGE=python"); err != nil || !strings.Contains(out, "ran-py") {
+		t.Errorf("script.language=python should run the script under Python: err=%v\n%s", err, out)
+	}
+}
+
+// TestArtifactsInterceptImagesStoresAnEmittedImage is the effect probe for
+// artifacts.interceptImages: an image block a script emits is captured as
+// an artifact by default, and left alone once interception is off.
+func TestArtifactsInterceptImagesStoresAnEmittedImage(t *testing.T) {
+	const script = `emit({ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" })`
+	run := func(env ...string) string {
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		out, err := e.try("exec", "--json", script)
+		if err != nil {
+			t.Fatalf("exec: %v\n%s", err, out)
+		}
+		return out
+	}
+	if out := run(); !strings.Contains(out, `"name": "image.png"`) {
+		t.Errorf("by default an emitted image should become an artifact:\n%s", out)
+	}
+	if out := run("MCPX_ARTIFACTS_INTERCEPT_IMAGES=false"); strings.Contains(out, `"name": "image.png"`) {
+		t.Errorf("with artifacts.interceptImages off the image should not be stored:\n%s", out)
+	}
+}
+
+// TestPlumbingIndexOnQueryIngestsBeforeALogQuery is the effect probe for
+// plumbing.indexOnQuery: `mcpx log` reads the daemon's records by default,
+// and answers from the empty index alone once ingest-on-query is off.
+func TestPlumbingIndexOnQueryIngestsBeforeALogQuery(t *testing.T) {
+	query := func(env ...string) string {
+		e := newEnv(t, oneServer)
+		e.setenv(append([]string{"MCPX_LOGGING_DIR=" + filepath.Join(t.TempDir(), "logs")}, env...)...)
+		e.run("ls")
+		out, se, err := e.split("log")
+		if err != nil {
+			t.Fatalf("log: %v\n%s", err, se)
+		}
+		return out
+	}
+	if out := query(); !strings.Contains(out, "daemon starting") {
+		t.Errorf("by default `mcpx log` should ingest and show the daemon's start:\n%s", out)
+	}
+	if out := query("MCPX_PLUMBING_INDEX_ON_QUERY=false"); strings.Contains(out, "daemon starting") {
+		t.Errorf("with plumbing.indexOnQuery off nothing should have been ingested:\n%s", out)
 	}
 }
 

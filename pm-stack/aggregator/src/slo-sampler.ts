@@ -12,9 +12,9 @@ const QUOTA_BAD_AGE_MS = 75 * MINUTE;
 const ORCHESTRATION_BAD_AGE_MS = 90 * MINUTE;
 
 function serviceOk(view: HealthView, ids: readonly string[]): boolean | null {
-  const rows: ServiceHealth[] = ids.map((id) => view.services.find((s) => s.def.id === id)).filter(
-    (s): s is ServiceHealth => s !== undefined,
-  );
+  const rows: ServiceHealth[] = ids
+    .map((id) => view.services.find((s) => s.def.id === id))
+    .filter((s): s is ServiceHealth => s !== undefined);
   if (rows.length !== ids.length) return null;
   if (rows.some((s) => s.ok === false)) return false;
   if (rows.every((s) => s.ok === true)) return true;

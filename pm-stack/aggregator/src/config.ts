@@ -306,10 +306,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       env.PM_AGG_OPENCODE_SERVER_STATE,
       join(homedir(), ".local", "state", "opencode", "service-prod.json"),
     ),
-    mcpxCallLedgerDir: s(
-      env.PM_AGG_MCPX_CALL_LEDGER_DIR,
-      join(homedir(), ".local", "state", "mcpx", "call-ledger"),
-    ),
+    mcpxCallLedgerDir: s(env.PM_AGG_MCPX_CALL_LEDGER_DIR, join(homedir(), ".local", "state", "mcpx", "call-ledger")),
     fleetInvocationLedgerFile: s(
       env.PM_AGG_FLEET_INVOCATION_LEDGER_FILE,
       join(env.XDG_STATE_HOME?.trim() || join(homedir(), ".local", "state"), "fleet", "invocations.jsonl"),

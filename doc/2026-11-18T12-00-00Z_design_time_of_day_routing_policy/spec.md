@@ -40,23 +40,23 @@ and start from this spec.
 
 Every time-based rule places a pool, leg or effort in one of three classes:
 
-| Class | Meaning |
-|---|---|
-| `peak` | Provider pricing or quota pressure is high for this window. Prefer cheaper or flatter legs. |
-| `off-peak` | Pricing is at its lowest. Deferrable work may run here. |
-| `neutral` | No time rule applies. Current chain order holds. |
+| Class      | Meaning                                                                                     |
+| ---------- | ------------------------------------------------------------------------------------------- |
+| `peak`     | Provider pricing or quota pressure is high for this window. Prefer cheaper or flatter legs. |
+| `off-peak` | Pricing is at its lowest. Deferrable work may run here.                                     |
+| `neutral`  | No time rule applies. Current chain order holds.                                            |
 
 A class changes ordering. It never removes a leg from eligibility.
 
 ### 1.2 Decision inputs
 
-| Input | Source |
-|---|---|
-| Local time in the window's timezone | Config `timezone` on the named window |
-| Day of week | Same |
-| Holiday flag for the date | Calendar, see §2.3 (until then: none) |
-| Pool used % and projected wall time | Quota analytics (`/quota#analytics`, `/api/quota-analytics.json`) |
-| Hours until the pool's window resets | Quota record |
+| Input                                | Source                                                            |
+| ------------------------------------ | ----------------------------------------------------------------- |
+| Local time in the window's timezone  | Config `timezone` on the named window                             |
+| Day of week                          | Same                                                              |
+| Holiday flag for the date            | Calendar, see §2.3 (until then: none)                             |
+| Pool used % and projected wall time  | Quota analytics (`/quota#analytics`, `/api/quota-analytics.json`) |
+| Hours until the pool's window resets | Quota record                                                      |
 
 ### 1.3 Allowed actions
 
@@ -140,16 +140,16 @@ analytics so the loss can be measured.
 Every route attempt records the following, so a time-based switch can be
 measured against the analytics:
 
-| Field | Meaning |
-|---|---|
-| `window_names` | Named windows matched at attempt time (may be empty) |
-| `window_class` | `peak`, `off-peak`, `preburn` or `neutral` |
-| `holiday` | Boolean from the calendar, `unknown` until #821 |
-| `pool_used_pct` | Pool quota used at attempt time |
-| `hours_to_reset` | Hours until the pool window resets |
-| `priority_band` | Interactive (10) or batch |
-| `leg`, `effort`, `served_by` | Which leg, effort and provider served it |
-| `cost_usd`, `tokens` | Cost and tokens for the attempt |
+| Field                        | Meaning                                              |
+| ---------------------------- | ---------------------------------------------------- |
+| `window_names`               | Named windows matched at attempt time (may be empty) |
+| `window_class`               | `peak`, `off-peak`, `preburn` or `neutral`           |
+| `holiday`                    | Boolean from the calendar, `unknown` until #821      |
+| `pool_used_pct`              | Pool quota used at attempt time                      |
+| `hours_to_reset`             | Hours until the pool window resets                   |
+| `priority_band`              | Interactive (10) or batch                            |
+| `leg`, `effort`, `served_by` | Which leg, effort and provider served it             |
+| `cost_usd`, `tokens`         | Cost and tokens for the attempt                      |
 
 ### 4.2 Before and after metrics, per pool
 
@@ -166,14 +166,14 @@ the same length after it.
 
 ## 5. Open questions and defaults
 
-| # | Question | Default |
-|---|---|---|
-| Q1 | Pools without provider peak pricing: what is the window source? | Quota analytics hour pattern. No time windows for them until two weeks of data exist. |
-| Q2 | How is a weekday holiday handled before #821? | Holiday flag `unknown`; treated as the schedule says; labelled in analytics. |
-| Q3 | Does pre-burn (A4) override a user pin? | No. Explicit user adjustments keep precedence (§2.2). |
-| Q4 | Is effort lowered in `peak` (A3)? | Off until the #9399 effort tiers exist. |
-| Q5 | Which timezone for a provider that documents none? | UTC. |
-| Q6 | Does this spec own the runtime? | No. The runtime ranking belongs to #8838's design. This spec defines the values and the classes it ranks by. |
+| #   | Question                                                        | Default                                                                                                      |
+| --- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Q1  | Pools without provider peak pricing: what is the window source? | Quota analytics hour pattern. No time windows for them until two weeks of data exist.                        |
+| Q2  | How is a weekday holiday handled before #821?                   | Holiday flag `unknown`; treated as the schedule says; labelled in analytics.                                 |
+| Q3  | Does pre-burn (A4) override a user pin?                         | No. Explicit user adjustments keep precedence (§2.2).                                                        |
+| Q4  | Is effort lowered in `peak` (A3)?                               | Off until the #9399 effort tiers exist.                                                                      |
+| Q5  | Which timezone for a provider that documents none?              | UTC.                                                                                                         |
+| Q6  | Does this spec own the runtime?                                 | No. The runtime ranking belongs to #8838's design. This spec defines the values and the classes it ranks by. |
 
 ## Acceptance mapping
 

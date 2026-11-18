@@ -31,7 +31,11 @@ describe("SLO sampler", () => {
   test("age facets are bad only past their thresholds", () => {
     const fresh = byFacet(
       sampleSloFacets(
-        view({ feedAgeMs: 4 * 60_000, quotaGeneratedAt: new Date(NOW - 10 * 60_000).toISOString(), orchestrationAgeMs: 30 * 60_000 }),
+        view({
+          feedAgeMs: 4 * 60_000,
+          quotaGeneratedAt: new Date(NOW - 10 * 60_000).toISOString(),
+          orchestrationAgeMs: 30 * 60_000,
+        }),
         NOW,
       ),
     );
@@ -41,7 +45,11 @@ describe("SLO sampler", () => {
 
     const stale = byFacet(
       sampleSloFacets(
-        view({ feedAgeMs: 11 * 60_000, quotaGeneratedAt: new Date(NOW - 80 * 60_000).toISOString(), orchestrationAgeMs: 95 * 60_000 }),
+        view({
+          feedAgeMs: 11 * 60_000,
+          quotaGeneratedAt: new Date(NOW - 80 * 60_000).toISOString(),
+          orchestrationAgeMs: 95 * 60_000,
+        }),
         NOW,
       ),
     );

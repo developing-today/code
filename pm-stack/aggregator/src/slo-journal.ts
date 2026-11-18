@@ -19,10 +19,12 @@ export class SloJournal {
     // A failed append must not poison the chain: each write starts from
     // the previous one settled, so one bad write does not fail every
     // later append and read.
-    this.writes = this.writes.catch(() => undefined).then(async () => {
-      await mkdir(dirname(this.file), { recursive: true });
-      await appendFile(this.file, payload, "utf8");
-    });
+    this.writes = this.writes
+      .catch(() => undefined)
+      .then(async () => {
+        await mkdir(dirname(this.file), { recursive: true });
+        await appendFile(this.file, payload, "utf8");
+      });
     return this.writes;
   }
 

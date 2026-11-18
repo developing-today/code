@@ -47,24 +47,24 @@ Stream: `GET /freshness/stream` (server-sent events).
 
 ## Writes (POST unless noted)
 
-| Route | Methods | Purpose |
-|-------|---------|---------|
-| `/api/roadmap/annotations`, `/api/roadmap/annotations/alias` | POST | Roadmap annotations. |
-| `/api/comments`, `/api/comments/triage`, `/api/comments/github-result` | POST | Comment submission, triage and result. |
-| `/api/actions`, `/api/actions/batch`, `/api/actions/result` | POST | Action submission and results. |
-| `/quota/refresh`, `/api/quota/refresh` | POST | Refresh quota data. |
-| `/api/alerts` | POST | Create an alert. |
-| `/api/alerts/<id>/ack`, `/api/alerts/<id>/close` | POST | Acknowledge or close an alert. |
-| `/api/decision-sets`, `/api/decision-sets/submit` | POST | Create and submit decision sets. |
-| `/api/decision-sets/<id>/events` | GET, POST | Decision-set events. |
-| `/api/decisions/<id>/submit`, `/defer`, `/request-info` | POST | Decision actions. |
-| `/api/decisions/<id>/drafts` | GET, POST | Decision drafts. |
-| `/api/decisions/<id>/events` | GET, POST | Decision events. |
-| `/api/needs-drew/<id>/answer` | POST | Answer a needs-Drew item. |
-| `/api/sw-probe` | POST records; GET summarises | Service-worker probe. |
-| `/api/push/subscriptions` | POST (create), DELETE (remove) | Push subscriptions; other methods return 405. |
-| `/api/push/test`, `/api/push/test-class` | POST | Push test sends. |
-| `/api/admin/identity-registry` | GET, POST, DELETE | Identity registry administration. |
+| Route                                                                  | Methods                        | Purpose                                       |
+| ---------------------------------------------------------------------- | ------------------------------ | --------------------------------------------- |
+| `/api/roadmap/annotations`, `/api/roadmap/annotations/alias`           | POST                           | Roadmap annotations.                          |
+| `/api/comments`, `/api/comments/triage`, `/api/comments/github-result` | POST                           | Comment submission, triage and result.        |
+| `/api/actions`, `/api/actions/batch`, `/api/actions/result`            | POST                           | Action submission and results.                |
+| `/quota/refresh`, `/api/quota/refresh`                                 | POST                           | Refresh quota data.                           |
+| `/api/alerts`                                                          | POST                           | Create an alert.                              |
+| `/api/alerts/<id>/ack`, `/api/alerts/<id>/close`                       | POST                           | Acknowledge or close an alert.                |
+| `/api/decision-sets`, `/api/decision-sets/submit`                      | POST                           | Create and submit decision sets.              |
+| `/api/decision-sets/<id>/events`                                       | GET, POST                      | Decision-set events.                          |
+| `/api/decisions/<id>/submit`, `/defer`, `/request-info`                | POST                           | Decision actions.                             |
+| `/api/decisions/<id>/drafts`                                           | GET, POST                      | Decision drafts.                              |
+| `/api/decisions/<id>/events`                                           | GET, POST                      | Decision events.                              |
+| `/api/needs-drew/<id>/answer`                                          | POST                           | Answer a needs-Drew item.                     |
+| `/api/sw-probe`                                                        | POST records; GET summarises   | Service-worker probe.                         |
+| `/api/push/subscriptions`                                              | POST (create), DELETE (remove) | Push subscriptions; other methods return 405. |
+| `/api/push/test`, `/api/push/test-class`                               | POST                           | Push test sends.                              |
+| `/api/admin/identity-registry`                                         | GET, POST, DELETE              | Identity registry administration.             |
 
 ## Static and PWA assets
 

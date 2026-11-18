@@ -644,7 +644,10 @@ export function readMcpxCallLedger(dir: string, now: number): ActivityCounts["mc
   let budget = 32 * 1024 * 1024;
   let names: string[];
   try {
-    names = readdirSync(dir).filter((name) => /^mcpx-\d{4}-\d{2}-\d{2}(?:-.*)?\.jsonl$/.test(name)).sort().slice(-32);
+    names = readdirSync(dir)
+      .filter((name) => /^mcpx-\d{4}-\d{2}-\d{2}(?:-.*)?\.jsonl$/.test(name))
+      .sort()
+      .slice(-32);
   } catch {
     return { calls, errors, topTools: [] };
   }
@@ -676,11 +679,17 @@ export function readMcpxCallLedger(dir: string, now: number): ActivityCounts["mc
   return {
     calls,
     errors,
-    topTools: [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([name, count]) => ({ name, count })),
+    topTools: [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 12)
+      .map(([name, count]) => ({ name, count })),
   };
 }
 
-export function readFleetInvocationLedger(file: string, now: number): {
+export function readFleetInvocationLedger(
+  file: string,
+  now: number,
+): {
   readable: boolean;
   total: number;
   byCommand: { subcommand: string; count: number }[];
@@ -709,11 +718,18 @@ export function readFleetInvocationLedger(file: string, now: number): {
         sub_subcommand?: unknown;
         exit_code?: unknown;
       };
-      if (row.schema !== "fleet-invocation/v1" || typeof row.at_unix_ms !== "number" ||
-          row.at_unix_ms < cutoff || row.at_unix_ms > now + 60_000 || typeof row.exit_code !== "number") continue;
-      const command = [row.command, row.subcommand, row.sub_subcommand]
-        .filter((part): part is string => typeof part === "string" && part.length > 0)
-        .join(" ") || "(root)";
+      if (
+        row.schema !== "fleet-invocation/v1" ||
+        typeof row.at_unix_ms !== "number" ||
+        row.at_unix_ms < cutoff ||
+        row.at_unix_ms > now + 60_000 ||
+        typeof row.exit_code !== "number"
+      )
+        continue;
+      const command =
+        [row.command, row.subcommand, row.sub_subcommand]
+          .filter((part): part is string => typeof part === "string" && part.length > 0)
+          .join(" ") || "(root)";
       total++;
       counts.set(command, (counts.get(command) ?? 0) + 1);
     } catch {
@@ -723,11 +739,19 @@ export function readFleetInvocationLedger(file: string, now: number): {
   return {
     readable: true,
     total,
-    byCommand: [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([subcommand, count]) => ({ subcommand, count })),
+    byCommand: [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 12)
+      .map(([subcommand, count]) => ({ subcommand, count })),
   };
 }
 
-function activityComputePlan(db: Database, now: number, ledgerDir: string, fleetLedgerFile: string): { steps: Array<() => void>; assemble: () => ActivityCounts } {
+function activityComputePlan(
+  db: Database,
+  now: number,
+  ledgerDir: string,
+  fleetLedgerFile: string,
+): { steps: Array<() => void>; assemble: () => ActivityCounts } {
   const since = now - 7 * DAY_MS;
   const until = now + 1;
   const toolCounts = new Map<string, number>();
@@ -876,7 +900,8 @@ function startActivityCompute(db: Database, ledgerDir: string, fleetLedgerFile: 
 
 function loadActivity(db: Database, now: number, ledgerDir: string, fleetLedgerFile: string): ActivityCounts | null {
   const cacheKey = `${ledgerDir}|${fleetLedgerFile}`;
-  if (activityCache && activityCache.ledgerDir === cacheKey && now - activityCache.at < ACTIVITY_TTL_MS) return activityCache.data;
+  if (activityCache && activityCache.ledgerDir === cacheKey && now - activityCache.at < ACTIVITY_TTL_MS)
+    return activityCache.data;
   if (!activityComputing) startActivityCompute(db, ledgerDir, fleetLedgerFile);
   return activityCache?.ledgerDir === cacheKey ? activityCache.data : null;
 }
