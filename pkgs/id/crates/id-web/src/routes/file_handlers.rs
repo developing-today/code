@@ -108,7 +108,7 @@ pub(super) async fn save_handler(
     // hash comes from a legacy client that cannot state a base and
     // is not second-guessed here.
     if let Some(current) = current_filename_hash(&state.store, &req.name).await
-        && let Ok(base) = req.doc_id.parse::<iroh_blobs::Hash>()
+        && let Ok(base) = id_core::iroh_hash::parse_hash(&req.doc_id)
         && base != current
     {
         tracing::info!(
