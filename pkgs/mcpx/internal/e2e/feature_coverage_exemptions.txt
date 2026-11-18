@@ -13,11 +13,6 @@
 # (2026-11-11, task 14824): 403 required features, 152 covered, 251
 # exempt below.
 
-cli	daemon	no integration-test exercise yet; burn-down #8461 (cli daemon group)
-cli	reload	no integration-test exercise yet; burn-down #8461 (cli daemon group)
-cli	stdio-proxy	no integration-test exercise yet; burn-down #8461 (cli daemon group)
-cli	supervise	no integration-test exercise yet; burn-down #8461 (cli daemon group)
-cli	upgrade	no integration-test exercise yet; burn-down #8461 (cli daemon group)
 setting	daemon.inlineStartPoll	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.socketProbeTimeout	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.takeoverTimeout	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
@@ -49,7 +44,6 @@ setting	plugin.tools	no integration-test exercise yet; burn-down #8472 (settings
 setting	logging.maxAge	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
 setting	logstore.followBacklog	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
 setting	output.color	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
-setting	paths.config	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
 setting	embeddings.wasmPath	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
 setting	deps.autoInstall	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	events.reconnect	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
