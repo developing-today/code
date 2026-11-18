@@ -190,6 +190,20 @@ LAUNCHED_BY_RECOVERY_ZERO_MESSAGE = "opencode-claimant-recovery:zero-message-del
 LAUNCHED_BY_RECOVERY_GONE_SESSION = "opencode-claimant-recovery:gone-session"
 
 
+# Where this process's mode came from (#10332): the file's path and
+# state, and the mtimes that let a later reader date a flip. Set by
+# read_mode(), written into every fires.jsonl entry by log_fire().
+_mode_source: "Dict[str, Any] | None" = None
+
+
+def _mtime(path: Path) -> "str | None":
+    """An ISO UTC mtime for path, or None when it cannot be read."""
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+    except OSError:
+        return None
+
+
 def read_mode() -> str:
     """Read the execution mode from the mode file.
 
@@ -202,19 +216,40 @@ def read_mode() -> str:
     every such read logs a loud CLAIMANT-MODE-WARNING line, and the
     aggregator's host-health watchdog surfaces the same fact as a
     needs-attention tier item.
+
+    Every read also records where the mode came from (#10332) in
+    _mode_source, which log_fire() writes into fires.jsonl: the path,
+    whether the file was ok, missing, unreadable or invalid, the
+    file's mtime when it exists, and the state directory's mtime. A
+    deletion changes the directory's mtime, so when a fire reads
+    "missing", the directory mtime bounds when the file went.
     """
+    global _mode_source
+    source: Dict[str, Any] = {
+        "path": str(MODE_FILE),
+        "state": "ok",
+        "file_mtime": None,
+        "dir_mtime": _mtime(MODE_FILE.parent),
+        "pid": os.getpid(),
+    }
+    _mode_source = source
+
     if not MODE_FILE.exists():
+        source["state"] = "missing"
         print(
             f"CLAIMANT-MODE-WARNING (#10141): mode file {MODE_FILE} is MISSING "
             "- defaulting to shadow; dispatch will return mode_not_live and "
-            "stall until the file is restored with the intended mode.",
+            "stall until the file is restored with the intended mode. "
+            f"State directory last changed {source['dir_mtime']}.",
             file=sys.stderr,
         )
         return "shadow"
 
+    source["file_mtime"] = _mtime(MODE_FILE)
     try:
         raw = MODE_FILE.read_text()
     except Exception as exc:
+        source["state"] = "unreadable"
         print(
             f"CLAIMANT-MODE-WARNING (#10141): mode file {MODE_FILE} is "
             f"UNREADABLE ({exc}) - defaulting to shadow.",
@@ -224,6 +259,7 @@ def read_mode() -> str:
     mode = raw.strip().lower()
     if mode in ("shadow", "live"):
         return mode
+    source["state"] = "invalid"
     print(
         f"CLAIMANT-MODE-WARNING (#10141): mode file {MODE_FILE} content "
         f"{raw.strip()[:40]!r} is not live|shadow - defaulting to shadow.",
@@ -263,6 +299,7 @@ def log_fire(
     fire_entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "mode": mode,
+        "mode_source": _mode_source,
         "candidates_seen": candidates,
         "sessions_launched": launched,
         "cap_room": cap_room,
@@ -1449,7 +1486,12 @@ def main():
 
 def _fire(mode: str):
     """One claimant fire, run under the single-instance lock."""
-    print(f"OpenCode claimant starting in {mode} mode")
+    source = _mode_source or {}
+    print(
+        f"OpenCode claimant starting in {mode} mode "
+        f"(mode file {source.get('path', MODE_FILE)}: {source.get('state', 'unknown')}, "
+        f"modified {source.get('file_mtime')})"
+    )
 
     # Step 1: Supervision (always runs in live mode). Tasks it
     # recovers are eligible on the NEXT fire, not this one (#8038
