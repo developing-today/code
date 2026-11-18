@@ -76,6 +76,8 @@ var implementedEffectProbes = map[string]string{
 	"proto.native":               "TestNativeAsksTheCallingClientFromTheEnvironment",
 	"protoMessages.listMaxAge":   "TestListMaxAgeSetsTheListCacheHintFromTheEnvironment",
 	"protoMessages.readMaxAge":   "TestReadMaxAgeSetsTheReadCacheHintFromTheEnvironment",
+	"protoMessages.taskAfter":    "TestTaskAfterHandsASlowCallATaskFromTheEnvironment",
+	"protoTasks.pollInterval":    "TestTaskPollIntervalSetsTheTaskPollHintFromTheEnvironment",
 	"proto.serveMCP":             "TestServeMCPUnmountsTheEndpointFromTheEnvironment",
 	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
 	"daemon.autostart":           "TestDaemonAutostartIsReachableFromTheEnvironment",
@@ -103,57 +105,59 @@ var implementedEffectProbes = map[string]string{
 // implemented probe name to appear here, so a declared probe must
 // really exist -- not just be spelled the same in two maps.
 var effectProbeFuncs = map[string]func(*testing.T){
-	"TestLoggingFileOffWritesNoDurableLog":                   TestLoggingFileOffWritesNoDurableLog,
-	"TestOutputJSONIsReachableFromTheEnvironment":            TestOutputJSONIsReachableFromTheEnvironment,
-	"TestPathsConfigFileChangesWhichConfigLoads":             TestPathsConfigFileChangesWhichConfigLoads,
-	"TestPathsScriptsFindsRecipesThatLiveOnlyThere":          TestPathsScriptsFindsRecipesThatLiveOnlyThere,
-	"TestPathsCacheChangesTheDoctorDirectory":                TestPathsCacheChangesTheDoctorDirectory,
-	"TestPathsPluginsDiscoversAPluginThatLivesOnlyThere":     TestPathsPluginsDiscoversAPluginThatLivesOnlyThere,
-	"TestProxyUpstreamTimeoutIsReachableFromTheEnvironment":  TestProxyUpstreamTimeoutIsReachableFromTheEnvironment,
-	"TestPoolDefaultsAreReachableFromTheEnvironment":         TestPoolDefaultsAreReachableFromTheEnvironment,
-	"TestRegistryLimitReachesTheCLI":                         TestRegistryLimitReachesTheCLI,
-	"TestRegistryPageSizeChangesWhatTheCLIAsksFor":           TestRegistryPageSizeChangesWhatTheCLIAsksFor,
-	"TestScriptCaptureConsoleOffDropsConsoleOutput":          TestScriptCaptureConsoleOffDropsConsoleOutput,
-	"TestScriptCwdIsReachableFromTheEnvironment":             TestScriptCwdIsReachableFromTheEnvironment,
-	"TestScriptInterpreterIsReachableFromTheEnvironment":     TestScriptInterpreterIsReachableFromTheEnvironment,
-	"TestScriptEnvIsReachableFromTheEnvironment":             TestScriptEnvIsReachableFromTheEnvironment,
-	"TestScriptDevshellIsReachableFromTheEnvironment":        TestScriptDevshellIsReachableFromTheEnvironment,
-	"TestScriptPrefixIsReachableFromTheEnvironment":          TestScriptPrefixIsReachableFromTheEnvironment,
-	"TestScriptTypecheckOnRefusesATypeError":                 TestScriptTypecheckOnRefusesATypeError,
-	"TestSearchLimitCapsTheResults":                          TestSearchLimitCapsTheResults,
-	"TestStateDirectoryIsReachableAsASetting":                TestStateDirectoryIsReachableAsASetting,
-	"TestStrictUnknownKeysRefusesATypo":                      TestStrictUnknownKeysRefusesATypo,
-	"TestTheRegistryPageCapSaysItStoppedEarly":               TestTheRegistryPageCapSaysItStoppedEarly,
-	"TestDepsSourceNoneDropsTheManifestLayer":                TestDepsSourceNoneDropsTheManifestLayer,
-	"TestDepsManifestNamesTheManifestResolutionReads":        TestDepsManifestNamesTheManifestResolutionReads,
-	"TestDepsPackagesPinContradictingTheManifestFailsTheRun": TestDepsPackagesPinContradictingTheManifestFailsTheRun,
-	"TestPathsDepsExtendsManifestDiscovery":                  TestPathsDepsExtendsManifestDiscovery,
-	"TestTasksMaxAgeIsReachableFromEnvironment":              TestTasksMaxAgeIsReachableFromEnvironment,
-	"TestStatsTopLimitsTheRowsTheStatsAPIReports":            TestStatsTopLimitsTheRowsTheStatsAPIReports,
-	"TestAskPollCeilingIsReachableFromTheEnvironment":        TestAskPollCeilingIsReachableFromTheEnvironment,
-	"TestAskRoundsLimitIsReachableFromTheEnvironment":        TestAskRoundsLimitIsReachableFromTheEnvironment,
-	"TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment":  TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment,
-	"TestAskTimeoutReleasesAHeldRequestFromTheEnvironment":   TestAskTimeoutReleasesAHeldRequestFromTheEnvironment,
-	"TestStateTTLExpiresAResumableRequestFromTheEnvironment": TestStateTTLExpiresAResumableRequestFromTheEnvironment,
-	"TestSessionIdleReapsAnUnusedSessionFromTheEnvironment":  TestSessionIdleReapsAnUnusedSessionFromTheEnvironment,
-	"TestMCPPathMovesTheEndpointFromTheEnvironment":          TestMCPPathMovesTheEndpointFromTheEnvironment,
-	"TestNativeAsksTheCallingClientFromTheEnvironment":       TestNativeAsksTheCallingClientFromTheEnvironment,
-	"TestListMaxAgeSetsTheListCacheHintFromTheEnvironment":   TestListMaxAgeSetsTheListCacheHintFromTheEnvironment,
-	"TestReadMaxAgeSetsTheReadCacheHintFromTheEnvironment":   TestReadMaxAgeSetsTheReadCacheHintFromTheEnvironment,
-	"TestServeMCPUnmountsTheEndpointFromTheEnvironment":      TestServeMCPUnmountsTheEndpointFromTheEnvironment,
-	"TestDaemonAddressIsReachableFromTheEnvironment":         TestDaemonAddressIsReachableFromTheEnvironment,
-	"TestDaemonAutostartIsReachableFromTheEnvironment":       TestDaemonAutostartIsReachableFromTheEnvironment,
-	"TestHTTPBodyLimitsRejectOversizedBodies":                TestHTTPBodyLimitsRejectOversizedBodies,
-	"TestHTTPEventStreamSettingsChangeTheStream":             TestHTTPEventStreamSettingsChangeTheStream,
-	"TestHTTPReadHeaderTimeoutClosesSlowClients":             TestHTTPReadHeaderTimeoutClosesSlowClients,
-	"TestHTTPRequestTimeoutBoundsAClientCall":                TestHTTPRequestTimeoutBoundsAClientCall,
-	"TestHTTPShutdownGraceBoundsHowLongAStopWaits":           TestHTTPShutdownGraceBoundsHowLongAStopWaits,
-	"TestHTTPStreamBufferMaxEndsAnOversizedEventLine":        TestHTTPStreamBufferMaxEndsAnOversizedEventLine,
-	"TestTransportAllowedOriginsAreServed":                   TestTransportAllowedOriginsAreServed,
-	"TestTransportBearerTokenGatesTheDaemon":                 TestTransportBearerTokenGatesTheDaemon,
-	"TestTransportSSEKeepAliveCommentsOnAQuietStream":        TestTransportSSEKeepAliveCommentsOnAQuietStream,
-	"TestTransportSessionMetaKeysNameTheSession":             TestTransportSessionMetaKeysNameTheSession,
-	"TestTransportStdioDrainBoundsServeShutdown":             TestTransportStdioDrainBoundsServeShutdown,
+	"TestLoggingFileOffWritesNoDurableLog":                      TestLoggingFileOffWritesNoDurableLog,
+	"TestOutputJSONIsReachableFromTheEnvironment":               TestOutputJSONIsReachableFromTheEnvironment,
+	"TestPathsConfigFileChangesWhichConfigLoads":                TestPathsConfigFileChangesWhichConfigLoads,
+	"TestPathsScriptsFindsRecipesThatLiveOnlyThere":             TestPathsScriptsFindsRecipesThatLiveOnlyThere,
+	"TestPathsCacheChangesTheDoctorDirectory":                   TestPathsCacheChangesTheDoctorDirectory,
+	"TestPathsPluginsDiscoversAPluginThatLivesOnlyThere":        TestPathsPluginsDiscoversAPluginThatLivesOnlyThere,
+	"TestProxyUpstreamTimeoutIsReachableFromTheEnvironment":     TestProxyUpstreamTimeoutIsReachableFromTheEnvironment,
+	"TestPoolDefaultsAreReachableFromTheEnvironment":            TestPoolDefaultsAreReachableFromTheEnvironment,
+	"TestRegistryLimitReachesTheCLI":                            TestRegistryLimitReachesTheCLI,
+	"TestRegistryPageSizeChangesWhatTheCLIAsksFor":              TestRegistryPageSizeChangesWhatTheCLIAsksFor,
+	"TestScriptCaptureConsoleOffDropsConsoleOutput":             TestScriptCaptureConsoleOffDropsConsoleOutput,
+	"TestScriptCwdIsReachableFromTheEnvironment":                TestScriptCwdIsReachableFromTheEnvironment,
+	"TestScriptInterpreterIsReachableFromTheEnvironment":        TestScriptInterpreterIsReachableFromTheEnvironment,
+	"TestScriptEnvIsReachableFromTheEnvironment":                TestScriptEnvIsReachableFromTheEnvironment,
+	"TestScriptDevshellIsReachableFromTheEnvironment":           TestScriptDevshellIsReachableFromTheEnvironment,
+	"TestScriptPrefixIsReachableFromTheEnvironment":             TestScriptPrefixIsReachableFromTheEnvironment,
+	"TestScriptTypecheckOnRefusesATypeError":                    TestScriptTypecheckOnRefusesATypeError,
+	"TestSearchLimitCapsTheResults":                             TestSearchLimitCapsTheResults,
+	"TestStateDirectoryIsReachableAsASetting":                   TestStateDirectoryIsReachableAsASetting,
+	"TestStrictUnknownKeysRefusesATypo":                         TestStrictUnknownKeysRefusesATypo,
+	"TestTheRegistryPageCapSaysItStoppedEarly":                  TestTheRegistryPageCapSaysItStoppedEarly,
+	"TestDepsSourceNoneDropsTheManifestLayer":                   TestDepsSourceNoneDropsTheManifestLayer,
+	"TestDepsManifestNamesTheManifestResolutionReads":           TestDepsManifestNamesTheManifestResolutionReads,
+	"TestDepsPackagesPinContradictingTheManifestFailsTheRun":    TestDepsPackagesPinContradictingTheManifestFailsTheRun,
+	"TestPathsDepsExtendsManifestDiscovery":                     TestPathsDepsExtendsManifestDiscovery,
+	"TestTasksMaxAgeIsReachableFromEnvironment":                 TestTasksMaxAgeIsReachableFromEnvironment,
+	"TestStatsTopLimitsTheRowsTheStatsAPIReports":               TestStatsTopLimitsTheRowsTheStatsAPIReports,
+	"TestAskPollCeilingIsReachableFromTheEnvironment":           TestAskPollCeilingIsReachableFromTheEnvironment,
+	"TestAskRoundsLimitIsReachableFromTheEnvironment":           TestAskRoundsLimitIsReachableFromTheEnvironment,
+	"TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment":     TestAskTTLBoundsAnInterruptibleCallFromTheEnvironment,
+	"TestAskTimeoutReleasesAHeldRequestFromTheEnvironment":      TestAskTimeoutReleasesAHeldRequestFromTheEnvironment,
+	"TestStateTTLExpiresAResumableRequestFromTheEnvironment":    TestStateTTLExpiresAResumableRequestFromTheEnvironment,
+	"TestSessionIdleReapsAnUnusedSessionFromTheEnvironment":     TestSessionIdleReapsAnUnusedSessionFromTheEnvironment,
+	"TestMCPPathMovesTheEndpointFromTheEnvironment":             TestMCPPathMovesTheEndpointFromTheEnvironment,
+	"TestNativeAsksTheCallingClientFromTheEnvironment":          TestNativeAsksTheCallingClientFromTheEnvironment,
+	"TestListMaxAgeSetsTheListCacheHintFromTheEnvironment":      TestListMaxAgeSetsTheListCacheHintFromTheEnvironment,
+	"TestReadMaxAgeSetsTheReadCacheHintFromTheEnvironment":      TestReadMaxAgeSetsTheReadCacheHintFromTheEnvironment,
+	"TestTaskAfterHandsASlowCallATaskFromTheEnvironment":        TestTaskAfterHandsASlowCallATaskFromTheEnvironment,
+	"TestTaskPollIntervalSetsTheTaskPollHintFromTheEnvironment": TestTaskPollIntervalSetsTheTaskPollHintFromTheEnvironment,
+	"TestServeMCPUnmountsTheEndpointFromTheEnvironment":         TestServeMCPUnmountsTheEndpointFromTheEnvironment,
+	"TestDaemonAddressIsReachableFromTheEnvironment":            TestDaemonAddressIsReachableFromTheEnvironment,
+	"TestDaemonAutostartIsReachableFromTheEnvironment":          TestDaemonAutostartIsReachableFromTheEnvironment,
+	"TestHTTPBodyLimitsRejectOversizedBodies":                   TestHTTPBodyLimitsRejectOversizedBodies,
+	"TestHTTPEventStreamSettingsChangeTheStream":                TestHTTPEventStreamSettingsChangeTheStream,
+	"TestHTTPReadHeaderTimeoutClosesSlowClients":                TestHTTPReadHeaderTimeoutClosesSlowClients,
+	"TestHTTPRequestTimeoutBoundsAClientCall":                   TestHTTPRequestTimeoutBoundsAClientCall,
+	"TestHTTPShutdownGraceBoundsHowLongAStopWaits":              TestHTTPShutdownGraceBoundsHowLongAStopWaits,
+	"TestHTTPStreamBufferMaxEndsAnOversizedEventLine":           TestHTTPStreamBufferMaxEndsAnOversizedEventLine,
+	"TestTransportAllowedOriginsAreServed":                      TestTransportAllowedOriginsAreServed,
+	"TestTransportBearerTokenGatesTheDaemon":                    TestTransportBearerTokenGatesTheDaemon,
+	"TestTransportSSEKeepAliveCommentsOnAQuietStream":           TestTransportSSEKeepAliveCommentsOnAQuietStream,
+	"TestTransportSessionMetaKeysNameTheSession":                TestTransportSessionMetaKeysNameTheSession,
+	"TestTransportStdioDrainBoundsServeShutdown":                TestTransportStdioDrainBoundsServeShutdown,
 }
 
 func TestEffectProbeDeclarationsMatchTheProbesThatExist(t *testing.T) {
@@ -769,6 +773,72 @@ func TestReadMaxAgeSetsTheReadCacheHintFromTheEnvironment(t *testing.T) {
 	if got := modernTTL(t, "resources/read", read, "MCPX_PROTO_MESSAGES_READ_MAX_AGE=9s"); got != float64(9000) {
 		t.Fatalf("protoMessages.readMaxAge=9s should carry ttlMs 9000, got %v", got)
 	}
+}
+
+// protoMessages.taskAfter is how long a tools/call runs in line before a
+// 2026-07-28 client that declared the tasks extension is handed a task.
+// The client runs a script that takes one second.
+// Oracle: at the default (2s) the call is answered directly with
+// resultType complete; with MCPX_PROTO_MESSAGES_TASK_AFTER=200ms it comes
+// back as a task (resultType task with a taskId).
+func TestTaskAfterHandsASlowCallATaskFromTheEnvironment(t *testing.T) {
+	call := func(env ...string) map[string]any { t.Helper(); return slowTaskCall(t, env...) }
+
+	if got := call(); got["resultType"] != "complete" || !strings.Contains(dumpJSON(t, got), "slept") {
+		t.Fatalf("at the default protoMessages.taskAfter a one-second call should be answered in line, got %s", dumpJSON(t, got))
+	}
+	if got := call("MCPX_PROTO_MESSAGES_TASK_AFTER=200ms"); got["resultType"] != "task" || got["taskId"] == nil {
+		t.Fatalf("protoMessages.taskAfter=200ms should hand a one-second call a task, got %s", dumpJSON(t, got))
+	}
+}
+
+// protoTasks.pollInterval is the pollIntervalMs a task mcpx hands out
+// carries. A one-second call is made into a task (taskAfter 200ms).
+// Oracle: the task carries pollIntervalMs 1000 at the default (1s) and 250
+// with MCPX_PROTO_TASKS_POLL_INTERVAL=250ms.
+func TestTaskPollIntervalSetsTheTaskPollHintFromTheEnvironment(t *testing.T) {
+	poll := func(env ...string) any {
+		t.Helper()
+		got := slowTaskCall(t, append([]string{"MCPX_PROTO_MESSAGES_TASK_AFTER=200ms"}, env...)...)
+		if got["resultType"] != "task" {
+			t.Fatalf("a one-second call past a 200ms threshold should be a task, got %s", dumpJSON(t, got))
+		}
+		return got["pollIntervalMs"]
+	}
+
+	if got := poll(); got != float64(1000) {
+		t.Fatalf("at the default protoTasks.pollInterval a task should carry pollIntervalMs 1000, got %v", got)
+	}
+	if got := poll("MCPX_PROTO_TASKS_POLL_INTERVAL=250ms"); got != float64(250) {
+		t.Fatalf("protoTasks.pollInterval=250ms should carry pollIntervalMs 250, got %v", got)
+	}
+}
+
+// slowTaskCall has a 2026-07-28 client that declared the tasks extension
+// run a script that takes one second, and returns the tools/call result.
+func slowTaskCall(t *testing.T, env ...string) map[string]any {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(env...)
+	e.run("refresh")
+	ep := e.endpoint(t)
+	resp := mcpPost(t, ep, "", map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{
+		"name":      "mcpx_exec",
+		"arguments": map[string]any{"source": "await new Promise((r) => setTimeout(r, 1000)); console.log(\"slept\")"},
+		"_meta": map[string]any{
+			"io.modelcontextprotocol/protocolVersion": "2026-07-28",
+			"io.modelcontextprotocol/clientCapabilities": map[string]any{
+				"extensions": map[string]any{"io.modelcontextprotocol/tasks": map[string]any{}},
+			},
+		},
+	}})
+	defer func() { _ = resp.Body.Close() }()
+	doc := decodeJSON(t, resp.Body)
+	res, _ := doc["result"].(map[string]any)
+	if res == nil {
+		t.Fatalf("no result: %s", dumpJSON(t, doc))
+	}
+	return res
 }
 
 // TestDaemonAddressIsReachableFromTheEnvironment is the effect probe
