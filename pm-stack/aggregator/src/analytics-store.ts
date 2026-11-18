@@ -685,16 +685,20 @@ export function readFleetInvocationLedger(file: string, now: number): {
   total: number;
   byCommand: { subcommand: string; count: number }[];
 } {
-  let text: string;
-  try {
-    text = readFileSync(file, "utf8");
-  } catch {
-    return { readable: false, total: 0, byCommand: [] };
+  const texts: string[] = [];
+  for (const candidate of [file, ...[1, 2, 3, 4].map((index) => `${file}.${index}`)]) {
+    try {
+      texts.push(readFileSync(candidate, "utf8"));
+    } catch {
+      // Rotated segments are optional; one readable segment is enough to
+      // establish that the ledger is available rather than inferred.
+    }
   }
+  if (texts.length === 0) return { readable: false, total: 0, byCommand: [] };
   const cutoff = now - 7 * DAY_MS;
   const counts = new Map<string, number>();
   let total = 0;
-  for (const line of text.split("\n")) {
+  for (const line of texts.join("\n").split("\n")) {
     if (!line) continue;
     try {
       const row = JSON.parse(line) as {

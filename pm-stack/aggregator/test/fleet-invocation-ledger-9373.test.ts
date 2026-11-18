@@ -36,4 +36,18 @@ describe("fleet invocation ledger (#9373)", () => {
     expect(readFleetInvocationLedger(file, Date.now())).toEqual({ readable: true, total: 0, byCommand: [] });
     expect(readFleetInvocationLedger(join(dir, "missing.jsonl"), Date.now())).toEqual({ readable: false, total: 0, byCommand: [] });
   });
+
+  test("includes recent records from rotated segments", () => {
+    const dir = mkdtempSync(join(tmpdir(), "fleet-ledger-"));
+    dirs.push(dir);
+    const file = join(dir, "invocations.jsonl");
+    const now = Date.parse("2026-11-18T12:00:00Z");
+    writeFileSync(file, JSON.stringify({ schema: "fleet-invocation/v1", at_unix_ms: now - 1_000, command: "queue", exit_code: 0 }));
+    writeFileSync(`${file}.1`, JSON.stringify({ schema: "fleet-invocation/v1", at_unix_ms: now - 2_000, command: "fleet", subcommand: "status", exit_code: 0 }));
+    expect(readFleetInvocationLedger(file, now)).toEqual({
+      readable: true,
+      total: 2,
+      byCommand: [{ subcommand: "queue", count: 1 }, { subcommand: "fleet status", count: 1 }],
+    });
+  });
 });
