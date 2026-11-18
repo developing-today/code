@@ -14,7 +14,7 @@ Basis, and the inputs this record must answer rather than restate:
   directions; one large public database everyone can connect to.
 - **The peer principle** (Drew amendment, 2026-11-12 17:03, restated on the
   issue): hosted-CF nodes, Rust-binary nodes and clustered self-hosted nodes
-  (component I, #9087) are the *same participant kinds* with different
+  (component I, #9087) are the _same participant kinds_ with different
   backends. Our own server is a peer, not a special case. No protocol
   special-casing.
 - **The #9106 federation input** (Drew, 2026-11-12 18:29, restated on the
@@ -59,11 +59,11 @@ naming above it.
 
 ## 1. The three planes, and why the split is the design
 
-| Plane | Holds | Never holds | Owner |
-|---|---|---|---|
-| **Tenancy (central, one Turso DB)** | accounts, bindings pointers, tenant/database registry, tenant state machine, roles, peer policies, publish records, credential metadata, metering rollups | user content, content keys, private keys, raw Turso tokens | tenancy Workers + `TenancyOpsDO` |
-| **Tenant data (one Turso DB per tenant)** | that tenant's event log, documents, notes, references, metadata, blob *references* | other tenants' rows, tenancy authority, plaintext credentials | the tenant's own token holders + `TenantDO` |
-| **Public (one shared Turso DB, tenant = publish service)** | published, signed, content-addressed content and its index | private content, per-user data, secrets | `PublishIndexDO` + the publish service |
+| Plane                                                      | Holds                                                                                                                                                     | Never holds                                                   | Owner                                       |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- | ------------------------------------------- |
+| **Tenancy (central, one Turso DB)**                        | accounts, bindings pointers, tenant/database registry, tenant state machine, roles, peer policies, publish records, credential metadata, metering rollups | user content, content keys, private keys, raw Turso tokens    | tenancy Workers + `TenancyOpsDO`            |
+| **Tenant data (one Turso DB per tenant)**                  | that tenant's event log, documents, notes, references, metadata, blob _references_                                                                        | other tenants' rows, tenancy authority, plaintext credentials | the tenant's own token holders + `TenantDO` |
+| **Public (one shared Turso DB, tenant = publish service)** | published, signed, content-addressed content and its index                                                                                                | private content, per-user data, secrets                       | `PublishIndexDO` + the publish service      |
 
 The split is the design because it makes three failure modes structural rather
 than procedural:
@@ -82,7 +82,7 @@ than procedural:
    `env.USERS.jurisdiction(<j>)` restricted-namespace rule already enforces for
    DOs, with no unrestricted fallback (fail closed).
 
-**Peer principle applied at the plane level.** The tenancy DB is *our*
+**Peer principle applied at the plane level.** The tenancy DB is _our_
 control plane, not a privileged protocol participant. Its rows describe a
 hosted tenant exactly the way they describe a Rust-binary node or a clustered
 self-hosted node: `participant_kind` + backend descriptors + a peer policy
@@ -205,7 +205,7 @@ already uses: events/chain, documents, notes, tags, media **references**
 this tenant — the rule the landed `blobs` table in
 `pkgs/id/hosted-worker/src/user-do.ts` already implements and which component F
 owns program-wide), grants, and a `tenant_meta` table carrying
-`schema_version` and the tenant's own peer-policy *cursors*. The tenant DB also
+`schema_version` and the tenant's own peer-policy _cursors_. The tenant DB also
 holds the tenant's own copy of the pointers it needs (its binding id, its
 account id) so that an export is self-describing — but never the authority for
 them.
@@ -234,15 +234,15 @@ added to the central schema by a normal PR with a stated reason.
 ## 3. Q2 — Durable Object inventory
 
 Four DO classes, three of them per-scope, one singleton. The existing
-`UserDO` (#5199) is the per-tenant *data* object and keeps that job; this
+`UserDO` (#5199) is the per-tenant _data_ object and keeps that job; this
 record adds coordination objects above it.
 
-| DO | Cardinality | Key | Responsibility | Explicitly not |
-|---|---|---|---|---|
-| `TenantDO` (existing `UserDO`, renamed in docs only) | one per tenant | `binding_id` | versioned schema bootstrap, tenant data + blob references, ceiling/usage, export, fail-closed identity guard | tenancy authority, token minting, cross-tenant anything |
-| `TenantOpsDO` | one per tenant, created lazily | `binding_id` | the provisioning state machine (§5): serialised transitions, idempotent external effects, retry/compensation | serving reads/writes of tenant data |
-| `SyncCoord` | one per (tenant, peer) pair, ephemeral-ish, hibernating | `sha256(tenant_id || peer_id)` | owns a sync session's ordering and presence: who is in a session, the last agreed watermark, conflict report delivery, rate accounting for the session | storing events (they go to the tenant DB), deciding acceptance (§9's gate does) |
-| `PublishIndex` | one singleton (plus one per public DB if we ever split public) | fixed name | the public DB's ingest serialisation: accepts a signed publish, validates, writes the row, updates the public index, records the `publish_record` back-link | moderation policy content (that is F + #6007 tiers), tenant-private data |
+| DO                                                   | Cardinality                                                    | Key               | Responsibility                                                                                                                                              | Explicitly not                                                           |
+| ---------------------------------------------------- | -------------------------------------------------------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `TenantDO` (existing `UserDO`, renamed in docs only) | one per tenant                                                 | `binding_id`      | versioned schema bootstrap, tenant data + blob references, ceiling/usage, export, fail-closed identity guard                                                | tenancy authority, token minting, cross-tenant anything                  |
+| `TenantOpsDO`                                        | one per tenant, created lazily                                 | `binding_id`      | the provisioning state machine (§5): serialised transitions, idempotent external effects, retry/compensation                                                | serving reads/writes of tenant data                                      |
+| `SyncCoord`                                          | one per (tenant, peer) pair, ephemeral-ish, hibernating        | `sha256(tenant_id |                                                                                                                                                             | peer_id)`                                                                | owns a sync session's ordering and presence: who is in a session, the last agreed watermark, conflict report delivery, rate accounting for the session | storing events (they go to the tenant DB), deciding acceptance (§9's gate does) |
+| `PublishIndex`                                       | one singleton (plus one per public DB if we ever split public) | fixed name        | the public DB's ingest serialisation: accepts a signed publish, validates, writes the row, updates the public index, records the `publish_record` back-link | moderation policy content (that is F + #6007 tiers), tenant-private data |
 
 Rules that make the inventory defensible:
 
@@ -271,7 +271,7 @@ Rules that make the inventory defensible:
 
 Anti-goal recorded: a single "tenancy DO" holding all tenants would be a
 global hot partition and a single-object blast radius; the central tenancy
-*data* is a Turso database queried by stateless Workers, and
+_data_ is a Turso database queried by stateless Workers, and
 `TenantOpsDO`/`SyncCoord`/`PublishIndex` are the only strongly-serialised
 scopes.
 
@@ -289,18 +289,18 @@ requested ──► db_creating ──► db_ready ──► active
                                               └──► deleting ──► deleted
 ```
 
-| Step | Who may do it | What happens | Irreversible effect |
-|---|---|---|---|
-| 1. signup | the identity layer (#9077, component H) | `account` row created on first sign-in; **nothing else** — an account with no binding owns nothing (#2258 §1.1) | none |
-| 2. binding ceremony | the user (proof of possession) + the service (attestation) | `binding` row minted, `binding_id` fixed (§2258 §1.2); no database yet | none |
-| 3. tenant request | `TenantOpsDO`, triggered by first authenticated tenant request or explicit onboarding | `tenant_db` row `requested` → `db_creating`; intent recorded with a deterministic request id; jurisdiction read from the account's chosen tier | none |
-| 4. database creation | `TenantOpsDO` only, holding the platform Turso management credential | create database in the recorded jurisdiction; write `turso_db_id`/`turso_db_url`; `db_creating` → `db_ready` | **yes** — retried with the same request id until the row is `db_ready` or `failed` |
-| 5. schema bootstrap | `TenantDO` on first routed request | idempotent `blockConcurrencyWhile` bootstrap at `schema_version` (the pattern already in `user-do.ts`) | none |
-| 6. credential issuance | tenancy Worker, on an authenticated session, for an `active` tenant | mint a scoped, short-TTL Turso token (§8); record `credential` metadata | yes (revocable) |
-| 7. activation | `TenantOpsDO` | `db_ready` → `active` once schema bootstrap has been observed | none |
-| 8. suspension | operator role, or abuse/ceiling trigger | `active` → `suspended`: refuse new tokens, do not drop existing data; existing tokens expire on their own TTL | none (reversible) |
-| 9. export-only | ceiling/over-quota, or a user request | `active`/`suspended` → `export_only`: reads and export stay, writes refused (the rule #3811 states) | none |
-| 10. deletion | the account holder, plus a cooling-off window | `export_only` → `deleting` → `deleted`: revoke all credentials, drop the tenant DB, mark `deleted_at`; the tenancy rows are retained as a tombstone (account, binding, publish back-links) | **yes** |
+| Step                   | Who may do it                                                                         | What happens                                                                                                                                                                               | Irreversible effect                                                                |
+| ---------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
+| 1. signup              | the identity layer (#9077, component H)                                               | `account` row created on first sign-in; **nothing else** — an account with no binding owns nothing (#2258 §1.1)                                                                            | none                                                                               |
+| 2. binding ceremony    | the user (proof of possession) + the service (attestation)                            | `binding` row minted, `binding_id` fixed (§2258 §1.2); no database yet                                                                                                                     | none                                                                               |
+| 3. tenant request      | `TenantOpsDO`, triggered by first authenticated tenant request or explicit onboarding | `tenant_db` row `requested` → `db_creating`; intent recorded with a deterministic request id; jurisdiction read from the account's chosen tier                                             | none                                                                               |
+| 4. database creation   | `TenantOpsDO` only, holding the platform Turso management credential                  | create database in the recorded jurisdiction; write `turso_db_id`/`turso_db_url`; `db_creating` → `db_ready`                                                                               | **yes** — retried with the same request id until the row is `db_ready` or `failed` |
+| 5. schema bootstrap    | `TenantDO` on first routed request                                                    | idempotent `blockConcurrencyWhile` bootstrap at `schema_version` (the pattern already in `user-do.ts`)                                                                                     | none                                                                               |
+| 6. credential issuance | tenancy Worker, on an authenticated session, for an `active` tenant                   | mint a scoped, short-TTL Turso token (§8); record `credential` metadata                                                                                                                    | yes (revocable)                                                                    |
+| 7. activation          | `TenantOpsDO`                                                                         | `db_ready` → `active` once schema bootstrap has been observed                                                                                                                              | none                                                                               |
+| 8. suspension          | operator role, or abuse/ceiling trigger                                               | `active` → `suspended`: refuse new tokens, do not drop existing data; existing tokens expire on their own TTL                                                                              | none (reversible)                                                                  |
+| 9. export-only         | ceiling/over-quota, or a user request                                                 | `active`/`suspended` → `export_only`: reads and export stay, writes refused (the rule #3811 states)                                                                                        | none                                                                               |
+| 10. deletion           | the account holder, plus a cooling-off window                                         | `export_only` → `deleting` → `deleted`: revoke all credentials, drop the tenant DB, mark `deleted_at`; the tenancy rows are retained as a tombstone (account, binding, publish back-links) | **yes**                                                                            |
 
 Who may do what is a role check (#1253 vocabulary), not a hosted-only
 privilege table: `owner` (the bound binding) may request, export and delete;
@@ -389,7 +389,7 @@ thin client.
 
 The session is transport-agnostic: component G owns whether it runs over
 WebSocket, HTTP, QUIC/iroh where available. The tenancy plane's only concern
-is that a session is *attributable*: `SyncCoord` knows the tenant and the peer,
+is that a session is _attributable_: `SyncCoord` knows the tenant and the peer,
 and the peer's policy version, before the first event is accepted. Frames
 carry the peer's identity and the policy version so a policy change takes
 effect at the next evaluation, never retroactively.
@@ -405,7 +405,7 @@ reference public content by content hash, never by copying.**
   in every mechanical respect (it has a `TenantDO`-shaped owner for ingest
   serialisation, credentials, and a state machine), which is what keeps it
   inside the same rules instead of beside them. A federation of public DBs is
-  *possible later* by adding rows with `participant_kind='public'` and a peer
+  _possible later_ by adding rows with `participant_kind='public'` and a peer
   class between them; it is not chosen now, because one database is simpler to
   moderate and to keep consistent, and the reference model (§6.3) makes moving
   to several a data-plane change rather than a protocol change.
@@ -416,7 +416,7 @@ reference public content by content hash, never by copying.**
   operation on the tenancy plane, which is what makes retraction, moderation
   and abuse accounting possible at all.
 - **Moderation and abuse.** The append-only publish log plus the
-  `publish_record.retracted_at` marker gives the substrate; the *policy* is
+  `publish_record.retracted_at` marker gives the substrate; the _policy_ is
   #6007's tier model (Open / Standard / Strict) applied by F, and rate limits
   live on `PublishIndex` and the publish Worker. Takedown is a retraction on
   the public DB plus a note on the publishing tenant; it never reaches into the
@@ -425,7 +425,7 @@ reference public content by content hash, never by copying.**
   public object holds a reference row (content hash + kind). Access follows
   the program rule (S10): a user may access an object iff their database holds
   a reference to it or it is public-published. Because the public copy is the
-  published one, a retraction removes readability of the *public* address while
+  published one, a retraction removes readability of the _public_ address while
   a tenant's own referenced copy keeps its own reference rule — the two are
   distinct, and the record must not conflate "retracted from public" with
   "deleted for the publisher".
@@ -463,7 +463,7 @@ minted by the tenancy plane from an authenticated session; revocation by
 ## 8. The #9106 federation amendment, mapped
 
 This record does not design trust; it makes the tenancy DB the place those
-decisions are *configured*, in B31's exact shape:
+decisions are _configured_, in B31's exact shape:
 
 - `peer_policy` (§2.1) is `PeerPolicy`'s tenancy-side projection: `peer_id`,
   `class`, configured `operations`, separate `relay_granted`, `scope`,
@@ -500,7 +500,7 @@ decisions are *configured*, in B31's exact shape:
   per-user **Turso** database as the tenant's data store alongside the DO's
   SQLite. #3811's acceptance criteria are a subset of this record's tenant
   plane; nothing in #3811 is invalidated.
-- **Superseded: nothing.** The one thing that *changes meaning* is the word
+- **Superseded: nothing.** The one thing that _changes meaning_ is the word
   "user" in #3811: it becomes "tenant", because the peer principle admits
   tenants that are not hosted users. That is a vocabulary change, recorded
   here, applied in the docs as those packages are touched.
@@ -509,16 +509,16 @@ decisions are *configured*, in B31's exact shape:
 
 ## 10. Rejected alternatives
 
-| Alternative | Why rejected |
-|---|---|
-| One shared Turso DB, row-level tenant isolation | Blast radius is every tenant; per-database tokens become one token with a WHERE clause; jurisdiction isolation (#2283/#3401) cannot be per-tenant; and it contradicts the sketch's per-user databases without buying anything a second DB row doesn't. |
-| Turso replication as *the* sync protocol | Not available to clustered self-hosted nodes, browser clients or non-Turso peers — hosted-only special-casing, forbidden by the peer principle. Kept as a backend-local optimisation (§5.1). |
-| One DO per database | Multiplies hibernating state without isolation gain; breaks the stable-name rule when a user gains a second database. One DO per tenant, keyed by `binding_id`. |
-| A single global tenancy DO | Hot partition and single-object blast radius for every tenant's provisioning. Central data is a Turso DB; only per-tenant/per-session serialisation is an object. |
-| Copy public content into each tenant DB | Duplicates bytes and creates N divergent copies of one published object; contradicts F's content-addressed reference model and S10. |
-| Long-lived per-user Turso tokens | Unbounded leak window, and no revocation story short of rotating the whole database's auth. |
-| Tenancy DB as the content index / search plane | Turns a control-plane breach into a content breach, and makes the central DB scale with content rather than with accounts. |
-| Storing Turso tokens in the tenancy DB for convenience | A tenancy dump would then be database access. Metadata only. |
+| Alternative                                            | Why rejected                                                                                                                                                                                                                                           |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| One shared Turso DB, row-level tenant isolation        | Blast radius is every tenant; per-database tokens become one token with a WHERE clause; jurisdiction isolation (#2283/#3401) cannot be per-tenant; and it contradicts the sketch's per-user databases without buying anything a second DB row doesn't. |
+| Turso replication as _the_ sync protocol               | Not available to clustered self-hosted nodes, browser clients or non-Turso peers — hosted-only special-casing, forbidden by the peer principle. Kept as a backend-local optimisation (§5.1).                                                           |
+| One DO per database                                    | Multiplies hibernating state without isolation gain; breaks the stable-name rule when a user gains a second database. One DO per tenant, keyed by `binding_id`.                                                                                        |
+| A single global tenancy DO                             | Hot partition and single-object blast radius for every tenant's provisioning. Central data is a Turso DB; only per-tenant/per-session serialisation is an object.                                                                                      |
+| Copy public content into each tenant DB                | Duplicates bytes and creates N divergent copies of one published object; contradicts F's content-addressed reference model and S10.                                                                                                                    |
+| Long-lived per-user Turso tokens                       | Unbounded leak window, and no revocation story short of rotating the whole database's auth.                                                                                                                                                            |
+| Tenancy DB as the content index / search plane         | Turns a control-plane breach into a content breach, and makes the central DB scale with content rather than with accounts.                                                                                                                             |
+| Storing Turso tokens in the tenancy DB for convenience | A tenancy dump would then be database access. Metadata only.                                                                                                                                                                                           |
 
 ## 11. Granular implementation split (issues to file under #9083)
 

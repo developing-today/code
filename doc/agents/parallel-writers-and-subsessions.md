@@ -25,11 +25,11 @@ design-mill protocol.
   the record shows intent.
 - **Scratch worktrees are per run (#11348).** A scheduled task that
   needs a throwaway tree gets it from `node bin/scratch-worktree.mjs add
-  --repo <checkout> --prefix <task-name>`, which names the path with a
+--repo <checkout> --prefix <task-name>`, which names the path with a
   UTC timestamp and random suffix, fetches the base, refuses to adopt a
   path that already exists, and prints the path and an owner token as
   JSON. Clean up with `node bin/scratch-worktree.mjs remove --path <path>
-  --token <token>`: it removes only a clean tree this run created and
+--token <token>`: it removes only a clean tree this run created and
   never forces. Never build the path from the date or a per-day counter,
   never guard with `test -d … ||`, never pipe `worktree add` through
   `tail`, and never `git worktree remove --force` a scratch tree.

@@ -22,7 +22,6 @@ A row here records intent. It does not settle a product question and it is not a
 
 ## Next
 
-
 ## Later
 
 1. `id` Phase 12: worlds as data, a provider registry, more guest languages, program upgrades, fair scheduling, delta frames.

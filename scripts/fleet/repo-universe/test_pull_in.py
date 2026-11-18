@@ -373,13 +373,16 @@ class PullInCycleTests(unittest.TestCase):
         self.assertTrue(any(p.startswith("create:") for p in dry.planned))
 
     def test_target_repo_is_never_mirrored(self):
-        inventory = INVENTORY + """\
+        inventory = (
+            INVENTORY
+            + """\
   - name: developing-today/code
     url: https://github.com/developing-today/code
     class: owned
     watch: issues
     sources: [github]
 """
+        )
         mapping = {
             "dezren39/hatch-personal": [],
             "someone/upstream": [],
