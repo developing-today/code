@@ -341,7 +341,7 @@ fn validate_relay_hint(relay: &str) -> Result<()> {
 /// Serde for fixed byte arrays as CBOR byte strings (a `[u8; N]`
 /// would otherwise encode as N separate integers and blow the
 /// packet budget).
-mod byte_array {
+pub(crate) mod byte_array {
     use serde::{Deserializer, Serializer, de::Error as _, de::Visitor};
 
     pub fn serialize<S, const N: usize>(value: &[u8; N], serializer: S) -> Result<S::Ok, S::Error>
