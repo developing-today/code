@@ -42,3 +42,10 @@ test('malformed workbook numbers fail closed instead of SQLite casting to zero',
  expect(()=>assertAaNumericInputs([{cell:"2cats"}])).toThrow('malformed');
  expect(()=>assertAaNumericInputs([{cell:""},{cell:null},{cell:"2.5e-3"},{cell:42}])).not.toThrow();
 });
+
+test('ranking rejects ambiguous row ids and nonfinite sorting values',()=>{
+ const row={row_index:4,eligible:1,balanced_value:1,smart_value:1,speed_value:1,adjusted_score:50,cost_task:2};
+ expect(()=>rankAaValues([row,{...row}])).toThrow('duplicate');
+ expect(()=>rankAaValues([{...row,row_index:4.5}])).toThrow('row_index');
+ expect(()=>rankAaValues([{...row,cost_task:Infinity}])).toThrow('numeric');
+});

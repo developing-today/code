@@ -742,7 +742,15 @@ export function aaRankingValuesSql(batch: string): string {
  * each partition this equals stable ordinal position, with row_index ties. */
 export function rankAaValues(rows: Record<string, unknown>[]): Record<string, unknown>[] {
  const ranks = new Map<unknown, Record<string, number>>();
- for(const row of rows) ranks.set(row.row_index,{});
+ for(const row of rows) {
+  if (!Number.isSafeInteger(row.row_index) || ranks.has(row.row_index)) throw new Error("invalid or duplicate AA ranking row_index");
+  if (row.eligible !== 0 && row.eligible !== 1) throw new Error("invalid AA ranking eligibility");
+  for (const field of ["balanced_value","smart_value","speed_value","adjusted_score","cost_task"]) {
+   const value=row[field];
+   if (value !== null && (typeof value !== "number" || !Number.isFinite(value))) throw new Error("invalid AA ranking numeric value");
+  }
+  ranks.set(row.row_index,{});
+ }
  const rank=(field:string,key:string,ascending=false,partition:(r:Record<string,unknown>)=>unknown=()=>true) => {
   const groups=new Map<unknown,Record<string,unknown>[]>();
   for(const r of rows){const k=partition(r);if(!groups.has(k))groups.set(k,[]);groups.get(k)!.push(r);}
