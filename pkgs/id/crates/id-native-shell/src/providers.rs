@@ -377,6 +377,11 @@ pub struct ProviderAdapter {
     grants: HashMap<(String, String), GrantState>,
     revoked: HashSet<(String, String)>,
     executors: HashMap<String, Box<dyn ClientProviderExecutor>>,
+    /// Executors bound to one world's grant (#11478): a resource the
+    /// local user picked for that world, such as a file-read root. A
+    /// world's own executor wins over the provider-wide one, and no
+    /// other world can reach or replace it.
+    world_executors: HashMap<(String, String), Box<dyn ClientProviderExecutor>>,
     audit: Vec<LocalAuditEntry>,
 }
 
@@ -385,6 +390,10 @@ impl std::fmt::Debug for ProviderAdapter {
         f.debug_struct("ProviderAdapter")
             .field("grants", &self.grants.len())
             .field("executors", &self.executors.keys().collect::<Vec<_>>())
+            .field(
+                "world_executors",
+                &self.world_executors.keys().collect::<Vec<_>>(),
+            )
             .field("audit_entries", &self.audit.len())
             .finish_non_exhaustive()
     }
@@ -399,11 +408,36 @@ impl ProviderAdapter {
         Self::default()
     }
 
-    /// Register the executor that serves one provider name. A
-    /// provider with an executor but no grant for a world is still
-    /// never offered or executed for that world.
+    /// Register the executor that serves one provider name for every
+    /// world that has no executor of its own (see
+    /// [`Self::register_world_executor`]). A provider with an executor
+    /// but no grant for a world is still never offered or executed for
+    /// that world.
     pub fn register_executor(&mut self, provider: &str, executor: Box<dyn ClientProviderExecutor>) {
         self.executors.insert(provider.to_owned(), executor);
+    }
+
+    /// Register the executor that serves `provider` for `world` only
+    /// (#11478). It wins over any provider-wide executor for that
+    /// world, and registering one for another world never changes it,
+    /// so a resource the local user granted to one world (a file-read
+    /// root) cannot be swapped out or reached by another world's grant.
+    pub fn register_world_executor(
+        &mut self,
+        world: &str,
+        provider: &str,
+        executor: Box<dyn ClientProviderExecutor>,
+    ) {
+        self.world_executors
+            .insert((world.to_owned(), provider.to_owned()), executor);
+    }
+
+    /// Whether `world` has an executor for `provider`: its own, or the
+    /// provider-wide one.
+    fn has_executor(&self, world: &str, provider: &str) -> bool {
+        self.world_executors
+            .contains_key(&(world.to_owned(), provider.to_owned()))
+            || self.executors.contains_key(provider)
     }
 
     /// Opt `provider` in for `world` with the given local bounds.
@@ -424,9 +458,11 @@ impl ProviderAdapter {
     }
 
     /// The step-5 opt-in for `client.file.read`: register the
-    /// [`FileReadExecutor`] rooted at `root` and grant it for
-    /// `world`, in one step, so the shipped shell's opt-in surface
-    /// cannot grant the provider without its executor or vice versa.
+    /// [`FileReadExecutor`] rooted at `root` for `world` alone and
+    /// grant it for `world`, in one step, so the shipped shell's
+    /// opt-in surface cannot grant the provider without its executor
+    /// or vice versa. Each world reads only the root granted to it: a
+    /// later grant for another world never changes this one (#11478).
     ///
     /// `disclosure_acknowledged` is the local user's explicit
     /// acknowledgment of the design's durability disclosure: bytes
@@ -453,16 +489,19 @@ impl ProviderAdapter {
             return Err(REFUSAL_DISCLOSURE_NOT_ACKNOWLEDGED.to_owned());
         }
         let executor = FileReadExecutor::new(root, true)?;
-        self.register_executor(CLIENT_FILE_READ_PROVIDER, Box::new(executor));
+        self.register_world_executor(world, CLIENT_FILE_READ_PROVIDER, Box::new(executor));
         self.grant(world, CLIENT_FILE_READ_PROVIDER, bounds);
         Ok(())
     }
 
     /// Revoke a grant, effective immediately: the provider leaves
     /// the world's offer set and the next request for it refuses
-    /// with [`REFUSAL_REVOKED`]. Returns whether a grant existed.
+    /// with [`REFUSAL_REVOKED`]. Any executor bound to that world's
+    /// grant is dropped with it, so a later bare [`Self::grant`] cannot
+    /// revive the old resource. Returns whether a grant existed.
     pub fn revoke(&mut self, world: &str, provider: &str) -> bool {
         let key = (world.to_owned(), provider.to_owned());
+        self.world_executors.remove(&key);
         let existed = self.grants.remove(&key).is_some();
         if existed {
             self.revoked.insert(key);
@@ -486,7 +525,7 @@ impl ProviderAdapter {
             .grants
             .keys()
             .filter(|(grant_world, provider)| {
-                grant_world == world && self.executors.contains_key(provider)
+                grant_world == world && self.has_executor(world, provider)
             })
             .map(|(_, provider)| provider.clone())
             .collect();
@@ -581,7 +620,7 @@ impl ProviderAdapter {
             self.grants.insert(key, state);
             return self.refuse(now_ms, world, &provider, &nonce, REFUSAL_BUSY);
         }
-        if !self.executors.contains_key(&provider) {
+        if !self.has_executor(world, &provider) {
             self.grants.insert(key, state);
             return self.refuse(now_ms, world, &provider, &nonce, REFUSAL_UNAVAILABLE);
         }
@@ -589,7 +628,11 @@ impl ProviderAdapter {
         state.in_flight += 1;
         self.grants.insert(key.clone(), state);
         let args = frame["args"].clone();
-        let result = match self.executors.get_mut(&provider) {
+        let executor = match self.world_executors.get_mut(&key) {
+            Some(executor) => Some(executor),
+            None => self.executors.get_mut(&provider),
+        };
+        let result = match executor {
             Some(executor) => executor.execute(&args, state.bounds.max_bytes),
             None => Err(REFUSAL_UNAVAILABLE.to_owned()),
         };
@@ -974,6 +1017,95 @@ mod file_read_tests {
         );
         assert_eq!(reply["ok"], true);
         assert_eq!(reply["result_hex"], json!(hex_encode(b"hello world")));
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    /// #11478: two worlds granted `client.file.read` on one adapter,
+    /// each with its own root holding a distinct sentinel. Each world
+    /// reads only its own root, whichever grant came last.
+    #[test]
+    fn file_read_grants_for_two_worlds_keep_their_own_roots() {
+        let read = |adapter: &mut ProviderAdapter, world: &str| {
+            adapter.handle_request(
+                world,
+                &json!({
+                    "type": "provider_request",
+                    "nonce": format!("n-{world}"),
+                    "provider": CLIENT_FILE_READ_PROVIDER,
+                    "args": {"path": "sentinel.txt"},
+                    "deadline_ms": 5000,
+                }),
+                1_000,
+            )
+        };
+        for a_first in [true, false] {
+            let (base_a, root_a) = temp_tree();
+            let (base_b, root_b) = temp_tree();
+            std::fs::write(root_a.join("sentinel.txt"), b"root-a").unwrap();
+            std::fs::write(root_b.join("sentinel.txt"), b"root-b").unwrap();
+            let mut adapter = ProviderAdapter::new();
+            let grants = if a_first {
+                [("world-a", &root_a), ("world-b", &root_b)]
+            } else {
+                [("world-b", &root_b), ("world-a", &root_a)]
+            };
+            for (world, root) in grants {
+                adapter
+                    .grant_file_read(world, root.clone(), LocalBounds::DESIGN_DEFAULT, true)
+                    .unwrap();
+            }
+            let reply = read(&mut adapter, "world-a");
+            assert_eq!(reply["ok"], true, "a_first={a_first}: {reply}");
+            assert_eq!(
+                reply["result_hex"],
+                json!(hex_encode(b"root-a")),
+                "a_first={a_first}"
+            );
+            let reply = read(&mut adapter, "world-b");
+            assert_eq!(reply["ok"], true, "a_first={a_first}: {reply}");
+            assert_eq!(
+                reply["result_hex"],
+                json!(hex_encode(b"root-b")),
+                "a_first={a_first}"
+            );
+            // Both worlds still offer the provider.
+            assert!(adapter.offer_frame("world-a").is_some());
+            assert!(adapter.offer_frame("world-b").is_some());
+            std::fs::remove_dir_all(base_a).ok();
+            std::fs::remove_dir_all(base_b).ok();
+        }
+    }
+
+    /// Revoking a world's file-read grant drops the root bound to it,
+    /// so a later bare `grant` for that world cannot revive the old
+    /// root: with no executor the provider is not offered and a
+    /// request refuses as unavailable.
+    #[test]
+    fn revoke_drops_the_world_bound_root() {
+        let (base, root) = temp_tree();
+        let mut adapter = ProviderAdapter::new();
+        adapter
+            .grant_file_read("world-a", root, LocalBounds::DESIGN_DEFAULT, true)
+            .unwrap();
+        assert!(adapter.revoke("world-a", CLIENT_FILE_READ_PROVIDER));
+        adapter.grant(
+            "world-a",
+            CLIENT_FILE_READ_PROVIDER,
+            LocalBounds::DESIGN_DEFAULT,
+        );
+        assert_eq!(adapter.offer_frame("world-a"), None);
+        let reply = adapter.handle_request(
+            "world-a",
+            &json!({
+                "type": "provider_request",
+                "nonce": "ab12",
+                "provider": CLIENT_FILE_READ_PROVIDER,
+                "args": {"path": "notes.txt"},
+                "deadline_ms": 5000,
+            }),
+            1_000,
+        );
+        assert_eq!(reply["error"], REFUSAL_UNAVAILABLE);
         std::fs::remove_dir_all(base).ok();
     }
 }
