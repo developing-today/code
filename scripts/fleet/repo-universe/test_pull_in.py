@@ -372,6 +372,69 @@ class PullInCycleTests(unittest.TestCase):
         self.assertEqual(store.mirrors, [])
         self.assertTrue(any(p.startswith("create:") for p in dry.planned))
 
+    def test_target_repo_is_never_mirrored(self):
+        inventory = INVENTORY + """\
+  - name: developing-today/code
+    url: https://github.com/developing-today/code
+    class: owned
+    watch: issues
+    sources: [github]
+"""
+        mapping = {
+            "dezren39/hatch-personal": [],
+            "someone/upstream": [],
+            "developing-today/code": [issue(1, repo="developing-today/code")],
+        }
+        store = pull_in.FixtureMirrorStore()
+        state, _, _, _ = pull_in.run_pull_in(
+            inventory, {"version": 1, "repos": {}}, fetch_from(mapping), store, NOW1
+        )
+        mapping["developing-today/code"].append(
+            issue(2, "a new issue", repo="developing-today/code")
+        )
+        state, lines, had_error, actions = pull_in.run_pull_in(
+            inventory, state, fetch_from(mapping), store, NOW2
+        )
+        self.assertFalse(had_error)
+        self.assertEqual(actions, [])
+        self.assertEqual(store.mirrors, [])
+        self.assertIn("2", state["repos"]["developing-today/code"]["issues"])
+        self.assertTrue(any("never mirrored" in line for line in lines))
+        # A different target repo would mirror it as usual.
+        mapping["developing-today/code"].append(
+            issue(3, "another", repo="developing-today/code")
+        )
+        _, _, _, actions = pull_in.run_pull_in(
+            inventory, state, fetch_from(mapping), store, NOW3, "elsewhere/tracker"
+        )
+        self.assertTrue(any("created mirror" in a for a in actions))
+
+    def test_new_issue_already_closed_gets_no_mirror(self):
+        state, store = baselined_state(
+            {"dezren39/hatch-personal": [issue(1)], "someone/upstream": []}
+        )
+        store.create_mirror(
+            pull_in.mirror_title("dezren39/hatch-personal", issue(3, "gone")),
+            pull_in.mirror_body("dezren39/hatch-personal", "owned", issue(3, "gone")),
+            ["source/universe", "universe/owned"],
+        )
+        closed = {
+            "dezren39/hatch-personal": [
+                issue(1),
+                issue(2, "done already", state="closed"),
+                issue(3, "gone", state="closed"),
+            ],
+            "someone/upstream": [],
+        }
+        _, _, had_error, actions = pull_in.run_pull_in(
+            INVENTORY, state, fetch_from(closed), store, NOW2
+        )
+        self.assertFalse(had_error)
+        self.assertEqual(len(store.mirrors), 1)
+        self.assertEqual(store.mirrors[0]["state"], "closed")
+        self.assertEqual(len(actions), 1)
+        self.assertIn("resolved mirror", actions[0])
+
     def test_inventory_classes_parse(self):
         repos = pull_in.parse_inventory_classes(INVENTORY)
         by_name = {r["name"]: r["class"] for r in repos}
