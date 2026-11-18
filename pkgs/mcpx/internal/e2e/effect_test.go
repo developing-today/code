@@ -100,6 +100,12 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor": "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":       "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":             "TestEventsHistoryBoundsTheReplay",
+	"artifacts.enabled":          "TestArtifactsEnabledGatesTheStore",
+	"artifacts.maxBytes":         "TestArtifactsMaxBytesRefusesALargeArtifact",
+	"artifacts.quota":            "TestArtifactsQuotaBoundsTheStore",
+	"artifacts.delivery":         "TestArtifactsDeliveryInlinesTheBody",
+	"artifacts.inlineMaxBytes":   "TestArtifactsInlineMaxBytesBoundsAnInlinedBody",
+	"artifacts.dir":              "TestArtifactsDirReceivesTheRunsArtifacts",
 	"preset":                     "TestPresetSelectsADefinedBundle",
 	"serve.mode":                 "TestServeModeSelectsTheServedSurface",
 	"presets":                    "TestPresetsDefinesNamedFlagBundles",
@@ -195,6 +201,12 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":        TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                 TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                          TestEventsHistoryBoundsTheReplay,
+	"TestArtifactsEnabledGatesTheStore":                                         TestArtifactsEnabledGatesTheStore,
+	"TestArtifactsMaxBytesRefusesALargeArtifact":                                TestArtifactsMaxBytesRefusesALargeArtifact,
+	"TestArtifactsQuotaBoundsTheStore":                                          TestArtifactsQuotaBoundsTheStore,
+	"TestArtifactsDeliveryInlinesTheBody":                                       TestArtifactsDeliveryInlinesTheBody,
+	"TestArtifactsInlineMaxBytesBoundsAnInlinedBody":                            TestArtifactsInlineMaxBytesBoundsAnInlinedBody,
+	"TestArtifactsDirReceivesTheRunsArtifacts":                                  TestArtifactsDirReceivesTheRunsArtifacts,
 	"TestPresetSelectsADefinedBundle":                                           TestPresetSelectsADefinedBundle,
 	"TestServeModeSelectsTheServedSurface":                                      TestServeModeSelectsTheServedSurface,
 	"TestPresetsDefinesNamedFlagBundles":                                        TestPresetsDefinesNamedFlagBundles,
@@ -1693,6 +1705,97 @@ func TestServeModeSelectsTheServedSurface(t *testing.T) {
 	e.setenv("MCPX_SERVE_MODE=reactive")
 	if got := servedTools(t, e, ""); !got["request_tools"] || got["mcpx_exec"] {
 		t.Errorf("serve.mode=reactive should serve the reactive surface: %v", got)
+	}
+}
+
+// artifactScript stores one four-byte artifact and prints "done".
+const artifactScript = `await artifact("n.txt", new Uint8Array([104, 105, 104, 105]));
+console.log("done");`
+
+// runArtifactScript runs artifactScript with --json in a fresh env carrying
+// env, and returns what it printed and whether it failed.
+func runArtifactScript(t *testing.T, env ...string) (string, error) {
+	t.Helper()
+	e := newEnv(t, oneServer)
+	e.setenv(env...)
+	return e.try("exec", "--json", artifactScript)
+}
+
+// TestArtifactsEnabledGatesTheStore is the effect probe for
+// artifacts.enabled: a script's artifact is stored at the default and
+// refused once the environment disables the store.
+func TestArtifactsEnabledGatesTheStore(t *testing.T) {
+	if out, err := runArtifactScript(t); err != nil || !strings.Contains(out, `"name": "n.txt"`) {
+		t.Errorf("artifacts are on by default (err %v):\n%s", err, out)
+	}
+	if out, err := runArtifactScript(t, "MCPX_ARTIFACTS_ENABLED=false"); err == nil || !strings.Contains(out, "artifacts are disabled") {
+		t.Errorf("artifacts.enabled=false should refuse the artifact (err %v):\n%s", err, out)
+	}
+}
+
+// TestArtifactsMaxBytesRefusesALargeArtifact is the effect probe for
+// artifacts.maxBytes: four bytes fit the default and not a 2-byte limit.
+func TestArtifactsMaxBytesRefusesALargeArtifact(t *testing.T) {
+	if out, err := runArtifactScript(t); err != nil {
+		t.Errorf("four bytes should fit the default artifacts.maxBytes (err %v):\n%s", err, out)
+	}
+	if out, err := runArtifactScript(t, "MCPX_ARTIFACTS_MAX_BYTES=2"); err == nil || !strings.Contains(out, "artifacts.maxBytes") {
+		t.Errorf("artifacts.maxBytes=2 should refuse four bytes (err %v):\n%s", err, out)
+	}
+}
+
+// TestArtifactsQuotaBoundsTheStore is the effect probe for artifacts.quota:
+// four bytes fit the default quota and not a 2-byte one.
+func TestArtifactsQuotaBoundsTheStore(t *testing.T) {
+	if out, err := runArtifactScript(t); err != nil {
+		t.Errorf("four bytes should fit the default artifacts.quota (err %v):\n%s", err, out)
+	}
+	if out, err := runArtifactScript(t, "MCPX_ARTIFACTS_QUOTA=2"); err == nil || !strings.Contains(out, "artifacts.quota") {
+		t.Errorf("artifacts.quota=2 should refuse four bytes (err %v):\n%s", err, out)
+	}
+}
+
+// TestArtifactsDeliveryInlinesTheBody is the effect probe for
+// artifacts.delivery: the default hands back a reference only, and inline
+// carries the base64 body in the result.
+func TestArtifactsDeliveryInlinesTheBody(t *testing.T) {
+	const body = `"data": "aGloaQ=="`
+	if out, err := runArtifactScript(t); err != nil || strings.Contains(out, body) {
+		t.Errorf("the default delivery should not inline the body (err %v):\n%s", err, out)
+	}
+	if out, err := runArtifactScript(t, "MCPX_ARTIFACTS_DELIVERY=inline"); err != nil || !strings.Contains(out, body) {
+		t.Errorf("artifacts.delivery=inline should carry the body (err %v):\n%s", err, out)
+	}
+}
+
+// TestArtifactsInlineMaxBytesBoundsAnInlinedBody is the effect probe for
+// artifacts.inlineMaxBytes: with inline delivery, four bytes are inlined
+// under the default bound and left as a reference under a 1-byte bound.
+func TestArtifactsInlineMaxBytesBoundsAnInlinedBody(t *testing.T) {
+	const body = `"data": "aGloaQ=="`
+	if out, err := runArtifactScript(t, "MCPX_ARTIFACTS_DELIVERY=inline"); err != nil || !strings.Contains(out, body) {
+		t.Errorf("four bytes should inline under the default bound (err %v):\n%s", err, out)
+	}
+	out, err := runArtifactScript(t, "MCPX_ARTIFACTS_DELIVERY=inline", "MCPX_ARTIFACTS_INLINE_MAX_BYTES=1")
+	if err != nil || strings.Contains(out, body) || !strings.Contains(out, `"name": "n.txt"`) {
+		t.Errorf("artifacts.inlineMaxBytes=1 should keep the body out of the result (err %v):\n%s", err, out)
+	}
+}
+
+// TestArtifactsDirReceivesTheRunsArtifacts is the effect probe for
+// artifacts.dir: by default nothing lands in the directory, and naming it
+// in the environment copies the run's artifact there.
+func TestArtifactsDirReceivesTheRunsArtifacts(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "out")
+	e := newEnv(t, oneServer)
+	e.run("exec", artifactScript)
+	if _, err := os.Stat(filepath.Join(dir, "n.txt")); err == nil {
+		t.Fatal("with no artifacts.dir, nothing should be written to the directory")
+	}
+	e.setenv("MCPX_ARTIFACTS_DIR=" + dir)
+	e.run("exec", artifactScript)
+	if b, err := os.ReadFile(filepath.Join(dir, "n.txt")); err != nil || string(b) != "hihi" {
+		t.Errorf("artifacts.dir should receive n.txt with its body, got %q (%v)", b, err)
 	}
 }
 
