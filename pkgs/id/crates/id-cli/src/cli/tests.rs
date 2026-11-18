@@ -2066,6 +2066,22 @@ fn test_cli_parse_web_cookie_secure() {
 }
 
 #[test]
+fn test_cli_parse_gallery_dir_requires_web() {
+    match Cli::parse_from(["id", "serve", "--web", "--gallery-dir", "/srv/gallery"]).command {
+        Some(Command::Serve(args)) => assert_eq!(
+            args.gallery_dir.as_deref(),
+            Some(std::path::Path::new("/srv/gallery"))
+        ),
+        _ => panic!("Expected Serve command"),
+    }
+    match Cli::parse_from(["id", "serve", "--web"]).command {
+        Some(Command::Serve(args)) => assert!(args.gallery_dir.is_none()),
+        _ => panic!("Expected Serve command"),
+    }
+    assert!(Cli::try_parse_from(["id", "serve", "--gallery-dir", "/srv/gallery"]).is_err());
+}
+
+#[test]
 fn test_cli_parse_world_boot_window() {
     let cli = Cli::parse_from([
         "id",

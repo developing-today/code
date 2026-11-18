@@ -470,6 +470,14 @@ pub struct ServeArgs {
     /// Browsers drop `Secure` cookies over plain HTTP, except on localhost.
     #[arg(long, env = "ID_WEB_COOKIE_SECURE")]
     pub web_cookie_secure: bool,
+    /// Serve the program gallery stored in this directory (#10003).
+    ///
+    /// The web interface answers `/api/gallery/records`,
+    /// `/api/gallery/bundles/<hash>` and `/api/gallery/search` from the
+    /// verified bundle files (`<content-hash>.idpb`) in the directory.
+    /// Every file is verified when the server starts.
+    #[arg(long, env = "ID_GALLERY_DIR", requires = "web")]
+    pub gallery_dir: Option<std::path::PathBuf>,
     /// Host a multiplayer world over Iroh (and `/ws/world` with `--web`).
     #[arg(long, requires = "world_admin_token")]
     pub world: bool,

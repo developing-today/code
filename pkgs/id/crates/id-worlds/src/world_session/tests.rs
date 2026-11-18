@@ -3382,6 +3382,8 @@ mod tests {
             name,
             version: 1,
             licence: Some("MIT"),
+            description: None,
+            categories: &[],
         };
         let parent = export(wasm.clone(), spec("counter"), &original_author).unwrap();
         let bundle = fork(&parent, wasm.clone(), spec("counter-plus"), &forker).unwrap();

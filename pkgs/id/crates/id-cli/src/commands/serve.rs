@@ -320,6 +320,8 @@ pub struct ServeOptions {
     pub web_token: Option<String>,
     /// Mark the directory explorer's session cookies `Secure` (HTTPS in front).
     pub web_cookie_secure: bool,
+    /// Serve the program gallery stored in this directory (#10003).
+    pub gallery_dir: Option<std::path::PathBuf>,
     /// Host a multiplayer world (durable unless `ephemeral`).
     pub world: bool,
     /// Admin secret required to mint world guest capabilities.
@@ -1108,6 +1110,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         port_explicit,
         web_token,
         web_cookie_secure,
+        gallery_dir,
         world,
         world_admin_token,
         world_module,
@@ -1152,6 +1155,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
              rebuild with `--features web` to serve it"
         );
     }
+    #[cfg(not(feature = "web"))]
+    let _ = &gallery_dir;
     validate_world_options(
         world,
         world_admin_token.as_deref(),
@@ -1982,6 +1987,29 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 });
                 minter
             };
+            // #10003: the program gallery's read surface, from verified
+            // bundle files in --gallery-dir. A file that no longer verifies
+            // stops the start rather than being served or skipped.
+            let gallery = match &gallery_dir {
+                Some(dir) => {
+                    let registry = id_worlds::program_registry::Registry::open_dir(
+                        dir,
+                        id_worlds::program_registry::AdmitAll,
+                    )
+                    .map_err(|error| {
+                        anyhow::anyhow!("open the gallery in {}: {error}", dir.display())
+                    })?;
+                    status!(
+                        "gallery: {} program bundles from {}",
+                        registry.len(),
+                        dir.display()
+                    );
+                    Some(std::sync::Arc::new(std::sync::RwLock::new(
+                        id_worlds::program_gallery::Gallery::new(registry),
+                    )))
+                }
+                None => None,
+            };
             let (web_routers, surface) = id_web::web_routers_with_surface(
                 store_handle.clone(),
                 Some(peer_discovery.clone()),
@@ -1998,6 +2026,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
                 seitan_state,
                 Some(endpoint.clone()),
                 Some(std::sync::Arc::clone(&transport_ad_minter)),
+                gallery,
             )
             .await?;
             publication_surface = Some(surface);
