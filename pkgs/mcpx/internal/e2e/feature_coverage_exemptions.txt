@@ -150,8 +150,6 @@ setting	catalog.instructions	no integration-test exercise yet; burn-down #8470 (
 setting	catalog.pinnedTools	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	completion.maxValues	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	deps.autoInstall	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
-setting	diagnose.history	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
-setting	diagnose.preflight	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	doctor.timeout	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	events.reconnect	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
 setting	exec.where	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test

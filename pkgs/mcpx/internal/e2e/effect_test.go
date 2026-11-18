@@ -99,6 +99,8 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor": "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":       "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":             "TestEventsHistoryBoundsTheReplay",
+	"diagnose.history":           "TestDiagnoseHistoryCapsRecordedSchemaChanges",
+	"diagnose.preflight":         "TestDiagnosePreflightStopsAMismatchedScript",
 	"proto.serveMCP":             "TestServeMCPUnmountsTheEndpointFromTheEnvironment",
 	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
 	"daemon.autostart":           "TestDaemonAutostartIsReachableFromTheEnvironment",
@@ -185,6 +187,8 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":        TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                 TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                          TestEventsHistoryBoundsTheReplay,
+	"TestDiagnoseHistoryCapsRecordedSchemaChanges":                              TestDiagnoseHistoryCapsRecordedSchemaChanges,
+	"TestDiagnosePreflightStopsAMismatchedScript":                               TestDiagnosePreflightStopsAMismatchedScript,
 	"TestServeMCPUnmountsTheEndpointFromTheEnvironment":                         TestServeMCPUnmountsTheEndpointFromTheEnvironment,
 	"TestDaemonAddressIsReachableFromTheEnvironment":                            TestDaemonAddressIsReachableFromTheEnvironment,
 	"TestDaemonAutostartIsReachableFromTheEnvironment":                          TestDaemonAutostartIsReachableFromTheEnvironment,
@@ -1416,6 +1420,73 @@ func TestEventsHistoryBoundsTheReplay(t *testing.T) {
 	}
 	if n := strings.Count(body, "event: call.finished"); n > 1 {
 		t.Errorf("events.history=1 should keep at most one event, replayed %d calls:\n%s", n, body)
+	}
+}
+
+// churnedSchemaServer starts a daemon over the schema fixture and flips
+// demo.create_issue's schema three times, so the catalog history has three
+// recorded changes to keep or trim. env pairs reach the daemon at start.
+func churnedSchemaServer(t *testing.T, env ...string) *env {
+	t.Helper()
+	schema := filepath.Join(t.TempDir(), "schema")
+	mustWrite(t, schema, "v1")
+	e := newEnv(t, strings.ReplaceAll(schemaServer, "VERSIONFILE", schema))
+	e.setenv(env...)
+	e.run("refresh")
+	for _, v := range []string{"v2", "v1", "v2"} {
+		mustWrite(t, schema, v)
+		e.run("refresh")
+	}
+	return e
+}
+
+// recordedChanges counts the schema changes the daemon keeps for one tool.
+func recordedChanges(t *testing.T, e *env, tool string) int {
+	t.Helper()
+	resp, err := e.socketClient(t).Get("http://mcpx/v1/catalog/history?tool=" + tool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var doc struct {
+		Changes map[string][]json.RawMessage `json:"changes"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		t.Fatal(err)
+	}
+	return len(doc.Changes[tool])
+}
+
+// TestDiagnoseHistoryCapsRecordedSchemaChanges is the effect probe for
+// diagnose.history: how many schema changes the daemon remembers per tool.
+// Three flips are all kept at the default and trimmed to one at 1.
+func TestDiagnoseHistoryCapsRecordedSchemaChanges(t *testing.T) {
+	if n := recordedChanges(t, churnedSchemaServer(t), "demo.create_issue"); n != 3 {
+		t.Errorf("the default diagnose.history should keep all 3 changes, kept %d", n)
+	}
+	if n := recordedChanges(t, churnedSchemaServer(t, "MCPX_DIAGNOSE_HISTORY=1"), "demo.create_issue"); n != 1 {
+		t.Errorf("diagnose.history=1 should keep one change, kept %d", n)
+	}
+}
+
+// TestDiagnosePreflightStopsAMismatchedScript is the effect probe for
+// diagnose.preflight: a script calling a tool whose schema moved under it is
+// stopped before it runs by default, and runs (catching the tool's own
+// error) when the environment turns preflight off.
+func TestDiagnosePreflightStopsAMismatchedScript(t *testing.T) {
+	e := churnedSchemaServer(t)
+	const script = `try { await demo.create_issue({ title: "x" }); } catch (err) {}
+console.log("script ran");`
+
+	out, err := e.try("exec", script)
+	if err == nil || strings.Contains(out, "script ran") || !strings.Contains(out, "does not match the tools it calls") {
+		t.Errorf("default diagnose.preflight should stop the script before it runs (err %v):\n%s", err, out)
+	}
+
+	e.setenv("MCPX_DIAGNOSE_PREFLIGHT=false")
+	out, err = e.try("exec", script)
+	if err != nil || !strings.Contains(out, "script ran") {
+		t.Errorf("diagnose.preflight=false should let the script run (err %v):\n%s", err, out)
 	}
 }
 
