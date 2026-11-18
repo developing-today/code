@@ -15,5 +15,5 @@ class Guards(unittest.TestCase):
                 for sql in (f'UPDATE ainventory_{t} SET body="changed"',f'DELETE FROM ainventory_{t}',f'INSERT OR REPLACE INTO ainventory_{t} VALUES(1,"changed")'):
                     with self.subTest(table=t,sql=sql),self.assertRaises(sqlite3.IntegrityError):db.execute(sql)
                     self.assertEqual(db.execute(f'SELECT body FROM ainventory_{t}').fetchall(),[('original',)])
-            db.close()
+        db.close()
 if __name__=='__main__':unittest.main()
