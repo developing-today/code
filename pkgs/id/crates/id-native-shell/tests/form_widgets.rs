@@ -10,6 +10,8 @@
 //! oracle is the SSH presenter in `id-worlds` (`world_ssh.rs`) plus the
 //! machine-readable contract (`contract/shell-contract.v1.json`).
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use id_native_shell::form::{
     FormPresenter, FormStatusOutcome, form_result_frame, native_form_input_manifest, widgets_for,
 };
