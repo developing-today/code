@@ -11,10 +11,10 @@
 //! dot-normalized, an unknown critical version or shape is rejected, and
 //! the authority never selects a resolver on its own.
 //!
-//! The crate-root export of `id_uri_parse` and `array_address` belongs
-//! to slice 9110-02, so until that lands this test includes them by path;
-//! `id_shape` is already exported and is re-exported under the name the
-//! module uses.
+//! The crate-root export of `id_uri_parse`, `id_uri_format` and
+//! `array_address` belongs to slice 9110-02, so until that lands this
+//! test includes them by path; `id_shape` is already exported and is
+//! re-exported under the name the modules use.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -29,9 +29,14 @@ mod array_address;
 #[path = "../src/id_uri_parse.rs"]
 mod id_uri_parse;
 
+#[path = "../src/id_uri_format.rs"]
+#[allow(dead_code)]
+mod id_uri_format;
+
 use array_address::ArrayAddress;
 use id_shape::{ContentId, HashProfile};
-use id_uri_parse::{IdUriV1, UriParseError, UriTarget, parse, resolve_context};
+use id_uri_format::resolve_context;
+use id_uri_parse::{IdUriV1, UriParseError, UriTarget, parse};
 use proptest::prelude::*;
 
 const EMPTY_BLAKE3: &str = "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262";

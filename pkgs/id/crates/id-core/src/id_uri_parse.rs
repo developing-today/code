@@ -33,11 +33,17 @@
 //!   the same bytes is rejected, so a slot has exactly one text form.
 //! - A content token names the `raw-blake3-256` profile and a lowercase
 //!   64-digit hex digest.
+//!
+//! The canonical formatter and the resolver-context check live in
+//! [`crate::id_uri_format`] (slice A9117-uri-format, #10273); this module
+//! borrows its octet encoder so a slot's one canonical spelling is
+//! defined in exactly one place.
 
 use std::fmt;
 
 use crate::array_address::ArrayAddress;
 use crate::id_shape::{ContentId, DIGEST_BYTES, HashProfile};
+use crate::id_uri_format::{is_unreserved, push_pct_encoded};
 
 /// The URI scheme, written lowercase by the formatter.
 pub const SCHEME: &str = "id";
@@ -201,41 +207,10 @@ impl IdUriV1 {
         &self.target
     }
 
-    /// The one canonical text form of this value.
+    /// The one canonical text form of this value; see
+    /// [`crate::id_uri_format::format`].
     pub fn format(&self) -> String {
-        let mut out = String::new();
-        out.push_str(SCHEME);
-        out.push_str("://");
-        out.push_str(&self.resolver_hint);
-        out.push('/');
-        push_pct_encoded(&mut out, self.namespace.as_bytes());
-        out.push('/');
-        out.push_str(VERSION);
-        match &self.target {
-            UriTarget::Array(address) => {
-                out.push_str("/array");
-                for slot in address.slots() {
-                    out.push('/');
-                    match slot {
-                        None => out.push('~'),
-                        Some(bytes) => {
-                            out.push_str("b.");
-                            push_pct_encoded(&mut out, bytes);
-                        }
-                    }
-                }
-            }
-            UriTarget::Content(id) => {
-                out.push_str("/content/");
-                out.push_str(CONTENT_PROFILE);
-                out.push('.');
-                for byte in id.digest() {
-                    out.push(char::from(HEX_LOWER[usize::from(byte >> 4)]));
-                    out.push(char::from(HEX_LOWER[usize::from(byte & 0x0F)]));
-                }
-            }
-        }
-        out
+        crate::id_uri_format::format(self)
     }
 }
 
@@ -243,21 +218,6 @@ impl fmt::Display for IdUriV1 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.format())
     }
-}
-
-/// Check the URI's resolver hint against the resolver the caller has
-/// already selected. The hint is never trusted to pick one: a mismatch
-/// is `resolver_context_mismatch`.
-pub fn resolve_context<'a>(
-    uri_hint: &str,
-    selected_local_resolver: &'a str,
-) -> Result<&'a str, UriParseError> {
-    check_alias(uri_hint)?;
-    check_alias(selected_local_resolver)?;
-    if uri_hint != selected_local_resolver {
-        return Err(UriParseError::ResolverContextMismatch);
-    }
-    Ok(selected_local_resolver)
 }
 
 /// Parse `uri` under the V1 grammar.
@@ -287,14 +247,6 @@ pub fn parse(uri: &str) -> Result<IdUriV1, UriParseError> {
     })
 }
 
-const HEX_LOWER: &[u8; 16] = b"0123456789abcdef";
-const HEX_UPPER: &[u8; 16] = b"0123456789ABCDEF";
-
-/// RFC 3986 unreserved: `ALPHA / DIGIT / "-" / "." / "_" / "~"`.
-const fn is_unreserved(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
-}
-
 /// RFC 3986 scheme: `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`.
 fn is_scheme(text: &str) -> bool {
     let mut bytes = text.bytes();
@@ -308,7 +260,7 @@ const fn is_alias_tail(byte: u8) -> bool {
     byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
 }
 
-fn check_alias(alias: &str) -> Result<(), UriParseError> {
+pub(crate) fn check_alias(alias: &str) -> Result<(), UriParseError> {
     let bytes = alias.as_bytes();
     let Some((&first, rest)) = bytes.split_first() else {
         return Err(UriParseError::InvalidResolverAlias);
@@ -337,18 +289,6 @@ fn check_content_profile(id: &ContentId) -> Result<(), UriParseError> {
         Ok(())
     } else {
         Err(UriParseError::UnsupportedHashProfile)
-    }
-}
-
-fn push_pct_encoded(out: &mut String, bytes: &[u8]) {
-    for &byte in bytes {
-        if is_unreserved(byte) {
-            out.push(char::from(byte));
-        } else {
-            out.push('%');
-            out.push(char::from(HEX_UPPER[usize::from(byte >> 4)]));
-            out.push(char::from(HEX_UPPER[usize::from(byte & 0x0F)]));
-        }
     }
 }
 
