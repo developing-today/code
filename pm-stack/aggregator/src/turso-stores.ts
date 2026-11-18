@@ -52,7 +52,7 @@ export function storeStatement(input: string): { sql: string; args: StoreArg[] }
   return { sql, args: compact };
 }
 
-const JSON_COLUMNS = new Set(["classes", "quiet", "detail", "payload", "author", "checkpoint", "seen_ids", "source_status", "value", "document"]);
+const JSON_COLUMNS = new Set(["classes", "quiet", "detail", "payload", "author", "checkpoint", "seen_ids", "source_status", "value", "document", "aa", "batches", "prices"]);
 export function decodeStoreRow(row: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(row).map(([key, value]) => [key,
     JSON_COLUMNS.has(key) && typeof value === "string" ? JSON.parse(value) : value,

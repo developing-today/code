@@ -95,7 +95,7 @@ import {
   isAaSection,
   type AaRawPayload,
 } from "../src/aa.ts";
-import { AA_BATCH_INDEX_SQL, AA_PAYLOAD_SQL_REVISION, AA_PRICES_SQL, aaPayloadSql } from "../src/aa-batch-sql.ts";
+import { AA_BATCH_INDEX_SQL, AA_PAYLOAD_SQL_REVISION, AA_PRICES_SQL, aaPayloadSql } from "../src/aa-turso-sql.ts";
 import {
   aaBatchFingerprint,
   aaCacheFileName,
@@ -168,7 +168,7 @@ import { staleIssueSearchQuery, type RepoCensus } from "../src/coverage.ts";
 import { loadLaunchRecords, recordFromSessionEntry } from "../src/registry.ts";
 import { defaultHiddenDir, defaultQuotaViewPath, defaultUsageOutboxPath } from "../src/default-paths.ts";
 import { mapServerSessions, poolBurn } from "../src/sources/opencode.ts";
-import { resolveSupabaseProjectRef } from "../src/supabase.ts";
+import { getTursoStoreClient } from "../src/turso-stores.ts";
 import { AaLastGoodStore } from "../src/aa-last-good.ts";
 import { createSupabaseDocumentRemote } from "../src/remote-stores.ts";
 import { parseStoreBackend } from "../src/store-backend.ts";
@@ -470,7 +470,7 @@ const aaLastGoodPath = join(dirname(outPath), "aa-last-good.json");
  *  then neither read nor written. */
 const aaLastGoodStore = new AaLastGoodStore(
   aaLastGoodPath,
-  parseStoreBackend() === "supabase" ? createSupabaseDocumentRemote() : undefined,
+  parseStoreBackend() === "turso" ? createSupabaseDocumentRemote(getTursoStoreClient) : parseStoreBackend() === "supabase" ? createSupabaseDocumentRemote() : undefined,
 );
 // #1116: last-good attention entries, carried across runs whose server
 // read fails (restart churn) so one bad read cannot zero the feed.
@@ -554,15 +554,10 @@ async function opencodeConfigFingerprint(): Promise<string> {
   }
 }
 
-async function supabaseQuery(token: string, ref: string, sql: string): Promise<unknown> {
-  const res = await fetch(`https://api.supabase.com/v1/projects/${ref}/database/query`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ query: sql }),
-    signal: AbortSignal.timeout(60_000),
-  });
-  if (!res.ok) throw new Error(`Supabase query failed (HTTP ${res.status})`);
-  return res.json();
+async function storeQuery(sql: string): Promise<unknown> {
+  const client = await getTursoStoreClient();
+  if (!client) throw new Error("Turso store credential unavailable");
+  return client.query(sql);
 }
 
 function aaRawFromRows(rows: unknown): AaRawPayload | null {
@@ -571,9 +566,9 @@ function aaRawFromRows(rows: unknown): AaRawPayload | null {
 }
 
 /** Fetch one batch payload (a uuid; null is the latest fallback). */
-async function fetchAaPayload(token: string, ref: string, batch: string | null): Promise<AaRawPayload> {
-  const raw = aaRawFromRows(await supabaseQuery(token, ref, aaPayloadSql(batch)));
-  if (!raw) throw new Error("Supabase returned no AA payload");
+async function fetchAaPayload(batch: string | null): Promise<AaRawPayload> {
+  const raw = aaRawFromRows(await storeQuery(aaPayloadSql(batch)));
+  if (!raw) throw new Error("Turso returned no AA payload");
   return raw;
 }
 
@@ -628,20 +623,16 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     return section;
   };
 
-  const token = await resolveBwsSecret("supabase.muse-dev2.access-token-muse-cli");
-  if (!token) return degrade("no Supabase management token available (bws)");
-  const ref = await resolveSupabaseProjectRef(resolveBwsSecret);
-  if (!ref) return degrade("no Supabase project ref available (bws)");
 
   // The workbook index is the complete sources register; ingest_batches is
   // optional metadata and a missing join row does not hide a batch.
   let index: AaBatchIndexRow[];
   try {
-    const rows = (await supabaseQuery(token, ref, AA_BATCH_INDEX_SQL)) as { batches?: unknown }[];
+    const rows = (await storeQuery(AA_BATCH_INDEX_SQL)) as { batches?: unknown }[];
     index = parseBatchIndex(Array.isArray(rows) ? rows[0]?.batches : null);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "error";
-    return degrade(msg.startsWith("Supabase query failed") ? msg : `Supabase unreachable (${msg})`);
+    return degrade(msg.startsWith("Turso") ? msg : `Turso unreachable (${msg})`);
   }
   if (index.length === 0) return degrade("no workbook batches in ainventory.sources");
 
@@ -652,11 +643,11 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
   // page presents these prices as current.
   let currentPricesFingerprint: string;
   try {
-    const rows = (await supabaseQuery(token, ref, AA_PRICES_SQL)) as { prices?: unknown }[];
+    const rows = (await storeQuery(AA_PRICES_SQL)) as { prices?: unknown }[];
     currentPricesFingerprint = aaPricesFingerprint(Array.isArray(rows) ? rows[0]?.prices : null);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "error";
-    return degrade(msg.startsWith("Supabase query failed") ? msg : `Supabase unreachable (${msg})`);
+    return degrade(msg.startsWith("Turso") ? msg : `Turso unreachable (${msg})`);
   }
 
   // Read every batch cache once; a changed config, a changed
@@ -704,11 +695,11 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     cacheMeta.set(latestBatch, { fingerprint: lastGood.fingerprint, cached });
   } else if (latestBatch) {
     try {
-      latestSection = await assemble(await fetchAaPayload(token, ref, latestBatch));
-      if (!latestSection) return degrade("Supabase payload failed its structural check");
+      latestSection = await assemble(await fetchAaPayload(latestBatch));
+      if (!latestSection) return degrade("Turso payload failed its structural check");
     } catch (err) {
       const msg = err instanceof Error ? err.message : "error";
-      return degrade(msg.startsWith("Supabase query failed") ? msg : `Supabase unreachable (${msg})`);
+      return degrade(msg.startsWith("Turso") ? msg : `Turso unreachable (${msg})`);
     }
   }
   if (!latestSection) return degrade("no AA payload for the latest workbook batch");
@@ -732,7 +723,7 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     if (cacheMeta.get(row.importBatch)?.cached) continue;
     attempts++;
     try {
-      await assemble(await fetchAaPayload(token, ref, row.importBatch));
+      await assemble(await fetchAaPayload(row.importBatch));
     } catch (err) {
       console.error(`collector: AA historical batch build failed (${err instanceof Error ? err.message : "error"})`);
     }
@@ -1033,11 +1024,7 @@ async function main(): Promise<void> {
     const resolution = await resolveOrchestrationDocument({
       source: orchestrationSourceFromEnv(process.env),
       readDb: async () => {
-        const token = await resolveBwsSecret("supabase.muse-dev2.access-token-muse-cli");
-        if (!token) throw new Error("no Supabase management token available (bws)");
-        const ref = await resolveSupabaseProjectRef(resolveBwsSecret);
-        if (!ref) throw new Error("no Supabase project ref available (bws)");
-        const row = orchestrationDocumentFromRows(await supabaseQuery(token, ref, LATEST_ORCH_RUN_SQL));
+        const row = orchestrationDocumentFromRows(await storeQuery(LATEST_ORCH_RUN_SQL));
         if (!row) throw new Error("orch_runs returned no usable latest row");
         return row.document;
       },

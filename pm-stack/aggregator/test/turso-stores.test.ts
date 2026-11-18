@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { Database } from "bun:sqlite";
 import { storeStatement, decodeStoreRow, createTursoStoreClient } from "../src/turso-stores.ts";
-import { createSupabaseActivityRemote, createSupabaseDocumentRemote, createSupabaseSnapshotsRemote } from "../src/remote-stores.ts";
+import { createSupabaseActionsRemote, createSupabaseActivityRemote, createSupabaseDocumentRemote, createSupabaseSnapshotsRemote } from "../src/remote-stores.ts";
 import { AlertsStore } from "../src/alerts.ts";
 
 // SQLite is the execution oracle, not a string-only SQL snapshot.
@@ -49,6 +49,21 @@ test("alerts partial-index dedupe, JSON preference merge and ack are preserved",
   expect((await store.ackIncident(a.incident.id)).transitioned).toBe(true);
   expect((await store.ackIncident(a.incident.id)).transitioned).toBe(false);
   expect(await store.pendingEscalations(15)).toEqual([]);
+  const c = await store.postIncident({source:"test",key:"second",severity:"critical",title:"second"});
+  expect((await store.pendingDeliveries()).map(x=>x.id)).toContain(c.incident.id);
+  expect(await store.markDelivered(c.incident.id,{})).toBe(true);
+  expect(await store.markDelivered(c.incident.id,{})).toBe(false);
+  db.query("update alerts_incidents set delivered_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-16 minutes') where id = ?").run(c.incident.id);
+  expect((await store.pendingEscalations(15)).map(x=>x.id)).toContain(c.incident.id);
+  expect(await store.markEscalated(c.incident.id,{})).toBe(true);
+  expect(await store.pendingEscalations(15)).toEqual([]);
+  await store.logSend({class:"critical",objectRef:"test",incidentId:c.incident.id,outcome:"sent"});
+  expect((await store.listSends()).length).toBe(1);
+  await store.ackIncident(c.incident.id);
+  expect((await store.listSends())[0].acted_on_at).not.toBeNull();
+  expect((await store.closeIncident(c.incident.id)).transitioned).toBe(true);
+  expect((await store.closeIncident(c.incident.id)).transitioned).toBe(false);
+  expect((await store.recentEvents()).length).toBeGreaterThan(3);
   const sub = {endpoint:"https://example.test",p256dh:"test",auth:"test",classes:{critical:true},quiet:{} } as any;
   await store.upsertSubscription(sub);
   const updated = await store.upsertSubscription({...sub,classes:{digest:false},providedClasses:{digest:false}});
@@ -73,4 +88,13 @@ test("unknown dialect and unsafe numeric result are rejected", async () => {
  expect(()=>storeStatement("select x::uuid")).toThrow("unsupported");
  const c=createTursoStoreClient("https://example.test","test",(async()=>Response.json({results:[{type:"ok",response:{result:{cols:[{name:"id"}],rows:[[{type:"integer",value:"9007199254740992"}]]}}}]})) as any);
  await expect(c.query("select 1")).rejects.toThrow("unsafe");
+});
+
+test("actions JSON and self references round trip with real FK constraints", async () => {
+ const db=new Database(":memory:"); db.exec(`pragma foreign_keys=on;
+ create table agg_actions(id text primary key,client_token text,kind text,verb text,object_ref text,target_ref text,session_id text,session_source text,payload text,author text,created_at text,state text,applied_at text,applied_by_run text,result_note text,supersedes_action_id text references agg_actions(id),duplicate_of_action_id text references agg_actions(id));`);
+ const store=createSupabaseActionsRemote(async()=>localClient(db));
+ const base={id:"one",kind:"task",verb:"park",objectRef:"repo#1",payload:{text:"now() 'x'"},author:{kind:"drew",id:"drew",label:"Drew"},createdAt:"2026-11-18T00:00:00.000Z",state:"new"} as any;
+ await store.saveAll([{...base,id:"two",supersedes:"one",createdAt:"2026-11-18T00:01:00.000Z"},base]);
+ const rows=await store.loadAll();expect(rows[0].payload).toEqual(base.payload);expect(rows[0].author).toEqual(base.author);expect(rows[1].supersedes).toBe("one");db.close();
 });
