@@ -26,4 +26,6 @@ pub mod directory_mail;
 pub mod directory_view;
 pub mod invite;
 pub mod invites;
+pub mod keyset;
+pub mod keyset_file;
 pub mod seitan;
