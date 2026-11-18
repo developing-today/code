@@ -101,6 +101,7 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"completion.maxValues":               "TestCompletionMaxValuesCapsTheValues",
 	"catalog.instructions":               "TestCatalogInstructionsShowsServerGuidance",
 	"plumbing.launcherPlaceholderRepeat": "TestPlumbingLauncherPlaceholderRepeatAllowsATwiceUsedName",
 	"plumbing.allowTsJsOverlap":          "TestPlumbingAllowTsJsOverlapPicksAmbiguousScripts",
@@ -240,6 +241,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":        TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                 TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                          TestEventsHistoryBoundsTheReplay,
+	"TestCompletionMaxValuesCapsTheValues":                                      TestCompletionMaxValuesCapsTheValues,
 	"TestCatalogInstructionsShowsServerGuidance":                                TestCatalogInstructionsShowsServerGuidance,
 	"TestPlumbingLauncherPlaceholderRepeatAllowsATwiceUsedName":                 TestPlumbingLauncherPlaceholderRepeatAllowsATwiceUsedName,
 	"TestPlumbingAllowTsJsOverlapPicksAmbiguousScripts":                         TestPlumbingAllowTsJsOverlapPicksAmbiguousScripts,
@@ -2629,6 +2631,51 @@ func TestCatalogInstructionsShowsServerGuidance(t *testing.T) {
 	e.setenv("MCPX_CATALOG_INSTRUCTIONS=false")
 	if out := e.run("types", "demo"); strings.Contains(out, "probe-instructions") {
 		t.Errorf("catalog.instructions=false should leave the instructions out:\n%s", out)
+	}
+}
+
+// completingServer is oneServer's fake answering every completion with
+// three values, set through FAKEMCP_COMPLETIONS (JSON-escaped, because
+// newEnv replaces every "FAKE" in a config with the binary's path).
+const completingServer = `{
+  "mcpServers": {
+    "demo": {
+      "command": "FAKE",
+      "env": { "\u0046AKEMCP_COMPLETIONS": "alpha,beta,gamma" },
+      "mcpx": { "sharing": "shared", "scope": "global" }
+    }
+  }
+}`
+
+// TestCompletionMaxValuesCapsTheValues is the effect probe for
+// completion.maxValues: all three of the server's values come back by
+// default, and one once the environment caps completions at one.
+func TestCompletionMaxValuesCapsTheValues(t *testing.T) {
+	values := func(env ...string) int {
+		e := newEnv(t, completingServer)
+		e.setenv(env...)
+		e.run("refresh")
+		body := `{"server":"demo","ref":{"type":"ref/prompt","name":"summarise"},"argument":{"name":"style","value":""}}`
+		resp, err := e.socketClient(t).Post("http://mcpx/v1/complete", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		var got struct {
+			Completion struct {
+				Values []string `json:"values"`
+			} `json:"completion"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+			t.Fatalf("decode completion (status %d): %v", resp.StatusCode, err)
+		}
+		return len(got.Completion.Values)
+	}
+	if n := values(); n != 3 {
+		t.Errorf("by default all three completion values should come back, got %d", n)
+	}
+	if n := values("MCPX_COMPLETION_MAX_VALUES=1"); n != 1 {
+		t.Errorf("completion.maxValues=1 should cap the values at one, got %d", n)
 	}
 }
 

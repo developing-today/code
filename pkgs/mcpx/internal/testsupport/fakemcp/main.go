@@ -189,6 +189,11 @@ func handle(r req) map[string]any {
 				"prompts":   map[string]any{},
 			},
 		}
+		// FAKEMCP_COMPLETIONS makes the server answer completion/complete
+		// with that comma-separated list, so a test can see a cap applied.
+		if completionValues() != nil {
+			result["capabilities"].(map[string]any)["completions"] = map[string]any{}
+		}
 		// FAKEMCP_INSTRUCTIONS gives the server free-text instructions, so a
 		// test can see whether a surface shows or hides them.
 		if instr := os.Getenv("FAKEMCP_INSTRUCTIONS"); instr != "" {
@@ -260,6 +265,13 @@ func handle(r req) map[string]any {
 		return ok(r.ID, map[string]any{"contents": []any{
 			map[string]any{"uri": p.URI, "mimeType": "text/plain", "text": "hello from a resource"},
 		}})
+	case "completion/complete":
+		values := completionValues()
+		if values == nil {
+			break
+		}
+		return ok(r.ID, map[string]any{"completion": map[string]any{
+			"values": values, "total": len(values), "hasMore": false}})
 	case "prompts/list":
 		return ok(r.ID, map[string]any{"prompts": []any{
 			map[string]any{
@@ -623,4 +635,14 @@ func callTool(r req) map[string]any {
 		}
 	}
 	return fail(r.ID, -32602, "unknown tool "+p.Name)
+}
+
+// completionValues is FAKEMCP_COMPLETIONS split on commas, or nil when it
+// is unset and the server offers no completions.
+func completionValues() []string {
+	v := os.Getenv("FAKEMCP_COMPLETIONS")
+	if v == "" {
+		return nil
+	}
+	return strings.Split(v, ",")
 }
