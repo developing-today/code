@@ -40,3 +40,21 @@ queues. The matching model (Drew, 2026-11-10; #8097):
   item names a platform beyond the optional coarse family mark; Muse
   lanes work their own fixes and triage is a separate step; lanes do
   the work rather than handing off, and a handoff records its reason.
+
+## Decision records bind this file
+
+Every durable ruling behind the rules above lives in the fleet decision
+records index, [`doc/decisions/README.md`](../decisions/README.md) —
+resume-by-session (FDR-0001), the manual-claim override (FDR-0002),
+multi-task claim and take-over (FDR-0003), manual-only items (FDR-0004),
+run identity and attribution (FDR-0005), the park remediation ladder
+(FDR-0006), justified count caps (FDR-0007), parks with a term and an
+owner release (FDR-0008), the park reboot test (FDR-0009), and
+completion evidence (FDR-0010).
+
+**A change to claim, park, resume, take-over, stop-authority, cap, or
+attribution semantics requires a decision record in the same body of
+work** — the same PR, or the same run for non-PR work. Editing this
+file without that record is an incomplete change, and a change that
+contradicts an accepted record must supersede it rather than diverge
+from it in silence.

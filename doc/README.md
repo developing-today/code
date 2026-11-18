@@ -12,6 +12,7 @@ This page says where each kind of document lives in this repository and how it c
 - **`doc/<UTC>_<kind>_<name>/`.** Dated records: one folder per design, architecture, feature, fix or phase. A record says what was known when it was written. While the work is active, new sections are appended to it. It is not rewritten later.
 - **`doc/<UTC>_research_<slug>/`.** Research packages. Each holds an exact request transcript, a main reference, a review order, a change log and one file per concept. `request-intake` creates them. [`planning/workflow/records.md`](../planning/workflow/records.md) defines the format.
 - **[`doc/references/`](references/README.md).** Shared standards and reference material that more than one record cites.
+- **[`doc/decisions/`](decisions/README.md).** The **fleet decision records** (FDR) index: one maintained page of convention, template, and an index of FDR-0001…, each record tying a durable ruling on queue claim/park/resume semantics, stop authority, cap policy, or attribution to its source ruling and implementation. A change to any of those semantics adds a record in the same body of work.
 - **[`planning/`](../planning/README.md).** Maintained control documents:
   - roadmaps;
   - implementation plans ([`planning/plans/`](../planning/plans/README.md));
