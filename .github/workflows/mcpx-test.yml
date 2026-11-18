@@ -279,9 +279,102 @@ jobs:
           count=$(pgrep -c -x mcpx || true)
           echo "surviving mcpx daemon count: ${count:-0}"
 
+  nix-e2e:
+    name: "environment: mcpx flake e2e"
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+      - name: Run the e2e suite against the wrapped flake binary
+        run: nix build .#checks.x86_64-linux.mcpx-e2e --print-build-logs
+
+  container-e2e:
+    name: "environment: mcpx container e2e"
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+      - name: Build the shipped image and test harness image
+        run: |
+          nix build .#packages.x86_64-linux.mcpx-container --print-build-logs --out-link mcpx-image
+          nix build .#packages.x86_64-linux.mcpx-e2e-test-image --print-build-logs --out-link mcpx-e2e-test-image
+      - name: Smoke-test the shipped image
+        run: |
+          image=$(docker load --input mcpx-image | sed -n 's/^Loaded image: //p')
+          test -n "$image"
+          docker run --rm "$image" --version
+          docker run --rm "$image" exec 'console.log("container-e2e-runtime-ok")' \
+            | grep -q 'container-e2e-runtime-ok'
+      - name: Run e2e inside the flake-built test image
+        run: |
+          image=$(docker load --input mcpx-e2e-test-image | sed -n 's/^Loaded image: //p')
+          test -n "$image"
+          docker run --rm \
+            --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/workspace,readonly" \
+            "$image"
+
+  remote-smoke:
+    name: "environment: mcpx remote daemon smoke"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
+        continue-on-error: true
+        with:
+          use-flakehub: false
+          use-gha-cache: true
+      - name: Build the shipped image
+        run: nix build .#packages.x86_64-linux.mcpx-container --print-build-logs --out-link mcpx-image
+      - name: Connect a client container to a separate daemon container
+        run: |
+          set -euo pipefail
+          image=$(docker load --input mcpx-image | sed -n 's/^Loaded image: //p')
+          test -n "$image"
+          network=mcpx-remote-e2e
+          docker network create "$network"
+          cleanup() {
+            docker rm -f mcpx-remote-daemon >/dev/null 2>&1 || true
+            docker network rm "$network" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run --detach --name mcpx-remote-daemon \
+            --network "$network" --network-alias mcpxd \
+            --env MCPX_DAEMON_ADDRESS=0.0.0.0 \
+            --env MCPX_DAEMON_PORT=18765 \
+            "$image" daemon
+          for attempt in $(seq 1 30); do
+            if output=$(docker run --rm --network "$network" \
+              --env MCPX_DAEMON_ENDPOINT=http://mcpxd:18765 \
+              "$image" status 2>&1); then
+              if grep -q 'daemon:   running' <<<"$output"; then
+                echo "$output"
+                exit 0
+              fi
+            fi
+            sleep 1
+          done
+          echo "client could not reach the remote daemon" >&2
+          echo "$output" >&2
+          docker logs mcpx-remote-daemon >&2
+          exit 1
+
   ci-ok:
     name: "mcpx-test ci-ok"
-    needs: [init, unit, lint, plugin-ts, e2e]
+    needs: [init, unit, lint, plugin-ts, e2e, nix-e2e, container-e2e, remote-smoke]
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     timeout-minutes: 10
