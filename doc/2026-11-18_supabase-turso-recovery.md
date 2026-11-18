@@ -124,3 +124,8 @@ inspected repo, laptop-tool scripts or user units. Source-path invocations
 therefore have migrated code, but no real writer invocation is claimed
 verified by this receipt. Separate fleet worktrees and remote producers
 require their own deployment audit.
+
+A subsequent unit audit found `ainventory-gatherer.timer` still active with
+an older standalone fleet-worktree producer that calls the deleted
+Supabase REST endpoint. Its repair is separate and in progress. This PM
+cutover receipt does not claim that all Supabase consumers are migrated.
