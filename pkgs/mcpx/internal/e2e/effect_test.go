@@ -104,6 +104,9 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"proto.samplingPerMinute":            "TestSamplingPerMinuteRefusesAServersSecondSampling",
+	"proto.samplingSessionPerMinute":     "TestSamplingSessionPerMinuteRefusesASessionsSecondSampling",
+	"proto.elicitationPerMinute":         "TestElicitationPerMinuteRefusesAServersSecondQuestion",
 	"sampling.answerLocally":             "TestSamplingAnswerLocallyAnswersAnUpstreamFromTheEnvironment",
 	"model.provider":                     "TestModelProviderSelectsTheBackendFromTheEnvironment",
 	"model.baseURL":                      "TestModelBaseURLPointsTheProviderAtAnEndpointFromTheEnvironment",
@@ -300,6 +303,9 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestSamplingPerMinuteRefusesAServersSecondSampling":                             TestSamplingPerMinuteRefusesAServersSecondSampling,
+	"TestSamplingSessionPerMinuteRefusesASessionsSecondSampling":                     TestSamplingSessionPerMinuteRefusesASessionsSecondSampling,
+	"TestElicitationPerMinuteRefusesAServersSecondQuestion":                          TestElicitationPerMinuteRefusesAServersSecondQuestion,
 	"TestSamplingAnswerLocallyAnswersAnUpstreamFromTheEnvironment":                   TestSamplingAnswerLocallyAnswersAnUpstreamFromTheEnvironment,
 	"TestModelProviderSelectsTheBackendFromTheEnvironment":                           TestModelProviderSelectsTheBackendFromTheEnvironment,
 	"TestModelBaseURLPointsTheProviderAtAnEndpointFromTheEnvironment":                TestModelBaseURLPointsTheProviderAtAnEndpointFromTheEnvironment,
@@ -4132,6 +4138,94 @@ func TestSamplingAnswerLocallyAnswersAnUpstreamFromTheEnvironment(t *testing.T) 
 	}
 	if out := call("MCPX_SAMPLING_ANSWER_LOCALLY=true"); !strings.Contains(out, "advice from A") {
 		t.Fatalf("with sampling.answerLocally=true the model's answer should reach the tool:\n%s", out)
+	}
+}
+
+// twoSamplings calls the ask fixture's need_model tool twice on one shared
+// upstream session, with mcpx answering each sampling request from a fake
+// model, and returns the second call's output.
+func twoSamplings(t *testing.T, env ...string) string {
+	t.Helper()
+	a := newFakeModel(t, "A", 0)
+	e := askWith(t, `{"sharing":"shared","scope":"global","callTimeout":"10s"}`)
+	e.setenv(append(append(modelAt(a), "MCPX_SAMPLING_ANSWER_LOCALLY=true"), env...)...)
+	e.run("refresh")
+	if out, _ := e.try("call", "ask.need_model", "{}"); !strings.Contains(out, "advice from A") {
+		t.Fatalf("the first sampling request should be answered by the model:\n%s", out)
+	}
+	out, _ := e.try("call", "ask.need_model", "{}")
+	return out
+}
+
+// TestSamplingPerMinuteRefusesAServersSecondSampling is the effect probe for
+// proto.samplingPerMinute. Oracle: by default (60) a second sampling
+// request in the same minute is answered; at 1 it fails with an error
+// naming the setting.
+func TestSamplingPerMinuteRefusesAServersSecondSampling(t *testing.T) {
+	if out := twoSamplings(t); !strings.Contains(out, "advice from A") {
+		t.Fatalf("oracle: by default the second sampling request should be answered:\n%s", out)
+	}
+	if out := twoSamplings(t, "MCPX_PROTO_SAMPLING_PER_MINUTE=1"); !strings.Contains(out, "proto.samplingPerMinute") {
+		t.Fatalf("with proto.samplingPerMinute=1 the second request should be refused by name:\n%s", out)
+	}
+}
+
+// TestSamplingSessionPerMinuteRefusesASessionsSecondSampling is the effect
+// probe for proto.samplingSessionPerMinute: with the server-wide bound left
+// at its default, a per-session bound of 1 refuses the session's second
+// sampling request with an error naming the per-session setting.
+func TestSamplingSessionPerMinuteRefusesASessionsSecondSampling(t *testing.T) {
+	if out := twoSamplings(t); strings.Contains(out, "proto.samplingSessionPerMinute") {
+		t.Fatalf("oracle: by default the session bound should not bite:\n%s", out)
+	}
+	if out := twoSamplings(t, "MCPX_PROTO_SAMPLING_SESSION_PER_MINUTE=1"); !strings.Contains(out, "proto.samplingSessionPerMinute") {
+		t.Fatalf("with proto.samplingSessionPerMinute=1 the second request should be refused by name:\n%s", out)
+	}
+}
+
+// TestElicitationPerMinuteRefusesAServersSecondQuestion is the effect probe
+// for proto.elicitationPerMinute. The ask fixture's need_repo_twice tool
+// asks two questions in one call. Oracle: by default the second question
+// reaches the broker after the first is answered; at 1 it never does, and
+// the call fails with an error naming the setting.
+func TestElicitationPerMinuteRefusesAServersSecondQuestion(t *testing.T) {
+	run := func(env ...string) (string, bool) {
+		t.Helper()
+		e := askWith(t, `{"sharing":"shared","scope":"global"}`)
+		e.setenv(env...)
+		e.run("refresh")
+		beAnswerer(t, e)
+		c := e.longSocketClient(t)
+		done := make(chan map[string]any, 1)
+		go func() {
+			_, body := sockDo(t, c, http.MethodPost, "/v1/call", map[string]any{"server": "ask", "tool": "need_repo_twice"})
+			done <- body
+		}()
+		ids := waitQuestions(t, e, 1)
+		e.run("elicit", "answer", ids[0], `{"repo":"one"}`)
+		deadline := time.After(30 * time.Second)
+		for {
+			select {
+			case body := <-done:
+				b, _ := json.Marshal(body)
+				return string(b), false
+			case <-deadline:
+				t.Fatal("the two-question call neither asked again nor finished")
+			case <-time.After(100 * time.Millisecond):
+			}
+			if ids := pendingQuestions(t, e); len(ids) == 1 {
+				e.run("elicit", "answer", ids[0], `{"repo":"two"}`)
+				body := <-done
+				b, _ := json.Marshal(body)
+				return string(b), true
+			}
+		}
+	}
+	if out, asked := run(); !asked || !strings.Contains(out, "using one and two") {
+		t.Fatalf("oracle: by default the second question should be asked and answered (asked=%v):\n%s", asked, out)
+	}
+	if out, asked := run("MCPX_PROTO_ELICITATION_PER_MINUTE=1"); asked || !strings.Contains(out, "proto.elicitationPerMinute") {
+		t.Fatalf("with proto.elicitationPerMinute=1 the second question should be refused by name (asked=%v):\n%s", asked, out)
 	}
 }
 
