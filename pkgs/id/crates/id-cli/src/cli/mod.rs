@@ -473,9 +473,11 @@ pub struct ServeArgs {
     /// Serve the program gallery stored in this directory (#10003).
     ///
     /// The web interface answers `/api/gallery/records`,
-    /// `/api/gallery/bundles/<hash>` and `/api/gallery/search` from the
-    /// verified bundle files (`<content-hash>.idpb`) in the directory.
-    /// Every file is verified when the server starts.
+    /// `/api/gallery/bundles/<hash>`, `/api/gallery/search`,
+    /// `/api/gallery/authors/<key>` and `/api/gallery/collections` from the
+    /// verified bundle files (`<content-hash>.idpb`) in the directory and
+    /// the operator's collections and tags under `operator/`. Every file is
+    /// verified when the server starts.
     #[arg(long, env = "ID_GALLERY_DIR", requires = "web")]
     pub gallery_dir: Option<std::path::PathBuf>,
     /// Host a multiplayer world over Iroh (and `/ws/world` with `--web`).

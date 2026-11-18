@@ -17,7 +17,10 @@
 use std::collections::BTreeMap;
 
 use crate::program_bundle::{BundleManifest, BundleRecord};
-use crate::program_registry::{ListQuery, Registry, RegistryError};
+use crate::program_gallery_operator::{
+    AuthorPage, OperatorData, OperatorError, OperatorOverlay, SignedCollection, check_author_key,
+};
+use crate::program_registry::{AdmissionPolicy, ListQuery, Registry, RegistryError};
 
 /// Most results one search returns, whatever the caller asks for.
 pub const MAX_SEARCH_RESULTS: usize = 200;
@@ -200,14 +203,114 @@ fn searchable_text(manifest: &BundleManifest) -> String {
 pub struct Gallery {
     registry: Registry,
     index: SearchIndex,
+    operator: OperatorData,
+    dir: Option<std::path::PathBuf>,
 }
 
 impl Gallery {
-    /// Serve `registry`, indexing every record it lists.
+    /// Serve `registry`, indexing every record it lists, with no operator
+    /// data and nothing kept on disk beyond what the registry keeps.
     #[must_use]
     pub fn new(registry: Registry) -> Self {
         let index = SearchIndex::rebuild(registry.list(&ListQuery::default()));
-        Self { registry, index }
+        Self {
+            registry,
+            index,
+            operator: OperatorData::default(),
+            dir: None,
+        }
+    }
+
+    /// Open the gallery stored in `dir`: its bundles (verified as
+    /// [`Registry::open_dir`] does) and its operator data (verified as
+    /// [`OperatorData::load`] does).
+    ///
+    /// # Errors
+    ///
+    /// The registry or the operator data does not load.
+    pub fn open_dir(
+        dir: impl Into<std::path::PathBuf>,
+        policy: impl AdmissionPolicy + 'static,
+    ) -> anyhow::Result<Self> {
+        let dir = dir.into();
+        let registry = Registry::open_dir(&dir, policy)?;
+        let operator = OperatorData::load(&dir)?;
+        let mut gallery = Self::new(registry);
+        gallery.operator = operator;
+        gallery.dir = Some(dir);
+        Ok(gallery)
+    }
+
+    /// Every record `author` published here, addressed by the key alone
+    /// (G5), with the operator's tags for that author kept apart.
+    ///
+    /// # Errors
+    ///
+    /// `author` is not a key in canonical form.
+    pub fn author_page(&self, author: &str) -> Result<AuthorPage, OperatorError> {
+        check_author_key(author)?;
+        Ok(AuthorPage {
+            author: author.to_owned(),
+            records: self.registry.list(&ListQuery {
+                author: Some(author.to_owned()),
+                name: None,
+            }),
+            operator_tags: self
+                .operator
+                .overlay
+                .authors
+                .get(author)
+                .cloned()
+                .unwrap_or_default(),
+        })
+    }
+
+    /// Every featured collection, ordered by operator key then name.
+    pub fn collections(&self) -> impl Iterator<Item = &SignedCollection> {
+        self.operator.collections.values()
+    }
+
+    /// One operator's collection by name.
+    #[must_use]
+    pub fn collection(&self, operator: &str, name: &str) -> Option<&SignedCollection> {
+        self.operator
+            .collections
+            .get(&(operator.to_owned(), name.to_owned()))
+    }
+
+    /// Feature a collection (G4), keeping the higher revision, and store it
+    /// when the gallery has a directory. Returns whether it was kept.
+    ///
+    /// # Errors
+    ///
+    /// It does not verify, or it cannot be stored.
+    pub fn feature(&mut self, signed: &SignedCollection) -> Result<bool, OperatorError> {
+        let kept = self.operator.insert_collection(signed.clone())?;
+        if kept && let Some(dir) = &self.dir {
+            OperatorData::save_collection(dir, signed)?;
+        }
+        Ok(kept)
+    }
+
+    /// The operator's tags (G2).
+    #[must_use]
+    pub const fn overlay(&self) -> &OperatorOverlay {
+        &self.operator.overlay
+    }
+
+    /// Replace the operator's tags, storing them when the gallery has a
+    /// directory.
+    ///
+    /// # Errors
+    ///
+    /// They do not check, or they cannot be stored.
+    pub fn set_overlay(&mut self, overlay: OperatorOverlay) -> Result<(), OperatorError> {
+        overlay.check()?;
+        if let Some(dir) = &self.dir {
+            OperatorData::save_overlay(dir, &overlay)?;
+        }
+        self.operator.overlay = overlay;
+        Ok(())
     }
 
     /// The registry behind this gallery.
@@ -293,6 +396,7 @@ mod tests {
 
     use super::*;
     use crate::program_bundle::{ProgramBundle, ProgramSpec, export};
+    use crate::program_gallery_operator::{OperatorOverlay, SignedCollection};
     use crate::program_registry::{AdmitAll, sign_unpublish};
 
     fn alice() -> SigningKey {
@@ -526,5 +630,74 @@ mod tests {
             })
             .unwrap_err();
         assert_eq!(error, SearchError::QueryTooLong(MAX_QUERY_BYTES + 1));
+    }
+
+    #[test]
+    fn an_author_page_is_addressed_by_key_with_operator_tags_apart() {
+        let mut gallery = gallery();
+        let bob_key = crate::world_session::encode_hex(&bob().verifying_key().to_bytes());
+        let mut overlay = OperatorOverlay::default();
+        overlay
+            .authors
+            .insert(bob_key.clone(), vec!["prolific".to_owned()]);
+        gallery.set_overlay(overlay).unwrap();
+        let page = gallery.author_page(&bob_key).unwrap();
+        assert_eq!(page.author, bob_key);
+        assert_eq!(
+            names(&page.records),
+            vec![
+                ("chess-puzzles".to_owned(), 3),
+                ("go".to_owned(), 1),
+                ("racer".to_owned(), 5),
+            ]
+        );
+        assert_eq!(page.operator_tags, ["prolific"]);
+        for record in &page.records {
+            assert!(
+                !record
+                    .verify()
+                    .unwrap()
+                    .categories
+                    .contains(&"prolific".to_owned()),
+                "operator tags never enter signed categories"
+            );
+        }
+        assert!(gallery.author_page("bob").is_err());
+        let nobody = "ab".repeat(32);
+        assert!(gallery.author_page(&nobody).unwrap().records.is_empty());
+    }
+
+    #[test]
+    fn a_directory_gallery_keeps_collections_and_overlay_across_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let operator = SigningKey::from_bytes(&[9; 32]);
+        let chess = program(&alice(), "chess", 1, "Board game.", &["board"]);
+        {
+            let mut gallery = Gallery::open_dir(dir.path(), AdmitAll).unwrap();
+            gallery.publish(&chess.to_bytes()).unwrap();
+            let picks =
+                SignedCollection::sign("picks", "Picks", 1, vec![chess.identity()], &operator)
+                    .unwrap();
+            assert!(gallery.feature(&picks).unwrap());
+            let mut overlay = OperatorOverlay::default();
+            overlay.programs.insert(
+                chess.manifest().content_hash.clone(),
+                vec!["classic".to_owned()],
+            );
+            gallery.set_overlay(overlay).unwrap();
+        }
+        let gallery = Gallery::open_dir(dir.path(), AdmitAll).unwrap();
+        assert_eq!(gallery.list(&ListQuery::default()), vec![chess.record()]);
+        let operator_key = crate::world_session::encode_hex(&operator.verifying_key().to_bytes());
+        let picks = gallery.collection(&operator_key, "picks").unwrap();
+        assert_eq!(picks.verify().unwrap().items, vec![chess.identity()]);
+        assert_eq!(gallery.collections().count(), 1);
+        assert_eq!(
+            gallery.overlay().tags_for(&[chess.record()]),
+            BTreeMap::from([(
+                chess.manifest().content_hash.clone(),
+                vec!["classic".to_owned()]
+            )])
+        );
     }
 }

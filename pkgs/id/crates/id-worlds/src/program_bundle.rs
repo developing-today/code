@@ -575,7 +575,7 @@ fn push_segment(out: &mut Vec<u8>, segment: &[u8]) {
 }
 
 /// Canonical lower-case hex of exactly `N` bytes.
-fn parse_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
+pub(crate) fn parse_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
     let bytes: [u8; N] = decode_hex(text)?.try_into().ok()?;
     (encode_hex(&bytes) == text).then_some(bytes)
 }
@@ -584,7 +584,7 @@ fn parse_signature(text: &str) -> Option<Signature> {
     parse_hex::<64>(text).map(|bytes| Signature::from_bytes(&bytes))
 }
 
-fn check_identity(identity: &ProgramIdentity) -> Result<VerifyingKey, String> {
+pub(crate) fn check_identity(identity: &ProgramIdentity) -> Result<VerifyingKey, String> {
     let author = parse_hex::<32>(&identity.author)
         .ok_or_else(|| "author is not 32 bytes of lower-case hex".to_owned())?;
     let author = VerifyingKey::from_bytes(&author)
@@ -643,6 +643,18 @@ fn check_manifest(manifest: &BundleManifest) -> Result<VerifyingKey, BundleError
     Ok(author)
 }
 
+/// Whether `category` is in the portable form every registry's taxonomy
+/// reads the same: 1 to [`MAX_CATEGORY_BYTES`] lower-case ASCII letters,
+/// digits and `-`. Operator tags (v3 G2) use the same form.
+#[must_use]
+pub fn is_portable_category(category: &str) -> bool {
+    !category.is_empty()
+        && category.len() <= MAX_CATEGORY_BYTES
+        && category
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
 /// The discovery metadata's bounds: a description within
 /// [`MAX_DESCRIPTION_BYTES`], and at most [`MAX_CATEGORIES`] distinct
 /// categories in the portable form.
@@ -662,12 +674,7 @@ fn check_discovery(manifest: &BundleManifest) -> Result<(), String> {
         ));
     }
     for (index, category) in manifest.categories.iter().enumerate() {
-        let portable = !category.is_empty()
-            && category.len() <= MAX_CATEGORY_BYTES
-            && category
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
-        if !portable {
+        if !is_portable_category(category) {
             return Err(format!(
                 "category {index} must be 1 to {MAX_CATEGORY_BYTES} lower-case ASCII letters, digits or '-'"
             ));

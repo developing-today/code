@@ -9,12 +9,22 @@
 //! - `GET /api/gallery/search?q=&category=&limit=`: search over the
 //!   rebuildable index, in its documented order (exact name, then
 //!   category, then most recent version).
+//! - `GET /api/gallery/authors/{key}`: an author page addressed by key
+//!   alone (G5, #10004).
+//! - `GET /api/gallery/collections` and
+//!   `GET /api/gallery/collections/{operator}/{name}`: featured collections,
+//!   each signed by and attributed to its operator (G4).
+//!
+//! Operator speech (collections and the operator's tags, G2) is always
+//! under a field that names the operator, never mixed into a record, so a
+//! surface cannot present it as the author's.
 //!
 //! Records are signed and bundles are content-addressed, so every answer
 //! is cacheable at any tier without trust implications (G7): a cache cannot
 //! forge a record that verifies. A fetched bundle never changes, so it is
 //! marked immutable. With no gallery wired in, every route answers 404.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 use axum::{
@@ -28,6 +38,7 @@ use serde::{Deserialize, Serialize};
 
 use id_worlds::program_bundle::BundleRecord;
 use id_worlds::program_gallery::{Gallery, SearchQuery};
+use id_worlds::program_gallery_operator::SignedCollection;
 use id_worlds::program_registry::ListQuery;
 
 /// A gallery shared between the web routes and whatever publishes to it.
@@ -49,6 +60,12 @@ pub fn gallery_routes() -> Router<Option<SharedGallery>> {
         .route("/api/gallery/records", get(records_handler))
         .route("/api/gallery/bundles/{content_hash}", get(bundle_handler))
         .route("/api/gallery/search", get(search_handler))
+        .route("/api/gallery/authors/{author}", get(author_handler))
+        .route("/api/gallery/collections", get(collections_handler))
+        .route(
+            "/api/gallery/collections/{operator}/{name}",
+            get(collection_handler),
+        )
 }
 
 /// A list or search answer.
@@ -59,6 +76,38 @@ pub struct RecordsAnswer {
     /// For a search, the documented result order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub order: Option<String>,
+    /// The operator's own tags for these records, by content hash: operator
+    /// speech, never part of a signed record (G2).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub operator_tags: BTreeMap<String, Vec<String>>,
+}
+
+/// An author page.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AuthorAnswer {
+    /// The author's key: the page's address.
+    pub author: String,
+    /// Every record that key published here.
+    pub records: Vec<BundleRecord>,
+    /// The operator's own tags for this author (G2): operator speech.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operator_tags: Vec<String>,
+}
+
+/// A featured collection with its attribution.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FeaturedAnswer {
+    /// The key of the operator who signed and features the collection.
+    pub featured_by: String,
+    /// The collection exactly as the operator signed it.
+    pub collection: SignedCollection,
+}
+
+/// Every featured collection.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CollectionsAnswer {
+    /// The collections, ordered by operator key then name.
+    pub collections: Vec<FeaturedAnswer>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -86,14 +135,18 @@ async fn records_handler(
         author: params.author,
         name: params.name,
     };
-    let records = match gallery.read() {
-        Ok(gallery) => gallery.list(&query),
+    let answer = match gallery.read() {
+        Ok(gallery) => {
+            let records = gallery.list(&query);
+            RecordsAnswer {
+                operator_tags: gallery.overlay().tags_for(&records),
+                records,
+                order: None,
+            }
+        }
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    listing(RecordsAnswer {
-        records,
-        order: None,
-    })
+    listing(&answer)
 }
 
 async fn bundle_handler(
@@ -150,19 +203,78 @@ async fn search_handler(
         limit: params.limit,
     };
     let found = match gallery.read() {
-        Ok(gallery) => gallery.search(&query),
+        Ok(gallery) => gallery.search(&query).map(|records| RecordsAnswer {
+            operator_tags: gallery.overlay().tags_for(&records),
+            records,
+            order: Some(SEARCH_ORDER.to_owned()),
+        }),
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     match found {
-        Ok(records) => listing(RecordsAnswer {
-            records,
-            order: Some(SEARCH_ORDER.to_owned()),
+        Ok(answer) => listing(&answer),
+        Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+    }
+}
+
+async fn author_handler(
+    State(gallery): State<Option<SharedGallery>>,
+    Path(author): Path<String>,
+) -> Response {
+    let Some(gallery) = gallery else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let page = match gallery.read() {
+        Ok(gallery) => gallery.author_page(&author),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    match page {
+        Ok(page) => listing(&AuthorAnswer {
+            author: page.author,
+            records: page.records,
+            operator_tags: page.operator_tags,
         }),
         Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
     }
 }
 
-fn listing(answer: RecordsAnswer) -> Response {
+async fn collections_handler(State(gallery): State<Option<SharedGallery>>) -> Response {
+    let Some(gallery) = gallery else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let collections = match gallery.read() {
+        Ok(gallery) => gallery.collections().filter_map(featured).collect(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    listing(&CollectionsAnswer { collections })
+}
+
+async fn collection_handler(
+    State(gallery): State<Option<SharedGallery>>,
+    Path((operator, name)): Path<(String, String)>,
+) -> Response {
+    let Some(gallery) = gallery else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let found = match gallery.read() {
+        Ok(gallery) => gallery.collection(&operator, &name).and_then(featured),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    found.map_or_else(
+        || StatusCode::NOT_FOUND.into_response(),
+        |answer| listing(&answer),
+    )
+}
+
+/// A stored collection with the attribution its own signature proves.
+fn featured(signed: &SignedCollection) -> Option<FeaturedAnswer> {
+    let collection = signed.verify().ok()?;
+    Some(FeaturedAnswer {
+        featured_by: collection.operator,
+        collection: signed.clone(),
+    })
+}
+
+fn listing(answer: &impl Serialize) -> Response {
     let mut response = Json(answer).into_response();
     response.headers_mut().insert(
         header::CACHE_CONTROL,
@@ -319,5 +431,78 @@ mod tests {
         ] {
             assert_eq!(get(&app, uri).await.0, StatusCode::NOT_FOUND, "{uri}");
         }
+    }
+
+    #[tokio::test]
+    async fn author_pages_collections_and_operator_tags_are_served_apart() {
+        let author = SigningKey::from_bytes(&[7; 32]);
+        let author_key = id_worlds::world_session::encode_hex(&author.verifying_key().to_bytes());
+        let operator = SigningKey::from_bytes(&[9; 32]);
+        let operator_key =
+            id_worlds::world_session::encode_hex(&operator.verifying_key().to_bytes());
+        let mut gallery = Gallery::new(Registry::in_memory(AdmitAll));
+        let chess = bundle("chess", 1, "The classic board game.", &["board"]);
+        gallery.publish(&chess.to_bytes()).unwrap();
+        let picks = SignedCollection::sign(
+            "staff-picks",
+            "Staff picks",
+            1,
+            vec![chess.identity()],
+            &operator,
+        )
+        .unwrap();
+        gallery.feature(&picks).unwrap();
+        let mut overlay = id_worlds::program_gallery_operator::OperatorOverlay::default();
+        overlay.programs.insert(
+            chess.manifest().content_hash.clone(),
+            vec!["miscategorised".to_owned()],
+        );
+        overlay
+            .authors
+            .insert(author_key.clone(), vec!["verified".to_owned()]);
+        gallery.set_overlay(overlay).unwrap();
+        let app = app(Some(Arc::new(RwLock::new(gallery))));
+
+        let (status, _, body) = get(&app, &format!("/api/gallery/authors/{author_key}")).await;
+        assert_eq!(status, StatusCode::OK);
+        let page: AuthorAnswer = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.author, author_key);
+        assert_eq!(page.records, vec![chess.record()]);
+        assert_eq!(page.operator_tags, ["verified"]);
+        let (status, _, _) = get(&app, "/api/gallery/authors/not-a-key").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let (_, _, body) = get(&app, "/api/gallery/records").await;
+        let answer: RecordsAnswer = serde_json::from_slice(&body).unwrap();
+        let hash = &chess.manifest().content_hash;
+        assert_eq!(answer.operator_tags[hash], ["miscategorised"]);
+        assert_eq!(
+            answer.records[0].verify().unwrap().categories,
+            ["board"],
+            "the signed categories are untouched by the overlay"
+        );
+
+        let (_, _, body) = get(&app, "/api/gallery/collections").await;
+        let all: CollectionsAnswer = serde_json::from_slice(&body).unwrap();
+        assert_eq!(all.collections.len(), 1);
+        assert_eq!(all.collections[0].featured_by, operator_key);
+        assert_eq!(all.collections[0].collection, picks);
+        let (status, _, body) = get(
+            &app,
+            &format!("/api/gallery/collections/{operator_key}/staff-picks"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let one: FeaturedAnswer = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            one.collection.verify().unwrap().items,
+            vec![chess.identity()]
+        );
+        let (status, _, _) = get(
+            &app,
+            &format!("/api/gallery/collections/{author_key}/staff-picks"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "attribution is by signer");
     }
 }
