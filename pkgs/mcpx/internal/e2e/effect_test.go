@@ -100,6 +100,8 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor": "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":       "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":             "TestEventsHistoryBoundsTheReplay",
+	"preset":                     "TestPresetSelectsADefinedBundle",
+	"serve.mode":                 "TestServeModeSelectsTheServedSurface",
 	"presets":                    "TestPresetsDefinesNamedFlagBundles",
 	"catalog.budget":             "TestCatalogBudgetFitsTheSignatures",
 	"catalog.bias":               "TestCatalogBiasPicksWhatATightBudgetShows",
@@ -193,6 +195,8 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":        TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                 TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                          TestEventsHistoryBoundsTheReplay,
+	"TestPresetSelectsADefinedBundle":                                           TestPresetSelectsADefinedBundle,
+	"TestServeModeSelectsTheServedSurface":                                      TestServeModeSelectsTheServedSurface,
 	"TestPresetsDefinesNamedFlagBundles":                                        TestPresetsDefinesNamedFlagBundles,
 	"TestCatalogBudgetFitsTheSignatures":                                        TestCatalogBudgetFitsTheSignatures,
 	"TestCatalogBiasPicksWhatATightBudgetShows":                                 TestCatalogBiasPicksWhatATightBudgetShows,
@@ -1508,7 +1512,13 @@ console.log("script ran");`
 // tools/list could be answered before the request_tools it follows.
 func reactiveTools(t *testing.T, e *env, query string) map[string]bool {
 	t.Helper()
-	cmd := exec.Command(e.mcpx, "serve", "--mode", "reactive")
+	return servedTools(t, e, query, "--mode", "reactive")
+}
+
+// servedTools is reactiveTools for any `mcpx serve` arguments.
+func servedTools(t *testing.T, e *env, query string, args ...string) map[string]bool {
+	t.Helper()
+	cmd := exec.Command(e.mcpx, append([]string{"serve"}, args...)...)
 	cmd.Dir = e.dir
 	cmd.Env = e.envVars
 	stdin, err := cmd.StdinPipe()
@@ -1653,6 +1663,36 @@ func TestPresetsDefinesNamedFlagBundles(t *testing.T) {
 	out, err = e.try("status", "--preset", "j")
 	if err != nil || !json.Valid([]byte(strings.TrimSpace(out))) {
 		t.Errorf("presets defining j as --json should make status print JSON (err %v):\n%s", err, out)
+	}
+}
+
+// TestPresetSelectsADefinedBundle is the effect probe for preset: with j
+// defined as ["--json"], plain `mcpx status` prints text, and naming j in
+// MCPX_PRESET applies it without the flag.
+func TestPresetSelectsADefinedBundle(t *testing.T) {
+	e := newEnv(t, oneServer)
+	e.setenv(`MCPX_PRESETS={"j":["--json"]}`)
+	if out := e.run("status"); json.Valid([]byte(strings.TrimSpace(out))) {
+		t.Errorf("with no preset selected, status should print text:\n%s", out)
+	}
+	e.setenv("MCPX_PRESET=j")
+	if out := e.run("status"); !json.Valid([]byte(strings.TrimSpace(out))) {
+		t.Errorf("preset=j should make status print JSON:\n%s", out)
+	}
+}
+
+// TestServeModeSelectsTheServedSurface is the effect probe for serve.mode:
+// plain `mcpx serve` is code mode and lists no request_tools; with
+// MCPX_SERVE_MODE=reactive the same command serves the reactive surface.
+func TestServeModeSelectsTheServedSurface(t *testing.T) {
+	e := newEnv(t, oneServer)
+	e.run("ls")
+	if got := servedTools(t, e, ""); got["request_tools"] || !got["mcpx_exec"] {
+		t.Errorf("the default serve.mode should serve code mode: %v", got)
+	}
+	e.setenv("MCPX_SERVE_MODE=reactive")
+	if got := servedTools(t, e, ""); !got["request_tools"] || got["mcpx_exec"] {
+		t.Errorf("serve.mode=reactive should serve the reactive surface: %v", got)
 	}
 }
 
