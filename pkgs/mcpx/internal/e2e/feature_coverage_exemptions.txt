@@ -20,7 +20,6 @@ cli	supervise	no integration-test exercise yet; burn-down #8461 (cli daemon grou
 cli	upgrade	no integration-test exercise yet; burn-down #8461 (cli daemon group)
 setting	daemon.idleExit	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.inlineStartPoll	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
-setting	daemon.leaseTTL	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.port	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.roots	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.saveInterval	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
