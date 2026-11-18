@@ -101,6 +101,9 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"upstream.probeTimeout":              "TestUpstreamProbeTimeoutBoundsTheDiscoverWaitFromTheEnvironment",
+	"upstream.eraCache":                  "TestTheEraIsProbedOnceAndRememberedAcrossDaemonRestarts",
+	"upstream.protocol":                  "TestTheEraIsProbedOnceAndRememberedAcrossDaemonRestarts",
 	"prompt.autonomy":                    "TestPromptAutonomyRunsTheMatchedRecipeFromTheEnvironment",
 	"hooks.autonomy":                     "TestHooksAutonomySkipsAConfiguredHookFromTheEnvironment",
 	"repair.autonomy":                    "TestRepairAutonomyOffDropsTheDiagnosticsFromTheEnvironment",
@@ -262,6 +265,8 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestUpstreamProbeTimeoutBoundsTheDiscoverWaitFromTheEnvironment":                TestUpstreamProbeTimeoutBoundsTheDiscoverWaitFromTheEnvironment,
+	"TestTheEraIsProbedOnceAndRememberedAcrossDaemonRestarts":                        TestTheEraIsProbedOnceAndRememberedAcrossDaemonRestarts,
 	"TestPromptAutonomyRunsTheMatchedRecipeFromTheEnvironment":                       TestPromptAutonomyRunsTheMatchedRecipeFromTheEnvironment,
 	"TestHooksAutonomySkipsAConfiguredHookFromTheEnvironment":                        TestHooksAutonomySkipsAConfiguredHookFromTheEnvironment,
 	"TestRepairAutonomyOffDropsTheDiagnosticsFromTheEnvironment":                     TestRepairAutonomyOffDropsTheDiagnosticsFromTheEnvironment,
@@ -3187,6 +3192,26 @@ func TestRepairAutonomyOffDropsTheDiagnosticsFromTheEnvironment(t *testing.T) {
 	}
 	if got := refused("MCPX_REPAIR_AUTONOMY=off"); len(got.Diagnostics) != 0 {
 		t.Fatalf("with repair.autonomy=off no diagnostics should be attached: %+v", got)
+	}
+}
+
+// TestUpstreamProbeTimeoutBoundsTheDiscoverWaitFromTheEnvironment is the
+// effect probe for upstream.probeTimeout. The era server in legacy-silent
+// mode never answers server/discover, so a start waits out the probe
+// bound before falling back to initialize. With a 300ms bound the call
+// is answered inside a 2s start bound; with a one-hour bound the probe
+// is still waiting when the start bound expires, and the call fails.
+func TestUpstreamProbeTimeoutBoundsTheDiscoverWaitFromTheEnvironment(t *testing.T) {
+	call := func(probe string) (string, error) {
+		e, _ := eraEnv(t, "legacy-silent", "",
+			"MCPX_POOL_START_TIMEOUT=2s", "MCPX_UPSTREAM_PROBE_TIMEOUT="+probe)
+		return e.try("call", "era.hello", "{}")
+	}
+	if out, err := call("300ms"); err != nil || !strings.Contains(out, "hello from legacy-silent") {
+		t.Fatalf("oracle: a 300ms probe bound should fall back to initialize in time (err %v):\n%s", err, out)
+	}
+	if out, err := call("1h"); err == nil {
+		t.Fatalf("with upstream.probeTimeout=1h the start should run out before the probe gives up; got:\n%s", out)
 	}
 }
 
