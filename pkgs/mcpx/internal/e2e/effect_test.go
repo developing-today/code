@@ -72,6 +72,8 @@ var implementedEffectProbes = map[string]string{
 	"proto.askTimeout":           "TestAskTimeoutReleasesAHeldRequestFromTheEnvironment",
 	"proto.stateTTL":             "TestStateTTLExpiresAResumableRequestFromTheEnvironment",
 	"proto.sessionIdle":          "TestSessionIdleReapsAnUnusedSessionFromTheEnvironment",
+	"proto.mcpPath":              "TestMCPPathMovesTheEndpointFromTheEnvironment",
+	"proto.serveMCP":             "TestServeMCPUnmountsTheEndpointFromTheEnvironment",
 	"daemon.address":             "TestDaemonAddressIsReachableFromTheEnvironment",
 	"daemon.autostart":           "TestDaemonAutostartIsReachableFromTheEnvironment",
 	"http.bodyLimit":             "TestHTTPBodyLimitsRejectOversizedBodies",
@@ -131,6 +133,8 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestAskTimeoutReleasesAHeldRequestFromTheEnvironment":   TestAskTimeoutReleasesAHeldRequestFromTheEnvironment,
 	"TestStateTTLExpiresAResumableRequestFromTheEnvironment": TestStateTTLExpiresAResumableRequestFromTheEnvironment,
 	"TestSessionIdleReapsAnUnusedSessionFromTheEnvironment":  TestSessionIdleReapsAnUnusedSessionFromTheEnvironment,
+	"TestMCPPathMovesTheEndpointFromTheEnvironment":          TestMCPPathMovesTheEndpointFromTheEnvironment,
+	"TestServeMCPUnmountsTheEndpointFromTheEnvironment":      TestServeMCPUnmountsTheEndpointFromTheEnvironment,
 	"TestDaemonAddressIsReachableFromTheEnvironment":         TestDaemonAddressIsReachableFromTheEnvironment,
 	"TestDaemonAutostartIsReachableFromTheEnvironment":       TestDaemonAutostartIsReachableFromTheEnvironment,
 	"TestHTTPBodyLimitsRejectOversizedBodies":                TestHTTPBodyLimitsRejectOversizedBodies,
@@ -605,6 +609,69 @@ func TestSessionIdleReapsAnUnusedSessionFromTheEnvironment(t *testing.T) {
 	}
 	if got := endStatus("MCPX_PROTO_SESSION_IDLE=1s"); got != http.StatusNotFound {
 		t.Fatalf("proto.sessionIdle=1s should reap a session idle for three seconds, so DELETE should answer 404, got %d", got)
+	}
+}
+
+// initializeStatus posts an initialize to path on the daemon and returns
+// the HTTP status, so a probe can tell where MCP is mounted.
+func initializeStatus(t *testing.T, ep, path string) int {
+	t.Helper()
+	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`
+	req, err := http.NewRequest(http.MethodPost, ep+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode
+}
+
+// proto.mcpPath is where the daemon mounts MCP.
+// Oracle: at the default an initialize to /mcp succeeds and one to
+// /tools/mcp does not; with MCPX_PROTO_MCP_PATH=/tools/mcp it is the
+// other way round.
+func TestMCPPathMovesTheEndpointFromTheEnvironment(t *testing.T) {
+	statuses := func(env ...string) (atMCP, atMoved int) {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		e.run("ls")
+		ep := endpointOf(t, e)
+		return initializeStatus(t, ep, "/mcp"), initializeStatus(t, ep, "/tools/mcp")
+	}
+
+	if atMCP, atMoved := statuses(); atMCP != http.StatusOK || atMoved == http.StatusOK {
+		t.Fatalf("at the default proto.mcpPath MCP should answer at /mcp only, got /mcp=%d /tools/mcp=%d", atMCP, atMoved)
+	}
+	if atMCP, atMoved := statuses("MCPX_PROTO_MCP_PATH=/tools/mcp"); atMoved != http.StatusOK || atMCP == http.StatusOK {
+		t.Fatalf("proto.mcpPath=/tools/mcp should move MCP there, got /mcp=%d /tools/mcp=%d", atMCP, atMoved)
+	}
+}
+
+// proto.serveMCP mounts mcpx's own MCP server on the daemon.
+// Oracle: at the default an initialize to /mcp succeeds; with
+// MCPX_PROTO_SERVE_MCP=false the daemon still answers /v1 but not /mcp.
+func TestServeMCPUnmountsTheEndpointFromTheEnvironment(t *testing.T) {
+	status := func(env ...string) int {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		e.setenv(env...)
+		e.run("ls")
+		got := initializeStatus(t, endpointOf(t, e), "/mcp")
+		t.Logf("serveMCP env=%v status=%d", env, got)
+		return got
+	}
+
+	if got := status(); got != http.StatusOK {
+		t.Fatalf("at the default proto.serveMCP the daemon should answer MCP at /mcp, got %d", got)
+	}
+	if got := status("MCPX_PROTO_SERVE_MCP=false"); got == http.StatusOK {
+		t.Fatalf("proto.serveMCP=false should leave /mcp unmounted, got %d", got)
 	}
 }
 
