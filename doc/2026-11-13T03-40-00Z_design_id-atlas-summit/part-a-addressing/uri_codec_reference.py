@@ -11,6 +11,7 @@ Run: python3 -I uri_codec_reference.py self-test
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import random
 import re
 import sys
@@ -28,6 +29,12 @@ _UNRESERVED = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
 )
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
+# SHA-256 of the deterministic self-test corpus: the 10,000 array URIs then
+# the 10,000 content URIs, each followed by "\n". The Rust
+# (crates/id-core/tests/id_uri_property.rs) and TypeScript
+# (hosted-worker/test/id-uri-vectors.test.ts) conformance suites replay the
+# same draws and pin the same digest.
+CORPUS_SHA256 = "390eaa67a9f94e9034fb8ba77596b14be2765403606b52abfb6c1a4ff9af7fac"
 
 
 @dataclass(frozen=True)
@@ -242,6 +249,7 @@ def self_test() -> int:
             raise AssertionError(f"accepted malformed URI: {uri!r}")
 
     rng = random.Random(0x9117_2026)
+    corpus = hashlib.sha256()
     alphabet = [None, b"", b"/", b"%", b"~", bytes(range(256)), "雪/é".encode()]
     for _ in range(10_000):
         namespace = rng.choice(["ns", "雪/é", "café%path"]) + "".join(
@@ -259,6 +267,7 @@ def self_test() -> int:
         reparsed = parse(uri)
         assert reparsed == address, (address, uri, reparsed)
         assert format_array(reparsed) == uri
+        corpus.update(uri.encode("ascii") + b"\n")
 
     # Content syntax has its own deterministic generator and typed formatter.
     for _ in range(10_000):
@@ -267,6 +276,9 @@ def self_test() -> int:
         reparsed = parse(uri)
         assert reparsed == content, (content, uri, reparsed)
         assert format_content(reparsed) == uri
+        corpus.update(uri.encode("ascii") + b"\n")
+    if corpus.hexdigest() != CORPUS_SHA256:
+        raise AssertionError(f"corpus digest changed: {corpus.hexdigest()}")
 
     for invalid_content in (
         ContentId("local", "main", _PROFILE, b"short"),
@@ -292,7 +304,8 @@ def self_test() -> int:
 
     print(
         f"PASS: {len(vectors)} array vectors + 1 content golden, {len(bad)} malformed cases, "
-        "10000 deterministic array and 10000 content round trips"
+        "10000 deterministic array and 10000 content round trips, "
+        f"corpus sha256 {CORPUS_SHA256}"
     )
     return 0
 
