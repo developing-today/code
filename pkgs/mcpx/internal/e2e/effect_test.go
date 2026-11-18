@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -101,6 +102,7 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"daemon.port":                        "TestDaemonPortBindsTheChosenPortFromTheEnvironment",
 	"daemon.saveInterval":                "TestDaemonSaveIntervalWritesTheLeaseTableFromTheEnvironment",
 	"autostart.pollInterval":             "TestAutostartPollIntervalPacesTheReadinessPollFromTheEnvironment",
 	"daemon.leaseTTL":                    "TestDaemonLeaseTTLForgetsASilentCallerFromTheEnvironment",
@@ -284,6 +286,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestDaemonPortBindsTheChosenPortFromTheEnvironment":                             TestDaemonPortBindsTheChosenPortFromTheEnvironment,
 	"TestDaemonSaveIntervalWritesTheLeaseTableFromTheEnvironment":                    TestDaemonSaveIntervalWritesTheLeaseTableFromTheEnvironment,
 	"TestAutostartPollIntervalPacesTheReadinessPollFromTheEnvironment":               TestAutostartPollIntervalPacesTheReadinessPollFromTheEnvironment,
 	"TestDaemonLeaseTTLForgetsASilentCallerFromTheEnvironment":                       TestDaemonLeaseTTLForgetsASilentCallerFromTheEnvironment,
@@ -3797,6 +3800,41 @@ func TestDaemonSaveIntervalWritesTheLeaseTableFromTheEnvironment(t *testing.T) {
 	}
 	if !leaseSavedWithin(t, "MCPX_DAEMON_SAVE_INTERVAL=200ms") {
 		t.Fatal("with daemon.saveInterval=200ms the lease should have been saved to sessions.json")
+	}
+}
+
+// TestDaemonPortBindsTheChosenPortFromTheEnvironment is the effect probe
+// for daemon.port. By default the daemon binds an ephemeral port; with
+// daemon.port set to a port the test just found free, the daemon
+// reports that exact endpoint, and it answers there.
+func TestDaemonPortBindsTheChosenPortFromTheEnvironment(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
+	_ = l.Close()
+	want := "http://127.0.0.1:" + port
+
+	def := newEnv(t, oneServer)
+	def.run("ls")
+	if got := endpointOf(t, def); got == want || !strings.HasPrefix(got, "http://127.0.0.1:") {
+		t.Fatalf("oracle: by default the daemon should bind some other loopback port, got %s", got)
+	}
+
+	e := newEnv(t, oneServer)
+	e.setenv("MCPX_DAEMON_PORT=" + port)
+	e.run("ls")
+	if got := endpointOf(t, e); got != want {
+		t.Fatalf("with daemon.port=%s the daemon should report %s, got %s", port, want, got)
+	}
+	resp, err := http.Get(want + "/v1/health")
+	if err != nil {
+		t.Fatalf("the chosen port should answer: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the chosen port answered %d, want 200", resp.StatusCode)
 	}
 }
 
