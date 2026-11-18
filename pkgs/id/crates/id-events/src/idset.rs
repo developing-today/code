@@ -71,6 +71,9 @@ use id_core::waiting::AuthorKey;
 /// Store-wired expansion over the membership layer (spec §9 item 2).
 pub mod expand;
 
+/// The counted/uncounted projection of a view (spec §4.1, §4.3).
+pub mod project;
+
 /// View projection and discovery over an explicitly pinned snapshot.
 pub mod view;
 
