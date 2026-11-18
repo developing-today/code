@@ -63,6 +63,11 @@ let
       fi
 
       logger -t agent-rebuild-switch "switch to ${flakeRef} started by ''${SUDO_USER:-unknown}"
+      # sudo keeps the caller's working directory, and nix resolves an
+      # installable that contains a slash against the cwd, following a
+      # symlink there into the store. Run from root-owned / so a caller
+      # cannot plant an entry that stands in for the flake reference.
+      cd /
       if nixos-rebuild switch --refresh --accept-flake-config --flake ${flakeRef}; then
         logger -t agent-rebuild-switch "switch to ${flakeRef} succeeded"
       else
