@@ -21,13 +21,23 @@ stdenv.mkDerivation {
 
   src = lib.fileset.toSource {
     root = ./.;
-    fileset = lib.fileset.unions [ ./sigterm-witness.c ];
+    fileset = lib.fileset.unions [
+      ./sigterm-witness.c
+      ./check.sh
+    ];
   };
 
   buildPhase = ''
     runHook preBuild
     $CC -O2 -Wall -o sigterm-witness sigterm-witness.c
     runHook postBuild
+  '';
+
+  doCheck = true;
+  checkPhase = ''
+    runHook preCheck
+    bash ./check.sh ./sigterm-witness
+    runHook postCheck
   '';
 
   installPhase = ''
