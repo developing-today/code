@@ -101,6 +101,7 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"elicit.askTimeout":                  "TestElicitAskTimeoutBoundsTheWaitForAnAnswerFromTheEnvironment",
 	"artifacts.idleTtl":                  "TestArtifactsIdleTTLRenewsAReadArtifactFromTheEnvironment",
 	"artifacts.maxAge":                   "TestArtifactsMaxAgeCapsARenewedArtifactFromTheEnvironment",
 	"artifacts.ttl":                      "TestArtifactsTTLExpiresAnArtifactFromTheEnvironment",
@@ -275,6 +276,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestElicitAskTimeoutBoundsTheWaitForAnAnswerFromTheEnvironment":                 TestElicitAskTimeoutBoundsTheWaitForAnAnswerFromTheEnvironment,
 	"TestArtifactsIdleTTLRenewsAReadArtifactFromTheEnvironment":                      TestArtifactsIdleTTLRenewsAReadArtifactFromTheEnvironment,
 	"TestArtifactsMaxAgeCapsARenewedArtifactFromTheEnvironment":                      TestArtifactsMaxAgeCapsARenewedArtifactFromTheEnvironment,
 	"TestArtifactsTTLExpiresAnArtifactFromTheEnvironment":                            TestArtifactsTTLExpiresAnArtifactFromTheEnvironment,
@@ -3468,6 +3470,51 @@ func TestArtifactsMaxAgeCapsARenewedArtifactFromTheEnvironment(t *testing.T) {
 	}
 	if code := readAfterRenewal(t, "MCPX_ARTIFACTS_IDLE_TTL=3s", "MCPX_ARTIFACTS_MAX_AGE=2s"); code != http.StatusNotFound {
 		t.Fatalf("with artifacts.maxAge=2s the renewal should be capped and the artifact collected, got %d", code)
+	}
+}
+
+// TestElicitAskTimeoutBoundsTheWaitForAnAnswerFromTheEnvironment is the
+// effect probe for elicit.askTimeout. Under policy.write=ask, with an
+// answerer present, an unannotated call raises a confirmation and waits.
+// Under the default deadline (45s) the question is still pending 3s
+// later, and the call ends only when it is declined. With a 1s deadline
+// the call gives up by itself, saying nobody answered within 1s.
+func TestElicitAskTimeoutBoundsTheWaitForAnAnswerFromTheEnvironment(t *testing.T) {
+	asking := func(extra ...string) *env {
+		e := newEnv(t, oneServer)
+		e.setenv(append([]string{"MCPX_POLICY_WRITE=ask"}, extra...)...)
+		e.run("ls")
+		beAnswerer(t, e)
+		return e
+	}
+
+	def := asking()
+	done := make(chan string, 1)
+	go func() {
+		out, _ := def.try("call", "demo.structured", `{}`)
+		done <- out
+	}()
+	time.Sleep(3 * time.Second)
+	ids := pendingQuestions(t, def)
+	if len(ids) != 1 {
+		t.Fatalf("oracle: under the default deadline the confirmation should still be pending, got %v", ids)
+	}
+	def.run("elicit", "decline", ids[0])
+	select {
+	case out := <-done:
+		if strings.Contains(out, "nobody answered") {
+			t.Fatalf("oracle: the call should end on the decline, not a deadline:\n%s", out)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("oracle: the declined call never finished")
+	}
+
+	out, err := asking("MCPX_ELICIT_ASK_TIMEOUT=1s").try("call", "demo.structured", `{}`)
+	if err == nil {
+		t.Fatalf("with elicit.askTimeout=1s the unanswered confirmation should refuse the call; got:\n%s", out)
+	}
+	if !strings.Contains(out, "nobody answered within 1s") {
+		t.Fatalf("the refusal should name the 1s deadline, got:\n%s", out)
 	}
 }
 
