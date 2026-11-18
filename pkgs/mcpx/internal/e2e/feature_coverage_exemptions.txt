@@ -14,7 +14,6 @@
 # exempt below.
 
 setting	daemon.inlineStartPoll	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
-setting	daemon.takeoverTimeout	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.tsnet.hostname	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.tsnetUpTimeout	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	http.idleConnTimeout	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
