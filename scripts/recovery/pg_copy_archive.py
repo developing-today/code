@@ -61,6 +61,22 @@ def convert(src,dst,report):
                     sql='INSERT INTO '+quote(table)+' VALUES ('+','.join('?' for c in cols)+')'
                     manifest['tables'][table]={'columns':cols,'rows':0};h=hashlib.sha256()
         if table: raise ValueError('unterminated COPY')
+        # Preserve DDL-only empty/partition-parent tables without executing DDL.
+        ddl_name=None; ddl_cols=[]
+        with src.open() as f:
+            for line in f:
+                match=re.fullmatch(r'CREATE TABLE ([\w]+\.[\w]+) \(\n',line)
+                if match: ddl_name=match[1];ddl_cols=[]
+                elif ddl_name:
+                    if line.startswith(')'):
+                        if ddl_name not in manifest['tables']:
+                            if not ddl_cols: raise ValueError('DDL-only table has no parsed columns')
+                            db.execute('CREATE TABLE '+quote(ddl_name)+' ('+','.join(quote(c)+' TEXT' for c in ddl_cols)+')')
+                            manifest['tables'][ddl_name]={'columns':ddl_cols,'rows':0,'sha256':hashlib.sha256().hexdigest(),'ddl_only':True}
+                        ddl_name=None
+                    elif line.startswith('    ') and not line.lstrip().startswith(('CONSTRAINT ', 'PRIMARY ', 'FOREIGN ', 'CHECK ', 'UNIQUE ')):
+                        col=re.match(r'    ("(?:[^"]|"")+"|[a-zA-Z_][a-zA-Z_0-9]*) ',line)
+                        if col: ddl_cols.append(col[1].strip('"'))
         db.commit()
         for name,item in manifest['tables'].items():
             h=hashlib.sha256();count=0

@@ -18,6 +18,10 @@ class ArchiveTests(unittest.TestCase):
             m=convert(s,p/'d',p/'r');self.assertEqual(m['total_rows'],2)
             with sqlite3.connect(p/'d') as db:self.assertEqual(db.execute('select * from "public.t"').fetchall(),[('9223372036854775809',None),('1',r'\N')])
             with self.assertRaises(ValueError):convert(s,p/'d',p/'r')
+    def test_empty_ddl(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d);s=p/'s';s.write_text('CREATE TABLE realtime.messages (\n    topic text NOT NULL,\n    id uuid DEFAULT gen_random_uuid() NOT NULL\n)\nPARTITION BY RANGE (id);\n')
+            m=convert(s,p/'d',p/'r');self.assertEqual(m['tables']['realtime.messages']['columns'],['topic','id']);self.assertEqual(m['total_rows'],0)
     def test_truncated_rejected(self):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d);s=p/'s';s.write_text('COPY public.t (id) FROM stdin;\n1\n')
