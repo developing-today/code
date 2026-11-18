@@ -36,9 +36,9 @@ ed25519-dalek = { version = "3", features = ["rand_core"] }
 futures-lite = "2"
 iroh = "1"
 iroh-base = "1"
-iroh-blobs = "0.105"
+iroh-blobs = "0.103"
 iroh-docs = "0.101"
-iroh-gossip = { version = "0.102", features = ["net"] }
+iroh-gossip = { version = "0.101", features = ["net"] }
 iroh-mdns-address-lookup = "0.6"
 libc = "0.2"
 p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }

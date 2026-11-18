@@ -46,7 +46,7 @@ libc = "0.2"
 id-worlds = { path = "../id-worlds", default-features = false, features = [
   "sandbox",
 ] }
-iroh-blobs = "0.105"
+iroh-blobs = "0.103"
 # The F13.7 end-to-end test observes the host's F12.6 audit trail
 # through its public emission surface: every audit record is also
 # emitted as a tracing event on the `id::audit` target (the record

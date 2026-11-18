@@ -2,7 +2,7 @@
 //! (slice C9133-02-redb, issue #10164).
 //!
 //! Implements the benchmark's logical operations on a real local
-//! redb database (pinned crate `redb = "=4.3.0"`, the same pin the
+//! redb database (pinned crate `redb = "=4.6.0"`, the same pin the
 //! `pkgs/id` workspace uses), following the benchmark plan's redb
 //! cells: puts and reference/tombstone transitions run in a single
 //! write transaction on the authority DB, reads run in a read

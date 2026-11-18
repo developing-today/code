@@ -36,7 +36,7 @@ id-sync = { path = "../id-sync", default-features = false }
 id-worlds = { path = "../id-worlds", default-features = false }
 iroh = "1"
 iroh-base = "1"
-iroh-blobs = "0.105"
+iroh-blobs = "0.103"
 redb = "=4.6.0"
 rmp-serde = "1"
 serde = { version = "1", features = ["derive"] }
@@ -76,7 +76,7 @@ id-worlds = { path = "../id-worlds", default-features = false, features = [
 ] }
 iroh = "1"
 iroh-docs = "0.101"
-iroh-gossip = { version = "0.102", features = ["net"] }
+iroh-gossip = { version = "0.101", features = ["net"] }
 proptest = "1.12"
 tempfile = "3"
 futures-util = { version = "0.3", features = ["sink"] }

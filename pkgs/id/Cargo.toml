@@ -127,9 +127,13 @@ iroh = "1"
 iroh-mdns-address-lookup = "0.6"
 iroh-base = "1"
 iroh-tickets = "1"
-iroh-blobs = "0.105"
+# iroh-blobs and iroh-gossip stay on the versions iroh-docs is built
+# against: Docs::spawn takes their Store and Gossip types, so a newer
+# release cannot be mixed in until iroh-docs moves to it (iroh-docs 0.101
+# needs iroh-blobs 0.103 and iroh-gossip 0.101).
+iroh-blobs = "0.103"
 iroh-docs = "0.101"
-iroh-gossip = { version = "0.102", features = ["net"] }
+iroh-gossip = { version = "0.101", features = ["net"] }
 p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
 # Store traits only. The default features would pull in SQLite (explainers section 14).
 p2panda-store = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", default-features = false }

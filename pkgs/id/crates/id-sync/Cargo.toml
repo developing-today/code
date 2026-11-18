@@ -40,7 +40,7 @@ id-events = { path = "../id-events", default-features = false }
 id-store = { path = "../id-store", default-features = false }
 iroh = "1"
 iroh-base = "1"
-iroh-blobs = "0.105"
+iroh-blobs = "0.103"
 iroh-mainline-address-lookup = { version = "0.6", optional = true }
 p2panda-core = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc" }
 p2panda-store = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", default-features = false }
@@ -54,7 +54,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 iroh-docs = "0.101"
-iroh-gossip = { version = "0.102", features = ["net"] }
+iroh-gossip = { version = "0.101", features = ["net"] }
 p2panda-auth = { git = "https://github.com/p2panda/p2panda", rev = "da80c05b95269926bf58121cf6a2d3dd5ca41dfc", features = [
   "serde",
 ] }
