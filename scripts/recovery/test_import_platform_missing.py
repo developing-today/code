@@ -1,13 +1,15 @@
 """Oracle: SQLite state, exact key/temporal equivalence, rejected invalid input."""
 import unittest,sqlite3,copy
+from unittest.mock import patch
 from import_platform_missing import validate,check_absent,preflight,check_unique_indexes
 class C:
  def __init__(self):self.db=sqlite3.connect(':memory:');self.db.execute('CREATE TABLE agent_quota_records(source TEXT,id TEXT,ts TEXT,PRIMARY KEY(source,id,ts))')
  def execute(self,s,args=()):return [[str(v) if isinstance(v,int) else v for v in r] for r in self.db.execute(s,args)]
 class Tests(unittest.TestCase):
  def setUp(self):
+  self.patcher=patch('import_platform_missing.execute_reads',side_effect=lambda c,qs:[c.execute(sql,args) for sql,args in qs]);self.patcher.start()
   self.c=C();self.t='agent_quota_records';self.x={'columns':['source','id','ts'],'keys':['source','id','ts'],'temporal_keys':['ts'],'rows':[['a','b','2026-11-01T00:00:00Z']],'schema':self.c.execute('SELECT type,name,tbl_name,sql FROM sqlite_master WHERE tbl_name=? ORDER BY type,name',[self.t]),'initial_count':0}
- def tearDown(self):self.c.db.close()
+ def tearDown(self):self.c.db.close();self.patcher.stop()
  def test_missing(self):validate({self.t:self.x});preflight(self.c,{self.t:self.x})
  def test_temporal_collision(self):
   self.c.db.execute("INSERT INTO agent_quota_records VALUES ('a','b','2026-11-01 00:00:00+00')")

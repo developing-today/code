@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Read-only by default. Usage: import_platform_missing.py CANDIDATE
-[--apply --expect-sha256 SHA] [--target fleet-platform|fleet-platform-reconcile-stage-20261118|fleet-platform-short-tx-stage-20261118].
+[--apply --expect-sha256 SHA] [--target fleet-platform|fleet-platform-reconcile-stage-20261118|fleet-platform-short-tx-stage-20261118|fleet-platform-batched-stage-20261118].
 Strictly INSERT-only historical recovery into 17 allowlisted existing tables.
 No credential values or row contents printed. No retry after ambiguous COMMIT.
 """
 import argparse,json,sqlite3,subprocess,hashlib,math,datetime,time
 from pathlib import Path
 from import_runtime import Client,quote,batches,filehash
+from read_pipeline import execute_reads
 TABLES={'agent_mirror_'+s for s in ('agent_agents','compaction_stats_daily','conversation_stats_daily','distincts_daily','goals_updates','histograms_daily','message_token_stats_daily','run_stats_daily','scheduler_job_runs','scheduler_jobs','session_activity_hourly','session_stats_daily','sessions','token_usage_daily','token_usage_hourly')}|{'agent_quota_records','ci_events'}
 def canonical_time(v):
  if not isinstance(v,str):raise ValueError('temporal key must be text')
@@ -61,14 +62,22 @@ def verify_schema(c,data):
 def table_counts(c,data):
  return {r[0]:int(r[1]) for r in c.execute(' UNION ALL '.join('SELECT ?,count(*) FROM '+quote(t) for t in data),list(data))}
 def preflight(c,data,specs=None):
- verify_schema(c,data);counts=table_counts(c,data)
+ if specs is None:specs={t:unique_specs(c,t,x) for t,x in data.items()}
+ queries=[('SELECT type,name,tbl_name,sql FROM sqlite_master WHERE tbl_name IN ('+','.join('?' for _ in data)+') ORDER BY type,name',list(data)),(' UNION ALL '.join('SELECT ?,count(*) FROM '+quote(t) for t in data),list(data))]
+ class Collector:
+  def execute(self,sql,args=()):queries.append((sql,args));return []
+ collector=Collector()
  for table,x in data.items():
-  if counts[table]<x['initial_count']:raise ValueError('count decreased')
-  check_absent(c,table,x)
-  check_unique_indexes(c,table,x,None if specs is None else specs[table])
+  check_absent(collector,table,x);check_unique_indexes(collector,table,x,specs[table])
+ answers=execute_reads(c,queries)
+ for table,x in data.items():
+  if [r for r in answers[0] if r[2]==table]!=x['schema']:raise ValueError('schema changed')
+ counts={r[0]:int(r[1]) for r in answers[1]}
+ if set(counts)!=set(data) or any(counts[t]<x['initial_count'] for t,x in data.items()):raise ValueError('count decreased/missing')
+ if any(answers[2:]):raise ValueError('candidate key or alternate unique key already exists')
  return counts
 def main():
- p=argparse.ArgumentParser(description=__doc__);p.add_argument('candidate',type=Path);p.add_argument('--apply',action='store_true');p.add_argument('--expect-sha256');p.add_argument('--target',choices=['fleet-platform','fleet-platform-reconcile-stage-20261118','fleet-platform-short-tx-stage-20261118'],default='fleet-platform');a=p.parse_args()
+ p=argparse.ArgumentParser(description=__doc__);p.add_argument('candidate',type=Path);p.add_argument('--apply',action='store_true');p.add_argument('--expect-sha256');p.add_argument('--target',choices=['fleet-platform','fleet-platform-reconcile-stage-20261118','fleet-platform-short-tx-stage-20261118','fleet-platform-batched-stage-20261118'],default='fleet-platform');a=p.parse_args()
  digest=filehash(a.candidate)
  if a.apply and digest!=a.expect_sha256:p.error('reviewed candidate SHA required')
  data=json.loads(a.candidate.read_text());validate(data)
