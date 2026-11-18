@@ -22,6 +22,7 @@
 // reinterpreted.
 import type { Config } from "./config.ts";
 import { sendPush, type PushOutcome, type PushTarget } from "./push.ts";
+import { getTursoStoreClient } from "./turso-stores.ts";
 import { getSupabaseClient, sqlInt, sqlJson, sqlStr, type SupabaseClient } from "./supabase.ts";
 import {
   buildNotificationCandidates,
@@ -785,7 +786,7 @@ export async function sendTestPush(
  * Lazy-init contract (success-only memoization): README "Lazy-initialization contract" (#3879).
  */
 export function createAlertsStoreGetter(
-  getClient: typeof getSupabaseClient = getSupabaseClient,
+  getClient: typeof getSupabaseClient = getTursoStoreClient,
 ): () => Promise<AlertsStore | null> {
   let storePromise: Promise<AlertsStore | null> | null = null;
 

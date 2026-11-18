@@ -110,6 +110,36 @@ fn manual_schema_errors(p: &Value) -> Vec<String> {
             python_repr(get("repo"))
         ));
     }
+    // Do not accept a cross-repo task whose only identity is its issue host.
+    // Keep enqueue, claim quarantine and quarantine-recheck on one contract.
+    if get("implementation_repo").is_none()
+        && p.pointer("/risk/flags")
+            .and_then(Value::as_array)
+            .is_some_and(|flags| {
+                flags
+                    .iter()
+                    .any(|f| f.as_str() == Some("cross-repo-change"))
+            })
+    {
+        errs.push("payload.implementation_repo: required for cross-repo-change; repair the explicit implementation target before claiming".to_string());
+    }
+    if let Some(target) = get("implementation_repo") {
+        let valid = target.as_str().is_some_and(|s| {
+            let parts: Vec<_> = s.split('/').collect();
+            parts.len() == 2
+                && parts.iter().all(|part| {
+                    !part.is_empty()
+                        && *part != "."
+                        && *part != ".."
+                        && part
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+                })
+        });
+        if !valid {
+            errs.push("payload.implementation_repo: must be an owner/name repository".to_string());
+        }
+    }
     for f in ["problem", "priority_reason"] {
         match get(f) {
             Some(Value::String(s)) if !s.is_empty() => {}
@@ -1215,6 +1245,65 @@ mod tests {
         assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 1000);
         packet["payload"]["max_attempts"] = json!(7);
         assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 7);
+    }
+
+    #[test]
+    fn implementation_repo_validates_explicit_target() {
+        // Oracle: an optional owner/name target, not an issue-repo allowlist.
+        let payload = payload_with(
+            json!({"issue":{"number":10415}, "risk":{"level":"low","flags":["cross-repo-change"]}}),
+        );
+        let mut packet = json!({"title":"replicate workflow", "priority":30, "payload":payload, "dedupe_key":"repo-health:v1:fix:developing-today/code:issue:10415"});
+        assert!(
+            validate_packet(&packet)
+                .0
+                .iter()
+                .any(|e| e.contains("implementation_repo"))
+        );
+        packet["payload"]["implementation_repo"] = json!("developing-today/kaneo");
+        assert!(
+            validate_packet(&packet).0.is_empty(),
+            "{:?}",
+            validate_packet(&packet).0
+        );
+        let row = task_from_packet(&packet, "repo-health-code-pilot");
+        assert!(
+            validate_packet(&row).0.is_empty(),
+            "{:?}",
+            validate_packet(&row).0
+        );
+
+        let unknown = payload_with(json!({"risk":{"level":"low","flags":["cross-repo-change"]}}));
+        assert!(
+            manual_schema_errors(&unknown)
+                .iter()
+                .any(|e| e.contains("implementation_repo"))
+        );
+
+        for target in [json!("developing-today/kaneo"), json!("owner/repo.name-1")] {
+            let payload = payload_with(json!({"implementation_repo":target}));
+            assert!(
+                !manual_schema_errors(&payload)
+                    .iter()
+                    .any(|e| e.contains("implementation_repo"))
+            );
+        }
+        for target in [
+            json!(null),
+            json!(""),
+            json!("kaneo"),
+            json!("o/r/extra"),
+            json!(" o/r"),
+            json!(3),
+        ] {
+            let payload = payload_with(json!({"implementation_repo":target}));
+            assert!(
+                manual_schema_errors(&payload)
+                    .iter()
+                    .any(|e| e.contains("implementation_repo")),
+                "{target}"
+            );
+        }
     }
 
     #[test]

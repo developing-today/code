@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -104,6 +105,11 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"script.checkOnUnsupported":          "TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes",
+	"daemon.takeoverTimeout":             "TestDaemonTakeoverTimeoutBoundsTheHandoverFromTheEnvironment",
+	"daemon.socketProbeTimeout":          "TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale",
+	"logging.maxAge":                     "TestLoggingMaxAgeRotatesAnAgedFile",
+	"logstore.followBacklog":             "TestFollowBacklogCapsWhatOneFollowPollEmits",
 	"paths.config":                       "TestPathsConfigReadsAConfigOnlyThatPathHolds",
 	"script.imports":                     "TestScriptImportsOffSkipsTheImportPipeline",
 	"script.importsOnDynamic":            "TestScriptImportsOnDynamicDecidesAComputedImport",
@@ -316,6 +322,11 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes":                       TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes,
+	"TestDaemonTakeoverTimeoutBoundsTheHandoverFromTheEnvironment":                   TestDaemonTakeoverTimeoutBoundsTheHandoverFromTheEnvironment,
+	"TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale":                   TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale,
+	"TestLoggingMaxAgeRotatesAnAgedFile":                                             TestLoggingMaxAgeRotatesAnAgedFile,
+	"TestFollowBacklogCapsWhatOneFollowPollEmits":                                    TestFollowBacklogCapsWhatOneFollowPollEmits,
 	"TestPathsConfigReadsAConfigOnlyThatPathHolds":                                   TestPathsConfigReadsAConfigOnlyThatPathHolds,
 	"TestScriptImportsOffSkipsTheImportPipeline":                                     TestScriptImportsOffSkipsTheImportPipeline,
 	"TestScriptImportsOnDynamicDecidesAComputedImport":                               TestScriptImportsOnDynamicDecidesAComputedImport,
@@ -4593,6 +4604,187 @@ func TestPathsConfigReadsAConfigOnlyThatPathHolds(t *testing.T) {
 	}
 	if out := ls("MCPX_PATHS_CONFIG=" + elsewhere); !strings.Contains(out, "extra") {
 		t.Fatalf("with paths.config=%s its server should be listed:\n%s", elsewhere, out)
+	}
+}
+
+// TestLoggingMaxAgeRotatesAnAgedFile is the effect probe for
+// logging.maxAge. Today's log file already holds a record from two hours
+// ago. Oracle: at the default 24h the next run appends to it and keeps one
+// file; at maxAge=1h the first new record rotates the aged file aside.
+func TestLoggingMaxAgeRotatesAnAgedFile(t *testing.T) {
+	files := func(env ...string) []string {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		dir := filepath.Join(t.TempDir(), "logs")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now()
+		aged := fmt.Sprintf(`{"ts":%q,"level":"info","msg":"aged","event":"harness.aged"}`+"\n",
+			now.Add(-2*time.Hour).Format(time.RFC3339Nano))
+		mustWrite(t, filepath.Join(dir, "mcpx-"+now.Format("2006-01-02")+".jsonl"), aged)
+		e.setenv(append([]string{"MCPX_LOGGING_DIR=" + dir}, env...)...)
+		e.run("ls")
+		return logFiles(t, dir)
+	}
+	if got := files(); len(got) != 1 {
+		t.Errorf("at the default logging.maxAge a two-hour-old file should keep taking records: %v", got)
+	}
+	if got := files("MCPX_LOGGING_MAX_AGE=1h"); len(got) < 2 {
+		t.Errorf("logging.maxAge=1h should rotate the two-hour-old file aside: %v", got)
+	}
+}
+
+// TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale is the effect
+// probe for daemon.socketProbeTimeout. A daemon is running, and a second
+// `mcpx daemon` starts for the same configuration. Before binding, the
+// second one dials the socket within daemon.socketProbeTimeout to tell a
+// live daemon from a crashed one's leftover file. Oracle: by default the
+// dial answers, so it refuses to start; with a 1ns bound no dial can
+// finish, so it takes the live socket for stale, removes it and listens.
+func TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale(t *testing.T) {
+	second := func(extra ...string) string {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		e.run("ls")
+		state := e.daemonState(t)
+		t.Cleanup(func() {
+			// A first daemon whose socket was taken is unreachable, and so
+			// is the server child it started; the test that orphaned them
+			// retires them.
+			for _, pid := range []int{state.PID, state.childOf("demo")} {
+				if pid > 0 && processExists(pid) {
+					if proc, err := os.FindProcess(pid); err == nil {
+						_ = proc.Kill()
+					}
+				}
+			}
+		})
+		var out syncBuffer
+		cmd := exec.Command(e.mcpx, "daemon")
+		cmd.Dir = e.dir
+		cmd.Env = append(append([]string{}, e.envVars...), extra...)
+		cmd.Stdout, cmd.Stderr = &out, &out
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan struct{})
+		go func() { _ = cmd.Wait(); close(done) }()
+		defer func() {
+			select {
+			case <-done:
+			default:
+				_ = cmd.Process.Signal(os.Interrupt)
+				select {
+				case <-done:
+				case <-time.After(10 * time.Second):
+					_ = cmd.Process.Kill()
+					<-done
+				}
+			}
+		}()
+		deadline := time.After(20 * time.Second)
+		for {
+			select {
+			case <-done:
+				return out.String()
+			case <-deadline:
+				t.Fatalf("the second daemon neither refused nor listened:\n%s", out.String())
+			case <-time.After(50 * time.Millisecond):
+			}
+			if strings.Contains(out.String(), " listening on ") {
+				return out.String()
+			}
+		}
+	}
+
+	if out := second(); !strings.Contains(out, "a daemon is already listening") {
+		t.Fatalf("at the default daemon.socketProbeTimeout a second daemon should find the live one and refuse:\n%s", out)
+	}
+	out := second("MCPX_DAEMON_SOCKET_PROBE_TIMEOUT=1ns")
+	if !strings.Contains(out, "removing stale socket") || !strings.Contains(out, " listening on ") {
+		t.Fatalf("daemon.socketProbeTimeout=1ns should take the live socket for stale and listen on it:\n%s", out)
+	}
+}
+
+// TestDaemonTakeoverTimeoutBoundsTheHandoverFromTheEnvironment is the
+// effect probe for daemon.takeoverTimeout. A successor started with
+// `mcpx daemon --takeover` dials the running daemon and exchanges the
+// handover within this bound. Oracle: by default the successor takes over
+// and serves; with a 1ns bound its dial cannot finish, so it gives up and
+// the old daemon keeps serving with the same server child.
+func TestDaemonTakeoverTimeoutBoundsTheHandoverFromTheEnvironment(t *testing.T) {
+	e := newEnv(t, oneServer)
+	e.setenv("MCPX_DAEMON_WATCH_CONFIG=false")
+	e.run("call", "demo.echo", `{"message":"before"}`)
+	s := startSuccessor(t, e)
+	if after := e.awaitSuccessor(t, s); after.PID != s.cmd.Process.Pid {
+		t.Fatalf("at the default daemon.takeoverTimeout the successor should take over")
+	}
+
+	e = newEnv(t, oneServer)
+	e.setenv("MCPX_DAEMON_WATCH_CONFIG=false", "MCPX_DAEMON_TAKEOVER_TIMEOUT=1ns")
+	e.run("call", "demo.echo", `{"message":"before"}`)
+	before := e.daemonState(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, e.mcpx, "daemon", "--takeover")
+	cmd.Dir = e.dir
+	cmd.Env = append([]string{}, e.envVars...)
+	out, err := cmd.CombinedOutput()
+	if err == nil || ctx.Err() != nil || !strings.Contains(string(out), "i/o timeout") {
+		t.Fatalf("daemon.takeoverTimeout=1ns should make the successor give up on its dial (err %v):\n%s", err, out)
+	}
+	after := e.daemonState(t)
+	if after.PID != before.PID || after.childOf("demo") != before.childOf("demo") {
+		t.Fatalf("the old daemon should keep serving after a failed takeover: pid %d -> %d", before.PID, after.PID)
+	}
+	if got := e.run("call", "demo.echo", `{"message":"after"}`); !strings.Contains(got, "after") {
+		t.Fatalf("the old daemon should still answer:\n%s", got)
+	}
+}
+
+// TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes is the effect
+// probe for script.checkOnUnsupported: with an explicit check on bun, the
+// default (warn) runs the script with a notice that only Deno checks,
+// skip runs it quietly, and switch, with no deno to check with, refuses.
+func TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes(t *testing.T) {
+	testsupport.RequireBinary(t, "bun")
+	e := newEnv(t, oneServer)
+	script := filepath.Join(e.dir, "plain.ts")
+	if err := os.WriteFile(script, []byte("export default function () { return \"ran-plain\"; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.setenv("MCPX_SCRIPT_RUNTIME=bun")
+	e.setenv("MCPX_SCRIPT_TYPECHECK=on")
+
+	out, err := e.try("run", script)
+	if err != nil || !strings.Contains(out, "ran-plain") {
+		t.Fatalf("the default policy should still run the script: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "only available under Deno") {
+		t.Errorf("the default policy should warn that only Deno checks:\n%s", out)
+	}
+
+	e.setenv("MCPX_SCRIPT_CHECK_ON_UNSUPPORTED=skip")
+	out, err = e.try("run", script)
+	if err != nil || !strings.Contains(out, "ran-plain") {
+		t.Fatalf("skip should run the script: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "only available under Deno") {
+		t.Errorf("skip should not warn:\n%s", out)
+	}
+
+	if _, lookErr := exec.LookPath("deno"); lookErr == nil {
+		return // switch would check with the real deno; the two legs above already tell the policies apart.
+	}
+	e.setenv("MCPX_SCRIPT_CHECK_ON_UNSUPPORTED=switch")
+	out, err = e.try("run", script)
+	if err == nil {
+		t.Fatalf("switch with no deno on PATH should refuse:\n%s", out)
+	}
+	if !strings.Contains(out, "deno is not on PATH") || strings.Contains(out, "ran-plain") {
+		t.Errorf("switch should refuse before running, naming the missing deno:\n%s", out)
 	}
 }
 

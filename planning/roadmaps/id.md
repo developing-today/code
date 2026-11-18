@@ -21,7 +21,6 @@ Make the platform something other people can build on without changing its core:
 | First new providers                      | planned  | A bounded key-value store, content-addressed blobs, an allowlisted `http.fetch` (off by default) and rate-limited notifications — the notifications provider also covers the old "outbound notifications" idea. | F12.5 #1062      |
 | Delta and binary frames                  | planned  | A typical redraw costs under 10 percent of a full frame.                                                                                                                                                        | F12.11 #805      |
 | Many worlds per node                     | planned  | 1,000 idle / 100 active worlds with a per-world memory budget.                                                                                                                                                  | F12.12 #557      |
-| Denial-of-service test suite             | planned  | Fuel, memory, journal, frame, session, schedule and provider bounds all refused with documented codes, in CI.                                                                                                   | F12.18 #560      |
 | Sync protocol + tags/documents hardening | proposed | Bounds on frame buffering and batch bytes, held-message limits, joiner stall fixes; tag index and claim rules. Older phase leftovers, kept tracked.                                                             | #183, #194, #195 |
 
 ## Later — Phase 13 and long-term ideas (priority/low)

@@ -49,6 +49,7 @@ pub mod residency_inventory;
 pub mod sanctions;
 pub mod sanctions_store;
 pub mod seed_phrase;
+pub mod swarm;
 pub mod sync_method;
 pub mod text;
 pub mod time;

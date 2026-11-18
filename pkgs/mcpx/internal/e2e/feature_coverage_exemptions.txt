@@ -13,14 +13,7 @@
 # (2026-11-11, task 14824): 403 required features, 152 covered, 251
 # exempt below.
 
-cli	daemon	no integration-test exercise yet; burn-down #8461 (cli daemon group)
-cli	reload	no integration-test exercise yet; burn-down #8461 (cli daemon group)
-cli	stdio-proxy	no integration-test exercise yet; burn-down #8461 (cli daemon group)
-cli	supervise	no integration-test exercise yet; burn-down #8461 (cli daemon group)
-cli	upgrade	no integration-test exercise yet; burn-down #8461 (cli daemon group)
 setting	daemon.inlineStartPoll	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
-setting	daemon.socketProbeTimeout	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
-setting	daemon.takeoverTimeout	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.tsnet.hostname	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	daemon.tsnetUpTimeout	no integration-test exercise yet; burn-down #8468 (settings daemon family); needs an EffectProbes entry + e2e test
 setting	http.idleConnTimeout	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
@@ -28,7 +21,6 @@ setting	http.idleConns	no integration-test exercise yet; burn-down #8469 (settin
 setting	http.remoteIdleConns	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
 setting	http.streamBufferInit	no integration-test exercise yet; burn-down #8469 (settings http-transport family); needs an EffectProbes entry + e2e test
 setting	script.checkOnError	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
-setting	script.checkOnUnsupported	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
 setting	script.importsCrossProject	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
 setting	script.importsNetwork	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
 setting	script.importsOnMissing	no integration-test exercise yet; burn-down #8474 (settings script family); needs an EffectProbes entry + e2e test
@@ -46,8 +38,6 @@ setting	plugin.instructions	no integration-test exercise yet; burn-down #8472 (s
 setting	plugin.remember	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
 setting	plugin.toolTiming	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
 setting	plugin.tools	no integration-test exercise yet; burn-down #8472 (settings plugin family); needs an EffectProbes entry + e2e test
-setting	logging.maxAge	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
-setting	logstore.followBacklog	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
 setting	output.color	no integration-test exercise yet; burn-down #8467 (settings core-paths family); needs an EffectProbes entry + e2e test
 setting	embeddings.wasmPath	no integration-test exercise yet; burn-down #8471 (settings model-ai family); needs an EffectProbes entry + e2e test
 setting	deps.autoInstall	no integration-test exercise yet; burn-down #8470 (settings long-tail families); needs an EffectProbes entry + e2e test
