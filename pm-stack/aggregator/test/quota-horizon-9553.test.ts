@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { analyticsSectionHtml, resetHorizonEvents } from "../src/quota-analytics-view.ts";
 import { fmtCentral } from "../src/render.ts";
 import { formatResetCompact } from "../src/notifications.ts";
-import type { QuotaAnalytics } from "../src/analytics-store.ts";
+import type { ActivityCounts, QuotaAnalytics } from "../src/analytics-store.ts";
 import { emptyBurn } from "../src/analytics-store.ts";
 
 // Sat 2026-11-14 18:00Z = 12:00 PM CST.
@@ -74,6 +74,30 @@ function analytics(): QuotaAnalytics {
 }
 
 describe("reset horizon (#9553)", () => {
+  test("labels daemon-recorded mcpx calls separately from the transcript subset", () => {
+    const a = analytics();
+    a.activity7d = {
+      rangeLabel: "7d",
+      sessions: 0,
+      rootSessions: 0,
+      subSessions: 0,
+      turns: 0,
+      toolCallsTotal: 0,
+      topTools: [],
+      skillTotal: 0,
+      topSkills: [],
+      mcpx: [{ name: "mcpx_exec", count: 2 }],
+      mcpxDaemon: { calls: 5, errors: 1, topTools: [{ name: "srv.tool", count: 5 }] },
+      executeGateway: 0,
+      fleetInferred: [],
+      fleetInferredTotal: 0,
+    } satisfies ActivityCounts;
+    const html = analyticsSectionHtml(a, (n) => n);
+    expect(html).toContain("mcpx daemon-recorded calls (7d)");
+    expect(html).toContain("mcpx calls seen in OpenCode transcripts (7d, subset)");
+    expect(html).toContain("srv.tool 5");
+  });
+
   test("weekly window steps -3d..+35d from the recorded reset", () => {
     const ev = resetHorizonEvents(analytics()).filter((e) => e.window === "weekly");
     expect(ev.map((e) => new Date(e.at).toISOString())).toEqual([
