@@ -104,6 +104,7 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"logging.maxAge":                     "TestLoggingMaxAgeRotatesAnAgedFile",
 	"logstore.followBacklog":             "TestFollowBacklogCapsWhatOneFollowPollEmits",
 	"paths.config":                       "TestPathsConfigReadsAConfigOnlyThatPathHolds",
 	"script.imports":                     "TestScriptImportsOffSkipsTheImportPipeline",
@@ -317,6 +318,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestLoggingMaxAgeRotatesAnAgedFile":                                             TestLoggingMaxAgeRotatesAnAgedFile,
 	"TestFollowBacklogCapsWhatOneFollowPollEmits":                                    TestFollowBacklogCapsWhatOneFollowPollEmits,
 	"TestPathsConfigReadsAConfigOnlyThatPathHolds":                                   TestPathsConfigReadsAConfigOnlyThatPathHolds,
 	"TestScriptImportsOffSkipsTheImportPipeline":                                     TestScriptImportsOffSkipsTheImportPipeline,
@@ -4595,6 +4597,34 @@ func TestPathsConfigReadsAConfigOnlyThatPathHolds(t *testing.T) {
 	}
 	if out := ls("MCPX_PATHS_CONFIG=" + elsewhere); !strings.Contains(out, "extra") {
 		t.Fatalf("with paths.config=%s its server should be listed:\n%s", elsewhere, out)
+	}
+}
+
+// TestLoggingMaxAgeRotatesAnAgedFile is the effect probe for
+// logging.maxAge. Today's log file already holds a record from two hours
+// ago. Oracle: at the default 24h the next run appends to it and keeps one
+// file; at maxAge=1h the first new record rotates the aged file aside.
+func TestLoggingMaxAgeRotatesAnAgedFile(t *testing.T) {
+	files := func(env ...string) []string {
+		t.Helper()
+		e := newEnv(t, oneServer)
+		dir := filepath.Join(t.TempDir(), "logs")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now()
+		aged := fmt.Sprintf(`{"ts":%q,"level":"info","msg":"aged","event":"harness.aged"}`+"\n",
+			now.Add(-2*time.Hour).Format(time.RFC3339Nano))
+		mustWrite(t, filepath.Join(dir, "mcpx-"+now.Format("2006-01-02")+".jsonl"), aged)
+		e.setenv(append([]string{"MCPX_LOGGING_DIR=" + dir}, env...)...)
+		e.run("ls")
+		return logFiles(t, dir)
+	}
+	if got := files(); len(got) != 1 {
+		t.Errorf("at the default logging.maxAge a two-hour-old file should keep taking records: %v", got)
+	}
+	if got := files("MCPX_LOGGING_MAX_AGE=1h"); len(got) < 2 {
+		t.Errorf("logging.maxAge=1h should rotate the two-hour-old file aside: %v", got)
 	}
 }
 
