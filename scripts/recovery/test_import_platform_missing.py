@@ -31,6 +31,15 @@ class Tests(unittest.TestCase):
  def test_trigger_refusal(self):
   self.x['schema'].append(['trigger','x',self.t,'x'])
   with self.assertRaises(ValueError):validate({self.t:self.x})
+ def test_invalid_time(self):
+  self.x['rows'][0][2]='not-time'
+  with self.assertRaises(ValueError):validate({self.t:self.x})
+ def test_naive_time(self):
+  self.x['rows'][0][2]='2026-11-01T00:00:00'
+  with self.assertRaises(ValueError):validate({self.t:self.x})
+ def test_equivalent_duplicate(self):
+  self.x['rows'].append(['a','b','2026-11-01 00:00:00+00'])
+  with self.assertRaises(ValueError):validate({self.t:self.x})
  def test_many_keys(self):
   self.x['rows']=[['a',str(i),'2026-11-01T00:00:00Z'] for i in range(1200)];check_absent(self.c,self.t,self.x)
 if __name__=='__main__':unittest.main()

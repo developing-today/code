@@ -4,10 +4,15 @@
 Strictly INSERT-only historical recovery into 17 allowlisted existing tables.
 No credential values or row contents printed. No retry after ambiguous COMMIT.
 """
-import argparse,json,sqlite3,subprocess,hashlib,math
+import argparse,json,sqlite3,subprocess,hashlib,math,datetime
 from pathlib import Path
 from import_runtime import Client,quote,batches,filehash
 TABLES={'agent_mirror_'+s for s in ('agent_agents','compaction_stats_daily','conversation_stats_daily','distincts_daily','goals_updates','histograms_daily','message_token_stats_daily','run_stats_daily','scheduler_job_runs','scheduler_jobs','session_activity_hourly','session_stats_daily','sessions','token_usage_daily','token_usage_hourly')}|{'agent_quota_records','ci_events'}
+def canonical_time(v):
+ if not isinstance(v,str):raise ValueError('temporal key must be text')
+ dt=datetime.datetime.fromisoformat(v.replace('Z','+00:00'))
+ if dt.tzinfo is None:raise ValueError('temporal key requires timezone')
+ return dt.astimezone(datetime.timezone.utc).isoformat().replace('+00:00','Z')
 def validate(data):
  if not data or set(data)-TABLES:raise ValueError('unexpected table')
  for table,x in data.items():
@@ -17,7 +22,7 @@ def validate(data):
   seen=set()
   for row in x['rows']:
    if len(row)!=len(cols) or any(not isinstance(v,(str,int,float,type(None))) or isinstance(v,float) and not math.isfinite(v) for v in row):raise ValueError('invalid row')
-   key=tuple(row[cols.index(k)] for k in keys)
+   key=tuple(canonical_time(row[cols.index(k)]) if k in x['temporal_keys'] else row[cols.index(k)] for k in keys)
    if any(v is None for v in key) or key in seen:raise ValueError('null/duplicate key')
    seen.add(key)
   if any(s[0]=='trigger' for s in x['schema']):raise ValueError('target triggers not allowed')
@@ -26,7 +31,7 @@ def check_absent(c,table,x):
  lhs=[("julianday(CASE WHEN substr("+quote(k)+",-3)='+00' THEN substr("+quote(k)+",1,length("+quote(k)+")-3)||'Z' ELSE "+quote(k)+" END)" if k in x['temporal_keys'] else quote(k)) for k in keys]
  rhs=[('julianday(?)' if k in x['temporal_keys'] else '?') for k in keys]
  for start in range(0,len(x['rows']),100):
-  rows=x['rows'][start:start+100];args=[row[i] for row in rows for i in positions]
+  rows=x['rows'][start:start+100];args=[canonical_time(row[i]) if k in x['temporal_keys'] else row[i] for row in rows for k,i in zip(keys,positions)]
   left='('+','.join(lhs)+')' if len(keys)>1 else lhs[0]
   item='('+','.join(rhs)+')' if len(keys)>1 else rhs[0]
   if c.execute('SELECT 1 FROM '+quote(table)+' WHERE '+left+' IN ('+','.join(item for row in rows)+') LIMIT 1',args):raise ValueError('candidate key exists or timestamp-equivalent collision')
