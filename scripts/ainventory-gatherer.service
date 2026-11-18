@@ -1,0 +1,10 @@
+[Unit]
+Description=ainventory AA and models.dev event gatherer (Turso, insert-only)
+After=network-online.target
+
+[Service]
+EnvironmentFile=%h/.config/ainventory-gatherer/env
+Type=oneshot
+WorkingDirectory=%h/git/code
+ExecStart=/etc/profiles/per-user/user/bin/python3 %h/git/code/scripts/ainventory_gather.py --live --out %h/.local/state/ainventory-gatherer/runs
+TimeoutStartSec=600
