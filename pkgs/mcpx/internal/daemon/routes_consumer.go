@@ -218,11 +218,23 @@ func (s *Server) handleRecipeSave(w http.ResponseWriter, r *http.Request) {
 	// Refuse that ambiguity unless overwrite explicitly targets the visible
 	// defining file, matching recipe lookup's nearest-directory precedence.
 	var existing string
-	for _, recipe := range s.loadRecipes() {
-		if recipe.Name == name {
-			existing = recipe.Path
-			break
+	var existingIsSymlink bool
+	for _, searchDir := range s.consumer.dirs {
+		candidate := filepath.Join(searchDir, name+recipes.Ext)
+		info, statErr := os.Lstat(candidate)
+		if errors.Is(statErr, os.ErrNotExist) {
+			continue
 		}
+		if statErr != nil {
+			writeErr(w, http.StatusInternalServerError, statErr)
+			return
+		}
+		if info.IsDir() {
+			continue
+		}
+		existing = candidate
+		existingIsSymlink = info.Mode()&os.ModeSymlink != 0
+		break
 	}
 	dir, err := recipes.SaveDir(s.consumer.dirs)
 	if err != nil {
@@ -236,6 +248,11 @@ func (s *Server) handleRecipeSave(w http.ResponseWriter, r *http.Request) {
 				fmt.Errorf("recipe %q already exists at %s; pass overwrite to replace it", name, existing))
 			return
 		}
+		if existingIsSymlink {
+			writeErr(w, http.StatusConflict,
+				fmt.Errorf("recipe %q at %s is a symlink and cannot be overwritten", name, existing))
+			return
+		}
 		path = existing
 	} else if _, err := os.Stat(path); err == nil && !req.Overwrite {
 		writeErr(w, http.StatusConflict,
@@ -246,7 +263,17 @@ func (s *Server) handleRecipeSave(w http.ResponseWriter, r *http.Request) {
 	if !strings.HasSuffix(body, "\n") {
 		body += "\n"
 	}
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+	if req.Overwrite {
+		err = replaceRecipeFile(path, []byte(body))
+	} else {
+		err = createRecipeFileNoReplace(path, []byte(body))
+	}
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			writeErr(w, http.StatusConflict,
+				fmt.Errorf("%s already exists; pass overwrite to replace it", path))
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -254,6 +281,54 @@ func (s *Server) handleRecipeSave(w http.ResponseWriter, r *http.Request) {
 		"recipe": listing(recipes.Parse(name, path, body)),
 		"path":   path,
 	})
+}
+
+// replaceRecipeFile writes beside the destination and renames into place.
+// Unlike os.WriteFile, this never opens or follows a destination symlink if
+// the path changes after the caller's Lstat check.
+func replaceRecipeFile(path string, body []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".recipe-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(body); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}
+
+// createRecipeFileNoReplace writes beside the destination and links into place.
+// Unlike os.Rename, os.Link fails if another writer created the destination
+// after the caller's existence check, rather than replacing that file.
+func createRecipeFileNoReplace(path string, body []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".recipe-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(body); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Link(tmpName, path)
 }
 
 func (s *Server) handleRecipeRemove(w http.ResponseWriter, r *http.Request) {
