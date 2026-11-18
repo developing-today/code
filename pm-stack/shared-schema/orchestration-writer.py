@@ -11,10 +11,8 @@ one transaction per orchestration pass, in this order:
      document and the item counts agree (the export regeneration step
      is the pass's own file write; this read-back is its parity proof).
 
-Transport: the standing Supabase Management API SQL route (the same
-route domain_append_pg.py uses) with secrets fetched by name via
-`fleet secrets get` — values are never printed or written to disk.
-
+Transport: Turso fleet-platform Hrana, using Fleet secret resolution.
+Statements and credentials stay in memory; failed batches roll back.
 Usage: orchestration-writer.py [path-to-orchestration.json]
 Exit 0 with a one-line JSON verdict on success; nonzero on any failure
 (the files remain authoritative — a failed write changes nothing the
@@ -28,7 +26,10 @@ unaccounted argument (extra positional, unknown flag) is a usage error
 with exit 2.
 """
 
-import argparse, json, os, subprocess, sys, tempfile
+import argparse, json, os, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+from fleet_turso import Turso
 
 
 DEFAULT_PATH = os.path.expanduser(
@@ -53,78 +54,9 @@ def parse_args(argv):
     return parser.parse_args(argv)
 
 
-# Strict parse first: a usage error (exit 2) must precede every secret
-# fetch, subprocess, network request, and file read below.
-ARGS = parse_args(sys.argv[1:])
-
-
-def secret(name):
-    fleet = "/home/hatch/tools/bin/fleet"
-    if not os.path.exists(fleet):
-        fleet = "fleet"
-    out = subprocess.run(
-        [fleet, "secrets", "get", name], capture_output=True, text=True
-    )
-    if out.returncode != 0:
-        raise SystemExit(f"secret fetch failed: {name}")
-    return out.stdout.strip()
-
-
-REF = secret("supabase.muse-dev2.project-ref")
-TOKEN = secret("supabase.muse-dev2.access-token-muse-cli")
-URL = f"https://api.supabase.com/v1/projects/{REF}/database/query"
-
-
-def sql(query):
-    fd, tmp = tempfile.mkstemp(suffix=".json")
-    with os.fdopen(fd, "w") as f:
-        json.dump({"query": query}, f)
-    try:
-        out = subprocess.run(
-            [
-                "curl",
-                "-sS",
-                "-m",
-                "120",
-                "-A",
-                "Mozilla/5.0",
-                "-X",
-                "POST",
-                "-H",
-                f"Authorization: Bearer {TOKEN}",
-                "-H",
-                "Content-Type: application/json",
-                "--data",
-                "@" + tmp,
-                URL,
-                "-w",
-                "\n%{http_code}",
-            ],
-            capture_output=True,
-            text=True,
-        )
-    finally:
-        os.unlink(tmp)
-    if out.returncode != 0:
-        raise SystemExit(f"curl failed: {out.stderr[:200]}")
-    body, _, code = out.stdout.rpartition("\n")
-    if int(code) >= 300:
-        raise SystemExit(f"SQL failed (HTTP {code}): {body[:400]}")
-    return json.loads(body) if body.strip() else []
-
-
-def lit(value):
-    if value is None:
-        return "NULL"
-    return "'" + str(value).replace("'", "''") + "'"
-
-
-def jsonb(obj):
-    return lit(json.dumps(obj)) + "::jsonb"
-
-
 def main():
-    path = ARGS.path
+    args = parse_args(sys.argv[1:])
+    path = args.path
     with open(path) as f:
         doc = json.load(f)
     run_id = doc["runId"]
@@ -138,68 +70,23 @@ def main():
             items.append((tier, item))
     item_count = len(items)
 
-    prior = sql("SELECT id, first_seen_run_id FROM public.orch_items")
-    first_seen = {r["id"]: r["first_seen_run_id"] for r in prior}
-
-    stmts = ["BEGIN;"]
-    stmts.append(
-        "INSERT INTO public.orch_runs (run_id, generated_at, document_version, provenance, document, item_count) VALUES ("
-        + ", ".join(
-            [
-                lit(run_id),
-                lit(generated_at),
-                str(version),
-                jsonb(provenance),
-                jsonb(doc),
-                str(item_count),
-            ]
-        )
-        + ") ON CONFLICT (run_id) DO NOTHING;"
-    )
-    stmts.append("DELETE FROM public.orch_items;")
+    db = Turso()
+    stmts = [("INSERT INTO orch_runs (run_id,generated_at,document_version,provenance,document,item_count) VALUES (?,?,?,?,?,?) ON CONFLICT(run_id) DO NOTHING", [run_id, generated_at, version, provenance, doc, item_count])]
+    # Upsert before removing stale rows; preserve first_seen atomically.
     for tier, item in items:
-        fsr = first_seen.get(item["id"], run_id)
-        stmts.append(
-            "INSERT INTO public.orch_items (id, tier, kind, title, source, state, reason, ref, since, last_seen_at, item, first_seen_run_id, last_seen_run_id) VALUES ("
-            + ", ".join(
-                [
-                    lit(item["id"]),
-                    lit(tier),
-                    lit(item["kind"]),
-                    lit(item["title"]),
-                    lit(item["source"]),
-                    lit(item.get("state")),
-                    lit(item["reason"]),
-                    lit(item.get("ref")),
-                    lit(item["since"]),
-                    lit(item["lastSeenAt"]),
-                    jsonb(item),
-                    lit(fsr),
-                    lit(run_id),
-                ]
-            )
-            + ");"
-        )
-    stmts.append("COMMIT;")
-    sql("\n".join(stmts))
-
-    runs = sql(
-        "SELECT run_id, item_count, document FROM public.orch_runs WHERE run_id = "
-        + lit(run_id)
-    )
-    if len(runs) != 1:
-        raise SystemExit(f"read-back: run row missing for {run_id}")
-    if runs[0]["item_count"] != item_count:
-        raise SystemExit(
-            f"read-back: item_count {runs[0]['item_count']} != {item_count}"
-        )
-    if runs[0]["document"] != doc:
-        raise SystemExit("read-back: stored document differs from the file document")
-    counts = sql("SELECT count(*) AS n FROM public.orch_items")
+        stmts.append(("INSERT INTO orch_items (id,tier,kind,title,source,state,reason,ref,since,last_seen_at,item,first_seen_run_id,last_seen_run_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET tier=excluded.tier,kind=excluded.kind,title=excluded.title,source=excluded.source,state=excluded.state,reason=excluded.reason,ref=excluded.ref,since=excluded.since,last_seen_at=excluded.last_seen_at,item=excluded.item,last_seen_run_id=excluded.last_seen_run_id", [item["id"], tier, item["kind"], item["title"], item["source"], item.get("state"), item["reason"], item.get("ref"), item["since"], item["lastSeenAt"], item, run_id, run_id]))
+    # Exact document membership, including repeat run IDs with a changed item set.
+    ids = [item["id"] for _, item in items]
+    stmts.append(("DELETE FROM orch_items WHERE id NOT IN (SELECT value FROM json_each(?))", [ids]))
+    # Conflicting run-id replay aborts the transaction, never changes the snapshot.
+    stmts.append(("INSERT INTO orch_runs(run_id,generated_at,document_version,provenance,document,item_count) SELECT run_id,generated_at,document_version,provenance,document,item_count FROM orch_runs WHERE run_id=? AND document != ?", [run_id, json.dumps(doc)]))
+    db.batch(stmts, transaction=True)
+    runs = db.query("SELECT item_count,document FROM orch_runs WHERE run_id=?", [run_id])
+    if len(runs) != 1 or runs[0]["item_count"] != item_count or json.loads(runs[0]["document"]) != doc:
+        raise SystemExit("read-back: stored run differs from the file document")
+    counts = db.query("SELECT count(*) AS n FROM orch_items")
     if counts[0]["n"] != item_count:
-        raise SystemExit(
-            f"read-back: orch_items has {counts[0]['n']} rows, expected {item_count}"
-        )
+        raise SystemExit("read-back: item count differs from file document")
     print(json.dumps({"ok": True, "run_id": run_id, "items": item_count}))
 
 
