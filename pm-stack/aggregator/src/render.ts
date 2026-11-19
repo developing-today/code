@@ -2031,6 +2031,8 @@ export interface ItemExtras {
   serviceLinks?: ItemServiceLink[];
   /** Present when this item's Project-pool entry is an epic. */
   epicRollup?: EpicRollup;
+  /** Honest chain summary derived from the live Project pool. */
+  genealogySentence?: string;
   /** Project-pool briefs for linked refs (#1279). */
   briefs?: Map<RefKey, ItemBrief>;
   /** Real ready-for-agent dispatch state for explicitly labelled linked issues. */
@@ -2169,7 +2171,7 @@ export function renderItem(
     : "";
   return layout(
     title,
-    `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${epicRollup}${svcLinks}${dispatchSection}${stripHtml(items, links)}
+    `<h1>${esc(title)}</h1><p class="muted">subject: <code>${esc(subject)}</code></p>${extras?.genealogySentence ? `<p class="genealogy">${esc(extras.genealogySentence)}</p>` : ""}${epicRollup}${svcLinks}${dispatchSection}${stripHtml(items, links)}
 ${
   extras?.briefs
     ? briefPanelsForRefs(
