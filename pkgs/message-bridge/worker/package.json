@@ -1,0 +1,10 @@
+{
+  "name": "message-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Worker: remote MCP connector that sends and receives messages, with a history page",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

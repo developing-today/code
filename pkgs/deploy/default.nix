@@ -49,6 +49,10 @@ let
     queueTransportAlertDeploy = callPackage ../../pkgs/queue-transport-alert/worker/deploy.nix {
       queueTransportAlert = callPackage ../../pkgs/queue-transport-alert/worker/package.nix { };
     };
+    # Remote MCP connector that sends and receives messages.
+    messageBridgeDeploy = callPackage ../../pkgs/message-bridge/worker/deploy.nix {
+      messageBridge = callPackage ../../pkgs/message-bridge/worker/package.nix { };
+    };
   };
   jsonDefinitions = lib.mapAttrs (name: defn: defn // { package = "${defn.package}"; }) definitions;
 in
