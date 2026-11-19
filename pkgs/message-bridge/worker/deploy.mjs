@@ -69,7 +69,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, USAGE } from "./deploy-args.mjs";
-import { CODE_ONLY_MARK, classifyWorkerProbe, strayBeforeCodeOnly } from "./deploy-probe.mjs";
+import { CODE_ONLY_MARK, VersionListGap, classifyWorkerProbe, strayBeforeCodeOnly } from "./deploy-probe.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const WORKER = "message-bridge";
@@ -258,14 +258,29 @@ console.log(`roll back with: nix run .#message-bridge-deploy -- --deploy-version
 // live one and this upload must itself be a code-only upload (which only
 // ever carries a token forward), or this refuses. It runs before the
 // upload (so a doomed upload never happens) and again after it, over the
-// versions created before this run's version, so a full deploy that
+// versions numbered before this run's version, so a full deploy that
 // slipped in between the check and the upload can't be inherited
-// either; then this run's version is left undeployed.
+// either; then this run's version is left undeployed. Versions are
+// numbered in upload order, so the check knows exactly which versions it
+// must see and waits until the list shows them all.
 async function assertTokenInheritsFromLive(uploadedId = null) {
   const liveId = (await liveVersions())[0]?.version_id;
   if (!liveId) throw new Error("could not find the live version; refusing a code-only deploy");
-  const newestFirst = (await listVersions()).sort((a, b) => createdOn(b) - createdOn(a));
-  const stray = strayBeforeCodeOnly(newestFirst, liveId, uploadedId);
+  // Retry while the list is missing a version number in the range: it
+  // can lag an upload, and an unlisted version could be a full deploy.
+  let stray = null;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      stray = strayBeforeCodeOnly(await listVersions(), liveId, uploadedId);
+      break;
+    } catch (err) {
+      if (!(err instanceof VersionListGap) || attempt >= 8) {
+        if (uploadedId && err instanceof VersionListGap) err.message += ` (version ${uploadedId} was uploaded but not deployed)`;
+        throw err;
+      }
+      await new Promise((r) => setTimeout(r, 2500));
+    }
+  }
   if (stray) {
     throw new Error(
       `version ${stray.id} sits between the live version ${liveId} and this upload and isn't a code-only ` +
@@ -343,11 +358,6 @@ async function listVersions(params = {}) {
   throw new Error("Cloudflare API /versions kept paging past 50 pages");
 }
 
-function createdOn(v) {
-  const raw = v.metadata?.created_on ?? v.created_on ?? 0;
-  const t = typeof raw === "number" ? raw : Date.parse(raw);
-  return Number.isFinite(t) ? t : 0;
-}
 
 // The version must be deployable and must carry ACCESS_TOKEN: without it
 // the Worker answers 404 everywhere, which would take the connector down.

@@ -261,19 +261,23 @@ test("worker existence probe bootstraps only on the API's not-found answer", asy
 });
 
 test("code-only deploys refuse to inherit a token from a full deploy newer than the live version", async () => {
-  const { strayBeforeCodeOnly } = await import("../deploy-probe.mjs");
-  const v = (id, how) => ({ id, annotations: { "workers/message": `deploy abc via ${how} (run 1)` } });
+  const { strayBeforeCodeOnly, VersionListGap } = await import("../deploy-probe.mjs");
+  const v = (id, number, how) => ({ id, number, annotations: { "workers/message": `deploy abc via ${how} (run 1)` } });
   const code = "message-bridge-deploy workflow";
   const full = "nix run .#message-bridge-deploy";
-  // Before the upload: nothing newer than live, or only code-only uploads.
-  assert.equal(strayBeforeCodeOnly([v("live", full)], "live"), null);
-  assert.equal(strayBeforeCodeOnly([v("c2", code), v("c1", code), v("live", full)], "live"), null);
-  assert.equal(strayBeforeCodeOnly([v("c1", code), v("f1", full), v("live", code)], "live")?.id, "f1");
+  // Before the upload: nothing newer than live, or only code-only uploads (in any order).
+  assert.equal(strayBeforeCodeOnly([v("live", 5, full)], "live"), null);
+  assert.equal(strayBeforeCodeOnly([v("c1", 6, code), v("live", 5, full), v("c2", 7, code)], "live"), null);
+  assert.equal(strayBeforeCodeOnly([v("c1", 7, code), v("f1", 6, full), v("live", 5, code)], "live")?.id, "f1");
   // After the upload: a full deploy that slipped in before ours counts, one after it doesn't.
-  assert.equal(strayBeforeCodeOnly([v("mine", code), v("f1", full), v("live", code)], "live", "mine")?.id, "f1");
-  assert.equal(strayBeforeCodeOnly([v("f1", full), v("mine", code), v("live", code)], "live", "mine"), null);
-  assert.throws(() => strayBeforeCodeOnly([v("x", code)], "live"), /not in the versions list/);
-  assert.throws(() => strayBeforeCodeOnly([v("live", code), v("mine", code)], "live", "mine"), /not newer/);
+  assert.equal(strayBeforeCodeOnly([v("mine", 7, code), v("f1", 6, full), v("live", 5, code)], "live", "mine")?.id, "f1");
+  assert.equal(strayBeforeCodeOnly([v("f1", 7, full), v("mine", 6, code), v("live", 5, code)], "live", "mine"), null);
+  // A version the list hasn't caught up with yet could be a full deploy: no verdict on a gap.
+  assert.throws(() => strayBeforeCodeOnly([v("mine", 7, code), v("live", 5, code)], "live", "mine"), VersionListGap);
+  assert.throws(() => strayBeforeCodeOnly([v("c2", 7, code), v("live", 5, code)], "live"), VersionListGap);
+  assert.throws(() => strayBeforeCodeOnly([v("x", 1, code)], "live"), /not in the versions list/);
+  assert.throws(() => strayBeforeCodeOnly([v("live", 6, code), v("mine", 5, code)], "live", "mine"), /not newer/);
+  assert.throws(() => strayBeforeCodeOnly([{ id: "live" }], "live"), /no version number/);
 });
 
 test("deploy.mjs rejects undeclared arguments before touching credentials", async () => {

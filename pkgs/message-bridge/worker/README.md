@@ -98,7 +98,10 @@ refuses to upload when a version newer than the live one came from a
 full deploy (say one that uploaded a rotated token and then failed),
 since the new version would inherit that token instead. It checks again
 after the upload, so a full deploy that lands in between leaves the new
-version undeployed. A full deploy from a checkout clears the condition. A manual
+version undeployed. Cloudflare numbers versions in upload order, so that
+check waits until the list shows every version numbered between the
+live one and the new one, and refuses if it never does. A full deploy
+from a checkout clears the condition. A manual
 run with a `rollback_version` deploys that existing version instead.
 Without the two secrets the workflow builds, tests and skips the upload.
 Setting or rotating the access token is still a local full deploy.

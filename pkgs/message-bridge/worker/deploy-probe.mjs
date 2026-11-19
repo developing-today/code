@@ -30,29 +30,48 @@ export function classifyWorkerProbe(status, body) {
 
 export const CODE_ONLY_MARK = "via message-bridge-deploy workflow";
 
+/** Thrown when the versions list is missing a version number, as it can for a few seconds after an upload. */
+export class VersionListGap extends Error {}
+
 /**
  * The first version between the live one and a code-only upload that
  * isn't itself a code-only upload, or null. A code-only upload inherits
  * ACCESS_TOKEN from the newest version before it, so any such version
  * means it may not carry the live token.
  *
- * @param {{id: string, annotations?: Record<string, string>}[]} newestFirst versions, newest first
+ * Cloudflare numbers a Worker's versions 1, 2, 3, ... in upload order,
+ * so the versions in between are exactly the numbers between the live
+ * one and this upload. A number missing from the list means the list
+ * hasn't caught up yet (it can lag an upload), and an unseen version
+ * could be a full deploy, so that throws VersionListGap rather than
+ * passing on a partial list.
+ *
+ * @param {{id: string, number: number, annotations?: Record<string, string>}[]} versions in any order
  * @param {string} liveId the live version
  * @param {string | null} uploadedId this run's version, once uploaded
  * @returns {{id: string} | null}
+ * @throws {VersionListGap} when a version between the two is missing from the list
  * @throws {Error} when the live version (or this upload, if given) can't be placed
  */
-export function strayBeforeCodeOnly(newestFirst, liveId, uploadedId = null) {
-  const liveAt = newestFirst.findIndex((v) => v.id === liveId);
-  if (liveAt === -1) throw new Error(`live version ${liveId} is not in the versions list`);
-  let from = 0;
-  if (uploadedId) {
-    const mine = newestFirst.findIndex((v) => v.id === uploadedId);
-    if (mine === -1 || mine > liveAt) throw new Error(`uploaded version ${uploadedId} is not newer than the live one`);
-    from = mine + 1;
+export function strayBeforeCodeOnly(versions, liveId, uploadedId = null) {
+  if (!versions.every((v) => Number.isSafeInteger(v.number))) {
+    throw new Error("a version in the list has no version number; refusing to judge token inheritance");
   }
-  return (
-    newestFirst.slice(from, liveAt).find((v) => !(v.annotations?.["workers/message"] ?? "").includes(CODE_ONLY_MARK)) ??
-    null
-  );
+  const live = versions.find((v) => v.id === liveId);
+  if (!live) throw new Error(`live version ${liveId} is not in the versions list`);
+  let top = Math.max(...versions.map((v) => v.number)) + 1;
+  if (uploadedId) {
+    const mine = versions.find((v) => v.id === uploadedId);
+    if (!mine || mine.number <= live.number) {
+      throw new Error(`uploaded version ${uploadedId} is not newer than the live one`);
+    }
+    top = mine.number;
+  }
+  const byNumber = new Map(versions.map((v) => [v.number, v]));
+  for (let n = top - 1; n > live.number; n--) {
+    const v = byNumber.get(n);
+    if (!v) throw new VersionListGap(`version number ${n} (between the live version and this upload) is not listed yet`);
+    if (!(v.annotations?.["workers/message"] ?? "").includes(CODE_ONLY_MARK)) return v;
+  }
+  return null;
 }
