@@ -462,6 +462,12 @@ impl Registry {
         Ok(Registry { conn })
     }
 
+    /// The registry's connection, for sibling modules that keep their
+    /// own tables in the registry DB (the ingest gate's records).
+    pub(crate) fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
     /// An in-memory registry (tests, ephemeral tools).
     pub fn in_memory() -> Result<Registry> {
         let conn = Connection::open_in_memory()
