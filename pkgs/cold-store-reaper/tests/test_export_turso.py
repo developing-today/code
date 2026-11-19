@@ -58,11 +58,16 @@ fi
 body=""
 case "${url}" in
   */auth/tokens) body='{"jwt":"__JWT__"}' ;;
-  */dump) body='BEGIN TRANSACTION;
+  */dump)
+    if [[ -n "${STUB_DUMP_BODY_FILE:-}" ]]; then
+      body="$(cat "${STUB_DUMP_BODY_FILE}")"
+    else
+      body='BEGIN TRANSACTION;
 CREATE TABLE t (x INTEGER);
 INSERT INTO t VALUES (1);
 COMMIT;
-' ;;
+'
+    fi ;;
   *) body='{"databases":[{"Name":"db1","Hostname":"db1.example.test"}]}' ;;
 esac
 if [[ -n "${out}" ]]; then
@@ -185,6 +190,30 @@ class TestExportTursoArgv(unittest.TestCase):
         self.assertIn("1 of 1 database(s) FAILED", result.stderr)
         self.assertEqual(self.dump_calls(), 2)
         self.assertFalse((self.capture / "cold-store.log").exists())
+
+    def test_rebuild_failure_names_the_repeated_statement(self):
+        # #12000: the atlas dump repeated a vec-table row and the rebuild
+        # stopped on its primary key; the dump is deleted afterwards, so
+        # the failure itself must say what the statement was.
+        body = self.capture.parent / "dup.sql"
+        body.write_text(
+            "BEGIN TRANSACTION;\n"
+            "CREATE TABLE vec (chunk_id INTEGER PRIMARY KEY, v BLOB);\n"
+            "INSERT INTO vec VALUES(1,X'00');\n"
+            "INSERT INTO vec VALUES(2,X'01');\n"
+            "INSERT INTO vec VALUES(1,X'00');\n"
+            "COMMIT;\n"
+        )
+        env = {**self.env, "STUB_DUMP_BODY_FILE": str(body)}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("UNIQUE constraint failed: vec.chunk_id", result.stderr)
+        self.assertIn(
+            "line 5: INSERT into vec; 2 identical statement(s) (first at line 3);"
+            " 2 INSERT(s) share its first value",
+            result.stderr,
+        )
+        self.assertNotIn("X'00'", result.stderr.split("UNIQUE")[1])
 
     def test_retry_pass_delay_must_be_an_integer(self):
         env = {**self.env, "TURSO_DUMP_RETRY_PASS_DELAY_SECONDS": "soon"}

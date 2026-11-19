@@ -83,13 +83,16 @@ the two entry points cannot diverge in shape.
 import ast
 import base64
 import json
+import http.client
 import os
 import re
 import subprocess
+import socket
 import sys
 import tempfile
 import time
 import urllib.request
+import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -613,6 +616,26 @@ def fetch_active_ids():
     return None
 
 
+class _UnixHTTPConnection(http.client.HTTPConnection):
+    """HTTP framing over the configured broker socket; no DNS/TCP fallback."""
+
+    def __init__(self, socket_path, timeout=30):
+        if not socket_path.startswith("/") or "\x00" in socket_path:
+            raise ValueError("unix broker URL requires an absolute socket path")
+        super().__init__("localhost", timeout=timeout)
+        self.socket_path = socket_path
+
+    def connect(self):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.settimeout(self.timeout)
+            sock.connect(self.socket_path)
+        except BaseException:
+            sock.close()
+            raise
+        self.sock = sock
+
+
 def _broker_post(path, body):
     """POST a JSON body to the queue-broker and return the decoded
     response object. Raises on any transport, credential or protocol
@@ -626,14 +649,33 @@ def _broker_post(path, body):
         if token_file
         else BROKER_TOKEN_FILE.read_text().strip()
     )
-    req = urllib.request.Request(
-        url.rstrip("/") + path,
-        data=json.dumps(body).encode(),
-        headers={"X-Agent-Token": token, "Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=30) as res:
-        data = json.loads(res.read() or "null")
+    payload = json.dumps(body).encode()
+    headers = {"X-Agent-Token": token, "Content-Type": "application/json"}
+    if url.startswith("unix://"):
+        # Same HTTP API/auth as TCP, but the URL suffix is a literal socket
+        # path, not an HTTP base URL. Never append /list to that filename.
+        conn = _UnixHTTPConnection(url[len("unix://"):], timeout=30)
+        try:
+            conn.request("POST", path, body=payload, headers=headers)
+            with conn.getresponse() as res:
+                # No redirects or fallback to a different broker/auth target.
+                if not 200 <= res.status < 300:
+                    error = urllib.error.HTTPError(
+                        url + path, res.status, res.reason, res.headers, res
+                    )
+                    # This helper exposes decoded JSON, never an open error
+                    # response; close the wrapper as well as the connection.
+                    error.close()
+                    raise error
+                data = json.loads(res.read() or "null")
+        finally:
+            conn.close()
+    else:
+        req = urllib.request.Request(
+            url.rstrip("/") + path, data=payload, headers=headers, method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as res:
+            data = json.loads(res.read() or "null")
     if isinstance(data, dict) and data.get("ok") is False:
         raise RuntimeError(f"broker {path} failed: {str(data.get('error'))[:200]}")
     return data

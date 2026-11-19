@@ -1,5 +1,5 @@
 import {historyTransition} from './history.mjs';
-import {evaluateAccess,projectSnapshot,projectEvents,assertSnapshotMutation,validateAccessConfig,hasScopedAccess} from './access.mjs';
+import {evaluateAccess,projectSnapshot,projectEvents,assertSnapshotMutation,validateAccessConfig,hasScopedAccess,assertPolicyWrite,queryScope} from './access.mjs';
 import {transitionSteering,assertSteeringUnchanged} from './steering.mjs';
 import {validateVariantGraph,assertVariantMetadataUnchanged} from './variant-graph.mjs';
 import {variantPlan} from './variant-plan.mjs';
@@ -140,8 +140,8 @@ export async function api(request,env){
    const settings=await getSettings(db,user),all=await accessible(db,user),results=[];
    for(const store of all){
     if(store.archived||settings.stores?.[store.id]?.hidden)continue;
-    const state=projectSnapshot(parse(store.state_json),{principal:user,role:store.role,openVisitor:!!(store.is_open&&!store.member_role)});
-    const hits=state.items.filter(item=>!item.archived&&!item.hidden&&[item.name,item.description,...(item.attributes||[]).map(([k,v])=>k+' '+JSON.stringify(v))].join(' ').toLocaleLowerCase().includes(query));
+    const scope=queryScope(parse(store.state_json),{principal:user,role:store.role,openVisitor:!!(store.is_open&&!store.member_role)});
+    const hits=scope.search('items',item=>!item.archived&&!item.hidden&&[item.name,item.description,...(item.attributes||[]).map(([k,v])=>k+' '+JSON.stringify(v))].join(' ').toLocaleLowerCase().includes(query)).rows;
     for(const item of hits){results.push({storeId:store.id,storeName:store.name,itemId:item.id,name:item.name,kind:item.kind||'item',description:clean(item.description,500)});if(results.length>100)return json({query,results:results.slice(0,100),truncated:true})}
    }
    return json({query,results,truncated:false});
@@ -213,7 +213,7 @@ export async function api(request,env){
     if(prior){const replay=retryResult(prior,sid,user,intentDedicated);return json({version:replay.version,duplicate:true});}
     if(s.version!==b.expectedVersion)fail(409,'Store changed; reload before applying command');
     if(sub==='policy'){
-     if(s.role!=='admin')fail(403,'Administrator required');validateAccessConfig(b.access);
+     if(s.role!=='admin')fail(403,'Administrator required');b.access=assertPolicyWrite(b.access,{role:s.role});
      for(const entityId of ['*',...source.items.map(x=>'item:'+x.id),...source.tags.map(x=>'tag:'+x.id),...source.notes.filter(x=>x.id).map(x=>'note:'+x.id),...source.inventory.filter(x=>x.id).map(x=>'inventory:'+x.id)])for(const action of ['read','write','admin'])for(const principal of [user,{id:s.owner_id}])if(!evaluateAccess({...context,principal,access:b.access,entityId,action}).allowed)fail(400,'Policy would lock out an administrator or owner');
      event={id:commandId,after:{...source,access:b.access},label:'Updated object access policy',operation:'policy'};
     }else if(sub==='steering'){

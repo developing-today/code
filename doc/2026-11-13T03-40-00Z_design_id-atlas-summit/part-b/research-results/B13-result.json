@@ -1,0 +1,309 @@
+{
+  "assessments": [
+    {
+      "criterion_id": "data-model-history",
+      "evidence_refs": [
+        "ocapn-captp",
+        "b13-research-note"
+      ],
+      "option_id": "adopt-as-authority-layer",
+      "reason": "CapTP is a live object-messaging protocol (references, promises, pipelining, distributed reference counting) with Syrup as its message serialization; it defines no persistent data model or change history, so it cannot carry the design's records or their history.",
+      "status": "unsupported"
+    },
+    {
+      "criterion_id": "convergence",
+      "evidence_refs": [
+        "ocapn-captp",
+        "b13-research-note"
+      ],
+      "option_id": "adopt-as-authority-layer",
+      "reason": "OCapN is not a CRDT and specifies no merge of concurrent state; sessions deliver ordered messages over one live session between two peers, and nothing converges replicas.",
+      "status": "unsupported"
+    },
+    {
+      "criterion_id": "scale-performance",
+      "evidence_refs": [
+        "b13-research-note"
+      ],
+      "experiment_ref": "attenuation-wrapper-proof",
+      "option_id": "adopt-as-authority-layer",
+      "reason": "No measurement of CapTP sessions or handoffs on this design's relay workloads exists; adopting now would be an unmeasured commitment.",
+      "status": "unknown"
+    },
+    {
+      "criterion_id": "signed-history-compat",
+      "evidence_refs": [
+        "ocapn-captp",
+        "versioned-design-s144"
+      ],
+      "option_id": "adopt-as-authority-layer",
+      "reason": "Handoff certificates are signed with per-session keys (the gifter's key from the gifter-exporter session and the receiver's key from the gifter-receiver session) to authorise one live withdrawal; they are not durable signed records, and the design's signed envelopes and ingest gate would remain an independent layer OCapN does not provide.",
+      "status": "unsupported"
+    },
+    {
+      "criterion_id": "cross-language-format-interop",
+      "evidence_refs": [
+        "ocapn-captp",
+        "ocapn-netlayers",
+        "ocapn-impl-guide"
+      ],
+      "option_id": "adopt-as-authority-layer",
+      "reason": "Both the CapTP and Netlayers documents open with 'This is a draft specification likely to undergo significant change'; neither carries a date or document version, the CapTP draft gives two different required crypto-version values for op:start-session (Ed25519_SHA256 and Ed25519), and the implementation guide's Appendix A is still under consideration. There is no stable contract to build against.",
+      "status": "unsupported"
+    },
+    {
+      "criterion_id": "authority-boundary",
+      "evidence_refs": [
+        "ocapn-captp",
+        "versioned-design-s144"
+      ],
+      "option_id": "adopt-as-authority-layer",
+      "reason": "In CapTP, holding a reference is the authority ('if you don't have it, you can't use it'), so adopting it as the authority layer replaces the design's explicit grant layer instead of staying behind it.",
+      "status": "unsupported"
+    },
+    {
+      "criterion_id": "attenuation-evidence",
+      "evidence_refs": [
+        "ocapn-captp",
+        "ocapn-impl-guide"
+      ],
+      "option_id": "adopt-as-authority-layer",
+      "reason": "Neither the CapTP draft nor the implementation guide mentions attenuation, attenuated references, caretakers or revocation; the closest mechanisms are single-use gifts and broken promises on session abort, which neither source presents as attenuation.",
+      "status": "unsupported"
+    },
+    {
+      "criterion_id": "data-model-history",
+      "evidence_refs": [
+        "b13-research-note",
+        "versioned-design-s144"
+      ],
+      "option_id": "handoff-wrapper-after-proof",
+      "reason": "The wrapper is confined to relay authority; records, history and the conflict report stay in ID's existing layers, so the data model is unaffected.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "convergence",
+      "evidence_refs": [
+        "versioned-design-s144"
+      ],
+      "option_id": "handoff-wrapper-after-proof",
+      "reason": "Convergence stays with ID's deterministic fold; the wrapper only governs who may relay, not how state merges.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "scale-performance",
+      "evidence_refs": [
+        "b13-research-note"
+      ],
+      "experiment_ref": "attenuation-wrapper-proof",
+      "option_id": "handoff-wrapper-after-proof",
+      "reason": "Unmeasured; the option is defined by first proving and measuring the wrapper's behaviour, so the criterion is answered by the revisit gate rather than asserted now.",
+      "status": "unknown"
+    },
+    {
+      "criterion_id": "signed-history-compat",
+      "evidence_refs": [
+        "versioned-design-s144",
+        "b13-research-note"
+      ],
+      "option_id": "handoff-wrapper-after-proof",
+      "reason": "The wrapper would be complementary to the signed ingest gate, never a replacement: relayed data is still accepted only as signed and validated records.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "cross-language-format-interop",
+      "evidence_refs": [
+        "ocapn-captp",
+        "ocapn-netlayers"
+      ],
+      "option_id": "handoff-wrapper-after-proof",
+      "reason": "Netlayers keep CapTP transport-agnostic (any reliable, in-order, session-secure channel, with Tor onion the one netlayer specified), which helps a wrapper, but the underlying drafts may change significantly and no Rust or TypeScript fit has been shown.",
+      "status": "unknown"
+    },
+    {
+      "criterion_id": "authority-boundary",
+      "evidence_refs": [
+        "versioned-design-s144",
+        "b13-research-note"
+      ],
+      "option_id": "handoff-wrapper-after-proof",
+      "reason": "The wrapper is an application-level mechanism under the existing grant layer: a handed-off reference would carry only what an explicit grant already allows, and actor identity alone grants nothing.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "attenuation-evidence",
+      "evidence_refs": [
+        "ocapn-captp",
+        "b13-research-note"
+      ],
+      "experiment_ref": "attenuation-wrapper-proof",
+      "option_id": "handoff-wrapper-after-proof",
+      "reason": "References and third-party handoff are established by the cited sources, but bounded authority would be the wrapper's own claim; it stays unknown until an explicit proof shows a handed-off reference cannot exceed its bound.",
+      "status": "unknown"
+    },
+    {
+      "criterion_id": "data-model-history",
+      "evidence_refs": [
+        "versioned-design-s144"
+      ],
+      "option_id": "signed-relay-grants-only",
+      "reason": "Unchanged: relay authority is expressed as signed grants in the existing record model, with retained history.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "convergence",
+      "evidence_refs": [
+        "versioned-design-s144"
+      ],
+      "option_id": "signed-relay-grants-only",
+      "reason": "Unchanged: the existing deterministic fold and conflict-report-first sync apply to grants like any other record.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "scale-performance",
+      "evidence_refs": [
+        "versioned-design-s144",
+        "b13-research-note"
+      ],
+      "option_id": "signed-relay-grants-only",
+      "reason": "No unmeasured protocol is adopted; the versioned design records a complete 'adopt none' outcome as valid for the #9143 comparison.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "signed-history-compat",
+      "evidence_refs": [
+        "versioned-design-s144"
+      ],
+      "option_id": "signed-relay-grants-only",
+      "reason": "Grants are signed records, verified by the existing ingest gate.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "cross-language-format-interop",
+      "evidence_refs": [
+        "b13-research-note"
+      ],
+      "option_id": "signed-relay-grants-only",
+      "reason": "Adopting none gains no interoperability with OCapN peers such as Spritely Goblins; reaching that ecosystem would need a separate bridge if it becomes a requirement.",
+      "status": "unsupported"
+    },
+    {
+      "criterion_id": "authority-boundary",
+      "evidence_refs": [
+        "versioned-design-s144"
+      ],
+      "option_id": "signed-relay-grants-only",
+      "reason": "The authority boundary is unchanged; grants stay explicit in the existing layer.",
+      "status": "supported"
+    },
+    {
+      "criterion_id": "attenuation-evidence",
+      "evidence_refs": [
+        "b13-research-note",
+        "versioned-design-s144"
+      ],
+      "option_id": "signed-relay-grants-only",
+      "reason": "Bounded relay authority is stated directly in each signed grant's scope, so no unverified attenuation property of another protocol is assumed.",
+      "status": "supported"
+    }
+  ],
+  "checked_at": "2026-11-19T02:45:00Z",
+  "criteria": [
+    {
+      "id": "data-model-history",
+      "question": "Does the option fit the data model and history the design needs (structured documents with inspectable change history)?"
+    },
+    {
+      "id": "convergence",
+      "question": "Does the option provide deterministic convergence for concurrent changes?"
+    },
+    {
+      "id": "scale-performance",
+      "question": "Is the option's scale/performance cost (memory, CPU, wire) established for representative workloads?"
+    },
+    {
+      "id": "signed-history-compat",
+      "question": "Is the option compatible with signed history (authenticated signer identity stays verifiable)?"
+    },
+    {
+      "id": "cross-language-format-interop",
+      "question": "Does the option interoperate across languages and formats (including the Rust core and the per-document sync protocol)?"
+    },
+    {
+      "id": "authority-boundary",
+      "question": "Does the option preserve the design's authority boundary (actor identity is not authority; grants stay in the existing layer)?"
+    },
+    {
+      "id": "attenuation-evidence",
+      "question": "Do the cited sources establish bounded (attenuated) relay authority, rather than leaving it as an unverified application-level assumption?"
+    }
+  ],
+  "decision": {
+    "outcome": "defer",
+    "reason": "Adopting OCapN now as the authority layer is rejected: it is a live object-messaging protocol, not a CRDT or signed data-history format; reference possession would replace the explicit grant layer; and the CapTP and Netlayers documents are undated drafts expected to change significantly. The established facts are only references, third-party handoff and transport separation. Attenuation is not mentioned in any cited source, so the handoff-based wrapper stays an open, conditional candidate that needs an explicit proof of bounded authority and the versioned-design evidence threshold before any work. Explicit signed relay grants without OCapN remain the valid baseline and a valid final result. This preserves the contingent-tier trigger recorded on #10151 / S1.44."
+  },
+  "experiments": [
+    {
+      "checked_at": "2026-11-19T02:45:00Z",
+      "id": "attenuation-wrapper-proof",
+      "method": "Specify an application-level wrapper that hands off a reference bounded by an explicit signed grant, then prove (by model check or property test) that a receiver cannot exceed the bound through further handoffs, sturdyrefs or pipelined messages, and measure session and handoff cost on a representative relay workload. Planned only in this slice; nothing was built or run, so no measurements are asserted.",
+      "status": "unmeasured"
+    }
+  ],
+  "limitations": [
+    "The validator checks structural completeness and traceability only, not factual truth; this artifact synthesizes the B13 note (evidence checked 2026-11-12) plus a fresh re-read of the three OCapN documents on 2026-11-19.",
+    "Absence of attenuation is a finding about the cited documents only; other OCapN or Spritely material was not surveyed, and the open question stays open rather than answered no.",
+    "The OCapN documents are living drafts on a main branch with no dates; findings hold as read on 2026-11-19.",
+    "No OCapN implementation was run, and no measurements were taken (contingent tier), so every scale assessment is unknown rather than estimated."
+  ],
+  "options": [
+    {
+      "id": "adopt-as-authority-layer",
+      "label": "Adopt OCapN (CapTP, handoffs, netlayers) now as the peer-class and relay authority system"
+    },
+    {
+      "id": "handoff-wrapper-after-proof",
+      "label": "Defer: evaluate an application-level wrapper that uses references and third-party handoff for bounded relay authority, only after an explicit proof of its attenuation behaviour"
+    },
+    {
+      "id": "signed-relay-grants-only",
+      "label": "Adopt none: keep explicit signed relay grants in the existing layer without OCapN"
+    }
+  ],
+  "question": "Against the shared CRDT criteria for #9143 (statement S1.44) plus the attenuation question, should ID/Atlas adopt OCapN now as its peer and relay authority system, evaluate an application-level handoff wrapper after proving attenuation, or keep explicit signed relay grants without OCapN?",
+  "report_kind": "research-matrix",
+  "research_scope": "crdt-ocapn",
+  "schema_version": 1,
+  "source_ledger": [
+    {
+      "accessed_at": "2026-11-19T02:45:00Z",
+      "id": "ocapn-captp",
+      "reference": "https://github.com/ocapn/ocapn/blob/main/draft-specifications/CapTP%20Specification.md",
+      "undated_reason": "Living draft with no date or document version (captp-version 1.0 is the protocol field). Re-read 2026-11-19: opens 'This is a draft specification likely to undergo significant change'; defines references, promises and pipelining, distributed GC, sessions, Syrup serialization, and third-party handoff via deposit-gift plus desc:handoff-give and desc:handoff-receive signed with per-session keys and a handoff-count replay check; does not mention attenuation; gives two different required crypto-version values for op:start-session."
+    },
+    {
+      "accessed_at": "2026-11-19T02:45:00Z",
+      "id": "ocapn-impl-guide",
+      "reference": "https://github.com/ocapn/ocapn/blob/main/implementation-guide/Implementation%20Guide.md",
+      "undated_reason": "Living guide with no version or date; Appendix A is marked as subject to further consideration by the OCapN specification group. Re-read 2026-11-19: describes references, single-use handoff gifts, sturdyrefs (peer plus swiss-num, redeemed via fetch on the bootstrap object) and a Tor onion netlayer example; no mention of attenuation, caretakers or revocation."
+    },
+    {
+      "accessed_at": "2026-11-19T02:45:00Z",
+      "id": "ocapn-netlayers",
+      "reference": "https://github.com/ocapn/ocapn/blob/main/draft-specifications/Netlayers.md",
+      "undated_reason": "Living draft with no date or version. Re-read 2026-11-19: opens 'This is a draft specification likely to undergo significant change'; a netlayer is the transport delivering messages to a peer, needing bidirectional, in-order, session-secure delivery with encryption optional; CapTP is netlayer-agnostic; only the Tor onion netlayer is specified."
+    },
+    {
+      "accessed_at": "2026-11-19T02:45:00Z",
+      "id": "b13-research-note",
+      "reference": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/B13-research-ocapn.md",
+      "undated_reason": "Repo research note for slice B13; its header records evidence checked 2026-11-12. It scopes the slice (research-only, scope crdt-ocapn, attenuation an open application-level question) and gives the three options and the conclusion this artifact formalizes."
+    },
+    {
+      "accessed_at": "2026-11-19T02:45:00Z",
+      "id": "versioned-design-s144",
+      "reference": "doc/2026-11-13T03-40-00Z_design_id-atlas-summit/part-b/versioned-design.md",
+      "undated_reason": "Repo versioned design record for the ID/Atlas summit, Part B. Its #9143 lines (S1.41-S1.46) include the OCapN capability-based authority and handoff fit with application-level attenuation treated as a separate question, state that a complete 'adopt none' result is valid, and bar implementation before the evidence-based revisit threshold."
+    }
+  ]
+}

@@ -159,7 +159,7 @@ async fn a_moderator_revoke_is_audited() {
     assert!(
         entries.iter().any(|entry| matches!(
             entry,
-            JournalEntry::Revoked { participant_id, by: Some(by) }
+            JournalEntry::Revoked { participant_id, by: Some(by), .. }
                 if *participant_id == 1 && *by == 2
         )),
         "expected a Revoked audit record naming the moderator: {entries:?}"
@@ -222,7 +222,7 @@ async fn a_moderator_capability_revokes_and_a_guest_capability_is_denied() {
     assert!(
         entries.iter().any(|entry| matches!(
             entry,
-            JournalEntry::Revoked { participant_id, by: Some(by) }
+            JournalEntry::Revoked { participant_id, by: Some(by), .. }
                 if *participant_id == victim.id && *by == moderator.id
         )),
         "expected a Revoked audit record naming the derived moderator: {entries:?}"

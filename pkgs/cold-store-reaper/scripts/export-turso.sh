@@ -278,8 +278,20 @@ PY
     echo "turso export: ERROR: ${name}: sqlite3 CLI not found (SQLITE3_BIN=${SQLITE3}); cannot rebuild the export" >&2
     return 1
   fi
-  if ! "${SQLITE3}" -bail "${db_file}" <"${filtered_sql}"; then
+  local rebuild_err="${WORK}/${name}.rebuild.err"
+  if ! "${SQLITE3}" -bail "${db_file}" <"${filtered_sql}" 2>"${rebuild_err}"; then
+    cat "${rebuild_err}" >&2
     echo "turso export: ERROR: ${name}: dump did not rebuild into a SQLite file" >&2
+    # The dump is deleted with the work dir, so say now what the
+    # failing statement was (#12000): its table, and whether the dump
+    # repeats it verbatim. Row values are never printed.
+    local err_line report
+    err_line="$(sed -nE '0,/ near line [0-9]+:/s/^(Parse error|Runtime error|Error) near line ([0-9]+):.*/\2/p' "${rebuild_err}")"
+    if [[ -n ${err_line} ]]; then
+      report="$(python3 "${SCRIPT_DIR}/dump_line_report.py" "${filtered_sql}" "${err_line}" 2>&1)" ||
+        report="line ${err_line}: report failed: ${report}"
+      echo "turso export: ${name}: ${report}" >&2
+    fi
     return 1
   fi
   # Verify the finished file (the CLI reads it; the dump text is
@@ -327,6 +339,7 @@ export_one() {
   local rc=0
   export_one_run "${name}" "${hostname}" || rc=$?
   rm -f "${WORK}/${name}.sql" "${WORK}/${name}.filtered.sql" \
+    "${WORK}/${name}.rebuild.err" \
     "${WORK}/${name}.db" "${WORK}/${name}.db.gz" \
     "${WORK}/${name}.token.json"
   return "${rc}"

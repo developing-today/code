@@ -38,6 +38,7 @@ pub mod feedback;
 pub mod feedback_normalise;
 pub mod filters;
 pub mod fusion;
+pub mod gate;
 pub mod github_comments;
 pub mod join;
 pub mod local;

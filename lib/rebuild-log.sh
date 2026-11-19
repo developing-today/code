@@ -13,7 +13,7 @@
 #   - lib/auth.sh runs as the user. It creates the directory and the file as
 #     the user, writes the header and the final exit status, and prints
 #     "rebuild log: <path>". It passes the path to the root side as
-#     REBUILD_LOG on the sudo command line (sudo resets the environment).
+#     REBUILD_LOG through sudo --preserve-env (sudo resets the environment).
 #   - lib/rebuild-*.sh run as root under that sudo. They only append to the
 #     existing user-owned file, so its owner and mode stay as the user made
 #     them. rebuild_log_wrap re-runs the script with its stdout and stderr
