@@ -74,8 +74,17 @@ const env = { ...process.env, CLOUDFLARE_API_TOKEN: byName(names.cf) };
 // pointing at the Nix-built cf and wrangler.
 const pkgDir = process.env.QUEUE_TRANSPORT_ALERT_PKG ?? here;
 const stage = mkdtempSync(join(tmpdir(), "queue-transport-alert-deploy-"));
-process.on("exit", () => rmSync(stage, { recursive: true, force: true }));
 cpSync(pkgDir, stage, { recursive: true, filter: (src) => !src.includes("node_modules") });
+// Copies of store paths keep their read-only modes; make the stage
+// writable so it can be removed afterwards.
+execFileSync("chmod", ["-R", "u+w", stage]);
+process.on("exit", () => {
+  try {
+    rmSync(stage, { recursive: true, force: true });
+  } catch (error) {
+    console.warn(`could not remove ${stage}: ${error.message}`);
+  }
+});
 if (!existsSync(join(stage, "cloudflare.config.ts"))) {
   throw new Error(`no cloudflare.config.ts in the Worker package at ${pkgDir}`);
 }
