@@ -130,6 +130,8 @@ export interface ProjectPoolItem {
    *  no epic ancestor, and when the parent chain leaves the pool (the
    *  collector only knows Kind for items on the board). */
   epicRef?: RefKey;
+  /** Former parent refs retained by the PM metadata record after a split. */
+  historicalParentRefs?: RefKey[];
 }
 
 export interface ProjectPoolEdgeDiagnostic {
