@@ -27,6 +27,7 @@ let
       config.nix.package
       pkgs.git
       pkgs.coreutils
+      pkgs.curl
       pkgs.util-linux
       pkgs.systemd
     ];
@@ -54,10 +55,18 @@ let
 
       if [[ -f ${tokenFile} && ! -L ${tokenFile} ]]; then
         token="$(head -n 1 ${tokenFile} | tr -d '\r\n')"
-        if [[ $token =~ ^[A-Za-z0-9_]+$ ]]; then
-          export NIX_CONFIG="access-tokens = github.com=$token"
-        else
+        if [[ ! $token =~ ^[A-Za-z0-9_]+$ ]]; then
           echo "agent-rebuild-switch: ignoring ${tokenFile} (not a bare GitHub token)" >&2
+        # The header goes in on stdin so the token never shows in ps.
+        elif [[ "$(printf 'Authorization: Bearer %s\n' "$token" |
+          curl -s -o /dev/null -w '%{http_code}' --max-time 15 -H @- \
+            https://api.github.com/rate_limit)" == 401 ]]; then
+          # An expired or revoked token makes every GitHub fetch fail with
+          # 401, even for public inputs; fetching without one still works.
+          echo "agent-rebuild-switch: GitHub rejects the token in ${tokenFile} (401); continuing without it" >&2
+          logger -t agent-rebuild-switch "token in ${tokenFile} rejected by GitHub (401); continuing without it"
+        else
+          export NIX_CONFIG="access-tokens = github.com=$token"
         fi
         unset token
       fi
