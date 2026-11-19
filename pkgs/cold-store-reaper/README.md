@@ -169,8 +169,6 @@ pipefail`, no secrets stored or echoed — credentials arrive via the
 environment only):
 
 - `scripts/nightly-backup.sh` — the nightly run: `backup-d1`, then
-  `backup-supabase` (only when both R2 credentials are set; a skip
-  notice is printed otherwise — never an error), then
   `scripts/export-turso.sh`, then `prune-backups --apply`, then
   `sync-manifest`, then `status`. Steps are isolated: a failing step
   never starves the steps after it — every step is attempted, each
@@ -179,9 +177,11 @@ environment only):
   any step failed (guarded skips are not failures). Requires
   `CLOUDFLARE_API_TOKEN` in the environment
   (materialize from Bitwarden into the cron env);
-  `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` are optional (they gate
-  the Supabase step), as is `TURSO_PLATFORM_API_TOKEN` (it gates the
-  Turso step).
+  `TURSO_PLATFORM_API_TOKEN` is optional (it gates the Turso step).
+  The nightly `backup-supabase` filing is retired (2026-11-19): the
+  Supabase project was replaced by Turso, so no new dump reaches R2.
+  Existing `supabase/` filings keep their retention, and
+  `cold-store backup-supabase` still works by hand.
 - `scripts/export-turso.sh` — the Turso step: discovers every
   database in the Turso organization through the Platform API (no
   `turso` CLI needed), mints a per-database auth token, downloads
