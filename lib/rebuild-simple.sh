@@ -18,8 +18,29 @@ echo "entered git root: ${git_root}"
 echo "git add ."
 git add .
 
+# nixpkgs#180175: with tailscaled up, NetworkManager-wait-online (and on some
+# hosts systemd-networkd-wait-online) can fail during switch-to-configuration,
+# so the switch reports a failed unit. Stopping tailscaled avoids that, but it
+# also takes every Tailscale service on this host offline for the whole build
+# (on amd that is the fleet queue broker). Only hosts with a wait-online unit
+# can hit the bug, so stop tailscaled only there. REBUILD_STOP_TAILSCALE=1 or
+# =0 forces the choice either way; through auth.sh, pass it as
+#   ./lib/auth.sh env REBUILD_STOP_TAILSCALE=1 ./lib/rebuild-simple.sh
+stop_tailscale="${REBUILD_STOP_TAILSCALE:-auto}"
+if [[ ${stop_tailscale} == auto ]]; then
+  stop_tailscale=0
+  for unit in NetworkManager-wait-online.service systemd-networkd-wait-online.service; do
+    if systemctl is-enabled --quiet "${unit}" 2>/dev/null; then
+      stop_tailscale=1
+      echo "${unit} is enabled; tailscaled will be stopped for the rebuild (nixpkgs#180175)"
+    fi
+  done
+fi
+
 was_tailscaled_active=false
-if systemctl is-active --quiet tailscaled; then # this is a hack: https://github.com/NixOS/nixpkgs/issues/180175#issuecomment-2134547782
+if [[ ${stop_tailscale} != 1 ]]; then
+  echo "leaving tailscaled running during the rebuild (nixpkgs#180175 workaround not needed here)"
+elif systemctl is-active --quiet tailscaled; then # this is a hack: https://github.com/NixOS/nixpkgs/issues/180175#issuecomment-2134547782
   was_tailscaled_active=true
   echo "stopping tailscaled..."      # this is a hack: https://github.com/NixOS/nixpkgs/issues/180175#issuecomment-2134547782
   sudo systemctl stop tailscaled     # this is a hack: https://github.com/NixOS/nixpkgs/issues/180175#issuecomment-2134547782
