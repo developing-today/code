@@ -6,7 +6,7 @@
 
 # The queue-transport-alert Worker tree as a flake package (code#6369).
 # Plain ESM with no npm dependencies, so the package is the source tree
-# itself; wrangler bundles it at deploy time from a staged copy. The
+# itself; cf bundles it at deploy time from a staged copy. The
 # contract tests run in checkPhase.
 stdenvNoCC.mkDerivation {
   pname = "queue-transport-alert-worker";
@@ -18,6 +18,8 @@ stdenvNoCC.mkDerivation {
       ./test
       ./package.json
       ./wrangler.jsonc
+      ./cloudflare.config.ts
+      ./deploy-lib.mjs
     ];
   };
   nativeCheckInputs = [ nodejs ];
@@ -30,7 +32,7 @@ stdenvNoCC.mkDerivation {
   installPhase = ''
     runHook preInstall
     mkdir -p $out
-    cp -r src package.json wrangler.jsonc $out/
+    cp -r src package.json wrangler.jsonc cloudflare.config.ts $out/
     runHook postInstall
   '';
   meta = {
