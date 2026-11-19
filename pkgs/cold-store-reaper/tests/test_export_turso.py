@@ -235,7 +235,9 @@ class TestExportTursoArgv(unittest.TestCase):
         self.assertIn("put-backup", (self.capture / "cold-store.log").read_text())
 
     def test_table_dumped_twice_with_different_rows_fails(self):
-        create = "CREATE TABLE IF NOT EXISTS vec (chunk_id INTEGER PRIMARY KEY, v BLOB);\n"
+        create = (
+            "CREATE TABLE IF NOT EXISTS vec (chunk_id INTEGER PRIMARY KEY, v BLOB);\n"
+        )
         body = self.capture.parent / "conflict.sql"
         body.write_text(
             "BEGIN TRANSACTION;\n"

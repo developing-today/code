@@ -88,7 +88,9 @@ class TestDedupeDump(unittest.TestCase):
         )
         result = run(dump)
         self.assertEqual(result.returncode, 1)
-        self.assertIn("created twice with different definitions", result.stderr.decode())
+        self.assertIn(
+            "created twice with different definitions", result.stderr.decode()
+        )
 
     def test_multiline_create_is_matched_whole(self):
         create = "CREATE TABLE IF NOT EXISTS s(\n      id TEXT PRIMARY KEY);\n"

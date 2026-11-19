@@ -16,7 +16,11 @@ type Scoped = Window & Pick<SpendRollup, "scopeKind" | "scopeId">;
 type CompleteTotal = Window & Pick<SpendRollup, "unit" | "pool"> & { value: number };
 type CostEvidence =
   | { kind: "burn-without-progress"; spend: SpendRollup; closedChildren: (Scoped & { count: number }) | null }
-  | { kind: "single-session-dominance"; spend: SpendRollup; busiestRoot: (Scoped & { pool: string; tokens: number }) | null }
+  | {
+      kind: "single-session-dominance";
+      spend: SpendRollup;
+      busiestRoot: (Scoped & { pool: string; tokens: number }) | null;
+    }
   | {
       kind: "unattributed-growth";
       current: SpendRollup;
@@ -30,7 +34,13 @@ type CostEvidence =
       kind: "charge-without-activity";
       // Deduplicated monthly total from matched PAYG charges only.
       charges: Pick<MatchedCharge, "service"> & { month: string; totalUsd: number; coverage: Window["coverage"] };
-      activity: { service: string; month: string; sessions: number; quotaActivity: number; coverage: Window["coverage"] } | null;
+      activity: {
+        service: string;
+        month: string;
+        sessions: number;
+        quotaActivity: number;
+        coverage: Window["coverage"];
+      } | null;
     };
 
 export type { CostEvidence };
@@ -39,26 +49,40 @@ function completeSpend(spend: SpendRollup, now: Date): boolean {
   try {
     validateSpendRollup(spend);
     const range = windowRange(spend.windowKind, spend.windowStart);
-    return spend.coverage === "complete" &&
-      range.start === spend.windowStart && range.end === spend.windowEnd &&
+    return (
+      spend.coverage === "complete" &&
+      range.start === spend.windowStart &&
+      range.end === spend.windowEnd &&
       Date.parse(spend.coverageStart) <= Date.parse(range.start) &&
-      Date.parse(range.end) <= now.getTime();
+      Date.parse(range.end) <= now.getTime()
+    );
   } catch {
     return false;
   }
 }
 
 function sameWindow(aux: Window, spend: SpendRollup): boolean {
-  return aux.coverage === "complete" && aux.windowKind === spend.windowKind &&
-    aux.windowStart === spend.windowStart && aux.windowEnd === spend.windowEnd &&
-    aux.attributionVersion === spend.attributionVersion;
+  return (
+    aux.coverage === "complete" &&
+    aux.windowKind === spend.windowKind &&
+    aux.windowStart === spend.windowStart &&
+    aux.windowEnd === spend.windowEnd &&
+    aux.attributionVersion === spend.attributionVersion
+  );
 }
 
 function sameScope(aux: Scoped, spend: SpendRollup): boolean {
   return sameWindow(aux, spend) && aux.scopeKind === spend.scopeKind && aux.scopeId === spend.scopeId;
 }
 
-function warning(kind: CostEvidence["kind"], scope: string, window: [string, string], measure: [string, string | null], evidence: string, link: string): NewIncident {
+function warning(
+  kind: CostEvidence["kind"],
+  scope: string,
+  window: [string, string],
+  measure: [string, string | null],
+  evidence: string,
+  link: string,
+): NewIncident {
   return {
     source: "cost-anomaly",
     key: JSON.stringify([kind, scope, ...window, ...measure]),
@@ -69,14 +93,27 @@ function warning(kind: CostEvidence["kind"], scope: string, window: [string, str
 }
 
 function spendWarning(kind: CostEvidence["kind"], spend: SpendRollup, evidence: string): NewIncident {
-  return warning(kind, `${spend.scopeKind}:${spend.scopeId}`, [spend.windowStart, spend.windowEnd],
-    [spend.unit, spend.pool], spend.pool ? `${evidence} (pool: ${spend.pool})` : evidence, "/projects");
+  return warning(
+    kind,
+    `${spend.scopeKind}:${spend.scopeId}`,
+    [spend.windowStart, spend.windowEnd],
+    [spend.unit, spend.pool],
+    spend.pool ? `${evidence} (pool: ${spend.pool})` : evidence,
+    "/projects",
+  );
 }
 
 function share(numerator: SpendRollup, denominator: CompleteTotal | null): number | null {
-  if (!denominator || !sameWindow(denominator, numerator) || denominator.unit !== numerator.unit ||
-      denominator.pool !== numerator.pool || !Number.isFinite(denominator.value) ||
-      denominator.value <= 0 || denominator.value < numerator.value) return null;
+  if (
+    !denominator ||
+    !sameWindow(denominator, numerator) ||
+    denominator.unit !== numerator.unit ||
+    denominator.pool !== numerator.pool ||
+    !Number.isFinite(denominator.value) ||
+    denominator.value <= 0 ||
+    denominator.value < numerator.value
+  )
+    return null;
   return 100 * (numerator.value / denominator.value);
 }
 
@@ -86,46 +123,93 @@ export function detectCostAnomaly(evidence: CostEvidence, now: Date): NewInciden
   switch (evidence.kind) {
     case "burn-without-progress": {
       const { spend, closedChildren } = evidence;
-      if (!completeSpend(spend, now) || spend.scopeKind === "unattributed" ||
-          spend.value <= THRESHOLDS.minimumSpend || !closedChildren ||
-          !sameScope(closedChildren, spend) || closedChildren.count !== THRESHOLDS.closedChildren) return null;
+      if (
+        !completeSpend(spend, now) ||
+        spend.scopeKind === "unattributed" ||
+        spend.value <= THRESHOLDS.minimumSpend ||
+        !closedChildren ||
+        !sameScope(closedChildren, spend) ||
+        closedChildren.count !== THRESHOLDS.closedChildren
+      )
+        return null;
       const unit = spend.unit === "usd" ? "USD" : spend.unit === "share_pct" ? "% of plan window" : "tokens";
       return spendWarning(evidence.kind, spend, `${spend.value} ${unit} consumed; 0 child closures`);
     }
     case "single-session-dominance": {
       const { spend, busiestRoot } = evidence;
-      if (!completeSpend(spend, now) || spend.scopeKind !== "epic" || spend.unit !== "tokens" ||
-          spend.value <= THRESHOLDS.minimumSpend || !busiestRoot || !sameScope(busiestRoot, spend) ||
-          busiestRoot.pool !== spend.pool || !Number.isFinite(busiestRoot.tokens) || busiestRoot.tokens > spend.value) return null;
+      if (
+        !completeSpend(spend, now) ||
+        spend.scopeKind !== "epic" ||
+        spend.unit !== "tokens" ||
+        spend.value <= THRESHOLDS.minimumSpend ||
+        !busiestRoot ||
+        !sameScope(busiestRoot, spend) ||
+        busiestRoot.pool !== spend.pool ||
+        !Number.isFinite(busiestRoot.tokens) ||
+        busiestRoot.tokens > spend.value
+      )
+        return null;
       const percent = (busiestRoot.tokens / spend.value) * 100;
       if (percent <= THRESHOLDS.dominancePct) return null;
-      return spendWarning(evidence.kind, spend, `${busiestRoot.tokens} tokens in busiest root / ${spend.value} tokens total (${pct(percent)}%)`);
+      return spendWarning(
+        evidence.kind,
+        spend,
+        `${busiestRoot.tokens} tokens in busiest root / ${spend.value} tokens total (${pct(percent)}%)`,
+      );
     }
     case "unattributed-growth": {
       const { current, previous } = evidence;
-      if (!completeSpend(current, now) || !completeSpend(previous, now) ||
-          current.scopeKind !== "unattributed" || previous.scopeKind !== "unattributed" ||
-          current.scopeId !== previous.scopeId || current.unit !== "tokens" || previous.unit !== current.unit ||
-          current.pool !== previous.pool || current.windowKind !== previous.windowKind ||
-          current.attributionVersion !== previous.attributionVersion || previous.windowEnd !== current.windowStart) return null;
+      if (
+        !completeSpend(current, now) ||
+        !completeSpend(previous, now) ||
+        current.scopeKind !== "unattributed" ||
+        previous.scopeKind !== "unattributed" ||
+        current.scopeId !== previous.scopeId ||
+        current.unit !== "tokens" ||
+        previous.unit !== current.unit ||
+        current.pool !== previous.pool ||
+        current.windowKind !== previous.windowKind ||
+        current.attributionVersion !== previous.attributionVersion ||
+        previous.windowEnd !== current.windowStart
+      )
+        return null;
       const before = share(previous, evidence.previousTotal);
       const after = share(current, evidence.currentTotal);
       // A mathematically exact boundary must not fire due to floating point noise.
-      if (before === null || after === null ||
-          after - before <= THRESHOLDS.unattributedDeltaPoints + Number.EPSILON * 100) return null;
+      if (
+        before === null ||
+        after === null ||
+        after - before <= THRESHOLDS.unattributedDeltaPoints + Number.EPSILON * 100
+      )
+        return null;
       return spendWarning(evidence.kind, current, `${pct(after)}% unattributed vs ${pct(before)}% in preceding window`);
     }
     case "charge-without-activity": {
       const { charges, activity } = evidence;
-      if (!activity || activity.coverage !== "complete" || charges.coverage !== "complete" || !charges.service.trim() ||
-          activity.service !== charges.service || !/^\d{4}-(0[1-9]|1[0-2])$/.test(charges.month) ||
-          charges.month !== activity.month || !Number.isFinite(charges.totalUsd) ||
-          charges.totalUsd <= THRESHOLDS.minimumChargeUsd || activity.sessions !== THRESHOLDS.activityCount ||
-          activity.quotaActivity !== THRESHOLDS.activityCount) return null;
+      if (
+        !activity ||
+        activity.coverage !== "complete" ||
+        charges.coverage !== "complete" ||
+        !charges.service.trim() ||
+        activity.service !== charges.service ||
+        !/^\d{4}-(0[1-9]|1[0-2])$/.test(charges.month) ||
+        charges.month !== activity.month ||
+        !Number.isFinite(charges.totalUsd) ||
+        charges.totalUsd <= THRESHOLDS.minimumChargeUsd ||
+        activity.sessions !== THRESHOLDS.activityCount ||
+        activity.quotaActivity !== THRESHOLDS.activityCount
+      )
+        return null;
       const { start, end } = windowRange("month", charges.month + "-01");
       if (!(Date.parse(end) <= now.getTime())) return null;
-      return warning(evidence.kind, `service:${charges.service}`, [start, end], ["usd", null],
-        `matched PAYG USD ${charges.totalUsd}; 0 sessions / quota activity`, "/quota");
+      return warning(
+        evidence.kind,
+        `service:${charges.service}`,
+        [start, end],
+        ["usd", null],
+        `matched PAYG USD ${charges.totalUsd}; 0 sessions / quota activity`,
+        "/quota",
+      );
     }
   }
 }
