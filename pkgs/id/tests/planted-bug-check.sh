@@ -38,8 +38,8 @@ REPO_ROOT="$(git -C "$ID_DIR" rev-parse --show-toplevel)"
 MUTATED_FILES=(
   "pkgs/id/crates/id-core/src/membership/layer.rs"
   "pkgs/id/crates/id-core/src/membership/frontier.rs"
-  "pkgs/id/src/groups/delegation.rs"
-  "pkgs/id/src/tag_claims.rs"
+  "pkgs/id/crates/id-events/src/groups/delegation.rs"
+  "pkgs/id/crates/id-store/src/tag_claims.rs"
 )
 
 restore() {
