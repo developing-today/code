@@ -114,6 +114,10 @@ park notes in two days). The rule:
   `work/assigned` label. Which worker holds a task is the queue's
   atomic claim, not a label or an assignee. Never park, and never wait
   for a "release" or "handoff", because of an assignee.
+- **A PR or branch authored by `dezren39` is not Drew's either.** Fleet
+  agents push and open PRs under that account, so authorship is fleet
+  work product, not a hold. A PR is someone else's only if a live queue
+  claim holds it or it carries a hold label.
 - Check before parking on ownership (exit 0 = workable, 3 = held):
 
   ```bash
