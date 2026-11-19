@@ -71,7 +71,8 @@ let
           log_file=$candidate
           ln -sfn "$(basename "$log_file")" "$log_dir/latest.log" || true
           printf '# agent-rebuild-switch log: started %s by %s; format: plain text, the messages of this command and nixos-rebuild stdout+stderr\n' \
-            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "''${SUDO_USER:-unit}" >>"$log_file"
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "''${SUDO_USER:-unit}" >>"$log_file" 2>/dev/null ||
+            log_file= # a log that can't be written is skipped, never a reason to stop the switch
           # Keep the newest 30 (names sort by time).
           old_logs=("$log_dir"/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z*.log)
           if ((''${#old_logs[@]} > 30)); then
