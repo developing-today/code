@@ -419,6 +419,32 @@ pub fn sign_issue(
     sign_body(key, seq_num, backlink, &body, ISSUE_KIND, after)
 }
 
+/// Sign an issuance with a rotated-in issuer generation key (design #2804).
+///
+/// [`sign_issue`] signs only with the currency's generation-0 key. A later
+/// generation's key signs here instead; whether it may issue is the fold's
+/// decision, from the issuer's generation chain and this event's causal
+/// position, so `after` must reach the rotation that installed `key`.
+///
+/// # Errors
+///
+/// [`TokenError::CurrencyMismatch`] when the body names another currency,
+/// and the signing errors of [`sign_issue`] otherwise.
+pub fn sign_generation_issue(
+    key: &SigningKey,
+    seq_num: SeqNum,
+    backlink: Option<Hash>,
+    currency: &CurrencyId,
+    issue: &TokenIssue,
+    after: Vec<Hash>,
+) -> Result<Event, TokenError> {
+    if issue.currency != currency.compact_hash() {
+        return Err(TokenError::CurrencyMismatch);
+    }
+    let body = issue.body()?;
+    sign_body(key, seq_num, backlink, &body, ISSUE_KIND, after)
+}
+
 /// Sign a holder transfer. This only signs the assertion; it does not prove funds.
 pub fn sign_transfer(
     key: &SigningKey,
