@@ -2380,14 +2380,28 @@ func runtimeOf(t *testing.T, e *env, args ...string) string {
 	return doc.Runtime
 }
 
+// firstDefaultRuntime returns the first installed runtime in the configured
+// default order. The suite can run with only a subset of runtimes installed.
+func firstDefaultRuntime(t *testing.T) string {
+	t.Helper()
+	for _, name := range []string{"deno", "bun", "node"} {
+		if _, err := exec.LookPath(name); err == nil {
+			return name
+		}
+	}
+	t.Skip("no supported script runtime is installed")
+	return ""
+}
+
 // TestScriptRuntimeSelectsTheRuntime is the effect probe for
 // script.runtime: scripts use the first available runtime in the configured
 // default order (deno, bun, node), and node once the environment names it.
 func TestScriptRuntimeSelectsTheRuntime(t *testing.T) {
 	testsupport.RequireBinary(t, "node")
 	e := newEnv(t, oneServer)
-	if rt := runtimeOf(t, e); rt != "deno" {
-		t.Errorf("the default script.runtime should pick deno, got %q", rt)
+	want := firstDefaultRuntime(t)
+	if rt := runtimeOf(t, e); rt != want {
+		t.Errorf("the default script.runtime should pick %s, got %q", want, rt)
 	}
 	e.setenv("MCPX_SCRIPT_RUNTIME=node")
 	if rt := runtimeOf(t, e); rt != "node" {
@@ -2401,8 +2415,9 @@ func TestScriptRuntimeSelectsTheRuntime(t *testing.T) {
 func TestScriptRuntimeOrderRanksTheAutoPick(t *testing.T) {
 	testsupport.RequireBinary(t, "node")
 	e := newEnv(t, oneServer)
-	if rt := runtimeOf(t, e); rt != "deno" {
-		t.Errorf("the default script.runtimeOrder should pick deno, got %q", rt)
+	want := firstDefaultRuntime(t)
+	if rt := runtimeOf(t, e); rt != want {
+		t.Errorf("the default script.runtimeOrder should pick %s, got %q", want, rt)
 	}
 	e.setenv("MCPX_SCRIPT_RUNTIME_ORDER=node,bun")
 	if rt := runtimeOf(t, e); rt != "node" {
