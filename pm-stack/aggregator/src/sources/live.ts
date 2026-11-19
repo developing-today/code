@@ -23,6 +23,7 @@ import {
   poolAvailableFromFeed,
   poolFromFeed,
   projectAuditFromFeed,
+  designBoardsFromFeed,
   type FleetFeed,
   type SectionDiagnosis,
 } from "../feed.ts";
@@ -1794,6 +1795,9 @@ export function liveSource(
     async projectsAvailable(): Promise<boolean> {
       const feed = await getFeed();
       return poolAvailableFromFeed(feed);
+    },
+    async designBoards() {
+      return designBoardsFromFeed(await getFeed());
     },
     async projectAudit() {
       const feed = await getFeed();

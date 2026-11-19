@@ -1114,6 +1114,7 @@ async function main(): Promise<void> {
   // aggregator's items() falls back to its previous chain.
   let projects: ProjectPoolItem[] | undefined;
   let projectAudit: FleetFeed["projectAudit"];
+  const designBoards: NonNullable<FleetFeed["designBoards"]> = [];
   try {
     const token = await resolveProjectToken();
     if (!token) {
@@ -1123,6 +1124,14 @@ async function main(): Promise<void> {
       const snapshot = await fetchProjectSnapshot(token, fetch, now.toISOString());
       projects = snapshot.items;
       projectAudit = snapshot.audit;
+      designBoards.push(snapshot.board);
+      // Cache draft ideas separately; their failure must not discard Project #4.
+      try {
+        const ideas = await fetchProjectSnapshot(token, fetch, now.toISOString(), "PVT_kwDOAZNvF84BrQnp");
+        designBoards.push(ideas.board);
+      } catch (err) {
+        console.error(`collector: Ideas board read failed (${sanitizeCollectionError(err)}); ideas snapshot omitted`);
+      }
       if (!projects.length) {
         // #3979: Project #4 is never legitimately empty, so a zero-item
         // read is a broken read (lost scope, renamed project, shape
@@ -1374,6 +1383,7 @@ async function main(): Promise<void> {
     ...(dedupedSnapshots.length ? { snapshots: dedupedSnapshots } : {}),
     ...(projects ? { projects } : {}),
     ...(projectAudit ? { projectAudit } : {}),
+    ...(designBoards.length ? { designBoards } : {}),
     ...(coverage ? { coverage } : {}),
     aa,
   });

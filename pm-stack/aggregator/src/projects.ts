@@ -9,6 +9,7 @@
 // This module is pure parsing/mapping (no I/O except fetchProjectSnapshot,
 // whose fetch is injectable for tests), shared by the collector and
 // the live source so the wire shape is parsed exactly once.
+import type { BoardSnapshot, BoardEntry } from "./design-boards.ts";
 import type {
   GhItem,
   MilestoneRef,
@@ -58,6 +59,7 @@ export const PROJECT_QUERY = `query($id: ID!, $cursor: String) {
             nodes {
               ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2FieldCommon { name } } }
               ... on ProjectV2ItemFieldTextValue { text field { ... on ProjectV2FieldCommon { name } } }
+              ... on ProjectV2ItemFieldDateValue { date field { ... on ProjectV2FieldCommon { name } } }
             }
           }
         }
@@ -67,6 +69,7 @@ export const PROJECT_QUERY = `query($id: ID!, $cursor: String) {
 }`;
 
 interface GqlFieldValue {
+  date?: string;
   name?: string;
   text?: string;
   field?: { name?: string } | null;
@@ -336,6 +339,25 @@ export function parseProjectAudit(json: unknown, items: GqlItem[], generatedAt: 
   };
 }
 
+/** Retain draft cards and dates for the board family; never carry tokens/raw responses. */
+function parseBoardEntries(items: GqlItem[], projectUrl: string): BoardEntry[] {
+  const date = (item: GqlItem, names: string[]): string | null => {
+    const value = item.fieldValues?.nodes?.find(v => v && names.includes(v.field?.name ?? ""))?.date;
+    return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) && isIsoDate(value) ? value : null;
+  };
+  return items.flatMap(item => {
+    if (!item.id || !item.content || typeof item.content.title !== "string") return [];
+    return [{ id: item.id, title: item.content.title,
+      url: item.content.url ?? projectItemUrl(item.databaseId ?? undefined, projectUrl),
+      status: singleSelect(item, "Status"), area: singleSelect(item, "Area"), theme: singleSelect(item, "Theme"),
+      repo: item.content.repository?.nameWithOwner ?? null,
+      milestone: item.content.milestone?.title ?? null,
+      labels: (item.content.labels?.nodes ?? []).flatMap(l => typeof l?.name === "string" ? [l.name] : []),
+      start: date(item, ["Start date", "Start", "Start Date"]), target: date(item, ["Target date", "Target", "Target Date"]),
+    }];
+  });
+}
+
 /** Runtime gate for audit snapshots read from the collector-owned feed. */
 export function isProjectAudit(value: unknown): value is ProjectAudit {
   if (!isRecord(value) || !isRecord(value.counts)) return false;
@@ -384,6 +406,8 @@ export function isProjectAudit(value: unknown): value is ProjectAudit {
 }
 
 export interface ProjectSnapshot {
+  /** All board cards, including draft ideas, safe for cached rendering. */
+  board: BoardSnapshot;
   items: ProjectPoolItem[];
   audit: ProjectAudit;
   /** Section counts for feed health (#5180): the provider total made
@@ -401,6 +425,7 @@ export async function fetchProjectSnapshot(
   token: string,
   fetchFn: typeof fetch = fetch,
   generatedAt = new Date().toISOString(),
+  projectId = PROJECT_ID,
 ): Promise<ProjectSnapshot> {
   const parsedItems: ProjectPoolItem[] = [];
   const auditItems: GqlItem[] = [];
@@ -420,7 +445,7 @@ export async function fetchProjectSnapshot(
         "Content-Type": "application/json",
         "User-Agent": "pm-fleet-feed-collector",
       },
-      body: JSON.stringify({ query: PROJECT_QUERY, variables: { id: PROJECT_ID, cursor } }),
+      body: JSON.stringify({ query: PROJECT_QUERY, variables: { id: projectId, cursor } }),
       signal: AbortSignal.timeout(20_000),
     });
     if (!res.ok) throw new Error(`github GraphQL HTTP ${res.status}`);
@@ -445,7 +470,7 @@ export async function fetchProjectSnapshot(
     });
     auditItems.push(...freshNodes);
     const freshIds = new Set(freshNodes.map((node) => node.id));
-    parsedItems.push(...parseProjectItems(json).filter((item) => freshIds.has(item.id)));
+    parsedItems.push(...parseProjectItems(json, (json as GqlProjectPage).data?.node?.url ?? PROJECT_URL).filter((item) => freshIds.has(item.id)));
     const info = projectPageInfo(json);
     if (!info.hasNextPage) {
       if (auditItems.length < info.totalCount) {
@@ -454,9 +479,11 @@ export async function fetchProjectSnapshot(
         // items. Over-delivery is absorbed by the dedupe above.
         throw new Error(`github GraphQL project export incomplete (${auditItems.length}/${info.totalCount} items)`);
       }
+      const audit = parseProjectAudit(firstPage, auditItems, generatedAt);
       return {
+        board: { number: audit.number, url: audit.url, generatedAt, totalItems: audit.totalItems, views: audit.views, items: parseBoardEntries(auditItems, audit.url) },
         items: resolveEpicRefs(parsedItems),
-        audit: parseProjectAudit(firstPage, auditItems, generatedAt),
+        audit,
         counts: {
           reportedTotal: info.totalCount - (auditItems.length - parsedItems.length),
           emittedEntries: parsedItems.length,
