@@ -1,6 +1,6 @@
 import type { ProjectPoolItem, RefKey, RoadmapRow } from "./model.ts";
 
-export type GenealogyRelation = "parent" | "primary-parent" | "spawned-by" | "roadmap" | "priority";
+export type GenealogyRelation = "parent" | "historical-parent" | "primary-parent" | "spawned-by" | "roadmap" | "priority";
 
 export interface GenealogyAncestor {
   ref: RefKey;
@@ -47,17 +47,8 @@ export function deriveGenealogy(item: ProjectPoolItem, pool: readonly ProjectPoo
   const historicalParents = (item.historicalParentRefs ?? []).flatMap((ref) => {
     const former = byRef.get(ref);
     if (!former) return [];
-    add(former, "parent");
-    const formerChain: ProjectPoolItem[] = [former];
-    const formerSeen = new Set<RefKey>([item.ref, former.ref]);
-    let oldCursor = former.parentRef ? byRef.get(former.parentRef) : undefined;
-    while (oldCursor && !formerSeen.has(oldCursor.ref)) {
-      formerChain.push(oldCursor);
-      formerSeen.add(oldCursor.ref);
-      add(oldCursor, "parent");
-      oldCursor = oldCursor.parentRef ? byRef.get(oldCursor.parentRef) : undefined;
-    }
-    return formerChain;
+    add(former, "historical-parent");
+    return [former];
   });
 
   const nearestEpic = chain.find((entry) => entry.kind === "Epic");
@@ -97,7 +88,7 @@ export function deriveGenealogy(item: ProjectPoolItem, pool: readonly ProjectPoo
   const priorityPhrase = priority ? `, overall priority ${priority.title} (${priority.ref})` : "";
   const releasePhrase = release ? `; release ${release.title}${release.dueOn ? ` due ${release.dueOn}` : ""}` : "";
   const historicalPhrase = historicalParents.length
-    ? ` Formerly part of ${historicalParents.map((former) => `${former.title} (${former.ref})`).join(" → ")}.`
+    ? ` ${historicalParents.map((former) => `Formerly part of ${former.title} (${former.ref})`).join(". ")}.`
     : "";
   return {
     ancestors,
