@@ -22,6 +22,13 @@
 //! event's id. Pending events are not covered, so the frontier is
 //! causally closed: everything a covered event depends on is covered too.
 //!
+//! **Signer.** The issuer key active at the snapshot's frontier signs it:
+//! the generation-0 key, or after a rotation the key the issuer's
+//! generation chain names, folded from the rotation events the frontier
+//! covers (design #2804 §3.3). A retired key may still sign a snapshot of a
+//! frontier before its rotation. While the chain is forked no key speaks
+//! for the issuer, so no snapshot verifies.
+//!
 //! **Scope.** Graph-native currencies only, signed by the issuer. The
 //! anchored fields of the spec (`ledger_pos`, `ledger_accounts_root`) and
 //! the reconciliation join belong to the anchored gateway phase and are
@@ -41,6 +48,7 @@ use crate::currency::graph::{
     sign_body,
 };
 use crate::currency::{IssuerId, issuer_id};
+use crate::issuer_rotation::ChainStatus;
 
 /// Event kind carrying an issuer snapshot.
 pub const SNAPSHOT_KIND: &str = "token.snapshot";
@@ -224,6 +232,31 @@ pub fn sign_snapshot(
     sign_body(key, seq_num, backlink, &body, SNAPSHOT_KIND, after)
 }
 
+/// Sign a snapshot with a rotated-in issuer generation key.
+///
+/// [`sign_snapshot`] signs only with the generation-0 key. A later
+/// generation's key signs here; [`verify_snapshot`] decides whether that
+/// key was the active one at the snapshot's frontier.
+///
+/// # Errors
+///
+/// [`TokenError::CurrencyMismatch`] when the body names another currency,
+/// or a body or chain error.
+pub fn sign_generation_snapshot(
+    key: &SigningKey,
+    seq_num: SeqNum,
+    backlink: Option<Hash>,
+    currency: &CurrencyId,
+    snapshot: &TokenSnapshot,
+    after: Vec<Hash>,
+) -> Result<Event, TokenError> {
+    if snapshot.currency != currency.compact_hash() {
+        return Err(TokenError::CurrencyMismatch);
+    }
+    let body = snapshot.body()?;
+    sign_body(key, seq_num, backlink, &body, SNAPSHOT_KIND, after)
+}
+
 /// What recomputing a snapshot found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SnapshotFinding {
@@ -233,7 +266,8 @@ pub enum SnapshotFinding {
     BadBody,
     /// The events within the frontier define no such graph-native currency.
     UnknownCurrency,
-    /// The snapshot is signed by someone other than the currency's issuer.
+    /// The snapshot is signed by a key other than the issuer key active at
+    /// its frontier, or the issuer's generation chain is forked there.
     NotIssuer,
     /// A frontier head is not among the supplied events.
     HeadMissing,
@@ -312,7 +346,12 @@ pub fn verify_snapshot(
     if matches!(definition.binding, CurrencyBinding::Ledger { .. }) {
         return Err(SnapshotFinding::UnknownCurrency);
     }
-    if *snapshot_event.header.verifying_key.as_bytes() != currency.issuer() {
+    let signer = *snapshot_event.header.verifying_key.as_bytes();
+    let speaks = fold.generation_chain(&claimed.currency).map_or_else(
+        || signer == currency.issuer(),
+        |chain| chain.status == ChainStatus::Settled && chain.is_active_key(&signer),
+    );
+    if !speaks {
         return Err(SnapshotFinding::NotIssuer);
     }
     for (author, (seq, head)) in &bound {
@@ -830,7 +869,7 @@ mod tests {
                 .body()
                 .unwrap(),
         )]);
-        let fold = fold_events(&[define.clone()], &bodies);
+        let fold = fold_events(std::slice::from_ref(&define), &bodies);
         assert_eq!(
             snapshot(&fold, &currency.compact_hash()),
             Err(SnapshotError::Anchored)
@@ -859,5 +898,100 @@ mod tests {
             verify_snapshot(&forged, Some(&body), &[define], &bodies),
             Err(SnapshotFinding::UnknownCurrency)
         );
+    }
+
+    /// A routine rotation of the world's issuer from key 7 to `to`,
+    /// signed by `by` at `seq` on `backlink`.
+    fn rotation(
+        w: &World,
+        by: u8,
+        seq: u32,
+        backlink: Hash,
+        from: u64,
+        previous: Option<Hash>,
+        to: u8,
+    ) -> Event {
+        let mut body = crate::issuer_rotation::IssuerRotation::unsigned(
+            crate::issuer_rotation::RotationMode::Routine,
+            w.currency.issuer(),
+            w.currency.compact_hash(),
+            from,
+            previous,
+            issuer_id(&key(to)),
+            None,
+        );
+        body.prove_successor(&key(to)).unwrap();
+        crate::issuer_rotation::sign_rotation(&key(by), seq, Some(backlink), &body, vec![]).unwrap()
+    }
+
+    fn verify_as(
+        w: &World,
+        snap: &TokenSnapshot,
+        by: u8,
+        seq: u32,
+        backlink: Option<Hash>,
+        after: Vec<Hash>,
+    ) -> Result<TokenSnapshot, SnapshotFinding> {
+        let event =
+            sign_generation_snapshot(&key(by), seq, backlink, &w.currency, snap, after).unwrap();
+        verify_snapshot(&event, Some(&snap.body().unwrap()), &w.events, &w.bodies)
+    }
+
+    #[test]
+    fn after_a_rotation_the_successor_signs_and_the_old_key_only_the_past() {
+        let mut w = world();
+        let before = snapshot(
+            &fold_events(&w.events, &w.bodies),
+            &w.currency.compact_hash(),
+        )
+        .unwrap();
+        let rotated = rotation(&w, 7, 2, w.id(1), 0, None, 13);
+        w.events.push(rotated.clone());
+        let after = snapshot(
+            &fold_events(&w.events, &w.bodies),
+            &w.currency.compact_hash(),
+        )
+        .unwrap();
+
+        // The new key speaks for the frontier that holds its rotation.
+        assert_eq!(
+            verify_as(&w, &after, 13, 0, None, vec![rotated.id]),
+            Ok(after.clone())
+        );
+        // The old key no longer does.
+        assert_eq!(
+            verify_as(&w, &after, 7, 3, Some(rotated.id), vec![]),
+            Err(SnapshotFinding::NotIssuer)
+        );
+        // But its snapshot of the frontier before the rotation still stands,
+        // and the new key cannot speak for that frontier.
+        assert_eq!(
+            verify_as(&w, &before, 7, 3, Some(rotated.id), vec![]),
+            Ok(before.clone())
+        );
+        assert_eq!(
+            verify_as(&w, &before, 13, 0, None, vec![rotated.id]),
+            Err(SnapshotFinding::NotIssuer)
+        );
+    }
+
+    #[test]
+    fn a_forked_issuer_chain_signs_no_snapshot() {
+        let mut w = world();
+        let one = rotation(&w, 7, 2, w.id(1), 0, None, 13);
+        let two = rotation(&w, 7, 2, w.id(1), 0, None, 15);
+        w.events.push(one.clone());
+        w.events.push(two);
+        let snap = snapshot(
+            &fold_events(&w.events, &w.bodies),
+            &w.currency.compact_hash(),
+        )
+        .unwrap();
+        for (by, seq, backlink) in [(13, 0, None), (7, 3, Some(one.id))] {
+            assert_eq!(
+                verify_as(&w, &snap, by, seq, backlink, vec![one.id]),
+                Err(SnapshotFinding::NotIssuer)
+            );
+        }
     }
 }
