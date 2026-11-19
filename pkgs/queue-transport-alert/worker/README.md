@@ -19,14 +19,37 @@ outage (every lane exiting at its health gate) no longer goes unseen.
 - **Recovery:** the first healthy probe after an alert comments once with
   the outage span. It never closes the issue: automation may label and
   comment but must not close an issue (#10136), so a human closes it.
-- A failed GitHub write leaves the state as it was, so the next tick
-  retries it.
+- **Phone push:** the alert and the recovery each send one Telegram
+  message to `TELEGRAM_CHAT_ID` through the existing OpenClaw bot
+  (`TELEGRAM_BOT_TOKEN`), with the incident link and the status page.
+  Nothing to install beyond Telegram, which already reaches the bot.
+- **Queue task:** a queue task needs a working broker, so it can't be
+  filed while the broker is down. On recovery the Worker enqueues one
+  `triage` task in `QUEUE` (default `repo-health-code-pilot`), anchored
+  to the incident issue (dedupe key
+  `repo-health:v1:triage:<repo>:issue:<N>`), asking for the cause and
+  any follow-up fix. It never asks the task to close the incident.
+- **Retries:** pushes and queue tasks wait in a small `pending` list in
+  the Durable Object until they go through, so a failed delivery is
+  retried on later ticks without being sent twice. A failed GitHub
+  write leaves the state as it was, so the next tick retries it.
 
 The decision logic (`src/logic.js`, `src/run.js`) is a port of
 `scripts/fleet/queue-transport-alert/check_transport.py`, and the two
 share one contract and one incident title, so they dedupe onto the same
 issue when both run. State lives in one SQLite-backed Durable Object.
-`GET /status` on the Worker returns that state (no secrets).
+
+## Status endpoint
+
+- `https://queue-transport-alert.developing-today.workers.dev/` is a
+  small page (auto-refresh every minute).
+- `/status` (or `/status.json`) is the same view as JSON, CORS-open, for
+  the PM stack and other tools: `status` (`up`, `degraded`, `down`,
+  `stale` when no probe in 25 minutes, `unknown` before the first),
+  `up`, `last_check`, `last_ok`, `failing_since`,
+  `consecutive_failures`, `last_failure`, `incident`, `last_outage`
+  (`start`, `end`, `duration`, `incident`), `pending_deliveries`,
+  `last_errors` and `issue_title_prefix`. No secrets.
 
 ## Deploying
 
@@ -46,13 +69,17 @@ values read from Bitwarden by name (override with the env vars):
 | `ACCESS_CLIENT_ID` | `cloudflare.access.queue-broker-client-id` (`QTA_ACCESS_ID_SECRET`) |
 | `ACCESS_CLIENT_SECRET` | `cloudflare.access.queue-broker-client-secret` (`QTA_ACCESS_SECRET_SECRET`) |
 | `GITHUB_TOKEN` | `github.developing-today-code-automation` (`QTA_GITHUB_TOKEN_SECRET`) |
+| `TELEGRAM_BOT_TOKEN` | `openclaw.telegram-bot-token` (`QTA_TELEGRAM_SECRET`) |
+| `BROKER_AGENT_TOKEN` | the file `~/.config/queue-broker/token` (`QTA_BROKER_TOKEN_FILE`); left as is when the file is absent |
 
 Wrangler itself uses `cloudflare.api-token-day-to-day`
 (`QTA_CF_TOKEN_SECRET`). It is also in the deploy registry as
 `queue-transport-alert` (`deploy list`).
 
 Without the Access secrets the Worker skips its probe; without
-`GITHUB_TOKEN`, or with `APPLY` other than `true`, it only logs.
+`GITHUB_TOKEN`, or with `APPLY` other than `true`, it only logs. Without
+the Telegram secret it sends no push, and without `BROKER_AGENT_TOKEN`
+it files no queue task.
 
 ## Tests
 

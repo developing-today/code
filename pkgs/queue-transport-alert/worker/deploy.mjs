@@ -13,10 +13,15 @@
 //   QTA_ACCESS_ID_SECRET      (cloudflare.access.queue-broker-client-id)
 //   QTA_ACCESS_SECRET_SECRET  (cloudflare.access.queue-broker-client-secret)
 //   QTA_GITHUB_TOKEN_SECRET   (github.developing-today-code-automation)
+//   QTA_TELEGRAM_SECRET       (openclaw.telegram-bot-token)       phone push
+// and the broker's agent token (for the post-outage queue task) from
+// the file the fleet queue CLI reads, QTA_BROKER_TOKEN_FILE (default
+// ~/.config/queue-broker/token); it is not in Bitwarden. When that file
+// is absent the Worker keeps whatever BROKER_AGENT_TOKEN it already has.
 // No secret is ever printed.
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { cpSync, existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -43,6 +48,7 @@ const names = {
   accessId: process.env.QTA_ACCESS_ID_SECRET ?? "cloudflare.access.queue-broker-client-id",
   accessSecret: process.env.QTA_ACCESS_SECRET_SECRET ?? "cloudflare.access.queue-broker-client-secret",
   github: process.env.QTA_GITHUB_TOKEN_SECRET ?? "github.developing-today-code-automation",
+  telegram: process.env.QTA_TELEGRAM_SECRET ?? "openclaw.telegram-bot-token",
 };
 const vault = JSON.parse(execFileSync("bws", ["secret", "list", "-o", "json"], { encoding: "utf8" }));
 const byName = (name) => {
@@ -55,7 +61,15 @@ const workerSecrets = {
   ACCESS_CLIENT_ID: byName(names.accessId),
   ACCESS_CLIENT_SECRET: byName(names.accessSecret),
   GITHUB_TOKEN: byName(names.github),
+  TELEGRAM_BOT_TOKEN: byName(names.telegram),
 };
+const brokerTokenFile = process.env.QTA_BROKER_TOKEN_FILE ?? join(homedir(), ".config/queue-broker/token");
+if (existsSync(brokerTokenFile)) {
+  const token = readFileSync(brokerTokenFile, "utf8").trim();
+  if (token) workerSecrets.BROKER_AGENT_TOKEN = token;
+} else {
+  console.warn(`no broker token at ${brokerTokenFile}; leaving the Worker's BROKER_AGENT_TOKEN as it is`);
+}
 
 // Stage a writable copy (the store path is read-only; wrangler writes
 // .wrangler state next to the config).

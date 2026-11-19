@@ -19,8 +19,24 @@ export function emptyState() {
     alerted: false,
     incident: null,
     incident_filed_by_probe: false,
+    alert_notified: false,
+    recovery_notified: false,
     last_ok: null,
     last_probe: null,
+    // Carried across windows:
+    last_outage: null, // {start, end, incident} of the last alerted window
+    pending: [], // side effects still to deliver (see run.js)
+  };
+}
+
+/** A fresh window that keeps what outlives one (last outage, pending). */
+function freshWindow(prev, nowMs, lastOutage) {
+  return {
+    ...emptyState(),
+    last_ok: iso(nowMs),
+    last_probe: iso(nowMs),
+    last_outage: lastOutage === undefined ? (prev.last_outage ?? null) : lastOutage,
+    pending: Array.isArray(prev.pending) ? prev.pending : [],
   };
 }
 
@@ -45,7 +61,7 @@ export function step(prev, ok, detail, nowMs, threshold) {
         event: "recovered",
       };
     }
-    return { state: { ...emptyState(), last_ok: iso(nowMs), last_probe: iso(nowMs) }, event: "ok" };
+    return { state: freshWindow(state, nowMs), event: "ok" };
   }
   state.consecutive_failures = Number(state.consecutive_failures || 0) + 1;
   state.last_failure_detail = detail;
@@ -58,9 +74,14 @@ export function step(prev, ok, detail, nowMs, threshold) {
   return { state, event: "failing" };
 }
 
-/** The state after a recovery has been announced: a fresh window. */
-export function finishRecovery(nowMs) {
-  return { ...emptyState(), last_ok: iso(nowMs), last_probe: iso(nowMs) };
+/** The state after a recovery has been announced: a fresh window that
+ * records the outage just ended. */
+export function finishRecovery(state, nowMs) {
+  return freshWindow(state, nowMs, {
+    start: state.window_start,
+    end: iso(nowMs),
+    incident: state.incident ?? null,
+  });
 }
 
 export function incidentTitle(state) {

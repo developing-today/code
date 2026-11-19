@@ -14,7 +14,10 @@
 import { DurableObject } from "cloudflare:workers";
 import { makeGitHub } from "./github.js";
 import { classifyHealthz, emptyState } from "./logic.js";
+import { makeTelegramNotifier } from "./notify.js";
+import { makeBrokerEnqueuer } from "./queue.js";
 import { runPass } from "./run.js";
+import { publicStatus, renderStatusPage } from "./status.js";
 
 const UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36 queue-transport-alert";
@@ -47,7 +50,7 @@ export async function probeBroker(env, fetchImpl = fetch) {
 export class TransportState extends DurableObject {
   async fetch(request) {
     const { pathname } = new URL(request.url);
-    if (pathname === "/status") {
+    if (pathname === "/state") {
       return Response.json((await this.ctx.storage.get("state")) || emptyState());
     }
     if (pathname === "/run") {
@@ -63,8 +66,23 @@ export class TransportState extends DurableObject {
       console.log(JSON.stringify({ event: "skipped", reason: probe.skipped }));
       return { event: "skipped", reason: probe.skipped };
     }
-    const apply = String(env.APPLY || "").toLowerCase() === "true" && Boolean(env.GITHUB_TOKEN);
-    const github = apply ? makeGitHub(env.GITHUB_TOKEN, env.REPO) : null;
+    const apply = String(env.APPLY || "").toLowerCase() === "true";
+    const github = apply && env.GITHUB_TOKEN ? makeGitHub(env.GITHUB_TOKEN, env.REPO) : null;
+    const notify =
+      apply && env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID
+        ? makeTelegramNotifier(env.TELEGRAM_BOT_TOKEN, env.TELEGRAM_CHAT_ID)
+        : null;
+    const enqueue =
+      apply && env.BROKER_AGENT_TOKEN && env.QUEUE
+        ? makeBrokerEnqueuer({
+            brokerUrl: env.BROKER_URL,
+            agentToken: env.BROKER_AGENT_TOKEN,
+            accessId: env.ACCESS_CLIENT_ID,
+            accessSecret: env.ACCESS_CLIENT_SECRET,
+            queue: env.QUEUE,
+            repo: env.REPO,
+          })
+        : null;
     const prev = await this.ctx.storage.get("state");
     const result = await runPass(
       prev,
@@ -73,7 +91,9 @@ export class TransportState extends DurableObject {
       Date.now(),
       Number(env.THRESHOLD || 2),
       `GET ${env.BROKER_URL}/healthz through Cloudflare Access, from a Cloudflare Worker cron`,
+      { notify, enqueue, repo: env.REPO, statusUrl: env.PUBLIC_URL ? `${env.PUBLIC_URL}/` : "" },
     );
+    result.state.last_errors = result.errors;
     await this.ctx.storage.put("state", result.state);
     const log = {
       event: result.event,
@@ -100,9 +120,21 @@ export default {
   },
   async fetch(request, env) {
     const { pathname } = new URL(request.url);
-    if (request.method === "GET" && pathname === "/status") {
-      return stub(env).fetch("https://transport-state/status");
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return new Response("method not allowed\n", { status: 405 });
     }
-    return new Response("queue-transport-alert: GET /status\n", { status: 404 });
+    if (pathname === "/status" || pathname === "/status.json" || pathname === "/") {
+      const res = await stub(env).fetch("https://transport-state/state");
+      const view = publicStatus(await res.json(), env, Date.now());
+      if (pathname === "/") {
+        return new Response(renderStatusPage(view), {
+          headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+        });
+      }
+      return Response.json(view, {
+        headers: { "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store" },
+      });
+    }
+    return new Response("queue-transport-alert: GET / or /status\n", { status: 404 });
   },
 };
