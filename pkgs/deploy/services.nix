@@ -21,6 +21,7 @@
   coldStoreRehydratorDeploy,
   labOpsHubDeploy,
   cfContainerHelloDeploy,
+  queueTransportAlertDeploy,
 }:
 {
   queue-broker = {
@@ -208,6 +209,22 @@
   cf-container-hello = {
     package = cfContainerHelloDeploy;
     entryPoint = "bin/cf-container-hello-deploy";
+    args = [ ];
+    environment = { };
+    secrets = [ ]; # resolved by the deploy app itself at deploy time
+    user = "user";
+    ports = [ ];
+    restart = "no";
+    healthCheck = null;
+    targets = [ "cloudflare" ];
+    class = "cloudflare";
+  };
+
+  # code#6369: probes the broker's public route every 10 minutes from a
+  # Cloudflare cron and files/closes a GitHub incident on an outage.
+  queue-transport-alert = {
+    package = queueTransportAlertDeploy;
+    entryPoint = "bin/queue-transport-alert-deploy";
     args = [ ];
     environment = { };
     secrets = [ ]; # resolved by the deploy app itself at deploy time

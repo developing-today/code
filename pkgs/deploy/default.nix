@@ -45,6 +45,10 @@ let
     cfContainerHelloDeploy = callPackage ../../pkgs/cf-container-hello/deploy.nix {
       cfContainerHello = callPackage ../../pkgs/cf-container-hello/package.nix { };
     };
+    # code#6369: the broker outage alert Worker.
+    queueTransportAlertDeploy = callPackage ../../pkgs/queue-transport-alert/worker/deploy.nix {
+      queueTransportAlert = callPackage ../../pkgs/queue-transport-alert/worker/package.nix { };
+    };
   };
   jsonDefinitions = lib.mapAttrs (name: defn: defn // { package = "${defn.package}"; }) definitions;
 in
