@@ -230,7 +230,12 @@ try {
   if (secretsDir) rmSync(secretsDir, { recursive: true, force: true });
 }
 
-const matches = (await listVersions()).filter((v) => v.annotations?.["workers/message"] === message);
+// The versions list can lag a just-finished upload by a few seconds.
+let matches = [];
+for (let attempt = 1; attempt <= 8 && matches.length === 0; attempt++) {
+  if (attempt > 1) await new Promise((r) => setTimeout(r, 2500));
+  matches = (await listVersions()).filter((v) => v.annotations?.["workers/message"] === message);
+}
 if (matches.length !== 1) {
   throw new Error(`expected exactly one version with this run's message, found ${matches.length}: ${message}`);
 }
@@ -322,9 +327,20 @@ async function cfApi(path) {
   return (await res.json()).result;
 }
 
-async function listVersions(query = "") {
-  const result = await cfApi(`/versions${query}`);
-  return Array.isArray(result) ? result : (result?.items ?? []);
+// Every version, across pages (the API pages 10 at a time by default).
+async function listVersions(params = {}) {
+  const all = [];
+  for (let page = 1; page <= 50; page++) {
+    const qs = new URLSearchParams({ ...params, page: String(page), per_page: "100" });
+    const res = await fetch(`${api}/versions?${qs}`, { headers: { authorization: `Bearer ${apiToken}` } });
+    if (!res.ok) throw new Error(`Cloudflare API /versions returned HTTP ${res.status}`);
+    const body = await res.json();
+    const items = Array.isArray(body.result) ? body.result : (body.result?.items ?? []);
+    all.push(...items);
+    const total = body.result_info?.total_count;
+    if (items.length === 0 || typeof total !== "number" || all.length >= total) return all;
+  }
+  throw new Error("Cloudflare API /versions kept paging past 50 pages");
 }
 
 function createdOn(v) {
@@ -336,7 +352,7 @@ function createdOn(v) {
 // The version must be deployable and must carry ACCESS_TOKEN: without it
 // the Worker answers 404 everywhere, which would take the connector down.
 async function assertDeployable(id) {
-  const deployable = (await listVersions("?deployable=true")).map((v) => v.id);
+  const deployable = (await listVersions({ deployable: "true" })).map((v) => v.id);
   if (!deployable.includes(id)) throw new Error(`version ${id} is not deployable; refusing to deploy it`);
   const detail = await cfApi(`/versions/${id}`);
   const hasToken = (detail?.resources?.bindings ?? []).some(
