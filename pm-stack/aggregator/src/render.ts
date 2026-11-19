@@ -1,3 +1,4 @@
+import { renderDesignBoards, type BoardSnapshot } from "./design-boards.ts";
 // Pure HTML rendering. Every view function takes already-assembled data and
 // returns a full HTML string — nothing here does I/O, which keeps the smoke
 // tests cheap (render from fixtures and assert on output).
@@ -6938,6 +6939,7 @@ export function renderProjects(
     kind?: string | null;
     /** Project #4 audit snapshot (#1208): reconciles the rendered pool count against the board total (draft/unlinked caveat). */
     audit?: ProjectAudit | null;
+    designBoards?: BoardSnapshot[];
     orchestration?: OrchestrationSection | null;
     detail?: ProvenanceDetail;
     actionsByObject?: Map<string, DashAction[]>;
@@ -6952,6 +6954,7 @@ export function renderProjects(
   return layout(
     "Projects",
     `<h1>Projects — GitHub Project pool</h1>
+${renderDesignBoards(opts.designBoards ?? [])}
 ${projectsBodyHtml(pool, opts)}`,
     provenance,
     "/projects",
@@ -7043,6 +7046,7 @@ export function renderProgram(
     status?: string | null;
     kind?: string | null;
     audit?: ProjectAudit | null;
+    designBoards?: BoardSnapshot[];
     coverage?: CoverageSnapshotFile | null;
     orchestration?: OrchestrationSection | null;
     actionsByObject?: Map<string, DashAction[]>;
@@ -7076,6 +7080,7 @@ ${projectsBodyHtml(poolSection.pool, { area: poolSection.area, status: poolSecti
 <h2>Projects</h2>
 <div class="board">${cards || '<p class="muted">No projects configured.</p>'}</div>
 ${unsetHtml}
+${renderDesignBoards(poolSection?.designBoards ?? [])}
 <h2>Live status</h2>
 <p class="muted">Derived at request time from the Project pool and the latest orchestration section — not written by hand.</p>
 ${poolSummaryHtml(live)}

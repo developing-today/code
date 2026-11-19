@@ -1124,3 +1124,23 @@ internal are exempt. Probe matrix for every covered site — keys
 "toString", and an ordinary key: the entry exists as an own property with
 its value, a JSON round-trip preserves it, and neither the container's
 prototype nor Object.prototype moves or gains own properties.
+
+### Cached Designs and Roadmaps (#8864)
+
+Program status includes the seven named Project #4 design views, its five
+named repository roadmap views, and Project #5 Ideas grouped by Theme.
+The existing fleet-feed collector caches both boards in optional
+`designBoards`; requests only read the cached feed. Draft idea titles are
+retained separately from the linked-issue pool. No new collector timer is
+required. The APIs `/api/program.json` and `/api/projects.json` expose the
+same cached snapshots.
+
+Panels use the live named view filters (Design Register is `label:design`;
+area views are not implicitly intersected with that label). Unsupported
+filter syntax is explicitly unavailable, never an unfiltered fallback.
+Roadmaps display cards with Start/Target dates, count undated matches, and
+sort by Start then Target date. Empty dated views do not mean no work.
+Board timestamps are shown, with a stale warning after 15 minutes. Missing
+or invalid snapshots are unavailable; personal-repository token coverage
+remains a stated caveat. These views are read-only and do not redefine
+Parked or Abandoned statuses.

@@ -3137,6 +3137,7 @@ async function handler(req: Request): Promise<Response> {
       // its state resolved, but only expose briefs for the visible items.
       briefs: Object.fromEntries([...briefs].filter(([ref]) => outRefs.has(ref))),
       audit,
+      designBoards: source.designBoards ? await source.designBoards().catch(() => []) : [],
       coverage: coverage.current,
       coverageBaseline: coverage.baseline,
     });
@@ -3166,6 +3167,7 @@ async function handler(req: Request): Promise<Response> {
     const data = {
       ...buildProgramData(items, viewPool, orchestration),
       projects: buildProjectSummaries(PROJECT_CONFIGS, viewPool, rows),
+      designBoards: source.designBoards ? await source.designBoards().catch(() => []) : [],
     };
     if (path === "/api/program.json") return json(data);
     const coverage = await coverageSnapshot(census, pool, poolAvailable);
@@ -3180,6 +3182,7 @@ async function handler(req: Request): Promise<Response> {
     return html(
       renderProgram(data, items, prov(), provDetail(), {
         pool: viewPool,
+        designBoards: data.designBoards,
         area: url.searchParams.get("area"),
         status: url.searchParams.get("status"),
         kind: url.searchParams.get("kind"),

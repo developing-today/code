@@ -9,6 +9,7 @@
 import { readFile } from "node:fs/promises";
 import type { UnmatchedCharge } from "./charges-match.ts";
 import type { CheckoutDrift } from "./checkout-drift.ts";
+import { isBoardSnapshot, type BoardSnapshot } from "./design-boards.ts";
 import { isProjectAudit, isProjectPoolItem } from "./projects.ts";
 import { isRepoCensus, type RepoCensus } from "./coverage.ts";
 import { isSessionRecord } from "./registry.ts";
@@ -129,6 +130,8 @@ export interface FleetFeed {
   projects?: ProjectPoolItem[];
   /** Scheduled Project #4 audit snapshot (fields, views, totals, and distributions). */
   projectAudit?: ProjectAudit;
+  /** Collector-cached Projects #4/#5, including draft ideas and dates. */
+  designBoards?: BoardSnapshot[];
   /** Project #4 coverage census (#1220/#1224): per-repo open-issue,
    * gate-label, and timestamped >90-day untouched-issue counts from the
    * collector's Search API reads, embedded beside the projects section.
@@ -1210,4 +1213,9 @@ export function ageMsText(ageMs: number): string {
 /** "3m old", "2h old", "fresh" — for provenance strings. */
 export function feedAgeText(generatedAt: string, now = Date.now()): string {
   return ageMsText(now - Date.parse(generatedAt));
+}
+
+/** Malformed/missing cached boards stay unavailable. */
+export function designBoardsFromFeed(feed: Partial<FleetFeed> | null | undefined): BoardSnapshot[] {
+  return Array.isArray(feed?.designBoards) ? feed.designBoards.filter(isBoardSnapshot) : [];
 }
