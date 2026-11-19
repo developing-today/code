@@ -45,14 +45,29 @@ MUTATED_FILES=(
 restore() {
   git -C "$REPO_ROOT" checkout -- "${MUTATED_FILES[@]}" 2>/dev/null
 }
-trap restore EXIT INT TERM
-
+# Refusal must never restore files: arm cleanup only after every target is
+# present, tracked, and clean in both the index and worktree.
 for f in "${MUTATED_FILES[@]}"; do
-  if [ -n "$(git -C "$REPO_ROOT" status --porcelain -- "$f")" ]; then
+  if [ ! -f "$REPO_ROOT/$f" ] || ! tracked="$(git -C "$REPO_ROOT" ls-files -v --error-unmatch -- "$f" 2>/dev/null)"; then
+    echo "planted-bug-check: $f is missing or untracked; refusing to mutate it" >&2
+    exit 2
+  fi
+  # Status can hide edits under assume-unchanged or skip-worktree flags.
+  # Only an ordinary tracked entry may reach the cleanup-armed phase.
+  if [ "$tracked" != "H $f" ]; then
+    echo "planted-bug-check: $f has unsupported index flags; refusing to mutate it" >&2
+    exit 2
+  fi
+  if ! dirty="$(git --no-optional-locks -C "$REPO_ROOT" status --porcelain -- "$f")"; then
+    echo "planted-bug-check: cannot check $f cleanliness; refusing to mutate it" >&2
+    exit 2
+  fi
+  if [ -n "$dirty" ]; then
     echo "planted-bug-check: $f has uncommitted changes; refusing to mutate it" >&2
     exit 2
   fi
 done
+trap restore EXIT INT TERM
 
 cd "$ID_DIR" || exit 2
 
