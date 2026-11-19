@@ -414,8 +414,14 @@ function createDeployment(cwd, id, { bypassChecks = false } = {}) {
 // previous live version (which had the right token) goes back live at
 // once and the deploy fails.
 async function verifyLive(id, { stage, expectFingerprint = null, rollbackTo = null, requireVersion = false } = {}) {
-  const serving = await liveVersions();
-  if (!(serving.length === 1 && serving[0].version_id === id && serving[0].percentage === 100)) {
+  // The deployments list can lag a just-created deployment by a few seconds.
+  const servesOnly = (vs) => vs.length === 1 && vs[0].version_id === id && vs[0].percentage === 100;
+  let serving = [];
+  for (let attempt = 1; attempt <= 10 && !servesOnly(serving); attempt++) {
+    if (attempt > 1) await new Promise((r) => setTimeout(r, 3000));
+    serving = await liveVersions();
+  }
+  if (!servesOnly(serving)) {
     throw new Error(`newest deployment does not serve version ${id} at 100%; check the dashboard`);
   }
   // An older version (a rollback target) may not report its version id;
