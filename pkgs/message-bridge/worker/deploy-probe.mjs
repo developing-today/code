@@ -103,18 +103,43 @@ export function codeOnlyFingerprint(health) {
  *   verify: () => Promise<unknown>, rollback: (id: string) => unknown}} steps
  */
 export async function promoteOrRollBack({ newId, previousId, promote, verify, rollback }) {
+  if (!previousId) throw new Error("could not tell which version is live, so there would be nothing to roll back to; refusing to promote");
   try {
     await promote();
     await verify();
   } catch (err) {
-    if (previousId && previousId !== newId) {
+    // A verify step can name a different version to go back to (another
+    // deployment that went live just before this one).
+    const target = err.rollbackTo ?? previousId;
+    if (target !== newId) {
       try {
-        await rollback(previousId);
-        err.message += `; version ${previousId} was put back live`;
+        await rollback(target);
+        err.message += `; version ${target} was put back live`;
       } catch (rbErr) {
-        err.message += `; putting version ${previousId} back live failed too (${rbErr.message}), so fix it by hand with --deploy-version ${previousId} --allow-secret-change`;
+        err.message += `; putting version ${target} back live failed too (${rbErr.message}), so fix it by hand with --deploy-version ${target} --allow-secret-change`;
       }
     }
     throw err;
   }
+}
+
+/**
+ * Checks that this promotion replaced the version the deploy read as live
+ * just before promoting. If another deployment went live in between (say
+ * a full deploy rotating the token), the token fingerprint read earlier no
+ * longer describes what was replaced, so this returns the version that
+ * really preceded this one (to go back to), or null when all is as read.
+ *
+ * @param {{versions?: {version_id: string, percentage: number}[]}[]} newestFirst deployments, newest first
+ * @param {string} newId this run's version, which must be the newest deployment
+ * @param {string} previousId the version read as live before promoting
+ * @returns {string | null}
+ * @throws {Error} when the newest deployment isn't this one or nothing preceded it
+ */
+export function replacedOtherThan(newestFirst, newId, previousId) {
+  const only = (d) => (d?.versions?.length === 1 && d.versions[0].percentage === 100 ? d.versions[0].version_id : null);
+  if (only(newestFirst[0]) !== newId) throw new Error(`the newest deployment is not version ${newId} alone`);
+  const before = only(newestFirst[1]);
+  if (!before) throw new Error(`could not tell which deployment version ${newId} replaced`);
+  return before === previousId ? null : before;
 }

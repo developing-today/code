@@ -334,9 +334,32 @@ test("a failed promotion or verification puts the previous version back", async 
   assert.deepEqual(promoteErr.log, ["promote", "rollback old"]);
   const both = await run({ verifyFails: true, rollbackFails: true });
   assert.match(both.result, /failed too \(api down\).*--deploy-version old --allow-secret-change/);
-  const nothingBefore = await run({ verifyFails: true, previousId: null });
-  assert.deepEqual(nothingBefore.log, ["promote", "verify"]);
-  assert.equal(nothingBefore.result, "verify timed out");
+  const nothingBefore = await run({ previousId: null });
+  assert.deepEqual(nothingBefore.log, []);
+  assert.match(nothingBefore.result, /refusing to promote/);
+});
+
+test("a promotion that replaced a different version than the one checked goes back to that one", async () => {
+  const { promoteOrRollBack, replacedOtherThan } = await import("../deploy-probe.mjs");
+  const d = (id) => ({ versions: [{ version_id: id, percentage: 100 }] });
+  assert.equal(replacedOtherThan([d("new"), d("old"), d("older")], "new", "old"), null);
+  assert.equal(replacedOtherThan([d("new"), d("rotated"), d("old")], "new", "old"), "rotated");
+  assert.throws(() => replacedOtherThan([d("old")], "new", "old"), /newest deployment is not/);
+  assert.throws(() => replacedOtherThan([d("new")], "new", "old"), /could not tell/);
+  const log = [];
+  const err = await promoteOrRollBack({
+    newId: "new",
+    previousId: "old",
+    promote: () => log.push("promote"),
+    verify: async () => {
+      const e = new Error("another deployment went live");
+      e.rollbackTo = "rotated";
+      throw e;
+    },
+    rollback: (id) => log.push(`rollback ${id}`),
+  }).catch((e) => e);
+  assert.deepEqual(log, ["promote", "rollback rotated"]);
+  assert.match(err.message, /version rotated was put back live/);
 });
 
 test("deploy.mjs rejects undeclared arguments before touching credentials", async () => {

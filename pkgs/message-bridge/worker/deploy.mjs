@@ -75,6 +75,7 @@ import {
   classifyWorkerProbe,
   codeOnlyFingerprint,
   promoteOrRollBack,
+  replacedOtherThan,
   strayBeforeCodeOnly,
 } from "./deploy-probe.mjs";
 import { tokenFingerprint } from "./src/auth.js";
@@ -273,7 +274,7 @@ if (exists) {
     newId: version.id,
     previousId,
     promote: () => createDeployment(stage, version.id),
-    verify: () => verifyLive(version.id, { expectFingerprint, requireVersion: true }),
+    verify: () => verifyLive(version.id, { expectFingerprint, requireVersion: true, replaced: previousId }),
     rollback: (id) => {
       console.error(`verification failed; putting version ${id} back live`);
       createDeployment(stage, id, { bypassChecks: true });
@@ -329,10 +330,13 @@ async function assertTokenInheritsFromLive(uploadedId = null) {
   }
 }
 
-async function liveVersions() {
+async function deploymentsNewestFirst() {
   const deployments = (await cfApi("/deployments"))?.deployments ?? [];
-  const newest = [...deployments].sort((a, b) => Date.parse(b.created_on) - Date.parse(a.created_on))[0];
-  return newest?.versions ?? [];
+  return [...deployments].sort((a, b) => Date.parse(b.created_on) - Date.parse(a.created_on));
+}
+
+async function liveVersions() {
+  return (await deploymentsNewestFirst())[0]?.versions ?? [];
 }
 
 async function workerExists() {
@@ -432,7 +436,7 @@ function createDeployment(cwd, id, { bypassChecks = false } = {}) {
 // showed, this compares the token itself. On any failure after a
 // promotion, promoteOrRollBack puts the previous live version (which had
 // the right token) back at once and the deploy fails.
-async function verifyLive(id, { expectFingerprint = null, requireVersion = false } = {}) {
+async function verifyLive(id, { expectFingerprint = null, requireVersion = false, replaced = null } = {}) {
   // The deployments list can lag a just-created deployment by a few seconds.
   const servesOnly = (vs) => vs.length === 1 && vs[0].version_id === id && vs[0].percentage === 100;
   let serving = [];
@@ -442,6 +446,20 @@ async function verifyLive(id, { expectFingerprint = null, requireVersion = false
   }
   if (!servesOnly(serving)) {
     throw new Error(`newest deployment does not serve version ${id} at 100%; check the dashboard`);
+  }
+  // The token fingerprint was read from the version live before the
+  // promote; it only describes what this replaced if no other deployment
+  // went live in between.
+  if (replaced) {
+    const other = replacedOtherThan(await deploymentsNewestFirst(), id, replaced);
+    if (other) {
+      const err = new Error(
+        `another deployment (version ${other}) went live between this deploy's checks and its promotion, ` +
+          `so its token check no longer applies`,
+      );
+      err.rollbackTo = other;
+      throw err;
+    }
   }
   // An older version (a rollback target) may not report its version id;
   // then the configured check is all there is.
