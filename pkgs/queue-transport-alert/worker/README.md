@@ -19,10 +19,17 @@ outage (every lane exiting at its health gate) no longer goes unseen.
 - **Recovery:** the first healthy probe after an alert comments once with
   the outage span. It never closes the issue: automation may label and
   comment but must not close an issue (#10136), so a human closes it.
-- **Phone push:** the alert and the recovery each send one Telegram
+- **Phone push (Web Push):** the alert and the recovery each send one
+  standard Web Push to every device that turned on alerts on the status
+  page (open it, tap **Turn on phone alerts**, allow notifications).
+  Pushes carry no payload: the page's service worker reads
+  `/status.json` (`last_push`) and shows the notification, so nothing
+  needs encrypting. The VAPID key pair is made once inside the Durable
+  Object and never leaves it. Devices that the push service reports
+  gone (404/410) are dropped; at most 20 devices can subscribe.
+- **Telegram:** the alert and the recovery also send one Telegram
   message to `TELEGRAM_CHAT_ID` through the existing OpenClaw bot
   (`TELEGRAM_BOT_TOKEN`), with the incident link and the status page.
-  Nothing to install beyond Telegram, which already reaches the bot.
 - **Queue task:** a queue task needs a working broker, so it can't be
   filed while the broker is down. On recovery the Worker enqueues one
   `triage` task in `QUEUE` (default `repo-health-code-pilot`), anchored
@@ -43,13 +50,19 @@ issue when both run. State lives in one SQLite-backed Durable Object.
 
 - `https://queue-transport-alert.developing-today.workers.dev/` is a
   small page (auto-refresh every minute).
+- The page is installable (`/manifest.webmanifest`, `/sw.js`) and has
+  **Turn on phone alerts** and **Send a test** buttons. Its POST
+  routes are `/subscribe`, `/unsubscribe` and `/test-push` (that device
+  only, at most every 30 seconds). `POST /admin/test-push` with
+  `X-Admin-Token` set to the probe's Access client secret pushes a test
+  to every device.
 - `/status` (or `/status.json`) is the same view as JSON, CORS-open, for
   the PM stack and other tools: `status` (`up`, `degraded`, `down`,
   `stale` when no probe in 25 minutes, `unknown` before the first),
   `up`, `last_check`, `last_ok`, `failing_since`,
   `consecutive_failures`, `last_failure`, `incident`, `last_outage`
   (`start`, `end`, `duration`, `incident`), `pending_deliveries`,
-  `last_errors` and `issue_title_prefix`. No secrets.
+  `last_errors`, `last_push` and `issue_title_prefix`. No secrets.
 
 ## Deploying
 

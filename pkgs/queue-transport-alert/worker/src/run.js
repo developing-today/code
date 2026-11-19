@@ -4,9 +4,9 @@
 //
 // Side effects per outage window:
 //   alert     -> GitHub incident (file, or comment on an open one)
-//                + one phone notification
+//                + one Telegram message and one Web Push
 //   recovered -> GitHub comment on the incident (never a close, #10136)
-//                + one phone notification
+//                + one Telegram message and one Web Push
 //                + one fleet-queue triage task anchored to the incident
 // Notifications and the queue task go through `state.pending`, so a
 // failed delivery is retried on later ticks. The queue task is only
@@ -37,13 +37,14 @@ function errText(err) {
  * @param {number} threshold
  * @param {string} probeDesc
  * @param {object} [extra]
- * @param {((text:string)=>Promise<void>)|null} [extra.notify]   phone push
+ * @param {((text:string)=>Promise<void>)|null} [extra.notify]   Telegram message
  * @param {((item:object)=>Promise<void>)|null} [extra.enqueue]  fleet queue task
+ * @param {((msg:{title:string, body:string})=>Promise<void>)|null} [extra.push]  Web Push
  * @param {string} [extra.repo]
  * @param {string} [extra.statusUrl]
  */
 export async function runPass(prev, probe, github, nowMs, threshold, probeDesc, extra = {}) {
-  const { notify = null, enqueue = null, repo = "developing-today/code", statusUrl = "" } = extra;
+  const { notify = null, enqueue = null, push = null, repo = "developing-today/code", statusUrl = "" } = extra;
   let { state, event } = step(prev || emptyState(), probe.ok, probe.detail, nowMs, threshold);
   const errors = [];
   let message = "";
@@ -78,6 +79,7 @@ export async function runPass(prev, probe, github, nowMs, threshold, probeDesc, 
     if (!state.alert_notified) {
       const link = state.incident ? `\n${issueUrl(state.incident)}` : "";
       queue({ type: "notify", text: `Queue broker DOWN. ${alertMessage(state, nowMs)}${link}${statusLine}` });
+      queue({ type: "push", title: "Queue broker DOWN", body: alertMessage(state, nowMs) });
       state.alert_notified = true;
     }
   } else if (event === "recovered") {
@@ -85,6 +87,7 @@ export async function runPass(prev, probe, github, nowMs, threshold, probeDesc, 
     if (!state.recovery_notified) {
       const link = state.incident ? `\n${issueUrl(state.incident)}` : "";
       queue({ type: "notify", text: `Queue broker back UP. ${message}${link}` });
+      queue({ type: "push", title: "Queue broker back UP", body: message });
       state.recovery_notified = true;
     }
     let commented = true;
@@ -113,6 +116,8 @@ export async function runPass(prev, probe, github, nowMs, threshold, probeDesc, 
     try {
       if (item.type === "notify") {
         if (notify) await notify(item.text);
+      } else if (item.type === "push") {
+        if (push) await push({ title: item.title, body: item.body });
       } else if (item.type === "enqueue") {
         if (enqueue && !probe.ok) {
           left.push(item); // the broker is down; try once it answers

@@ -189,5 +189,8 @@ test("status view: up, degraded, down, stale, unknown", () => {
   const html = renderStatusPage(withOutage);
   assert.match(html, /<title>Queue broker status<\/title>/);
   assert.match(html, /1h15m/);
-  assert.doesNotMatch(renderStatusPage({ ...up, last_failure: "<script>" }), /<script>/);
+  const page = renderStatusPage({ ...up, last_failure: "<script>alert(1)</script>" });
+  assert.match(page, /&lt;script&gt;alert\(1\)/);
+  assert.equal(page.match(/<script>/g).length, 1, "only the page's own script");
+  assert.match(page, /rel="manifest"/);
 });
