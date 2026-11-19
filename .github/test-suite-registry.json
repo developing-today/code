@@ -779,6 +779,19 @@
       "related_issues": [9877, 9103]
     },
     {
+      "id": "pm-stack.lane-guard",
+      "paths": ["pm-stack/lane-guard/test_lane_guard.py"],
+      "invocation": "cd pm-stack/lane-guard && python3 -m unittest test_lane_guard.py",
+      "venue": {
+        "workflow": ".github/workflows/pm-stack-tests.yml",
+        "job_step": "Test lane guard",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [7616, 9991]
+    },
+    {
       "id": "pm-stack.grist.choice-options",
       "paths": ["pm-stack/grist/test_update_choice_options.py"],
       "invocation": "python3 -m unittest discover -s pm-stack/grist -p 'test_*.py'",

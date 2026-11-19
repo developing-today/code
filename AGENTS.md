@@ -98,6 +98,44 @@ bindings, and claimer identity is recorded, never itself a filter.
 Designated filtered lanes (5 code-only, 3 not-code per surface) are the
 only exceptions; the sets are recorded on #8097.
 
+## Who holds an issue (assignee is not a hold)
+
+Every open issue and PR here used to be auto-assigned to `dezren39`
+(Drew) by a sweeper workflow, so the assignee says nothing about
+ownership. Lanes read it as "Drew-owned" and parked work for an
+"explicit ownership release" that never comes (#7616 collected 50+
+park notes in two days). The rule:
+
+- An issue or PR is **held for a human only** when it carries a hold
+  label: `held`, `user/owned` or `do-not-auto-edit`. `do-not-merge`
+  blocks merging, not working. "Drew-owned" in any runbook means one of
+  these labels, nothing else.
+- **Assignees never hold work**, whoever they are, and neither does a
+  `work/assigned` label. Which worker holds a task is the queue's
+  atomic claim, not a label or an assignee. Never park, and never wait
+  for a "release" or "handoff", because of an assignee.
+- Check before parking on ownership (exit 0 = workable, 3 = held):
+
+  ```bash
+  python3 pm-stack/lane-guard/lane_guard.py hold --repo <owner/repo> --issue <n>
+  ```
+
+- **One park note, not one per cycle.** Before posting a parked or
+  picked-up agent note, run the note check and skip the comment on
+  exit 3; record the park in the queue checkpoint instead.
+
+  ```bash
+  python3 pm-stack/lane-guard/lane_guard.py note --repo <owner/repo> \
+    --issue <n> --task <task-id> --state parked
+  ```
+
+  When it says to post, start the note with the `header` line it
+  prints. Progress notes (PR opened, blocked, completed) always post.
+
+- A task too big for one run is not a reason to park without code:
+  land the next reviewable slice as a PR (or a checkpointed branch)
+  and park with that slice named as the resume point.
+
 ## Research, design and delivery workflow
 
 Use it when a request, from one sentence to pages of voice-transcribed notes, should become researched documents, designs, plans or parallel PRs. Contracts: [`planning/workflow/`](planning/workflow/README.md). Where documents go: [`planning/DOCUMENTATION_ARCHITECTURE.md`](planning/DOCUMENTATION_ARCHITECTURE.md). Tool: `python3 -I scripts/research_workflow.py` (`check`, `status`, `ready`).
