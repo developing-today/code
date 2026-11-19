@@ -118,6 +118,10 @@ export function incidentBody(state, nowMs, probeDesc) {
     "",
     alertMessage(state, nowMs),
     "",
+    "No queue task is filed now, because the queue is the thing that is " +
+      "down. When the broker answers again the Worker enqueues one triage " +
+      "task anchored to this issue to find the cause.",
+    "",
     "The Worker comments here once when the transport recovers. Close this " +
       "issue by hand once the outage is understood; automation never closes " +
       "issues (#10136).",

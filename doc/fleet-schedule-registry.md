@@ -21,6 +21,8 @@ specified in the #2020 Jules investigation).
   defined in `dezren39/darwin-nix` and deployed to the Mac (#11805).
 - **Surface 6 — PM-stack process intervals:** timers inside the
   PM-stack aggregator process, live only while it runs (#9988).
+- **Surface 7 — Cloudflare Worker cron triggers:** `triggers.crons` in
+  a Worker's `wrangler.jsonc`, deployed from the flake (#6369).
 
 **This registry is an input to the placement audit** proposed in the
 #2024 framework doc
@@ -259,7 +261,7 @@ Execution route/pool is recorded separately from work scope: the repo-health que
 The OS-timer half of surface 2. Cadence is the unit's own `OnCalendar`/`OnUnitActiveUSec` spec, read live from `systemctl --user show`. Specs are recorded **complete** — the full effective calendar expression, date **and** time components (e.g. `*-*-* *:*:00`); never truncate a spec to a date-only prefix, because a bare `*-*-*` normalizes to daily at midnight and misstates the cadence (issue #5313). Prompt/brief pointer is the unit file in `~/.config/systemd/user/` (or its Nix store target for linked units). Installed-but-disabled timer units ARE listed in this table and marked `(disabled)` after the unit name: the registry inventories what is installed on the laptop, not only what is currently scheduled, so a disabled unit stays visible until it is uninstalled (reconciled 2026-11-04, issue #5661).
 
 | timer unit                                                           | cadence spec                                              | activates                                  | owner / scope                                                                                    | budget       | kill criteria | created      | last review |
-| -------------------------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------ | ------------ | ------------- | ------------ | ----------- |
+| -------------------------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------ | ------------ | ------------- | ------------ | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ainventory-gatherer.timer`                                          | `OnCalendar=*-*-* 06:20:00`                               | `ainventory-gatherer.service`              | laptop (user systemd; code#9999; canonical `scripts/ainventory_gather.py`, Turso fleet-platform) | not recorded | not recorded  | 2026-11-16   | 2026-11-16  |
 | `atlas-backup.timer`                                                 | `OnCalendar=*-*-* 04:47:00`                               | `atlas-backup.service`                     | laptop (user systemd)                                                                            | not recorded | not recorded  | not recorded | 2026-11-04  |
 | `cargo-target-janitor.timer`                                         | `OnCalendar=*-*-* *:00:00`                                | `cargo-target-janitor.service`             | laptop (user systemd)                                                                            | not recorded | not recorded  | not recorded | 2026-11-04  |
@@ -381,3 +383,16 @@ while the service is alive.
 | name/id                     | repo/scope            | cadence          | state                        | owner / scope | prompt/brief pointer                                           | budget       | kill criteria                                                                                                                        | created    | last review |
 | --------------------------- | --------------------- | ---------------- | ---------------------------- | ------------- | -------------------------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------ | ---------- | ----------- |
 | SLO journal sampler (#9988) | developing-today/code | every 60 seconds | live aggregator process only | issue #9988   | `pm-stack/aggregator/src/server.ts` (`SLO_SAMPLE_INTERVAL_MS`) | not recorded | Remove/disable if the health view or append-only journal becomes unavailable; sampler is unref'd and does not keep the process alive | 2026-11-18 | 2026-11-18  |
+
+## Surface 7 — Cloudflare Worker cron triggers (1 entry)
+
+Cron triggers on Cloudflare Workers in this account, from each Worker's
+`wrangler.jsonc` (`triggers.crons`) and deployed from the flake. They
+run on Cloudflare, off every fleet host. Cadence is the trigger's cron
+expression in UTC. The row was read from the repo and confirmed against
+the Worker's live schedule (Cloudflare `workers/scripts/<name>/schedules`)
+on 2026-11-19.
+
+| name/id                                       | repo/scope            | cadence                           | state                                                                                                                                                                                                        | owner / scope | prompt/brief pointer                                            | budget                                         | kill criteria                                                                                   | created    | last review |
+| --------------------------------------------- | --------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------- | --------------------------------------------------------------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------- | ---------- | ----------- |
+| `queue-transport-alert` (Worker cron trigger) | developing-today/code | `*/10 * * * *` (every 10 min UTC) | enabled; probes the repo-queue broker `/healthz` through Cloudflare Access; files or comments on one `Queue transport incident:` issue, pushes to Telegram, enqueues a triage task on recovery, never closes | issue #6369   | `pkgs/queue-transport-alert/worker/` (`wrangler.jsonc`, `src/`) | Workers free-tier requests; one probe per tick | Remove the trigger if the probe misfires (repeated false alerts) or the broker route is retired | 2026-11-19 | 2026-11-19  |
