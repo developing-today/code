@@ -468,11 +468,20 @@ impl GraphIndex {
         &self,
         assertions: impl IntoIterator<Item = IndexedTriple>,
     ) -> Result<IndexState, IndexError> {
-        let mut state = {
+        // Check the index is built (and of a known schema) without
+        // creating tables, then take the count and digest from inside
+        // the write transaction: redb has one writer at a time, so state
+        // read there is current, and concurrent appends cannot both
+        // build on the same stale count (#12011).
+        {
             let read = self.db.begin_read().map_err(storage)?;
-            Self::meta(&read)?
-        };
+            Self::meta(&read)?;
+        }
         let txn = self.db.begin_write().map_err(storage)?;
+        let mut state = {
+            let meta = txn.open_table(META).map_err(storage)?;
+            Self::state_from(&meta)?
+        };
         Self::write_rows(&txn, assertions, &mut state)?;
         txn.commit().map_err(storage)?;
         Ok(state)
@@ -533,6 +542,18 @@ impl GraphIndex {
             }
             Err(err) => return Err(storage(err)),
         };
+        let state = Self::state_from(&meta)?;
+        for order in Order::ALL {
+            Self::open_read(txn, order.table(), order.name())?;
+        }
+        Ok(state)
+    }
+
+    /// The schema-checked count and digest from a meta table, read-only
+    /// or inside a write transaction.
+    fn state_from<T: ReadableTable<&'static str, &'static [u8]>>(
+        meta: &T,
+    ) -> Result<IndexState, IndexError> {
         let read = |key: &'static str| -> Result<Vec<u8>, IndexError> {
             meta.get(key)
                 .map_err(storage)?
@@ -549,9 +570,6 @@ impl GraphIndex {
             .map_err(|_| corrupt("meta", "count is not 8 bytes"))?;
         let digest = <[u8; 32]>::try_from(read(META_DIGEST)?)
             .map_err(|_| corrupt("meta", "digest is not 32 bytes"))?;
-        for order in Order::ALL {
-            Self::open_read(txn, order.table(), order.name())?;
-        }
         Ok(IndexState {
             count: u64::from_be_bytes(count),
             digest,

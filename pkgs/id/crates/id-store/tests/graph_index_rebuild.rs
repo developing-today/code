@@ -502,6 +502,39 @@ fn append_is_idempotent_and_order_independent() {
     assert_eq!(scan_all(&a, &empty, 4), scan_all(&b, &empty, 4));
 }
 
+/// #12011: concurrent appends of distinct rows must each build on the
+/// committed count and digest, so none is lost and `verify` agrees with
+/// a serial build of the same rows.
+#[test]
+fn concurrent_appends_keep_meta_consistent() {
+    let truth = evidence(&signed_records(11));
+    assert!(truth.len() >= 8, "need enough rows to split across threads");
+    let dir = tempfile::tempdir().unwrap();
+    let index = GraphIndex::open(dir.path().join("c.redb")).unwrap();
+    index.rebuild(std::iter::empty()).unwrap();
+    let rows: Vec<IndexedTriple> = truth.iter().map(indexed).collect();
+    let threads = rows.len().min(24);
+    let chunks: Vec<Vec<IndexedTriple>> = (0..threads)
+        .map(|t| rows.iter().skip(t).step_by(threads).cloned().collect())
+        .collect();
+    let gate = std::sync::Barrier::new(threads);
+    std::thread::scope(|scope| {
+        for chunk in &chunks {
+            let (index, gate) = (&index, &gate);
+            scope.spawn(move || {
+                gate.wait();
+                for row in chunk {
+                    index.append(std::iter::once(row.clone())).unwrap();
+                }
+            });
+        }
+    });
+    let state = index.verify().unwrap();
+    assert_eq!(state.count, rows.len() as u64);
+    let serial = rebuilt(&dir.path().join("s.redb"), &signed_records(11), 3);
+    assert_eq!(state, serial.verify().unwrap());
+}
+
 type Removal = fn(&redb::WriteTransaction);
 type Edit = Box<dyn Fn(&redb::WriteTransaction)>;
 
