@@ -100,8 +100,14 @@ since the new version would inherit that token instead. It checks again
 after the upload, so a full deploy that lands in between leaves the new
 version undeployed. Cloudflare numbers versions in upload order, so that
 check waits until the list shows every version numbered between the
-live one and the new one, and refuses if it never does. A full deploy
-from a checkout clears the condition. A manual
+live one and the new one, and refuses if it never does. After promoting,
+every deploy waits for `/healthz` to answer from the new version, and a
+code-only deploy checks that it reports the same token fingerprint as
+the version it replaced (`/healthz` shows a 16-hex SHA-256 fingerprint of
+the token, never the token). If it doesn't, the previous version goes
+back live at once and the deploy fails, so the token can't change
+silently whatever the versions list showed. A full deploy from a
+checkout clears the condition. A manual
 run with a `rollback_version` deploys that existing version instead.
 Without the two secrets the workflow builds, tests and skips the upload.
 Setting or rotating the access token is still a local full deploy.

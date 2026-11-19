@@ -40,3 +40,16 @@ export function matchTokenPath(pathname, env) {
   if (!safeEqual(token, env.ACCESS_TOKEN)) return null;
   return { area, rest };
 }
+
+/**
+ * A short public fingerprint of the access token, reported by /healthz so
+ * a deploy can check the live Worker carries the token it expects (a
+ * code-only upload must keep the live one) without the token itself
+ * leaving the Worker. 64 bits of a SHA-256 over a 256-bit random token
+ * reveal nothing usable about it. deploy.mjs computes the same value.
+ */
+export async function tokenFingerprint(token) {
+  const data = new TextEncoder().encode(`message-bridge/token-fingerprint/v1:${token}`);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", data));
+  return Array.from(digest.subarray(0, 8), (b) => b.toString(16).padStart(2, "0")).join("");
+}

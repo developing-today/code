@@ -43,8 +43,21 @@ test("wrong or missing token is a plain 404 everywhere", async () => {
     assert.equal((await call(path, { method: "POST", body: "{}" })).status, 404, path);
     assert.equal((await call(path)).status, 404, path);
   }
-  const health = await call("/healthz");
-  assert.deepEqual(await health.json(), { ok: true, configured: true });
+  const health = await (await call("/healthz")).json();
+  const { tokenFingerprint } = await import("../src/auth.js");
+  assert.deepEqual(health, { ok: true, configured: true, version: null, token_fingerprint: await tokenFingerprint(TOKEN) });
+  assert.doesNotMatch(JSON.stringify(health), new RegExp(TOKEN));
+});
+
+test("token fingerprint is short, stable and token-specific", async () => {
+  const { tokenFingerprint } = await import("../src/auth.js");
+  const a = await tokenFingerprint(TOKEN);
+  assert.match(a, /^[0-9a-f]{16}$/);
+  assert.equal(await tokenFingerprint(TOKEN), a);
+  assert.notEqual(await tokenFingerprint(`${TOKEN}x`), a);
+  const versioned = { ...env, CF_VERSION_METADATA: { id: "v-123" } };
+  const res = await route(new Request(`${BASE}/healthz`), versioned, () => null);
+  assert.equal((await res.json()).version, "v-123");
 });
 
 test("MCP initialize, tools/list, notifications, unknown method", async () => {

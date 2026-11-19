@@ -70,6 +70,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, USAGE } from "./deploy-args.mjs";
 import { CODE_ONLY_MARK, VersionListGap, classifyWorkerProbe, strayBeforeCodeOnly } from "./deploy-probe.mjs";
+import { tokenFingerprint } from "./src/auth.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const WORKER = "message-bridge";
@@ -153,7 +154,7 @@ if (args.mode === "deploy-version") {
         `deploy it anyway, knowing the connector then uses that version's token.`,
     );
   }
-  await verifyLive(id);
+  await verifyLive(id, { stage });
   console.log(`live: ${publicUrl} at version ${id}`);
   process.exit(0);
 }
@@ -187,6 +188,7 @@ if (args.dryRun) {
 }
 
 let secretsDir = null;
+let expectFingerprint = null;
 if (args.mode === "deploy") {
   let token = accessTokenFromVault();
   if (!token) {
@@ -216,6 +218,7 @@ if (args.mode === "deploy") {
   chmodSync(secretsDir, 0o700);
   const secretsFile = join(secretsDir, "secrets.json");
   writeFileSync(secretsFile, JSON.stringify({ ACCESS_TOKEN: token }), { mode: 0o600 });
+  expectFingerprint = await tokenFingerprint(token);
   uploadArgs.push("--secrets-file", secretsFile);
 }
 
@@ -243,9 +246,24 @@ const version = matches[0];
 console.log(`uploaded version ${version.id}`);
 if (args.mode === "code-only") await assertTokenInheritsFromLive(version.id);
 await assertDeployable(version.id);
+// Read what is live right before promoting: its version is the one to
+// put back if the new one turns out to carry a different token, and a
+// code-only version must keep its token fingerprint.
+let previousId = null;
+if (exists) {
+  previousId = (await liveVersions())[0]?.version_id ?? null;
+  if (args.mode === "code-only") {
+    const live = await readHealth();
+    if (!live?.ok) throw new Error(`could not read ${publicUrl}/healthz before promoting; version ${version.id} was left undeployed`);
+    expectFingerprint = live.token_fingerprint ?? null;
+    if (!expectFingerprint) {
+      console.log("the live version predates the token fingerprint; relying on the version-number check alone this time");
+    }
+  }
+}
 // cf deploy already put the bootstrap version live.
 if (exists) createDeployment(stage, version.id);
-await verifyLive(version.id);
+await verifyLive(version.id, { stage, expectFingerprint, rollbackTo: previousId, requireVersion: true });
 console.log(`live: ${publicUrl} at version ${version.id} (${tag})`);
 console.log(`roll back with: nix run .#message-bridge-deploy -- --deploy-version <older version id>`);
 
@@ -389,21 +407,50 @@ function createDeployment(cwd, id, { bypassChecks = false } = {}) {
   ]);
 }
 
-async function verifyLive(id) {
+// Checks the deployment API serves `id`, then waits for /healthz to answer
+// from that version and checks its token. A code-only version must
+// answer with the live token's fingerprint: whatever the versions list
+// showed, this compares the token itself. If it doesn't match, the
+// previous live version (which had the right token) goes back live at
+// once and the deploy fails.
+async function verifyLive(id, { stage, expectFingerprint = null, rollbackTo = null, requireVersion = false } = {}) {
   const serving = await liveVersions();
   if (!(serving.length === 1 && serving[0].version_id === id && serving[0].percentage === 100)) {
     throw new Error(`newest deployment does not serve version ${id} at 100%; check the dashboard`);
   }
+  // An older version (a rollback target) may not report its version id;
+  // then the configured check is all there is.
   let health = null;
-  for (let attempt = 1; attempt <= 5 && !health?.configured; attempt++) {
+  for (let attempt = 1; attempt <= 20; attempt++) {
     if (attempt > 1) await new Promise((r) => setTimeout(r, 3000));
-    try {
-      health = await (await fetch(`${publicUrl}/healthz`, { cache: "no-store" })).json();
-    } catch {
-      health = null;
-    }
+    health = await readHealth();
+    if (health?.version === id) break;
+    if (!requireVersion && attempt >= 5 && health?.configured && health?.version == null) break;
+  }
+  if (requireVersion && health?.version !== id) {
+    throw new Error(`${publicUrl}/healthz never answered from version ${id}; check the dashboard`);
   }
   if (!health?.ok || !health?.configured) {
     throw new Error(`${publicUrl}/healthz does not report an access token after deploying ${id}; roll back with --deploy-version`);
+  }
+  if (expectFingerprint && health.token_fingerprint !== expectFingerprint) {
+    if (rollbackTo) {
+      console.error(`version ${id} carries a different ACCESS_TOKEN; putting ${rollbackTo} back live`);
+      createDeployment(stage, rollbackTo, { bypassChecks: true });
+    }
+    throw new Error(
+      `version ${id} went live with a different ACCESS_TOKEN than expected` +
+        (rollbackTo ? `; version ${rollbackTo} was put back live` : "") +
+        `; run a full deploy from a checkout (nix run .#message-bridge-deploy)`,
+    );
+  }
+}
+
+async function readHealth() {
+  try {
+    const res = await fetch(`${publicUrl}/healthz`, { cache: "no-store" });
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
   }
 }

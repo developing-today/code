@@ -17,6 +17,7 @@ export default defineConfig({
     env: {
       MESSAGES: bindings.durableObject({ worker: "message-bridge", exportName: "MessageStore" }),
       PUBLIC_URL: bindings.text("https://message-bridge.developing-today.workers.dev"),
+      CF_VERSION_METADATA: bindings.versionMetadata(),
     },
   },
 });
