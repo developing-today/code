@@ -2921,6 +2921,93 @@ mod tests {
         );
     }
 
+    /// #796 item 9-5 oracle: an ungranted read returns only cap_denied,
+    /// while the identical granted read returns the seeded history line.
+    /// Both paths must account for exactly one request in the ledger.
+    async fn assert_chat_history_policy_result(granted: bool) {
+        struct HistoryProbe(Arc<Mutex<Vec<serde_json::Value>>>);
+
+        impl WorldProgram for HistoryProbe {
+            fn update(&mut self, event: &WorldEvent) -> Result<()> {
+                if let WorldEventKind::System { event } = &event.kind {
+                    let value: serde_json::Value = serde_json::from_str(event)?;
+                    if value["cap"] == "result" && value["id"] == "history-proof" {
+                        self.0.lock().unwrap().push(value);
+                    }
+                }
+                Ok(())
+            }
+
+            fn wants(&mut self) -> Result<Option<String>> {
+                // Keep the same request visible for the capability report;
+                // the actor must deduplicate its already answered id.
+                let requests = serde_json::json!([{
+                    "id": "history-proof", "cap": "chat.history", "args": {"count": 1}
+                }]);
+                Ok(Some(serde_json::json!({"requests": requests}).to_string()))
+            }
+        }
+
+        let mut core = world(16);
+        if granted {
+            core.ledger
+                .set_granted(BTreeSet::from(["chat.history".to_owned()]));
+        }
+        core.events.push_back(WorldEvent {
+            sequence: 1,
+            participant_id: 7,
+            kind: WorldEventKind::Chat("history-proof-line".to_owned()),
+        });
+        let results = Arc::new(Mutex::new(Vec::new()));
+        let handle = WorldHandle::spawn_with_program(core, Box::new(HistoryProbe(results.clone())));
+        let (_, token) = handle.issue("ann", WorldScopes::GUEST).await.unwrap();
+        handle.input(token.clone(), b"read".to_vec()).await.unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while results.lock().unwrap().is_empty() {
+            assert!(Instant::now() < deadline, "no history result delivered");
+            tokio::task::yield_now().await;
+        }
+        // A second evaluation must not count or deliver the answered request again.
+        handle.input(token, b"read".to_vec()).await.unwrap();
+        let report = handle.caps_report().await.unwrap();
+
+        let results = results.lock().unwrap();
+        assert_eq!(results.len(), 1, "one result must reach the program");
+        let result = &results[0];
+        assert_eq!(report.policy, "deny");
+        let usage = report.usage["chat.history"];
+        if granted {
+            assert_eq!(result["ok"], true, "{result}");
+            let lines = result["value"]["lines"].as_array().unwrap();
+            assert_eq!(lines.len(), 1);
+            assert_eq!(lines[0]["text"], "history-proof-line");
+            assert_eq!(usage.allowed, 1);
+            assert_eq!(usage.denied, 0);
+            assert!(!report.missing.contains(&"chat.history".to_owned()));
+        } else {
+            assert_eq!(
+                result,
+                &serde_json::json!({
+                    "cap": "result", "id": "history-proof", "ok": false, "error": "cap_denied"
+                }),
+                "denial must contain no history value or lines"
+            );
+            assert_eq!(usage.denied, 1);
+            assert_eq!(usage.allowed, 0);
+            assert!(report.missing.contains(&"chat.history".to_owned()));
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_history_policy_ungranted_is_refused_counted_and_delivered() {
+        assert_chat_history_policy_result(false).await;
+    }
+
+    #[tokio::test]
+    async fn chat_history_policy_granted_delivers_history_and_counts_once() {
+        assert_chat_history_policy_result(true).await;
+    }
+
     #[tokio::test]
     async fn a_granted_request_gets_a_real_answer() {
         let (world, token) = caps_world_sync(false).await;
