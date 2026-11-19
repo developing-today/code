@@ -12,22 +12,19 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 # never triggers a credential prompt or a decrypt.
 MB_CHECK_ARGS_ONLY=1 node deploy.mjs "$@"
 
-# CI hands over both Cloudflare values; --code-only and --deploy-version
-# then need nothing else. Everything else reads Bitwarden and sops.
+# --code-only and GitHub Actions runs take both Cloudflare values from
+# the environment and never touch Bitwarden or sops (deploy.mjs fails
+# naming a missing one). Everything else reads Bitwarden and sops.
 mode="${1:-}"
-if [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ] &&
-  { [ "$mode" = "--code-only" ] || [ "$mode" = "--deploy-version" ]; }; then
+if [ "$mode" = "--code-only" ] || [ "${GITHUB_ACTIONS:-}" = "true" ]; then
   exec node deploy.mjs "$@"
-fi
-if [ "$mode" = "--code-only" ]; then
-  exec node deploy.mjs "$@" # fails with the missing variable named
 fi
 repo_root=$(git rev-parse --show-toplevel)
 if [ -z "${BWS_ACCESS_TOKEN:-}" ]; then
   # shellcheck source=/dev/null
   source "${repo_root}/lib/bitwarden-env.sh" >/dev/null
 fi
-if [ "$mode" != "--print-urls" ] && [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+if [ "$mode" != "--print-urls" ]; then
   CLOUDFLARE_ACCOUNT_ID=$(sops decrypt --extract '["cloudflare_account_id"]' "${repo_root}/secrets/sops/common/cloudflare.yaml")
   export CLOUDFLARE_ACCOUNT_ID
 fi

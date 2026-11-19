@@ -32,8 +32,8 @@
 //   deploy.mjs --print-urls           print the connector, page and API
 //                                     URLs (they contain the token)
 //
-// Credentials: CLOUDFLARE_API_TOKEN from the env when set, otherwise
-// from Bitwarden (MB_CF_TOKEN_SECRET, default
+// Credentials: CLOUDFLARE_API_TOKEN from the env for --code-only and in
+// GitHub Actions, otherwise from Bitwarden (MB_CF_TOKEN_SECRET, default
 // cloudflare.api-token-day-to-day); CLOUDFLARE_ACCOUNT_ID from the env
 // (deploy.sh decrypts it with sops). The access token is Bitwarden's
 // message-bridge.access-token (MB_ACCESS_TOKEN_SECRET), created on the
@@ -97,14 +97,18 @@ if (args.mode === "print-urls") {
   process.exit(0);
 }
 
-// Credentials. --code-only never reads Bitwarden; the rest use the env
-// token when one is set (CI), otherwise Bitwarden's.
-if (args.mode === "code-only" && !process.env.CLOUDFLARE_API_TOKEN) {
-  throw new Error("CLOUDFLARE_API_TOKEN is not set; --code-only reads it from the environment");
+// Credentials. --code-only, and any run in GitHub Actions, takes the API
+// token from the environment and never reads Bitwarden. Everything else
+// uses Bitwarden's token even when the shell has another
+// CLOUDFLARE_API_TOKEN set, so a local deploy always runs with the
+// token this script names.
+const tokenFromEnv = args.mode === "code-only" || process.env.GITHUB_ACTIONS === "true";
+if (tokenFromEnv && !process.env.CLOUDFLARE_API_TOKEN) {
+  throw new Error("CLOUDFLARE_API_TOKEN is not set; --code-only and CI read it from the environment");
 }
 const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
 if (!accountId) throw new Error("CLOUDFLARE_ACCOUNT_ID is not set; run deploy.sh");
-const apiToken = process.env.CLOUDFLARE_API_TOKEN || fromVault(names.cf);
+const apiToken = tokenFromEnv ? process.env.CLOUDFLARE_API_TOKEN : fromVault(names.cf);
 if (!apiToken) throw new Error(`no CLOUDFLARE_API_TOKEN and no Bitwarden secret named ${names.cf}`);
 const env = { ...process.env, CLOUDFLARE_API_TOKEN: apiToken, CLOUDFLARE_ACCOUNT_ID: accountId };
 const api = `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${WORKER}`;
