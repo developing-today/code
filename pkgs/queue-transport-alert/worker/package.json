@@ -1,0 +1,10 @@
+{
+  "name": "queue-transport-alert",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Worker that alerts on a repo-queue broker outage (code#6369)",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

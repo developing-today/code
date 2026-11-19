@@ -699,6 +699,10 @@ let
       cfContainerHelloDeploy = pkgs.callPackage ../pkgs/cf-container-hello/deploy.nix {
         inherit cfContainerHello;
       };
+      queueTransportAlert = pkgs.callPackage ../pkgs/queue-transport-alert/worker/package.nix { };
+      queueTransportAlertDeploy = pkgs.callPackage ../pkgs/queue-transport-alert/worker/deploy.nix {
+        inherit queueTransportAlert;
+      };
     in
     {
       packages = {
@@ -714,6 +718,8 @@ let
           labOpsHubDeploy
           cfContainerHello
           cfContainerHelloDeploy
+          queueTransportAlert
+          queueTransportAlertDeploy
           ;
         mcpx-docs = mcpxDocs;
         mcpx-real-servers = mcpxRealServers;
@@ -784,6 +790,7 @@ let
         cold-store-rehydrator-deploy = mkApp coldStoreRehydratorDeploy "Deploy the cold-store-rehydrator Worker from its flake bundle via the wrangler versions flow (needs Bitwarden and sops access)";
         lab-ops-hub-deploy = mkApp labOpsHubDeploy "Deploy the lab-ops-hub Worker and push its crawler container image as one command (needs Bitwarden and sops access)";
         cf-container-hello-deploy = mkApp cfContainerHelloDeploy "Deploy the cf-container-hello Worker from its flake package (needs Bitwarden and sops access)";
+        queue-transport-alert-deploy = mkApp queueTransportAlertDeploy "Deploy the queue-transport-alert Worker (broker outage alert, code#6369) from its flake package and set its secrets (needs Bitwarden and sops access)";
         mcpx = {
           type = "app";
           program = "${mcpx}/bin/mcpx";
@@ -1494,6 +1501,7 @@ let
               grep -q "cold-store-rehydrator" list.txt
               grep -q "lab-ops-hub" list.txt
               grep -q "cf-container-hello" list.txt
+              grep -q "queue-transport-alert" list.txt
               grep -q "secrets-broker" list.txt
               grep -q "session-proxy" list.txt
               grep -q "mcpx" list.txt

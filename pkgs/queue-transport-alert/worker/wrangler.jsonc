@@ -1,0 +1,24 @@
+{
+  // Queue transport alert Worker (code#6369). Deployed from the flake:
+  //   nix run .#queue-transport-alert-deploy [-- --dry-run]
+  "name": "queue-transport-alert",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-25",
+  "observability": { "enabled": true },
+  "triggers": { "crons": ["*/10 * * * *"] },
+  "vars": {
+    "BROKER_URL": "https://queue-broker.security.cab",
+    "REPO": "developing-today/code",
+    "THRESHOLD": "2",
+    "PROBE_TIMEOUT_MS": "10000",
+    // "true" files/comments/closes incidents; anything else only logs.
+    "APPLY": "true"
+  },
+  // Secrets (set by deploy.mjs from Bitwarden, never in this file):
+  //   ACCESS_CLIENT_ID, ACCESS_CLIENT_SECRET  Access service token for the broker route
+  //   GITHUB_TOKEN                           token that may write issues in REPO
+  "durable_objects": {
+    "bindings": [{ "name": "TRANSPORT_STATE", "class_name": "TransportState" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TransportState"] }]
+}
