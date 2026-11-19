@@ -316,8 +316,8 @@ in
       ./amd-rustdesk.nix
       ./amd-ipv4-preference.nix
       ./amd-openclaw-secrets.nix
-      # Agent-triggered rebuilds without sudo: user may start only
-      # agent-rebuild-switch.service, which switches to the amd config on main.
+      # Agent-triggered rebuilds to the amd config on main: passwordless
+      # `sudo agent-rebuild-switch`, or start agent-rebuild-switch.service.
       ./amd-agent-rebuild.nix
     ];
   };

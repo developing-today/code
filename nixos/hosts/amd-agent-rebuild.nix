@@ -32,13 +32,13 @@ let
     ];
     text = ''
       # Argument contract (AGENTS.md, #3352): this command takes no
-      # arguments; the systemd unit passes none.
+      # arguments. The sudo rule forbids them and the unit passes none.
       if (($# != 0)); then
-        echo "usage: agent-rebuild-switch   (takes no arguments; start agent-rebuild-switch.service)" >&2
+        echo "usage: agent-rebuild-switch   (takes no arguments; or start agent-rebuild-switch.service)" >&2
         exit 2
       fi
       if ((EUID != 0)); then
-        echo "agent-rebuild-switch: must run as root (start agent-rebuild-switch.service)" >&2
+        echo "agent-rebuild-switch: run it with sudo, or start agent-rebuild-switch.service" >&2
         exit 1
       fi
 
@@ -79,12 +79,29 @@ let
   };
 in
 {
-  # Passwordless rebuilds for agents on this laptop, without sudo.
-  # `systemctl start --no-block agent-rebuild-switch.service` runs the
-  # wrapper above as root; it switches the system to the amd config on
-  # main and takes no input. A polkit rule lets `user` start (only start)
-  # this one unit, so sudo can stay blocked for agents entirely.
-  # Follow a run with `journalctl -u agent-rebuild-switch -f`.
+  # Passwordless rebuilds for agents on this laptop, two ways in, both
+  # running the same no-argument wrapper (switch to the amd config on
+  # main) and nothing else:
+  #   - `sudo agent-rebuild-switch` (sudo rule below), and
+  #   - `systemctl start --no-block agent-rebuild-switch.service`, which a
+  #     polkit rule lets `user` start (only start) without sudo, so sudo
+  #     can stay blocked for agents in Desktop Commander.
+  # Follow a service run with `journalctl -u agent-rebuild-switch -f`.
+  environment.systemPackages = [ agentRebuildSwitch ];
+
+  security.sudo.extraRules = [
+    {
+      users = [ "user" ];
+      commands = [
+        {
+          # `""` after the path is sudoers for "no arguments allowed".
+          command = ''${agentRebuildSwitch}/bin/agent-rebuild-switch ""'';
+          options = [ "NOPASSWD" ];
+        }
+      ];
+    }
+  ];
+
   systemd.services.agent-rebuild-switch = {
     description = "Switch amd to the config on main (agent-triggered)";
     serviceConfig = {
