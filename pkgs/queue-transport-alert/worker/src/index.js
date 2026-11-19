@@ -7,7 +7,7 @@
 // tailscaled is stopped (the 2026-11-18 outage) or when the broker is
 // down. Two failed probes in a row file one GitHub incident (or
 // comment on an open one); the first passing probe after that comments
-// once and closes the incident if this Worker filed it.
+// once. It never closes the incident (#10136): a human does.
 //
 // State lives in one SQLite-backed Durable Object so passes never race.
 // GET /status returns that state (no secrets) for a quick look.

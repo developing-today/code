@@ -31,10 +31,6 @@ class FakeGitHub {
     this.calls.push(["comment", n, body]);
     this.maybe("comment");
   }
-  async close(n) {
-    this.calls.push(["close", n]);
-    this.maybe("close");
-  }
   kinds() {
     return this.calls.map((c) => c[0]);
   }
@@ -128,17 +124,17 @@ test("failed filing is retried on the next tick", async () => {
   assert.deepEqual(h.gh.kinds(), ["find", "file", "find", "file"]);
 });
 
-test("recovery comments once and closes a Worker-filed incident", async () => {
+test("recovery comments once and never closes (#10136)", async () => {
   const h = new Harness();
   await h.alerted();
   let r = await h.pass(OK, "2026-11-19T01:15:00Z");
   assert.equal(r.event, "recovered");
   assert.match(r.message, /after about 2h15m/);
-  assert.deepEqual(h.gh.kinds(), ["find", "file", "comment", "close"]);
-  assert.equal(h.gh.calls[3][1], 9001);
+  assert.deepEqual(h.gh.kinds(), ["find", "file", "comment"]);
+  assert.equal(h.gh.calls[2][1], 9001);
   r = await h.pass(OK, "2026-11-19T01:25:00Z");
   assert.equal(r.event, "ok");
-  assert.equal(h.gh.calls.length, 4);
+  assert.equal(h.gh.calls.length, 3);
 });
 
 test("recovery leaves a hand-filed incident open", async () => {
@@ -157,16 +153,18 @@ test("blip below threshold recovers quietly", async () => {
   assert.deepEqual(h.gh.calls, []);
 });
 
-test("failed close is retried without a second comment", async () => {
+test("failed recovery comment is retried on the next tick", async () => {
   const h = new Harness();
   await h.alerted();
-  h.gh.failOn.add("close");
+  h.gh.failOn.add("comment");
   let r = await h.pass(OK, "2026-11-18T23:20:00Z");
   assert.ok(r.errors.length);
+  assert.equal(r.state.alerted, true);
   h.gh.failOn.clear();
   r = await h.pass(OK, "2026-11-18T23:30:00Z");
   assert.equal(r.event, "recovered");
-  assert.deepEqual(h.gh.kinds(), ["find", "file", "comment", "close", "close"]);
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(h.gh.kinds(), ["find", "file", "comment", "comment"]);
 });
 
 test("new outage after recovery alerts again", async () => {
@@ -213,8 +211,9 @@ test("GitHub client sends auth, UA and the incident labels", async () => {
   assert.deepEqual(post.labels, ["kind/bug", "priority/high", "area/infra", "source/fleet-monitor"]);
   assert.equal(seen[0].init.headers.Authorization, "Bearer tok");
   assert.ok(seen[0].init.headers["User-Agent"]);
+  assert.equal(gh.close, undefined, "the client must not be able to close issues (#10136)");
   await assert.rejects(
-    makeGitHub("tok", "o/r", async () => new Response("nope", { status: 403 })).close(1),
+    makeGitHub("tok", "o/r", async () => new Response("nope", { status: 403 })).comment(1, "x"),
     /HTTP 403/,
   );
 });

@@ -40,8 +40,6 @@ export function makeGitHub(token, repo, fetchImpl = fetch) {
     async comment(number, body) {
       await call("POST", `/repos/${repo}/issues/${number}/comments`, { body });
     },
-    async close(number) {
-      await call("PATCH", `/repos/${repo}/issues/${number}`, { state: "closed", state_reason: "completed" });
-    },
+    // Deliberately no close(): automation must never close an issue (#10136).
   };
 }

@@ -23,9 +23,10 @@ depends only on the transport it watches, never on the queue itself:
    `--apply` it first searches open issues for a transport incident and
    comments on that one if it exists, and otherwise files exactly one.
 4. On the first passing probe after an alerted window it announces
-   recovery ONCE: a comment with the outage span, and, if this probe
-   filed the incident, it closes it. A silent gap in lane reports is
-   then distinguishable from a healthy idle queue.
+   recovery ONCE: a comment with the outage span. It never closes the
+   incident: automation may label and comment but must not close an
+   issue (#10136), so a human closes it. A silent gap in lane reports
+   is then distinguishable from a healthy idle queue.
 
 Every pass prints one JSON document. Its `message` field is the one
 line a scheduled run should deliver to the main chat: empty on a pass
@@ -268,8 +269,9 @@ def incident_body(state: dict, now: datetime, probe_desc: str) -> str:
             (
                 "While the transport is down every worker lane exits at its Step 0 "
                 "`repo-queue health` gate, so the fleet starves silently. The probe "
-                "comments here once when the transport recovers, and closes this "
-                "issue if it filed it."
+                "comments here once when the transport recovers; close this issue "
+                "by hand once the outage is understood (automation never closes "
+                "issues, #10136)."
             ),
         ]
     )
@@ -336,10 +338,6 @@ def comment(repo: str, number: int, body: str) -> None:
     gh(["issue", "comment", str(number), "--repo", repo, "--body", body])
 
 
-def close_issue(repo: str, number: int) -> None:
-    gh(["issue", "close", str(number), "--repo", repo, "--reason", "completed"])
-
-
 # --- main ----------------------------------------------------------------
 
 
@@ -364,7 +362,6 @@ def main(argv: list[str] | None = None, github=None) -> int:
         "find": find_open_incident,
         "file": file_incident,
         "comment": comment,
-        "close": close_issue,
     }
     now = parse_ts(args.now) if args.now else now_utc()
 
@@ -419,8 +416,6 @@ def main(argv: list[str] | None = None, github=None) -> int:
         if args.apply and incident:
             try:
                 gh_ops["comment"](args.repo, incident, "Recovered: " + message)
-                if state.get("incident_filed_by_probe"):
-                    gh_ops["close"](args.repo, incident)
             except Exception as err:  # noqa: BLE001
                 apply_errors.append(describe_error(err))
         if not apply_errors:

@@ -19,7 +19,6 @@ export function emptyState() {
     alerted: false,
     incident: null,
     incident_filed_by_probe: false,
-    recovery_noted: false,
     last_ok: null,
     last_probe: null,
   };
@@ -98,8 +97,9 @@ export function incidentBody(state, nowMs, probeDesc) {
     "",
     alertMessage(state, nowMs),
     "",
-    "The Worker comments here once when the transport recovers, and closes " +
-      "this issue if it filed it.",
+    "The Worker comments here once when the transport recovers. Close this " +
+      "issue by hand once the outage is understood; automation never closes " +
+      "issues (#10136).",
   ].join("\n");
 }
 
