@@ -48,6 +48,8 @@ let
     # code#6369: the broker outage alert Worker.
     queueTransportAlertDeploy = callPackage ../../pkgs/queue-transport-alert/worker/deploy.nix {
       queueTransportAlert = callPackage ../../pkgs/queue-transport-alert/worker/package.nix { };
+      cf = callPackage ../cf { };
+      wrangler = callPackage ../wrangler { };
     };
     # Remote MCP connector that sends and receives messages.
     messageBridgeDeploy = callPackage ../../pkgs/message-bridge/worker/deploy.nix {
