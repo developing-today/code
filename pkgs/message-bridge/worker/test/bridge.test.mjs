@@ -293,6 +293,52 @@ test("code-only deploys refuse to inherit a token from a full deploy newer than 
   assert.throws(() => strayBeforeCodeOnly([{ id: "live" }], "live"), /no version number/);
 });
 
+test("a code-only deploy needs the live token fingerprint", async () => {
+  const { codeOnlyFingerprint } = await import("../deploy-probe.mjs");
+  assert.equal(codeOnlyFingerprint({ ok: true, configured: true, token_fingerprint: "0123456789abcdef" }), "0123456789abcdef");
+  assert.throws(() => codeOnlyFingerprint(null), /could not read/);
+  assert.throws(() => codeOnlyFingerprint({ ok: true, configured: true }), /no token fingerprint/);
+  assert.throws(() => codeOnlyFingerprint({ ok: true, token_fingerprint: null }), /no token fingerprint/);
+});
+
+test("a failed promotion or verification puts the previous version back", async () => {
+  const { promoteOrRollBack } = await import("../deploy-probe.mjs");
+  const run = async ({ promoteFails = false, verifyFails = false, rollbackFails = false, previousId = "old" }) => {
+    const log = [];
+    const result = await promoteOrRollBack({
+      newId: "new",
+      previousId,
+      promote: () => {
+        log.push("promote");
+        if (promoteFails) throw new Error("promote failed");
+      },
+      verify: async () => {
+        log.push("verify");
+        if (verifyFails) throw new Error("verify timed out");
+      },
+      rollback: (id) => {
+        log.push(`rollback ${id}`);
+        if (rollbackFails) throw new Error("api down");
+      },
+    }).then(
+      () => "ok",
+      (err) => err.message,
+    );
+    return { log, result };
+  };
+  assert.deepEqual(await run({}), { log: ["promote", "verify"], result: "ok" });
+  const timedOut = await run({ verifyFails: true });
+  assert.deepEqual(timedOut.log, ["promote", "verify", "rollback old"]);
+  assert.match(timedOut.result, /verify timed out; version old was put back live/);
+  const promoteErr = await run({ promoteFails: true });
+  assert.deepEqual(promoteErr.log, ["promote", "rollback old"]);
+  const both = await run({ verifyFails: true, rollbackFails: true });
+  assert.match(both.result, /failed too \(api down\).*--deploy-version old --allow-secret-change/);
+  const nothingBefore = await run({ verifyFails: true, previousId: null });
+  assert.deepEqual(nothingBefore.log, ["promote", "verify"]);
+  assert.equal(nothingBefore.result, "verify timed out");
+});
+
 test("deploy.mjs rejects undeclared arguments before touching credentials", async () => {
   const { spawnSync } = await import("node:child_process");
   const { fileURLToPath } = await import("node:url");

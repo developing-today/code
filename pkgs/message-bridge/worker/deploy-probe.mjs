@@ -75,3 +75,46 @@ export function strayBeforeCodeOnly(versions, liveId, uploadedId = null) {
   }
   return null;
 }
+
+/**
+ * The token fingerprint a code-only version must keep, from the live
+ * Worker's /healthz answer. A code-only deploy has no token of its own,
+ * so without the live fingerprint it can't check what it promotes and
+ * refuses rather than trusting the versions list alone.
+ *
+ * @param {unknown} health parsed /healthz body, or null if unreadable
+ * @returns {string}
+ */
+export function codeOnlyFingerprint(health) {
+  if (!health?.ok) throw new Error("could not read the live /healthz before promoting");
+  const fp = health.token_fingerprint;
+  if (typeof fp !== "string" || !/^[0-9a-f]{16}$/.test(fp)) {
+    throw new Error("the live version reports no token fingerprint, so a code-only deploy can't check the token it keeps");
+  }
+  return fp;
+}
+
+/**
+ * Promotes a version and verifies it; if either step fails, puts the
+ * previously live version back (when there is one) before rethrowing,
+ * so a failed or unverifiable promotion never stays live.
+ *
+ * @param {{newId: string, previousId: string | null, promote: () => unknown,
+ *   verify: () => Promise<unknown>, rollback: (id: string) => unknown}} steps
+ */
+export async function promoteOrRollBack({ newId, previousId, promote, verify, rollback }) {
+  try {
+    await promote();
+    await verify();
+  } catch (err) {
+    if (previousId && previousId !== newId) {
+      try {
+        await rollback(previousId);
+        err.message += `; version ${previousId} was put back live`;
+      } catch (rbErr) {
+        err.message += `; putting version ${previousId} back live failed too (${rbErr.message}), so fix it by hand with --deploy-version ${previousId} --allow-secret-change`;
+      }
+    }
+    throw err;
+  }
+}

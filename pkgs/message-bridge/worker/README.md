@@ -104,9 +104,11 @@ live one and the new one, and refuses if it never does. After promoting,
 every deploy waits for `/healthz` to answer from the new version, and a
 code-only deploy checks that it reports the same token fingerprint as
 the version it replaced (`/healthz` shows a 16-hex SHA-256 fingerprint of
-the token, never the token). If it doesn't, the previous version goes
-back live at once and the deploy fails, so the token can't change
-silently whatever the versions list showed. A full deploy from a
+the token, never the token). A code-only deploy refuses to promote when
+the live version reports no fingerprint. If promoting or any check after
+it fails (a token mismatch, or the new version never answering), the
+previous version goes back live at once and the deploy fails, so the
+token can't change silently whatever the versions list showed. A full deploy from a
 checkout clears the condition. A manual
 run with a `rollback_version` deploys that existing version instead.
 Without the two secrets the workflow builds, tests and skips the upload.
