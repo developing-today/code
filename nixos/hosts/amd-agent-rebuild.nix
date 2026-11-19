@@ -19,26 +19,27 @@ let
 
   agentRebuildSwitch = pkgs.writeShellApplication {
     name = "agent-rebuild-switch";
-    # No inherited PATH: under sudo the caller's PATH would otherwise
-    # decide which nix/git/nixos-rebuild run as root.
+    # No inherited PATH: the caller's environment must never decide
+    # which nix/git/nixos-rebuild run as root.
     inheritPath = false;
     runtimeInputs = [
       config.system.build.nixos-rebuild
       config.nix.package
       pkgs.git
       pkgs.coreutils
+      pkgs.curl
       pkgs.util-linux
       pkgs.systemd
     ];
     text = ''
       # Argument contract (AGENTS.md, #3352): this command takes no
-      # arguments. The sudo rule also forbids them; this is the second wall.
+      # arguments. The sudo rule forbids them and the unit passes none.
       if (($# != 0)); then
-        echo "usage: sudo agent-rebuild-switch   (takes no arguments)" >&2
+        echo "usage: agent-rebuild-switch   (takes no arguments; or start agent-rebuild-switch.service)" >&2
         exit 2
       fi
       if ((EUID != 0)); then
-        echo "agent-rebuild-switch: run it with sudo" >&2
+        echo "agent-rebuild-switch: run it with sudo, or start agent-rebuild-switch.service" >&2
         exit 1
       fi
 
@@ -54,19 +55,27 @@ let
 
       if [[ -f ${tokenFile} && ! -L ${tokenFile} ]]; then
         token="$(head -n 1 ${tokenFile} | tr -d '\r\n')"
-        if [[ $token =~ ^[A-Za-z0-9_]+$ ]]; then
-          export NIX_CONFIG="access-tokens = github.com=$token"
-        else
+        if [[ ! $token =~ ^[A-Za-z0-9_]+$ ]]; then
           echo "agent-rebuild-switch: ignoring ${tokenFile} (not a bare GitHub token)" >&2
+        # The header goes in on stdin so the token never shows in ps.
+        elif [[ "$(printf 'Authorization: Bearer %s\n' "$token" |
+          curl -s -o /dev/null -w '%{http_code}' --max-time 15 -H @- \
+            https://api.github.com/rate_limit)" == 401 ]]; then
+          # An expired or revoked token makes every GitHub fetch fail with
+          # 401, even for public inputs; fetching without one still works.
+          echo "agent-rebuild-switch: GitHub rejects the token in ${tokenFile} (401); continuing without it" >&2
+          logger -t agent-rebuild-switch "token in ${tokenFile} rejected by GitHub (401); continuing without it"
+        else
+          export NIX_CONFIG="access-tokens = github.com=$token"
         fi
         unset token
       fi
 
       logger -t agent-rebuild-switch "switch to ${flakeRef} started by ''${SUDO_USER:-unknown}"
-      # sudo keeps the caller's working directory, and nix resolves an
-      # installable that contains a slash against the cwd, following a
-      # symlink there into the store. Run from root-owned / so a caller
-      # cannot plant an entry that stands in for the flake reference.
+      # Nix resolves an installable that contains a slash against the
+      # cwd, following a symlink there into the store. Run from root-owned
+      # / so no caller can plant an entry that stands in for the flake
+      # reference (the unit also sets WorkingDirectory=/).
       cd /
       if nixos-rebuild switch --refresh --accept-flake-config --flake ${flakeRef}; then
         logger -t agent-rebuild-switch "switch to ${flakeRef} succeeded"
@@ -79,11 +88,14 @@ let
   };
 in
 {
-  # Passwordless rebuilds for agents on this laptop, scoped to one
-  # command: `sudo agent-rebuild-switch` (no arguments) switches the
-  # system to the amd config on main. Nothing else becomes passwordless:
-  # ./rebuild, nixos-rebuild with its own flags, and every other sudo
-  # still ask for the password.
+  # Passwordless rebuilds for agents on this laptop, two ways in, both
+  # running the same no-argument wrapper (switch to the amd config on
+  # main) and nothing else:
+  #   - `sudo agent-rebuild-switch` (sudo rule below), and
+  #   - `systemctl start --no-block agent-rebuild-switch.service`, which a
+  #     polkit rule lets `user` start (only start) without sudo, so sudo
+  #     can stay blocked for agents in Desktop Commander.
+  # Follow a service run with `journalctl -u agent-rebuild-switch -f`.
   environment.systemPackages = [ agentRebuildSwitch ];
 
   security.sudo.extraRules = [
@@ -98,4 +110,30 @@ in
       ];
     }
   ];
+
+  systemd.services.agent-rebuild-switch = {
+    description = "Switch amd to the config on main (agent-triggered)";
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = "${agentRebuildSwitch}/bin/agent-rebuild-switch";
+      WorkingDirectory = "/";
+      Environment = [ "HOME=/root" ];
+    };
+    # The switch this unit runs must not stop or restart the unit itself.
+    restartIfChanged = false;
+    stopIfChanged = false;
+  };
+
+  security.polkit.extraConfig = ''
+    polkit.addRule(function (action, subject) {
+      if (
+        action.id == "org.freedesktop.systemd1.manage-units" &&
+        action.lookup("unit") == "agent-rebuild-switch.service" &&
+        action.lookup("verb") == "start" &&
+        subject.user == "user"
+      ) {
+        return polkit.Result.YES;
+      }
+    });
+  '';
 }
