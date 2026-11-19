@@ -9,10 +9,10 @@
 //                                     before_id, unread_only, limit, order)
 //   POST /api/<token>/messages        JSON {body, sender}: store inbound
 //   POST /api/<token>/ack             JSON {up_to_id | ids}: mark read
-//   GET  /healthz                     {"ok":true}, no data
+//   GET  /healthz                     {ok, configured, version, token_fingerprint}, no data
 // Anything else, a wrong token included, is a plain 404.
 
-import { matchTokenPath, tokenConfigured } from "./auth.js";
+import { matchTokenPath, tokenConfigured, tokenFingerprint } from "./auth.js";
 import { handleMcp } from "./mcp.js";
 import { InputError } from "./messages.js";
 import { renderPage } from "./page.js";
@@ -118,7 +118,15 @@ async function handleApi(request, store, rest, url) {
 
 export async function route(request, env, getStore) {
   const url = new URL(request.url);
-  if (url.pathname === "/healthz") return json({ ok: true, configured: tokenConfigured(env) });
+  if (url.pathname === "/healthz") {
+    const configured = tokenConfigured(env);
+    return json({
+      ok: true,
+      configured,
+      version: env.CF_VERSION_METADATA?.id ?? null,
+      token_fingerprint: configured ? await tokenFingerprint(env.ACCESS_TOKEN) : null,
+    });
+  }
   const m = matchTokenPath(url.pathname, env);
   if (!m) return notFound();
   const token = env.ACCESS_TOKEN;

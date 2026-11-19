@@ -43,8 +43,21 @@ test("wrong or missing token is a plain 404 everywhere", async () => {
     assert.equal((await call(path, { method: "POST", body: "{}" })).status, 404, path);
     assert.equal((await call(path)).status, 404, path);
   }
-  const health = await call("/healthz");
-  assert.deepEqual(await health.json(), { ok: true, configured: true });
+  const health = await (await call("/healthz")).json();
+  const { tokenFingerprint } = await import("../src/auth.js");
+  assert.deepEqual(health, { ok: true, configured: true, version: null, token_fingerprint: await tokenFingerprint(TOKEN) });
+  assert.doesNotMatch(JSON.stringify(health), new RegExp(TOKEN));
+});
+
+test("token fingerprint is short, stable and token-specific", async () => {
+  const { tokenFingerprint } = await import("../src/auth.js");
+  const a = await tokenFingerprint(TOKEN);
+  assert.match(a, /^[0-9a-f]{16}$/);
+  assert.equal(await tokenFingerprint(TOKEN), a);
+  assert.notEqual(await tokenFingerprint(`${TOKEN}x`), a);
+  const versioned = { ...env, CF_VERSION_METADATA: { id: "v-123" } };
+  const res = await route(new Request(`${BASE}/healthz`), versioned, () => null);
+  assert.equal((await res.json()).version, "v-123");
 });
 
 test("MCP initialize, tools/list, notifications, unknown method", async () => {
@@ -204,11 +217,183 @@ test("history pages back past the newest page with before_id", async () => {
   assert.equal((await call(`/api/${TOKEN}/messages?before_id=0`)).status, 400);
 });
 
+test("deploy argument parsing fails closed", async () => {
+  const { parseArgs } = await import("../deploy-args.mjs");
+  const id = "02854b08-81e8-4ee5-bbc4-f7cba767fa8f";
+  assert.deepEqual(parseArgs([]), { mode: "deploy", dryRun: false, deployVersion: null, allowSecretChange: false });
+  assert.deepEqual(parseArgs(["--dry-run"]), { mode: "deploy", dryRun: true, deployVersion: null, allowSecretChange: false });
+  assert.equal(parseArgs(["--code-only"]).mode, "code-only");
+  assert.equal(parseArgs(["--print-urls"]).mode, "print-urls");
+  assert.deepEqual(parseArgs(["--deploy-version", id, "--dry-run"]), {
+    mode: "deploy-version",
+    dryRun: true,
+    deployVersion: id,
+    allowSecretChange: false,
+  });
+  assert.deepEqual(parseArgs(["--dry-run", "--deploy-version", id]), {
+    mode: "deploy-version",
+    dryRun: true,
+    deployVersion: id,
+    allowSecretChange: false,
+  });
+  assert.equal(parseArgs(["--deploy-version", id, "--allow-secret-change"]).allowSecretChange, true);
+  for (const bad of [
+    ["deploy"],
+    ["--nope"],
+    ["--dry-run", "--dry-run"],
+    ["--dry-run", "--print-urls"],
+    ["--code-only", "--dry-run"],
+    ["--deploy-version"],
+    ["--deploy-version", "latest"],
+    ["--deploy-version", id, "--code-only"],
+    ["--allow-secret-change"],
+    ["--dry-run", "--allow-secret-change"],
+    ["--deploy-version", id, "--allow-secret-change", "--allow-secret-change"],
+  ]) {
+    assert.throws(() => parseArgs(bad), undefined, bad.join(" "));
+  }
+});
+
+test("worker existence probe bootstraps only on the API's not-found answer", async () => {
+  const { classifyWorkerProbe } = await import("../deploy-probe.mjs");
+  assert.equal(classifyWorkerProbe(200, { success: true, result: {} }), true);
+  assert.equal(
+    classifyWorkerProbe(404, { success: false, errors: [{ code: 10007, message: "This Worker does not exist on your account." }] }),
+    false,
+  );
+  for (const [status, body] of [
+    [401, { success: false, errors: [{ code: 10000, message: "Authentication error" }] }],
+    [403, { success: false, errors: [{ code: 9109, message: "Unauthorized" }] }],
+    [404, { success: false, errors: [{ code: 7003, message: "Could not route" }] }],
+    [404, null],
+    [500, null],
+    [200, { success: false }],
+  ]) {
+    assert.throws(() => classifyWorkerProbe(status, body), /aborting before any upload/, `${status}`);
+  }
+});
+
+test("code-only deploys refuse to inherit a token from a full deploy newer than the live version", async () => {
+  const { strayBeforeCodeOnly, VersionListGap } = await import("../deploy-probe.mjs");
+  const v = (id, number, how) => ({ id, number, annotations: { "workers/message": `deploy abc via ${how} (run 1)` } });
+  const code = "message-bridge-deploy workflow";
+  const full = "nix run .#message-bridge-deploy";
+  // Before the upload: nothing newer than live, or only code-only uploads (in any order).
+  assert.equal(strayBeforeCodeOnly([v("live", 5, full)], "live"), null);
+  assert.equal(strayBeforeCodeOnly([v("c1", 6, code), v("live", 5, full), v("c2", 7, code)], "live"), null);
+  assert.equal(strayBeforeCodeOnly([v("c1", 7, code), v("f1", 6, full), v("live", 5, code)], "live")?.id, "f1");
+  // After the upload: a full deploy that slipped in before ours counts, one after it doesn't.
+  assert.equal(strayBeforeCodeOnly([v("mine", 7, code), v("f1", 6, full), v("live", 5, code)], "live", "mine")?.id, "f1");
+  assert.equal(strayBeforeCodeOnly([v("f1", 7, full), v("mine", 6, code), v("live", 5, code)], "live", "mine"), null);
+  // A version the list hasn't caught up with yet could be a full deploy: no verdict on a gap.
+  assert.throws(() => strayBeforeCodeOnly([v("mine", 7, code), v("live", 5, code)], "live", "mine"), VersionListGap);
+  assert.throws(() => strayBeforeCodeOnly([v("c2", 7, code), v("live", 5, code)], "live"), VersionListGap);
+  assert.throws(() => strayBeforeCodeOnly([v("x", 1, code)], "live"), /not in the versions list/);
+  assert.throws(() => strayBeforeCodeOnly([v("live", 6, code), v("mine", 5, code)], "live", "mine"), /not newer/);
+  assert.throws(() => strayBeforeCodeOnly([{ id: "live" }], "live"), /no version number/);
+});
+
+test("a code-only deploy needs the live token fingerprint", async () => {
+  const { codeOnlyFingerprint } = await import("../deploy-probe.mjs");
+  assert.equal(codeOnlyFingerprint({ ok: true, configured: true, token_fingerprint: "0123456789abcdef" }), "0123456789abcdef");
+  assert.throws(() => codeOnlyFingerprint(null), /could not read/);
+  assert.throws(() => codeOnlyFingerprint({ ok: true, configured: true }), /no token fingerprint/);
+  assert.throws(() => codeOnlyFingerprint({ ok: true, token_fingerprint: null }), /no token fingerprint/);
+});
+
+test("a failed promotion or verification puts the previous version back", async () => {
+  const { promoteOrRollBack } = await import("../deploy-probe.mjs");
+  const run = async ({ promoteFails = false, verifyFails = false, rollbackFails = false, previousId = "old" }) => {
+    const log = [];
+    const result = await promoteOrRollBack({
+      newId: "new",
+      previousId,
+      promote: () => {
+        log.push("promote");
+        if (promoteFails) throw new Error("promote failed");
+      },
+      verify: async () => {
+        log.push("verify");
+        if (verifyFails) throw new Error("verify timed out");
+      },
+      rollback: (id) => {
+        log.push(`rollback ${id}`);
+        if (rollbackFails) throw new Error("api down");
+      },
+    }).then(
+      () => "ok",
+      (err) => err.message,
+    );
+    return { log, result };
+  };
+  assert.deepEqual(await run({}), { log: ["promote", "verify"], result: "ok" });
+  const timedOut = await run({ verifyFails: true });
+  assert.deepEqual(timedOut.log, ["promote", "verify", "rollback old"]);
+  assert.match(timedOut.result, /verify timed out; version old was put back live/);
+  const promoteErr = await run({ promoteFails: true });
+  assert.deepEqual(promoteErr.log, ["promote", "rollback old"]);
+  const both = await run({ verifyFails: true, rollbackFails: true });
+  assert.match(both.result, /failed too \(api down\).*--deploy-version old --allow-secret-change/);
+  const nothingBefore = await run({ previousId: null });
+  assert.deepEqual(nothingBefore.log, []);
+  assert.match(nothingBefore.result, /refusing to promote/);
+});
+
+test("a promotion that replaced a different version than the one checked goes back to that one", async () => {
+  const { promoteOrRollBack, replacedOtherThan } = await import("../deploy-probe.mjs");
+  const d = (id) => ({ versions: [{ version_id: id, percentage: 100 }] });
+  assert.equal(replacedOtherThan([d("new"), d("old"), d("older")], "new", "old"), null);
+  assert.equal(replacedOtherThan([d("new"), d("rotated"), d("old")], "new", "old"), "rotated");
+  assert.throws(() => replacedOtherThan([d("old")], "new", "old"), /newest deployment is not/);
+  assert.throws(() => replacedOtherThan([d("new")], "new", "old"), /could not tell/);
+  const log = [];
+  const err = await promoteOrRollBack({
+    newId: "new",
+    previousId: "old",
+    promote: () => log.push("promote"),
+    verify: async () => {
+      const e = new Error("another deployment went live");
+      e.rollbackTo = "rotated";
+      throw e;
+    },
+    rollback: (id) => log.push(`rollback ${id}`),
+  }).catch((e) => e);
+  assert.deepEqual(log, ["promote", "rollback rotated"]);
+  assert.match(err.message, /version rotated was put back live/);
+});
+
+test("a failed verification never rolls back over a deployment made after it", async () => {
+  const { promoteOrRollBack } = await import("../deploy-probe.mjs");
+  const log = [];
+  const steps = (stillNewest) => ({
+    newId: "v2",
+    previousId: "v1",
+    promote: () => log.push("promote v2"),
+    verify: async () => {
+      log.push("v3 deployed by someone else");
+      throw new Error("verify timed out");
+    },
+    rollback: (id) => log.push(`rollback ${id}`),
+    stillNewest,
+  });
+  const err = await promoteOrRollBack(steps(async () => false)).catch((e) => e);
+  assert.deepEqual(log, ["promote v2", "v3 deployed by someone else"]);
+  assert.match(err.message, /not rolling back/);
+  log.length = 0;
+  const unreadable = await promoteOrRollBack(
+    steps(async () => {
+      throw new Error("api down");
+    }),
+  ).catch((e) => e);
+  assert.ok(!log.some((l) => l.startsWith("rollback")));
+  assert.match(unreadable.message, /not rolling back/);
+});
+
 test("deploy.mjs rejects undeclared arguments before touching credentials", async () => {
   const { spawnSync } = await import("node:child_process");
   const { fileURLToPath } = await import("node:url");
   const script = fileURLToPath(new URL("../deploy.mjs", import.meta.url));
-  for (const argv of [["deploy"], ["--nope"], ["--dry-run", "--print-urls"]]) {
+  for (const argv of [["deploy"], ["--nope"], ["--dry-run", "--print-urls"], ["--deploy-version", "x"]]) {
     const r = spawnSync(process.execPath, [script, ...argv], {
       encoding: "utf8",
       env: { PATH: "/nonexistent" }, // bws unreachable: any credential use would fail differently
@@ -216,6 +401,11 @@ test("deploy.mjs rejects undeclared arguments before touching credentials", asyn
     assert.equal(r.status, 2, `${argv.join(" ")}: ${r.stderr}`);
     assert.match(r.stderr, /usage: deploy\.mjs/);
   }
+  const ok = spawnSync(process.execPath, [script, "--code-only"], {
+    encoding: "utf8",
+    env: { PATH: "/nonexistent", MB_CHECK_ARGS_ONLY: "1" },
+  });
+  assert.equal(ok.status, 0, ok.stderr);
 });
 
 test("deploy.mjs --code-only needs the Cloudflare env and nothing from Bitwarden", async () => {
@@ -226,4 +416,49 @@ test("deploy.mjs --code-only needs the Cloudflare env and nothing from Bitwarden
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /CLOUDFLARE_API_TOKEN is not set/);
   assert.doesNotMatch(r.stderr, /bws/);
+});
+
+test("cloudflare.config.ts matches wrangler.jsonc", async () => {
+  const { readFileSync } = await import("node:fs");
+  const cfg = readFileSync(new URL("../cloudflare.config.ts", import.meta.url), "utf8");
+  const wr = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
+  const pick = (re, text) => text.match(re)?.[1];
+  assert.equal(pick(/name: "([^"]+)"/, cfg), pick(/"name": "([^"]+)"/, wr));
+  assert.equal(pick(/compatibilityDate: "([^"]+)"/, cfg), pick(/"compatibility_date": "([^"]+)"/, wr));
+  assert.equal(pick(/PUBLIC_URL: bindings\.text\("([^"]+)"\)/, cfg), pick(/"PUBLIC_URL": "([^"]+)"/, wr));
+  assert.ok(cfg.includes('MESSAGES: bindings.durableObject({ worker: "message-bridge", exportName: "MessageStore" })'));
+  assert.ok(wr.includes('"name": "MESSAGES", "class_name": "MessageStore"'));
+});
+
+test("isOwnDeployment accepts only this run's single-version deployment", async () => {
+  const { isOwnDeployment } = await import("../deploy-probe.mjs");
+  const mine = { id: "d1", versions: [{ version_id: "v2", percentage: 100 }] };
+  assert.equal(isOwnDeployment(mine, "v2"), true);
+  assert.equal(isOwnDeployment(mine, "v2", "d1"), true);
+  // the same version deployed again by someone else
+  assert.equal(isOwnDeployment({ ...mine, id: "d2" }, "v2", "d1"), false);
+  // a newer split deployment that still includes this version
+  const split = {
+    id: "d2",
+    versions: [
+      { version_id: "v2", percentage: 50 },
+      { version_id: "v3", percentage: 50 },
+    ],
+  };
+  assert.equal(isOwnDeployment(split, "v2"), false);
+  assert.equal(isOwnDeployment({ id: "d1", versions: [{ version_id: "v1", percentage: 100 }] }, "v2"), false);
+  assert.equal(isOwnDeployment(undefined, "v2"), false);
+});
+
+test("healthVersionProblem rejects a different reported version", async () => {
+  const { healthVersionProblem } = await import("../deploy-probe.mjs");
+  assert.equal(healthVersionProblem({ version: "v2" }, "v2"), null);
+  assert.equal(healthVersionProblem({ version: "v2" }, "v2", { requireVersion: true }), null);
+  // older Workers report no version: fine for a rollback, not for a new deploy
+  assert.equal(healthVersionProblem({ version: null }, "v1"), null);
+  assert.match(healthVersionProblem({ version: null }, "v1", { requireVersion: true }), /never answered/);
+  assert.match(healthVersionProblem(null, "v1", { requireVersion: true }), /never answered/);
+  // a different, configured version is wrong either way
+  assert.match(healthVersionProblem({ version: "v3" }, "v1"), /answered from version v3, not v1/);
+  assert.match(healthVersionProblem({ version: "v3" }, "v1", { requireVersion: true }), /v3/);
 });
