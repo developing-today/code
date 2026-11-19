@@ -308,6 +308,20 @@
       "reason": "The registered id-bench workflow is disabled_manually."
     },
     {
+      "id": "id.planted-bug.preflight",
+      "paths": ["pkgs/id/tests/test_planted_bug_preflight.py"],
+      "invocation": "python3 -I -m unittest discover -s pkgs/id/tests -p 'test_planted_bug_preflight.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/id-check.yml",
+        "job_step": "guard / Test planted-bug preflight safety refusals",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped",
+      "related_issues": [12058],
+      "notes": "Runs on the existing nightly/manual guard, before Nix setup. Five refusal tests use synthetic disposable Git fixtures and a fake Cargo sentinel, not the heavy mutation harness. Workflow enablement verified 2026-11-19; configured coverage is not evidence of a hosted run."
+    },
+    {
       "id": "id.just-recipes.drift-guard",
       "paths": ["pkgs/id/scripts/just-recipes-check-test.sh"],
       "invocation": "just-recipes-drift flake check: just-recipes-check && bash scripts/just-recipes-check-test.sh (pkgs/id/flake.nix, via .github/scripts/id-pr-checks.txt)",

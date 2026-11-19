@@ -76,6 +76,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Synthetic Git fixtures only: no Cargo build or live mutation harness.
+      - name: Test planted-bug preflight safety refusals
+        run: python3 -I -m unittest discover -s pkgs/id/tests -p 'test_planted_bug_preflight.py' -v
+
       - name: Test matrix normalization
         run: bash .github/scripts/id-pr-checks-matrix.test.sh
 
