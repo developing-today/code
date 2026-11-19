@@ -63,7 +63,7 @@
 #   (code#1515). Script: ./atlas-backup.sh (vendored here; credentials
 #   from Bitwarden by name at runtime, never in the store).
 # - cold-store-nightly (daily 03:12): the cold-store reaper's nightly
-#   backup set (D1 exports, Supabase filing, Turso exports) to Google
+#   backup set (D1 exports, Turso exports) to Google
 #   Drive. Migrated from the sandbox 2026-10-28 (code#1723). Script:
 #   ~/tools/cold-store-nightly.sh (wrapper; the job script itself lives
 #   in developing-today/code, pkgs/cold-store-reaper).
@@ -384,7 +384,7 @@ in
       })
       (lib.mkIf cfg.coldStoreNightly.enable {
         cold-store-nightly = {
-          Unit.Description = "Cold-store nightly backup set (D1 + Supabase + Turso exports to Drive) (code#1723)";
+          Unit.Description = "Cold-store nightly backup set (D1 + Turso exports to Drive) (code#1723)";
           Service = {
             Type = "oneshot";
             ExecStart = cfg.coldStoreNightly.script;

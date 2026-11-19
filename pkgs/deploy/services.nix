@@ -40,7 +40,6 @@
     # activation time (later slice); a definition never carries a value.
     secrets = [
       "turso.fleet-queue-rw-token" # the Turso backend token, by name
-      "supabase.muse-dev2.service-role-key" # legacy Postgres backend
     ];
     user = "user";
     ports = [ 4801 ];
