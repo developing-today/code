@@ -412,7 +412,7 @@ export interface GathererProviderFreshness {
   serviceId: string;
   credentialLabel?: string;
   state: "ok" | "stale" | "error" | "lapsed";
-  measuredAt: string;
+  measuredAt: string | null;
   source: string;
   error?: string;
 }
@@ -425,6 +425,8 @@ export interface GathererSummary {
   source: string;
   tickAt: string | null;
   ok: boolean;
+  durationMs?: number | null;
+  error?: string;
   providers: GathererProviderFreshness[];
 }
 

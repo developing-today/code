@@ -2570,6 +2570,7 @@ export function renderQuota(
 ${credentialLifecycle}
 ${providerAuthSection}
 ${quotaRefreshHtml(refresh, view.gatherer?.generatedAt ?? null)}
+${view.gatherer ? `<p class="muted">Gatherer tick: ${view.gatherer.tickAt ? fmtCentral(view.gatherer.tickAt) : "unknown"} · ${view.gatherer.ok ? "ok" : "failed"}${view.gatherer.tickAt && Date.now() - Date.parse(view.gatherer.tickAt) > 20 * 60_000 ? " · stale" : ""}${view.gatherer.durationMs != null ? ` · ${esc(view.gatherer.durationMs)} ms` : ""}${view.gatherer.error ? ` · ${esc(view.gatherer.error)}` : ""}</p>` : ""}
 <h2>Pools</h2>${pools}
 ${analytics ? analyticsSectionHtml(analytics, display) : ""}
 ${burnAndChoices}`,
@@ -2615,6 +2616,7 @@ ${attentionStripHtml(usage)}
 ${credentialLifecycle}
 ${providerAuthSection}
 ${quotaRefreshHtml(refresh, view.gatherer?.generatedAt ?? null)}
+${view.gatherer ? `<p class="muted">Gatherer tick: ${view.gatherer.tickAt ? fmtCentral(view.gatherer.tickAt) : "unknown"} · ${view.gatherer.ok ? "ok" : "failed"}${view.gatherer.tickAt && Date.now() - Date.parse(view.gatherer.tickAt) > 20 * 60_000 ? " · stale" : ""}${view.gatherer.durationMs != null ? ` · ${esc(view.gatherer.durationMs)} ms` : ""}${view.gatherer.error ? ` · ${esc(view.gatherer.error)}` : ""}</p>` : ""}
 <h2>Token quotas</h2>${pools}
 ${analytics ? analyticsSectionHtml(analytics, display) : ""}
 ${paygCardHtml(usage)}

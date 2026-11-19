@@ -1144,3 +1144,19 @@ Board timestamps are shown, with a stale warning after 15 minutes. Missing
 or invalid snapshots are unavailable; personal-repository token coverage
 remains a stated caveat. These views are read-only and do not redefine
 Parked or Abandoned statuses.
+
+
+### Independent quota gatherer heartbeat (#1175)
+
+`PM_AGG_QUOTA_HEARTBEAT_FILE` selects the standalone tick record. Its default
+is `quota-gatherer-heartbeat.json` beside the configured `quota-current.json`.
+The quota view uses the newer valid embedded or standalone heartbeat, so a
+failed tick remains visible when current measurements are missing, unreadable,
+or older. Missing/invalid heartbeat files do not erase valid embedded status.
+Future-skewed timestamps and malformed records are rejected; old valid ticks
+remain historical evidence and are visibly stale after 20 minutes.
+
+Tick duration and sanitized failure reasons appear in the existing quota UI.
+Heartbeat-only provider failures have no measurement timestamp; successes do
+not invent fresh measurements or pools. Quota measurement precedence, refresh
+behavior and the existing current-file read retry remain unchanged.
