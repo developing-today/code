@@ -1155,10 +1155,12 @@ func (s *Server) scriptLanguage(w http.ResponseWriter, r *http.Request) (codegen
 }
 
 type callReq struct {
-	Server  string             `json:"server"`
-	Tool    string             `json:"tool"`
-	Args    json.RawMessage    `json:"args"`
-	Context config.CallContext `json:"context"`
+	LazySelector string             `json:"lazySelector,omitempty"`
+	LazyLanguage string             `json:"lazyLanguage,omitempty"`
+	Server       string             `json:"server"`
+	Tool         string             `json:"tool"`
+	Args         json.RawMessage    `json:"args"`
+	Context      config.CallContext `json:"context"`
 	// Session is the shorthand a caller may send instead of a full context.
 	Session string `json:"session"`
 	// Task, when present, asks for a handle now and the result later.
@@ -1222,6 +1224,12 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, errors.New("server and tool are required"))
 		return
 	}
+	if req.LazyLanguage != "" {
+		if _, valid := codegen.GeneratedToolName(req.LazyLanguage, ""); !valid || req.Task != nil {
+			writeErr(w, 400, errors.New("lazyLanguage requires typescript or python and synchronous/reporting calls"))
+			return
+		}
+	}
 	cc := callContext(r, req.Context, req.Session)
 
 	var args any = map[string]any{}
@@ -1277,6 +1285,8 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request) {
 		// A dry run's calls are answered synthetically and never
 		// reach a server (#1927).
 		res, dryRun = syn, true
+	} else if req.LazyLanguage != "" {
+		res, err = s.reg.CallGenerated(ctx, "", req.LazyLanguage, req.Server, req.Tool, cc, args, req.LazySelector)
 	} else {
 		res, err = s.reg.Call(ctx, req.Server, req.Tool, cc, args)
 	}

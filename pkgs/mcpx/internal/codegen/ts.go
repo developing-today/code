@@ -28,6 +28,10 @@ type Tool struct {
 
 // Namespace groups tools under one TypeScript identifier.
 type Namespace struct {
+	// Cold preserves configured members while their catalogue is still loading.
+	Cold bool
+	// LazyTools limits a cold stub to explicitly selected members; nil means whole namespace.
+	LazyTools   []string
 	Name        string
 	Server      string
 	Description string
@@ -523,4 +527,22 @@ func funcCollisions(tools []Tool) map[string][]string {
 		}
 	}
 	return by
+}
+
+// lazySelector keeps an exact selector through normalization. If multiple
+// selections share a property, leave collision resolution to the daemon.
+func lazySelector(ns Namespace, language, property string) string {
+	var match string
+	count := 0
+	for _, selector := range ns.LazyTools {
+		normalized, _ := GeneratedToolName(language, selector)
+		if normalized == property {
+			match = selector
+			count++
+		}
+	}
+	if count == 1 {
+		return match
+	}
+	return ""
 }

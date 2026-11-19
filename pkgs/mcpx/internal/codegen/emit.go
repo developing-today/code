@@ -27,7 +27,11 @@ func Declarations(nss []Namespace) string {
 	sort.Slice(nss, func(i, j int) bool { return nss[i].Name < nss[j].Name })
 	for _, ns := range nss {
 		b.WriteString(namespaceDoc(ns))
-		fmt.Fprintf(&b, "declare namespace %s {\n", ns.Name)
+		if ns.Cold {
+			fmt.Fprintf(&b, "declare const %s: Record<string, (args?: any) => Promise<any>> & {\n", ns.Name)
+		} else {
+			fmt.Fprintf(&b, "declare namespace %s {\n", ns.Name)
+		}
 		tools := append([]Tool(nil), ns.Tools...)
 		sort.Slice(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
 		clash := funcCollisions(tools)
@@ -45,7 +49,11 @@ func Declarations(nss []Namespace) string {
 			// The form a script calls it in, and the name it has as a native
 			// tool once projected. Both spelled from the same identifier.
 			fmt.Fprintf(&b, "  // Called as tools.%s.%s(args); native name %s_%s.\n", ns.Name, fn, ns.Name, fn)
-			b.WriteString(toolDecl(t, "  "))
+			decl := toolDecl(t, "  ")
+			if ns.Cold {
+				decl = strings.Replace(decl, "function ", "", 1)
+			}
+			b.WriteString(decl)
 		}
 		b.WriteString("}\n\n")
 	}
@@ -160,7 +168,11 @@ func ModuleWithRecipes(nss []Namespace, endpoint, session string, recipes []Reci
 		sort.Slice(tools, func(i, j int) bool { return tools[i].Name < tools[j].Name })
 
 		b.WriteString(namespaceDoc(ns))
-		fmt.Fprintf(&b, "export const %s = {\n", ns.Name)
+		if ns.Cold {
+			fmt.Fprintf(&b, "export const %s = __lazyNamespace({\n", ns.Name)
+		} else {
+			fmt.Fprintf(&b, "export const %s = {\n", ns.Name)
+		}
 		clash := funcCollisions(tools)
 		done := map[string]bool{}
 		for i, t := range tools {
@@ -184,7 +196,20 @@ func ModuleWithRecipes(nss []Namespace, endpoint, session string, recipes []Reci
 			}
 			b.WriteString(toolImpl(ns.Server, t, "  "))
 		}
-		b.WriteString("};\n\n")
+		if ns.Cold {
+			var allowed map[string]string
+			if ns.LazyTools != nil {
+				allowed = map[string]string{}
+			}
+			for _, name := range ns.LazyTools {
+				fn := ToolFuncName(name)
+				allowed[fn] = lazySelector(ns, "typescript", fn)
+			}
+			encoded, _ := json.Marshal(allowed)
+			fmt.Fprintf(&b, "}, %s, %s);\n\n", quote(ns.Server), encoded)
+		} else {
+			b.WriteString("};\n\n")
+		}
 	}
 
 	b.WriteString("export const tools = {\n")
@@ -760,7 +785,22 @@ function unwrap(server: string, tool: string, raw: RawToolResult): ToolResult {
   return attachRaw(blocks as ToolResult, raw);
 }
 
-async function __call(server: string, tool: string, args: unknown): Promise<ToolResult> {
+function __lazyNamespace<T extends object>(known: T, server: string, allowed: Record<string,string> | null): T & Record<string, (args?: any) => Promise<any>> {
+  return new Proxy(known, {
+    get(target, prop, receiver) {
+      if (typeof prop !== "string") return Reflect.get(target, prop, receiver);
+      // Do not turn namespaces into promises or synthesize object machinery.
+      if (!Object.prototype.hasOwnProperty.call(target, prop) &&
+          (prop === "then" || prop === "catch" || prop === "toJSON" || prop in Object.prototype)) return undefined;
+      if (allowed && !Object.prototype.hasOwnProperty.call(allowed, prop)) return Reflect.get(target, prop, receiver);
+      // Read known getters first so existing collision stubs keep refusing.
+      if (Object.prototype.hasOwnProperty.call(target, prop)) Reflect.get(target, prop, receiver);
+      return (args?: any) => __call(server, prop, args ?? {}, "typescript", allowed?.[prop]);
+    }
+  }) as T & Record<string, (args?: any) => Promise<any>>;
+}
+
+async function __call(server: string, tool: string, args: unknown, lazyLanguage?: string, lazySelector?: string): Promise<ToolResult> {
   let resp: Response;
   try {
     resp = await TRANSPORT.fetch(base() + "/v1/call", {
@@ -777,7 +817,7 @@ async function __call(server: string, tool: string, args: unknown): Promise<Tool
         "x-mcpx-settings": asciiHeader(env("MCPX_SETTINGS")),
         "x-mcpx-input": env("MCPX_INPUT"),
       },
-      body: JSON.stringify({ server, tool, args: args ?? {} }),
+      body: JSON.stringify({ server, tool, args: args ?? {}, ...(lazyLanguage ? {lazyLanguage} : {}), ...(lazySelector ? {lazySelector} : {}) }),
     });
   } catch (e) {
     throw new ToolError(
