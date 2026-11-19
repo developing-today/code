@@ -3,7 +3,7 @@
 // default, except the default Source: implicit fixtures require the
 // explicit PM_AGG_DEV=1 switch (#1195).
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { parseStoreBackend, type StoreBackendKind } from "./store-backend.ts";
 
 const s = (v: string | undefined, d: string): string => (v && v.trim() !== "" ? v.trim() : d);
@@ -131,6 +131,7 @@ export interface Config {
   /** The quota gatherer's latest-state file (#1151), written into the
    * aggregator's own data dir by scripts/gather-quota.ts. */
   quotaCurrentFile: string;
+  quotaHeartbeatFile: string;
   /** The deployed OpenCode config (.opencode/opencode.jsonc of the
    * code repo): the section-risk join (#8882) reads its model_routes
    * leaf sets from here. */
@@ -285,6 +286,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       join(homedir(), "workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md"),
     ),
     quotaCurrentFile: s(env.PM_AGG_QUOTA_CURRENT_FILE, join(process.cwd(), "quota-current.json")),
+    quotaHeartbeatFile: s(env.PM_AGG_QUOTA_HEARTBEAT_FILE, join(dirname(s(env.PM_AGG_QUOTA_CURRENT_FILE, join(process.cwd(), "quota-current.json"))), "quota-gatherer-heartbeat.json")),
     opencodeConfigFile: s(
       env.PM_AGG_OPENCODE_CONFIG_FILE,
       join(homedir(), "git", "code", ".opencode", "opencode.jsonc"),

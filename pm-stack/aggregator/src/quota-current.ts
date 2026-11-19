@@ -25,6 +25,7 @@ import { computeChoices } from "./quota-guidance.ts";
 import { resolveTursoLimits, type TursoLimits } from "./quota-gather-map.ts";
 import type {
   GathererSummary,
+  QuotaGatherHeartbeat,
   PoolFreshness,
   QuotaCurrentEntry,
   QuotaCredentialRow,
@@ -36,7 +37,7 @@ import type {
   UsageMetric,
   UsageUnit,
 } from "./model.ts";
-import { arrayOf, isFiniteNumber, isIsoDate, isNonEmptyString, isRecord } from "./validate.ts";
+import { arrayOf, isFiniteNumber, isIsoDate, isNonEmptyString, isRecord, isTimestampNotFuture } from "./validate.ts";
 
 /** Freshness bound for gatherer precedence: two missed ticks. */
 export const QUOTA_CURRENT_FRESH_MS = 20 * 60_000;
@@ -129,9 +130,53 @@ export function parseQuotaCurrent(doc: unknown): QuotaCurrentFile | null {
   return {
     ...doc,
     providers: validProviders,
+    heartbeat: parseQuotaGatherHeartbeat(doc.heartbeat) ?? undefined,
     providerAuth,
     sanitized: { droppedProviders: providers.dropped, droppedWindows },
   } as unknown as QuotaCurrentFile;
+}
+
+/** Validate both embedded and standalone tick health, independently of readings. */
+export function parseQuotaGatherHeartbeat(doc: unknown): QuotaGatherHeartbeat | null {
+  if (!isRecord(doc) || !isTimestampNotFuture(doc.tickAt, QUOTA_CURRENT_FUTURE_SKEW_MS)
+    || typeof doc.ok !== "boolean" || !isFiniteNumber(doc.durationMs) || doc.durationMs < 0
+    || !isRecord(doc.perProvider) || (doc.error !== undefined && typeof doc.error !== "string")) return null;
+  const perProvider: QuotaGatherHeartbeat["perProvider"] = {};
+  for (const [id, value] of Object.entries(doc.perProvider)) {
+    if (!isRecord(value) || (value.state !== "ok" && value.state !== "error" && value.state !== "lapsed")
+      || !isFiniteNumber(value.ms) || value.ms < 0
+      || !Number.isSafeInteger(value.rows) || (value.rows as number) < 0
+      || (value.error !== undefined && typeof value.error !== "string")
+      || (value.errorKind !== undefined && typeof value.errorKind !== "string")) return null;
+    Object.defineProperty(perProvider, id, {value: {
+      state: value.state, ms: value.ms, rows: value.rows,
+      ...(typeof value.error === "string" ? {error: safeProviderReason(value.error)} : {}),
+      ...(typeof value.errorKind === "string" ? {errorKind: safeProviderReason(value.errorKind)} : {}),
+    }, enumerable: true});
+  }
+  return {tickAt: doc.tickAt as string, ok: doc.ok, durationMs: doc.durationMs, perProvider,
+    ...(typeof doc.error === "string" ? {error: safeProviderReason(doc.error)} : {})};
+}
+
+export function latestQuotaHeartbeat(
+  embedded: QuotaGatherHeartbeat | undefined,
+  standalone: QuotaGatherHeartbeat | null,
+): QuotaGatherHeartbeat | undefined {
+  const a = parseQuotaGatherHeartbeat(embedded);
+  const b = parseQuotaGatherHeartbeat(standalone);
+  return b && (!a || Date.parse(b.tickAt) > Date.parse(a.tickAt)) ? b : a ?? undefined;
+}
+
+export async function readQuotaHeartbeatFile(path: string): Promise<QuotaGatherHeartbeat | null> {
+  try {
+    const {readFile} = await import("node:fs/promises");
+    return parseQuotaGatherHeartbeat(JSON.parse(await readFile(path, "utf8")));
+  } catch { return null; }
+}
+
+export function overlayStandaloneQuotaHeartbeat(view: QuotaView, heartbeat: QuotaGatherHeartbeat, now = new Date()): QuotaView {
+  return {...view, gatherer: summarize({version: 1, generatedAt: heartbeat.tickAt,
+    source: "standalone-heartbeat", heartbeat, providers: []}, now.getTime())};
 }
 
 type FreshState = PoolFreshness["state"];
@@ -442,24 +487,32 @@ function credentialRows(entries: QuotaCurrentEntry[], nowMs: number): QuotaCrede
 }
 
 function summarize(file: QuotaCurrentFile, nowMs: number): GathererSummary {
-  return {
-    generatedAt: file.generatedAt,
-    source: file.source,
-    tickAt: file.heartbeat?.tickAt ?? null,
-    ok: file.heartbeat?.ok ?? true,
-    providers: file.providers.map((e) => {
-      const s: GathererSummary["providers"][number] = {
-        providerId: e.providerId,
-        serviceId: e.serviceId,
-        state: entryState(e, nowMs),
-        measuredAt: e.measuredAt,
-        source: e.source,
-      };
-      if (e.credentialLabel) s.credentialLabel = e.credentialLabel;
-      if (s.state === "error" || s.state === "lapsed") s.error = errorText(e);
-      return s;
-    }),
-  };
+  const heartbeat = parseQuotaGatherHeartbeat(file.heartbeat);
+  const providers: GathererSummary["providers"] = file.providers.map(e => {
+    const run = heartbeat?.perProvider[e.providerId];
+    const state = run?.state === "error" || run?.state === "lapsed" ? run.state : entryState(e, nowMs);
+    // A folded provider run may be successful while carrying one failed
+    // credential's reason. That aggregate reason is not every row's error.
+    const failedEntry = e.state === "error" || e.state === "lapsed" || e.retainedFromFailedTick;
+    const error = e.error ? safeProviderReason(e.error)
+      : failedEntry ? (run?.error ?? errorText(e)) : undefined;
+    return {providerId: e.providerId, serviceId: e.serviceId, state,
+      measuredAt: e.measuredAt, source: e.source,
+      ...(e.credentialLabel ? {credentialLabel: e.credentialLabel} : {}),
+      ...(error ? {error} : {})};
+  });
+  const present = new Set(providers.map(p => p.providerId));
+  for (const [providerId, run] of Object.entries(heartbeat?.perProvider ?? {})) {
+    // A tick is not a quota measurement. Never manufacture a fresh success.
+    if (!present.has(providerId) && run.state !== "ok") providers.push({
+      providerId, serviceId: providerId, state: run.state, measuredAt: null,
+      source: "standalone-heartbeat", ...(run.error ? {error: run.error} : {}),
+    });
+  }
+  return {generatedAt: file.generatedAt, source: file.source,
+    tickAt: heartbeat?.tickAt ?? null, ok: heartbeat?.ok ?? true,
+    durationMs: heartbeat?.durationMs ?? null,
+    ...(heartbeat?.error ? {error: heartbeat.error} : {}), providers};
 }
 
 /**
