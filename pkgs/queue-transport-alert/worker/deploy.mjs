@@ -3,7 +3,7 @@
 //
 //   cf workers versions create     upload a version stamped with the git
 //                                  SHA (--tag git-<sha12>), its secrets
-//                                  read from stdin; nothing goes live yet
+//                                  through a pipe; nothing goes live yet
 //   cf workers deployments create  put that version at 100%
 //   cf workers triggers deploy     apply the cron schedule from the config
 //
@@ -33,6 +33,7 @@
 // the previous version's value. No secret is printed or written to disk.
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { setDefaultAutoSelectFamilyAttemptTimeout } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -95,13 +96,25 @@ for (const [name, variable] of [["cf", "QTA_CF_MODULE"], ["wrangler", "QTA_WRANG
   symlinkSync(target, join(stage, "node_modules", name));
 }
 
-function runCf(args, { capture = false, input } = {}) {
+function runCf(args, { capture = false } = {}) {
   return execFileSync("cf", ["-q", ...args], {
     cwd: stage,
     env,
     encoding: "utf8",
-    input,
-    stdio: [input === undefined ? "inherit" : "pipe", capture ? "pipe" : "inherit", "inherit"],
+    stdio: ["inherit", capture ? "pipe" : "inherit", "inherit"],
+  });
+}
+
+// cf reads --secrets-file with a plain file read, which fails on this
+// process's stdin pipe. Hand it a fresh pipe instead: bash's process
+// substitution copies our stdin (the secrets JSON) into /dev/fd/N, and
+// cf itself gets /dev/null, so the values never touch disk or argv.
+function runCfWithSecrets(args, secrets) {
+  execFileSync("bash", ["-c", 'cf -q "$@" --secrets-file <(cat) </dev/null', "cf", ...args], {
+    cwd: stage,
+    env,
+    input: JSON.stringify(secrets),
+    stdio: ["pipe", "inherit", "inherit"],
   });
 }
 
@@ -121,9 +134,23 @@ async function verify(versionId) {
     throw new Error(`post-deploy check failed: expected version ${versionId} at 100%, latest deployment serves ${serving.serving}`);
   }
   const url = `${WORKER_URL}/status.json`;
-  const response = await fetch(url, { headers: { "user-agent": BROWSER_UA }, signal: AbortSignal.timeout(15_000) });
-  if (!response.ok) throw new Error(`post-deploy check failed: ${url} answered HTTP ${response.status}`);
-  const status = await response.json();
+  // Node tries each address for only 250 ms by default; on the laptop's
+  // network that timed out every address while curl got through.
+  setDefaultAutoSelectFamilyAttemptTimeout(5_000);
+  let status;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      const response = await fetch(url, { headers: { "user-agent": BROWSER_UA }, signal: AbortSignal.timeout(20_000) });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      status = await response.json();
+      break;
+    } catch (error) {
+      if (attempt >= 3) {
+        throw new Error(`version ${versionId} is deployed, but ${url} did not answer: ${error.cause?.message ?? error.message}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+    }
+  }
   console.log(`verified: version ${versionId} serves 100%; ${url} reports the broker ${status.status ?? "unknown"}`);
 }
 
@@ -163,10 +190,7 @@ if (brokerToken) {
 }
 
 console.log(`uploading version (tag ${tag}; secrets ${Object.keys(workerSecrets).join(", ")})`);
-runCf(
-  ["workers", "versions", "create", "--worker", WORKER, "--tag", tag, "--message", message, "--secrets-file", "/dev/stdin"],
-  { input: JSON.stringify(workerSecrets) },
-);
+runCfWithSecrets(["workers", "versions", "create", "--worker", WORKER, "--tag", tag, "--message", message], workerSecrets);
 const versions = listItems(
   parseJsonOutput(runCf(["workers", "versions", "list", "--worker-id", WORKER], { capture: true })),
   "versions",
