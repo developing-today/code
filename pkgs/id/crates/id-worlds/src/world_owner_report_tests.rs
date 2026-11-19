@@ -536,6 +536,52 @@ fn timed_joins_give_exact_window_counts_and_since() {
     assert_eq!(report.joins.in_window, Measured::Known(1));
 }
 
+// #12041 oracle: an untimed revocation may belong to any requested window,
+// so a timed subset (including zero) cannot establish a complete count.
+#[test]
+fn mixed_revocation_times_never_report_a_complete_window_count() {
+    let v = crate::world::JOURNAL_VERSION_JOIN_TIMES;
+    for timed_at in [INSIDE, BEFORE, request().window.to_unix_ms] {
+        let report = run(&jsonl(&[
+            header(v),
+            issued(1, None, None),
+            issued_at(2, BEFORE),
+            revoked(1),
+            revoked_at(2, timed_at),
+        ]))
+        .unwrap();
+        assert_eq!(report.joins.revoked, 2);
+        assert_eq!(report.joins.revoked_untimed, 1);
+        assert_eq!(
+            report.joins.revoked_in_window,
+            Measured::Unavailable(UnavailableReason::RevokeTimeNotRecorded),
+            "timed revocation at {timed_at} does not date the untimed one"
+        );
+    }
+}
+
+#[test]
+fn complete_revocation_times_keep_known_window_counts() {
+    let v = crate::world::JOURNAL_VERSION_JOIN_TIMES;
+    let window = request().window;
+    let report = run(&jsonl(&[
+        header(v),
+        issued_at(1, BEFORE),
+        issued_at(2, BEFORE),
+        issued_at(3, BEFORE),
+        revoked_at(1, BEFORE),
+        revoked_at(2, window.from_unix_ms),
+        revoked_at(3, window.to_unix_ms),
+    ]))
+    .unwrap();
+    assert_eq!(report.joins.revoked_in_window, Measured::Known(1));
+    assert_eq!(report.joins.revoked_untimed, 0);
+    // Untimed joins are irrelevant when nobody has been revoked.
+    let none = run(&jsonl(&[header(v), issued(1, None, None)])).unwrap();
+    assert_eq!(none.joins.revoked_in_window, Measured::Known(0));
+    assert_eq!(none.joins.revoked_untimed, 0);
+}
+
 #[test]
 fn joins_from_before_the_upgrade_stay_untimed_and_mark_the_window_incomplete() {
     let v = crate::world::JOURNAL_VERSION_JOIN_TIMES;

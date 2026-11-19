@@ -76,7 +76,9 @@ impl UnavailableReason {
     pub const fn describe(self) -> &'static str {
         match self {
             Self::JoinTimeNotRecorded => "the journal does not record when anyone joined",
-            Self::RevokeTimeNotRecorded => "the journal does not record when anyone was revoked",
+            Self::RevokeTimeNotRecorded => {
+                "the journal does not record when all revocations occurred"
+            }
             Self::NoJoins => "no one has joined yet",
             Self::LiveStateNotProvided => "no live snapshot (the world is not running here)",
             Self::ProgramRunsNotRecorded => "program runs are not recorded by this journal",
@@ -242,7 +244,7 @@ pub struct JoinsSection {
     /// Joins whose entry carries no time (issued before times were
     /// recorded).
     pub untimed: u64,
-    /// Revokes inside the requested window, counting those with a time.
+    /// Revokes inside the requested window; unavailable if any revoke lacks a time.
     pub revoked_in_window: Measured<u64>,
     /// Revoked participants whose revoke carries no time.
     pub revoked_untimed: u64,
@@ -667,7 +669,7 @@ pub fn project<R: BufRead>(
         .values()
         .filter(|f| f.revoked && f.revoked_at.is_some())
         .count() as u64;
-    let revoked_in_window = if revoked > 0 && revoked_timed == 0 {
+    let revoked_in_window = if revoked_timed < revoked {
         Measured::Unavailable(UnavailableReason::RevokeTimeNotRecorded)
     } else {
         Measured::Known(
