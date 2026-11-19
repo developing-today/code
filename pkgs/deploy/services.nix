@@ -22,6 +22,7 @@
   labOpsHubDeploy,
   cfContainerHelloDeploy,
   queueTransportAlertDeploy,
+  messageBridgeDeploy,
 }:
 {
   queue-broker = {
@@ -225,6 +226,22 @@
   queue-transport-alert = {
     package = queueTransportAlertDeploy;
     entryPoint = "bin/queue-transport-alert-deploy";
+    args = [ ];
+    environment = { };
+    secrets = [ ]; # resolved by the deploy app itself at deploy time
+    user = "user";
+    ports = [ ];
+    restart = "no";
+    healthCheck = null;
+    targets = [ "cloudflare" ];
+    class = "cloudflare";
+  };
+
+  # Remote MCP connector for Claude that sends and receives messages,
+  # with a history page; one SQLite Durable Object holds the messages.
+  message-bridge = {
+    package = messageBridgeDeploy;
+    entryPoint = "bin/message-bridge-deploy";
     args = [ ];
     environment = { };
     secrets = [ ]; # resolved by the deploy app itself at deploy time

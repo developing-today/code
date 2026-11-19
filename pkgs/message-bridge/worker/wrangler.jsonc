@@ -1,0 +1,18 @@
+{
+  // Message bridge Worker: a remote MCP connector for Claude plus a
+  // history page. Deployed from the flake:
+  //   nix run .#message-bridge-deploy [-- --dry-run | --print-urls]
+  "name": "message-bridge",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-25",
+  "observability": { "enabled": true },
+  "vars": {
+    "PUBLIC_URL": "https://message-bridge.developing-today.workers.dev"
+  },
+  // Secret (set by deploy.mjs from Bitwarden, never in this file):
+  //   ACCESS_TOKEN  the path token that guards /mcp, /p and /api
+  "durable_objects": {
+    "bindings": [{ "name": "MESSAGES", "class_name": "MessageStore" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["MessageStore"] }]
+}
