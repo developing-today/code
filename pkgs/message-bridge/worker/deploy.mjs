@@ -10,6 +10,13 @@
 // --print-urls prints the connector and page URLs, which contain the
 // access token, and deploys nothing. Nothing else ever prints it.
 //
+// --code-only is the repo's deploy (the message-bridge-deploy GitHub
+// workflow): it uploads the code with CLOUDFLARE_API_TOKEN and
+// CLOUDFLARE_ACCOUNT_ID from the environment and touches no secret.
+// The Worker keeps the ACCESS_TOKEN an earlier full deploy set, so the
+// connector URL doesn't change. It then checks /healthz says the token
+// is still configured.
+//
 // Needs BWS_ACCESS_TOKEN (and CLOUDFLARE_ACCOUNT_ID to deploy);
 // deploy.sh sets them. Values come from Bitwarden by name:
 //   MB_CF_TOKEN_SECRET      (cloudflare.api-token-day-to-day)   wrangler's API token
@@ -30,12 +37,12 @@ const WORKER = "message-bridge";
 const MIN_TOKEN_LENGTH = 32;
 
 function usageError(message) {
-  console.error(`${message}\nusage: deploy.mjs [--dry-run | --print-urls]`);
+  console.error(`${message}\nusage: deploy.mjs [--dry-run | --print-urls | --code-only]`);
   process.exit(2);
 }
 const args = process.argv.slice(2);
-if (args.length > 1) usageError("give at most one of --dry-run, --print-urls");
-if (args.length === 1 && !["--dry-run", "--print-urls"].includes(args[0])) {
+if (args.length > 1) usageError("give at most one of --dry-run, --print-urls, --code-only");
+if (args.length === 1 && !["--dry-run", "--print-urls", "--code-only"].includes(args[0])) {
   usageError(`unrecognized argument: ${args[0]}`);
 }
 // "deploy" is only the internal name for the no-argument default.
@@ -47,6 +54,44 @@ const names = {
 };
 const project = process.env.MB_BWS_PROJECT ?? "d370cd10-3d67-4b34-b61a-b4dc00753f97";
 
+const pkgDir = process.env.MESSAGE_BRIDGE_PKG ?? here;
+const wranglerConfig = readFileSync(join(pkgDir, "wrangler.jsonc"), "utf8");
+const publicUrl = (wranglerConfig.match(/"PUBLIC_URL"\s*:\s*"([^"]+)"/)?.[1] ?? "").replace(/\/+$/, "");
+
+function stagePackage() {
+  // A writable copy: the store path is read-only and wrangler writes
+  // .wrangler state next to the config.
+  const stage = mkdtempSync(join(tmpdir(), "message-bridge-deploy-"));
+  cpSync(pkgDir, stage, { recursive: true });
+  if (!existsSync(join(stage, "wrangler.jsonc"))) {
+    throw new Error(`no wrangler.jsonc in staged Worker package at ${pkgDir}`);
+  }
+  return stage;
+}
+
+if (mode === "--code-only") {
+  for (const name of ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]) {
+    if (!process.env[name]) throw new Error(`${name} is not set; --code-only reads it from the environment`);
+  }
+  execFileSync("wrangler", ["deploy"], { cwd: stagePackage(), stdio: "inherit" });
+  let health = null;
+  for (let attempt = 1; attempt <= 5 && !health?.configured; attempt++) {
+    if (attempt > 1) await new Promise((r) => setTimeout(r, 3000));
+    try {
+      health = await (await fetch(`${publicUrl}/healthz`, { cache: "no-store" })).json();
+    } catch {
+      health = null;
+    }
+  }
+  if (!health?.ok || !health?.configured) {
+    throw new Error(
+      `${publicUrl}/healthz does not report an access token; run a full deploy (nix run .#message-bridge-deploy) once`,
+    );
+  }
+  console.log(`deployed: ${WORKER} code (${publicUrl}); ACCESS_TOKEN left as it was`);
+  process.exit(0);
+}
+
 const vault = JSON.parse(execFileSync("bws", ["secret", "list", "-o", "json"], { encoding: "utf8" }));
 const find = (name) => vault.find((s) => s.key === name)?.value?.replace(/\r?\n$/, "");
 const byName = (name) => {
@@ -54,10 +99,6 @@ const byName = (name) => {
   if (!value) throw new Error(`no Bitwarden secret named ${name}`);
   return value;
 };
-
-const pkgDir = process.env.MESSAGE_BRIDGE_PKG ?? here;
-const wranglerConfig = readFileSync(join(pkgDir, "wrangler.jsonc"), "utf8");
-const publicUrl = (wranglerConfig.match(/"PUBLIC_URL"\s*:\s*"([^"]+)"/)?.[1] ?? "").replace(/\/+$/, "");
 
 let accessToken = find(names.access);
 if (accessToken && accessToken.length < MIN_TOKEN_LENGTH) {
@@ -76,13 +117,7 @@ if (mode === "--print-urls") {
 if (!process.env.CLOUDFLARE_ACCOUNT_ID) throw new Error("CLOUDFLARE_ACCOUNT_ID is not set; run deploy.sh");
 const env = { ...process.env, CLOUDFLARE_API_TOKEN: byName(names.cf) };
 
-// Stage a writable copy (the store path is read-only; wrangler writes
-// .wrangler state next to the config).
-const stage = mkdtempSync(join(tmpdir(), "message-bridge-deploy-"));
-cpSync(pkgDir, stage, { recursive: true });
-if (!existsSync(join(stage, "wrangler.jsonc"))) {
-  throw new Error(`no wrangler.jsonc in staged Worker package at ${pkgDir}`);
-}
+const stage = stagePackage();
 
 const wranglerArgs = ["deploy"];
 if (mode === "--dry-run") wranglerArgs.push("--dry-run");

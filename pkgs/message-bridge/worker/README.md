@@ -64,7 +64,20 @@ nix run .#message-bridge-deploy -- --print-urls  # print connector/page URLs (co
 ```
 
 The first deploy creates the access token in Bitwarden if it is
-missing. Tests: `node --test test/*.test.mjs` (also run by the flake
+missing.
+
+### From the repo
+
+`.github/workflows/message-bridge-deploy.yml` deploys on every push to
+`main` that touches `pkgs/message-bridge/` (and by hand from the Actions
+tab). It builds and tests the flake package, then runs
+`nix run .#message-bridge-deploy -- --code-only`, which uploads the code
+with the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository
+secrets and leaves the Worker's `ACCESS_TOKEN` alone, so the connector
+URL stays the same and the runner needs no Bitwarden or sops access. It
+checks `/healthz` afterwards. Without those two secrets the workflow
+builds, tests and skips the upload. Setting or rotating the access token
+is still a local full deploy. Tests: `node --test test/*.test.mjs` (also run by the flake
 package's checkPhase).
 
 ## Adding it to Claude

@@ -797,7 +797,7 @@ let
         lab-ops-hub-deploy = mkApp labOpsHubDeploy "Deploy the lab-ops-hub Worker and push its crawler container image as one command (needs Bitwarden and sops access)";
         cf-container-hello-deploy = mkApp cfContainerHelloDeploy "Deploy the cf-container-hello Worker from its flake package (needs Bitwarden and sops access)";
         queue-transport-alert-deploy = mkApp queueTransportAlertDeploy "Deploy the queue-transport-alert Worker (broker outage alert, code#6369) from its flake package and set its secrets (needs Bitwarden and sops access)";
-        message-bridge-deploy = mkApp messageBridgeDeploy "Deploy the message-bridge Worker (Claude custom connector that sends and receives messages, plus history page) from its flake package and set its access token; --print-urls prints the connector URL (needs Bitwarden and sops access)";
+        message-bridge-deploy = mkApp messageBridgeDeploy "Deploy the message-bridge Worker (Claude custom connector that sends and receives messages, plus history page) from its flake package and set its access token; --print-urls prints the connector URL, --code-only uploads code only with Cloudflare env vars (CI) (needs Bitwarden and sops access)";
         mcpx = {
           type = "app";
           program = "${mcpx}/bin/mcpx";
