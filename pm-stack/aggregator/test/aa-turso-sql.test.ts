@@ -68,6 +68,7 @@ test("Turso AA preserves workbook metrics, boolean JSON and historical batches",
   };
   const a = run(aaPayloadSql(old)),
     b = run(aaPayloadSql(null));
+  expect(Array.isArray(a.rankings)).toBe(true);
   expect(rankAaValues(db.query(aaRankingValuesSql(old)).all() as any[])).toEqual(a.rankings);
   expect(Object.keys(aaSectionQueries(old))).toHaveLength(8);
   expect(a.batch).toBe(old);
