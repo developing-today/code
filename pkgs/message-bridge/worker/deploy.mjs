@@ -9,6 +9,8 @@
 //                                  and still has its ACCESS_TOKEN
 //   cf workers deployments create  put that version at 100%
 //   then check the deployment serves it and /healthz says the token is set
+//   PUT .../workers/domains        keep PUBLIC_URL's host (bridge.security.cab)
+//                                  attached to the Worker as a custom domain
 //
 // Every deploy leaves the previous versions in place, so a rollback is
 // a deployment at an older version id (--deploy-version <id>), with no
@@ -40,8 +42,9 @@
 //                                     whose secrets have since changed;
 //                                     --allow-secret-change deploys it
 //                                     anyway (with that version's token)
-//   deploy.mjs --print-urls           print the connector, page and API
-//                                     URLs (they contain the token)
+//   deploy.mjs --print-urls           print the Claude and ChatGPT
+//                                     connector, page and API URLs (they
+//                                     contain the tokens)
 //
 // Credentials: CLOUDFLARE_API_TOKEN from the env for --code-only and in
 // GitHub Actions, otherwise from Bitwarden (MB_CF_TOKEN_SECRET, default
@@ -49,7 +52,9 @@
 // (deploy.sh decrypts it with sops). The access token is Bitwarden's
 // message-bridge.access-token (MB_ACCESS_TOKEN_SECRET), created on the
 // first full deploy (32 random bytes, base64url) in project
-// MB_BWS_PROJECT. It reaches cf through --secrets-file, a 0600 file on
+// MB_BWS_PROJECT. The ChatGPT connector's token, CHATGPT_TOKEN, is
+// message-bridge.chatgpt-token (MB_CHATGPT_TOKEN_SECRET), created the
+// same way. They reach cf through --secrets-file, a 0600 file on
 // /dev/shm (memory) that is removed as soon as the upload returns. To rotate it, edit or delete that secret and run a full
 // deploy.
 import { execFileSync } from "node:child_process";
@@ -99,12 +104,19 @@ if (process.env.MB_CHECK_ARGS_ONLY === "1") process.exit(0);
 const names = {
   cf: process.env.MB_CF_TOKEN_SECRET ?? "cloudflare.api-token-day-to-day",
   access: process.env.MB_ACCESS_TOKEN_SECRET ?? "message-bridge.access-token",
+  chatgpt: process.env.MB_CHATGPT_TOKEN_SECRET ?? "message-bridge.chatgpt-token",
 };
 const project = process.env.MB_BWS_PROJECT ?? "d370cd10-3d67-4b34-b61a-b4dc00753f97";
 
 const pkgDir = process.env.MESSAGE_BRIDGE_PKG ?? here;
 const wranglerConfig = readFileSync(join(pkgDir, "wrangler.jsonc"), "utf8");
-const publicUrl = (wranglerConfig.match(/"PUBLIC_URL"\s*:\s*"([^"]+)"/)?.[1] ?? "").replace(/\/+$/, "");
+const configUrl = (name) =>
+  (wranglerConfig.match(new RegExp(`"${name}"\\s*:\\s*"([^"]+)"`))?.[1] ?? "").replace(/\/+$/, "");
+// PUBLIC_URL is the custom domain the connectors use; deploy checks run
+// against workers.dev, which answers as soon as a version is live.
+const publicUrl = configUrl("PUBLIC_URL");
+const healthUrl = configUrl("WORKERS_DEV_URL") || publicUrl;
+const customDomain = publicUrl && !publicUrl.endsWith(".workers.dev") ? new URL(publicUrl).hostname : null;
 
 let vault = null;
 function fromVault(name) {
@@ -112,11 +124,25 @@ function fromVault(name) {
   return vault.find((s) => s.key === name)?.value?.replace(/\r?\n$/, "");
 }
 
-function accessTokenFromVault() {
-  const token = fromVault(names.access);
+function tokenFromVault(name) {
+  const token = fromVault(name);
   if (token && token.length < MIN_TOKEN_LENGTH) {
-    throw new Error(`Bitwarden secret ${names.access} is shorter than ${MIN_TOKEN_LENGTH} characters; the Worker would refuse it`);
+    throw new Error(`Bitwarden secret ${name} is shorter than ${MIN_TOKEN_LENGTH} characters; the Worker would refuse it`);
   }
+  return token;
+}
+const accessTokenFromVault = () => tokenFromVault(names.access);
+
+// Reads a path token from Bitwarden, creating it (32 random bytes,
+// base64url) the first time. Its value never reaches stdout.
+function vaultTokenOrCreate(name, note) {
+  let token = tokenFromVault(name);
+  if (token) return token;
+  token = randomBytes(32).toString("base64url");
+  execFileSync("bws", ["secret", "create", "--note", note, "-o", "none", "--", name, token, project], {
+    stdio: ["ignore", "ignore", "inherit"],
+  });
+  console.log(`created Bitwarden secret ${name}`);
   return token;
 }
 
@@ -124,9 +150,11 @@ if (args.mode === "print-urls") {
   const token = accessTokenFromVault();
   if (!token) throw new Error(`no Bitwarden secret named ${names.access}; deploy once to create it`);
   if (!publicUrl) throw new Error("no PUBLIC_URL in wrangler.jsonc");
-  console.log(`connector: ${publicUrl}/mcp/${token}`);
-  console.log(`page:      ${publicUrl}/p/${token}`);
-  console.log(`api:       ${publicUrl}/api/${token}/messages`);
+  const chatgpt = tokenFromVault(names.chatgpt);
+  console.log(`claude connector:  ${publicUrl}/mcp/${token}`);
+  console.log(`chatgpt connector: ${chatgpt ? `${publicUrl}/mcp/${chatgpt}` : "(none yet; a full deploy creates it)"}`);
+  console.log(`page:              ${publicUrl}/p/${token}`);
+  console.log(`api:               ${publicUrl}/api/${token}/messages`);
   process.exit(0);
 }
 
@@ -165,6 +193,7 @@ if (args.mode === "deploy-version") {
     );
   }
   await verifyLive(id);
+  await ensureCustomDomain(id);
   console.log(`live: ${publicUrl} at version ${id}`);
   process.exit(0);
 }
@@ -200,34 +229,24 @@ if (args.dryRun) {
 let secretsDir = null;
 let expectFingerprint = null;
 if (args.mode === "deploy") {
-  let token = accessTokenFromVault();
-  if (!token) {
-    token = randomBytes(32).toString("base64url");
-    execFileSync(
-      "bws",
-      [
-        "secret",
-        "create",
-        "--note",
-        "message-bridge Worker path token (guards /mcp, /p, /api). Rotate by editing and redeploying.",
-        "-o",
-        "none",
-        "--",
-        names.access,
-        token,
-        project,
-      ],
-      { stdio: ["ignore", "ignore", "inherit"] },
-    );
-    console.log(`created Bitwarden secret ${names.access}`);
-  }
+  const token = vaultTokenOrCreate(
+    names.access,
+    "message-bridge Worker path token (guards /mcp, /p, /api). Rotate by editing and redeploying.",
+  );
+  const chatgptToken = vaultTokenOrCreate(
+    names.chatgpt,
+    "message-bridge ChatGPT connector token (opens /mcp on the ChatGPT channel only). Rotate by editing and redeploying.",
+  );
+  if (chatgptToken === token) throw new Error(`${names.chatgpt} must differ from ${names.access}`);
   // cf reads secrets only from a regular file (not /dev/stdin), so the
   // token goes in a 0600 file inside a 0700 directory on /dev/shm
   // (memory, not disk), removed as soon as the upload returns.
   secretsDir = mkdtempSync(join(existsSync("/dev/shm") ? "/dev/shm" : tmpdir(), "message-bridge-secrets-"));
   chmodSync(secretsDir, 0o700);
   const secretsFile = join(secretsDir, "secrets.json");
-  writeFileSync(secretsFile, JSON.stringify({ ACCESS_TOKEN: token }), { mode: 0o600 });
+  writeFileSync(secretsFile, JSON.stringify({ ACCESS_TOKEN: token, CHATGPT_TOKEN: chatgptToken }), {
+    mode: 0o600,
+  });
   expectFingerprint = await tokenFingerprint(token);
   uploadArgs.push("--secrets-file", secretsFile);
 }
@@ -290,10 +309,62 @@ if (exists) {
   // cf deploy already put the bootstrap version live; nothing to go back to.
   await verifyLive(version.id, { expectFingerprint, requireVersion: true });
 }
+await ensureCustomDomain(version.id);
 console.log(`live: ${publicUrl} at version ${version.id} (${tag})`);
 console.log(`roll back with: nix run .#message-bridge-deploy -- --deploy-version <older version id>`);
 
 // --- helpers ---
+
+// Keeps PUBLIC_URL's host attached to this Worker as a Workers custom
+// domain (Cloudflare manages its DNS record and certificate), then waits
+// for it to answer from the live version. The zone must be in this
+// account. A host already attached to another Worker is left alone.
+// The version is live either way; a domain failure fails the run so
+// someone looks, but nothing is rolled back for it.
+async function ensureCustomDomain(versionId) {
+  if (!customDomain) return;
+  const accountApi = `https://api.cloudflare.com/client/v4/accounts/${accountId}`;
+  const auth = { authorization: `Bearer ${apiToken}` };
+  const listed = await fetch(`${accountApi}/workers/domains?hostname=${encodeURIComponent(customDomain)}`, { headers: auth });
+  if (!listed.ok) throw new Error(`Cloudflare API /workers/domains returned HTTP ${listed.status}`);
+  const current = ((await listed.json()).result ?? []).find((d) => d.hostname === customDomain);
+  if (current && current.service !== WORKER) {
+    throw new Error(`${customDomain} is attached to the Worker ${current.service}, not ${WORKER}; move it by hand`);
+  }
+  if (!current) {
+    const zoneName = customDomain.split(".").slice(-2).join(".");
+    const zones = await fetch(`https://api.cloudflare.com/client/v4/zones?name=${encodeURIComponent(zoneName)}`, {
+      headers: auth,
+    });
+    const zone = zones.ok ? (await zones.json()).result?.[0] : null;
+    if (!zone) throw new Error(`no Cloudflare zone ${zoneName} visible to this API token; can't attach ${customDomain}`);
+    const put = await fetch(`${accountApi}/workers/domains`, {
+      method: "PUT",
+      headers: { ...auth, "content-type": "application/json" },
+      body: JSON.stringify({ hostname: customDomain, service: WORKER, zone_id: zone.id, environment: "production" }),
+    });
+    if (!put.ok) {
+      const errors = JSON.stringify((await put.json().catch(() => ({})))?.errors ?? []);
+      throw new Error(`attaching ${customDomain} to ${WORKER} failed with HTTP ${put.status} ${errors}`);
+    }
+    console.log(`attached custom domain ${customDomain}`);
+  }
+  // A new custom domain needs a certificate first, so give it time.
+  let health = null;
+  for (let attempt = 1; attempt <= 40; attempt++) {
+    if (attempt > 1) await new Promise((r) => setTimeout(r, 3000));
+    try {
+      const res = await fetch(`${publicUrl}/healthz`, { cache: "no-store" });
+      health = res.ok ? await res.json() : null;
+    } catch {
+      health = null;
+    }
+    if (health?.version === versionId || (health?.ok && health?.version == null)) break;
+  }
+  if (!health?.ok || (health.version != null && health.version !== versionId)) {
+    throw new Error(`${publicUrl}/healthz isn't answering from version ${versionId} yet; version ${versionId} is live on ${healthUrl}`);
+  }
+}
 
 // A code-only upload keeps ACCESS_TOKEN by inheriting it from the newest
 // uploaded version, which is not always the live one: a full deploy that
@@ -478,10 +549,10 @@ async function verifyLive(id, { expectFingerprint = null, requireVersion = false
   }
   const versionProblem = healthVersionProblem(health, id, { requireVersion });
   if (versionProblem) {
-    throw new Error(`${publicUrl}/healthz ${versionProblem}; check the dashboard`);
+    throw new Error(`${healthUrl}/healthz ${versionProblem}; check the dashboard`);
   }
   if (!health?.ok || !health?.configured) {
-    throw new Error(`${publicUrl}/healthz does not report an access token after deploying ${id}; roll back with --deploy-version`);
+    throw new Error(`${healthUrl}/healthz does not report an access token after deploying ${id}; roll back with --deploy-version`);
   }
   if (expectFingerprint && health.token_fingerprint !== expectFingerprint) {
     throw new Error(
@@ -493,7 +564,7 @@ async function verifyLive(id, { expectFingerprint = null, requireVersion = false
 
 async function readHealth() {
   try {
-    const res = await fetch(`${publicUrl}/healthz`, { cache: "no-store" });
+    const res = await fetch(`${healthUrl}/healthz`, { cache: "no-store" });
     return res.ok ? await res.json() : null;
   } catch {
     return null;

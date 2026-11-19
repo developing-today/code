@@ -6,30 +6,39 @@
 // spec allows. No session id is issued: every call stands alone, and
 // the message store is the only state.
 
-import { InputError, MAX_BODY, MAX_LIMIT } from "./messages.js";
+import { CHANNEL_NAMES, InputError, MAX_BODY, MAX_LIMIT } from "./messages.js";
 
 export const SERVER_NAME = "message-bridge";
 export const SERVER_VERSION = "0.1.0";
 export const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+// What the ChatGPT Site answered to server/discover before it forwarded
+// here; kept so its client sees the same handshake.
+export const DISCOVER_VERSIONS = ["2026-07-28"];
 const MAX_REQUEST_BYTES = 64 * 1024;
 
-export const INSTRUCTIONS =
-  "A message bridge between Claude and Drew. send_message stores a message from Claude (outbound). " +
-  "read_messages returns stored messages; inbound ones were sent to Claude from Drew's page or the JSON API. " +
-  "Use read_messages with unread_only to check for new inbound messages, then ack_messages (or mark_read) " +
-  "so they are not reported as new again. Every message is kept with its direction, source and time.";
+/** Server instructions for one channel's assistant ("claude" or "chatgpt"). */
+export function instructionsFor(channel = "claude") {
+  const who = CHANNEL_NAMES[channel] ?? "Claude";
+  return (
+    `A message bridge between ${who} and Drew. send_message stores a message from ${who} (outbound). ` +
+    `read_messages returns stored messages; inbound ones were sent to ${who} from Drew's page or the JSON API. ` +
+    "Use read_messages with unread_only to check for new inbound messages, then ack_messages (or mark_read) " +
+    "so they are not reported as new again. Every message is kept with its direction, source and time."
+  );
+}
+export const INSTRUCTIONS = instructionsFor("claude");
 
 export const TOOLS = [
   {
     name: "send_message",
     title: "Send a message",
     description:
-      "Send (push) a message from Claude. It is stored as an outbound message and shows in the history page. Returns the stored message.",
+      "Send (push) a message to Drew. It is stored as an outbound message and shows in the history page. Returns the stored message.",
     inputSchema: {
       type: "object",
       properties: {
         body: { type: "string", description: "Message text.", maxLength: MAX_BODY },
-        sender: { type: "string", description: "Optional label for who is sending, e.g. 'claude'." },
+        sender: { type: "string", description: "Optional label for who is sending, e.g. 'claude' or 'chatgpt'." },
       },
       required: ["body"],
       additionalProperties: false,
@@ -40,7 +49,7 @@ export const TOOLS = [
     name: "read_messages",
     title: "Read messages",
     description:
-      "Read (receive) stored messages, oldest first. Defaults to inbound messages (sent to Claude). " +
+      "Read (receive) stored messages, oldest first. Defaults to inbound messages (sent to you by Drew). " +
       "Use since_id with the returned next_since_id to page or to poll for new ones; unread_only returns inbound messages not yet acknowledged; mark_read acknowledges the inbound ones returned.",
     inputSchema: {
       type: "object",
@@ -87,13 +96,18 @@ function rejectUnknownArgs(args, allowed) {
   }
 }
 
-export async function callTool(name, args, store) {
+/**
+ * Runs one tool for one channel's assistant. Every store call is scoped
+ * to that channel, so the Claude and ChatGPT connectors share this code
+ * and the store but never see or acknowledge each other's messages.
+ */
+export async function callTool(name, args, store, channel = "claude") {
   if (args === undefined || args === null) args = {};
   if (typeof args !== "object" || Array.isArray(args)) throw new InputError("arguments must be an object");
   switch (name) {
     case "send_message": {
       rejectUnknownArgs(args, ["body", "sender"]);
-      const message = await store.add({ body: args.body, sender: args.sender, direction: "outbound", source: "mcp" });
+      const message = await store.add({ body: args.body, sender: args.sender, direction: "outbound", source: "mcp", channel });
       return { message };
     }
     case "read_messages": {
@@ -104,26 +118,27 @@ export async function callTool(name, args, store) {
         since_id: args.since_id,
         unread_only: args.unread_only,
         limit: args.limit,
+        channel,
       });
       let acked = 0;
       if (args.mark_read) {
         const ids = messages.filter((m) => m.direction === "inbound" && m.read_at === null).map((m) => m.id);
-        if (ids.length) acked = (await store.ack({ ids })).acked;
+        if (ids.length) acked = (await store.ack({ ids, channel })).acked;
       }
-      const stats = await store.stats();
+      const stats = await store.stats(channel);
       const nextSinceId = messages.length ? messages[messages.length - 1].id : (args.since_id ?? 0);
       return { messages, next_since_id: nextSinceId, ...(args.mark_read ? { acked } : {}), stats };
     }
     case "ack_messages": {
       rejectUnknownArgs(args, ["up_to_id", "ids"]);
-      return await store.ack({ up_to_id: args.up_to_id, ids: args.ids });
+      return await store.ack({ up_to_id: args.up_to_id, ids: args.ids, channel });
     }
     default:
       return null;
   }
 }
 
-async function handleOne(msg, store) {
+async function handleOne(msg, store, channel) {
   if (!msg || typeof msg !== "object" || msg.jsonrpc !== "2.0" || typeof msg.method !== "string") {
     return rpcError(msg?.id, -32600, "Invalid Request");
   }
@@ -138,9 +153,11 @@ async function handleOne(msg, store) {
         protocolVersion,
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: SERVER_NAME, title: "Message bridge", version: SERVER_VERSION },
-        instructions: INSTRUCTIONS,
+        instructions: instructionsFor(channel),
       });
     }
+    case "server/discover":
+      return rpcResult(id, { supportedVersions: [...DISCOVER_VERSIONS, ...PROTOCOL_VERSIONS], capabilities: { tools: {} } });
     case "ping":
       return rpcResult(id, {});
     case "tools/list":
@@ -149,7 +166,7 @@ async function handleOne(msg, store) {
       const name = params?.name;
       if (!TOOLS.some((t) => t.name === name)) return rpcError(id, -32602, `Unknown tool: ${name}`);
       try {
-        return rpcResult(id, toolResult(await callTool(name, params?.arguments, store)));
+        return rpcResult(id, toolResult(await callTool(name, params?.arguments, store, channel)));
       } catch (err) {
         if (err instanceof InputError) return rpcResult(id, toolResult({ error: err.message }, true));
         throw err;
@@ -170,8 +187,8 @@ const json = (data, status = 200) =>
     headers: { "content-type": "application/json", "cache-control": "no-store" },
   });
 
-/** Handles a request already authorized for /mcp/<token>. */
-export async function handleMcp(request, store) {
+/** Handles a request already authorized for /mcp/<token>, for one channel. */
+export async function handleMcp(request, store, channel = "claude") {
   if (request.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405, headers: { allow: "POST" } });
   }
@@ -187,11 +204,11 @@ export async function handleMcp(request, store) {
     if (payload.length === 0) return json(rpcError(null, -32600, "Invalid Request"), 400);
     const out = [];
     for (const m of payload) {
-      const r = await handleOne(m, store);
+      const r = await handleOne(m, store, channel);
       if (r) out.push(r);
     }
     return out.length ? json(out) : new Response(null, { status: 202 });
   }
-  const r = await handleOne(payload, store);
+  const r = await handleOne(payload, store, channel);
   return r ? json(r) : new Response(null, { status: 202 });
 }

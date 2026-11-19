@@ -2,19 +2,28 @@
 // the tests can drive it with MemoryStore and index.js with the
 // Durable Object stub.
 //
-//   POST /mcp/<token>                 remote MCP server (Streamable HTTP)
+//   POST /mcp/<token>                 remote MCP server (Streamable HTTP),
+//                                     Claude's channel
+//   POST /mcp/<chatgpt token>         the same server on ChatGPT's channel,
+//                                     for the ChatGPT connector's Site
 //   GET  /p/<token>                   history page with the send form
 //   POST /p/<token>                   form post: store an inbound message
-//   GET  /api/<token>/messages        JSON history (direction, since_id,
-//                                     before_id, unread_only, limit, order)
-//   POST /api/<token>/messages        JSON {body, sender}: store inbound
-//   POST /api/<token>/ack             JSON {up_to_id | ids}: mark read
-//   GET  /healthz                     {ok, configured, version, token_fingerprint}, no data
-// Anything else, a wrong token included, is a plain 404.
+//                                     for each checked recipient (to)
+//   GET  /api/<token>/messages        JSON history (direction, channel,
+//                                     since_id, before_id, unread_only,
+//                                     limit, order)
+//   POST /api/<token>/messages        JSON {body, sender, to}: store an
+//                                     inbound message per recipient; to is
+//                                     "claude" (default), "chatgpt" or both
+//   POST /api/<token>/ack             JSON {up_to_id | ids, channel}: mark read
+//   GET  /healthz                     {ok, configured, chatgpt_configured,
+//                                     version, token_fingerprint}, no data
+// Anything else, a wrong token included, is a plain 404. The ChatGPT
+// token opens only its /mcp.
 
-import { matchTokenPath, tokenConfigured, tokenFingerprint } from "./auth.js";
+import { chatgptConfigured, matchTokenPath, tokenConfigured, tokenFingerprint } from "./auth.js";
 import { handleMcp } from "./mcp.js";
-import { InputError } from "./messages.js";
+import { InputError, normalizeRecipients } from "./messages.js";
 import { renderPage } from "./page.js";
 
 const MAX_FORM_BYTES = 64 * 1024;
@@ -48,10 +57,29 @@ async function readBody(request) {
   return text;
 }
 
-async function handlePage(request, store, base, api, url) {
+/** Stores one inbound message per recipient; validates all before writing. */
+async function sendToEach(store, { body, sender, to, source }) {
+  const channels = normalizeRecipients(to);
+  if (typeof body !== "string" || body.trim() === "") throw new InputError("body must be a non-empty string");
+  const messages = [];
+  for (const channel of channels) {
+    messages.push(await store.add({ body, sender, direction: "inbound", source, channel }));
+  }
+  return messages;
+}
+
+async function handlePage(request, store, base, api, url, chatgptReady) {
   if (request.method === "POST") {
     const form = new URLSearchParams(await readBody(request));
-    await store.add({ body: form.get("body") ?? "", sender: form.get("sender"), direction: "inbound", source: "page" });
+    // Without JavaScript the checkboxes post one "to" each; none checked
+    // falls back to Claude, as before.
+    const to = form.getAll("to");
+    await sendToEach(store, {
+      body: form.get("body") ?? "",
+      sender: form.get("sender"),
+      to: to.length ? to : undefined,
+      source: "page",
+    });
     return new Response(null, { status: 303, headers: { location: base } });
   }
   if (request.method !== "GET" && request.method !== "HEAD") {
@@ -64,7 +92,15 @@ async function handlePage(request, store, base, api, url) {
     limit: PAGE_SIZE,
     before_id: beforeId,
   });
-  const html = renderPage({ messages, stats, basePath: base, apiPath: api, pageSize: PAGE_SIZE, olderOnly: !!beforeId });
+  const html = renderPage({
+    messages,
+    stats,
+    basePath: base,
+    apiPath: api,
+    pageSize: PAGE_SIZE,
+    olderOnly: !!beforeId,
+    chatgptReady,
+  });
   return new Response(html, {
     headers: { "content-type": "text/html; charset=utf-8", "content-security-policy": PAGE_CSP },
   });
@@ -79,6 +115,7 @@ async function handleApi(request, store, rest, url) {
       return json(
         await store.list({
           direction: p.get("direction") ?? "all",
+          channel: p.get("channel") ?? undefined,
           since_id: p.get("since_id") ?? undefined,
           before_id: p.get("before_id") ?? undefined,
           unread_only: p.get("unread_only") === "true" || p.get("unread_only") === "1",
@@ -97,8 +134,9 @@ async function handleApi(request, store, rest, url) {
       }
       if (!data || typeof data !== "object") throw new InputError("body must be a JSON object");
       const source = data.source === "page" ? "page" : "api";
-      const message = await store.add({ body: data.body, sender: data.sender, direction: "inbound", source });
-      return json({ message }, 201);
+      const messages = await sendToEach(store, { body: data.body, sender: data.sender, to: data.to, source });
+      // message stays for callers from before there were two channels.
+      return json({ message: messages[0], messages }, 201);
     }
     return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET, POST" } });
   }
@@ -111,7 +149,7 @@ async function handleApi(request, store, rest, url) {
       if (err instanceof InputError) throw err;
       throw new InputError("body must be JSON");
     }
-    return json(await store.ack({ up_to_id: data?.up_to_id, ids: data?.ids }));
+    return json(await store.ack({ up_to_id: data?.up_to_id, ids: data?.ids, channel: data?.channel ?? "claude" }));
   }
   return notFound();
 }
@@ -123,6 +161,7 @@ export async function route(request, env, getStore) {
     return json({
       ok: true,
       configured,
+      chatgpt_configured: chatgptConfigured(env),
       version: env.CF_VERSION_METADATA?.id ?? null,
       token_fingerprint: configured ? await tokenFingerprint(env.ACCESS_TOKEN) : null,
     });
@@ -132,9 +171,12 @@ export async function route(request, env, getStore) {
   const token = env.ACCESS_TOKEN;
   const store = getStore();
   try {
-    if (m.area === "mcp" && m.rest.length === 0) return withHeaders(await handleMcp(request, store));
+    if (m.area === "mcp" && m.rest.length === 0) return withHeaders(await handleMcp(request, store, m.channel));
+    if (m.role !== "owner") return notFound();
     if (m.area === "p" && m.rest.length === 0) {
-      return withHeaders(await handlePage(request, store, `/p/${token}`, `/api/${token}`, url));
+      return withHeaders(
+        await handlePage(request, store, `/p/${token}`, `/api/${token}`, url, chatgptConfigured(env)),
+      );
     }
     if (m.area === "api") return withHeaders(await handleApi(request, store, m.rest, url));
   } catch (err) {

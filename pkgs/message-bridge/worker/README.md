@@ -1,32 +1,44 @@
 # Message bridge Worker (`message-bridge`)
 
-A remote MCP server that Claude can add as a **custom connector**, plus a
-page where Drew sends messages to Claude and sees everything sent and
-received. Every message is stored, with its direction, source, sender
-and time, in one SQLite-backed Durable Object.
+A remote MCP server that Claude and ChatGPT both use as a **custom
+connector**, plus a page where Drew sends a message to Claude, ChatGPT
+or both and sees everything sent and received. It lives at
+`https://bridge.security.cab` (a Workers custom domain; the
+`workers.dev` address answers too). Every message is stored, with its
+channel, direction, source, sender and time, in one SQLite-backed
+Durable Object.
 
-- **Outbound** messages are pushed by Claude through the connector
+- **Channels:** `claude` or `chatgpt`. Both connectors run the same
+  tools over the same store, each on its own channel with its own token,
+  so neither sees or acknowledges the other's messages. ChatGPT reaches
+  it either directly (`/mcp/<chatgpt token>`) or through its private
+  Site, `pkgs/dot-bridge/site`, which keeps the Site's own address and
+  sign-in and passes each request on.
+- **Outbound** messages are pushed by an assistant through its connector
   (`send_message`).
-- **Inbound** messages are sent to Claude from the page (or the JSON
-  API). They start unread; Claude reads them with `read_messages` and
-  marks them read with `mark_read` or `ack_messages`.
+- **Inbound** messages are sent to an assistant from the page (or the
+  JSON API), one stored row per recipient. They start unread; the
+  assistant reads them with `read_messages` and marks them read with
+  `mark_read` or `ack_messages`.
 
 The behaviour is deliberately minimal for now; more comes later.
 
 ## Routes
 
-`<token>` is the access token (below). A wrong or missing token gets the
-same plain 404 as an unknown path.
+`<token>` is the owner's access token and `<chatgpt token>` the ChatGPT
+connector's (below). A wrong or missing token gets the same plain 404 as
+an unknown path; the ChatGPT token opens only its `/mcp`.
 
-| Route                        | What                                                                                                                         |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `POST /mcp/<token>`          | MCP server, Streamable HTTP, stateless JSON answers (`GET` is 405: no server stream)                                         |
-| `GET /p/<token>`             | History page: send form + every message, newest first; refreshes every 10 s                                                  |
-| `POST /p/<token>`            | Form post (`body`, optional `sender`): stores an inbound message, redirects to the page                                      |
-| `GET /api/<token>/messages`  | JSON history: `direction` (`inbound`/`outbound`/`all`), `since_id`, `unread_only`, `limit` (max 200), `order` (`asc`/`desc`) |
-| `POST /api/<token>/messages` | JSON `{"body": "...", "sender": "..."}`: stores an inbound message (source `api`)                                            |
-| `POST /api/<token>/ack`      | JSON `{"up_to_id": N}` or `{"ids": [...]}`: marks inbound messages read                                                      |
-| `GET /healthz`               | `{"ok":true,"configured":true}`, no data                                                                                     |
+| Route                        | What                                                                                                                        |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `POST /mcp/<token>`          | MCP server on Claude's channel, Streamable HTTP, stateless JSON answers (`GET` is 405: no server stream)                    |
+| `POST /mcp/<chatgpt token>`  | The same MCP server on ChatGPT's channel                                                                                    |
+| `GET /p/<token>`             | History page: send form + every message, newest first; refreshes every 10 s                                                 |
+| `POST /p/<token>`            | Form post (`body`, optional `sender`, one `to` per recipient): stores the inbound messages, redirects to the page           |
+| `GET /api/<token>/messages`  | JSON history: `direction`, `channel` (`claude`/`chatgpt`/`all`), `since_id`, `before_id`, `unread_only`, `limit`, `order`   |
+| `POST /api/<token>/messages` | JSON `{"body", "sender", "to"}`; `to` is `"claude"` (default), `"chatgpt"` or both as a list: one inbound row per recipient |
+| `POST /api/<token>/ack`      | JSON `{"up_to_id": N}` or `{"ids": [...]}`, with `channel` (default `claude`): marks inbound messages read                  |
+| `GET /healthz`               | `ok`, `configured`, `chatgpt_configured`, `version`, `token_fingerprint`; no data                                           |
 
 ## MCP tools
 
@@ -42,7 +54,9 @@ secret: a 32-byte random token (base64url) in the URL path. Anyone with
 the URL can read and post, so treat the URL like a password. The token:
 
 - lives in Bitwarden as `message-bridge.access-token` and on the Worker
-  as the secret `ACCESS_TOKEN`; it is never in git;
+  as the secret `ACCESS_TOKEN`; it is never in git (the ChatGPT token is
+  `message-bridge.chatgpt-token` and `CHATGPT_TOKEN`, and opens only
+  ChatGPT's `/mcp`);
 - is compared in constant time; a Worker without a token of at least 32
   characters answers 404 on every route;
 - is kept out of logs and other sites: every response is `no-store`,
@@ -51,7 +65,8 @@ the URL can read and post, so treat the URL like a password. The token:
 
 To rotate it, edit or delete the Bitwarden secret and deploy again
 (deleting makes the deploy create a fresh one), then update the
-connector URL in Claude. OAuth can replace the path token later.
+connector URL in Claude (or ChatGPT, or its Site's token). OAuth can
+replace the path tokens later.
 
 ## Deploying
 
@@ -60,7 +75,10 @@ uses. Each deploy uploads a new Worker version tagged `git-<sha12>` (the
 full SHA is in its message), checks it is deployable and still carries
 `ACCESS_TOKEN`, deploys it at 100%, then checks the deployment serves it
 and `/healthz` reports the token. Older versions stay, so rolling back is
-a deployment at an older version id with no upload.
+a deployment at an older version id with no upload. Every deploy also
+keeps `PUBLIC_URL`'s host attached to the Worker as a Workers custom
+domain (Cloudflare makes its DNS record and certificate) and waits for it
+to answer; the deploy checks themselves use the `workers.dev` address.
 
 `cloudflare.config.ts` is the deploy config; `wrangler.jsonc` drives
 `wrangler dev` and must stay in step (a test checks the main fields).
