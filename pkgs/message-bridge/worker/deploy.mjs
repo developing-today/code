@@ -38,12 +38,22 @@
 // (deploy.sh decrypts it with sops). The access token is Bitwarden's
 // message-bridge.access-token (MB_ACCESS_TOKEN_SECRET), created on the
 // first full deploy (32 random bytes, base64url) in project
-// MB_BWS_PROJECT. It reaches cf on stdin (--secrets-file /dev/stdin),
-// never disk. To rotate it, edit or delete that secret and run a full
+// MB_BWS_PROJECT. It reaches cf through --secrets-file, a 0600 file on
+// /dev/shm (memory) that is removed as soon as the upload returns. To rotate it, edit or delete that secret and run a full
 // deploy.
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync } from "node:fs";
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -139,7 +149,7 @@ if (args.dryRun) {
   process.exit(0);
 }
 
-let input;
+let secretsDir = null;
 if (args.mode === "deploy") {
   let token = accessTokenFromVault();
   if (!token) {
@@ -162,13 +172,23 @@ if (args.mode === "deploy") {
     );
     console.log(`created Bitwarden secret ${names.access}`);
   }
-  createArgs.push("--secrets-file", "/dev/stdin");
-  input = JSON.stringify({ ACCESS_TOKEN: token });
+  // cf reads secrets only from a regular file (not /dev/stdin), so the
+  // token goes in a 0600 file inside a 0700 directory on /dev/shm
+  // (memory, not disk), removed as soon as the upload returns.
+  secretsDir = mkdtempSync(join(existsSync("/dev/shm") ? "/dev/shm" : tmpdir(), "message-bridge-secrets-"));
+  chmodSync(secretsDir, 0o700);
+  const secretsFile = join(secretsDir, "secrets.json");
+  writeFileSync(secretsFile, JSON.stringify({ ACCESS_TOKEN: token }), { mode: 0o600 });
+  createArgs.push("--secrets-file", secretsFile);
 }
 
 console.log(`uploading version (tag ${tag})`);
 const before = Date.now();
-runCf(stage, createArgs, input);
+try {
+  runCf(stage, createArgs);
+} finally {
+  if (secretsDir) rmSync(secretsDir, { recursive: true, force: true });
+}
 
 // Re-uploading an unchanged tree makes a second version with the same
 // tag, so take the newest one with this tag.
@@ -210,13 +230,8 @@ function stagePackage() {
   return dir;
 }
 
-function runCf(cwd, cfArgs, input) {
-  return execFileSync("cf", ["-q", ...cfArgs], {
-    cwd,
-    env,
-    input,
-    stdio: [input === undefined ? "ignore" : "pipe", "inherit", "inherit"],
-  });
+function runCf(cwd, cfArgs) {
+  return execFileSync("cf", ["-q", ...cfArgs], { cwd, env, stdio: ["ignore", "inherit", "inherit"] });
 }
 
 async function cfApi(path) {
