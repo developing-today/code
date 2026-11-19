@@ -144,6 +144,8 @@ func (s *Server) handleCallReporting(w http.ResponseWriter, r *http.Request, req
 			var err error
 			if syn, ok := s.dryRunResult(callCtx, req.Server, req.Tool); ok {
 				res = syn
+			} else if req.LazyLanguage != "" {
+				res, err = s.reg.CallGenerated(callCtx, id, req.LazyLanguage, req.Server, req.Tool, cc, args, req.LazySelector)
 			} else {
 				res, err = s.reg.CallReporting(callCtx, id, req.Server, req.Tool, cc, args)
 			}

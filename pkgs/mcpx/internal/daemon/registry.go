@@ -2419,12 +2419,23 @@ func (r *Registry) CodegenNamespaces(names []string, prof config.Profile) ([]cod
 		}
 		matchedNS[ns], matchedNS[name] = true, true
 
-		all, _, _ := p.CachedSchemas()
+		all, _, at := p.CachedSchemas()
 		cached := visibleTools(view, r.viewCatalogue(name, view, all))
 		cn := codegen.Namespace{
 			Name: ns, Server: name,
 			Description: view.Description,
 			Prelude:     view.Prelude,
+		}
+		cn.Cold = at.IsZero() && !view.ScriptOnly()
+		if view.Virtual() {
+			cn.Cold = !r.virtualCached(view)
+		}
+		if cn.Cold && !wantWhole && len(sels) > 0 {
+			for requested := range wantTools {
+				cn.LazyTools = append(cn.LazyTools, requested)
+				matchedTool[ns+"."+requested], matchedTool[name+"."+requested] = true, true
+			}
+			sort.Strings(cn.LazyTools)
 		}
 		// Server guidance is long and describes a whole namespace, so it is
 		// noise when a single tool was asked for.
@@ -2680,15 +2691,19 @@ func (r *Registry) Call(ctx context.Context, server, tool string, cc config.Call
 }
 
 func toolReadOnly(p *pool.Pool, tool string) bool {
+	return toolReadOnlyFor(context.Background(), p, tool)
+}
+
+func toolReadOnlyFor(ctx context.Context, p *pool.Pool, tool string) bool {
 	if p == nil {
 		return false
 	}
-	tools, _, at := p.CachedSchemas()
+	tools, at, expired := policySchemas(ctx, p)
 	// A missing, invalidated, or expired catalogue cannot be trusted to
 	// exempt the call: Pool.Invalidate clears the timestamp but retains
 	// the old tools, and an expired deadline means the annotations may
 	// no longer hold. Conservatively treat all of those as a write.
-	if at.IsZero() || p.SchemaExpired() {
+	if at.IsZero() || expired {
 		return false
 	}
 	for _, candidate := range tools {
@@ -2710,7 +2725,7 @@ func (r *Registry) callWithLedger(ctx context.Context, p *pool.Pool, server, too
 	// cannot have written, so it must not record an unknown outcome and
 	// block later writes. declaredReadOnly reads the requested server's
 	// view -- the same name this call was made under.
-	readOnly := toolReadOnly(p, tool) || r.declaredReadOnly(server, tool)
+	readOnly := toolReadOnlyFor(ctx, p, tool) || r.declaredReadOnly(server, tool)
 	if err != nil && dispatched.Load() && !readOnly && r.writeLedger != nil && !mcpclient.IsConclusiveUpstreamError(err) && !r.taskCancelled(ctx) {
 		return nil, r.recordUnknownOutcome(p, server, tool, args, surface)
 	}
@@ -2845,10 +2860,10 @@ func (r *Registry) resolveAndGuard(ctx context.Context, p *pool.Pool, server, to
 
 		}
 	}
-	rs := r.resolvedFor(p, cc)
-	// Two policies sit between resolving the instance and using it, and both
-	// are off unless somebody turned them on. See internal/daemon/consumer.go.
-	rs = r.disambiguate(ctx, p, cc, rs)
+	rs, selected := generatedScope(ctx, p)
+	if !selected {
+		rs = r.disambiguate(ctx, p, cc, r.resolvedFor(p, cc))
+	}
 	asked, err := r.applyWritePolicyFor(ctx, p, server, effTool, cc, effArgs, script)
 	if err != nil {
 		return config.ResolvedScope{}, "", nil, nil, err
