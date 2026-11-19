@@ -2785,6 +2785,8 @@ async function handler(req: Request): Promise<Response> {
     // the same way — the Roadmap charts render exactly this object.
     const flowAnalytics = computeFlowAnalytics(await itemHistoryStore.readAll().catch(() => []));
     const spendCards = await loadSpendCards();
+    const releaseSnapshots = buildReleaseSnapshots(pool);
+    const prioritiesView = url.searchParams.get("view") === "priorities";
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
     const resolved = await resolveView(url);
@@ -2818,6 +2820,8 @@ async function handler(req: Request): Promise<Response> {
           forecasts,
           flowAnalytics,
           spendCards,
+          releaseSnapshots,
+          prioritiesView,
         ),
       );
     }
@@ -2843,6 +2847,8 @@ async function handler(req: Request): Promise<Response> {
         forecasts,
         flowAnalytics,
         spendCards,
+        releaseSnapshots,
+        prioritiesView,
       ),
     );
   }
