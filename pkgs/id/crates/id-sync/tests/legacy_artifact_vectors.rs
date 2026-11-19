@@ -21,9 +21,9 @@
 //! - `hash` = lowercase hex SHA-256 of the preimage;
 //! - `signature` = lowercase hex Ed25519 over the same preimage.
 //!
-//! There is no domain prefix and no length framing, although the doc
-//! comment on `artifact::signed_bytes` says "length-prefixed and
-//! domain-separated". That discrepancy is recorded, not repaired.
+//! There is no domain prefix and no length framing. The doc comment on
+//! `artifact::signed_bytes` once claimed both; slice 9110-11 (#10176)
+//! corrected the comment and left the bytes alone.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
