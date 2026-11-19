@@ -35,8 +35,11 @@ function usageError(message) {
 }
 const args = process.argv.slice(2);
 if (args.length > 1) usageError("give at most one of --dry-run, --print-urls");
+if (args.length === 1 && !["--dry-run", "--print-urls"].includes(args[0])) {
+  usageError(`unrecognized argument: ${args[0]}`);
+}
+// "deploy" is only the internal name for the no-argument default.
 const mode = args[0] ?? "deploy";
-if (!["deploy", "--dry-run", "--print-urls"].includes(mode)) usageError(`unrecognized argument: ${mode}`);
 
 const names = {
   cf: process.env.MB_CF_TOKEN_SECRET ?? "cloudflare.api-token-day-to-day",

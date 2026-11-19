@@ -183,3 +183,37 @@ test("page script cannot be broken out of by the api path", () => {
   });
   assert.ok(!html.includes("</script><script>alert(1)"));
 });
+
+test("history pages back past the newest page with before_id", async () => {
+  const { call, store } = harness();
+  for (let i = 1; i <= 205; i++) {
+    await store.add({ body: `m${i}`, direction: i % 2 ? "inbound" : "outbound", source: i % 2 ? "page" : "mcp" });
+  }
+  const page = await (await call(`/p/${TOKEN}`)).text();
+  assert.ok(page.includes(`href="/p/${TOKEN}?before_id=6"`), "older link points below the oldest shown");
+  assert.ok(!/id="older"[^>]*hidden/.test(page), "older link visible when the page is full");
+  const older = await (await call(`/p/${TOKEN}?before_id=6`)).text();
+  assert.ok(older.includes(">m5<") && older.includes(">m1<") && !older.includes(">m6<"));
+  assert.ok(older.includes("Back to newest"));
+  assert.ok(/id="older"[^>]*hidden/.test(older), "no older link past the start");
+  const api = await (await call(`/api/${TOKEN}/messages?order=desc&limit=3&before_id=100`)).json();
+  assert.deepEqual(
+    api.messages.map((m) => m.id),
+    [99, 98, 97],
+  );
+  assert.equal((await call(`/api/${TOKEN}/messages?before_id=0`)).status, 400);
+});
+
+test("deploy.mjs rejects undeclared arguments before touching credentials", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  const script = fileURLToPath(new URL("../deploy.mjs", import.meta.url));
+  for (const argv of [["deploy"], ["--nope"], ["--dry-run", "--print-urls"]]) {
+    const r = spawnSync(process.execPath, [script, ...argv], {
+      encoding: "utf8",
+      env: { PATH: "/nonexistent" }, // bws unreachable: any credential use would fail differently
+    });
+    assert.equal(r.status, 2, `${argv.join(" ")}: ${r.stderr}`);
+    assert.match(r.stderr, /usage: deploy\.mjs/);
+  }
+});

@@ -33,8 +33,13 @@ export function renderRow(m) {
  * the request, so the token is never baked into anything but this
  * response (which is no-store and no-referrer).
  */
-export function renderPage({ messages, stats, basePath, apiPath, notice }) {
+export function renderPage({ messages, stats, basePath, apiPath, notice, pageSize = 200, olderOnly = false }) {
   const rows = messages.map(renderRow).join("\n");
+  // A full page means there may be more; the link pages back by id and
+  // works without JavaScript. With it, the button appends in place.
+  const oldest = messages.length ? messages[messages.length - 1].id : null;
+  const olderHref = oldest !== null ? `${basePath}?before_id=${oldest}` : "";
+  const hasOlder = messages.length >= pageSize;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -66,6 +71,8 @@ ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
 .meta b { color: var(--fg); font-weight: 600; }
 .body { white-space: pre-wrap; overflow-wrap: anywhere; }
 .empty { color: var(--muted); }
+.nav { margin: 12px 0; display: flex; gap: 16px; }
+.nav a { color: var(--accent); }
 </style>
 </head>
 <body>
@@ -80,11 +87,18 @@ ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
     <span class="notice" id="notice">${escapeHtml(notice ?? "")}</span>
   </div>
 </form>
+${olderOnly ? `<p class="nav"><a href="${escapeHtml(basePath)}">Back to newest</a></p>` : ""}
 <ul id="list">${rows || '<li class="empty">No messages yet.</li>'}</ul>
+<p class="nav"><a id="older" href="${escapeHtml(olderHref)}"${hasOlder ? "" : " hidden"}>Older messages</a></p>
 </main>
 <script>
 (() => {
   const api = ${JSON.stringify(apiPath).replace(/</g, "\\u003c")} + "/messages";
+  const PAGE = ${Number(pageSize)};
+  const olderOnly = ${olderOnly ? "true" : "false"};
+  const olderLink = document.getElementById("older");
+  const byId = new Map();
+  let hasOlder = ${hasOlder ? "true" : "false"};
   const list = document.getElementById("list");
   const statsEl = document.getElementById("stats");
   const form = document.getElementById("send");
@@ -102,17 +116,37 @@ ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
     const d = new Date(t.getAttribute("datetime"));
     if (!isNaN(d)) t.textContent = d.toLocaleString();
   });
-  async function refresh() {
-    try {
-      const r = await fetch(api + "?order=desc&limit=200", { cache: "no-store" });
-      if (!r.ok) return;
-      const data = await r.json();
-      list.innerHTML = data.messages.length ? data.messages.map(row).join("") : '<li class="empty">No messages yet.</li>';
-      const s = data.stats;
-      statsEl.textContent = s.total + " messages · " + s.inbound + " to Claude (" + s.unread_inbound + " unread) · " + s.outbound + " from Claude";
-      localTimes();
-    } catch {}
+  const oldestId = () => (byId.size ? Math.min(...byId.keys()) : null);
+  function render() {
+    const ms = [...byId.values()].sort((a, b) => b.id - a.id);
+    list.innerHTML = ms.length ? ms.map(row).join("") : '<li class="empty">No messages yet.</li>';
+    olderLink.hidden = !hasOlder;
+    if (oldestId() !== null) olderLink.href = location.pathname + "?before_id=" + oldestId();
+    localTimes();
   }
+  async function load(query) {
+    const r = await fetch(api + "?order=desc&limit=" + PAGE + query, { cache: "no-store" });
+    if (!r.ok) return null;
+    const data = await r.json();
+    for (const m of data.messages) byId.set(m.id, m);
+    const s = data.stats;
+    statsEl.textContent = s.total + " messages · " + s.inbound + " to Claude (" + s.unread_inbound + " unread) · " + s.outbound + " from Claude";
+    return data;
+  }
+  // Refresh merges the newest page into what is loaded, so older
+  // messages fetched with the button stay on screen.
+  async function refresh() {
+    if (olderOnly) return;
+    try { if (await load("")) render(); } catch {}
+  }
+  olderLink.addEventListener("click", async (e) => {
+    if (olderOnly || oldestId() === null) return;
+    e.preventDefault();
+    try {
+      const data = await load("&before_id=" + oldestId());
+      if (data) { hasOlder = data.messages.length >= PAGE; render(); }
+    } catch {}
+  });
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const btn = form.querySelector("button");
@@ -131,6 +165,7 @@ ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
     btn.disabled = false;
   });
   localTimes();
+  refresh();
   setInterval(refresh, 10000);
 })();
 </script>

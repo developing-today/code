@@ -41,6 +41,11 @@ export function normalizeQuery(q = {}) {
     sinceId = Number(q.since_id);
     if (!Number.isInteger(sinceId) || sinceId < 0) throw new InputError("since_id must be a non-negative integer");
   }
+  let beforeId = null;
+  if (q.before_id !== undefined && q.before_id !== null && q.before_id !== "") {
+    beforeId = Number(q.before_id);
+    if (!Number.isInteger(beforeId) || beforeId < 1) throw new InputError("before_id must be a positive integer");
+  }
   let limit = DEFAULT_LIMIT;
   if (q.limit !== undefined && q.limit !== null && q.limit !== "") {
     limit = Number(q.limit);
@@ -49,7 +54,7 @@ export function normalizeQuery(q = {}) {
   }
   const order = q.order ?? "asc";
   if (order !== "asc" && order !== "desc") throw new InputError("order must be asc or desc");
-  return { direction, sinceId, limit, unreadOnly: Boolean(q.unread_only), order };
+  return { direction, sinceId, beforeId, limit, unreadOnly: Boolean(q.unread_only), order };
 }
 
 /**
@@ -72,6 +77,7 @@ export class MemoryStore {
     let rows = this.rows.filter(
       (r) =>
         r.id > q.sinceId &&
+        (q.beforeId === null || r.id < q.beforeId) &&
         (q.direction === "all" || r.direction === q.direction) &&
         (!q.unreadOnly || (r.direction === "inbound" && r.read_at === null)),
     );

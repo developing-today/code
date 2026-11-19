@@ -6,7 +6,7 @@
 //   GET  /p/<token>                   history page with the send form
 //   POST /p/<token>                   form post: store an inbound message
 //   GET  /api/<token>/messages        JSON history (direction, since_id,
-//                                     unread_only, limit, order)
+//                                     before_id, unread_only, limit, order)
 //   POST /api/<token>/messages        JSON {body, sender}: store inbound
 //   POST /api/<token>/ack             JSON {up_to_id | ids}: mark read
 //   GET  /healthz                     {"ok":true}, no data
@@ -18,6 +18,7 @@ import { InputError } from "./messages.js";
 import { renderPage } from "./page.js";
 
 const MAX_FORM_BYTES = 64 * 1024;
+const PAGE_SIZE = 200;
 
 const PRIVATE_HEADERS = {
   "cache-control": "no-store",
@@ -47,7 +48,7 @@ async function readBody(request) {
   return text;
 }
 
-async function handlePage(request, store, base, api) {
+async function handlePage(request, store, base, api, url) {
   if (request.method === "POST") {
     const form = new URLSearchParams(await readBody(request));
     await store.add({ body: form.get("body") ?? "", sender: form.get("sender"), direction: "inbound", source: "page" });
@@ -56,8 +57,14 @@ async function handlePage(request, store, base, api) {
   if (request.method !== "GET" && request.method !== "HEAD") {
     return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET, POST" } });
   }
-  const { messages, stats } = await store.list({ direction: "all", order: "desc", limit: 200 });
-  const html = renderPage({ messages, stats, basePath: base, apiPath: api });
+  const beforeId = url.searchParams.get("before_id") ?? undefined;
+  const { messages, stats } = await store.list({
+    direction: "all",
+    order: "desc",
+    limit: PAGE_SIZE,
+    before_id: beforeId,
+  });
+  const html = renderPage({ messages, stats, basePath: base, apiPath: api, pageSize: PAGE_SIZE, olderOnly: !!beforeId });
   return new Response(html, {
     headers: { "content-type": "text/html; charset=utf-8", "content-security-policy": PAGE_CSP },
   });
@@ -73,6 +80,7 @@ async function handleApi(request, store, rest, url) {
         await store.list({
           direction: p.get("direction") ?? "all",
           since_id: p.get("since_id") ?? undefined,
+          before_id: p.get("before_id") ?? undefined,
           unread_only: p.get("unread_only") === "true" || p.get("unread_only") === "1",
           limit: p.get("limit") ?? undefined,
           order: p.get("order") ?? undefined,
@@ -118,7 +126,7 @@ export async function route(request, env, getStore) {
   try {
     if (m.area === "mcp" && m.rest.length === 0) return withHeaders(await handleMcp(request, store));
     if (m.area === "p" && m.rest.length === 0) {
-      return withHeaders(await handlePage(request, store, `/p/${token}`, `/api/${token}`));
+      return withHeaders(await handlePage(request, store, `/p/${token}`, `/api/${token}`, url));
     }
     if (m.area === "api") return withHeaders(await handleApi(request, store, m.rest, url));
   } catch (err) {

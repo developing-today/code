@@ -44,6 +44,10 @@ export class MessageStore extends DurableObject {
     const q = normalizeQuery(query);
     const where = ["id > ?"];
     const args = [q.sinceId];
+    if (q.beforeId !== null) {
+      where.push("id < ?");
+      args.push(q.beforeId);
+    }
     if (q.direction !== "all") {
       where.push("direction = ?");
       args.push(q.direction);

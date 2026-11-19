@@ -16,6 +16,7 @@ stdenvNoCC.mkDerivation {
     fileset = lib.fileset.unions [
       ./src
       ./test
+      ./deploy.mjs # its argument check is tested
       ./package.json
       ./wrangler.jsonc
     ];
