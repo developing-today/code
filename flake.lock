@@ -1350,22 +1350,6 @@
         "type": "github"
       }
     },
-    "mcpx-src": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1794968769,
-        "narHash": "sha256-a8f42Y1P0bzJ4PPHpl62bWMfI+z4YMhmBMnpw5g8WFU=",
-        "owner": "developing-today",
-        "repo": "code",
-        "rev": "d3a0db813931cf3eae942f7179ad28c5b33d77e9",
-        "type": "github"
-      },
-      "original": {
-        "owner": "developing-today",
-        "repo": "code",
-        "type": "github"
-      }
-    },
     "microvm": {
       "inputs": {
         "nixpkgs": "nixpkgs_12",
@@ -2279,7 +2263,7 @@
     "opencode": {
       "inputs": {
         "fleet": "fleet_3",
-        "mcpx-src": "mcpx-src",
+        "mcpx-src": [],
         "nixpkgs": [
           "opencode",
           "fleet",
