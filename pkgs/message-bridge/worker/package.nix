@@ -19,6 +19,7 @@ stdenvNoCC.mkDerivation {
       ./cloudflare.config.ts
       ./deploy.mjs # its argument check is tested
       ./deploy-args.mjs
+      ./deploy-probe.mjs
       ./package.json
       ./wrangler.jsonc
     ];

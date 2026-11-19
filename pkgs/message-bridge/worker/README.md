@@ -75,7 +75,11 @@ nix run .#message-bridge-deploy -- --print-urls              # connector/page UR
 ```
 
 The first full deploy creates the access token in Bitwarden if it is
-missing. Version ids are in the Cloudflare dashboard (Worker > Deployments)
+missing. In an account where the Worker doesn't exist yet, it bootstraps
+with `cf deploy` (the versions flow can't create a Worker), which uploads
+and deploys the first version in one step; every later deploy uses the
+versions flow. `--code-only` refuses to bootstrap, since it has no token
+to give the new Worker. Version ids are in the Cloudflare dashboard (Worker > Deployments)
 or in each deploy's output.
 
 ### From the repo

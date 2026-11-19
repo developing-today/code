@@ -14,6 +14,13 @@
 // a deployment at an older version id (--deploy-version <id>), with no
 // upload.
 //
+// The one exception is the very first deploy into an account: `cf
+// workers versions create` can't create a Worker, so when the API says
+// message-bridge doesn't exist yet (deploy-probe.mjs), a full deploy
+// bootstraps with `cf deploy` (same tag, message and ACCESS_TOKEN),
+// which uploads and deploys in one step. --code-only refuses there,
+// since it has no access token to give the new Worker.
+//
 // Usage:
 //   deploy.mjs                        full deploy from a checkout: upload
 //                                     a version with ACCESS_TOKEN from
@@ -58,6 +65,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, USAGE } from "./deploy-args.mjs";
+import { classifyWorkerProbe } from "./deploy-probe.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const WORKER = "message-bridge";
@@ -141,10 +149,20 @@ const stage = stagePackage();
 const sha = process.env.GITHUB_SHA || execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 const tag = `git-${sha.slice(0, 12)}`;
 const via = args.mode === "code-only" ? "message-bridge-deploy workflow" : "nix run .#message-bridge-deploy";
-const createArgs = ["workers", "versions", "create", "--tag", tag, "--message", `deploy ${sha} via ${via}`];
+const annotate = ["--tag", tag, "--message", `deploy ${sha} via ${via}`];
+const exists = await workerExists();
+if (!exists && args.mode === "code-only") {
+  throw new Error(
+    `worker ${WORKER} does not exist yet; run the first deploy from a checkout (nix run .#message-bridge-deploy) so it gets its ACCESS_TOKEN`,
+  );
+}
+const uploadArgs = exists
+  ? ["workers", "versions", "create", ...annotate]
+  : ["deploy", "--worker", WORKER, ...annotate];
 
 if (args.dryRun) {
-  runCf(stage, [...createArgs, "--dry-run"]);
+  if (!exists) console.log(`worker ${WORKER} does not exist yet; a real deploy would bootstrap it with cf deploy`);
+  runCf(stage, [...uploadArgs, "--dry-run"]);
   console.log("dry run: config builds, nothing uploaded");
   process.exit(0);
 }
@@ -179,13 +197,17 @@ if (args.mode === "deploy") {
   chmodSync(secretsDir, 0o700);
   const secretsFile = join(secretsDir, "secrets.json");
   writeFileSync(secretsFile, JSON.stringify({ ACCESS_TOKEN: token }), { mode: 0o600 });
-  createArgs.push("--secrets-file", secretsFile);
+  uploadArgs.push("--secrets-file", secretsFile);
 }
 
-console.log(`uploading version (tag ${tag})`);
+console.log(
+  exists
+    ? `uploading version (tag ${tag})`
+    : `worker ${WORKER} does not exist yet; bootstrapping with cf deploy (tag ${tag})`,
+);
 const before = Date.now();
 try {
-  runCf(stage, createArgs);
+  runCf(stage, uploadArgs);
 } finally {
   if (secretsDir) rmSync(secretsDir, { recursive: true, force: true });
 }
@@ -200,12 +222,24 @@ if (!version || createdOn(version) < before - 120_000) {
 }
 console.log(`uploaded version ${version.id}`);
 await assertDeployable(version.id);
-createDeployment(stage, version.id);
+// cf deploy already put the bootstrap version live.
+if (exists) createDeployment(stage, version.id);
 await verifyLive(version.id);
 console.log(`live: ${publicUrl} at version ${version.id} (${tag})`);
 console.log(`roll back with: nix run .#message-bridge-deploy -- --deploy-version <older version id>`);
 
 // --- helpers ---
+
+async function workerExists() {
+  const res = await fetch(`${api}/settings`, { headers: { authorization: `Bearer ${apiToken}` } });
+  let body = null;
+  try {
+    body = await res.json();
+  } catch {
+    body = null;
+  }
+  return classifyWorkerProbe(res.status, body);
+}
 
 function stagePackage() {
   // A writable copy (the store path is read-only; cf and wrangler write

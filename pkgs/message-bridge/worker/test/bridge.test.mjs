@@ -227,6 +227,25 @@ test("deploy argument parsing fails closed", async () => {
   }
 });
 
+test("worker existence probe bootstraps only on the API's not-found answer", async () => {
+  const { classifyWorkerProbe } = await import("../deploy-probe.mjs");
+  assert.equal(classifyWorkerProbe(200, { success: true, result: {} }), true);
+  assert.equal(
+    classifyWorkerProbe(404, { success: false, errors: [{ code: 10007, message: "This Worker does not exist on your account." }] }),
+    false,
+  );
+  for (const [status, body] of [
+    [401, { success: false, errors: [{ code: 10000, message: "Authentication error" }] }],
+    [403, { success: false, errors: [{ code: 9109, message: "Unauthorized" }] }],
+    [404, { success: false, errors: [{ code: 7003, message: "Could not route" }] }],
+    [404, null],
+    [500, null],
+    [200, { success: false }],
+  ]) {
+    assert.throws(() => classifyWorkerProbe(status, body), /aborting before any upload/, `${status}`);
+  }
+});
+
 test("deploy.mjs rejects undeclared arguments before touching credentials", async () => {
   const { spawnSync } = await import("node:child_process");
   const { fileURLToPath } = await import("node:url");
