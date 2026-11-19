@@ -1,5 +1,13 @@
 /** Server-only, versioned access policy. Input principal, role and access must be authoritative. */
 const levels={reader:1,editor:2,admin:3},actions={read:1,write:2,admin:3};
+/**
+ * Contract §4/§11 (BA-W01 L4): numeric priority overrides do not ship until reviewed. With this off,
+ * any matching deny is a hard block and stored `overrideDeny` rules are inert. When enabled, an allow
+ * beats a deny only if it was created by privileged authority and its priority is strictly greater
+ * than every matching deny; equal priority resolves to deny.
+ */
+export const PRIORITY_OVERRIDES=false;
+const DEFAULT_PRIORITY=100,privileged=new Set(['admin','service']);
 const record=x=>x&&typeof x==='object'&&!Array.isArray(x);
 const copy=x=>structuredClone(x);
 const problem=message=>Object.assign(new Error(message),{status:403});
@@ -12,7 +20,7 @@ export function validateAccessConfig(access){
   if(!key||!record(p)||p.default!==undefined&&!['allow','deny'].includes(p.default)||p.inherit!==undefined&&(!Array.isArray(p.inherit)||p.inherit.length>100)||!Array.isArray(p.rules)||p.rules.length>100)throw problem('Invalid policy');
   for(const parent of p.inherit||[])if(typeof parent!=='string'||!Object.hasOwn(access.policies,parent))throw problem('Missing policy parent');
   for(const r of p.rules){
-   if(!record(r)||!['allow','deny'].includes(r.effect)||!record(r.subject)||!['everyone','user','group'].includes(r.subject.type)||r.subject.type!=='everyone'&&(typeof r.subject.id!=='string'||!r.subject.id)||!Array.isArray(r.actions)||!r.actions.length||r.actions.some(a=>!Object.hasOwn(actions,a))||r.priority!==undefined&&(!Number.isSafeInteger(r.priority)||r.priority<0||r.priority>1000000)||r.overrideDeny!==undefined&&typeof r.overrideDeny!=='boolean'||r.overrideDeny&&r.effect!=='allow')throw problem('Invalid policy rule');
+   if(!record(r)||!['allow','deny'].includes(r.effect)||!record(r.subject)||!['everyone','user','group'].includes(r.subject.type)||r.subject.type!=='everyone'&&(typeof r.subject.id!=='string'||!r.subject.id)||!Array.isArray(r.actions)||!r.actions.length||r.actions.some(a=>!Object.hasOwn(actions,a))||r.priority!==undefined&&(!Number.isSafeInteger(r.priority)||r.priority<0||r.priority>1000000)||r.overrideDeny!==undefined&&typeof r.overrideDeny!=='boolean'||r.overrideDeny&&r.effect!=='allow'||r.authority!==undefined&&!privileged.has(r.authority))throw problem('Invalid policy rule');
    if(r.subject.type==='group'&&!Object.hasOwn(access.groups,r.subject.id))throw problem('Missing policy group');
   }
  }
@@ -20,7 +28,23 @@ export function validateAccessConfig(access){
  function visit(k,depth){if(depth>64||active.has(k))throw problem('Cyclic or deep policy inheritance');if(done.has(k))return;active.add(k);for(const p of access.policies[k].inherit||[])visit(p,depth+1);active.delete(k);done.add(k)}
  for(const [k]of entries)visit(k,0);
 }
-function decision({principal,role,entityId='*',access,action='read'},validated=false){
+/**
+ * Write-time gate for the administrator policy endpoint (§4 step 4, §8 test 2). Only administrators
+ * write policy, and while overrides are off no rule may claim to defeat a deny, so a larger number can
+ * never be used to escape an inherited deny. Rules are stamped with the authority that wrote them.
+ */
+export function assertPolicyWrite(access,{role,priorityOverrides=PRIORITY_OVERRIDES}={}){
+ if(role!=='admin')throw problem('Administrator required');
+ validateAccessConfig(access);
+ if(access==null)return access;
+ const out=copy(access);
+ for(const p of Object.values(out.policies))for(const r of p.rules){
+  if(r.overrideDeny&&!priorityOverrides)throw problem('Priority overrides are disabled; a deny cannot be overridden');
+  if(r.overrideDeny)r.authority='admin';else delete r.authority;
+ }
+ return out;
+}
+function decision({principal,role,entityId='*',access,action='read',priorityOverrides=PRIORITY_OVERRIDES},validated=false){
  const no=reason=>({allowed:false,reason});
  if(!principal?.id||!Object.hasOwn(actions,action)||!Object.hasOwn(levels,role)||levels[role]<actions[action])return no('store-role');
  if(!validated)try{validateAccessConfig(access)}catch{return no('invalid-policy')}
@@ -31,7 +55,11 @@ function decision({principal,role,entityId='*',access,action='read'},validated=f
  for(const k of selected){const p=access.policies[k];defaultDeny ||= p.default==='deny';for(const r of p.rules){const s=r.subject;if(r.actions.includes(action)&&(s.type==='everyone'||s.type==='user'&&s.id===principal.id||s.type==='group'&&access.groups[s.id].includes(principal.id)))rules.push(r)}}
  const denies=rules.filter(r=>r.effect==='deny');
  const allows=rules.filter(r=>r.effect==='allow');
- if(denies.length){const strongest=Math.min(...denies.map(r=>r.priority??100));return allows.some(r=>r.overrideDeny&&(r.priority??100)<strongest)?{allowed:true,reason:'explicit-priority-override'}:no('inherited-deny')}
+ if(denies.length){
+  if(!priorityOverrides)return no('inherited-deny');
+  const strongest=Math.max(...denies.map(r=>r.priority??DEFAULT_PRIORITY));
+  return allows.some(r=>r.overrideDeny&&privileged.has(r.authority)&&(r.priority??DEFAULT_PRIORITY)>strongest)?{allowed:true,reason:'privileged-priority-override'}:no('inherited-deny');
+ }
  if(defaultDeny&&!allows.length)return no('default-deny');
  return {allowed:true,reason:allows.length?'explicit-allow':'inherited-store-role'};
 }
@@ -88,4 +116,34 @@ export function assertSnapshotMutation(before,after,context){
   for(const [field,type]of [['items','item'],['tags','tag'],['notes','note'],['inventory','inventory']])for(const r of before[field]||[])if(!evaluateAccess({...policyFor(before,context),entityId:`${type}:${r.id}`,action:'write'}).allowed&&JSON.stringify(r)!==JSON.stringify((after[field]||[]).find(x=>x.id===r.id)))throw problem('Cannot mutate denied entity');
  }
  return true;
+}
+
+/**
+ * Query scope builder (§5): search and counts read only rows the principal may read, and every count is
+ * computed after that filter, so totals never reveal hidden rows. Callers must not filter on their own.
+ */
+export function queryScope(state,context){
+ const view=projectSnapshot(state,context),rows=kind=>view[kind]||[];
+ return {
+  view,
+  search(kind,match,limit=Infinity){const hits=[];for(const row of rows(kind)){if(match(row)){if(hits.length>=limit)return {rows:hits,truncated:true};hits.push(row)}}return {rows:hits,truncated:false}},
+  count(kind,match=()=>true){return rows(kind).filter(match).length},
+ };
+}
+/**
+ * Shadow mode (§9): a surface still being rolled out can compute and log decisions without enforcing
+ * them, switched per surface. Surfaces that already enforce can never be put back into shadow mode.
+ */
+export const ALWAYS_ENFORCED=Object.freeze(['api','search','counts']);
+export const SHADOWABLE=Object.freeze(['history','media','exports','summaries','jobs']);
+export function enforcementMode(env,surface){
+ if(!ALWAYS_ENFORCED.includes(surface)&&!SHADOWABLE.includes(surface))throw new Error('Unknown access surface: '+surface);
+ if(ALWAYS_ENFORCED.includes(surface))return 'enforce';
+ const shadow=String(env?.ACCESS_SHADOW_SURFACES??'').split(',').map(x=>x.trim());
+ return shadow.includes(surface)?'shadow':'enforce';
+}
+export function guard({env,surface,log=console.warn},decided){
+ const mode=enforcementMode(env,surface);
+ if(mode==='shadow'){if(!decided.allowed)log(JSON.stringify({accessShadow:surface,wouldDeny:decided.reason}));return {...decided,allowed:true,mode,enforced:false,wouldAllow:decided.allowed}}
+ return {...decided,mode,enforced:true};
 }
