@@ -1,5 +1,6 @@
 {
-  // Queue transport alert Worker (code#6369). Deployed from the flake:
+  // Queue transport alert Worker (code#6369), for local `wrangler dev`.
+  // Deploys go through cloudflare.config.ts and the cf versions flow:
   //   nix run .#queue-transport-alert-deploy [-- --dry-run]
   "name": "queue-transport-alert",
   "main": "src/index.js",
@@ -18,7 +19,7 @@
     // "true" files/comments on incidents, pushes and enqueues; anything else only logs.
     "APPLY": "true"
   },
-  // Secrets (set by deploy.mjs from Bitwarden, never in this file):
+  // Secrets (uploaded with each version by deploy.mjs from Bitwarden, never in this file):
   //   ACCESS_CLIENT_ID, ACCESS_CLIENT_SECRET  Access service token for the broker route
   //   GITHUB_TOKEN                           token that may write issues in REPO
   //   TELEGRAM_BOT_TOKEN                     OpenClaw's Telegram bot, for the phone push

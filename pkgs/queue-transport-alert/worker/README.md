@@ -69,23 +69,41 @@ issue when both run. State lives in one SQLite-backed Durable Object.
 From a checkout of this repo, with Bitwarden and sops access:
 
 ```bash
-nix run .#queue-transport-alert-deploy -- --dry-run   # bundle only
-nix run .#queue-transport-alert-deploy                # deploy + set secrets
+nix run .#queue-transport-alert-deploy -- --dry-run                 # build only
+nix run .#queue-transport-alert-deploy                              # upload + deploy HEAD
+nix run .#queue-transport-alert-deploy -- --deploy-version <id>     # roll back
 ```
 
-The app stages the flake package (`package.nix`), runs
-`wrangler deploy`, then `wrangler secret bulk` from stdin with these
-values read from Bitwarden by name (override with the env vars):
+It uses the `cf` CLI's versions flow, the same standard as
+`pkarr-deploy`, with `cloudflare.config.ts` as the deploy config
+(`wrangler.jsonc` mirrors it for `wrangler dev`; `test/config.test.mjs`
+keeps the two in step). The app stages the flake package
+(`package.nix`), links `cf/config` and wrangler (cf's build bridge) from
+the Nix store, then:
 
-| Worker secret          | Bitwarden name (env override)                                                                         |
-| ---------------------- | ----------------------------------------------------------------------------------------------------- |
-| `ACCESS_CLIENT_ID`     | `cloudflare.access.queue-broker-client-id` (`QTA_ACCESS_ID_SECRET`)                                   |
-| `ACCESS_CLIENT_SECRET` | `cloudflare.access.queue-broker-client-secret` (`QTA_ACCESS_SECRET_SECRET`)                           |
-| `GITHUB_TOKEN`         | `github.developing-today-code-automation` (`QTA_GITHUB_TOKEN_SECRET`)                                 |
-| `TELEGRAM_BOT_TOKEN`   | `openclaw.telegram-bot-token` (`QTA_TELEGRAM_SECRET`)                                                 |
-| `BROKER_AGENT_TOKEN`   | the file `~/.config/queue-broker/token` (`QTA_BROKER_TOKEN_FILE`); left as is when the file is absent |
+1. `cf workers versions create --tag git-<sha12>` uploads a version
+   with its secrets passed through a pipe (`--secrets-file <(cat)`);
+   nothing goes live yet.
+2. `cf workers deployments create` puts that version at 100%.
+3. `cf workers triggers deploy` applies the cron schedule.
+4. It checks the latest deployment serves that version and that
+   `/status.json` answers.
 
-Wrangler itself uses `cloudflare.api-token-day-to-day`
+Every version carries its own secrets, so `--deploy-version <id>` rolls
+back to an older version as it was, without uploading anything
+(`cf workers versions list --worker-id queue-transport-alert` lists the
+ids). The secrets come from Bitwarden by name (override with the env
+vars); one left out of an upload keeps the previous version's value:
+
+| Worker secret          | Bitwarden name (env override)                                                                           |
+| ---------------------- | ------------------------------------------------------------------------------------------------------- |
+| `ACCESS_CLIENT_ID`     | `cloudflare.access.queue-broker-client-id` (`QTA_ACCESS_ID_SECRET`)                                     |
+| `ACCESS_CLIENT_SECRET` | `cloudflare.access.queue-broker-client-secret` (`QTA_ACCESS_SECRET_SECRET`)                             |
+| `GITHUB_TOKEN`         | `github.developing-today-code-automation` (`QTA_GITHUB_TOKEN_SECRET`)                                   |
+| `TELEGRAM_BOT_TOKEN`   | `openclaw.telegram-bot-token` (`QTA_TELEGRAM_SECRET`)                                                   |
+| `BROKER_AGENT_TOKEN`   | the file `~/.config/queue-broker/token` (`QTA_BROKER_TOKEN_FILE`); carried over when the file is absent |
+
+cf itself uses `cloudflare.api-token-day-to-day`
 (`QTA_CF_TOKEN_SECRET`). It is also in the deploy registry as
 `queue-transport-alert` (`deploy list`).
 

@@ -1,0 +1,15 @@
+import assert from "node:assert/strict";
+import worker from "./worker/index.js";
+const rows = new Map();
+const env={BUCKET:{put:async(k,v)=>rows.set(k,v),head:async(k)=>rows.has(k)?{}:null}};
+const call = (method, name, user = "dummy-a", args = {}) => worker.fetch(new Request("https://fixture.invalid/mcp",{method:"POST",headers:user?{"oai-authenticated-user-id":user}:{},body:JSON.stringify({id:1,jsonrpc:"2.0",method,params:{name,arguments:args}})}),env);
+const out = async (...a) => (await (await call(...a)).json()).result;
+assert.equal((await call("tools/list",undefined,"")).status,401);
+assert.deepEqual((await out("server/discover")).supportedVersions,["2026-07-28"]);
+assert.equal((await out("tools/list")).tools.length,2);
+assert.equal((await out("tools/call","read_probe")).content[0].text,"No probe stored.");
+assert.equal((await out("tools/call","write_probe","dummy-a",{text:"not accepted"})).isError,true);
+assert.equal((await out("tools/call","write_probe")).isError,false);
+assert.equal((await out("tools/call","read_probe")).content[0].text,"site-probe-v1");
+assert.equal((await out("tools/call","read_probe","dummy-b")).content[0].text,"No probe stored.");
+console.log("Dummy MCP protocol and caller isolation checks passed");
