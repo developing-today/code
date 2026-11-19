@@ -481,3 +481,27 @@ Slice 3+: Additional features and optimizations (future work)
 - Defect: #5857 - Session creation request shape
 - Migration: 0021 - bind_repo_task_lane_session
 - Migration: 0022 - Atomic recovery operations
+
+
+### Broker Unix transport (#11980)
+
+The read-only poll uses the same configured broker and token resolution for
+both transports: `REPO_QUEUE_BROKER_URL` or
+`~/.config/repo-queue/broker-url`, and `REPO_QUEUE_TOKEN_FILE` or
+`~/.config/queue-broker/token`. An explicit
+`unix:///absolute/path/to/queue-broker.sock` sends HTTP `POST /list`
+over that literal filesystem socket with the usual `X-Agent-Token` header.
+It does not append the API path to the socket filename, probe TCP, or
+redirect to another broker. HTTP(S) URLs retain the existing urllib path.
+Both paths use the existing 30-second socket timeout. Transport, HTTP,
+JSON and broker application errors remain failed reads, not successful
+empty queues; no configuration changes or claimant launches are implied.
+
+Run the ordinary no-network suite unchanged:
+`python3 -I pm-stack/opencode-claimant/run_hermetic_tests.py`.
+
+Run the separate bounded local transport fixtures:
+`python3 -I pm-stack/opencode-claimant/test_poll_transport.py`.
+They serve only `/list` on a temporary Unix socket, use a dummy token,
+guard connections to that fixture path, and mock the TCP regression seam.
+They never run the live poll entry point, claim work, or launch sessions.
