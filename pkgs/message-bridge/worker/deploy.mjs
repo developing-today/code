@@ -33,9 +33,13 @@
 //                                     no Bitwarden; the new version keeps
 //                                     the deployed ACCESS_TOKEN, so the
 //                                     connector URL doesn't change
-//   deploy.mjs --deploy-version <id> [--dry-run]
+//   deploy.mjs --deploy-version <id> [--allow-secret-change] [--dry-run]
 //                                     deploy (roll back to) an existing
-//                                     version at 100%; --dry-run previews
+//                                     version at 100%; --dry-run previews.
+//                                     Cloudflare blocks an older version
+//                                     whose secrets have since changed;
+//                                     --allow-secret-change deploys it
+//                                     anyway (with that version's token)
 //   deploy.mjs --print-urls           print the connector, page and API
 //                                     URLs (they contain the token)
 //
@@ -139,7 +143,16 @@ if (args.mode === "deploy-version") {
     process.exit(0);
   }
   const stage = stagePackage();
-  createDeployment(stage, id);
+  try {
+    createDeployment(stage, id, { bypassChecks: args.allowSecretChange });
+  } catch (err) {
+    if (args.allowSecretChange) throw err;
+    throw new Error(
+      `Cloudflare refused to deploy version ${id} (cf's error is above). If ACCESS_TOKEN or another secret changed ` +
+        `since that version was uploaded, Cloudflare blocks rolling back to it; rerun with --allow-secret-change to ` +
+        `deploy it anyway, knowing the connector then uses that version's token.`,
+    );
+  }
   await verifyLive(id);
   console.log(`live: ${publicUrl} at version ${id}`);
   process.exit(0);
@@ -149,13 +162,19 @@ const stage = stagePackage();
 const sha = process.env.GITHUB_SHA || execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 const tag = `git-${sha.slice(0, 12)}`;
 const via = args.mode === "code-only" ? "message-bridge-deploy workflow" : "nix run .#message-bridge-deploy";
-const annotate = ["--tag", tag, "--message", `deploy ${sha} via ${via}`];
+// The run id makes this upload's message unique, so the version found
+// after the upload is this run's and never another upload of the same
+// SHA (a local deploy and the workflow can share a tag).
+const runId = randomBytes(6).toString("hex");
+const message = `deploy ${sha} via ${via} (run ${runId})`;
+const annotate = ["--tag", tag, "--message", message];
 const exists = await workerExists();
 if (!exists && args.mode === "code-only") {
   throw new Error(
     `worker ${WORKER} does not exist yet; run the first deploy from a checkout (nix run .#message-bridge-deploy) so it gets its ACCESS_TOKEN`,
   );
 }
+if (exists && args.mode === "code-only") await assertTokenInheritsFromLive();
 const uploadArgs = exists
   ? ["workers", "versions", "create", ...annotate]
   : ["deploy", "--worker", WORKER, ...annotate];
@@ -205,21 +224,17 @@ console.log(
     ? `uploading version (tag ${tag})`
     : `worker ${WORKER} does not exist yet; bootstrapping with cf deploy (tag ${tag})`,
 );
-const before = Date.now();
 try {
   runCf(stage, uploadArgs);
 } finally {
   if (secretsDir) rmSync(secretsDir, { recursive: true, force: true });
 }
 
-// Re-uploading an unchanged tree makes a second version with the same
-// tag, so take the newest one with this tag.
-const version = (await listVersions())
-  .filter((v) => v.annotations?.["workers/tag"] === tag)
-  .sort((a, b) => createdOn(b) - createdOn(a))[0];
-if (!version || createdOn(version) < before - 120_000) {
-  throw new Error(`uploaded version with tag ${tag} not found in the versions list`);
+const matches = (await listVersions()).filter((v) => v.annotations?.["workers/message"] === message);
+if (matches.length !== 1) {
+  throw new Error(`expected exactly one version with this run's message, found ${matches.length}: ${message}`);
 }
+const version = matches[0];
 console.log(`uploaded version ${version.id}`);
 await assertDeployable(version.id);
 // cf deploy already put the bootstrap version live.
@@ -229,6 +244,38 @@ console.log(`live: ${publicUrl} at version ${version.id} (${tag})`);
 console.log(`roll back with: nix run .#message-bridge-deploy -- --deploy-version <older version id>`);
 
 // --- helpers ---
+
+// A code-only upload keeps ACCESS_TOKEN by inheriting it from the newest
+// uploaded version, which is not always the live one: a full deploy that
+// uploaded a rotated token and then failed before promotion leaves a
+// newer version with a different token. So every version newer than the
+// live one must itself be a code-only upload (which only ever carries a
+// token forward), or this refuses before uploading.
+async function assertTokenInheritsFromLive() {
+  const liveId = (await liveVersions())[0]?.version_id;
+  if (!liveId) throw new Error("could not find the live version; refusing a code-only upload");
+  const newestFirst = (await listVersions()).sort((a, b) => createdOn(b) - createdOn(a));
+  const liveAt = newestFirst.findIndex((v) => v.id === liveId);
+  if (liveAt === -1) {
+    throw new Error(`live version ${liveId} is not in the versions list; refusing a code-only upload`);
+  }
+  const stray = newestFirst
+    .slice(0, liveAt)
+    .find((v) => !(v.annotations?.["workers/message"] ?? "").includes("via message-bridge-deploy workflow"));
+  if (stray) {
+    throw new Error(
+      `version ${stray.id} is newer than the live version ${liveId} and isn't a code-only upload, so a code-only ` +
+        `upload could inherit a different ACCESS_TOKEN; run a full deploy from a checkout ` +
+        `(nix run .#message-bridge-deploy) or deploy the live version again with --deploy-version ${liveId}`,
+    );
+  }
+}
+
+async function liveVersions() {
+  const deployments = (await cfApi("/deployments"))?.deployments ?? [];
+  const newest = [...deployments].sort((a, b) => Date.parse(b.created_on) - Date.parse(a.created_on))[0];
+  return newest?.versions ?? [];
+}
 
 async function workerExists() {
   const res = await fetch(`${api}/settings`, { headers: { authorization: `Bearer ${apiToken}` } });
@@ -299,8 +346,8 @@ async function assertDeployable(id) {
   }
 }
 
-function createDeployment(cwd, id) {
-  console.log(`deploying version ${id} at 100%`);
+function createDeployment(cwd, id, { bypassChecks = false } = {}) {
+  console.log(`deploying version ${id} at 100%${bypassChecks ? " (allowing a secret change)" : ""}`);
   runCf(cwd, [
     "workers",
     "deployments",
@@ -311,13 +358,12 @@ function createDeployment(cwd, id) {
     "percentage",
     "--versions",
     JSON.stringify([{ version_id: id, percentage: 100 }]),
+    ...(bypassChecks ? ["--bypass-deployment-checks"] : []),
   ]);
 }
 
 async function verifyLive(id) {
-  const deployments = (await cfApi("/deployments"))?.deployments ?? [];
-  const newest = [...deployments].sort((a, b) => Date.parse(b.created_on) - Date.parse(a.created_on))[0];
-  const serving = newest?.versions ?? [];
+  const serving = await liveVersions();
   if (!(serving.length === 1 && serving[0].version_id === id && serving[0].percentage === 100)) {
     throw new Error(`newest deployment does not serve version ${id} at 100%; check the dashboard`);
   }

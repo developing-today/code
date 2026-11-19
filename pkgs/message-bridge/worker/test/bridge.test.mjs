@@ -207,12 +207,23 @@ test("history pages back past the newest page with before_id", async () => {
 test("deploy argument parsing fails closed", async () => {
   const { parseArgs } = await import("../deploy-args.mjs");
   const id = "02854b08-81e8-4ee5-bbc4-f7cba767fa8f";
-  assert.deepEqual(parseArgs([]), { mode: "deploy", dryRun: false, deployVersion: null });
-  assert.deepEqual(parseArgs(["--dry-run"]), { mode: "deploy", dryRun: true, deployVersion: null });
+  assert.deepEqual(parseArgs([]), { mode: "deploy", dryRun: false, deployVersion: null, allowSecretChange: false });
+  assert.deepEqual(parseArgs(["--dry-run"]), { mode: "deploy", dryRun: true, deployVersion: null, allowSecretChange: false });
   assert.equal(parseArgs(["--code-only"]).mode, "code-only");
   assert.equal(parseArgs(["--print-urls"]).mode, "print-urls");
-  assert.deepEqual(parseArgs(["--deploy-version", id, "--dry-run"]), { mode: "deploy-version", dryRun: true, deployVersion: id });
-  assert.deepEqual(parseArgs(["--dry-run", "--deploy-version", id]), { mode: "deploy-version", dryRun: true, deployVersion: id });
+  assert.deepEqual(parseArgs(["--deploy-version", id, "--dry-run"]), {
+    mode: "deploy-version",
+    dryRun: true,
+    deployVersion: id,
+    allowSecretChange: false,
+  });
+  assert.deepEqual(parseArgs(["--dry-run", "--deploy-version", id]), {
+    mode: "deploy-version",
+    dryRun: true,
+    deployVersion: id,
+    allowSecretChange: false,
+  });
+  assert.equal(parseArgs(["--deploy-version", id, "--allow-secret-change"]).allowSecretChange, true);
   for (const bad of [
     ["deploy"],
     ["--nope"],
@@ -222,6 +233,9 @@ test("deploy argument parsing fails closed", async () => {
     ["--deploy-version"],
     ["--deploy-version", "latest"],
     ["--deploy-version", id, "--code-only"],
+    ["--allow-secret-change"],
+    ["--dry-run", "--allow-secret-change"],
+    ["--deploy-version", id, "--allow-secret-change", "--allow-secret-change"],
   ]) {
     assert.throws(() => parseArgs(bad), undefined, bad.join(" "));
   }

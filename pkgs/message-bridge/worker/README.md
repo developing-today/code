@@ -80,7 +80,10 @@ with `cf deploy` (the versions flow can't create a Worker), which uploads
 and deploys the first version in one step; every later deploy uses the
 versions flow. `--code-only` refuses to bootstrap, since it has no token
 to give the new Worker. Version ids are in the Cloudflare dashboard (Worker > Deployments)
-or in each deploy's output.
+or in each deploy's output. Cloudflare blocks rolling back to a version
+uploaded before a secret changed (such as a rotated token); add
+`--allow-secret-change` to `--deploy-version` to deploy it anyway, and
+the connector then uses that version's token.
 
 ### From the repo
 
@@ -90,7 +93,10 @@ tab. It builds and tests the flake package, then runs
 `nix run .#message-bridge-deploy -- --code-only` with the
 `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository secrets. A
 code-only version keeps the deployed `ACCESS_TOKEN`, so the connector URL
-stays the same and the runner needs no Bitwarden or sops access. A manual
+stays the same and the runner needs no Bitwarden or sops access. It
+refuses to upload when a version newer than the live one came from a
+full deploy (say one that uploaded a rotated token and then failed),
+since the new version would inherit that token instead. A manual
 run with a `rollback_version` deploys that existing version instead.
 Without the two secrets the workflow builds, tests and skips the upload.
 Setting or rotating the access token is still a local full deploy.
