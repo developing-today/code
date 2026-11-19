@@ -243,6 +243,10 @@ export interface RoadmapRow {
   source: string;
   notes: string;
   links: Link[];
+  /** Genealogy overlay from the Project pool; absent when no linked item resolves. */
+  priority?: RefKey | null;
+  afterRefs?: RefKey[];
+  releaseRef?: RefKey | null;
   /** Grist UI link for this row's document (#1136), when known. */
   gristUrl?: string;
   /** Repo-file link for this row's source file + heading (#1738), when

@@ -26,6 +26,7 @@ import {
 } from "./derive.ts";
 import type { RoadmapReconciliation } from "./roadmap-reconcile.ts";
 import type { RoadmapAnnotation } from "./roadmap-annotations.ts";
+import type { ReleaseSnapshot } from "./releases.ts";
 import { diffCoverage, staleIssueState, type CoverageSnapshotFile } from "./coverage.ts";
 import { DIGEST_SECTION_LIMIT, type Digest, type DigestKind } from "./digest.ts";
 import { registryQueryString, type RegistryView } from "./registry-view.ts";
@@ -1857,6 +1858,7 @@ function roadmapCard(
   briefs?: Map<RefKey, ItemBrief>,
   forecasts?: Map<RefKey, ForecastContract[]>,
   spend?: SpendCardsView | null,
+  epicRollups?: Map<string, EpicRollup>,
 ): string {
   const refs = allRefs([row]);
   const refBadges = refs
@@ -1868,6 +1870,8 @@ function roadmapCard(
   const grist = row.gristUrl ? ` <a class="badge" href="${esc(row.gristUrl)}">Grist ↗</a>` : "";
   const repoFile = row.fileUrl ? ` <a class="badge" href="${esc(row.fileUrl)}">Repo file ↗</a>` : "";
   const expansion = drill ? roadmapDrilldown(drill, row, forecasts, spend) : "";
+  const epicRollup = epicRollups?.get(row.subject);
+  const rollupHtml = epicRollup ? epicRollupHtml(epicRollup) : "";
   const notes = annotations?.get(row.subject) ?? [];
   const annotationHtml = notes.length
     ? `<div class="roadmap-annotations">${notes.map(roadmapAnnotationHtml).join("")}</div>`
@@ -1893,7 +1897,7 @@ function roadmapCard(
       }
     }
   }
-  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${statusClash}${refBadges}${grist}${repoFile}${annotationHtml}${expansion}${briefPanels}</div>`;
+  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${statusClash}${refBadges}${grist}${repoFile}${rollupHtml}${annotationHtml}${expansion}${briefPanels}</div>`;
 }
 
 function roadmapAnnotationHtml(annotation: RoadmapAnnotation): string {
@@ -1909,6 +1913,7 @@ function timelineTable(
   briefs?: Map<RefKey, ItemBrief>,
   forecasts?: Map<RefKey, ForecastContract[]>,
   spend?: SpendCardsView | null,
+  epicRollups?: Map<string, EpicRollup>,
 ): string {
   const head = `<tr><th scope="col">Theme</th>${tl.lanes.map((l) => `<th scope="col">${esc(l.label)}</th>`).join("")}</tr>`;
   const body = tl.themes
@@ -1918,7 +1923,7 @@ function timelineTable(
       const cells = tl.lanes
         .map((lane) => {
           const rs = tl.cells.get(theme)?.get(lane.key) ?? [];
-          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs, forecasts, spend)).join("")}</td>`;
+          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs, forecasts, spend, epicRollups)).join("")}</td>`;
         })
         .join("");
       return `<tr><th scope="row">${esc(theme)} <span class="muted theme-rollup">(${done}/${themeRows.length} done)</span></th>${cells}</tr>`;
@@ -1942,6 +1947,8 @@ export function renderRoadmap(
   forecasts?: Map<RefKey, ForecastContract[]>,
   flowAnalytics?: FlowAnalytics,
   spend?: SpendCardsView | null,
+  releases: ReleaseSnapshot[] = [],
+  prioritiesView = false,
 ): string {
   // #1144: when the Grist rows and the Project's Kind=Epic pool items
   // disagree, say so on the page itself — drift the reader can see,
@@ -1952,16 +1959,30 @@ export function renderRoadmap(
       : reconciliation && reconciliation.drift > 0
         ? `<div class="flag">Roadmap drift: ${reconciliation.unmatchedRows.length} Grist row${reconciliation.unmatchedRows.length === 1 ? "" : "s"} with no matching Project epic · ${reconciliation.unmatchedEpics.length} Project epic${reconciliation.unmatchedEpics.length === 1 ? "" : "s"} with no roadmap row (#1144 — the two roadmap sources disagree; both lists are in <a href="/api/roadmap.json">/api/roadmap.json</a>).</div>`
         : "";
-  const chips = GRAINS.map(
+  const chips = `${GRAINS.map(
     ([g, label]) =>
       `<a href="/roadmap?h=${g}${viewQuery ? `&${viewQuery}` : ""}"${g === grain ? ' class="active"' : ""}>${label}</a>`,
-  ).join("");
+  ).join("")} <a href="/roadmap?view=priorities"${prioritiesView ? ' class="active"' : ""}>Priorities</a>`;
   const invalidHorizons = rows.filter((row) => row.horizonError);
   const horizonFlag = invalidHorizons.length
     ? `<div class="flag">${invalidHorizons.length} roadmap row${invalidHorizons.length === 1 ? " has" : "s have"} an invalid Horizon value. Original values are preserved and marked on their cards; correct them in Grist using the documented Horizon grammar.</div>`
     : "";
   let body: string;
-  if (grain === "quarter") {
+  if (prioritiesView) {
+    const ordered = [...rows].sort((a, b) => {
+      const rank = (row: RoadmapRow) => {
+        const match = /#(\d+)$/.exec(row.priority ?? "");
+        return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+      };
+      return rank(a) - rank(b) || a.title.localeCompare(b.title);
+    });
+    body = ordered.length ? ordered.map((row) => {
+      const priority = row.priority ? `<span class="badge src">Priority <a href="${esc(refUrl(row.priority))}">${esc(row.priority)}</a></span>` : '<span class="badge stale">No priority link</span>';
+      const after = row.afterRefs?.length ? `<span class="muted">After: ${row.afterRefs.map((ref) => `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`).join(", ")}</span>` : '<span class="muted">No predecessor recorded</span>';
+      const release = row.releaseRef ? `<span class="badge src">Release <a href="${esc(refUrl(row.releaseRef))}">${esc(row.releaseRef)}</a></span>` : '<span class="muted">No release linked</span>';
+      return `<div class="card priority-row"><strong><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a></strong><br>${priority} ${release}<br>${after}<br><span class="muted">${esc(row.area)} · ${esc(row.horizon)} · ${esc(row.status)}</span></div>`;
+    }).join("") : '<p class="muted">No priority rows in the current roadmap source.</p>';
+  } else if (grain === "quarter") {
     body = timelineTable(buildTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend);
   } else if (grain === "month") {
     body = timelineTable(monthTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend);
@@ -2001,9 +2022,17 @@ export function renderRoadmap(
           .join("")
       : '<p class="muted">No roadmap rows.</p>';
   }
+  const releaseCards = releases.filter((release) => release.kind === "release").map((release) => {
+    const counts = release.counts;
+    const carried = release.carriedOverEpics.length
+      ? `<p>Carried-over epics: ${release.carriedOverEpics.map((ref) => `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`).join(", ")}</p>`
+      : '<p class="muted">No carried-over epics.</p>';
+    return `<article class="card release-card"><h3>${esc(release.milestone.title)}</h3><p>Date: <strong>${esc(release.releaseDate ?? "date not set")}</strong></p><p>Issues: ${counts.issues.closed}/${counts.issues.total} closed · Designs: ${counts.designs.closed}/${counts.designs.total} closed · Epics: ${counts.epics.closed}/${counts.epics.total} closed</p>${carried}<p class="muted">${esc(release.descriptionLine)}</p></article>`;
+  }).join("");
+  const releasesHtml = `<section class="release-snapshots"><h2>Releases</h2>${releaseCards || '<p class="muted">No release close-out snapshots are available.</p>'}<p><a href="/api/releases.json">Releases JSON</a></p></section>`;
   return layout(
     "Roadmap",
-    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain. Every row remains visible at every grain.</p><div class="chips">${chips}</div>${driftFlag}${horizonFlag}${body}${spend?.unattributed ? unattributedSpendHtml(spend.unattributed) : ""}${flowAnalytics ? flowChartsHtml(flowAnalytics) : ""}`,
+    `<h1>Roadmap</h1><p class="muted">Grist's <em>Program roadmap</em> table at every grain — one data model, switchable horizon. Rows with a calendar date land on their day; quarter-labelled rows stay at quarter grain. Every row remains visible at every grain.</p><div class="chips">${chips}</div>${driftFlag}${horizonFlag}${body}${releasesHtml}${spend?.unattributed ? unattributedSpendHtml(spend.unattributed) : ""}${flowAnalytics ? flowChartsHtml(flowAnalytics) : ""}`,
     provenance,
     "/roadmap",
     "",
@@ -7813,15 +7842,14 @@ export function renderProgramProject(
   } else if (!detail.roadmapRows.length) {
     roadmapHtml = `<div class="banner">No roadmap rows with area <code>${esc(config.roadmapArea)}</code> in the current source.</div>`;
   } else {
-    const rows = detail.roadmapRows
-      .map((r) => {
-        const links = r.links
-          .map((l) => `<a class="badge src" href="${esc(refUrl(l.ref))}">${esc(l.ref)}</a>`)
-          .join(" ");
-        return `<div class="card"><strong>${esc(r.title)}</strong><br><span class="badge src">${esc(r.status)}</span> <span class="badge src">${esc(r.horizon)}</span>${links ? ` ${links}` : ""}${r.notes ? `<br><span class="muted">${esc(r.notes)}</span>` : ""}<br><span class="muted"><a href="/discuss/${encodeURIComponent(r.subject)}">💬 comments</a> · <a href="/roadmap">roadmap</a></span></div>`;
-      })
-      .join("");
-    roadmapHtml = `<p class="muted">${detail.roadmapRows.length} row${detail.roadmapRows.length === 1 ? "" : "s"} with area <code>${esc(config.roadmapArea)}</code> in Grist's Program roadmap.</p>${rows}`;
+    const rollups = buildEpicRollups(epicPool);
+    const rowRollups = new Map<string, EpicRollup>();
+    for (const row of detail.roadmapRows) {
+      const epic = row.links.map((link) => epicPool.find((item) => item.ref === link.ref && item.kind === "Epic")).find(Boolean);
+      const rollup = epic ? rollups.get(epic.ref) : undefined;
+      if (rollup) rowRollups.set(row.subject, rollup);
+    }
+    roadmapHtml = `<p class="muted">${detail.roadmapRows.length} row${detail.roadmapRows.length === 1 ? "" : "s"} with area <code>${esc(config.roadmapArea)}</code> in Grist's Program roadmap. Timeline lanes and drill-downs use the shared roadmap renderer; epic rollups are per matched row.</p>${timelineTable(buildTimeline(detail.roadmapRows), items, undefined, undefined, undefined, undefined, undefined, undefined, rowRollups)}`;
   }
 
   const repoCardsHtml = detail.repoCards.length
