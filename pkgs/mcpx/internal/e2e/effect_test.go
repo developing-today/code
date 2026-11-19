@@ -2357,13 +2357,15 @@ func runtimeOf(t *testing.T, e *env, args ...string) string {
 }
 
 // TestScriptRuntimeSelectsTheRuntime is the effect probe for
-// script.runtime: scripts run on bun by default and on node once the
-// environment names it.
+// script.runtime: scripts run on deno by default (the first installed
+// entry of the documented runtimeOrder default, deno,bun,node) and on
+// node once the environment names it.
 func TestScriptRuntimeSelectsTheRuntime(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
 	testsupport.RequireBinary(t, "node")
 	e := newEnv(t, oneServer)
-	if rt := runtimeOf(t, e); rt != "bun" {
-		t.Errorf("the default script.runtime should pick bun, got %q", rt)
+	if rt := runtimeOf(t, e); rt != "deno" {
+		t.Errorf("the default script.runtime should pick deno, got %q", rt)
 	}
 	e.setenv("MCPX_SCRIPT_RUNTIME=node")
 	if rt := runtimeOf(t, e); rt != "node" {
@@ -2372,13 +2374,15 @@ func TestScriptRuntimeSelectsTheRuntime(t *testing.T) {
 }
 
 // TestScriptRuntimeOrderRanksTheAutoPick is the effect probe for
-// script.runtimeOrder: the automatic pick is bun by default and node once
-// the environment ranks node first.
+// script.runtimeOrder: the automatic pick is deno by default (the
+// documented runtimeOrder default is deno,bun,node) and node once the
+// environment ranks node first.
 func TestScriptRuntimeOrderRanksTheAutoPick(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
 	testsupport.RequireBinary(t, "node")
 	e := newEnv(t, oneServer)
-	if rt := runtimeOf(t, e); rt != "bun" {
-		t.Errorf("the default script.runtimeOrder should pick bun, got %q", rt)
+	if rt := runtimeOf(t, e); rt != "deno" {
+		t.Errorf("the default script.runtimeOrder should pick deno, got %q", rt)
 	}
 	e.setenv("MCPX_SCRIPT_RUNTIME_ORDER=node,bun")
 	if rt := runtimeOf(t, e); rt != "node" {

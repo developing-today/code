@@ -38,7 +38,7 @@ func TestColdGeneratedClients1868(t *testing.T) {
 					t.Error(err)
 				}
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"structuredContent": body}})
+				_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"structuredContent": body}})
 			}))
 			defer srv.Close()
 			ns := []codegen.Namespace{
