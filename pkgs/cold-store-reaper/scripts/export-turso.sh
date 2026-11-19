@@ -13,6 +13,11 @@
 # dump through scripts/repair_dump.py (libsql does not escape single
 # quotes inside the sqlite_schema INSERTs that register virtual
 # tables, so FTS5 databases are otherwise unparseable — #1391),
+# scripts/dedupe_dump.py (libsql can dump a table twice; an exact
+# repeat is dropped, a differing one fails the export — #12000) and
+# scripts/vector_index_dump.py (stock sqlite3 cannot build a libsql
+# vector index, so its CREATE INDEX is kept as a recorded statement;
+# the index data stays in its shadow tables — #12000),
 # require the filtered dump to end in COMMIT; (a truncated dump
 # otherwise rebuilds into an integrity-clean but partial database),
 # stream it through
@@ -251,7 +256,23 @@ PY
   # streams the dump (constant memory, one statement buffered) and
   # rewrites only verifiably mis-escaped schema literals with proper
   # '' doubling; everything else passes through byte-identical.
-  if ! python3 "${SCRIPT_DIR}/repair_dump.py" <"${dump_sql}" >"${filtered_sql}"; then
+  #
+  # Repeat pass (#12000): libsql's /dump can emit a table twice (the
+  # atlas vector table came out whole, then whole again, byte for
+  # byte), and the rebuild then stops on the second copy's first
+  # primary key. dedupe_dump.py drops a repeated copy only when its
+  # CREATE statement and every row match the first copy exactly, and
+  # fails (exit 1) when they differ, so no row is dropped silently.
+  #
+  # Vector index pass (#12000): a libsql vector index is dumped as
+  # CREATE INDEX ... (libsql_vector_idx(...)), which stock sqlite3
+  # cannot run, so the rebuild died on the dump's last statement.
+  # vector_index_dump.py records that statement in the table
+  # cold_store_libsql_vector_indexes instead; the index's data is in
+  # its shadow tables, which are dumped and rebuilt as plain tables.
+  if ! python3 "${SCRIPT_DIR}/repair_dump.py" <"${dump_sql}" |
+    python3 "${SCRIPT_DIR}/dedupe_dump.py" |
+    python3 "${SCRIPT_DIR}/vector_index_dump.py" >"${filtered_sql}"; then
     echo "turso export: ERROR: ${name}: dump repair filter failed" >&2
     return 1
   fi

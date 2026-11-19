@@ -215,6 +215,62 @@ class TestExportTursoArgv(unittest.TestCase):
         )
         self.assertNotIn("X'00'", result.stderr.split("UNIQUE")[1])
 
+    def test_table_dumped_twice_identically_is_filed_once(self):
+        # #12000: libsql's /dump emitted the atlas vec table whole, then
+        # whole again; the exact repeat is dropped and the export files.
+        block = (
+            "CREATE TABLE IF NOT EXISTS vec (chunk_id INTEGER PRIMARY KEY, v BLOB);\n"
+            "INSERT INTO vec VALUES(1,X'00');\n"
+            "INSERT INTO vec VALUES(2,X'01');\n"
+        )
+        body = self.capture.parent / "repeat.sql"
+        body.write_text("BEGIN TRANSACTION;\n" + block + block + "COMMIT;\n")
+        env = {**self.env, "STUB_DUMP_BODY_FILE": str(body)}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "dropped a repeated copy of table vec (2 rows identical to the first copy)",
+            result.stderr,
+        )
+        self.assertIn("put-backup", (self.capture / "cold-store.log").read_text())
+
+    def test_table_dumped_twice_with_different_rows_fails(self):
+        create = "CREATE TABLE IF NOT EXISTS vec (chunk_id INTEGER PRIMARY KEY, v BLOB);\n"
+        body = self.capture.parent / "conflict.sql"
+        body.write_text(
+            "BEGIN TRANSACTION;\n"
+            + create
+            + "INSERT INTO vec VALUES(1,X'00');\n"
+            + create
+            + "INSERT INTO vec VALUES(1,X'01');\n"
+            + "COMMIT;\n"
+        )
+        env = {**self.env, "STUB_DUMP_BODY_FILE": str(body)}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("dumped twice with different rows", result.stderr)
+        self.assertIn("db1: dump repair filter failed", result.stderr)
+        self.assertFalse((self.capture / "cold-store.log").exists())
+
+    def test_libsql_vector_index_is_recorded_and_the_export_files(self):
+        # #12000: stock sqlite3 has no libsql_vector_idx, so the dump's
+        # CREATE INDEX for a vector index killed the rebuild at the end.
+        body = self.capture.parent / "vector.sql"
+        body.write_text(
+            "BEGIN TRANSACTION;\n"
+            "CREATE TABLE IF NOT EXISTS vec (chunk_id INTEGER PRIMARY KEY, v F32_BLOB(1));\n"
+            "INSERT INTO vec VALUES(1,X'0000803f');\n"
+            "CREATE TABLE IF NOT EXISTS vec_idx_shadow (index_key INTEGER, data BLOB, PRIMARY KEY (index_key));\n"
+            "INSERT INTO vec_idx_shadow VALUES(1,X'00');\n"
+            "CREATE INDEX vec_idx ON vec (libsql_vector_idx(v));\n"
+            "COMMIT;\n"
+        )
+        env = {**self.env, "STUB_DUMP_BODY_FILE": str(body)}
+        result = self.run_script(env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("kept libsql vector index vec_idx", result.stderr)
+        self.assertIn("put-backup", (self.capture / "cold-store.log").read_text())
+
     def test_retry_pass_delay_must_be_an_integer(self):
         env = {**self.env, "TURSO_DUMP_RETRY_PASS_DELAY_SECONDS": "soon"}
         result = self.run_script(env=env)
