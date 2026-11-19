@@ -1,0 +1,6 @@
+{
+  "display_information": {"name":"Fleet Private Inbox","description":"Private agent request/reply relay, not Drew","background_color":"#233749"},
+  "features": {"bot_user":{"display_name":"Fleet Inbox","always_online":false}},
+  "oauth_config":{"scopes":{"bot":["chat:write","groups:read","groups:history"]}},
+  "settings":{"event_subscriptions":{"request_url":"https://REPLACE.example/slack/events","bot_events":["message.groups"]},"socket_mode_enabled":false,"org_deploy_enabled":false}
+}

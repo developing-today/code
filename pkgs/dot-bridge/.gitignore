@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+*.sqlite*
+*.db
+*.db-*
+.env
+.env.*
+dist/
+*.tar.gz
