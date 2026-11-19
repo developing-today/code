@@ -17,7 +17,8 @@ outage (every lane exiting at its health gate) no longer goes unseen.
   `kind/bug`, `priority/high`, `area/infra`, `source/fleet-monitor`, or
   comment on an open one with that title prefix.
 - **Recovery:** the first healthy probe after an alert comments once with
-  the outage span and closes the issue if the Worker filed it.
+  the outage span. It never closes the issue: automation may label and
+  comment but must not close an issue (#10136), so a human closes it.
 - A failed GitHub write leaves the state as it was, so the next tick
   retries it.
 

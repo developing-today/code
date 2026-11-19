@@ -156,18 +156,21 @@ class RecoveryTests(Harness):
         self.run_pass("fail", "2026-11-18T23:00:00Z", gh)
         self.run_pass("fail", "2026-11-18T23:10:00Z", gh)
 
-    def test_recovery_comments_once_and_closes_probe_filed_incident(self):
+    def test_recovery_comments_once_and_never_closes(self):
+        # #10136: automation may comment but must never close an issue,
+        # even one it filed itself.
         gh = FakeGitHub()
         self.alerted(gh)
         _, rep = self.run_pass("ok", "2026-11-19T01:15:00Z", gh)
         self.assertEqual(rep["event"], "recovered")
         self.assertIn("after about 2h15m", rep["message"])
-        self.assertEqual(gh.kinds(), ["find", "file", "comment", "close"])
-        self.assertEqual(gh.calls[3][1], 9001)
+        self.assertEqual(gh.kinds(), ["find", "file", "comment"])
+        self.assertEqual(gh.calls[2][1], 9001)
+        self.assertNotIn("close", gh.kinds())
         _, rep = self.run_pass("ok", "2026-11-19T01:25:00Z", gh)
         self.assertEqual(rep["event"], "ok")
         self.assertEqual(rep["message"], "")
-        self.assertEqual(len(gh.calls), 4)
+        self.assertEqual(len(gh.calls), 3)
 
     def test_recovery_leaves_hand_filed_incident_open(self):
         gh = FakeGitHub(existing=5708)
@@ -195,7 +198,8 @@ class RecoveryTests(Harness):
         code, rep = self.run_pass("ok", "2026-11-18T23:30:00Z", gh)
         self.assertEqual(code, 0)
         self.assertEqual(rep["event"], "recovered")
-        self.assertEqual(gh.kinds()[-2:], ["comment", "close"])
+        self.assertEqual(gh.kinds()[-1], "comment")
+        self.assertNotIn("close", gh.kinds())
 
     def test_new_outage_after_recovery_alerts_again(self):
         gh = FakeGitHub()

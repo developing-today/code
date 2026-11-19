@@ -22,8 +22,9 @@ file (`~/.local/state/queue-transport-alert/state.json` by default):
   it exists, and otherwise files exactly one, labelled `kind/bug`,
   `priority/high`, `area/infra`, `source/fleet-monitor`.
 - **Recovery:** the first passing probe after an alerted window comments
-  once with the outage span, and closes the incident if the probe filed
-  it. A hand-filed incident is left open for its owner.
+  once with the outage span. It never closes the incident (automation
+  may label and comment but must not close an issue, #10136); a human
+  closes it.
 - A failed window that recovers below the threshold ends quietly.
 
 Every pass prints one JSON document. Its `message` field is the one
@@ -72,6 +73,6 @@ python3 -I -m unittest discover -s . -p 'test_check_transport.py' -v
 
 Offline: probe results and the clock are pinned, and GitHub is a
 recording fake. Covered: one incident per window, dedupe onto an open
-incident, quiet continuing outage, one recovery note, close only when
-probe-filed, quiet sub-threshold blips, retry after a failed write,
+incident, quiet continuing outage, one recovery note and no close,
+quiet sub-threshold blips, retry after a failed write,
 observe mode, corrupt state, and the command/TCP probes.

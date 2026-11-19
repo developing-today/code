@@ -54,11 +54,9 @@ export async function runPass(prev, probe, github, nowMs, threshold, probeDesc) 
     message = recoveryMessage(state, nowMs);
     if (github && state.incident) {
       try {
-        if (!state.recovery_noted) {
-          await github.comment(state.incident, message);
-          state.recovery_noted = true;
-        }
-        if (state.incident_filed_by_probe) await github.close(state.incident);
+        // Comment only. Automation may label and comment but must never
+        // close an issue (#10136), even one it filed; a human closes it.
+        await github.comment(state.incident, message);
       } catch (err) {
         errors.push(String(err && err.message ? err.message : err));
         // Stay alerted: the next passing tick retries what is left.
