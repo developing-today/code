@@ -110,11 +110,13 @@ read, and fails if another deployment went live between its checks and
 its promotion (then that deployment goes back live). If promoting or any
 check after
 it fails (a token mismatch, or the new version never answering), the
-previous version goes back live at once (unless someone deployed after
-this run, which it then leaves alone) and the deploy fails, so the
+previous version goes back live at once (unless a newer deployment than this
+run's own, even one that splits traffic or redeploys the same version,
+has gone live, which it then leaves alone) and the deploy fails, so the
 token can't change silently whatever the versions list showed. A full deploy from a
 checkout clears the condition. A manual
-run with a `rollback_version` deploys that existing version instead.
+run with a `rollback_version` deploys that existing version instead,
+and fails if `/healthz` keeps answering from any other version.
 Without the two secrets the workflow builds, tests and skips the upload.
 Setting or rotating the access token is still a local full deploy.
 

@@ -429,3 +429,36 @@ test("cloudflare.config.ts matches wrangler.jsonc", async () => {
   assert.ok(cfg.includes('MESSAGES: bindings.durableObject({ worker: "message-bridge", exportName: "MessageStore" })'));
   assert.ok(wr.includes('"name": "MESSAGES", "class_name": "MessageStore"'));
 });
+
+test("isOwnDeployment accepts only this run's single-version deployment", async () => {
+  const { isOwnDeployment } = await import("../deploy-probe.mjs");
+  const mine = { id: "d1", versions: [{ version_id: "v2", percentage: 100 }] };
+  assert.equal(isOwnDeployment(mine, "v2"), true);
+  assert.equal(isOwnDeployment(mine, "v2", "d1"), true);
+  // the same version deployed again by someone else
+  assert.equal(isOwnDeployment({ ...mine, id: "d2" }, "v2", "d1"), false);
+  // a newer split deployment that still includes this version
+  const split = {
+    id: "d2",
+    versions: [
+      { version_id: "v2", percentage: 50 },
+      { version_id: "v3", percentage: 50 },
+    ],
+  };
+  assert.equal(isOwnDeployment(split, "v2"), false);
+  assert.equal(isOwnDeployment({ id: "d1", versions: [{ version_id: "v1", percentage: 100 }] }, "v2"), false);
+  assert.equal(isOwnDeployment(undefined, "v2"), false);
+});
+
+test("healthVersionProblem rejects a different reported version", async () => {
+  const { healthVersionProblem } = await import("../deploy-probe.mjs");
+  assert.equal(healthVersionProblem({ version: "v2" }, "v2"), null);
+  assert.equal(healthVersionProblem({ version: "v2" }, "v2", { requireVersion: true }), null);
+  // older Workers report no version: fine for a rollback, not for a new deploy
+  assert.equal(healthVersionProblem({ version: null }, "v1"), null);
+  assert.match(healthVersionProblem({ version: null }, "v1", { requireVersion: true }), /never answered/);
+  assert.match(healthVersionProblem(null, "v1", { requireVersion: true }), /never answered/);
+  // a different, configured version is wrong either way
+  assert.match(healthVersionProblem({ version: "v3" }, "v1"), /answered from version v3, not v1/);
+  assert.match(healthVersionProblem({ version: "v3" }, "v1", { requireVersion: true }), /v3/);
+});

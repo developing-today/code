@@ -157,3 +157,38 @@ export function replacedOtherThan(newestFirst, newId, previousId) {
   if (!before) throw new Error(`could not tell which deployment version ${newId} replaced`);
   return before === previousId ? null : before;
 }
+
+/**
+ * Whether a deployment is this run's: the given version alone at 100%,
+ * and, once its deployment id has been seen, that same deployment. A
+ * newer deployment that splits traffic, or serves the same version
+ * again, is someone else's and must not be rolled back over.
+ *
+ * @param {{id?: string, versions?: {version_id: string, percentage: number}[]} | undefined} deployment
+ * @param {string} versionId
+ * @param {string | null} [deploymentId]
+ * @returns {boolean}
+ */
+export function isOwnDeployment(deployment, versionId, deploymentId = null) {
+  const vs = deployment?.versions;
+  if (!Array.isArray(vs) || vs.length !== 1) return false;
+  if (vs[0]?.version_id !== versionId || vs[0]?.percentage !== 100) return false;
+  return deploymentId == null || deployment.id === deploymentId;
+}
+
+/**
+ * What is wrong with the last /healthz answer after waiting for a
+ * version to go live, or null when nothing is. A Worker built before
+ * /healthz reported its version answers version null, which is accepted
+ * unless the version is required; any other version is the wrong one.
+ *
+ * @param {{version?: string | null} | null} health
+ * @param {string} id
+ * @param {{requireVersion?: boolean}} [opts]
+ * @returns {string | null}
+ */
+export function healthVersionProblem(health, id, { requireVersion = false } = {}) {
+  if (health?.version === id) return null;
+  if (health?.version != null) return `answered from version ${health.version}, not ${id}`;
+  return requireVersion ? `never answered from version ${id}` : null;
+}

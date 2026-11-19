@@ -74,6 +74,8 @@ import {
   VersionListGap,
   classifyWorkerProbe,
   codeOnlyFingerprint,
+  healthVersionProblem,
+  isOwnDeployment,
   promoteOrRollBack,
   replacedOtherThan,
   strayBeforeCodeOnly,
@@ -270,12 +272,15 @@ if (exists) {
   }
 }
 if (exists) {
+  // Filled in once verification sees this run's deployment, so a later
+  // deployment of the same version (someone else's) isn't mistaken for it.
+  const own = { deploymentId: null };
   await promoteOrRollBack({
     newId: version.id,
     previousId,
     promote: () => createDeployment(stage, version.id),
-    verify: () => verifyLive(version.id, { expectFingerprint, requireVersion: true, replaced: previousId }),
-    stillNewest: async () => (await liveVersions()).some((v) => v.version_id === version.id),
+    verify: () => verifyLive(version.id, { expectFingerprint, requireVersion: true, replaced: previousId, own }),
+    stillNewest: async () => isOwnDeployment((await deploymentsNewestFirst())[0], version.id, own.deploymentId),
     rollback: (id) => {
       console.error(`verification failed; putting version ${id} back live`);
       createDeployment(stage, id, { bypassChecks: true });
@@ -437,17 +442,17 @@ function createDeployment(cwd, id, { bypassChecks = false } = {}) {
 // showed, this compares the token itself. On any failure after a
 // promotion, promoteOrRollBack puts the previous live version (which had
 // the right token) back at once and the deploy fails.
-async function verifyLive(id, { expectFingerprint = null, requireVersion = false, replaced = null } = {}) {
+async function verifyLive(id, { expectFingerprint = null, requireVersion = false, replaced = null, own = null } = {}) {
   // The deployments list can lag a just-created deployment by a few seconds.
-  const servesOnly = (vs) => vs.length === 1 && vs[0].version_id === id && vs[0].percentage === 100;
-  let serving = [];
-  for (let attempt = 1; attempt <= 10 && !servesOnly(serving); attempt++) {
+  let newest;
+  for (let attempt = 1; attempt <= 10 && !isOwnDeployment(newest, id); attempt++) {
     if (attempt > 1) await new Promise((r) => setTimeout(r, 3000));
-    serving = await liveVersions();
+    newest = (await deploymentsNewestFirst())[0];
   }
-  if (!servesOnly(serving)) {
+  if (!isOwnDeployment(newest, id)) {
     throw new Error(`newest deployment does not serve version ${id} at 100%; check the dashboard`);
   }
+  if (own) own.deploymentId = newest.id ?? null;
   // The token fingerprint was read from the version live before the
   // promote; it only describes what this replaced if no other deployment
   // went live in between.
@@ -471,8 +476,9 @@ async function verifyLive(id, { expectFingerprint = null, requireVersion = false
     if (health?.version === id) break;
     if (!requireVersion && attempt >= 5 && health?.configured && health?.version == null) break;
   }
-  if (requireVersion && health?.version !== id) {
-    throw new Error(`${publicUrl}/healthz never answered from version ${id}; check the dashboard`);
+  const versionProblem = healthVersionProblem(health, id, { requireVersion });
+  if (versionProblem) {
+    throw new Error(`${publicUrl}/healthz ${versionProblem}; check the dashboard`);
   }
   if (!health?.ok || !health?.configured) {
     throw new Error(`${publicUrl}/healthz does not report an access token after deploying ${id}; roll back with --deploy-version`);
