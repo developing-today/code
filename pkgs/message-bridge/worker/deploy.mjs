@@ -69,7 +69,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, USAGE } from "./deploy-args.mjs";
-import { classifyWorkerProbe } from "./deploy-probe.mjs";
+import { CODE_ONLY_MARK, classifyWorkerProbe, strayBeforeCodeOnly } from "./deploy-probe.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const WORKER = "message-bridge";
@@ -161,7 +161,7 @@ if (args.mode === "deploy-version") {
 const stage = stagePackage();
 const sha = process.env.GITHUB_SHA || execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 const tag = `git-${sha.slice(0, 12)}`;
-const via = args.mode === "code-only" ? "message-bridge-deploy workflow" : "nix run .#message-bridge-deploy";
+const via = args.mode === "code-only" ? CODE_ONLY_MARK.slice("via ".length) : "nix run .#message-bridge-deploy";
 // The run id makes this upload's message unique, so the version found
 // after the upload is this run's and never another upload of the same
 // SHA (a local deploy and the workflow can share a tag).
@@ -236,6 +236,7 @@ if (matches.length !== 1) {
 }
 const version = matches[0];
 console.log(`uploaded version ${version.id}`);
+if (args.mode === "code-only") await assertTokenInheritsFromLive(version.id);
 await assertDeployable(version.id);
 // cf deploy already put the bootstrap version live.
 if (exists) createDeployment(stage, version.id);
@@ -248,25 +249,25 @@ console.log(`roll back with: nix run .#message-bridge-deploy -- --deploy-version
 // A code-only upload keeps ACCESS_TOKEN by inheriting it from the newest
 // uploaded version, which is not always the live one: a full deploy that
 // uploaded a rotated token and then failed before promotion leaves a
-// newer version with a different token. So every version newer than the
-// live one must itself be a code-only upload (which only ever carries a
-// token forward), or this refuses before uploading.
-async function assertTokenInheritsFromLive() {
+// newer version with a different token. So every version between the
+// live one and this upload must itself be a code-only upload (which only
+// ever carries a token forward), or this refuses. It runs before the
+// upload (so a doomed upload never happens) and again after it, over the
+// versions created before this run's version, so a full deploy that
+// slipped in between the check and the upload can't be inherited
+// either; then this run's version is left undeployed.
+async function assertTokenInheritsFromLive(uploadedId = null) {
   const liveId = (await liveVersions())[0]?.version_id;
-  if (!liveId) throw new Error("could not find the live version; refusing a code-only upload");
+  if (!liveId) throw new Error("could not find the live version; refusing a code-only deploy");
   const newestFirst = (await listVersions()).sort((a, b) => createdOn(b) - createdOn(a));
-  const liveAt = newestFirst.findIndex((v) => v.id === liveId);
-  if (liveAt === -1) {
-    throw new Error(`live version ${liveId} is not in the versions list; refusing a code-only upload`);
-  }
-  const stray = newestFirst
-    .slice(0, liveAt)
-    .find((v) => !(v.annotations?.["workers/message"] ?? "").includes("via message-bridge-deploy workflow"));
+  const stray = strayBeforeCodeOnly(newestFirst, liveId, uploadedId);
   if (stray) {
     throw new Error(
-      `version ${stray.id} is newer than the live version ${liveId} and isn't a code-only upload, so a code-only ` +
-        `upload could inherit a different ACCESS_TOKEN; run a full deploy from a checkout ` +
-        `(nix run .#message-bridge-deploy) or deploy the live version again with --deploy-version ${liveId}`,
+      `version ${stray.id} sits between the live version ${liveId} and this upload and isn't a code-only ` +
+        `upload, so a code-only deploy could carry a different ACCESS_TOKEN` +
+        (uploadedId ? ` (version ${uploadedId} was uploaded but not deployed)` : "") +
+        `; run a full deploy from a checkout (nix run .#message-bridge-deploy), which uploads the Bitwarden ` +
+        `token and makes it live`,
     );
   }
 }

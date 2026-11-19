@@ -260,6 +260,22 @@ test("worker existence probe bootstraps only on the API's not-found answer", asy
   }
 });
 
+test("code-only deploys refuse to inherit a token from a full deploy newer than the live version", async () => {
+  const { strayBeforeCodeOnly } = await import("../deploy-probe.mjs");
+  const v = (id, how) => ({ id, annotations: { "workers/message": `deploy abc via ${how} (run 1)` } });
+  const code = "message-bridge-deploy workflow";
+  const full = "nix run .#message-bridge-deploy";
+  // Before the upload: nothing newer than live, or only code-only uploads.
+  assert.equal(strayBeforeCodeOnly([v("live", full)], "live"), null);
+  assert.equal(strayBeforeCodeOnly([v("c2", code), v("c1", code), v("live", full)], "live"), null);
+  assert.equal(strayBeforeCodeOnly([v("c1", code), v("f1", full), v("live", code)], "live")?.id, "f1");
+  // After the upload: a full deploy that slipped in before ours counts, one after it doesn't.
+  assert.equal(strayBeforeCodeOnly([v("mine", code), v("f1", full), v("live", code)], "live", "mine")?.id, "f1");
+  assert.equal(strayBeforeCodeOnly([v("f1", full), v("mine", code), v("live", code)], "live", "mine"), null);
+  assert.throws(() => strayBeforeCodeOnly([v("x", code)], "live"), /not in the versions list/);
+  assert.throws(() => strayBeforeCodeOnly([v("live", code), v("mine", code)], "live", "mine"), /not newer/);
+});
+
 test("deploy.mjs rejects undeclared arguments before touching credentials", async () => {
   const { spawnSync } = await import("node:child_process");
   const { fileURLToPath } = await import("node:url");
