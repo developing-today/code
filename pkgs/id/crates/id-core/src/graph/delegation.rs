@@ -240,7 +240,8 @@ impl Scope {
         other.prefixes.iter().all(|p| self.covers_path(p))
     }
 
-    fn to_value(&self) -> Result<Value, DelegationError> {
+    /// The scope as a canonical CBOR array of prefix arrays.
+    pub(crate) fn to_value(&self) -> Result<Value, DelegationError> {
         self.prefixes
             .iter()
             .map(|p| prefix_value(p))
@@ -248,7 +249,8 @@ impl Scope {
             .map(Value::Array)
     }
 
-    fn from_value(value: &Value) -> Result<Self, DelegationError> {
+    /// Reads a scope written by [`Self::to_value`].
+    pub(crate) fn from_value(value: &Value) -> Result<Self, DelegationError> {
         let Value::Array(prefixes) = value else {
             return Err(DelegationError::Malformed("scope must be an array"));
         };
