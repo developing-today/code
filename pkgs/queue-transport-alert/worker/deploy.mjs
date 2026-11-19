@@ -33,6 +33,7 @@
 // the previous version's value. No secret is printed or written to disk.
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { setDefaultAutoSelectFamilyAttemptTimeout } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -133,9 +134,23 @@ async function verify(versionId) {
     throw new Error(`post-deploy check failed: expected version ${versionId} at 100%, latest deployment serves ${serving.serving}`);
   }
   const url = `${WORKER_URL}/status.json`;
-  const response = await fetch(url, { headers: { "user-agent": BROWSER_UA }, signal: AbortSignal.timeout(15_000) });
-  if (!response.ok) throw new Error(`post-deploy check failed: ${url} answered HTTP ${response.status}`);
-  const status = await response.json();
+  // Node tries each address for only 250 ms by default; on the laptop's
+  // network that timed out every address while curl got through.
+  setDefaultAutoSelectFamilyAttemptTimeout(5_000);
+  let status;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      const response = await fetch(url, { headers: { "user-agent": BROWSER_UA }, signal: AbortSignal.timeout(20_000) });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      status = await response.json();
+      break;
+    } catch (error) {
+      if (attempt >= 3) {
+        throw new Error(`version ${versionId} is deployed, but ${url} did not answer: ${error.cause?.message ?? error.message}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+    }
+  }
   console.log(`verified: version ${versionId} serves 100%; ${url} reports the broker ${status.status ?? "unknown"}`);
 }
 
