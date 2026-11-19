@@ -107,6 +107,27 @@ test('a worktree this helper did not create is never removed', () => {
   assert.ok(fs.existsSync(foreign));
 });
 
+test('a missing --repo is a usage error naming the path, not a git ENOENT', () => {
+  const { dir, root } = fixture();
+  const missing = path.join(dir, 'no-such-checkout');
+  assert.throws(() => add({ repo: missing, prefix: 'creator', root }), refused(2, `--repo ${missing} is not a directory`));
+  assert.equal(fs.existsSync(root), false);
+});
+
+test('a quoted ~/ repo, root and path expand under HOME', () => {
+  const { dir, repo } = fixture();
+  const saved = process.env.HOME;
+  process.env.HOME = dir;
+  try {
+    const made = add({ repo: `~/${path.basename(repo)}`, prefix: 'creator', root: '~/fleet' });
+    assert.ok(made.path.startsWith(path.join(dir, 'fleet') + path.sep));
+    const rel = path.relative(dir, made.path);
+    assert.equal(remove({ path: `~/${rel}`, token: made.token }).removed, made.path);
+  } finally {
+    process.env.HOME = saved;
+  }
+});
+
 test('the owner record does not dirty the tree', () => {
   const { repo, root } = fixture();
   const created = add({ repo, prefix: 'creator', root });

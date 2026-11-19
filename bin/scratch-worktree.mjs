@@ -32,7 +32,7 @@ import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { homePath } from './home-dir.mjs';
+import { expandTilde, homePath } from './home-dir.mjs';
 
 export const OWNER_FILE = 'scratch-worktree-owner';
 
@@ -78,7 +78,16 @@ const ownerFile = (worktree) => {
 export const add = ({ repo, prefix, root, base = 'origin/main', fetch = true, now, random }) => {
   if (!repo) throw new ScratchError(2, '--repo is required');
   validatePrefix(prefix);
-  const scratchRoot = root ?? homePath(process.env, 'scratch-worktree (default --root)', 'git', 'fleet');
+  // A quoted `~/…` reaches us unexpanded, and a missing checkout otherwise
+  // surfaces as Node's "spawnSync git ENOENT", which reads like git is gone.
+  repo = expandTilde(repo, process.env, 'scratch-worktree --repo');
+  if (!fs.existsSync(repo) || !fs.statSync(repo).isDirectory()) {
+    throw new ScratchError(2, `--repo ${repo} is not a directory`);
+  }
+  const scratchRoot =
+    root !== undefined
+      ? expandTilde(root, process.env, 'scratch-worktree --root')
+      : homePath(process.env, 'scratch-worktree (default --root)', 'git', 'fleet');
   const target = scratchPath(scratchRoot, prefix, runId(now, random));
   if (fs.existsSync(target)) {
     throw new ScratchError(3, `refusing to adopt existing scratch path ${target}`);
@@ -102,6 +111,7 @@ export const add = ({ repo, prefix, root, base = 'origin/main', fetch = true, no
 export const remove = ({ path: target, token }) => {
   if (!target) throw new ScratchError(2, '--path is required');
   if (!token) throw new ScratchError(2, '--token is required');
+  target = expandTilde(target, process.env, 'scratch-worktree --path');
   if (!fs.existsSync(target)) throw new ScratchError(3, `no worktree at ${target}`);
   let recorded;
   try {
