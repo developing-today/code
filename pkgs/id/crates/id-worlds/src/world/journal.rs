@@ -229,6 +229,12 @@ pub enum JournalEntry {
         /// Account the capability acts for; its ceiling and friendships bound it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         subject: Option<String>,
+        /// Unix milliseconds at which the world issued the capability, from
+        /// the world clock (#11960). `None` for capabilities issued before
+        /// times were recorded; never inferred. Requires
+        /// [`JOURNAL_VERSION_JOIN_TIMES`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        issued_at: Option<u64>,
     },
     /// A capability was revoked, with every capability delegated from it.
     /// Replay revokes the same tree.
@@ -239,6 +245,11 @@ pub enum JournalEntry {
         /// from a moderator scope rather than the admin. `None` means admin.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         by: Option<u64>,
+        /// Unix milliseconds at which the revoke took effect, from the world
+        /// clock (#11960). `None` for revokes recorded before times were.
+        /// Requires [`JOURNAL_VERSION_JOIN_TIMES`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        revoked_at: Option<u64>,
     },
     /// A builder-scoped participant installed a program. Journal-only: it is
     /// the audit record for the builder authority, written alongside the
@@ -735,10 +746,18 @@ pub const JOURNAL_VERSION_PORTALS: u32 = 10;
 /// journal at the header check.
 pub const JOURNAL_VERSION_PROGRAM_BUNDLE: u32 = 11;
 
+/// Journal version 12 (#11960): `Issued` entries carry `issued_at` and
+/// `Revoked` entries carry `revoked_at`. The fields are optional, so a
+/// version-11 reader would parse such an entry, drop the time and lose it
+/// at its next checkpoint; an entry that carries a time therefore requires
+/// this version, and an older binary refuses the journal at the header
+/// check instead.
+pub const JOURNAL_VERSION_JOIN_TIMES: u32 = 12;
+
 /// Newest journal version this binary can read. Journals with a higher
 /// header version are refused at the header check, before any entry is
 /// applied.
-pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_PROGRAM_BUNDLE;
+pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_JOIN_TIMES;
 
 /// The header version a journal must carry once it contains `entry`: version 2
 /// for execution-profile entries, version 3 for region-handoff entries,
@@ -879,6 +898,13 @@ fn entry_kind_version(entry: &JournalEntry) -> u32 {
             JOURNAL_VERSION_EXECUTION_PROFILE.max(budget_version(Some(profile)))
         }
         JournalEntry::BuilderInstalled { .. } => JOURNAL_VERSION_EXECUTION_PROFILE,
+        JournalEntry::Issued {
+            issued_at: Some(_), ..
+        }
+        | JournalEntry::Revoked {
+            revoked_at: Some(_),
+            ..
+        } => JOURNAL_VERSION_JOIN_TIMES,
         _ => JOURNAL_VERSION,
     }
 }

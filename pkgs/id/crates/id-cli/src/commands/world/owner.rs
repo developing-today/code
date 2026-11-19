@@ -9,6 +9,7 @@
 //! the live-only sections (connected members, program runs) are always
 //! unavailable here, and it writes nothing.
 
+use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
@@ -133,7 +134,33 @@ pub(super) fn render_text(report: &OwnerReport, since_secs: u64) -> String {
             .map_or_else(|| "unknown".to_owned(), |n| n.to_string());
         out.push(format!("forked from: {from} ({inherited} joins inherited)"));
     }
-    out.push(format!("joins in window: {}", measured(&joins.in_window)));
+    out.push(format!(
+        "joins in window: {}{}",
+        measured(&joins.in_window),
+        if joins.in_window.value().is_some() && !joins.in_window_complete {
+            ", incomplete: the window starts before join times were recorded"
+        } else {
+            ""
+        }
+    ));
+    out.push(format!(
+        "join times recorded since: {}{}",
+        measured(&joins.available_since),
+        if joins.untimed > 0 {
+            format!(" ({} joins have no time)", joins.untimed)
+        } else {
+            String::new()
+        }
+    ));
+    out.push(format!(
+        "revokes in window: {}{}",
+        measured(&joins.revoked_in_window),
+        if joins.revoked_untimed > 0 && joins.revoked_in_window.value().is_some() {
+            format!(" ({} revokes have no time)", joins.revoked_untimed)
+        } else {
+            String::new()
+        }
+    ));
     out.push(format!(
         "active members: {}",
         measured(&report.members.active_count)
@@ -171,11 +198,18 @@ pub(super) fn render_text(report: &OwnerReport, since_secs: u64) -> String {
                 if join.revoked {
                     tags.push("revoked");
                 }
-                if tags.is_empty() {
+                let mut label = if tags.is_empty() {
                     join.participant_id.to_string()
                 } else {
                     format!("{} ({})", join.participant_id, tags.join(", "))
+                };
+                if let Some(at) = join.issued_at_unix_ms {
+                    let _ = write!(label, " joined {at}");
                 }
+                if let Some(at) = join.revoked_at_unix_ms {
+                    let _ = write!(label, " revoked {at}");
+                }
+                label
             })
             .collect();
         out.push(format!("recent joins, newest first: {}", recent.join("; ")));
@@ -250,7 +284,72 @@ mod tests {
             uses: None,
             used: 0,
             subject: None,
+            issued_at: None,
         }
+    }
+
+    fn issued_at(id: u64, at: u64) -> JournalEntry {
+        let JournalEntry::Issued {
+            participant,
+            digest,
+            scopes,
+            parent,
+            expires_at,
+            uses,
+            used,
+            subject,
+            ..
+        } = issued(id, None)
+        else {
+            unreachable!()
+        };
+        JournalEntry::Issued {
+            participant,
+            digest,
+            scopes,
+            parent,
+            expires_at,
+            uses,
+            used,
+            subject,
+            issued_at: Some(at),
+        }
+    }
+
+    #[test]
+    fn text_form_shows_join_and_revoke_times() {
+        let v = id_worlds::world::JOURNAL_VERSION_JOIN_TIMES;
+        let dir = world_dir(&[
+            JournalEntry::Created {
+                world_id: "w-cli".to_owned(),
+                version: v,
+            },
+            issued(1, None),
+            issued_at(2, 4_000),
+            JournalEntry::Revoked {
+                participant_id: 2,
+                by: None,
+                revoked_at: Some(4_500),
+            },
+        ]);
+        let report = owner_report(dir.path(), 3, 5_000).unwrap();
+        let text = render_text(&report, 3);
+        assert!(text.contains("joins in window: 1, incomplete"), "{text}");
+        assert!(
+            text.contains("join times recorded since: 4000 (1 joins have no time)"),
+            "{text}"
+        );
+        assert!(text.contains("revokes in window: 1"), "{text}");
+        assert!(
+            text.contains("recent joins, newest first: 2 (revoked) joined 4000 revoked 4500; 1"),
+            "{text}"
+        );
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["joins"]["available_since"]["value"], 4_000);
+        assert_eq!(
+            json["joins"]["recent"][1]["issued_at_unix_ms"],
+            serde_json::Value::Null
+        );
     }
 
     #[test]
