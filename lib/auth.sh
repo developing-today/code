@@ -38,5 +38,10 @@ ulimit -n "$(ulimit -Hn)"
 sudo prlimit --pid $$ --nofile=1000000:1000000
 # shellcheck disable=SC2312
 set +x
-sudo NIX_CONFIG="access-tokens = github.com=$(sudo cat "$AUTH_FILE")" "$@"
+# Pass the token through the environment, not the sudo command line: a VAR=value
+# argument shows in `ps` for every user and sudo logs it to the journal as ENV=.
+NIX_CONFIG="access-tokens = github.com=$(sudo cat "$AUTH_FILE")"
+export NIX_CONFIG
+sudo --preserve-env=NIX_CONFIG "$@"
+unset NIX_CONFIG
 set -Eeuxo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail

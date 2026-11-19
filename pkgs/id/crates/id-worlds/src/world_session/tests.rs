@@ -3774,7 +3774,7 @@ mod tests {
         assert!(
             entries.iter().any(|entry| matches!(
                 entry,
-                crate::world::JournalEntry::Revoked { participant_id, by: Some(by) }
+                crate::world::JournalEntry::Revoked { participant_id, by: Some(by), .. }
                 if *participant_id == victim.id && *by == moderator.id
             )),
             "revoke must be journal-attributed to the moderator: {entries:?}"
