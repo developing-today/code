@@ -491,10 +491,15 @@ function summarize(file: QuotaCurrentFile, nowMs: number): GathererSummary {
   const providers: GathererSummary["providers"] = file.providers.map(e => {
     const run = heartbeat?.perProvider[e.providerId];
     const state = run?.state === "error" || run?.state === "lapsed" ? run.state : entryState(e, nowMs);
+    // A folded provider run may be successful while carrying one failed
+    // credential's reason. That aggregate reason is not every row's error.
+    const failedEntry = e.state === "error" || e.state === "lapsed" || e.retainedFromFailedTick;
+    const error = e.error ? safeProviderReason(e.error)
+      : failedEntry ? (run?.error ?? errorText(e)) : undefined;
     return {providerId: e.providerId, serviceId: e.serviceId, state,
       measuredAt: e.measuredAt, source: e.source,
       ...(e.credentialLabel ? {credentialLabel: e.credentialLabel} : {}),
-      ...(run?.error ? {error: run.error} : state === "error" || state === "lapsed" ? {error: errorText(e)} : {})};
+      ...(error ? {error} : {})};
   });
   const present = new Set(providers.map(p => p.providerId));
   for (const [providerId, run] of Object.entries(heartbeat?.perProvider ?? {})) {

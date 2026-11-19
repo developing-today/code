@@ -3705,11 +3705,18 @@ function todayHealthStrip(health: HealthView | null, quota: QuotaView, quotaUnav
           : `orchestrator ${compactAge(orchestration.ageMs)}`
         : `orchestrator ${orchestration.state}`;
 
-  const quotaErrors = quota.gatherer
-    ? quota.gatherer.providers.filter((provider) => provider.state === "error").length
-    : quota.pools.filter((pool) => pool.state === "error" || pool.freshness?.state === "error").length;
+  const heartbeatOnly = quota.gatherer?.source === "standalone-heartbeat";
+  const poolErrors = quota.pools.filter((pool) => pool.state === "error" || pool.freshness?.state === "error");
+  const providerErrors = quota.gatherer?.providers.filter((provider) => provider.state === "error") ?? [];
+  // A standalone tick is not a replacement quota measurement. Preserve base
+  // pool failures and include heartbeat failures, deduplicating known services.
+  const quotaErrors = heartbeatOnly
+    ? new Set([...poolErrors.map(pool => pool.id), ...providerErrors.map(provider => provider.serviceId)]).size
+    : quota.gatherer ? providerErrors.length : poolErrors.length;
+  const quotaUnknown = quotaUnavailable ||
+    ((!quota.gatherer || heartbeatOnly) && quota.pools.length === 0 && quotaErrors === 0);
   const quotaState =
-    quotaUnavailable || (!quota.gatherer && quota.pools.length === 0)
+    quotaUnknown
       ? "unknown"
       : quotaErrors
         ? "warn"
@@ -3717,7 +3724,7 @@ function todayHealthStrip(health: HealthView | null, quota: QuotaView, quotaUnav
           ? "unknown"
           : "ok";
   const quotaText =
-    quotaUnavailable || (!quota.gatherer && quota.pools.length === 0)
+    quotaUnknown
       ? "quota unknown"
       : quotaErrors
         ? `quota errors ${quotaErrors}`
