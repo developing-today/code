@@ -1883,8 +1883,9 @@ mod tests {
     async fn offline_replica_serves_friend_delegation_from_directory_facts_without_writer() {
         use crate::directory::Actor;
         use crate::world::{
-            DurableReceiver, JOURNAL_VERSION, JournalEntry, ReplicationEnvelope,
-            SignedReplicationEnvelope, WorldCore, frame_digest, journal_entry_line,
+            DurableReceiver, JournalEntry, MAX_JOURNAL_VERSION as JOURNAL_VERSION,
+            ReplicationEnvelope, SignedReplicationEnvelope, WorldCore, frame_digest,
+            journal_entry_line,
         };
         use ed25519_dalek::SigningKey;
 
@@ -2048,9 +2049,9 @@ mod tests {
 
         use crate::directory::Actor;
         use crate::world::{
-            DurableReceiver, JOURNAL_VERSION, JournalEntry, ReplicationEnvelope,
-            SignedReplicationEnvelope, WorldCore, WorldEvent, WorldEventKind, frame_digest,
-            journal_entry_line,
+            DurableReceiver, JournalEntry, MAX_JOURNAL_VERSION as JOURNAL_VERSION,
+            ReplicationEnvelope, SignedReplicationEnvelope, WorldCore, WorldEvent, WorldEventKind,
+            frame_digest, journal_entry_line,
         };
 
         let mut writer_core = WorldCore::new(world_id, WorldLimits::default()).unwrap();
@@ -2739,6 +2740,7 @@ mod tests {
             .unwrap();
         journal
             .append(&JournalEntry::Issued {
+                issued_at: None,
                 participant,
                 digest: "00".repeat(32),
                 scopes: WorldScopes::GUEST.bits(),
@@ -2872,6 +2874,7 @@ mod tests {
         drop(FileJournal::open(&path, "w").unwrap());
         let created = std::fs::read(&path).unwrap();
         let revoked = serde_json::to_vec(&JournalEntry::Revoked {
+            revoked_at: None,
             participant_id: 1,
             by: None,
         })

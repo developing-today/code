@@ -623,6 +623,7 @@ impl WorldCore {
                     uses,
                     used,
                     subject,
+                    issued_at,
                 } => {
                     let digest = hex_decode_32(&digest).context("malformed capability digest")?;
                     // #2972: participant 0 is the reserved host/system
@@ -699,6 +700,7 @@ impl WorldCore {
                     }
                     let mut ancestor = parent;
                     let mut revoked_by_ancestor = false;
+                    let mut ancestor_revoked_at = None;
                     while let Some(ancestor_id) = ancestor {
                         let ancestor_record = core
                             .capabilities
@@ -706,6 +708,7 @@ impl WorldCore {
                             .context("delegated capability ancestor disappeared during restore")?;
                         if ancestor_record.revoked {
                             revoked_by_ancestor = true;
+                            ancestor_revoked_at = ancestor_record.revoked_at;
                             break;
                         }
                         ancestor = ancestor_record.parent;
@@ -744,16 +747,30 @@ impl WorldCore {
                             bounds: CapabilityBounds { expires_at, uses },
                             used,
                             subject,
+                            issued_at,
+                            revoked_at: ancestor_revoked_at,
                         },
                     );
                     if revoked_by_ancestor {
                         inherited_revocations.insert(issued_participant_id);
                     }
                 }
-                JournalEntry::Revoked { participant_id, by } => {
-                    if !inherited_revocations.remove(&participant_id) {
+                JournalEntry::Revoked {
+                    participant_id,
+                    by,
+                    revoked_at,
+                } => {
+                    if inherited_revocations.remove(&participant_id) {
+                        // Revoked with an ancestor before this checkpointed
+                        // entry was read: keep the time the entry carries.
+                        if let Some(record) = core.capabilities.get_mut(&participant_id) {
+                            record.revoked_at = revoked_at;
+                        }
+                    } else {
                         ensure!(
-                            !core.revoke_tree_by(participant_id, by).is_empty(),
+                            !core
+                                .revoke_tree_at(participant_id, by, revoked_at)
+                                .is_empty(),
                             "journal revokes unknown or revoked participant {participant_id}"
                         );
                     }
@@ -1644,6 +1661,10 @@ impl WorldCore {
                         .capabilities
                         .get(&id)
                         .and_then(|record| record.revoked_by),
+                    revoked_at: self
+                        .capabilities
+                        .get(&id)
+                        .and_then(|record| record.revoked_at),
                 });
             }
         }
