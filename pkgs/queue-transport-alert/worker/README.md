@@ -82,7 +82,7 @@ keeps the two in step). The app stages the flake package
 the Nix store, then:
 
 1. `cf workers versions create --tag git-<sha12>` uploads a version
-   with its secrets read from stdin (`--secrets-file /dev/stdin`);
+   with its secrets passed through a pipe (`--secrets-file <(cat)`);
    nothing goes live yet.
 2. `cf workers deployments create` puts that version at 100%.
 3. `cf workers triggers deploy` applies the cron schedule.

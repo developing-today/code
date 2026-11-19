@@ -3,7 +3,7 @@
 //
 //   cf workers versions create     upload a version stamped with the git
 //                                  SHA (--tag git-<sha12>), its secrets
-//                                  read from stdin; nothing goes live yet
+//                                  through a pipe; nothing goes live yet
 //   cf workers deployments create  put that version at 100%
 //   cf workers triggers deploy     apply the cron schedule from the config
 //
@@ -95,13 +95,25 @@ for (const [name, variable] of [["cf", "QTA_CF_MODULE"], ["wrangler", "QTA_WRANG
   symlinkSync(target, join(stage, "node_modules", name));
 }
 
-function runCf(args, { capture = false, input } = {}) {
+function runCf(args, { capture = false } = {}) {
   return execFileSync("cf", ["-q", ...args], {
     cwd: stage,
     env,
     encoding: "utf8",
-    input,
-    stdio: [input === undefined ? "inherit" : "pipe", capture ? "pipe" : "inherit", "inherit"],
+    stdio: ["inherit", capture ? "pipe" : "inherit", "inherit"],
+  });
+}
+
+// cf reads --secrets-file with a plain file read, which fails on this
+// process's stdin pipe. Hand it a fresh pipe instead: bash's process
+// substitution copies our stdin (the secrets JSON) into /dev/fd/N, and
+// cf itself gets /dev/null, so the values never touch disk or argv.
+function runCfWithSecrets(args, secrets) {
+  execFileSync("bash", ["-c", 'cf -q "$@" --secrets-file <(cat) </dev/null', "cf", ...args], {
+    cwd: stage,
+    env,
+    input: JSON.stringify(secrets),
+    stdio: ["pipe", "inherit", "inherit"],
   });
 }
 
@@ -163,10 +175,7 @@ if (brokerToken) {
 }
 
 console.log(`uploading version (tag ${tag}; secrets ${Object.keys(workerSecrets).join(", ")})`);
-runCf(
-  ["workers", "versions", "create", "--worker", WORKER, "--tag", tag, "--message", message, "--secrets-file", "/dev/stdin"],
-  { input: JSON.stringify(workerSecrets) },
-);
+runCfWithSecrets(["workers", "versions", "create", "--worker", WORKER, "--tag", tag, "--message", message], workerSecrets);
 const versions = listItems(
   parseJsonOutput(runCf(["workers", "versions", "list", "--worker-id", WORKER], { capture: true })),
   "versions",

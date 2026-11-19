@@ -1,5 +1,6 @@
 {
   writeShellApplication,
+  bash,
   bws,
   cf,
   git,
@@ -16,6 +17,7 @@
 writeShellApplication {
   name = "queue-transport-alert-deploy";
   runtimeInputs = [
+    bash
     bws
     cf
     git
