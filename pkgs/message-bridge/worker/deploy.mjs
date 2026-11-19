@@ -1,52 +1,67 @@
-// Deploys the message-bridge Worker from its flake package: stages the
-// package (or, run directly from a checkout, the checkout), runs
-// `wrangler deploy` from the staged copy, then sets the Worker's one
-// secret, ACCESS_TOKEN, with `wrangler secret bulk` read from stdin, so
-// the token never touches disk.
+// Deploys the message-bridge Worker through the cf versions flow, the
+// same one pkgs/pkarr-worker uses:
+//
+//   cf workers versions create     upload a new version tagged with the
+//                                  git SHA (git-<sha12>, full SHA in the
+//                                  message); nothing goes live yet
+//   GET .../versions?deployable=true
+//                                  pre-check the new version is deployable
+//                                  and still has its ACCESS_TOKEN
+//   cf workers deployments create  put that version at 100%
+//   then check the deployment serves it and /healthz says the token is set
+//
+// Every deploy leaves the previous versions in place, so a rollback is
+// a deployment at an older version id (--deploy-version <id>), with no
+// upload.
 //
 // Usage:
-//   deploy.mjs [--dry-run | --print-urls]
+//   deploy.mjs                        full deploy from a checkout: upload
+//                                     a version with ACCESS_TOKEN from
+//                                     Bitwarden, deploy it
+//   deploy.mjs --dry-run              build and check; upload nothing
+//   deploy.mjs --code-only            the repo's deploy (the
+//                                     message-bridge-deploy workflow):
+//                                     CLOUDFLARE_API_TOKEN and
+//                                     CLOUDFLARE_ACCOUNT_ID from the env,
+//                                     no Bitwarden; the new version keeps
+//                                     the deployed ACCESS_TOKEN, so the
+//                                     connector URL doesn't change
+//   deploy.mjs --deploy-version <id> [--dry-run]
+//                                     deploy (roll back to) an existing
+//                                     version at 100%; --dry-run previews
+//   deploy.mjs --print-urls           print the connector, page and API
+//                                     URLs (they contain the token)
 //
-// --print-urls prints the connector and page URLs, which contain the
-// access token, and deploys nothing. Nothing else ever prints it.
-//
-// --code-only is the repo's deploy (the message-bridge-deploy GitHub
-// workflow): it uploads the code with CLOUDFLARE_API_TOKEN and
-// CLOUDFLARE_ACCOUNT_ID from the environment and touches no secret.
-// The Worker keeps the ACCESS_TOKEN an earlier full deploy set, so the
-// connector URL doesn't change. It then checks /healthz says the token
-// is still configured.
-//
-// Needs BWS_ACCESS_TOKEN (and CLOUDFLARE_ACCOUNT_ID to deploy);
-// deploy.sh sets them. Values come from Bitwarden by name:
-//   MB_CF_TOKEN_SECRET      (cloudflare.api-token-day-to-day)   wrangler's API token
-//   MB_ACCESS_TOKEN_SECRET  (message-bridge.access-token)       the path token
-// The first deploy creates the access token (32 random bytes,
-// base64url) in Bitwarden project MB_BWS_PROJECT (default: the
-// "developing today" project) when it doesn't exist yet. To rotate it,
-// delete or edit that secret and deploy again.
+// Credentials: CLOUDFLARE_API_TOKEN from the env when set, otherwise
+// from Bitwarden (MB_CF_TOKEN_SECRET, default
+// cloudflare.api-token-day-to-day); CLOUDFLARE_ACCOUNT_ID from the env
+// (deploy.sh decrypts it with sops). The access token is Bitwarden's
+// message-bridge.access-token (MB_ACCESS_TOKEN_SECRET), created on the
+// first full deploy (32 random bytes, base64url) in project
+// MB_BWS_PROJECT. It reaches cf on stdin (--secrets-file /dev/stdin),
+// never disk. To rotate it, edit or delete that secret and run a full
+// deploy.
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { cpSync, existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgs, USAGE } from "./deploy-args.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const WORKER = "message-bridge";
 const MIN_TOKEN_LENGTH = 32;
 
-function usageError(message) {
-  console.error(`${message}\nusage: deploy.mjs [--dry-run | --print-urls | --code-only]`);
+let args;
+try {
+  args = parseArgs(process.argv.slice(2));
+} catch (err) {
+  console.error(`deploy.mjs: ${err.message}\n${USAGE}`);
   process.exit(2);
 }
-const args = process.argv.slice(2);
-if (args.length > 1) usageError("give at most one of --dry-run, --print-urls, --code-only");
-if (args.length === 1 && !["--dry-run", "--print-urls", "--code-only"].includes(args[0])) {
-  usageError(`unrecognized argument: ${args[0]}`);
-}
-// "deploy" is only the internal name for the no-argument default.
-const mode = args[0] ?? "deploy";
+// deploy.sh checks the arguments this way before it touches Bitwarden.
+if (process.env.MB_CHECK_ARGS_ONLY === "1") process.exit(0);
 
 const names = {
   cf: process.env.MB_CF_TOKEN_SECRET ?? "cloudflare.api-token-day-to-day",
@@ -58,22 +73,201 @@ const pkgDir = process.env.MESSAGE_BRIDGE_PKG ?? here;
 const wranglerConfig = readFileSync(join(pkgDir, "wrangler.jsonc"), "utf8");
 const publicUrl = (wranglerConfig.match(/"PUBLIC_URL"\s*:\s*"([^"]+)"/)?.[1] ?? "").replace(/\/+$/, "");
 
-function stagePackage() {
-  // A writable copy: the store path is read-only and wrangler writes
-  // .wrangler state next to the config.
-  const stage = mkdtempSync(join(tmpdir(), "message-bridge-deploy-"));
-  cpSync(pkgDir, stage, { recursive: true });
-  if (!existsSync(join(stage, "wrangler.jsonc"))) {
-    throw new Error(`no wrangler.jsonc in staged Worker package at ${pkgDir}`);
-  }
-  return stage;
+let vault = null;
+function fromVault(name) {
+  vault ??= JSON.parse(execFileSync("bws", ["secret", "list", "-o", "json"], { encoding: "utf8" }));
+  return vault.find((s) => s.key === name)?.value?.replace(/\r?\n$/, "");
 }
 
-if (mode === "--code-only") {
-  for (const name of ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"]) {
-    if (!process.env[name]) throw new Error(`${name} is not set; --code-only reads it from the environment`);
+function accessTokenFromVault() {
+  const token = fromVault(names.access);
+  if (token && token.length < MIN_TOKEN_LENGTH) {
+    throw new Error(`Bitwarden secret ${names.access} is shorter than ${MIN_TOKEN_LENGTH} characters; the Worker would refuse it`);
   }
-  execFileSync("wrangler", ["deploy"], { cwd: stagePackage(), stdio: "inherit" });
+  return token;
+}
+
+if (args.mode === "print-urls") {
+  const token = accessTokenFromVault();
+  if (!token) throw new Error(`no Bitwarden secret named ${names.access}; deploy once to create it`);
+  if (!publicUrl) throw new Error("no PUBLIC_URL in wrangler.jsonc");
+  console.log(`connector: ${publicUrl}/mcp/${token}`);
+  console.log(`page:      ${publicUrl}/p/${token}`);
+  console.log(`api:       ${publicUrl}/api/${token}/messages`);
+  process.exit(0);
+}
+
+// Credentials. --code-only never reads Bitwarden; the rest use the env
+// token when one is set (CI), otherwise Bitwarden's.
+if (args.mode === "code-only" && !process.env.CLOUDFLARE_API_TOKEN) {
+  throw new Error("CLOUDFLARE_API_TOKEN is not set; --code-only reads it from the environment");
+}
+const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+if (!accountId) throw new Error("CLOUDFLARE_ACCOUNT_ID is not set; run deploy.sh");
+const apiToken = process.env.CLOUDFLARE_API_TOKEN || fromVault(names.cf);
+if (!apiToken) throw new Error(`no CLOUDFLARE_API_TOKEN and no Bitwarden secret named ${names.cf}`);
+const env = { ...process.env, CLOUDFLARE_API_TOKEN: apiToken, CLOUDFLARE_ACCOUNT_ID: accountId };
+const api = `https://api.cloudflare.com/client/v4/accounts/${accountId}/workers/scripts/${WORKER}`;
+
+if (args.mode === "deploy-version") {
+  const id = args.deployVersion;
+  await assertDeployable(id);
+  if (args.dryRun) {
+    console.log(`dry run: would deploy ${WORKER} at version ${id} (100%); nothing changed`);
+    process.exit(0);
+  }
+  const stage = stagePackage();
+  createDeployment(stage, id);
+  await verifyLive(id);
+  console.log(`live: ${publicUrl} at version ${id}`);
+  process.exit(0);
+}
+
+const stage = stagePackage();
+const sha = process.env.GITHUB_SHA || execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+const tag = `git-${sha.slice(0, 12)}`;
+const via = args.mode === "code-only" ? "message-bridge-deploy workflow" : "nix run .#message-bridge-deploy";
+const createArgs = ["workers", "versions", "create", "--tag", tag, "--message", `deploy ${sha} via ${via}`];
+
+if (args.dryRun) {
+  runCf(stage, [...createArgs, "--dry-run"]);
+  console.log("dry run: config builds, nothing uploaded");
+  process.exit(0);
+}
+
+let input;
+if (args.mode === "deploy") {
+  let token = accessTokenFromVault();
+  if (!token) {
+    token = randomBytes(32).toString("base64url");
+    execFileSync(
+      "bws",
+      [
+        "secret",
+        "create",
+        "--note",
+        "message-bridge Worker path token (guards /mcp, /p, /api). Rotate by editing and redeploying.",
+        "-o",
+        "none",
+        "--",
+        names.access,
+        token,
+        project,
+      ],
+      { stdio: ["ignore", "ignore", "inherit"] },
+    );
+    console.log(`created Bitwarden secret ${names.access}`);
+  }
+  createArgs.push("--secrets-file", "/dev/stdin");
+  input = JSON.stringify({ ACCESS_TOKEN: token });
+}
+
+console.log(`uploading version (tag ${tag})`);
+const before = Date.now();
+runCf(stage, createArgs, input);
+
+// Re-uploading an unchanged tree makes a second version with the same
+// tag, so take the newest one with this tag.
+const version = (await listVersions())
+  .filter((v) => v.annotations?.["workers/tag"] === tag)
+  .sort((a, b) => createdOn(b) - createdOn(a))[0];
+if (!version || createdOn(version) < before - 120_000) {
+  throw new Error(`uploaded version with tag ${tag} not found in the versions list`);
+}
+console.log(`uploaded version ${version.id}`);
+await assertDeployable(version.id);
+createDeployment(stage, version.id);
+await verifyLive(version.id);
+console.log(`live: ${publicUrl} at version ${version.id} (${tag})`);
+console.log(`roll back with: nix run .#message-bridge-deploy -- --deploy-version <older version id>`);
+
+// --- helpers ---
+
+function stagePackage() {
+  // A writable copy (the store path is read-only; cf and wrangler write
+  // build state next to the config) with node_modules pointing at the
+  // flake's cf and wrangler, which cf needs to resolve cf/config and to
+  // delegate the build. deploy.nix sets both paths.
+  const cfModule = process.env.MB_CF_MODULE;
+  const wranglerModule = process.env.MB_WRANGLER_MODULE;
+  if (!cfModule || !wranglerModule) {
+    throw new Error("MB_CF_MODULE and MB_WRANGLER_MODULE are not set; run through nix run .#message-bridge-deploy");
+  }
+  const dir = mkdtempSync(join(tmpdir(), "message-bridge-deploy-"));
+  cpSync(pkgDir, dir, { recursive: true, filter: (src) => !src.includes("/node_modules") });
+  execFileSync("chmod", ["-R", "u+w", dir]);
+  if (!existsSync(join(dir, "cloudflare.config.ts"))) {
+    throw new Error(`no cloudflare.config.ts in the staged Worker package from ${pkgDir}`);
+  }
+  mkdirSync(join(dir, "node_modules"));
+  symlinkSync(cfModule, join(dir, "node_modules", "cf"));
+  symlinkSync(wranglerModule, join(dir, "node_modules", "wrangler"));
+  chmodSync(dir, 0o700);
+  return dir;
+}
+
+function runCf(cwd, cfArgs, input) {
+  return execFileSync("cf", ["-q", ...cfArgs], {
+    cwd,
+    env,
+    input,
+    stdio: [input === undefined ? "ignore" : "pipe", "inherit", "inherit"],
+  });
+}
+
+async function cfApi(path) {
+  const res = await fetch(`${api}${path}`, { headers: { authorization: `Bearer ${apiToken}` } });
+  if (!res.ok) throw new Error(`Cloudflare API ${path} returned HTTP ${res.status}`);
+  return (await res.json()).result;
+}
+
+async function listVersions(query = "") {
+  const result = await cfApi(`/versions${query}`);
+  return Array.isArray(result) ? result : (result?.items ?? []);
+}
+
+function createdOn(v) {
+  const raw = v.metadata?.created_on ?? v.created_on ?? 0;
+  const t = typeof raw === "number" ? raw : Date.parse(raw);
+  return Number.isFinite(t) ? t : 0;
+}
+
+// The version must be deployable and must carry ACCESS_TOKEN: without it
+// the Worker answers 404 everywhere, which would take the connector down.
+async function assertDeployable(id) {
+  const deployable = (await listVersions("?deployable=true")).map((v) => v.id);
+  if (!deployable.includes(id)) throw new Error(`version ${id} is not deployable; refusing to deploy it`);
+  const detail = await cfApi(`/versions/${id}`);
+  const hasToken = (detail?.resources?.bindings ?? []).some(
+    (b) => b.name === "ACCESS_TOKEN" && b.type === "secret_text",
+  );
+  if (!hasToken) {
+    throw new Error(`version ${id} has no ACCESS_TOKEN secret; refusing to deploy it (run a full deploy from a checkout)`);
+  }
+}
+
+function createDeployment(cwd, id) {
+  console.log(`deploying version ${id} at 100%`);
+  runCf(cwd, [
+    "workers",
+    "deployments",
+    "create",
+    "--worker",
+    WORKER,
+    "--strategy",
+    "percentage",
+    "--versions",
+    JSON.stringify([{ version_id: id, percentage: 100 }]),
+  ]);
+}
+
+async function verifyLive(id) {
+  const deployments = (await cfApi("/deployments"))?.deployments ?? [];
+  const newest = [...deployments].sort((a, b) => Date.parse(b.created_on) - Date.parse(a.created_on))[0];
+  const serving = newest?.versions ?? [];
+  if (!(serving.length === 1 && serving[0].version_id === id && serving[0].percentage === 100)) {
+    throw new Error(`newest deployment does not serve version ${id} at 100%; check the dashboard`);
+  }
   let health = null;
   for (let attempt = 1; attempt <= 5 && !health?.configured; attempt++) {
     if (attempt > 1) await new Promise((r) => setTimeout(r, 3000));
@@ -84,77 +278,6 @@ if (mode === "--code-only") {
     }
   }
   if (!health?.ok || !health?.configured) {
-    throw new Error(
-      `${publicUrl}/healthz does not report an access token; run a full deploy (nix run .#message-bridge-deploy) once`,
-    );
+    throw new Error(`${publicUrl}/healthz does not report an access token after deploying ${id}; roll back with --deploy-version`);
   }
-  console.log(`deployed: ${WORKER} code (${publicUrl}); ACCESS_TOKEN left as it was`);
-  process.exit(0);
 }
-
-const vault = JSON.parse(execFileSync("bws", ["secret", "list", "-o", "json"], { encoding: "utf8" }));
-const find = (name) => vault.find((s) => s.key === name)?.value?.replace(/\r?\n$/, "");
-const byName = (name) => {
-  const value = find(name);
-  if (!value) throw new Error(`no Bitwarden secret named ${name}`);
-  return value;
-};
-
-let accessToken = find(names.access);
-if (accessToken && accessToken.length < MIN_TOKEN_LENGTH) {
-  throw new Error(`Bitwarden secret ${names.access} is shorter than ${MIN_TOKEN_LENGTH} characters; the Worker would refuse it`);
-}
-
-if (mode === "--print-urls") {
-  if (!accessToken) throw new Error(`no Bitwarden secret named ${names.access}; deploy once to create it`);
-  if (!publicUrl) throw new Error("no PUBLIC_URL in wrangler.jsonc");
-  console.log(`connector: ${publicUrl}/mcp/${accessToken}`);
-  console.log(`page:      ${publicUrl}/p/${accessToken}`);
-  console.log(`api:       ${publicUrl}/api/${accessToken}/messages`);
-  process.exit(0);
-}
-
-if (!process.env.CLOUDFLARE_ACCOUNT_ID) throw new Error("CLOUDFLARE_ACCOUNT_ID is not set; run deploy.sh");
-const env = { ...process.env, CLOUDFLARE_API_TOKEN: byName(names.cf) };
-
-const stage = stagePackage();
-
-const wranglerArgs = ["deploy"];
-if (mode === "--dry-run") wranglerArgs.push("--dry-run");
-execFileSync("wrangler", wranglerArgs, { cwd: stage, env, stdio: "inherit" });
-if (mode === "--dry-run") {
-  console.log(
-    `dry run: config builds, nothing uploaded; would set ACCESS_TOKEN from ${names.access}` +
-      (accessToken ? "" : " (creating it first)"),
-  );
-  process.exit(0);
-}
-
-if (!accessToken) {
-  accessToken = randomBytes(32).toString("base64url");
-  execFileSync(
-    "bws",
-    [
-      "secret",
-      "create",
-      "--note",
-      "message-bridge Worker path token (guards /mcp, /p, /api). Rotate by editing and redeploying.",
-      "-o",
-      "none",
-      "--",
-      names.access,
-      accessToken,
-      project,
-    ],
-    { stdio: ["ignore", "ignore", "inherit"] },
-  );
-  console.log(`created Bitwarden secret ${names.access}`);
-}
-
-execFileSync("wrangler", ["secret", "bulk"], {
-  cwd: stage,
-  env,
-  input: JSON.stringify({ ACCESS_TOKEN: accessToken }),
-  stdio: ["pipe", "inherit", "inherit"],
-});
-console.log(`deployed: ${WORKER} (${publicUrl}); ACCESS_TOKEN set. Run with --print-urls for the connector URL.`);

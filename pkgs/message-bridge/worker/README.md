@@ -55,30 +55,44 @@ connector URL in Claude. OAuth can replace the path token later.
 
 ## Deploying
 
+Deploys go through the `cf` versions flow, the same one `pkgs/pkarr-worker`
+uses. Each deploy uploads a new Worker version tagged `git-<sha12>` (the
+full SHA is in its message), checks it is deployable and still carries
+`ACCESS_TOKEN`, deploys it at 100%, then checks the deployment serves it
+and `/healthz` reports the token. Older versions stay, so rolling back is
+a deployment at an older version id with no upload.
+
+`cloudflare.config.ts` is the deploy config; `wrangler.jsonc` drives
+`wrangler dev` and must stay in step (a test checks the main fields).
+
 From a checkout, with Bitwarden and sops access:
 
 ```bash
-nix run .#message-bridge-deploy -- --dry-run     # bundle only
-nix run .#message-bridge-deploy                  # deploy + set ACCESS_TOKEN
-nix run .#message-bridge-deploy -- --print-urls  # print connector/page URLs (contain the token)
+nix run .#message-bridge-deploy -- --dry-run                 # build and check, upload nothing
+nix run .#message-bridge-deploy                              # upload a version with ACCESS_TOKEN, deploy it
+nix run .#message-bridge-deploy -- --deploy-version <id>     # roll back (add --dry-run to preview)
+nix run .#message-bridge-deploy -- --print-urls              # connector/page URLs (contain the token)
 ```
 
-The first deploy creates the access token in Bitwarden if it is
-missing.
+The first full deploy creates the access token in Bitwarden if it is
+missing. Version ids are in the Cloudflare dashboard (Worker > Deployments)
+or in each deploy's output.
 
 ### From the repo
 
 `.github/workflows/message-bridge-deploy.yml` deploys on every push to
-`main` that touches `pkgs/message-bridge/` (and by hand from the Actions
-tab). It builds and tests the flake package, then runs
-`nix run .#message-bridge-deploy -- --code-only`, which uploads the code
-with the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository
-secrets and leaves the Worker's `ACCESS_TOKEN` alone, so the connector
-URL stays the same and the runner needs no Bitwarden or sops access. It
-checks `/healthz` afterwards. Without those two secrets the workflow
-builds, tests and skips the upload. Setting or rotating the access token
-is still a local full deploy. Tests: `node --test test/*.test.mjs` (also run by the flake
-package's checkPhase).
+`main` that touches `pkgs/message-bridge/`, and by hand from the Actions
+tab. It builds and tests the flake package, then runs
+`nix run .#message-bridge-deploy -- --code-only` with the
+`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository secrets. A
+code-only version keeps the deployed `ACCESS_TOKEN`, so the connector URL
+stays the same and the runner needs no Bitwarden or sops access. A manual
+run with a `rollback_version` deploys that existing version instead.
+Without the two secrets the workflow builds, tests and skips the upload.
+Setting or rotating the access token is still a local full deploy.
+
+Tests: `node --test test/*.test.mjs` (also run by the flake package's
+checkPhase).
 
 ## Adding it to Claude
 

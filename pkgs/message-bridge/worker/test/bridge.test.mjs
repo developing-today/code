@@ -204,11 +204,34 @@ test("history pages back past the newest page with before_id", async () => {
   assert.equal((await call(`/api/${TOKEN}/messages?before_id=0`)).status, 400);
 });
 
+test("deploy argument parsing fails closed", async () => {
+  const { parseArgs } = await import("../deploy-args.mjs");
+  const id = "02854b08-81e8-4ee5-bbc4-f7cba767fa8f";
+  assert.deepEqual(parseArgs([]), { mode: "deploy", dryRun: false, deployVersion: null });
+  assert.deepEqual(parseArgs(["--dry-run"]), { mode: "deploy", dryRun: true, deployVersion: null });
+  assert.equal(parseArgs(["--code-only"]).mode, "code-only");
+  assert.equal(parseArgs(["--print-urls"]).mode, "print-urls");
+  assert.deepEqual(parseArgs(["--deploy-version", id, "--dry-run"]), { mode: "deploy-version", dryRun: true, deployVersion: id });
+  assert.deepEqual(parseArgs(["--dry-run", "--deploy-version", id]), { mode: "deploy-version", dryRun: true, deployVersion: id });
+  for (const bad of [
+    ["deploy"],
+    ["--nope"],
+    ["--dry-run", "--dry-run"],
+    ["--dry-run", "--print-urls"],
+    ["--code-only", "--dry-run"],
+    ["--deploy-version"],
+    ["--deploy-version", "latest"],
+    ["--deploy-version", id, "--code-only"],
+  ]) {
+    assert.throws(() => parseArgs(bad), undefined, bad.join(" "));
+  }
+});
+
 test("deploy.mjs rejects undeclared arguments before touching credentials", async () => {
   const { spawnSync } = await import("node:child_process");
   const { fileURLToPath } = await import("node:url");
   const script = fileURLToPath(new URL("../deploy.mjs", import.meta.url));
-  for (const argv of [["deploy"], ["--nope"], ["--dry-run", "--print-urls"]]) {
+  for (const argv of [["deploy"], ["--nope"], ["--dry-run", "--print-urls"], ["--deploy-version", "x"]]) {
     const r = spawnSync(process.execPath, [script, ...argv], {
       encoding: "utf8",
       env: { PATH: "/nonexistent" }, // bws unreachable: any credential use would fail differently
@@ -216,6 +239,11 @@ test("deploy.mjs rejects undeclared arguments before touching credentials", asyn
     assert.equal(r.status, 2, `${argv.join(" ")}: ${r.stderr}`);
     assert.match(r.stderr, /usage: deploy\.mjs/);
   }
+  const ok = spawnSync(process.execPath, [script, "--code-only"], {
+    encoding: "utf8",
+    env: { PATH: "/nonexistent", MB_CHECK_ARGS_ONLY: "1" },
+  });
+  assert.equal(ok.status, 0, ok.stderr);
 });
 
 test("deploy.mjs --code-only needs the Cloudflare env and nothing from Bitwarden", async () => {
@@ -226,4 +254,16 @@ test("deploy.mjs --code-only needs the Cloudflare env and nothing from Bitwarden
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /CLOUDFLARE_API_TOKEN is not set/);
   assert.doesNotMatch(r.stderr, /bws/);
+});
+
+test("cloudflare.config.ts matches wrangler.jsonc", async () => {
+  const { readFileSync } = await import("node:fs");
+  const cfg = readFileSync(new URL("../cloudflare.config.ts", import.meta.url), "utf8");
+  const wr = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
+  const pick = (re, text) => text.match(re)?.[1];
+  assert.equal(pick(/name: "([^"]+)"/, cfg), pick(/"name": "([^"]+)"/, wr));
+  assert.equal(pick(/compatibilityDate: "([^"]+)"/, cfg), pick(/"compatibility_date": "([^"]+)"/, wr));
+  assert.equal(pick(/PUBLIC_URL: bindings\.text\("([^"]+)"\)/, cfg), pick(/"PUBLIC_URL": "([^"]+)"/, wr));
+  assert.ok(cfg.includes('MESSAGES: bindings.durableObject({ worker: "message-bridge", exportName: "MessageStore" })'));
+  assert.ok(wr.includes('"name": "MESSAGES", "class_name": "MessageStore"'));
 });
