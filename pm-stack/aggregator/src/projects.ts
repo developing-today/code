@@ -342,19 +342,26 @@ export function parseProjectAudit(json: unknown, items: GqlItem[], generatedAt: 
 /** Retain draft cards and dates for the board family; never carry tokens/raw responses. */
 function parseBoardEntries(items: GqlItem[], projectUrl: string): BoardEntry[] {
   const date = (item: GqlItem, names: string[]): string | null => {
-    const value = item.fieldValues?.nodes?.find(v => v && names.includes(v.field?.name ?? ""))?.date;
+    const value = item.fieldValues?.nodes?.find((v) => v && names.includes(v.field?.name ?? ""))?.date;
     return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) && isIsoDate(value) ? value : null;
   };
-  return items.flatMap(item => {
+  return items.flatMap((item) => {
     if (!item.id || !item.content || typeof item.content.title !== "string") return [];
-    return [{ id: item.id, title: item.content.title,
-      url: item.content.url ?? projectItemUrl(item.databaseId ?? undefined, projectUrl),
-      status: singleSelect(item, "Status"), area: singleSelect(item, "Area"), theme: singleSelect(item, "Theme"),
-      repo: item.content.repository?.nameWithOwner ?? null,
-      milestone: item.content.milestone?.title ?? null,
-      labels: (item.content.labels?.nodes ?? []).flatMap(l => typeof l?.name === "string" ? [l.name] : []),
-      start: date(item, ["Start date", "Start", "Start Date"]), target: date(item, ["Target date", "Target", "Target Date"]),
-    }];
+    return [
+      {
+        id: item.id,
+        title: item.content.title,
+        url: item.content.url ?? projectItemUrl(item.databaseId ?? undefined, projectUrl),
+        status: singleSelect(item, "Status"),
+        area: singleSelect(item, "Area"),
+        theme: singleSelect(item, "Theme"),
+        repo: item.content.repository?.nameWithOwner ?? null,
+        milestone: item.content.milestone?.title ?? null,
+        labels: (item.content.labels?.nodes ?? []).flatMap((l) => (typeof l?.name === "string" ? [l.name] : [])),
+        start: date(item, ["Start date", "Start", "Start Date"]),
+        target: date(item, ["Target date", "Target", "Target Date"]),
+      },
+    ];
   });
 }
 
@@ -470,7 +477,11 @@ export async function fetchProjectSnapshot(
     });
     auditItems.push(...freshNodes);
     const freshIds = new Set(freshNodes.map((node) => node.id));
-    parsedItems.push(...parseProjectItems(json, (json as GqlProjectPage).data?.node?.url ?? PROJECT_URL).filter((item) => freshIds.has(item.id)));
+    parsedItems.push(
+      ...parseProjectItems(json, (json as GqlProjectPage).data?.node?.url ?? PROJECT_URL).filter((item) =>
+        freshIds.has(item.id),
+      ),
+    );
     const info = projectPageInfo(json);
     if (!info.hasNextPage) {
       if (auditItems.length < info.totalCount) {
@@ -481,7 +492,14 @@ export async function fetchProjectSnapshot(
       }
       const audit = parseProjectAudit(firstPage, auditItems, generatedAt);
       return {
-        board: { number: audit.number, url: audit.url, generatedAt, totalItems: audit.totalItems, views: audit.views, items: parseBoardEntries(auditItems, audit.url) },
+        board: {
+          number: audit.number,
+          url: audit.url,
+          generatedAt,
+          totalItems: audit.totalItems,
+          views: audit.views,
+          items: parseBoardEntries(auditItems, audit.url),
+        },
         items: resolveEpicRefs(parsedItems),
         audit,
         counts: {

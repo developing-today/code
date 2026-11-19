@@ -70,7 +70,14 @@ import { poolItemToGhItem } from "../projects.ts";
 import { createNeedsDrewSweeper, type NeedsDrewCensus } from "../needs-drew.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
 import { assembleWorkItems } from "../work-items.ts";
-import { overlayQuotaCurrent, overlayTursoUsage, readQuotaCurrentFile, readQuotaHeartbeatFile, latestQuotaHeartbeat, overlayStandaloneQuotaHeartbeat } from "../quota-current.ts";
+import {
+  overlayQuotaCurrent,
+  overlayTursoUsage,
+  readQuotaCurrentFile,
+  readQuotaHeartbeatFile,
+  latestQuotaHeartbeat,
+  overlayStandaloneQuotaHeartbeat,
+} from "../quota-current.ts";
 import { SnapshotStore, type SnapshotsRemote } from "../snapshots.ts";
 import { gristDocUrl, kaneoTaskUrl } from "../service-links.ts";
 import { fixtureSource } from "./fixtures.ts";
@@ -1516,9 +1523,11 @@ export function liveSource(
   async function overlayCurrent(base: QuotaView): Promise<QuotaView> {
     const standalone = await readQuotaHeartbeatFile(cfg.quotaHeartbeatFile);
     const res = await readQuotaCurrentFile(cfg.quotaCurrentFile);
-    if (res.verdict === "ok" && res.file) return overlayQuotaCurrent(base, {
-      ...res.file, heartbeat: latestQuotaHeartbeat(res.file.heartbeat, standalone)!,
-    });
+    if (res.verdict === "ok" && res.file)
+      return overlayQuotaCurrent(base, {
+        ...res.file,
+        heartbeat: latestQuotaHeartbeat(res.file.heartbeat, standalone)!,
+      });
     if (res.verdict === "transport") {
       console.error(
         `[quota] WARNING: quota-current read transport failure (${res.error ?? "unknown"}) — base view stands (#10816)`,
@@ -1894,7 +1903,7 @@ export function liveSource(
       try {
         const res = await readQuotaCurrentFile(cfg.quotaCurrentFile);
         if (res.verdict === "ok" && res.file) {
-          const file = {...res.file, heartbeat: latestQuotaHeartbeat(res.file.heartbeat, standalone)!};
+          const file = { ...res.file, heartbeat: latestQuotaHeartbeat(res.file.heartbeat, standalone)! };
           provenance.quota += ` · gatherer ${file.generatedAt}`;
           const sanitized = file.sanitized;
           if (sanitized && sanitized.droppedProviders + sanitized.droppedWindows > 0) {

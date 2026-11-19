@@ -70,7 +70,14 @@ WORKLOADS = [
     "page_stream",
     "write",
 ]
-TIMED = ["load", "round_trip", "query_subject", "query_predicate_object", "page_stream", "write"]
+TIMED = [
+    "load",
+    "round_trip",
+    "query_subject",
+    "query_predicate_object",
+    "page_stream",
+    "write",
+]
 
 
 class Invalid(Exception):
@@ -185,7 +192,9 @@ class Model:
         rng = Rng(SEED ^ 0x5157)
         self.subjects = [user(rng.next() % SUBJECTS) for _ in range(SUBJECT_QUERIES)]
         rng = Rng(SEED ^ 0x504F)
-        self.po = [(iri("follows"), user(rng.next() % SUBJECTS)) for _ in range(PO_QUERIES)]
+        self.po = [
+            (iri("follows"), user(rng.next() % SUBJECTS)) for _ in range(PO_QUERIES)
+        ]
         new = {}
         for j in range(NEW_TRIPLES):
             s, p = iri(f"urn:new:{j}"), iri("name")
@@ -212,14 +221,21 @@ class Model:
             "new_triples": NEW_TRIPLES,
             "delete_stride": DELETE_STRIDE,
             "chunk_bytes": CHUNK_BYTES,
-            "type_tags": {"iri": TAG_IRI, "text": TAG_TEXT, "bytes": TAG_BYTES, "i64_be": TAG_I64},
+            "type_tags": {
+                "iri": TAG_IRI,
+                "text": TAG_TEXT,
+                "bytes": TAG_BYTES,
+                "i64_be": TAG_I64,
+            },
         }
 
     def subject_rows(self) -> list[dict]:
         rows = []
         for s in self.subjects:
             hits = [k for k, (ts, _, _) in self.triples.items() if ts == s]
-            rows.append({"subject": s.hex(), "count": len(hits), "sha256": set_digest(hits)})
+            rows.append(
+                {"subject": s.hex(), "count": len(hits), "sha256": set_digest(hits)}
+            )
         return rows
 
     def po_rows(self) -> list[dict]:
@@ -262,7 +278,10 @@ def load_json(path: Path) -> dict:
         raise Invalid(f"cannot read {path}: {err}") from err
     try:
         value = json.loads(
-            text, object_pairs_hook=_pairs, parse_float=_no_float, parse_constant=_no_float
+            text,
+            object_pairs_hook=_pairs,
+            parse_float=_no_float,
+            parse_constant=_no_float,
         )
     except json.JSONDecodeError as err:
         raise Invalid(f"{path.name}: not JSON: {err}") from err
@@ -296,7 +315,15 @@ def redb_pin() -> str:
 # Checks.
 # ---------------------------------------------------------------------------
 
-ENGINE_KEYS = {"name", "engine", "engine_version", "schema", "indexes", "query_plans", "durability"}
+ENGINE_KEYS = {
+    "name",
+    "engine",
+    "engine_version",
+    "schema",
+    "indexes",
+    "query_plans",
+    "durability",
+}
 PLAN_MUST = {
     "sqlite_jsonb": {"subject": "triples_spo", "predicate_object": "triples_po"},
     "sqlite_blob_rows": {"subject": "USING", "predicate_object": "triples_pos"},
@@ -304,26 +331,39 @@ PLAN_MUST = {
 
 
 def check_engines(engines: object) -> None:
-    need(isinstance(engines, list) and len(engines) == len(ENGINES), "engines: one entry per engine")
+    need(
+        isinstance(engines, list) and len(engines) == len(ENGINES),
+        "engines: one entry per engine",
+    )
     sqlite_versions = set()
     for meta, name in zip(engines, ENGINES):
         extra = {"select_all"} if name == "sqlite_blob_rows" else set()
         keys(meta, ENGINE_KEYS | extra, f"engines[{name}]")
         need(meta["name"] == name, f"engines: expected {name}, got {meta['name']!r}")
         for field in ("engine", "engine_version", "schema", "durability"):
-            need(isinstance(meta[field], str) and meta[field], f"engines[{name}].{field}: empty")
+            need(
+                isinstance(meta[field], str) and meta[field],
+                f"engines[{name}].{field}: empty",
+            )
         need(
             isinstance(meta["indexes"], list)
             and meta["indexes"]
             and all(isinstance(i, str) and i for i in meta["indexes"]),
             f"engines[{name}].indexes: must list the indexes",
         )
-        plans = keys(meta["query_plans"], {"subject", "predicate_object"}, f"engines[{name}].query_plans")
+        plans = keys(
+            meta["query_plans"],
+            {"subject", "predicate_object"},
+            f"engines[{name}].query_plans",
+        )
         for kind, plan in plans.items():
             need(isinstance(plan, str) and plan, f"engines[{name}]: empty {kind} plan")
             must = PLAN_MUST.get(name, {}).get(kind)
             if must:
-                need(must in plan, f"engines[{name}]: {kind} plan {plan!r} does not use {must}")
+                need(
+                    must in plan,
+                    f"engines[{name}]: {kind} plan {plan!r} does not use {must}",
+                )
                 need(
                     not re.search(r"\bSCAN triples\b(?! USING)", plan),
                     f"engines[{name}]: {kind} plan scans the whole table: {plan!r}",
@@ -331,7 +371,10 @@ def check_engines(engines: object) -> None:
         if name == "redb_tuple":
             need(meta["engine"] == "redb", "redb_tuple: engine must be redb")
             pin = redb_pin()
-            need(meta["engine_version"] == pin, f"redb_tuple: version {meta['engine_version']} != pin {pin}")
+            need(
+                meta["engine_version"] == pin,
+                f"redb_tuple: version {meta['engine_version']} != pin {pin}",
+            )
         if name.startswith("sqlite_"):
             need(
                 re.fullmatch(r"3\.\d+\.\d+", meta["engine_version"]) is not None,
@@ -339,7 +382,9 @@ def check_engines(engines: object) -> None:
             )
             need("CREATE TABLE" in meta["schema"], f"{name}: schema must be the DDL")
             sqlite_versions.add(meta["engine_version"])
-    need(len(sqlite_versions) == 1, "both SQLite engines must report one SQLite version")
+    need(
+        len(sqlite_versions) == 1, "both SQLite engines must report one SQLite version"
+    )
 
 
 def deterministic(cell: dict) -> dict:
@@ -357,18 +402,33 @@ def check_cell(cell: object, model: Model, expected: dict, where: str) -> None:
     keys(cell, {"engine", "run"} | set(WORKLOADS), where)
     n = len(model.triples)
     keys(cell["load"], {"triples", "micros"}, f"{where}.load")
-    need(cell["load"]["triples"] == n, f"{where}.load: triples {cell['load']['triples']} != {n}")
+    need(
+        cell["load"]["triples"] == n,
+        f"{where}.load: triples {cell['load']['triples']} != {n}",
+    )
     keys(cell["storage"], {"file_bytes", "compacted_bytes"}, f"{where}.storage")
     for field in ("file_bytes", "compacted_bytes"):
         count(cell["storage"][field], f"{where}.storage.{field}", 1)
 
-    rt = keys(cell["round_trip"], {"checked", "mismatches", "micros"}, f"{where}.round_trip")
+    rt = keys(
+        cell["round_trip"], {"checked", "mismatches", "micros"}, f"{where}.round_trip"
+    )
     need(rt["checked"] == n and rt["mismatches"] == 0, f"{where}.round_trip: {rt}")
 
     qs = keys(cell["query_subject"], {"queries", "micros"}, f"{where}.query_subject")
-    need(qs["queries"] == expected["subject"], f"{where}.query_subject: outputs differ from the reference model")
-    qp = keys(cell["query_predicate_object"], {"queries", "micros"}, f"{where}.query_predicate_object")
-    need(qp["queries"] == expected["po"], f"{where}.query_predicate_object: outputs differ from the reference model")
+    need(
+        qs["queries"] == expected["subject"],
+        f"{where}.query_subject: outputs differ from the reference model",
+    )
+    qp = keys(
+        cell["query_predicate_object"],
+        {"queries", "micros"},
+        f"{where}.query_predicate_object",
+    )
+    need(
+        qp["queries"] == expected["po"],
+        f"{where}.query_predicate_object: outputs differ from the reference model",
+    )
 
     page = keys(
         cell["page_stream"],
@@ -387,7 +447,15 @@ def check_cell(cell: object, model: Model, expected: dict, where: str) -> None:
 
     write = keys(
         cell["write"],
-        {"inserts", "deletes", "transactions", "micros", "final_count", "final_sha256", "file_bytes_after"},
+        {
+            "inserts",
+            "deletes",
+            "transactions",
+            "micros",
+            "final_count",
+            "final_sha256",
+            "file_bytes_after",
+        },
         f"{where}.write",
     )
     need(
@@ -406,20 +474,39 @@ def check_cell(cell: object, model: Model, expected: dict, where: str) -> None:
 def check_results(results: dict, model: Model, label: str) -> None:
     keys(
         results,
-        {"schema", "issue", "slice", "build", "fixture", "engines", "workloads", "runs", "cells", "limits"},
+        {
+            "schema",
+            "issue",
+            "slice",
+            "build",
+            "fixture",
+            "engines",
+            "workloads",
+            "runs",
+            "cells",
+            "limits",
+        },
         label,
     )
     need(results["schema"] == "id-graph-encoding-bakeoff/v1", f"{label}: schema")
-    need(results["issue"] == 10219 and results["slice"] == "A-GRAPH-9125-03", f"{label}: issue/slice")
+    need(
+        results["issue"] == 10219 and results["slice"] == "A-GRAPH-9125-03",
+        f"{label}: issue/slice",
+    )
     build = keys(results["build"], {"profile"}, f"{label}.build")
     need(build["profile"] in ("debug", "release"), f"{label}: build profile")
-    need(results["fixture"] == model.fixture(), f"{label}: fixture does not match the regenerated corpus")
+    need(
+        results["fixture"] == model.fixture(),
+        f"{label}: fixture does not match the regenerated corpus",
+    )
     need(results["workloads"] == WORKLOADS, f"{label}: workloads")
     check_engines(results["engines"])
     runs = count(results["runs"], f"{label}.runs", MIN_RUNS)
     limits = results["limits"]
     need(
-        isinstance(limits, list) and len(limits) >= 4 and all(isinstance(x, str) and x for x in limits),
+        isinstance(limits, list)
+        and len(limits) >= 4
+        and all(isinstance(x, str) and x for x in limits),
         f"{label}: limits must list at least four limits",
     )
 
@@ -430,7 +517,10 @@ def check_results(results: dict, model: Model, label: str) -> None:
         "final": set_digest(model.final),
     }
     cells = results["cells"]
-    need(isinstance(cells, list) and len(cells) == runs * len(ENGINES), f"{label}: matrix size")
+    need(
+        isinstance(cells, list) and len(cells) == runs * len(ENGINES),
+        f"{label}: matrix size",
+    )
     seen = {}
     for i, cell in enumerate(cells):
         where = f"{label}.cells[{i}]"
@@ -486,7 +576,9 @@ def table_values(results: dict) -> dict[str, list[int]]:
         row = []
         for _, workload, field in COLUMNS:
             values = [c[workload][field] for c in cells]
-            row.append(int(statistics.median(values)) if field == "micros" else values[0])
+            row.append(
+                int(statistics.median(values)) if field == "micros" else values[0]
+            )
         rows[engine] = row
     return rows
 
@@ -512,7 +604,9 @@ def render_leaders(results: dict) -> str:
 
 def block(text: str, name: str) -> str:
     match = re.search(
-        rf"<!-- bakeoff-{name}:begin -->\n(.*?)\n<!-- bakeoff-{name}:end -->", text, re.DOTALL
+        rf"<!-- bakeoff-{name}:begin -->\n(.*?)\n<!-- bakeoff-{name}:end -->",
+        text,
+        re.DOTALL,
     )
     need(match is not None, f"report: missing bakeoff-{name} block")
     return match.group(1)
@@ -520,16 +614,39 @@ def block(text: str, name: str) -> str:
 
 def check_report(results: dict) -> None:
     text = REPORT.read_text(encoding="utf-8")
-    need(block(text, "table") == render_table(results), "report: table differs from the committed results")
-    need(block(text, "leaders") == render_leaders(results), "report: leaders differ from the committed results")
+    need(
+        block(text, "table") == render_table(results),
+        "report: table differs from the committed results",
+    )
+    need(
+        block(text, "leaders") == render_leaders(results),
+        "report: leaders differ from the committed results",
+    )
     need(results["fixture"]["sha256"] in text, "report: must name the fixture SHA-256")
-    need(f"{results['fixture']['triples']} triples" in text, "report: must state the triple count")
+    need(
+        f"{results['fixture']['triples']} triples" in text,
+        "report: must state the triple count",
+    )
     for meta in results["engines"]:
-        need(meta["engine_version"] in text, f"report: must name {meta['name']} version {meta['engine_version']}")
-    need("No universal winner is asserted." in text, "report: must say that no universal winner is asserted")
+        need(
+            meta["engine_version"] in text,
+            f"report: must name {meta['name']} version {meta['engine_version']}",
+        )
+    need(
+        "No universal winner is asserted." in text,
+        "report: must say that no universal winner is asserted",
+    )
     lowered = text.lower()
-    for phrase in ("overall winner", "best overall", "clear winner", "universal winner is"):
-        need(phrase not in lowered.replace("no universal winner is asserted", ""), f"report: claims {phrase!r}")
+    for phrase in (
+        "overall winner",
+        "best overall",
+        "clear winner",
+        "universal winner is",
+    ):
+        need(
+            phrase not in lowered.replace("no universal winner is asserted", ""),
+            f"report: claims {phrase!r}",
+        )
     for limit in results["limits"]:
         need(limit in text, f"report: must list the limit {limit!r}")
 
@@ -554,23 +671,38 @@ CARGO = [
 
 def run_harness(out: Path) -> None:
     env = dict(os.environ, BAKEOFF_RESULTS=str(out))
-    proc = subprocess.run(CARGO, cwd=PKG, env=env, capture_output=True, text=True, check=False)
+    proc = subprocess.run(
+        CARGO, cwd=PKG, env=env, capture_output=True, text=True, check=False
+    )
     tail = (proc.stdout + proc.stderr)[-4000:]
     need(proc.returncode == 0, f"harness failed with exit {proc.returncode}:\n{tail}")
     need(
-        re.search(r"^test result: ok\. 1 passed; 0 failed;", proc.stdout, re.MULTILINE) is not None,
+        re.search(r"^test result: ok\. 1 passed; 0 failed;", proc.stdout, re.MULTILINE)
+        is not None,
         f"harness did not report exactly one passing test:\n{tail}",
     )
     need(out.is_file(), "harness wrote no results")
 
 
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
+    parser = argparse.ArgumentParser(
+        description=__doc__.splitlines()[0], allow_abbrev=False
+    )
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--run-and-check", action="store_true", help="run the harness, then check everything")
-    mode.add_argument("--check-committed", action="store_true", help="check the committed results and report only")
     mode.add_argument(
-        "--render-report-blocks", action="store_true", help="print the report's table and leaders blocks"
+        "--run-and-check",
+        action="store_true",
+        help="run the harness, then check everything",
+    )
+    mode.add_argument(
+        "--check-committed",
+        action="store_true",
+        help="check the committed results and report only",
+    )
+    mode.add_argument(
+        "--render-report-blocks",
+        action="store_true",
+        help="print the report's table and leaders blocks",
     )
     args = parser.parse_args(argv)
 
@@ -598,7 +730,9 @@ def main(argv: list[str]) -> int:
         print(f"FAIL: {err}", file=sys.stderr)
         return 1
     cells = committed["runs"] * len(ENGINES) * len(WORKLOADS)
-    what = "fresh run and committed results" if args.run_and_check else "committed results"
+    what = (
+        "fresh run and committed results" if args.run_and_check else "committed results"
+    )
     print(
         f"OK: {what}: {len(model.triples)} triples, fixture {model.fixture()['sha256'][:16]}..., "
         f"{len(ENGINES)} engines x {len(WORKLOADS)} workloads x {committed['runs']} runs = {cells} cells"

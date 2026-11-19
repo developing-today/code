@@ -39,12 +39,12 @@ envelope reference.
 
 ## Engines
 
-| engine | what is stored | engine and version |
-|---|---|---|
-| `chunked_binary` | sorted canonical triples in u32-length-framed chunks of at most 4096 bytes, with a chunk directory and a trailer; immutable, no secondary index | in-test file format `idcb/1` |
-| `redb_tuple` | SPO and POS tables keyed by `id_core::tuple` encodings of the canonical term bytes (the current tuple-key materialization) | redb 4.6.0 (pinned) |
-| `sqlite_jsonb` | one JSONB document per triple: structured terms plus hex term keys, with a unique (s, p, o) and a (p, o) expression index | SQLite 3.54.1 via rusqlite 0.42 (bundled) |
-| `sqlite_blob_rows` | interned `terms(bytes)` table plus a `WITHOUT ROWID` (s, p, o) table and a (p, o, s) index | SQLite 3.54.1 via rusqlite 0.42 (bundled) |
+| engine             | what is stored                                                                                                                                  | engine and version                        |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| `chunked_binary`   | sorted canonical triples in u32-length-framed chunks of at most 4096 bytes, with a chunk directory and a trailer; immutable, no secondary index | in-test file format `idcb/1`              |
+| `redb_tuple`       | SPO and POS tables keyed by `id_core::tuple` encodings of the canonical term bytes (the current tuple-key materialization)                      | redb 4.6.0 (pinned)                       |
+| `sqlite_jsonb`     | one JSONB document per triple: structured terms plus hex term keys, with a unique (s, p, o) and a (p, o) expression index                       | SQLite 3.54.1 via rusqlite 0.42 (bundled) |
+| `sqlite_blob_rows` | interned `terms(bytes)` table plus a `WITHOUT ROWID` (s, p, o) table and a (p, o, s) index                                                      | SQLite 3.54.1 via rusqlite 0.42 (bundled) |
 
 The exact DDL, index list, durability settings and the `EXPLAIN QUERY PLAN`
 output for both indexed queries are in the results file under `engines`. Both
@@ -71,17 +71,20 @@ Timings are medians over the 3 runs, in microseconds, from a
 `debug` build. Storage bytes are identical in every run.
 
 <!-- bakeoff-table:begin -->
-| engine | load µs | subject µs | p/o µs | page µs | write µs | bytes | compacted | bytes after writes |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| `chunked_binary` | 7982 | 17806 | 173268 | 12489 | 1085359 | 312475 | 312475 | 311511 |
-| `redb_tuple` | 199808 | 20790 | 8298 | 27712 | 633849 | 1118208 | 974848 | 1945600 |
-| `sqlite_jsonb` | 277592 | 25624 | 9329 | 116002 | 353003 | 2641920 | 2523136 | 2600960 |
-| `sqlite_blob_rows` | 178440 | 23801 | 10503 | 30377 | 357208 | 475136 | 438272 | 475136 |
+
+| engine             | load µs | subject µs | p/o µs | page µs | write µs |   bytes | compacted | bytes after writes |
+| ------------------ | ------: | ---------: | -----: | ------: | -------: | ------: | --------: | -----------------: |
+| `chunked_binary`   |    7982 |      17806 | 173268 |   12489 |  1085359 |  312475 |    312475 |             311511 |
+| `redb_tuple`       |  199808 |      20790 |   8298 |   27712 |   633849 | 1118208 |    974848 |            1945600 |
+| `sqlite_jsonb`     |  277592 |      25624 |   9329 |  116002 |   353003 | 2641920 |   2523136 |            2600960 |
+| `sqlite_blob_rows` |  178440 |      23801 |  10503 |   30377 |   357208 |  475136 |    438272 |             475136 |
+
 <!-- bakeoff-table:end -->
 
 Lowest value per column in this run (a reading of the table, not a ranking):
 
 <!-- bakeoff-leaders:begin -->
+
 - load µs: `chunked_binary`
 - subject µs: `chunked_binary`
 - p/o µs: `redb_tuple`
@@ -90,6 +93,7 @@ Lowest value per column in this run (a reading of the table, not a ranking):
 - bytes: `chunked_binary`
 - compacted: `chunked_binary`
 - bytes after writes: `chunked_binary`
+
 <!-- bakeoff-leaders:end -->
 
 ## What the numbers say

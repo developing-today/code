@@ -3,6 +3,7 @@
 Run separately from run_hermetic_tests.py (whose no-socket guard is unchanged).
 No live credentials, queue operations, subprocesses, or TCP connections.
 """
+
 import contextlib
 import http.server
 import importlib.util
@@ -20,7 +21,9 @@ from unittest.mock import patch, Mock
 import urllib.error
 
 sys.dont_write_bytecode = True
-_spec = importlib.util.spec_from_file_location("poll_transport", Path(__file__).with_name("poll.py"))
+_spec = importlib.util.spec_from_file_location(
+    "poll_transport", Path(__file__).with_name("poll.py")
+)
 poll = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(poll)
 
@@ -33,21 +36,27 @@ class TransportTests(unittest.TestCase):
         self.path = self.base / "broker.sock"
         self.token = self.base / "token"
         self.token.write_text("fixture-only-token\n")
-        self.env = patch.dict(os.environ, {
-            "HOME": self.tmp.name,
-            "REPO_QUEUE_BROKER_URL": "unix://" + str(self.path),
-            "REPO_QUEUE_TOKEN_FILE": str(self.token),
-        }, clear=True)
+        self.env = patch.dict(
+            os.environ,
+            {
+                "HOME": self.tmp.name,
+                "REPO_QUEUE_BROKER_URL": "unix://" + str(self.path),
+                "REPO_QUEUE_TOKEN_FILE": str(self.token),
+            },
+            clear=True,
+        )
         self.env.start()
         self.addCleanup(self.env.stop)
         poll._READ_ERRORS.clear()
         # Hard-bound every real connect to this test's disposable socket.
         real_connect = socket.socket.connect
         allowed = str(self.path)
+
         def fixture_connect(sock, address):
             if sock.family != socket.AF_UNIX or address != allowed:
                 raise AssertionError("test attempted a non-fixture connection")
             return real_connect(sock, address)
+
         connect_guard = patch.object(socket.socket, "connect", fixture_connect)
         connect_guard.start()
         self.addCleanup(connect_guard.stop)
@@ -55,11 +64,20 @@ class TransportTests(unittest.TestCase):
     @contextlib.contextmanager
     def broker(self, body=b'{"rows":[]}', status=200, chunked=False):
         seen = []
+
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_POST(self):
                 if self.path != "/list":
-                    raise AssertionError("fixture only serves the read-only /list route")
-                seen.append((self.path, dict(self.headers), self.rfile.read(int(self.headers["Content-Length"]))))
+                    raise AssertionError(
+                        "fixture only serves the read-only /list route"
+                    )
+                seen.append(
+                    (
+                        self.path,
+                        dict(self.headers),
+                        self.rfile.read(int(self.headers["Content-Length"])),
+                    )
+                )
                 self.send_response(status)
                 if chunked:
                     self.send_header("Transfer-Encoding", "chunked")
@@ -67,13 +85,19 @@ class TransportTests(unittest.TestCase):
                     self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 if chunked:
-                    self.wfile.write(("%x\r\n" % len(body)).encode() + body + b"\r\n0\r\n\r\n")
+                    self.wfile.write(
+                        ("%x\r\n" % len(body)).encode() + body + b"\r\n0\r\n\r\n"
+                    )
                 else:
                     self.wfile.write(body)
+
             def log_message(self, *args):
                 pass
+
         with socketserver.UnixStreamServer(str(self.path), Handler) as server:
-            thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .01}, daemon=True)
+            thread = threading.Thread(
+                target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+            )
             thread.start()
             try:
                 yield seen
@@ -98,10 +122,15 @@ class TransportTests(unittest.TestCase):
         # unrelated statuses cannot enter claimed discovery. Pure classifier
         # only: no claimant main, claims, ledger calls, or launches.
         raw = {
-            "id": 42, "queue": "fixture", "status": "claimed",
-            "worker_id": "fixture-worker", "lane_id": "fixture-lane",
-            "progress": {"lane": "opencode",
-                         "last_checkpoint": {"stage": "handed_off"}},
+            "id": 42,
+            "queue": "fixture",
+            "status": "claimed",
+            "worker_id": "fixture-worker",
+            "lane_id": "fixture-lane",
+            "progress": {
+                "lane": "opencode",
+                "last_checkpoint": {"stage": "handed_off"},
+            },
         }
         payload = {"ok": True, "rows": [raw, {"id": 43, "status": "done"}]}
         with self.broker(body=json.dumps(payload).encode()) as seen:
@@ -114,10 +143,15 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(poll.queue_read_errors("fixture"), {})
         self.assertEqual(len(seen), 1)
         self.assertEqual(seen[0][0], "/list")
-        self.assertEqual(json.loads(seen[0][2]), {
-            "queue": "fixture", "status": "claimed",
-            "rich": True, "limit": poll.LIST_LIMIT,
-        })
+        self.assertEqual(
+            json.loads(seen[0][2]),
+            {
+                "queue": "fixture",
+                "status": "claimed",
+                "rich": True,
+                "limit": poll.LIST_LIMIT,
+            },
+        )
 
     def test_chunked_http_response(self):
         with self.broker(chunked=True):
@@ -141,19 +175,37 @@ class TransportTests(unittest.TestCase):
                 self.path.unlink()
 
     def test_unreachable_socket_is_not_empty_success_or_tcp_fallback(self):
-        with patch.object(poll.urllib.request, "urlopen", side_effect=AssertionError("TCP fallback forbidden")), contextlib.redirect_stderr(io.StringIO()):
+        with (
+            patch.object(
+                poll.urllib.request,
+                "urlopen",
+                side_effect=AssertionError("TCP fallback forbidden"),
+            ),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
             self.assertEqual(poll.fetch_claimed_rows("fixture"), [])
             self.assertTrue(poll.queue_read_errors("fixture"))
 
     def test_config_file_resolution(self):
         config = self.base / "broker-url"
         config.write_text("unix://" + str(self.path) + "\n")
-        with patch.dict(os.environ, {"REPO_QUEUE_BROKER_URL": ""}), patch.object(poll, "BROKER_URL_FILE", config), self.broker():
+        with (
+            patch.dict(os.environ, {"REPO_QUEUE_BROKER_URL": ""}),
+            patch.object(poll, "BROKER_URL_FILE", config),
+            self.broker(),
+        ):
             self.assertEqual(poll._broker_post("/list", {}), {"rows": []})
 
     def test_tcp_urllib_request_and_timeout_unchanged(self):
         response = io.BytesIO(b'{"rows":[]}')
-        with patch.dict(os.environ, {"REPO_QUEUE_BROKER_URL": "http://fixture.invalid:9911/"}), patch.object(poll.urllib.request, "urlopen", return_value=response) as opened:
+        with (
+            patch.dict(
+                os.environ, {"REPO_QUEUE_BROKER_URL": "http://fixture.invalid:9911/"}
+            ),
+            patch.object(
+                poll.urllib.request, "urlopen", return_value=response
+            ) as opened,
+        ):
             self.assertEqual(poll._broker_post("/list", {"rich": True}), {"rows": []})
         req = opened.call_args.args[0]
         self.assertEqual(req.full_url, "http://fixture.invalid:9911/list")
@@ -174,7 +226,15 @@ class TransportTests(unittest.TestCase):
 
     def test_invalid_unix_paths_fail_before_connect(self):
         for url in ("unix://", "unix://relative/path"):
-            with self.subTest(url=url), patch.dict(os.environ, {"REPO_QUEUE_BROKER_URL": url}), patch.object(socket.socket, "connect", side_effect=AssertionError("invalid path connected")):
+            with (
+                self.subTest(url=url),
+                patch.dict(os.environ, {"REPO_QUEUE_BROKER_URL": url}),
+                patch.object(
+                    socket.socket,
+                    "connect",
+                    side_effect=AssertionError("invalid path connected"),
+                ),
+            ):
                 with self.assertRaises(ValueError):
                     poll._broker_post("/list", {})
 

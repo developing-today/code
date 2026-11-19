@@ -286,7 +286,13 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       join(homedir(), "workspace/goals/keep-the-four-repos-healthy/hidden_files/provider-quota-registry.md"),
     ),
     quotaCurrentFile: s(env.PM_AGG_QUOTA_CURRENT_FILE, join(process.cwd(), "quota-current.json")),
-    quotaHeartbeatFile: s(env.PM_AGG_QUOTA_HEARTBEAT_FILE, join(dirname(s(env.PM_AGG_QUOTA_CURRENT_FILE, join(process.cwd(), "quota-current.json"))), "quota-gatherer-heartbeat.json")),
+    quotaHeartbeatFile: s(
+      env.PM_AGG_QUOTA_HEARTBEAT_FILE,
+      join(
+        dirname(s(env.PM_AGG_QUOTA_CURRENT_FILE, join(process.cwd(), "quota-current.json"))),
+        "quota-gatherer-heartbeat.json",
+      ),
+    ),
     opencodeConfigFile: s(
       env.PM_AGG_OPENCODE_CONFIG_FILE,
       join(homedir(), "git", "code", ".opencode", "opencode.jsonc"),

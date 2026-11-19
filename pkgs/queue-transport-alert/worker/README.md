@@ -77,13 +77,13 @@ The app stages the flake package (`package.nix`), runs
 `wrangler deploy`, then `wrangler secret bulk` from stdin with these
 values read from Bitwarden by name (override with the env vars):
 
-| Worker secret | Bitwarden name (env override) |
-| --- | --- |
-| `ACCESS_CLIENT_ID` | `cloudflare.access.queue-broker-client-id` (`QTA_ACCESS_ID_SECRET`) |
-| `ACCESS_CLIENT_SECRET` | `cloudflare.access.queue-broker-client-secret` (`QTA_ACCESS_SECRET_SECRET`) |
-| `GITHUB_TOKEN` | `github.developing-today-code-automation` (`QTA_GITHUB_TOKEN_SECRET`) |
-| `TELEGRAM_BOT_TOKEN` | `openclaw.telegram-bot-token` (`QTA_TELEGRAM_SECRET`) |
-| `BROKER_AGENT_TOKEN` | the file `~/.config/queue-broker/token` (`QTA_BROKER_TOKEN_FILE`); left as is when the file is absent |
+| Worker secret          | Bitwarden name (env override)                                                                         |
+| ---------------------- | ----------------------------------------------------------------------------------------------------- |
+| `ACCESS_CLIENT_ID`     | `cloudflare.access.queue-broker-client-id` (`QTA_ACCESS_ID_SECRET`)                                   |
+| `ACCESS_CLIENT_SECRET` | `cloudflare.access.queue-broker-client-secret` (`QTA_ACCESS_SECRET_SECRET`)                           |
+| `GITHUB_TOKEN`         | `github.developing-today-code-automation` (`QTA_GITHUB_TOKEN_SECRET`)                                 |
+| `TELEGRAM_BOT_TOKEN`   | `openclaw.telegram-bot-token` (`QTA_TELEGRAM_SECRET`)                                                 |
+| `BROKER_AGENT_TOKEN`   | the file `~/.config/queue-broker/token` (`QTA_BROKER_TOKEN_FILE`); left as is when the file is absent |
 
 Wrangler itself uses `cloudflare.api-token-day-to-day`
 (`QTA_CF_TOKEN_SECRET`). It is also in the deploy registry as

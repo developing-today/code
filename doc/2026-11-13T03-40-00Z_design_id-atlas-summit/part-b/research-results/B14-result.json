@@ -2,35 +2,21 @@
   "assessments": [
     {
       "criterion_id": "data-model-history",
-      "evidence_refs": [
-        "b10-result",
-        "b11-result",
-        "b12-result",
-        "b13-result"
-      ],
+      "evidence_refs": ["b10-result", "b11-result", "b12-result", "b13-result"],
       "option_id": "adopt-one-now",
       "reason": "No candidate fits the whole data model and history: Diamond Types is plain-text only, Willow's store join prunes overwritten and prefix-deleted entries, OCapN has no persistent data model, and Automerge's B10 assessment leaves adoption-now unjustified without a workload.",
       "status": "unsupported"
     },
     {
       "criterion_id": "convergence",
-      "evidence_refs": [
-        "automerge-concepts",
-        "eg-walker-paper",
-        "willow-data-model"
-      ],
+      "evidence_refs": ["automerge-concepts", "eg-walker-paper", "willow-data-model"],
       "option_id": "adopt-one-now",
       "reason": "Three of four candidates do converge within their own model: Automerge documents can always be merged, Eg-walker merges concurrent text edits peer-to-peer, and Willow stores form a join semi-lattice. OCapN does not, so the choice would be limited to the first three.",
       "status": "supported"
     },
     {
       "criterion_id": "scale-performance",
-      "evidence_refs": [
-        "b10-result",
-        "b11-result",
-        "b12-result",
-        "b13-result"
-      ],
+      "evidence_refs": ["b10-result", "b11-result", "b12-result", "b13-result"],
       "experiment_ref": "representative-workload-comparison",
       "option_id": "adopt-one-now",
       "reason": "Every per-candidate result marks scale for this design's workloads as unmeasured; the only published figures are Eg-walker's on its own text-editing traces. Adopting any one now is an unmeasured commitment.",
@@ -38,78 +24,49 @@
     },
     {
       "criterion_id": "signed-history-compat",
-      "evidence_refs": [
-        "b10-result",
-        "b11-result",
-        "b12-result",
-        "b13-result"
-      ],
+      "evidence_refs": ["b10-result", "b11-result", "b12-result", "b13-result"],
       "option_id": "adopt-one-now",
       "reason": "None carries the design's signed history: Automerge actor IDs and Diamond Types agent IDs are not authenticated signers, Willow authenticates writes through its own tokens and hashes payloads with WILLIAM3 rather than ID's BLAKE3-256, and OCapN signs only per-session handoff certificates.",
       "status": "unsupported"
     },
     {
       "criterion_id": "cross-language-format-interop",
-      "evidence_refs": [
-        "b11-result",
-        "willow-confidential-sync",
-        "ocapn-captp"
-      ],
+      "evidence_refs": ["b11-result", "willow-confidential-sync", "ocapn-captp"],
       "option_id": "adopt-one-now",
       "reason": "Maturity is uneven: the Diamond Types crate API is in flux, Willow's Confidential Sync is a paused proposal its authors call outdated, and the OCapN CapTP document is a draft likely to undergo significant change. Only Automerge documents a stable binary format and per-document sync protocol.",
       "status": "unsupported"
     },
     {
       "criterion_id": "authority-boundary",
-      "evidence_refs": [
-        "b10-result",
-        "b12-result",
-        "b13-result",
-        "versioned-design-s145"
-      ],
+      "evidence_refs": ["b10-result", "b12-result", "b13-result", "versioned-design-s145"],
       "option_id": "adopt-one-now",
       "reason": "Each candidate either has no authority model (Automerge, Diamond Types) or brings its own that would replace the explicit grant layer (Willow's Meadowcap with key-derived identifiers, OCapN's reference-as-authority).",
       "status": "unsupported"
     },
     {
       "criterion_id": "evidence-revisit-gate",
-      "evidence_refs": [
-        "versioned-design-s145",
-        "b14-research-note"
-      ],
+      "evidence_refs": ["versioned-design-s145", "b14-research-note"],
       "option_id": "adopt-one-now",
       "reason": "The versioned design bars CRDT implementation before evaluation gives a measured reason plus an interop and signature adapter contract; adopting now would skip that gate.",
       "status": "unsupported"
     },
     {
       "criterion_id": "data-model-history",
-      "evidence_refs": [
-        "b10-result",
-        "b11-result",
-        "b12-result",
-        "b13-result"
-      ],
+      "evidence_refs": ["b10-result", "b11-result", "b12-result", "b13-result"],
       "option_id": "defer-all-behind-threshold",
       "reason": "Each conditional path is scoped to where its model fits (structured documents, text-only, scoped reconciliation, bounded relay authority), and ID's own records, history and conflict reports stay authoritative meanwhile.",
       "status": "supported"
     },
     {
       "criterion_id": "convergence",
-      "evidence_refs": [
-        "versioned-design-s145"
-      ],
+      "evidence_refs": ["versioned-design-s145"],
       "option_id": "defer-all-behind-threshold",
       "reason": "Convergence stays with ID's deterministic fold and conflict-report-first sync until a measured case selects a candidate for a narrower role.",
       "status": "supported"
     },
     {
       "criterion_id": "scale-performance",
-      "evidence_refs": [
-        "b10-result",
-        "b11-result",
-        "b12-result",
-        "b13-result"
-      ],
+      "evidence_refs": ["b10-result", "b11-result", "b12-result", "b13-result"],
       "experiment_ref": "representative-workload-comparison",
       "option_id": "defer-all-behind-threshold",
       "reason": "Still unmeasured, but by design: this option is defined by running the per-candidate experiments B10-B13 planned on one representative workload before any choice, so the criterion is answered at the revisit gate.",
@@ -117,102 +74,77 @@
     },
     {
       "criterion_id": "signed-history-compat",
-      "evidence_refs": [
-        "versioned-design-s145"
-      ],
+      "evidence_refs": ["versioned-design-s145"],
       "option_id": "defer-all-behind-threshold",
       "reason": "Any later adapter consumes signed operations and emits deterministic state with retained provenance without authenticating authorship itself, so signed history stays the independent layer.",
       "status": "supported"
     },
     {
       "criterion_id": "cross-language-format-interop",
-      "evidence_refs": [
-        "b14-research-note",
-        "versioned-design-s145"
-      ],
+      "evidence_refs": ["b14-research-note", "versioned-design-s145"],
       "option_id": "defer-all-behind-threshold",
       "reason": "A later choice must ship cross-implementation vectors, and maturity may change before then (Willow's new Confidential Sync spec, OCapN's drafts), so interop is judged at the revisit rather than now.",
       "status": "unknown"
     },
     {
       "criterion_id": "authority-boundary",
-      "evidence_refs": [
-        "versioned-design-s145"
-      ],
+      "evidence_refs": ["versioned-design-s145"],
       "option_id": "defer-all-behind-threshold",
       "reason": "Grants stay in the existing layer; every conditional adapter sits behind it and grants nothing by itself.",
       "status": "supported"
     },
     {
       "criterion_id": "evidence-revisit-gate",
-      "evidence_refs": [
-        "b14-research-note",
-        "versioned-design-s145"
-      ],
+      "evidence_refs": ["b14-research-note", "versioned-design-s145"],
       "option_id": "defer-all-behind-threshold",
       "reason": "The revisit threshold is explicit (conflict reports exist and representative fleet workloads show merge cost, latency or user-value evidence), the comparison is declared non-exhaustive, and newly found prior art gets a new evidence row rather than replacing the decision.",
       "status": "supported"
     },
     {
       "criterion_id": "data-model-history",
-      "evidence_refs": [
-        "versioned-design-s145"
-      ],
+      "evidence_refs": ["versioned-design-s145"],
       "option_id": "adopt-none",
       "reason": "The current records, retained history and pre-merge conflict report are unchanged.",
       "status": "supported"
     },
     {
       "criterion_id": "convergence",
-      "evidence_refs": [
-        "versioned-design-s145"
-      ],
+      "evidence_refs": ["versioned-design-s145"],
       "option_id": "adopt-none",
       "reason": "Convergence stays with the existing deterministic fold; nothing is added or removed.",
       "status": "supported"
     },
     {
       "criterion_id": "scale-performance",
-      "evidence_refs": [
-        "versioned-design-s145",
-        "b14-research-note"
-      ],
+      "evidence_refs": ["versioned-design-s145", "b14-research-note"],
       "option_id": "adopt-none",
       "reason": "No unmeasured protocol is adopted; the versioned design states a complete 'adopt none' outcome is valid.",
       "status": "supported"
     },
     {
       "criterion_id": "signed-history-compat",
-      "evidence_refs": [
-        "versioned-design-s145"
-      ],
+      "evidence_refs": ["versioned-design-s145"],
       "option_id": "adopt-none",
       "reason": "The signed-envelope layer is untouched.",
       "status": "supported"
     },
     {
       "criterion_id": "cross-language-format-interop",
-      "evidence_refs": [
-        "b14-research-note"
-      ],
+      "evidence_refs": ["b14-research-note"],
       "option_id": "adopt-none",
       "reason": "Adopting none gains no interoperability with any candidate's ecosystem; a bridge would be needed if that becomes a requirement.",
       "status": "unsupported"
     },
     {
       "criterion_id": "authority-boundary",
-      "evidence_refs": [
-        "versioned-design-s145"
-      ],
+      "evidence_refs": ["versioned-design-s145"],
       "option_id": "adopt-none",
       "reason": "The authority boundary is unchanged.",
       "status": "supported"
     },
     {
       "criterion_id": "evidence-revisit-gate",
-      "evidence_refs": [
-        "b14-research-note"
-      ],
+      "evidence_refs": ["b14-research-note"],
       "option_id": "adopt-none",
       "reason": "Adopt none is a complete, passing result on its own, but taken as final it would drop the revisit rule; whether it stays final depends on whether scale evidence ever earns reconsideration.",
       "status": "unknown"

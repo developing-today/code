@@ -3609,9 +3609,7 @@
       "durability": "whole-file rewrite with no fsync",
       "engine": "in-test chunked binary file",
       "engine_version": "idcb/1",
-      "indexes": [
-        "chunk directory over sorted canonical triple bytes (subject prefix)"
-      ],
+      "indexes": ["chunk directory over sorted canonical triple bytes (subject prefix)"],
       "name": "chunked_binary",
       "query_plans": {
         "predicate_object": "full scan of every chunk (no secondary index)",
@@ -3623,10 +3621,7 @@
       "durability": "Durability::Immediate (default) on every commit",
       "engine": "redb",
       "engine_version": "4.6.0",
-      "indexes": [
-        "spo tuple-key table",
-        "pos tuple-key table"
-      ],
+      "indexes": ["spo tuple-key table", "pos tuple-key table"],
       "name": "redb_tuple",
       "query_plans": {
         "predicate_object": "range scan of pos from tuple prefix bytes(predicate).bytes(object)",
@@ -3638,10 +3633,7 @@
       "durability": "journal_mode DELETE, synchronous FULL (defaults) on every commit",
       "engine": "SQLite (rusqlite 0.42, bundled)",
       "engine_version": "3.54.1",
-      "indexes": [
-        "triples_spo unique expression index (sk, pk, ok)",
-        "triples_po expression index (pk, ok)"
-      ],
+      "indexes": ["triples_spo unique expression index (sk, pk, ok)", "triples_po expression index (pk, ok)"],
       "name": "sqlite_jsonb",
       "query_plans": {
         "predicate_object": "SEARCH triples USING INDEX triples_po (<expr>=? AND <expr>=?)",
@@ -3653,11 +3645,7 @@
       "durability": "journal_mode DELETE, synchronous FULL (defaults) on every commit; deleted triples leave their interned terms",
       "engine": "SQLite (rusqlite 0.42, bundled)",
       "engine_version": "3.54.1",
-      "indexes": [
-        "terms.bytes unique",
-        "triples primary key (s, p, o)",
-        "triples_pos (p, o, s)"
-      ],
+      "indexes": ["terms.bytes unique", "triples primary key (s, p, o)", "triples_pos (p, o, s)"],
       "name": "sqlite_blob_rows",
       "query_plans": {
         "predicate_object": "SEARCH tp USING COVERING INDEX sqlite_autoindex_terms_1 (bytes=?); SEARCH tobj USING COVERING INDEX sqlite_autoindex_terms_1 (bytes=?); SEARCH t USING COVERING INDEX triples_pos (p=? AND o=?); SEARCH ts USING INTEGER PRIMARY KEY (rowid=?)",
@@ -3697,13 +3685,5 @@
   "runs": 3,
   "schema": "id-graph-encoding-bakeoff/v1",
   "slice": "A-GRAPH-9125-03",
-  "workloads": [
-    "load",
-    "storage",
-    "round_trip",
-    "query_subject",
-    "query_predicate_object",
-    "page_stream",
-    "write"
-  ]
+  "workloads": ["load", "storage", "round_trip", "query_subject", "query_predicate_object", "page_stream", "write"]
 }

@@ -1,4 +1,8 @@
-{ lib, stdenvNoCC, nodejs }:
+{
+  lib,
+  stdenvNoCC,
+  nodejs,
+}:
 
 # The queue-transport-alert Worker tree as a flake package (code#6369).
 # Plain ESM with no npm dependencies, so the package is the source tree

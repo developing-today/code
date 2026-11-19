@@ -482,7 +482,6 @@ Slice 3+: Additional features and optimizations (future work)
 - Migration: 0021 - bind_repo_task_lane_session
 - Migration: 0022 - Atomic recovery operations
 
-
 ### Broker Unix transport (#11980)
 
 The read-only poll uses the same configured broker and token resolution for

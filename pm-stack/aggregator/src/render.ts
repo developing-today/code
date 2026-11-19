@@ -3711,26 +3711,20 @@ function todayHealthStrip(health: HealthView | null, quota: QuotaView, quotaUnav
   // A standalone tick is not a replacement quota measurement. Preserve base
   // pool failures and include heartbeat failures, deduplicating known services.
   const quotaErrors = heartbeatOnly
-    ? new Set([...poolErrors.map(pool => pool.id), ...providerErrors.map(provider => provider.serviceId)]).size
-    : quota.gatherer ? providerErrors.length : poolErrors.length;
-  const quotaUnknown = quotaUnavailable ||
-    ((!quota.gatherer || heartbeatOnly) && quota.pools.length === 0 && quotaErrors === 0);
-  const quotaState =
-    quotaUnknown
-      ? "unknown"
-      : quotaErrors
-        ? "warn"
-        : quota.gatherer?.ok === false
-          ? "unknown"
-          : "ok";
-  const quotaText =
-    quotaUnknown
-      ? "quota unknown"
-      : quotaErrors
-        ? `quota errors ${quotaErrors}`
-        : quota.gatherer?.ok === false
-          ? "quota reads unknown"
-          : "quota reads OK";
+    ? new Set([...poolErrors.map((pool) => pool.id), ...providerErrors.map((provider) => provider.serviceId)]).size
+    : quota.gatherer
+      ? providerErrors.length
+      : poolErrors.length;
+  const quotaUnknown =
+    quotaUnavailable || ((!quota.gatherer || heartbeatOnly) && quota.pools.length === 0 && quotaErrors === 0);
+  const quotaState = quotaUnknown ? "unknown" : quotaErrors ? "warn" : quota.gatherer?.ok === false ? "unknown" : "ok";
+  const quotaText = quotaUnknown
+    ? "quota unknown"
+    : quotaErrors
+      ? `quota errors ${quotaErrors}`
+      : quota.gatherer?.ok === false
+        ? "quota reads unknown"
+        : "quota reads OK";
 
   const items = [
     { text: stackText, state: stackState, href: "/health", title: "Stack service health" },

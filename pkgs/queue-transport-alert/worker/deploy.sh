@@ -6,8 +6,12 @@ set -euo pipefail
 # triggers a credential prompt or a decrypt.
 for arg in "$@"; do
   case "$arg" in
-    --dry-run) ;;
-    *) echo "unrecognized argument: $arg" >&2; echo "usage: deploy.sh [--dry-run]" >&2; exit 2 ;;
+  --dry-run) ;;
+  *)
+    echo "unrecognized argument: $arg" >&2
+    echo "usage: deploy.sh [--dry-run]" >&2
+    exit 2
+    ;;
   esac
 done
 cd "$(dirname "${BASH_SOURCE[0]}")"

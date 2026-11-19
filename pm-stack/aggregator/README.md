@@ -1145,7 +1145,6 @@ or invalid snapshots are unavailable; personal-repository token coverage
 remains a stated caveat. These views are read-only and do not redefine
 Parked or Abandoned statuses.
 
-
 ### Independent quota gatherer heartbeat (#1175)
 
 `PM_AGG_QUOTA_HEARTBEAT_FILE` selects the standalone tick record. Its default

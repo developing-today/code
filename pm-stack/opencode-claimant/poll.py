@@ -654,7 +654,7 @@ def _broker_post(path, body):
     if url.startswith("unix://"):
         # Same HTTP API/auth as TCP, but the URL suffix is a literal socket
         # path, not an HTTP base URL. Never append /list to that filename.
-        conn = _UnixHTTPConnection(url[len("unix://"):], timeout=30)
+        conn = _UnixHTTPConnection(url[len("unix://") :], timeout=30)
         try:
             conn.request("POST", path, body=payload, headers=headers)
             with conn.getresponse() as res:
@@ -672,7 +672,10 @@ def _broker_post(path, body):
             conn.close()
     else:
         req = urllib.request.Request(
-            url.rstrip("/") + path, data=payload, headers=headers, method="POST",
+            url.rstrip("/") + path,
+            data=payload,
+            headers=headers,
+            method="POST",
         )
         with urllib.request.urlopen(req, timeout=30) as res:
             data = json.loads(res.read() or "null")
