@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 set -Eexuo pipefail
+# Log this run (see lib/rebuild-log.sh): re-runs this script with its output
+# teed into the user's rebuild log.
+# shellcheck source=rebuild-log.sh
+source "$(dirname "${BASH_SOURCE[0]}")/rebuild-log.sh"
+rebuild_log_wrap "$@"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${script_dir}" || exit 1

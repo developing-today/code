@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 set -Eexuo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo_pipefail
+# Log this run (see lib/rebuild-log.sh): re-runs this script with its output
+# teed into the user's rebuild log; nom's display stays on the terminal only.
+# shellcheck source=rebuild-log.sh
+source "$(dirname "${BASH_SOURCE[0]}")/rebuild-log.sh"
+rebuild_log_wrap "$@"
 
 #ulimit -n $(ulimit -Hn)
 #sudo prlimit --pid $$ --nofile=1000000:1000000
@@ -31,7 +36,7 @@ for dir in "${script_dir}"/pkgs/*; do
     # or: nix flake lock --update-input
     if [[ -f "./flake.nix" ]]; then
       echo "is a flake: ${dir}"
-      nix flake update --refresh --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace |& nom --json
+      nix flake update --refresh --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace |& rebuild_log_nom --json
       echo "git add flake.lock"
       git add flake.lock
       #else
@@ -59,7 +64,7 @@ set -Eeuxo pipefail # https://vaneyckt.io/posts/safer_bash_scripts_with_set_euxo
 if [[ -f "./flake.nix" ]]; then
   echo "is a flake: ${dir}"
   echo "updating flake..."
-  nix flake update --refresh --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace |& nom --json
+  nix flake update --refresh --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace |& rebuild_log_nom --json
   echo "git add flake.lock"
   git add flake.lock
   if systemctl is-active --quiet tailscaled; then # this is a hack: https://github.com/NixOS/nixpkgs/issues/180175#issuecomment-2134547782
@@ -76,7 +81,7 @@ if [[ -f "./flake.nix" ]]; then
   # --use-substitutes
   # --no-net
   # -vvvv
-  nixos-rebuild --use-remote-sudo --accept-flake-config --json switch --json --upgrade --json --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace --flake '.' |& nom --json
+  nixos-rebuild --use-remote-sudo --accept-flake-config --json switch --json --upgrade --json --print-build-logs --verbose --keep-going --log-format internal-json --fallback --show-trace --flake '.' |& rebuild_log_nom --json
 
   set +e
   current=$(nixos-rebuild list-generations | grep current)
