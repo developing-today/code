@@ -217,3 +217,13 @@ test("deploy.mjs rejects undeclared arguments before touching credentials", asyn
     assert.match(r.stderr, /usage: deploy\.mjs/);
   }
 });
+
+test("deploy.mjs --code-only needs the Cloudflare env and nothing from Bitwarden", async () => {
+  const { spawnSync } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  const script = fileURLToPath(new URL("../deploy.mjs", import.meta.url));
+  const r = spawnSync(process.execPath, [script, "--code-only"], { encoding: "utf8", env: { PATH: "/nonexistent" } });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /CLOUDFLARE_API_TOKEN is not set/);
+  assert.doesNotMatch(r.stderr, /bws/);
+});
