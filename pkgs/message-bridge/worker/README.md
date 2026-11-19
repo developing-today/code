@@ -110,7 +110,8 @@ read, and fails if another deployment went live between its checks and
 its promotion (then that deployment goes back live). If promoting or any
 check after
 it fails (a token mismatch, or the new version never answering), the
-previous version goes back live at once and the deploy fails, so the
+previous version goes back live at once (unless someone deployed after
+this run, which it then leaves alone) and the deploy fails, so the
 token can't change silently whatever the versions list showed. A full deploy from a
 checkout clears the condition. A manual
 run with a `rollback_version` deploys that existing version instead.

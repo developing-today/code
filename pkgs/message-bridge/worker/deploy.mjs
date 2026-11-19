@@ -275,6 +275,7 @@ if (exists) {
     previousId,
     promote: () => createDeployment(stage, version.id),
     verify: () => verifyLive(version.id, { expectFingerprint, requireVersion: true, replaced: previousId }),
+    stillNewest: async () => (await liveVersions()).some((v) => v.version_id === version.id),
     rollback: (id) => {
       console.error(`verification failed; putting version ${id} back live`);
       createDeployment(stage, id, { bypassChecks: true });

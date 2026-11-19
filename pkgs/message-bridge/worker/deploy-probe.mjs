@@ -96,13 +96,17 @@ export function codeOnlyFingerprint(health) {
 
 /**
  * Promotes a version and verifies it; if either step fails, puts the
- * previously live version back (when there is one) before rethrowing,
- * so a failed or unverifiable promotion never stays live.
+ * previously live version back before rethrowing, so a failed or
+ * unverifiable promotion never stays live. It only goes back while this
+ * run's deployment is still the newest one, so it never overwrites a
+ * deployment someone made after it (the Cloudflare API has no
+ * conditional deploy, so a deployment landing in the instant between that
+ * check and the rollback is the one case left to the operator).
  *
  * @param {{newId: string, previousId: string | null, promote: () => unknown,
  *   verify: () => Promise<unknown>, rollback: (id: string) => unknown}} steps
  */
-export async function promoteOrRollBack({ newId, previousId, promote, verify, rollback }) {
+export async function promoteOrRollBack({ newId, previousId, promote, verify, rollback, stillNewest = async () => true }) {
   if (!previousId) throw new Error("could not tell which version is live, so there would be nothing to roll back to; refusing to promote");
   try {
     await promote();
@@ -111,7 +115,17 @@ export async function promoteOrRollBack({ newId, previousId, promote, verify, ro
     // A verify step can name a different version to go back to (another
     // deployment that went live just before this one).
     const target = err.rollbackTo ?? previousId;
-    if (target !== newId) {
+    let ours = false;
+    try {
+      ours = await stillNewest();
+    } catch {
+      ours = false;
+    }
+    if (!ours) {
+      // Someone else deployed after this run (or that can't be read): going
+      // back now would overwrite their deployment, so leave it alone.
+      err.message += `; not rolling back, because version ${newId} is no longer the newest deployment (or that couldn't be checked), so check the dashboard`;
+    } else if (target !== newId) {
       try {
         await rollback(target);
         err.message += `; version ${target} was put back live`;

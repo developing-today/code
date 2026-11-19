@@ -362,6 +362,33 @@ test("a promotion that replaced a different version than the one checked goes ba
   assert.match(err.message, /version rotated was put back live/);
 });
 
+test("a failed verification never rolls back over a deployment made after it", async () => {
+  const { promoteOrRollBack } = await import("../deploy-probe.mjs");
+  const log = [];
+  const steps = (stillNewest) => ({
+    newId: "v2",
+    previousId: "v1",
+    promote: () => log.push("promote v2"),
+    verify: async () => {
+      log.push("v3 deployed by someone else");
+      throw new Error("verify timed out");
+    },
+    rollback: (id) => log.push(`rollback ${id}`),
+    stillNewest,
+  });
+  const err = await promoteOrRollBack(steps(async () => false)).catch((e) => e);
+  assert.deepEqual(log, ["promote v2", "v3 deployed by someone else"]);
+  assert.match(err.message, /not rolling back/);
+  log.length = 0;
+  const unreadable = await promoteOrRollBack(
+    steps(async () => {
+      throw new Error("api down");
+    }),
+  ).catch((e) => e);
+  assert.ok(!log.some((l) => l.startsWith("rollback")));
+  assert.match(unreadable.message, /not rolling back/);
+});
+
 test("deploy.mjs rejects undeclared arguments before touching credentials", async () => {
   const { spawnSync } = await import("node:child_process");
   const { fileURLToPath } = await import("node:url");
