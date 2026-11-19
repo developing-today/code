@@ -39,6 +39,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/developing-today/code/pkgs/mcpx/internal/defaults"
 )
 
 type frame struct {
@@ -70,6 +72,10 @@ func main() {
 		supported = strings.Split(s, ",")
 	}
 	in := bufio.NewScanner(os.Stdin)
+	// The frame ceiling the real transport uses, from the same place: a fake
+	// that accepts less than mcpx sends fails tests for a reason that has
+	// nothing to do with what they test (bufio's default is 64 KiB).
+	in.Buffer(nil, int(defaults.StdioMaxLine))
 	first := true
 	for in.Scan() {
 		var f frame
