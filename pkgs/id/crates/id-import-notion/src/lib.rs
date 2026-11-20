@@ -15,6 +15,11 @@ pub const NOTION_API_VERSION: &str = "2025-09-03";
 /// workflow owns rate limiting/retries; each method returns one raw API page.
 pub trait NotionApi {
     fn search(&mut self, start_cursor: Option<&str>) -> Result<serde_json::Value>;
+    fn block_children(
+        &mut self,
+        block_id: &str,
+        start_cursor: Option<&str>,
+    ) -> Result<serde_json::Value>;
     fn data_sources(
         &mut self,
         database_id: &str,
@@ -30,7 +35,49 @@ pub trait NotionApi {
 /// preflight. An API failure or pagination cycle returns an error, never a
 /// partial inventory.
 pub fn crawl_inventory(api: &mut impl NotionApi) -> Result<Inventory> {
-    let search_pages = crawl_pages(|cursor| api.search(cursor))?;
+    let mut search_pages = crawl_pages(|cursor| api.search(cursor))?;
+    let mut pending: Vec<String> = search_pages
+        .iter()
+        .flat_map(|page| page["results"].as_array().into_iter().flatten())
+        .filter(|value| {
+            matches!(object_kind(value).as_deref(), Ok("page" | "database"))
+                && value.get("has_children").and_then(|v| v.as_bool()) == Some(true)
+        })
+        .filter_map(|value| value.get("id").and_then(|v| v.as_str()).map(str::to_owned))
+        .collect();
+    let mut seen_parents = std::collections::BTreeSet::new();
+    let mut seen_objects: std::collections::BTreeSet<String> = search_pages
+        .iter()
+        .flat_map(|page| page["results"].as_array().into_iter().flatten())
+        .filter_map(|value| value.get("id").and_then(|v| v.as_str()).map(str::to_owned))
+        .collect();
+    let mut block_objects = Vec::new();
+    while let Some(parent_id) = pending.pop() {
+        if !seen_parents.insert(parent_id.clone()) {
+            continue;
+        }
+        let pages = crawl_pages(|cursor| api.block_children(&parent_id, cursor))?;
+        for page in pages {
+            for value in page["results"].as_array().into_iter().flatten() {
+                let id = required_string(value, "id")?;
+                if seen_objects.insert(id.clone()) {
+                    block_objects.push(value.clone());
+                }
+                if object_kind(value).is_ok_and(|kind| kind == "block")
+                    && value.get("has_children").and_then(|v| v.as_bool()) == Some(true)
+                {
+                    pending.push(id);
+                }
+            }
+        }
+    }
+    if !block_objects.is_empty() {
+        search_pages.push(serde_json::json!({
+            "object": "list",
+            "results": block_objects,
+            "has_more": false
+        }));
+    }
     let database_ids: Vec<String> = search_pages
         .iter()
         .flat_map(|page| page["results"].as_array().into_iter().flatten())
@@ -419,10 +466,31 @@ mod tests {
                     json!({"results":[{"object":"database","id":"db-paged","parent":{"type":"workspace"}}],"has_more":true,"next_cursor":"next"})
                 }
                 Some("next") => page(vec![
-                    json!({"object":"page","id":"page-paged","parent":{"type":"workspace"}}),
+                    json!({"object":"page","id":"page-paged","has_children":true,"parent":{"type":"workspace"}}),
                 ]),
                 _ => bail!("unexpected cursor"),
             })
+        }
+        fn block_children(
+            &mut self,
+            block_id: &str,
+            _cursor: Option<&str>,
+        ) -> Result<serde_json::Value> {
+            match block_id {
+                "page-paged" => Ok(page(vec![json!({
+                    "object":"block",
+                    "id":"block-parent",
+                    "has_children":true,
+                    "parent":{"type":"page_id","page_id":"page-paged"}
+                })])),
+                "block-parent" => Ok(page(vec![json!({
+                    "object":"block",
+                    "id":"block-child",
+                    "has_children":false,
+                    "parent":{"type":"block_id","block_id":"block-parent"}
+                })])),
+                _ => bail!("unexpected block parent {block_id}"),
+            }
         }
         fn data_sources(
             &mut self,
@@ -449,9 +517,11 @@ mod tests {
         let mut api = FixtureApi { search_calls: 0 };
         let inventory = crawl_inventory(&mut api).unwrap();
         assert_eq!(api.search_calls, 2);
-        assert_eq!(inventory.objects.len(), 2);
+        assert_eq!(inventory.objects.len(), 4);
         assert_eq!(inventory.data_sources["db-paged"][0].id, "ds-paged");
         assert_eq!(inventory.comments_available["page-paged"], true);
+        assert_eq!(inventory.objects["block-parent"].parent_id.as_deref(), Some("page-paged"));
+        assert_eq!(inventory.objects["block-child"].parent_id.as_deref(), Some("block-parent"));
     }
 
     #[test]
