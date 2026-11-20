@@ -1,11 +1,16 @@
 package e2e_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/creack/pty"
 )
 
 // These are the settings that were declared and never read. Each test here
@@ -99,6 +104,108 @@ func TestOutputJSONIsReachableFromTheEnvironment(t *testing.T) {
 	var any []map[string]any
 	if err := json.Unmarshal([]byte(out), &any); err != nil {
 		t.Fatalf("MCPX_OUTPUT_JSON should produce a document: %v\n%s", err, out)
+	}
+}
+
+func TestOutputColorIsReachableFromTheEnvironment(t *testing.T) {
+	e := newEnv(t, oneServer)
+	// The app's deferred cleanup owns an inline daemon; a detached autostart
+	// daemon would outlive this test process.
+	e.envVars = append(e.envVars, "MCPX_DAEMON_INLINE=always")
+
+	// Give the TUI contradictory ambient hints. Its configured mode must win:
+	// always removes NO_COLOR, while never removes CLICOLOR_FORCE. A PTY makes
+	// the ordinary interactive surface available to the child process.
+	colorOutput := func(mode string) []byte {
+		t.Helper()
+		cmd := exec.Command(e.mcpx, "tui")
+		cmd.Dir = e.dir
+		cmd.Env = append(append([]string{}, e.envVars...),
+			"TERM=xterm-256color",
+			"MCPX_OUTPUT_COLOR="+mode,
+			"NO_COLOR=1",
+			"CLICOLOR_FORCE=1",
+		)
+		master, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
+		if err != nil {
+			t.Fatalf("start mcpx tui in a PTY: %v", err)
+		}
+		defer master.Close()
+
+		// Wait for the fixture namespace in a rendered frame before sending q.
+		// Sending input during startup can quit before the configured color mode
+		// reaches the ready TUI.
+		frameReady := make(chan struct{})
+		stopInput := make(chan struct{})
+		defer close(stopInput)
+		go func() {
+			select {
+			case <-stopInput:
+				return
+			case <-frameReady:
+				_, _ = master.Write([]byte("q\r"))
+			}
+		}()
+
+		output := make(chan []byte, 1)
+		go func() {
+			var captured []byte
+			buf := make([]byte, 256)
+			answeredCursor := false
+			for {
+				n, readErr := master.Read(buf)
+				if n > 0 {
+					captured = append(captured, buf[:n]...)
+					if bytes.Contains(captured, []byte("demo")) {
+						select {
+						case <-frameReady:
+						default:
+							close(frameReady)
+						}
+					}
+					if !answeredCursor && bytes.Contains(captured, []byte("\x1b[6n")) {
+						// Bubble Tea asks the terminal for its cursor position while
+						// initializing. A PTY has no terminal emulator to answer.
+						_, _ = master.Write([]byte("\x1b[1;1R"))
+						answeredCursor = true
+					}
+				}
+				if readErr != nil {
+					break
+				}
+			}
+			output <- captured
+		}()
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		select {
+		case err := <-done:
+			if err != nil {
+				captured := <-output
+				t.Fatalf("mcpx tui (output.color=%s): %v\n%s", mode, err, captured)
+			}
+		case <-time.After(10 * time.Second):
+			_ = cmd.Process.Kill()
+			<-done
+			captured := <-output
+			t.Fatalf("mcpx tui (output.color=%s) did not exit after q:\n%s", mode, captured)
+		}
+		select {
+		case captured := <-output:
+			return captured
+		case <-time.After(time.Second):
+			t.Fatal("timed out collecting mcpx tui output")
+			return nil
+		}
+	}
+
+	forced := colorOutput("always")
+	if !strings.Contains(string(forced), "\x1b[38;") && !strings.Contains(string(forced), "\x1b[1;") {
+		t.Fatalf("MCPX_OUTPUT_COLOR=always should render ANSI foreground colors in a PTY:\n%s", forced)
+	}
+	plain := colorOutput("never")
+	if strings.Contains(string(plain), "\x1b[38;") || strings.Contains(string(plain), "\x1b[1;") {
+		t.Fatalf("MCPX_OUTPUT_COLOR=never should suppress ANSI foreground colors in a PTY:\n%s", plain)
 	}
 }
 
