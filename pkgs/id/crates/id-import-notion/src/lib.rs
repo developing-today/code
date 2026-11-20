@@ -33,6 +33,12 @@ pub trait NotionApi {
     fn database(&mut self, database_id: &str) -> Result<serde_json::Value>;
     /// Retrieve one source and its full schema.
     fn data_source(&mut self, data_source_id: &str) -> Result<serde_json::Value>;
+    /// Query one page of row pages for a data source.
+    fn query_data_source(
+        &mut self,
+        data_source_id: &str,
+        start_cursor: Option<&str>,
+    ) -> Result<serde_json::Value>;
     /// Return whether the comments endpoint can be queried for this page.
     fn comments_available(&mut self, page_id: &str) -> Result<bool>;
     /// Return the top-level IDs visible to this integration.
@@ -54,12 +60,7 @@ pub fn crawl_inventory(api: &mut impl NotionApi) -> Result<Inventory> {
         );
     }
     let mut search_pages = crawl_pages(|cursor| api.search(cursor))?;
-    let mut pending: Vec<String> = search_pages
-        .iter()
-        .flat_map(|page| page["results"].as_array().into_iter().flatten())
-        .filter(|value| object_kind(value).is_ok_and(|kind| kind == "page"))
-        .filter_map(|value| value.get("id").and_then(|v| v.as_str()).map(str::to_owned))
-        .collect();
+    let mut pending: Vec<String> = page_ids(&search_pages)?;
     let mut seen_parents = std::collections::BTreeSet::new();
     let mut seen_objects: std::collections::BTreeSet<String> = search_pages
         .iter()
@@ -68,40 +69,14 @@ pub fn crawl_inventory(api: &mut impl NotionApi) -> Result<Inventory> {
         .collect();
     let mut block_objects = Vec::new();
     let mut inline_database_ids = std::collections::BTreeSet::new();
-    while let Some(parent_id) = pending.pop() {
-        if !seen_parents.insert(parent_id.clone()) {
-            continue;
-        }
-        let pages = crawl_pages(|cursor| api.block_children(&parent_id, cursor))?;
-        for page in pages {
-            for value in page["results"].as_array().into_iter().flatten() {
-                let id = required_string(value, "id")?;
-                if is_child_database_block(value) {
-                    inline_database_ids.insert(id.clone());
-                }
-                if seen_objects.insert(id.clone()) {
-                    // A child-database block's ID is the database ID itself;
-                    // retain the database object fetched below, not a second
-                    // inventory object with the same identity.
-                    if !is_child_database_block(value) {
-                        block_objects.push(value.clone());
-                    }
-                }
-                if object_kind(value).is_ok_and(|kind| matches!(kind.as_str(), "block" | "page"))
-                    && value.get("has_children").and_then(|v| v.as_bool()) == Some(true)
-                {
-                    pending.push(id);
-                }
-            }
-        }
-    }
-    if !block_objects.is_empty() {
-        search_pages.push(serde_json::json!({
-            "object": "list",
-            "results": block_objects,
-            "has_more": false
-        }));
-    }
+    crawl_pending_blocks(
+        api,
+        &mut pending,
+        &mut seen_parents,
+        &mut seen_objects,
+        &mut block_objects,
+        &mut inline_database_ids,
+    )?;
     let mut database_ids = std::collections::BTreeSet::new();
     for value in search_pages
         .iter()
@@ -120,9 +95,18 @@ pub fn crawl_inventory(api: &mut impl NotionApi) -> Result<Inventory> {
             _ => {}
         }
     }
-    database_ids.extend(inline_database_ids);
     let mut data_sources = BTreeMap::new();
-    for database_id in database_ids {
+    let mut enumerated_databases = std::collections::BTreeSet::new();
+    loop {
+        database_ids.extend(inline_database_ids.iter().cloned());
+        let next_database = database_ids
+            .iter()
+            .find(|id| !enumerated_databases.contains(*id))
+            .cloned();
+        let Some(database_id) = next_database else {
+            break;
+        };
+        enumerated_databases.insert(database_id.clone());
         let database = api.database(&database_id)?;
         if required_string(&database, "id")? != database_id || object_kind(&database)? != "database"
         {
@@ -146,6 +130,29 @@ pub fn crawl_inventory(api: &mut impl NotionApi) -> Result<Inventory> {
                 || object_kind(&source)? != "data_source"
             {
                 bail!("Notion returned the wrong data source for {source_id}");
+            }
+            let row_pages = crawl_pages(|cursor| api.query_data_source(&source_id, cursor))?;
+            for mut row_page in row_pages {
+                let results = row_page
+                    .get_mut("results")
+                    .and_then(serde_json::Value::as_array_mut)
+                    .context("Notion data-source query response is missing results array")?;
+                let mut unique_results = Vec::with_capacity(results.len());
+                for row in results.drain(..) {
+                    if object_kind(&row)? != "page" {
+                        bail!("Notion data-source query returned a non-page for {source_id}");
+                    }
+                    let row_id = required_string(&row, "id")?;
+                    if seen_objects.insert(row_id.clone()) {
+                        pending.push(row_id);
+                        unique_results.push(row);
+                    }
+                }
+                *row_page
+                    .get_mut("results")
+                    .context("Notion data-source query response is missing results")? =
+                    serde_json::Value::Array(unique_results);
+                search_pages.push(row_page);
             }
             source_objects.push(source);
         }
@@ -175,6 +182,24 @@ pub fn crawl_inventory(api: &mut impl NotionApi) -> Result<Inventory> {
             search_pages
                 .push(serde_json::json!({"object":"list","results":[database],"has_more":false}));
         }
+        // Rows can contain blocks and inline databases too. Search pages were
+        // crawled above; query results enter the same fail-closed block walk.
+        crawl_pending_blocks(
+            api,
+            &mut pending,
+            &mut seen_parents,
+            &mut seen_objects,
+            &mut block_objects,
+            &mut inline_database_ids,
+        )?;
+        database_ids.extend(inline_database_ids.iter().cloned());
+    }
+    if !block_objects.is_empty() {
+        search_pages.push(serde_json::json!({
+            "object": "list",
+            "results": block_objects,
+            "has_more": false
+        }));
     }
     let mut availability = BTreeMap::new();
     for page_id in search_pages
@@ -192,6 +217,55 @@ pub fn crawl_inventory(api: &mut impl NotionApi) -> Result<Inventory> {
         availability,
         api.workspace_edition(),
     )
+}
+
+fn page_ids(pages: &[serde_json::Value]) -> Result<Vec<String>> {
+    pages
+        .iter()
+        .flat_map(|page| page["results"].as_array().into_iter().flatten())
+        .filter_map(|value| match object_kind(value) {
+            Ok(kind) if kind == "page" => Some(required_string(value, "id")),
+            _ => None,
+        })
+        .collect()
+}
+
+fn crawl_pending_blocks(
+    api: &mut impl NotionApi,
+    pending: &mut Vec<String>,
+    seen_parents: &mut std::collections::BTreeSet<String>,
+    seen_objects: &mut std::collections::BTreeSet<String>,
+    block_objects: &mut Vec<serde_json::Value>,
+    inline_database_ids: &mut std::collections::BTreeSet<String>,
+) -> Result<()> {
+    while let Some(parent_id) = pending.pop() {
+        if !seen_parents.insert(parent_id.clone()) {
+            continue;
+        }
+        let pages = crawl_pages(|cursor| api.block_children(&parent_id, cursor))?;
+        for page in pages {
+            for value in page["results"].as_array().into_iter().flatten() {
+                let id = required_string(value, "id")?;
+                if is_child_database_block(value) {
+                    inline_database_ids.insert(id.clone());
+                }
+                if seen_objects.insert(id.clone()) {
+                    // A child-database block's ID is the database ID itself;
+                    // retain the database object fetched below, not a second
+                    // inventory object with the same identity.
+                    if !is_child_database_block(value) {
+                        block_objects.push(value.clone());
+                    }
+                }
+                if object_kind(value).is_ok_and(|kind| matches!(kind.as_str(), "block" | "page"))
+                    && value.get("has_children").and_then(|v| v.as_bool()) == Some(true)
+                {
+                    pending.push(id);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn crawl_pages(
@@ -582,9 +656,7 @@ impl Manifest {
     /// field exists in the schema; callers should not put credentials in IDs,
     /// paths or reason strings.
     pub fn save_atomic(&self, path: &Path) -> Result<()> {
-        let parent = path
-            .parent()
-            .context("manifest path has no parent directory")?;
+        let parent = manifest_parent(path);
         fs::create_dir_all(parent)?;
         let mut temp =
             tempfile::NamedTempFile::new_in(parent).context("create unique manifest temp file")?;
@@ -618,6 +690,12 @@ impl Manifest {
         // `verify_resume_identity` and `validate_inventory_reconciles`.
         Ok(manifest)
     }
+}
+
+fn manifest_parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
 }
 
 fn ensure_complete_page(page: &serde_json::Value) -> Result<()> {
@@ -714,6 +792,11 @@ mod tests {
         json!({"object":"list", "results":results, "has_more":false})
     }
 
+    #[test]
+    fn bare_manifest_filename_uses_current_directory() {
+        assert_eq!(manifest_parent(Path::new("manifest.json")), Path::new("."));
+    }
+
     struct FixtureApi {
         search_calls: usize,
         version: &'static str,
@@ -748,6 +831,13 @@ mod tests {
                     "has_children":true,
                     "parent":{"type":"page_id","page_id":"page-paged"}
                 })])),
+                "row-paged" => Ok(page(vec![json!({
+                    "object":"block",
+                    "id":"row-block",
+                    "has_children":false,
+                    "parent":{"type":"page_id","page_id":"row-paged"}
+                })])),
+                "row-paged-2" => Ok(page(vec![])),
                 "block-parent" => Ok(page(vec![
                     json!({
                         "object":"block",
@@ -797,6 +887,28 @@ mod tests {
                 json!({"object":"data_source","id":data_source_id,"parent":{"type":"database_id","database_id":database_id},"properties":{"Name":{"type":"title"}}}),
             )
         }
+        fn query_data_source(
+            &mut self,
+            data_source_id: &str,
+            cursor: Option<&str>,
+        ) -> Result<serde_json::Value> {
+            if data_source_id != "ds-paged" {
+                return Ok(page(vec![]));
+            }
+            match cursor {
+                None => Ok(json!({
+                    "results":[{"object":"page","id":"row-paged","parent":{"type":"data_source_id","data_source_id":"ds-paged","database_id":"db-paged"}}],
+                    "has_more":true,
+                    "next_cursor":"row-next"
+                })),
+                Some("row-next") => Ok(page(vec![json!({
+                    "object":"page",
+                    "id":"row-paged-2",
+                    "parent":{"type":"data_source_id","data_source_id":"ds-paged","database_id":"db-paged"}
+                })])),
+                _ => bail!("unexpected data-source cursor"),
+            }
+        }
         fn comments_available(&mut self, _page_id: &str) -> Result<bool> {
             Ok(true)
         }
@@ -816,12 +928,18 @@ mod tests {
         };
         let inventory = crawl_inventory(&mut api).unwrap();
         assert_eq!(api.search_calls, 2);
-        assert_eq!(inventory.objects.len(), 6);
+        assert_eq!(inventory.objects.len(), 9);
         assert_eq!(inventory.data_sources["db-paged"][0].id, "ds-paged");
         assert_eq!(inventory.data_sources["db-inline"][0].id, "ds-inline");
         assert_eq!(inventory.comments_available["page-paged"], true);
         assert_eq!(inventory.comments_available["page-child"], true);
         assert_eq!(inventory.objects["page-child"].kind, "page");
+        assert!(inventory.objects.contains_key("row-paged"));
+        assert!(inventory.objects.contains_key("row-paged-2"));
+        assert_eq!(
+            inventory.objects["row-block"].parent_id.as_deref(),
+            Some("row-paged")
+        );
         assert_eq!(
             inventory.objects["block-parent"].parent_id.as_deref(),
             Some("page-paged")
