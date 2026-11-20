@@ -137,6 +137,28 @@ export class MemoryStore {
   constructor(now = () => new Date().toISOString()) {
     this.rows = [];
     this.now = now;
+    this.claimed = new Map();
+    this.families = new Map();
+  }
+  // OAuth bookkeeping (oauth.js): single-use codes and refresh-token
+  // families, same semantics as the Durable Object's SQL.
+  async oauthClaim(jti, exp) {
+    if (this.claimed.has(jti)) return false;
+    this.claimed.set(jti, exp);
+    return true;
+  }
+  async oauthFamilyStart(fam, jti, exp) {
+    this.families.set(fam, { jti, exp, revoked: false });
+  }
+  async oauthFamilyRotate(fam, jti, next, exp) {
+    const f = this.families.get(fam);
+    if (!f || f.revoked) return "unknown";
+    if (f.jti !== jti) {
+      f.revoked = true;
+      return "replay";
+    }
+    Object.assign(f, { jti: next, exp });
+    return "ok";
   }
   async add(msg) {
     const m = normalizeNew(msg);

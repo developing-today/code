@@ -7,9 +7,12 @@
 // to approve, then trades the code (PKCE S256 only) at /token for a
 // bearer token it sends with every MCP call.
 //
-// Nothing is stored: client ids, the pending request, codes, access and
-// refresh tokens are all HMAC-signed blobs. The key is derived from
-// ACCESS_TOKEN, so rotating that token revokes every grant at once.
+// Client ids, the pending request, codes, access and refresh tokens are
+// HMAC-signed blobs. The key is derived from ACCESS_TOKEN, so rotating
+// that token revokes every grant at once. The message store keeps only
+// what signing can't: each code's use (codes are single-use) and, per
+// refresh-token family, the one refresh token still valid. Redeeming an
+// older one revokes the family.
 //
 // Approving needs the owner: a browser that has opened the history page
 // (/p/<token>) carries a signed owner cookie and gets a one-tap Allow;
@@ -36,6 +39,7 @@ const MAX_BODY = 16 * 1024;
 const SCOPE = "messages";
 
 const nowSec = () => Math.floor(Date.now() / 1000);
+const randomId = () => b64u(crypto.getRandomValues(new Uint8Array(16)));
 
 function b64u(bytes) {
   let s = "";
@@ -171,7 +175,7 @@ async function register(request, env) {
     return oauthError("invalid_client_metadata", "unsupported token_endpoint_auth_method");
   }
   const name = typeof data.client_name === "string" ? data.client_name.trim().slice(0, 80) : "";
-  const clientId = await seal(env, { typ: "client", r: uris, m: method, n: name, iat: nowSec() });
+  const clientId = await seal(env, { typ: "client", id: randomId(), r: uris, m: method, n: name, iat: nowSec() });
   const out = {
     client_id: clientId,
     client_id_issued_at: nowSec(),
@@ -332,7 +336,15 @@ async function authorizePost(request, env, url) {
       error: secret ? "That isn't this bridge's page link or access token." : "Paste your bridge page link or access token.",
     });
   }
-  const code = await seal(env, { typ: "code", c: req.c, r: uri, cc: req.cc, ch: channel, exp: nowSec() + CODE_TTL });
+  const code = await seal(env, {
+    typ: "code",
+    jti: randomId(),
+    c: req.c,
+    r: uri,
+    cc: req.cc,
+    ch: channel,
+    exp: nowSec() + CODE_TTL,
+  });
   const res = redirectTo(uri, { code, state: req.s, iss: url.origin });
   if (setCookie) res.headers.append("set-cookie", setCookie);
   return res;
@@ -340,13 +352,13 @@ async function authorizePost(request, env, url) {
 
 // --- token -----------------------------------------------------------
 
-async function issueTokens(env, clientId, channel) {
+async function issueTokens(env, clientId, channel, fam, jti, exp) {
   return jsonRes(
     {
       access_token: await seal(env, { typ: "at", ch: channel, exp: nowSec() + ACCESS_TTL }),
       token_type: "Bearer",
       expires_in: ACCESS_TTL,
-      refresh_token: await seal(env, { typ: "rt", c: clientId, ch: channel, exp: nowSec() + REFRESH_TTL }),
+      refresh_token: await seal(env, { typ: "rt", c: clientId, ch: channel, fam, jti, exp }),
       scope: SCOPE,
     },
     200,
@@ -354,7 +366,7 @@ async function issueTokens(env, clientId, channel) {
   );
 }
 
-async function token(request, env) {
+async function token(request, env, store) {
   const text = await request.text();
   if (text.length > MAX_BODY) return oauthError("invalid_request", "request too large");
   const type = request.headers.get("content-type") ?? "";
@@ -395,12 +407,27 @@ async function token(request, env) {
     if (!/^[A-Za-z0-9._~-]{43,128}$/.test(verifier) || (await pkceChallenge(verifier)) !== code.cc) {
       return oauthError("invalid_grant", "code_verifier doesn't match");
     }
-    return issueTokens(env, clientId, code.ch);
+    if (!code.jti || !(await store.oauthClaim(code.jti, code.exp))) {
+      return oauthError("invalid_grant", "the code was already used");
+    }
+    const fam = randomId();
+    const jti = randomId();
+    const exp = nowSec() + REFRESH_TTL;
+    await store.oauthFamilyStart(fam, jti, exp);
+    return issueTokens(env, clientId, code.ch, fam, jti, exp);
   }
   if (grant === "refresh_token") {
     const rt = await unseal(env, form.get("refresh_token"), "rt");
-    if (!rt || rt.c !== clientId) return oauthError("invalid_grant", "the refresh token is invalid or expired");
-    return issueTokens(env, clientId, rt.ch);
+    if (!rt || rt.c !== clientId || !rt.fam || !rt.jti) {
+      return oauthError("invalid_grant", "the refresh token is invalid or expired");
+    }
+    const next = randomId();
+    const exp = nowSec() + REFRESH_TTL;
+    const outcome = await store.oauthFamilyRotate(rt.fam, rt.jti, next, exp);
+    if (outcome !== "ok") {
+      return oauthError("invalid_grant", outcome === "replay" ? "the refresh token was already used; sign in again" : "the refresh token is invalid or expired");
+    }
+    return issueTokens(env, clientId, rt.ch, rt.fam, next, exp);
   }
   return oauthError("unsupported_grant_type", "use authorization_code or refresh_token");
 }
@@ -417,6 +444,14 @@ export async function bearerChannel(request, env) {
   if (at.ch === "chatgpt" && !chatgptConfigured(env)) return null;
   return at.ch === "chatgpt" ? "chatgpt" : "claude";
 }
+
+/** CORS for the bare address, so a browser-based MCP client can read answers. */
+export const MCP_CORS = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-headers": "authorization, content-type, mcp-protocol-version, mcp-session-id",
+  "access-control-allow-methods": "POST, OPTIONS",
+  "access-control-expose-headers": "www-authenticate, mcp-session-id",
+};
 
 /** 401 that points an MCP client at the protected-resource metadata. */
 export function unauthorized(request, url) {
@@ -450,7 +485,7 @@ const WELL_KNOWN = /^\/\.well-known\/(oauth-protected-resource|oauth-authorizati
  * Handles the OAuth endpoints; returns null for any other path. Only
  * active when the Worker has an access token.
  */
-export async function handleOAuth(request, env, url) {
+export async function handleOAuth(request, env, url, getStore) {
   if (!tokenConfigured(env)) return null;
   const path = url.pathname;
   const wk = path.match(WELL_KNOWN);
@@ -474,7 +509,7 @@ export async function handleOAuth(request, env, url) {
     return jsonRes(authServerMetadata(url.origin), 200, CORS);
   }
   if (path === "/register") return request.method === "POST" ? register(request, env) : oauthError("invalid_request", "use POST", 405);
-  if (path === "/token") return request.method === "POST" ? token(request, env) : oauthError("invalid_request", "use POST", 405);
+  if (path === "/token") return request.method === "POST" ? token(request, env, getStore()) : oauthError("invalid_request", "use POST", 405);
   if (request.method === "GET" || request.method === "HEAD") return authorizeGet(request, env, url);
   if (request.method === "POST") return authorizePost(request, env, url);
   return errorPage("Method not allowed.", 405);

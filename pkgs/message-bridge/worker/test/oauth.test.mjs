@@ -143,6 +143,8 @@ test("pasting the page link approves, sets the owner cookie, and the token runs 
   assert.equal(messages.at(-1).body, "hello over oauth");
   assert.equal(messages.at(-1).channel, "claude");
 
+  // Browser-based clients can read authenticated answers.
+  assert.equal(sent.headers.get("access-control-allow-origin"), "*");
   // GET on the authorized address is the usual 405 (no server stream).
   assert.equal((await call("/", { headers: { authorization: `Bearer ${tokens.access_token}` } })).status, 405);
   // A forged or wrong-key token is refused.
@@ -196,6 +198,12 @@ test("refresh tokens rotate and stay bound to their client", async () => {
   const stolen = await call("/token", form({ grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: other.client_id }));
   assert.equal(stolen.status, 400);
   assert.equal((await stolen.json()).error, "invalid_grant");
+  // Rotation: the used refresh token is dead, and replaying it revokes
+  // the whole family, the newest refresh token included.
+  const replay = await call("/token", form({ grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: client.client_id }));
+  assert.match((await replay.json()).error_description, /already used/);
+  const afterReplay = await call("/token", form({ grant_type: "refresh_token", refresh_token: next.refresh_token, client_id: client.client_id }));
+  assert.equal(afterReplay.status, 400, "replay revokes the family");
   // An access token is not a refresh token.
   const swapped = await call("/token", form({ grant_type: "refresh_token", refresh_token: tokens.access_token, client_id: client.client_id }));
   assert.equal(swapped.status, 400);
@@ -245,6 +253,17 @@ test("approval refuses wrong secrets, foreign origins, bad PKCE and unregistered
     form({ grant_type: "authorization_code", code, redirect_uri: REDIRECT, client_id: other.client_id, code_verifier: VERIFIER }),
   );
   assert.equal((await theft.json()).error, "invalid_grant");
+  // Codes are single-use.
+  const first = await call(
+    "/token",
+    form({ grant_type: "authorization_code", code, redirect_uri: REDIRECT, client_id: client.client_id, code_verifier: VERIFIER }),
+  );
+  assert.equal(first.status, 200);
+  const second = await call(
+    "/token",
+    form({ grant_type: "authorization_code", code, redirect_uri: REDIRECT, client_id: client.client_id, code_verifier: VERIFIER }),
+  );
+  assert.match((await second.json()).error_description, /already used/);
 
   // Registration only takes https (or localhost) redirects.
   const http = await call("/register", {
@@ -258,15 +277,23 @@ test("confidential clients must present their secret", async () => {
   const { call } = harness();
   const client = await registerClient(call); // defaults to client_secret_basic
   assert.ok(client.client_secret);
-  const req = hiddenReq(await (await call(authorizeQuery(client.client_id))).text());
-  const ok = await call("/authorize", form({ req, action: "allow", secret: TOKEN }));
-  const code = new URL(ok.headers.get("location")).searchParams.get("code");
-  const body = { grant_type: "authorization_code", code, redirect_uri: REDIRECT, code_verifier: VERIFIER };
+  const twin = await registerClient(call);
+  assert.notEqual(twin.client_id, client.client_id, "identical metadata still gets its own client");
+  assert.notEqual(twin.client_secret, client.client_secret);
+  const newCode = async () => {
+    const req = hiddenReq(await (await call(authorizeQuery(client.client_id))).text());
+    const ok = await call("/authorize", form({ req, action: "allow", secret: TOKEN }));
+    return new URL(ok.headers.get("location")).searchParams.get("code");
+  };
+  const body = { grant_type: "authorization_code", code: await newCode(), redirect_uri: REDIRECT, code_verifier: VERIFIER };
   const noSecret = await call("/token", form({ ...body, client_id: client.client_id }));
   assert.equal(noSecret.status, 401);
   const basic = Buffer.from(`${encodeURIComponent(client.client_id)}:${encodeURIComponent(client.client_secret)}`).toString("base64");
   const withBasic = await call("/token", { ...form(body), headers: { ...form(body).headers, authorization: `Basic ${basic}` } });
   assert.equal(withBasic.status, 200);
-  const withPost = await call("/token", form({ ...body, client_id: client.client_id, client_secret: client.client_secret }));
+  const withPost = await call(
+    "/token",
+    form({ ...body, code: await newCode(), client_id: client.client_id, client_secret: client.client_secret }),
+  );
   assert.equal(withPost.status, 200);
 });

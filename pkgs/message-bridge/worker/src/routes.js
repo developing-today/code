@@ -30,7 +30,7 @@
 
 import { chatgptConfigured, matchTokenPath, tokenConfigured, tokenFingerprint } from "./auth.js";
 import { handleMcp } from "./mcp.js";
-import { bearerChannel, handleOAuth, ownerCookie, unauthorized } from "./oauth.js";
+import { MCP_CORS, bearerChannel, handleOAuth, ownerCookie, unauthorized } from "./oauth.js";
 import { InputError, normalizeKind, normalizeRecipients } from "./messages.js";
 import { renderPage } from "./page.js";
 
@@ -183,25 +183,16 @@ export async function route(request, env, getStore) {
       token_fingerprint: configured ? await tokenFingerprint(env.ACCESS_TOKEN) : null,
     });
   }
-  const oauth = await handleOAuth(request, env, url);
+  const oauth = await handleOAuth(request, env, url, getStore);
   if (oauth) return oauth;
   if (["/", "/mcp", "/mcp/"].includes(url.pathname) && tokenConfigured(env)) {
-    if (request.method === "OPTIONS") {
-      return new Response(null, {
-        status: 204,
-        headers: {
-          "access-control-allow-origin": "*",
-          "access-control-allow-headers": "authorization, content-type, mcp-protocol-version, mcp-session-id",
-          "access-control-allow-methods": "POST, OPTIONS",
-        },
-      });
-    }
+    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: MCP_CORS });
     const channel = await bearerChannel(request, env);
     if (!channel) return unauthorized(request, url);
     try {
-      return withHeaders(await handleMcp(request, getStore(), channel));
+      return withHeaders(await handleMcp(request, getStore(), channel), MCP_CORS);
     } catch (err) {
-      if (err instanceof InputError) return withHeaders(json({ error: err.message }, 400));
+      if (err instanceof InputError) return withHeaders(json({ error: err.message }, 400), MCP_CORS);
       throw err;
     }
   }

@@ -35,6 +35,41 @@ export class MessageStore extends DurableObject {
     }
     this.sql.exec("CREATE INDEX IF NOT EXISTS messages_unread ON messages (direction, read_at)");
     this.sql.exec("CREATE INDEX IF NOT EXISTS messages_channel ON messages (channel, direction, read_at)");
+    // OAuth (oauth.js): used authorization codes, and one row per
+    // refresh-token family holding the only refresh token still valid.
+    this.sql.exec("CREATE TABLE IF NOT EXISTS oauth_claimed (jti TEXT PRIMARY KEY, exp INTEGER NOT NULL)");
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS oauth_family (
+      fam TEXT PRIMARY KEY,
+      jti TEXT NOT NULL,
+      exp INTEGER NOT NULL,
+      revoked INTEGER NOT NULL DEFAULT 0
+    )`);
+  }
+
+  /** Marks a code used; false when it already was. */
+  oauthClaim(jti, exp) {
+    const now = Math.floor(Date.now() / 1000);
+    this.sql.exec("DELETE FROM oauth_claimed WHERE exp < ?", now);
+    return this.sql.exec("INSERT OR IGNORE INTO oauth_claimed (jti, exp) VALUES (?, ?) RETURNING jti", jti, exp).toArray()
+      .length === 1;
+  }
+
+  oauthFamilyStart(fam, jti, exp) {
+    const now = Math.floor(Date.now() / 1000);
+    this.sql.exec("DELETE FROM oauth_family WHERE exp < ?", now);
+    this.sql.exec("INSERT OR REPLACE INTO oauth_family (fam, jti, exp, revoked) VALUES (?, ?, ?, 0)", fam, jti, exp);
+  }
+
+  /** "ok" after rotating; "replay" revokes the family; "unknown" otherwise. */
+  oauthFamilyRotate(fam, jti, next, exp) {
+    const row = this.sql.exec("SELECT jti, revoked FROM oauth_family WHERE fam = ?", fam).toArray()[0];
+    if (!row || row.revoked) return "unknown";
+    if (row.jti !== jti) {
+      this.sql.exec("UPDATE oauth_family SET revoked = 1 WHERE fam = ?", fam);
+      return "replay";
+    }
+    this.sql.exec("UPDATE oauth_family SET jti = ?, exp = ? WHERE fam = ?", next, exp, fam);
+    return "ok";
   }
 
   add(msg) {
@@ -138,6 +173,9 @@ function storeFor(env) {
     list: (query) => (normalizeQuery(query), stub.list(query)),
     ack: (sel) => (ackSelector(sel ?? {}), normalizeChannel(sel?.channel), stub.ack(sel)),
     stats: (channel) => (normalizeChannel(channel), stub.stats(channel)),
+    oauthClaim: (jti, exp) => stub.oauthClaim(jti, exp),
+    oauthFamilyStart: (fam, jti, exp) => stub.oauthFamilyStart(fam, jti, exp),
+    oauthFamilyRotate: (fam, jti, next, exp) => stub.oauthFamilyRotate(fam, jti, next, exp),
   };
 }
 

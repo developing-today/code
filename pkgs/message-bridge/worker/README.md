@@ -81,8 +81,10 @@ To rotate it, edit or delete the Bitwarden secret and deploy again
 (deleting makes the deploy create a fresh one), then update the
 connector URL in Claude (or ChatGPT, or its Site's token). Rotating the
 access token also revokes every OAuth grant: OAuth's signing key is
-derived from it, and nothing else is stored (client ids, codes and
-tokens are HMAC-signed). Approving needs the owner's token, its page
+derived from it (client ids, codes and tokens are HMAC-signed). The
+message store keeps only each code's use (codes are single-use) and, per
+refresh-token family, the one refresh token still valid; redeeming an
+older one revokes the family. Approving needs the owner's token, its page
 link, or the owner cookie that opening the history page sets
 (`__Host-`, `Secure`, `HttpOnly`, `SameSite=Lax`, a year); approval
 posts must come from the bridge's own origin. The ChatGPT token approves
