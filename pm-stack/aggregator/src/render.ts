@@ -1859,6 +1859,7 @@ function roadmapCard(
   forecasts?: Map<RefKey, ForecastContract[]>,
   spend?: SpendCardsView | null,
   epicRollups?: Map<string, EpicRollup>,
+  showRowNotes = false,
 ): string {
   const refs = allRefs([row]);
   const refBadges = refs
@@ -1870,6 +1871,11 @@ function roadmapCard(
   const grist = row.gristUrl ? ` <a class="badge" href="${esc(row.gristUrl)}">Grist ↗</a>` : "";
   const repoFile = row.fileUrl ? ` <a class="badge" href="${esc(row.fileUrl)}">Repo file ↗</a>` : "";
   const expansion = drill ? roadmapDrilldown(drill, row, forecasts, spend) : "";
+  // The program timeline has no drill map; keep its Notes visible without
+  // duplicating the same text when a card already has a drilldown.
+  const rowNotes = showRowNotes && !drill && row.notes.trim()
+    ? `<p class="notes">${esc(row.notes)}</p>`
+    : "";
   const epicRollup = epicRollups?.get(row.subject);
   const rollupHtml = epicRollup ? epicRollupHtml(epicRollup) : "";
   const notes = annotations?.get(row.subject) ?? [];
@@ -1897,7 +1903,7 @@ function roadmapCard(
       }
     }
   }
-  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${statusClash}${refBadges}${grist}${repoFile}${rollupHtml}${annotationHtml}${expansion}${briefPanels}</div>`;
+  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${statusClash}${refBadges}${grist}${repoFile}${rollupHtml}${annotationHtml}${rowNotes}${expansion}${briefPanels}</div>`;
 }
 
 function roadmapAnnotationHtml(annotation: RoadmapAnnotation): string {
@@ -1913,7 +1919,7 @@ function timelineTable(
   briefs?: Map<RefKey, ItemBrief>,
   forecasts?: Map<RefKey, ForecastContract[]>,
   spend?: SpendCardsView | null,
-  epicRollups?: Map<string, EpicRollup>,
+  options?: { epicRollups?: Map<string, EpicRollup>; showRowNotes?: boolean },
 ): string {
   const head = `<tr><th scope="col">Theme</th>${tl.lanes.map((l) => `<th scope="col">${esc(l.label)}</th>`).join("")}</tr>`;
   const body = tl.themes
@@ -1923,7 +1929,7 @@ function timelineTable(
       const cells = tl.lanes
         .map((lane) => {
           const rs = tl.cells.get(theme)?.get(lane.key) ?? [];
-          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs, forecasts, spend, epicRollups)).join("")}</td>`;
+          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs, forecasts, spend, options?.epicRollups, options?.showRowNotes)).join("")}</td>`;
         })
         .join("");
       return `<tr><th scope="row">${esc(theme)} <span class="muted theme-rollup">(${done}/${themeRows.length} done)</span></th>${cells}</tr>`;
@@ -7849,7 +7855,7 @@ export function renderProgramProject(
       const rollup = epic ? rollups.get(epic.ref) : undefined;
       if (rollup) rowRollups.set(row.subject, rollup);
     }
-    roadmapHtml = `<p class="muted">${detail.roadmapRows.length} row${detail.roadmapRows.length === 1 ? "" : "s"} with area <code>${esc(config.roadmapArea)}</code> in Grist's Program roadmap. Timeline lanes and drill-downs use the shared roadmap renderer; epic rollups are per matched row.</p>${timelineTable(buildTimeline(detail.roadmapRows), items, undefined, undefined, undefined, undefined, undefined, undefined, rowRollups)}`;
+    roadmapHtml = `<p class="muted">${detail.roadmapRows.length} row${detail.roadmapRows.length === 1 ? "" : "s"} with area <code>${esc(config.roadmapArea)}</code> in Grist's Program roadmap. Timeline lanes and drill-downs use the shared roadmap renderer; epic rollups are per matched row.</p>${timelineTable(buildTimeline(detail.roadmapRows), items, undefined, undefined, undefined, undefined, undefined, undefined, { epicRollups: rowRollups, showRowNotes: true })}`;
   }
 
   const repoCardsHtml = detail.repoCards.length
