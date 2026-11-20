@@ -488,12 +488,24 @@ async function assertDeployable(id) {
   const deployable = (await listVersions({ deployable: "true" })).map((v) => v.id);
   if (!deployable.includes(id)) throw new Error(`version ${id} is not deployable; refusing to deploy it`);
   const detail = await cfApi(`/versions/${id}`);
-  const hasToken = (detail?.resources?.bindings ?? []).some(
-    (b) => b.name === "ACCESS_TOKEN" && b.type === "secret_text",
-  );
+  const hasToken = hasSecret(detail, "ACCESS_TOKEN");
   if (!hasToken) {
     throw new Error(`version ${id} has no ACCESS_TOKEN secret; refusing to deploy it (run a full deploy from a checkout)`);
   }
+  // Versions from before the ChatGPT channel have no CHATGPT_TOKEN and
+  // no channel filter, so once ChatGPT rows exist they would show them,
+  // and let them be acknowledged, on Claude's connector. Never roll the
+  // live channel-aware Worker back to one of those.
+  const liveId = (await liveVersions())[0]?.version_id;
+  if (liveId && liveId !== id && hasSecret(await cfApi(`/versions/${liveId}`), "CHATGPT_TOKEN") && !hasSecret(detail, "CHATGPT_TOKEN")) {
+    throw new Error(
+      `version ${id} predates the ChatGPT channel and would mix ChatGPT's messages into Claude's connector; refusing to deploy it`,
+    );
+  }
+}
+
+function hasSecret(detail, name) {
+  return (detail?.resources?.bindings ?? []).some((b) => b.name === name && b.type === "secret_text");
 }
 
 function createDeployment(cwd, id, { bypassChecks = false } = {}) {

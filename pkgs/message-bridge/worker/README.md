@@ -108,7 +108,10 @@ to give the new Worker. Version ids are in the Cloudflare dashboard (Worker > De
 or in each deploy's output. Cloudflare blocks rolling back to a version
 uploaded before a secret changed (such as a rotated token); add
 `--allow-secret-change` to `--deploy-version` to deploy it anyway, and
-the connector then uses that version's token.
+the connector then uses that version's token. A rollback never goes to a version
+from before the ChatGPT channel (one without `CHATGPT_TOKEN`) while the
+live one has it, since that older code would show ChatGPT's messages on
+Claude's connector.
 
 ### From the repo
 
