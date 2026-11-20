@@ -56,13 +56,76 @@ export interface CatalogueEntry {
 // §2 catalogue — stateless producers only. Pad/Grist/databases are
 // deliberately absent (stateful, never auto-restarted).
 export const CATALOGUE: readonly CatalogueEntry[] = [
-  { facet: "feed", action: "restart-collector", kind: "restart", unit: "pm-feed-collector", attemptCap: 3, cooldownMs: 15 * 60_000, verificationMs: 5 * 60_000, verification: "health" },
-  { facet: "feed", action: "rerun-feed-push", kind: "rerun", unit: "feed-push", attemptCap: 3, cooldownMs: 15 * 60_000, verificationMs: 10 * 60_000, verification: "age-decrease" },
-  { facet: "aggregator", action: "restart-aggregator", kind: "restart", unit: "pm-aggregator", attemptCap: 3, cooldownMs: 20 * 60_000, verificationMs: 5 * 60_000, verification: "health" },
-  { facet: "dispatch", action: "restart-dispatch", kind: "restart", unit: "pm-dispatch", attemptCap: 3, cooldownMs: 20 * 60_000, verificationMs: 5 * 60_000, verification: "health" },
-  { facet: "projector", action: "restart-projector", kind: "restart", unit: "pm-projector", attemptCap: 2, cooldownMs: 20 * 60_000, verificationMs: 5 * 60_000, verification: "health" },
-  { facet: "tunnel", action: "restart-tunnel", kind: "restart", unit: "pm-tunnel", attemptCap: 2, cooldownMs: 30 * 60_000, verificationMs: 10 * 60_000, verification: "health" },
-  { facet: "quota", action: "rerun-quota-refresh", kind: "rerun", unit: "quota-refresh", attemptCap: 2, cooldownMs: 30 * 60_000, verificationMs: 10 * 60_000, verification: "age-decrease" },
+  {
+    facet: "feed",
+    action: "restart-collector",
+    kind: "restart",
+    unit: "pm-feed-collector",
+    attemptCap: 3,
+    cooldownMs: 15 * 60_000,
+    verificationMs: 5 * 60_000,
+    verification: "health",
+  },
+  {
+    facet: "feed",
+    action: "rerun-feed-push",
+    kind: "rerun",
+    unit: "feed-push",
+    attemptCap: 3,
+    cooldownMs: 15 * 60_000,
+    verificationMs: 10 * 60_000,
+    verification: "age-decrease",
+  },
+  {
+    facet: "aggregator",
+    action: "restart-aggregator",
+    kind: "restart",
+    unit: "pm-aggregator",
+    attemptCap: 3,
+    cooldownMs: 20 * 60_000,
+    verificationMs: 5 * 60_000,
+    verification: "health",
+  },
+  {
+    facet: "dispatch",
+    action: "restart-dispatch",
+    kind: "restart",
+    unit: "pm-dispatch",
+    attemptCap: 3,
+    cooldownMs: 20 * 60_000,
+    verificationMs: 5 * 60_000,
+    verification: "health",
+  },
+  {
+    facet: "projector",
+    action: "restart-projector",
+    kind: "restart",
+    unit: "pm-projector",
+    attemptCap: 2,
+    cooldownMs: 20 * 60_000,
+    verificationMs: 5 * 60_000,
+    verification: "health",
+  },
+  {
+    facet: "tunnel",
+    action: "restart-tunnel",
+    kind: "restart",
+    unit: "pm-tunnel",
+    attemptCap: 2,
+    cooldownMs: 30 * 60_000,
+    verificationMs: 10 * 60_000,
+    verification: "health",
+  },
+  {
+    facet: "quota",
+    action: "rerun-quota-refresh",
+    kind: "rerun",
+    unit: "quota-refresh",
+    attemptCap: 2,
+    cooldownMs: 30 * 60_000,
+    verificationMs: 10 * 60_000,
+    verification: "age-decrease",
+  },
 ];
 
 // §2 guardrails.
@@ -255,7 +318,17 @@ export function decideRemediation(
       allowed: false,
       reason: `stateful service (${facet}) is never auto-remediated; escalate with diagnostics`,
       blockedBy: "stateful",
-      journalEntry: makeJournalEntry(syntheticEntry, incidentId, "refused", `stateful service (${facet}) is never auto-remediated; escalate with diagnostics`, "stateful", deployLocked, state, now, as),
+      journalEntry: makeJournalEntry(
+        syntheticEntry,
+        incidentId,
+        "refused",
+        `stateful service (${facet}) is never auto-remediated; escalate with diagnostics`,
+        "stateful",
+        deployLocked,
+        state,
+        now,
+        as,
+      ),
     };
   }
 
@@ -276,7 +349,17 @@ export function decideRemediation(
       allowed: false,
       reason: `action ${action} is not in the remediation catalogue for facet ${facet}`,
       blockedBy: "not-in-catalogue",
-      journalEntry: makeJournalEntry(syntheticEntry, incidentId, "refused", `action ${action} is not in the remediation catalogue for facet ${facet}`, "not-in-catalogue", deployLocked, state, now, as),
+      journalEntry: makeJournalEntry(
+        syntheticEntry,
+        incidentId,
+        "refused",
+        `action ${action} is not in the remediation catalogue for facet ${facet}`,
+        "not-in-catalogue",
+        deployLocked,
+        state,
+        now,
+        as,
+      ),
     };
   }
 
@@ -289,7 +372,17 @@ export function decideRemediation(
       allowed: false,
       reason: "deploy in progress: remediation refused (deploy lock present)",
       blockedBy: "deploy-lock",
-      journalEntry: makeJournalEntry(entry, incidentId, "refused", "deploy in progress: remediation refused (deploy lock present)", "deploy-lock", deployLocked, state, now, actionState),
+      journalEntry: makeJournalEntry(
+        entry,
+        incidentId,
+        "refused",
+        "deploy in progress: remediation refused (deploy lock present)",
+        "deploy-lock",
+        deployLocked,
+        state,
+        now,
+        actionState,
+      ),
     };
   }
 
@@ -300,7 +393,17 @@ export function decideRemediation(
       allowed: false,
       reason: `circuit breaker open for ${facet} until ${new Date(cb.closesAt).toISOString()} (3 exhausted incidents in 24h)`,
       blockedBy: "circuit-breaker",
-      journalEntry: makeJournalEntry(entry, incidentId, "refused", `circuit breaker open for ${facet}`, "circuit-breaker", deployLocked, state, now, actionState),
+      journalEntry: makeJournalEntry(
+        entry,
+        incidentId,
+        "refused",
+        `circuit breaker open for ${facet}`,
+        "circuit-breaker",
+        deployLocked,
+        state,
+        now,
+        actionState,
+      ),
     };
   }
 
@@ -310,7 +413,17 @@ export function decideRemediation(
       allowed: false,
       reason: `another remediation action in flight (${state.inFlight.facet}/${state.inFlight.action}); one action at a time`,
       blockedBy: "in-flight",
-      journalEntry: makeJournalEntry(entry, incidentId, "refused", `another remediation action in flight`, "in-flight", deployLocked, state, now, actionState),
+      journalEntry: makeJournalEntry(
+        entry,
+        incidentId,
+        "refused",
+        `another remediation action in flight`,
+        "in-flight",
+        deployLocked,
+        state,
+        now,
+        actionState,
+      ),
     };
   }
 
@@ -323,7 +436,17 @@ export function decideRemediation(
       allowed: false,
       reason: `per-facet daily cap reached (${FACET_DAILY_CAP}) for ${facet}`,
       blockedBy: "daily-cap-facet",
-      journalEntry: makeJournalEntry(entry, incidentId, "refused", `per-facet daily cap reached`, "daily-cap-facet", deployLocked, state, now, actionState),
+      journalEntry: makeJournalEntry(
+        entry,
+        incidentId,
+        "refused",
+        `per-facet daily cap reached`,
+        "daily-cap-facet",
+        deployLocked,
+        state,
+        now,
+        actionState,
+      ),
     };
   }
 
@@ -335,7 +458,17 @@ export function decideRemediation(
       allowed: false,
       reason: `global daily cap reached (${GLOBAL_DAILY_CAP})`,
       blockedBy: "daily-cap-global",
-      journalEntry: makeJournalEntry(entry, incidentId, "refused", `global daily cap reached`, "daily-cap-global", deployLocked, state, now, actionState),
+      journalEntry: makeJournalEntry(
+        entry,
+        incidentId,
+        "refused",
+        `global daily cap reached`,
+        "daily-cap-global",
+        deployLocked,
+        state,
+        now,
+        actionState,
+      ),
     };
   }
 
@@ -345,26 +478,55 @@ export function decideRemediation(
       allowed: false,
       reason: `cooldown active for ${facet}/${action} until ${new Date(actionState.cooldownUntil).toISOString()}`,
       blockedBy: "cooldown",
-      journalEntry: makeJournalEntry(entry, incidentId, "refused", `cooldown active`, "cooldown", deployLocked, state, now, actionState),
+      journalEntry: makeJournalEntry(
+        entry,
+        incidentId,
+        "refused",
+        `cooldown active`,
+        "cooldown",
+        deployLocked,
+        state,
+        now,
+        actionState,
+      ),
     };
   }
 
   // Attempt cap per incident.
-  const attemptsForIncident =
-    actionState.currentIncidentId === incidentId ? actionState.attemptsUsed : 0;
+  const attemptsForIncident = actionState.currentIncidentId === incidentId ? actionState.attemptsUsed : 0;
   if (attemptsForIncident >= entry.attemptCap) {
     return {
       allowed: false,
       reason: `attempt cap reached (${entry.attemptCap}) for ${facet}/${action} in incident ${incidentId}`,
       blockedBy: "attempt-cap",
-      journalEntry: makeJournalEntry(entry, incidentId, "refused", `attempt cap reached`, "attempt-cap", deployLocked, state, now, actionState),
+      journalEntry: makeJournalEntry(
+        entry,
+        incidentId,
+        "refused",
+        `attempt cap reached`,
+        "attempt-cap",
+        deployLocked,
+        state,
+        now,
+        actionState,
+      ),
     };
   }
 
   return {
     allowed: true,
     reason: `allowed: ${facet}/${action} (attempt ${attemptsForIncident + 1}/${entry.attemptCap})`,
-    journalEntry: makeJournalEntry(entry, incidentId, "allowed", `allowed`, undefined, deployLocked, state, now, actionState),
+    journalEntry: makeJournalEntry(
+      entry,
+      incidentId,
+      "allowed",
+      `allowed`,
+      undefined,
+      deployLocked,
+      state,
+      now,
+      actionState,
+    ),
   };
 }
 
@@ -470,10 +632,15 @@ export function deserializeState(raw: string, now: number): RemediationState {
     if (!parsed || typeof parsed !== "object") return emptyState(now);
     return {
       actions: parsed.actions && typeof parsed.actions === "object" ? parsed.actions : {},
-      circuitBreakers: parsed.circuitBreakers && typeof parsed.circuitBreakers === "object" ? parsed.circuitBreakers : {},
-      exhaustedIncidents: parsed.exhaustedIncidents && typeof parsed.exhaustedIncidents === "object" ? parsed.exhaustedIncidents : {},
+      circuitBreakers:
+        parsed.circuitBreakers && typeof parsed.circuitBreakers === "object" ? parsed.circuitBreakers : {},
+      exhaustedIncidents:
+        parsed.exhaustedIncidents && typeof parsed.exhaustedIncidents === "object" ? parsed.exhaustedIncidents : {},
       dailyPerFacet: parsed.dailyPerFacet && typeof parsed.dailyPerFacet === "object" ? parsed.dailyPerFacet : {},
-      dailyGlobal: parsed.dailyGlobal && typeof parsed.dailyGlobal === "object" && parsed.dailyGlobal.date ? parsed.dailyGlobal : { date: utcDateKey(now), count: 0 },
+      dailyGlobal:
+        parsed.dailyGlobal && typeof parsed.dailyGlobal === "object" && parsed.dailyGlobal.date
+          ? parsed.dailyGlobal
+          : { date: utcDateKey(now), count: 0 },
       inFlight: parsed.inFlight ?? null,
     };
   } catch {

@@ -28,8 +28,9 @@
 //!   want to be forgiving trim before calling in.
 //! - **The archive namespace is reserved at the writer.** A name for which
 //!   `is_archive_tag_name` holds (`{stem}.archive.{digits}`, unsigned ASCII
-//!   digits) is refused with [`FileOpError::ReservedArchiveName`]. Non-numeric
-//!   lookalikes such as `a.archive.notes` remain valid user files.
+//!   digits that fit in u64, the [`archive_tag_timestamp`] rule readers share)
+//!   is refused with [`FileOpError::ReservedArchiveName`]. Non-numeric or
+//!   overflowing lookalikes such as `a.archive.notes` remain valid user files.
 //! - **Archive references are ownership.** `archive.rename` and
 //!   `archive.replace` on a live file name the archives it owns; `archive.owner`
 //!   on an archive names the file it belongs to. These stay on the live name
@@ -861,7 +862,7 @@ mod archive_name_tests {
         for name in [
             "report.archive.0",
             "report.archive.1700000000",
-            "report.archive.18446744073709551616",
+            "report.archive.18446744073709551615",
         ] {
             assert!(matches!(
                 FileOps::validate_name(name),
@@ -869,7 +870,14 @@ mod archive_name_tests {
             ));
         }
 
-        for name in ["a.archive.notes", "a.archive.+1", "a.archive.١"] {
+        // A digit suffix past u64::MAX is not archive-shaped (#11790: one
+        // rule for writer and reader), so it stays a valid user file name.
+        for name in [
+            "a.archive.notes",
+            "a.archive.+1",
+            "a.archive.١",
+            "a.archive.18446744073709551616",
+        ] {
             assert!(FileOps::validate_name(name).is_ok(), "{name:?}");
         }
     }

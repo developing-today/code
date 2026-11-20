@@ -212,9 +212,7 @@ export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): Proj
           .map((n) => edgeRef(n, "blockedBy", edgeDiagnostics))
           .filter((x): x is RefKey => x !== null)
       : [];
-    const historicalParentRefs = !isPr && typeof c.body === "string"
-      ? historicalParentsFromMetadata(c.body)
-      : [];
+    const historicalParentRefs = !isPr && typeof c.body === "string" ? historicalParentsFromMetadata(c.body) : [];
     const blocks = !isPr
       ? edgeNodes(c.blocking, "blocks", edgeDiagnostics)
           .map((n) => edgeRef(n, "blocks", edgeDiagnostics))
@@ -273,13 +271,19 @@ export function historicalParentsFromMetadata(body: string): RefKey[] {
   try {
     const metadata: unknown = JSON.parse(json);
     if (!isRecord(metadata) || !Array.isArray(metadata.links)) return [];
-    return [...new Set(metadata.links.flatMap((link) => {
-      if (!isRecord(link) || link.relation !== "parent" || link.status !== "historical" || !isRecord(link.target)) return [];
-      const target = link.target;
-      if (typeof target.repo !== "string" || !Number.isSafeInteger(target.number) || (target.number as number) <= 0) return [];
-      const ref = refKey({ repo: target.repo, number: target.number as number });
-      return isValidRef(ref) ? [ref] : [];
-    }))];
+    return [
+      ...new Set(
+        metadata.links.flatMap((link) => {
+          if (!isRecord(link) || link.relation !== "parent" || link.status !== "historical" || !isRecord(link.target))
+            return [];
+          const target = link.target;
+          if (typeof target.repo !== "string" || !Number.isSafeInteger(target.number) || (target.number as number) <= 0)
+            return [];
+          const ref = refKey({ repo: target.repo, number: target.number as number });
+          return isValidRef(ref) ? [ref] : [];
+        }),
+      ),
+    ];
   } catch {
     return [];
   }
@@ -629,7 +633,8 @@ export function isProjectPoolItem(v: unknown): v is ProjectPoolItem {
     (p.state === "open" || p.state === "closed" || p.state === "merged") &&
     (p.parentRef === undefined || isValidRef(p.parentRef)) &&
     (p.epicRef === undefined || isValidRef(p.epicRef)) &&
-    (p.historicalParentRefs === undefined || (Array.isArray(p.historicalParentRefs) && p.historicalParentRefs.every(isValidRef))) &&
+    (p.historicalParentRefs === undefined ||
+      (Array.isArray(p.historicalParentRefs) && p.historicalParentRefs.every(isValidRef))) &&
     (p.blockedBy === undefined || (Array.isArray(p.blockedBy) && p.blockedBy.every(isValidRef))) &&
     (p.blocks === undefined || (Array.isArray(p.blocks) && p.blocks.every(isValidRef))) &&
     (p.edgeDiagnostics === undefined ||

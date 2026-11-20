@@ -157,9 +157,9 @@ describe("decideRemediation — daily caps", () => {
     for (let i = 0; i < FACET_DAILY_CAP; i++) {
       state = recordAttempt(state, "feed", "restart-collector", `inc-${i}`, NOW + i * 1000, { verified: false });
     }
-    // Need to bypass cooldown: use a fresh action? cooldown blocks. Use a different facet's action? 
-    // Actually cooldown is per action. Let's check global-ish: use tunnel (different cooldown) but same daily facet? 
-    // feed daily counter aggregates all feed actions. restart-collector cooldown blocks. 
+    // Need to bypass cooldown: use a fresh action? cooldown blocks. Use a different facet's action?
+    // Actually cooldown is per action. Let's check global-ish: use tunnel (different cooldown) but same daily facet?
+    // feed daily counter aggregates all feed actions. restart-collector cooldown blocks.
     // To test daily cap in isolation, advance time past all cooldowns.
     const entry = findCatalogueEntry("feed", "restart-collector")!;
     const after = NOW + FACET_DAILY_CAP * 1000 + entry.cooldownMs + 1;

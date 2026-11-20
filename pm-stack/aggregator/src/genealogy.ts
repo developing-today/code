@@ -67,22 +67,30 @@ export function deriveGenealogy(item: ProjectPoolItem, pool: readonly ProjectPoo
     : undefined;
   add(primaryEpic ?? nearestEpic, "primary-parent");
 
-  const design = chain.find((entry) => (entry.labels ?? []).includes("kind/design") || entry.kind === "Design") ??
+  const design =
+    chain.find((entry) => (entry.labels ?? []).includes("kind/design") || entry.kind === "Design") ??
     (() => {
       const designLabel = labelTarget(item.labels ?? [], "design/");
       return designLabel
-        ? pool.find((entry) =>
-            (entry.labels ?? []).includes(`design/${designLabel}`) &&
-            ((entry.labels ?? []).includes("kind/design") || entry.kind === "Design"),
+        ? pool.find(
+            (entry) =>
+              (entry.labels ?? []).includes(`design/${designLabel}`) &&
+              ((entry.labels ?? []).includes("kind/design") || entry.kind === "Design"),
           )
         : undefined;
     })();
   add(design, "spawned-by");
 
-  const roadmapItem = chain.find((entry) => (entry.labels ?? []).includes("kind/roadmap-item") || entry.kind === "Roadmap item");
+  const roadmapItem = chain.find(
+    (entry) => (entry.labels ?? []).includes("kind/roadmap-item") || entry.kind === "Roadmap item",
+  );
   add(roadmapItem, "roadmap");
   const priority = roadmapItem
-    ? chain.find((entry) => entry.ref !== roadmapItem.ref && ((entry.labels ?? []).includes("kind/roadmap-item") || entry.kind === "Roadmap item"))
+    ? chain.find(
+        (entry) =>
+          entry.ref !== roadmapItem.ref &&
+          ((entry.labels ?? []).includes("kind/roadmap-item") || entry.kind === "Roadmap item"),
+      )
     : undefined;
   add(priority, "priority");
 
@@ -93,7 +101,9 @@ export function deriveGenealogy(item: ProjectPoolItem, pool: readonly ProjectPoo
   const afterRefs = [...new Set((roadmapItem ?? priority ?? item).blockedBy ?? [])];
   const epicPhrase = nearestEpic ? `as part of epic ${nearestEpic.title} (${nearestEpic.ref})` : "with no epic yet";
   const designPhrase = design ? `, spawned by design ${design.title} (${design.ref})` : ", with no design yet";
-  const roadmapPhrase = roadmapItem ? `; on roadmap item ${roadmapItem.title} (${roadmapItem.ref})` : "; with no roadmap item yet";
+  const roadmapPhrase = roadmapItem
+    ? `; on roadmap item ${roadmapItem.title} (${roadmapItem.ref})`
+    : "; with no roadmap item yet";
   const priorityPhrase = priority ? `, overall priority ${priority.title} (${priority.ref})` : "";
   const releasePhrase = release ? `; release ${release.title}${release.dueOn ? ` due ${release.dueOn}` : ""}` : "";
   const historicalPhrase = historicalParents.length
@@ -111,8 +121,10 @@ export function deriveGenealogy(item: ProjectPoolItem, pool: readonly ProjectPoo
 export function enrichRoadmapRows(rows: readonly RoadmapRow[], pool: readonly ProjectPoolItem[]) {
   const byRef = new Map(pool.map((item) => [item.ref, item]));
   return rows.map((row) => {
-    const linked = [...row.links].sort((a, b) => Number(b.relation === "tracks") - Number(a.relation === "tracks"))
-      .map((link) => byRef.get(link.ref)).find((item): item is ProjectPoolItem => Boolean(item));
+    const linked = [...row.links]
+      .sort((a, b) => Number(b.relation === "tracks") - Number(a.relation === "tracks"))
+      .map((link) => byRef.get(link.ref))
+      .find((item): item is ProjectPoolItem => Boolean(item));
     const genealogy = linked ? deriveGenealogy(linked, pool) : null;
     const roadmapRef = genealogy?.ancestors.find((ancestor) => ancestor.relation === "roadmap")?.ref;
     const priorityRef = genealogy?.ancestors.find((ancestor) => ancestor.relation === "priority")?.ref ?? roadmapRef;

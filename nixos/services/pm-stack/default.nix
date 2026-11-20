@@ -42,9 +42,10 @@
 # pm-dispatch's env files are external the same way:
 # ~/pm-stack/dispatch/.env (rendered by pm-stack/dispatch/install.sh
 # from the same SOPS file — it carries the GitHub App material and the
-# fleet Supabase config: supabase_url + supabase_service_role_key for
-# muse-dev2) and ~/secrets/dispatch.env (operator-only secrets that
-# are not in SOPS: DISPATCH_API_TOKEN). install.sh remains the env
+# queue broker URL; the queue itself is the Turso-backed fleet queue
+# broker, reached with the token in ~/.config/queue-broker/token, so no
+# Supabase config is read anymore, #9028) and ~/secrets/dispatch.env
+# (operator-only secrets that are not in SOPS: DISPATCH_API_TOKEN). install.sh remains the env
 # renderer and the fallback installer; this module owns the unit
 # lifecycle.
 #
@@ -347,12 +348,14 @@ in
             ExecStart = "${sigtermWitness}/bin/sigterm-witness --log ${disState}/sigterm-witness.log ${pmDispatch}/bin/pm-dispatch";
             # The env files stay outside the module, exactly like the
             # aggregator's: install.sh renders the sops-derived file
-            # (GitHub App + Supabase config), and the operator file is
+            # (GitHub App + queue broker URL), and the operator file is
             # laptop-only (DISPATCH_API_TOKEN). The "-" keeps the hand
             # unit's semantics — a missing operator file degrades the
             # service instead of crash-looping it. systemd applies the
-            # files in order, so the operator file wins on a collision:
-            # it must never carry SUPABASE_* lines (install.sh warns).
+            # files in order, so the operator file wins on a collision.
+            # Leftover SUPABASE_* lines in either file are ignored since
+            # #9028 (install.sh warns about them). The build version in
+            # /health comes from the package wrapper, not these files.
             EnvironmentFile = [
               "${stackDir}/dispatch/.env"
               "-${home}/secrets/dispatch.env"

@@ -300,15 +300,18 @@ pub use crate::match_kind;
 /// as a filesystem path verbatim (`../` and absolute names would overwrite
 /// arbitrary local files — issues #1614, #2307). The write path is derived
 /// from the name's final path component only (`Path::file_name` ruling),
-/// optionally under `dir`. A name with no final component (`..`, `/`, a
-/// trailing separator, empty) is refused and nothing is written. Ordinary
-/// single-segment names produce byte-identical paths to the previous
-/// verbatim behaviour.
+/// optionally under a nonempty `dir`. A name with no final component
+/// (`..`, `/`, a trailing separator, empty) is refused and nothing is
+/// written. Ordinary single-segment names produce byte-identical paths to
+/// the previous verbatim behaviour.
 ///
 /// This is the single shared implementation used by both the CLI
 /// (`commands/find.rs`) and the REPL (`repl/runner.rs`); do not copy this
 /// rule elsewhere.
 pub fn download_output_path(dir: Option<&str>, name: &str) -> Result<String> {
+    if dir == Some("") {
+        bail!("output directory cannot be empty; use --dir . for the current directory");
+    }
     if name.is_empty() || name.ends_with('/') {
         bail!(
             "refusing download of match with unsafe name {:?}: no final path component",
@@ -369,6 +372,34 @@ pub fn parse_duration_secs(text: &str) -> Result<u64, String> {
 mod tests {
     use super::*;
     use iroh_blobs::Hash;
+
+    #[test]
+    fn download_path_rejects_empty_explicit_directory() {
+        let error = download_output_path(Some(""), "report.txt")
+            .err()
+            .map(|error| error.to_string());
+        assert_eq!(
+            error.as_deref(),
+            Some("output directory cannot be empty; use --dir . for the current directory"),
+        );
+    }
+
+    #[test]
+    fn download_path_preserves_nonempty_directories_and_default_names() {
+        assert_eq!(
+            download_output_path(Some("/home/example/downloads"), "report.txt").unwrap(),
+            "/home/example/downloads/report.txt",
+        );
+        assert_eq!(
+            download_output_path(Some("."), "report.txt").unwrap(),
+            "./report.txt",
+        );
+        assert_eq!(
+            download_output_path(None, "report.txt").unwrap(),
+            "report.txt"
+        );
+        assert_eq!(download_output_path(None, "-").unwrap(), "./-");
+    }
 
     #[test]
     fn test_parse_duration_secs_units() {
