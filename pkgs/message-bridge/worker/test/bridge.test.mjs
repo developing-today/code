@@ -648,3 +648,21 @@ test("only inbound messages can be instructions", async () => {
   const plain = await store.add({ body: "x", direction: "inbound", source: "api" });
   assert.equal(plain.kind, "message");
 });
+
+test("the deploy reads the uploaded version id from cf's output", async () => {
+  const { uploadedVersionId, describeVersions } = await import("../deploy-probe.mjs");
+  const out = "│  Uploaded message-bridge (0.92 sec)\n│  Worker Version ID: C8467CA5-4aae-4e33-bfcd-4ed13b280d06\n│\n";
+  assert.equal(uploadedVersionId(out), "c8467ca5-4aae-4e33-bfcd-4ed13b280d06");
+  assert.equal(uploadedVersionId("Uploaded, no id here"), null);
+  assert.equal(uploadedVersionId(undefined), null);
+  const line = describeVersions(
+    [
+      { id: "a", number: 1, annotations: { "workers/message": "one" } },
+      { id: "b", number: 3, annotations: {} },
+    ],
+    "c",
+  );
+  assert.match(line, /2 listed, numbers 1\.\.3/);
+  assert.match(line, /^versions list.*#3 b/);
+  assert.match(line, /c is not listed/);
+});

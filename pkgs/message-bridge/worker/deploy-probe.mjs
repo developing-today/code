@@ -195,3 +195,24 @@ export function healthVersionProblem(health, id, { requireVersion = false } = {}
   if (health?.version != null) return `answered from version ${health.version}, not ${id}`;
   return requireVersion ? `never answered from version ${id}` : null;
 }
+
+/** The version id `cf workers versions create` printed, or null. */
+export function uploadedVersionId(output) {
+  const m = /Worker Version ID:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(String(output ?? ""));
+  return m ? m[1].toLowerCase() : null;
+}
+
+/** A one-line summary of a versions list for a failed lookup: no secrets, just ids, numbers and messages. */
+export function describeVersions(versions, wantedId = null) {
+  const nums = versions.map((v) => v.number).filter(Number.isSafeInteger);
+  const newest = versions
+    .slice()
+    .sort((a, b) => (b.number ?? 0) - (a.number ?? 0))
+    .slice(0, 3)
+    .map((v) => `#${v.number} ${v.id} "${v.annotations?.["workers/message"] ?? ""}"`);
+  return (
+    `versions list: ${versions.length} listed, numbers ${nums.length ? `${Math.min(...nums)}..${Math.max(...nums)}` : "none"}; ` +
+    `newest ${newest.join("; ") || "none"}` +
+    (wantedId ? `; ${wantedId} ${versions.some((v) => v.id === wantedId) ? "is" : "is not"} listed` : "")
+  );
+}

@@ -79,11 +79,13 @@ import {
   VersionListGap,
   classifyWorkerProbe,
   codeOnlyFingerprint,
+  describeVersions,
   healthVersionProblem,
   isOwnDeployment,
   promoteOrRollBack,
   replacedOtherThan,
   strayBeforeCodeOnly,
+  uploadedVersionId,
 } from "./deploy-probe.mjs";
 import { tokenFingerprint } from "./src/auth.js";
 
@@ -94,6 +96,9 @@ const MIN_TOKEN_LENGTH = 32;
 // upload: 24 reads, 2.5 s apart, about a minute.
 const LIST_LAG_ATTEMPTS = 24;
 const LIST_LAG_DELAY_MS = 2500;
+// Declared before the deploy runs: listVersions is called from the
+// top-level flow above its own definition.
+const VERSIONS_PER_PAGE = 100;
 
 let args;
 try {
@@ -260,23 +265,43 @@ console.log(
     ? `uploading version (tag ${tag})`
     : `worker ${WORKER} does not exist yet; bootstrapping with cf deploy (tag ${tag})`,
 );
+let uploadOutput = "";
 try {
-  runCf(stage, uploadArgs);
+  uploadOutput = runCf(stage, uploadArgs, { capture: true });
 } finally {
   if (secretsDir) rmSync(secretsDir, { recursive: true, force: true });
 }
 
-// The versions list can lag a just-finished upload, sometimes by more
-// than 20 seconds, and two reads in a row can disagree.
-let matches = [];
-for (let attempt = 1; attempt <= LIST_LAG_ATTEMPTS && matches.length === 0; attempt++) {
-  if (attempt > 1) await new Promise((r) => setTimeout(r, LIST_LAG_DELAY_MS));
-  matches = (await listVersions()).filter((v) => v.annotations?.["workers/message"] === message);
+// cf prints the new version's id; read that version directly and check
+// it carries this run's message. The versions list is only the fallback
+// (bootstrap output may not print an id), since it can lag an upload.
+const printedId = uploadedVersionId(uploadOutput);
+let version = null;
+if (printedId) {
+  for (let attempt = 1; attempt <= LIST_LAG_ATTEMPTS && !version; attempt++) {
+    if (attempt > 1) await new Promise((r) => setTimeout(r, LIST_LAG_DELAY_MS));
+    const got = await cfApiOrNull(`/versions/${printedId}`);
+    if (got) {
+      const msg = got.annotations?.["workers/message"];
+      if (msg !== undefined && msg !== message) {
+        throw new Error(`version ${printedId} carries another run's message (${msg}), not ${message}`);
+      }
+      version = { id: got.id ?? printedId, number: got.number, annotations: got.annotations };
+    }
+  }
 }
-if (matches.length !== 1) {
-  throw new Error(`expected exactly one version with this run's message, found ${matches.length}: ${message}`);
+if (!version) {
+  let matches = [];
+  for (let attempt = 1; attempt <= LIST_LAG_ATTEMPTS && matches.length === 0; attempt++) {
+    if (attempt > 1) await new Promise((r) => setTimeout(r, LIST_LAG_DELAY_MS));
+    matches = (await listVersions()).filter((v) => v.annotations?.["workers/message"] === message);
+  }
+  if (matches.length !== 1) {
+    console.error(describeVersions(await listVersions(), printedId));
+    throw new Error(`expected exactly one version with this run's message, found ${matches.length}: ${message}`);
+  }
+  version = matches[0];
 }
-const version = matches[0];
 console.log(`uploaded version ${version.id}`);
 if (args.mode === "code-only") await assertTokenInheritsFromLive(version.id);
 await assertDeployable(version.id);
@@ -455,8 +480,18 @@ function stagePackage() {
   return dir;
 }
 
-function runCf(cwd, cfArgs) {
-  return execFileSync("cf", ["-q", ...cfArgs], { cwd, env, stdio: ["ignore", "inherit", "inherit"] });
+function runCf(cwd, cfArgs, { capture = false } = {}) {
+  if (!capture) return execFileSync("cf", ["-q", ...cfArgs], { cwd, env, stdio: ["ignore", "inherit", "inherit"] });
+  // Keep the output on screen and hand it back, for the version id.
+  const out = execFileSync("cf", ["-q", ...cfArgs], {
+    cwd,
+    env,
+    stdio: ["ignore", "pipe", "inherit"],
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  process.stdout.write(out);
+  return out;
 }
 
 async function cfApi(path) {
@@ -465,18 +500,34 @@ async function cfApi(path) {
   return (await res.json()).result;
 }
 
+/** Like cfApi, but a 404 (not visible yet) is null. */
+async function cfApiOrNull(path) {
+  const res = await fetch(`${api}${path}`, { headers: { authorization: `Bearer ${apiToken}` } });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Cloudflare API ${path} returned HTTP ${res.status}`);
+  return (await res.json()).result;
+}
+
 // Every version, across pages (the API pages 10 at a time by default).
+// Pages until one brings nothing new, deduplicating by id, rather than
+// trusting result_info (which the API may leave out) to say when to stop.
 async function listVersions(params = {}) {
-  const all = [];
+  const byId = new Map();
   for (let page = 1; page <= 50; page++) {
-    const qs = new URLSearchParams({ ...params, page: String(page), per_page: "100" });
+    const qs = new URLSearchParams({ ...params, page: String(page), per_page: String(VERSIONS_PER_PAGE) });
     const res = await fetch(`${api}/versions?${qs}`, { headers: { authorization: `Bearer ${apiToken}` } });
     if (!res.ok) throw new Error(`Cloudflare API /versions returned HTTP ${res.status}`);
     const body = await res.json();
     const items = Array.isArray(body.result) ? body.result : (body.result?.items ?? []);
-    all.push(...items);
+    const before = byId.size;
+    for (const v of items) byId.set(v.id, v);
     const total = body.result_info?.total_count;
-    if (items.length === 0 || typeof total !== "number" || all.length >= total) return all;
+    const done =
+      items.length === 0 ||
+      byId.size === before ||
+      (typeof total === "number" && byId.size >= total) ||
+      (typeof total !== "number" && items.length < VERSIONS_PER_PAGE);
+    if (done || params.deployable) return [...byId.values()];
   }
   throw new Error("Cloudflare API /versions kept paging past 50 pages");
 }
