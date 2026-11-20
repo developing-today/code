@@ -72,9 +72,10 @@
 //! id find config --node <NODE_ID>
 //! ```
 
-use anyhow::{Result, bail};
-use futures_lite::StreamExt;
+use anyhow::{Context, Result, bail};
+use futures_lite::{Stream, StreamExt};
 use iroh_base::EndpointId;
+use iroh_blobs::api::tags::TagInfo;
 
 use crate::{
     CLIENT_KEY_FILE, FindMatch, META_ALPN, MetaRequest, MetaResponse, TaggedMatch, cmd_get_one,
@@ -948,50 +949,71 @@ pub async fn cmd_find_matches(
     } else {
         // Local search
         let store = open_store(false).await?;
-        let store_handle = store.as_store();
-        let mut matches = Vec::new();
-        let query_lower = query.to_lowercase();
-
-        if let Ok(mut list) = store_handle.tags().list().await {
-            while let Some(item) = list.next().await {
-                if let Ok(item) = item {
-                    let name = String::from_utf8_lossy(item.name.as_ref()).to_string();
-                    let hash_str = item.hash.to_string();
-                    let name_lower = name.to_lowercase();
-
-                    if let Some(kind) = match_kind(&name_lower, &query_lower) {
-                        matches.push(FindMatch {
-                            hash: item.hash,
-                            name: name.clone(),
-                            kind,
-                            is_hash_match: false,
-                        });
-                    } else if let Some(kind) = match_kind(&hash_str, &query_lower) {
-                        matches.push(FindMatch {
-                            hash: item.hash,
-                            name,
-                            kind,
-                            is_hash_match: true,
-                        });
-                    }
-                }
-            }
-        }
-
-        matches.sort_by(|a, b| match a.kind.cmp(&b.kind) {
-            std::cmp::Ordering::Equal => {
-                if prefer_name {
-                    a.is_hash_match.cmp(&b.is_hash_match)
-                } else {
-                    b.is_hash_match.cmp(&a.is_hash_match)
-                }
-            }
-            other => other,
-        });
-
-        store.shutdown().await?;
+        let matches = collect_local_find_matches(
+            store
+                .as_store()
+                .tags()
+                .list()
+                .await
+                .map_err(anyhow::Error::from),
+            query,
+            prefer_name,
+        )
+        .await;
+        // The list is dropped by the collector before shutting down the store.
+        let shutdown = store.shutdown().await;
+        let matches = matches?;
+        shutdown?;
         Ok(matches)
     }
+}
+
+async fn collect_local_find_matches<E: Into<anyhow::Error>>(
+    list: Result<impl Stream<Item = Result<TagInfo, E>> + Unpin>,
+    query: &str,
+    prefer_name: bool,
+) -> Result<Vec<FindMatch>> {
+    let mut matches = Vec::new();
+    let query_lower = query.to_lowercase();
+
+    let mut list = list.context("failed to list local tags")?;
+    while let Some(item) = list.next().await {
+        let item = item
+            .map_err(Into::into)
+            .context("failed to read local tag")?;
+        let name = String::from_utf8_lossy(item.name.as_ref()).to_string();
+        let hash_str = item.hash.to_string();
+        let name_lower = name.to_lowercase();
+
+        if let Some(kind) = match_kind(&name_lower, &query_lower) {
+            matches.push(FindMatch {
+                hash: item.hash,
+                name: name.clone(),
+                kind,
+                is_hash_match: false,
+            });
+        } else if let Some(kind) = match_kind(&hash_str, &query_lower) {
+            matches.push(FindMatch {
+                hash: item.hash,
+                name,
+                kind,
+                is_hash_match: true,
+            });
+        }
+    }
+
+    matches.sort_by(|a, b| match a.kind.cmp(&b.kind) {
+        std::cmp::Ordering::Equal => {
+            if prefer_name {
+                a.is_hash_match.cmp(&b.is_hash_match)
+            } else {
+                b.is_hash_match.cmp(&a.is_hash_match)
+            }
+        }
+        other => other,
+    });
+
+    Ok(matches)
 }
 
 #[cfg(test)]
@@ -1000,6 +1022,58 @@ mod tests {
     use super::*;
     use crate::MatchKind;
     use iroh_blobs::Hash;
+
+    fn search_tag(name: &str) -> TagInfo {
+        TagInfo {
+            name: name.into(),
+            format: iroh_blobs::BlobFormat::Raw,
+            hash: Hash::from_bytes([123; 32]),
+        }
+    }
+
+    #[tokio::test]
+    async fn local_find_reports_list_initialization_error() {
+        let list = Err::<futures_lite::stream::Empty<Result<TagInfo>>, _>(anyhow::anyhow!(
+            "list initialization failed"
+        ));
+        let error = collect_local_find_matches(list, "report", true)
+            .await
+            .expect_err("failed initialization must not mean an empty search");
+        assert_eq!(error.root_cause().to_string(), "list initialization failed");
+    }
+
+    #[tokio::test]
+    async fn local_find_reports_stream_error_after_a_match() {
+        let list = futures_lite::stream::iter([
+            Ok(search_tag("report")),
+            Err(anyhow::anyhow!("stream item failed")),
+        ]);
+        let error = collect_local_find_matches(Ok(list), "report", true)
+            .await
+            .expect_err("a stream failure after a match must not return partial success");
+        assert_eq!(error.root_cause().to_string(), "stream item failed");
+    }
+
+    #[tokio::test]
+    async fn local_find_preserves_match_filtering_and_order() {
+        let list = futures_lite::stream::iter(
+            ["weekly report", "unrelated", "REPORT", "report today"]
+                .map(|name| Ok::<_, anyhow::Error>(search_tag(name))),
+        );
+        let matches = collect_local_find_matches(Ok(list), "report", true)
+            .await
+            .unwrap();
+        let names: Vec<_> = matches.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["REPORT", "report today", "weekly report"]);
+
+        let list = futures_lite::stream::iter([Ok::<_, anyhow::Error>(search_tag("unrelated"))]);
+        assert!(
+            collect_local_find_matches(Ok(list), "report", true)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     #[test]
     fn test_match_kind_exact() {
