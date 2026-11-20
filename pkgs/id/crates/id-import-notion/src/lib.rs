@@ -244,7 +244,11 @@ fn crawl_pending_blocks(
         }
         let pages = crawl_pages(|cursor| api.block_children(&parent_id, cursor))?;
         for page in pages {
-            for value in page["results"].as_array().into_iter().flatten() {
+            let results = page
+                .get("results")
+                .and_then(serde_json::Value::as_array)
+                .context("Notion block-children response is missing results array")?;
+            for value in results {
                 let id = required_string(value, "id")?;
                 if is_child_database_block(value) {
                     inline_database_ids.insert(id.clone());
@@ -825,6 +829,7 @@ mod tests {
             _cursor: Option<&str>,
         ) -> Result<serde_json::Value> {
             match block_id {
+                "missing-results" => Ok(json!({"has_more":false})),
                 "page-paged" => Ok(page(vec![json!({
                     "object":"block",
                     "id":"block-parent",
@@ -952,6 +957,26 @@ mod tests {
             inventory.objects["block-child"].source["image"]["file"]
                 .get("url")
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn block_children_response_without_results_fails_closed() {
+        let mut api = FixtureApi {
+            search_calls: 0,
+            version: NOTION_API_VERSION,
+        };
+        let mut pending = vec!["missing-results".to_owned()];
+        assert!(
+            crawl_pending_blocks(
+                &mut api,
+                &mut pending,
+                &mut std::collections::BTreeSet::new(),
+                &mut std::collections::BTreeSet::new(),
+                &mut Vec::new(),
+                &mut std::collections::BTreeSet::new(),
+            )
+            .is_err()
         );
     }
 
