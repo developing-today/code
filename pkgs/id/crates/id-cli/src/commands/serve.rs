@@ -51,9 +51,12 @@
 //! ```
 
 use std::collections::HashSet;
+use std::io::Write as _;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use anyhow::ensure;
@@ -212,12 +215,61 @@ pub async fn get_serve_info() -> Option<ServeInfo> {
 
     // Check if process is still alive
     if !is_process_alive(info.pid, info.start_time) {
-        // Stale lock file - remove it
-        let _ = afs::remove_file(SERVE_LOCK).await;
+        // Only remove the file we inspected. Moving it aside first means a
+        // replacement written after the move is never unlinked by cleanup.
+        remove_stale_serve_lock(Path::new(SERVE_LOCK), &contents).await;
         return None;
     }
 
     Some(info)
+}
+
+static STALE_LOCK_ATTEMPT: AtomicU64 = AtomicU64::new(0);
+
+/// Removes a stale lock only if the lock currently at `path` is the snapshot
+/// inspected by the caller. The rename atomically takes one file out of the
+/// public name; a mismatch is linked back without replacing any newer lock.
+async fn remove_stale_serve_lock(path: &Path, expected_contents: &str) {
+    let attempt = STALE_LOCK_ATTEMPT.fetch_add(1, Ordering::Relaxed);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    let mut tombstone_name = path.as_os_str().to_os_string();
+    tombstone_name.push(format!(
+        ".stale-{}-{timestamp}-{attempt}",
+        std::process::id()
+    ));
+    let tombstone = PathBuf::from(tombstone_name);
+
+    if afs::rename(path, &tombstone).await.is_err() {
+        return;
+    }
+
+    match afs::read_to_string(&tombstone).await {
+        Ok(contents) if contents == expected_contents => {
+            let _ = afs::remove_file(tombstone).await;
+        }
+        Ok(_) => {
+            // A different lock won the race with our initial read. Restore it
+            // only if nobody has already published another lock at `path`.
+            if let Err(error) = afs::hard_link(&tombstone, path).await {
+                warn!(
+                    ?error,
+                    ?path,
+                    "could not restore changed serve lock; leaving tombstone in place"
+                );
+            } else {
+                let _ = afs::remove_file(tombstone).await;
+            }
+        }
+        Err(error) => {
+            warn!(
+                ?error,
+                ?path,
+                "could not inspect moved serve lock; leaving tombstone in place"
+            );
+        }
+    }
 }
 
 mod process;
@@ -257,7 +309,16 @@ pub async fn create_serve_lock(
         start_time: get_process_start_time(std::process::id()),
     };
     let contents = serde_json::to_string_pretty(&info)?;
-    afs::write(SERVE_LOCK, contents).await?;
+    let lock_path = Path::new(SERVE_LOCK);
+    let parent = lock_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".iroh-serve-lock-")
+        .tempfile_in(parent)?;
+    temporary.write_all(contents.as_bytes())?;
+    temporary.persist(lock_path).map_err(|error| error.error)?;
     Ok(())
 }
 
@@ -2320,6 +2381,24 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use proptest::test_runner::{Config as ProptestConfig, TestCaseError};
+
+    #[tokio::test]
+    async fn stale_lock_cleanup_preserves_replacement_written_after_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("serve.lock");
+        let stale = r#"{"pid":1}"#;
+        let replacement = r#"{"pid":2}"#;
+        afs::write(&path, stale).await.unwrap();
+
+        // Deterministically model a writer publishing a new lock after the
+        // caller read the stale contents but before cleanup takes the path.
+        let replacement_file = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+        std::fs::write(replacement_file.path(), replacement).unwrap();
+        replacement_file.persist(&path).unwrap();
+        remove_stale_serve_lock(&path, stale).await;
+
+        assert_eq!(afs::read_to_string(path).await.unwrap(), replacement);
+    }
 
     fn stale_test_peer(seed: u8) -> id_core::discovery::PeerInfo {
         let node_id = iroh_base::SecretKey::from_bytes(&[seed; 32]).public();
