@@ -10,6 +10,34 @@ let
   # bakes hyprctl into its PATH must use the matching one, or it will ship the
   # nixpkgs 0.56.2 hyprctl and drag a second hyprland into the closure.
   hyprland-master = inputs.hyprland.packages.${system}.hyprland;
+  # Affinity Photo/Publisher/Designer, built from affinity-nix's own
+  # outputs function and pinned nixpkgs, but with that nixpkgs imported
+  # with allowUnfree. The flake's `packages` output uses
+  # `nixpkgs.legacyPackages`, whose config comes from the caller's
+  # environment (NIXPKGS_ALLOW_UNFREE, honoured because the hosts set
+  # pure-eval = false). An interactive ./rebuild evaluates as the user,
+  # who has that variable; agent-rebuild-switch evaluates as root from
+  # a systemd unit, which does not, so evaluation refused the unfree
+  # Affinity packages there. Same nixpkgs rev and inputs, so the same
+  # derivations, without depending on who runs the evaluation.
+  affinityPackages =
+    let
+      affinity = inputs.affinity-nix;
+      affinityPkgs = import affinity.inputs.nixpkgs {
+        inherit system;
+        config.allowUnfree = true;
+      };
+      affinityOutputs = (import "${affinity}/flake.nix").outputs {
+        self = affinity;
+        nixpkgs = affinity.inputs.nixpkgs // {
+          legacyPackages = {
+            ${system} = affinityPkgs;
+          };
+        };
+        inherit (affinity.inputs) elemental-wine-source winetricks-source;
+      };
+    in
+    affinityOutputs.packages.${system};
   # TEMPORARY (developing-today/code#5447, found via #2715): the
   # nixpkgs-25 segment below takes activitywatch and
   # haskellPackages.misfortune from this input, and on the current
@@ -603,7 +631,7 @@ in
       (scaleElectron2x inputs.chatgpt-desktop.packages.${system}.codex-desktop-remote-mobile-control)
     ]
     ++ (with inputs.roc.packages.${system}; [ nightly ])
-    ++ (with inputs.affinity-nix.packages.${system}; [
+    ++ (with affinityPackages; [
       photo
       publisher
       designer
