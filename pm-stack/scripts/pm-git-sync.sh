@@ -18,10 +18,19 @@
 # here never restarts a PM service.
 #
 # What remains is the clone hygiene the rest of the fleet relies on:
-# - If the clone is not on main, or the tree is dirty (any tracked
-#   modification or untracked file), FAIL LOUDLY (journal) naming the
-#   dirty paths and do NOT pull. A human/agent resolves the dirt first;
-#   this service never stashes, commits, or discards anything.
+# - If the clone is not on main, or has any tracked modification
+#   (staged or not), FAIL LOUDLY (journal) naming the dirty paths and do
+#   NOT pull. A human/agent resolves that first; this service never
+#   stashes, commits, or discards anything.
+# - Untracked (not ignored) files are MOVED ASIDE, not left to block the
+#   pull (2026-11-20): each one goes to
+#   $PM_GIT_SYNC_QUARANTINE/<UTC stamp>/<same relative path>
+#   (default ~/backups/pm-git-sync-quarantine), and every move is logged.
+#   Agents and scheduled sessions whose cwd is this clone kept dropping
+#   ledgers, logs and dashboards here (#5209, #5389, #5562, #8170, and
+#   three stalls on 2026-11-17/19/20), and every one stopped the laptop
+#   behind main until someone moved the file by hand. Nothing is deleted:
+#   the file keeps its content and mtime in the quarantine folder.
 # - Otherwise git fetch + git pull --ff-only.
 set -uo pipefail
 # Argument contract (#3352): this script takes no command-line
@@ -40,11 +49,31 @@ if [ "$branch" != "main" ]; then
   echo "pm-git-sync: FAIL $REPO is on branch '$branch', not main — not pulling"
   exit 1
 fi
-dirty="$(git status --porcelain)"
+dirty="$(git status --porcelain --untracked-files=no)"
 if [ -n "$dirty" ]; then
   echo "pm-git-sync: FAIL $REPO working tree is dirty — not pulling. Dirty paths:"
   echo "$dirty"
   exit 1
+fi
+if [ -n "$(git ls-files --others --exclude-standard | head -n 1)" ]; then
+  QUARANTINE_ROOT="${PM_GIT_SYNC_QUARANTINE:-$HOME/backups/pm-git-sync-quarantine}"
+  qdir="$QUARANTINE_ROOT/$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  moved=0
+  while IFS= read -r -d '' path; do
+    dest="$qdir/$path"
+    if ! mkdir -p "$(dirname "$dest")" || ! mv -n -- "$path" "$dest" || [ -e "$path" ]; then
+      echo "pm-git-sync: FAIL could not move untracked '$path' to $dest — not pulling"
+      exit 1
+    fi
+    echo "pm-git-sync: moved untracked '$path' -> $dest"
+    moved=$((moved + 1))
+  done < <(git ls-files --others --exclude-standard -z)
+  echo "pm-git-sync: moved $moved untracked file(s) out of $REPO into $qdir"
+  if [ -n "$(git status --porcelain)" ]; then
+    echo "pm-git-sync: FAIL $REPO still dirty after moving untracked files — not pulling. Dirty paths:"
+    git status --porcelain
+    exit 1
+  fi
 fi
 if ! git fetch origin --quiet; then
   echo "pm-git-sync: FAIL git fetch origin in $REPO"
