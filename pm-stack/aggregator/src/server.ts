@@ -3404,6 +3404,15 @@ async function handler(req: Request): Promise<Response> {
     const { rows, items, reconciliation } = await roadmapContext();
     const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
     const genealogyRows = enrichRoadmapRows(rows, pool);
+    if (url.searchParams.get("view") === "priorities") {
+      genealogyRows.sort((a, b) => {
+        const rank = (row: typeof a) => {
+          const match = /#(\d+)$/.exec(row.priority ?? "");
+          return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+        };
+        return rank(a) - rank(b) || a.title.localeCompare(b.title);
+      });
+    }
     const resolved = await resolveView(url);
     if (!resolved) {
       const annotatedRows = await Promise.all(
