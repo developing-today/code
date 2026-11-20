@@ -301,6 +301,8 @@ test("code-only deploys refuse to inherit a token from a full deploy newer than 
   assert.throws(() => strayBeforeCodeOnly([v("c2", 7, code), v("live", 5, code)], "live"), VersionListGap);
   assert.throws(() => strayBeforeCodeOnly([v("x", 1, code)], "live"), /not in the versions list/);
   assert.throws(() => strayBeforeCodeOnly([v("live", 6, code), v("mine", 5, code)], "live", "mine"), /not newer/);
+  // Our own upload not listed yet is lag too (seen live: the first read after an upload missed it).
+  assert.throws(() => strayBeforeCodeOnly([v("c1", 6, code), v("live", 5, code)], "live", "mine"), VersionListGap);
   assert.throws(() => strayBeforeCodeOnly([{ id: "live" }], "live"), /no version number/);
 });
 

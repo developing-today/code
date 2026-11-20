@@ -35,16 +35,16 @@ The behaviour is deliberately minimal for now; more comes later.
 connector's (below). A wrong or missing token gets the same plain 404 as
 an unknown path; the ChatGPT token opens only its `/mcp`.
 
-| Route                        | What                                                                                                                        |
-| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `POST /mcp/<token>`          | MCP server on Claude's channel, Streamable HTTP, stateless JSON answers (`GET` is 405: no server stream)                    |
-| `POST /mcp/<chatgpt token>`  | The same MCP server on ChatGPT's channel                                                                                    |
-| `GET /p/<token>`             | History page: send form + every message, newest first; refreshes every 10 s                                                 |
-| `POST /p/<token>`            | Form post (`body`, optional `sender`, one `to` per recipient, `kind`): stores the inbound messages, redirects to the page    |
-| `GET /api/<token>/messages`  | JSON history: `direction`, `channel` (`claude`/`chatgpt`/`all`), `kind`, `since_id`, `before_id`, `unread_only`, `limit`, `order`   |
+| Route                        | What                                                                                                                                                                                    |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /mcp/<token>`          | MCP server on Claude's channel, Streamable HTTP, stateless JSON answers (`GET` is 405: no server stream)                                                                                |
+| `POST /mcp/<chatgpt token>`  | The same MCP server on ChatGPT's channel                                                                                                                                                |
+| `GET /p/<token>`             | History page: send form + every message, newest first; refreshes every 10 s                                                                                                             |
+| `POST /p/<token>`            | Form post (`body`, optional `sender`, one `to` per recipient, `kind`): stores the inbound messages, redirects to the page                                                               |
+| `GET /api/<token>/messages`  | JSON history: `direction`, `channel` (`claude`/`chatgpt`/`all`), `kind`, `since_id`, `before_id`, `unread_only`, `limit`, `order`                                                       |
 | `POST /api/<token>/messages` | JSON `{"body", "sender", "to", "kind"}`; `to` is `"claude"` (default), `"chatgpt"` or both as a list: one inbound row per recipient; `kind` is `"message"` (default) or `"instruction"` |
-| `POST /api/<token>/ack`      | JSON `{"up_to_id": N}` or `{"ids": [...]}`, with `channel` (default `claude`): marks inbound messages read                  |
-| `GET /healthz`               | `ok`, `configured`, `chatgpt_configured`, `version`, `token_fingerprint`; no data                                           |
+| `POST /api/<token>/ack`      | JSON `{"up_to_id": N}` or `{"ids": [...]}`, with `channel` (default `claude`): marks inbound messages read                                                                              |
+| `GET /healthz`               | `ok`, `configured`, `chatgpt_configured`, `version`, `token_fingerprint`; no data                                                                                                       |
 
 ## MCP tools
 
@@ -108,7 +108,10 @@ to give the new Worker. Version ids are in the Cloudflare dashboard (Worker > De
 or in each deploy's output. Cloudflare blocks rolling back to a version
 uploaded before a secret changed (such as a rotated token); add
 `--allow-secret-change` to `--deploy-version` to deploy it anyway, and
-the connector then uses that version's token.
+the connector then uses that version's token. A rollback never goes to a version
+from before the ChatGPT channel (one without `CHATGPT_TOKEN`) while the
+live one has it, since that older code would show ChatGPT's messages on
+Claude's connector.
 
 ### From the repo
 

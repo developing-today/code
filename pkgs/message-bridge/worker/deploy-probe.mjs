@@ -50,7 +50,7 @@ export class VersionListGap extends Error {}
  * @param {string} liveId the live version
  * @param {string | null} uploadedId this run's version, once uploaded
  * @returns {{id: string} | null}
- * @throws {VersionListGap} when a version between the two is missing from the list
+ * @throws {VersionListGap} when this upload, or a version between it and the live one, is missing from the list
  * @throws {Error} when the live version (or this upload, if given) can't be placed
  */
 export function strayBeforeCodeOnly(versions, liveId, uploadedId = null) {
@@ -62,7 +62,9 @@ export function strayBeforeCodeOnly(versions, liveId, uploadedId = null) {
   let top = Math.max(...versions.map((v) => v.number)) + 1;
   if (uploadedId) {
     const mine = versions.find((v) => v.id === uploadedId);
-    if (!mine || mine.number <= live.number) {
+    // Right after an upload the list may not show it yet: that's lag, not a verdict.
+    if (!mine) throw new VersionListGap(`uploaded version ${uploadedId} is not listed yet`);
+    if (mine.number <= live.number) {
       throw new Error(`uploaded version ${uploadedId} is not newer than the live one`);
     }
     top = mine.number;
