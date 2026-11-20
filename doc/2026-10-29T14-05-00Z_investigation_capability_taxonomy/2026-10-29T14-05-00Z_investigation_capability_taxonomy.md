@@ -133,6 +133,17 @@ For human-conversation mode (the issue's "client-side mic-to-text vs audio-to-se
 
 Recommendation: **client-side transcription is the default**, because the world model only needs text and the existing `chat.say` / event path already carries it; `speech.capture` exists for devices that cannot run STT (most ESP32s) and for apps that need a better model. Per-app, not global: consent and provider choice differ per app, and the grant ledger's `actor_denied` is already the right mechanism for "this participant at this device said no".
 
+---
+
+## 2026-11-20T07-30-11Z Update: implement the speech capability slice
+
+Issue [#2344](https://github.com/developing-today/code/issues/2344) carries
+this design into the `id-caps` catalog and world execution contract. The
+provider-neutral implementation slice is documented in
+[`2026-11-20T07-30-11Z_feature_speech-capabilities.md`](../2026-11-20T07-30-11Z_feature_speech-capabilities.md):
+client-side transcription remains the default, server capture is per-app and
+consent-gated, and audio is not journaled absent an explicit artifact request.
+
 ### 3.6 Styling — semantic tokens, not CSS and not all-web-elements
 
 The issue's third question: a styling tool across GUI and web that is neither all-web-elements nor Electron. The line this model takes is the one `world_presentation.rs` already draws: **style is declared semantically and resolved by the adapter.**
