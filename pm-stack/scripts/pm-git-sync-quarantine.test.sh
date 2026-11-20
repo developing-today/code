@@ -65,4 +65,15 @@ out="$(bash "$sync" 2>&1)" || fail "recovery run exited non-zero: $out"
 [ "$(cat "$tmp/clone/tracked.txt")" = three ] || fail "recovery pull did not land"
 [ ! -e "$tmp/clone/stray.md" ] || fail "stray left in clone"
 
+# 5. An untracked .gitignore refuses and moves nothing, so the files it
+#    ignores never surface as untracked.
+mkdir -p "$tmp/clone/local/cache"
+printf 'cache/\n' >"$tmp/clone/local/.gitignore"
+echo data >"$tmp/clone/local/cache/data.bin"
+echo note >"$tmp/clone/local/note.md"
+if out="$(bash "$sync" 2>&1)"; then fail "untracked .gitignore did not refuse: $out"; fi
+printf '%s\n' "$out" | grep -q "untracked .gitignore" || fail "wrong .gitignore refusal: $out"
+[ -e "$tmp/clone/local/.gitignore" ] && [ -e "$tmp/clone/local/note.md" ] &&
+  [ -e "$tmp/clone/local/cache/data.bin" ] || fail "moved files despite refusing"
+
 echo "pm-git-sync quarantine suite passed."

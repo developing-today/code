@@ -55,6 +55,15 @@ if [ -n "$dirty" ]; then
   echo "$dirty"
   exit 1
 fi
+# An untracked .gitignore holds ignore rules for the files beside it;
+# moving it would turn those ignored files into untracked ones. Refuse as
+# before and let a human/agent decide what that ignore file is for.
+untracked_ignores="$(git ls-files --others --exclude-standard -- ':(glob)**/.gitignore')"
+if [ -n "$untracked_ignores" ]; then
+  echo "pm-git-sync: FAIL $REPO has untracked .gitignore file(s) — not moving or pulling:"
+  echo "$untracked_ignores"
+  exit 1
+fi
 if [ -n "$(git ls-files --others --exclude-standard | head -n 1)" ]; then
   QUARANTINE_ROOT="${PM_GIT_SYNC_QUARANTINE:-$HOME/backups/pm-git-sync-quarantine}"
   qdir="$QUARANTINE_ROOT/$(date -u +%Y%m%dT%H%M%SZ)-$$"
