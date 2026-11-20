@@ -51,12 +51,11 @@
 //! ```
 
 use std::collections::HashSet;
+use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use anyhow::ensure;
@@ -179,6 +178,15 @@ pub struct ServeInfo {
     pub start_time: Option<u64>,
 }
 
+/// Ownership token for the discovery lock written by one `id serve` process.
+///
+/// The serialized lock contents are retained so shutdown can remove the file
+/// only if it still contains the record published by this serve instance.
+#[derive(Debug)]
+pub struct ServeLock {
+    contents: String,
+}
+
 impl ServeInfo {
     /// Parse the `node_id` string back to an [`EndpointId`].
     pub fn endpoint_id(&self) -> Option<EndpointId> {
@@ -215,60 +223,55 @@ pub async fn get_serve_info() -> Option<ServeInfo> {
 
     // Check if process is still alive
     if !is_process_alive(info.pid, info.start_time) {
-        // Only remove the file we inspected. Moving it aside first means a
-        // replacement written after the move is never unlinked by cleanup.
-        remove_stale_serve_lock(Path::new(SERVE_LOCK), &contents).await;
+        // Only remove the file we inspected. The shared sidecar lock protects
+        // the ownership check and unlink from concurrent publication.
+        remove_stale_serve_lock(Path::new(SERVE_LOCK), &contents);
         return None;
     }
 
     Some(info)
 }
 
-static STALE_LOCK_ATTEMPT: AtomicU64 = AtomicU64::new(0);
+/// Opens the stable sidecar used to serialize all mutations of a serve lock.
+/// The sidecar is deliberately never removed: unlinking a locked sidecar can
+/// let processes lock different inodes and enter the critical section at once.
+fn lock_serve_lock(path: &Path) -> Result<File> {
+    let mut guard_name = path.as_os_str().to_os_string();
+    guard_name.push(".guard");
+    let guard = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(PathBuf::from(guard_name))?;
+    guard.lock()?;
+    Ok(guard)
+}
 
-/// Removes a stale lock only if the lock currently at `path` is the snapshot
-/// inspected by the caller. The rename atomically takes one file out of the
-/// public name; a mismatch is linked back without replacing any newer lock.
-async fn remove_stale_serve_lock(path: &Path, expected_contents: &str) {
-    let attempt = STALE_LOCK_ATTEMPT.fetch_add(1, Ordering::Relaxed);
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_nanos());
-    let mut tombstone_name = path.as_os_str().to_os_string();
-    tombstone_name.push(format!(
-        ".stale-{}-{timestamp}-{attempt}",
-        std::process::id()
-    ));
-    let tombstone = PathBuf::from(tombstone_name);
-
-    if afs::rename(path, &tombstone).await.is_err() {
-        return;
-    }
-
-    match afs::read_to_string(&tombstone).await {
-        Ok(contents) if contents == expected_contents => {
-            let _ = afs::remove_file(tombstone).await;
+/// Removes a stale lock only when the contents still match the inspected
+/// snapshot. Publication and cleanup share a stable OS file lock, so checking
+/// ownership and unlinking cannot expose a replacement lock path as vacant.
+fn remove_stale_serve_lock(path: &Path, expected_contents: &str) {
+    let _guard = match lock_serve_lock(path) {
+        Ok(guard) => guard,
+        Err(error) => {
+            warn!(?error, ?path, "could not lock serve lock for stale cleanup");
+            return;
         }
-        Ok(_) => {
-            // A different lock won the race with our initial read. Restore it
-            // only if nobody has already published another lock at `path`.
-            if let Err(error) = afs::hard_link(&tombstone, path).await {
-                warn!(
-                    ?error,
-                    ?path,
-                    "could not restore changed serve lock; leaving tombstone in place"
-                );
-            } else {
-                let _ = afs::remove_file(tombstone).await;
+    };
+    remove_stale_serve_lock_locked(path, expected_contents);
+}
+
+fn remove_stale_serve_lock_locked(path: &Path, expected_contents: &str) {
+    match fs::read_to_string(path) {
+        Ok(contents) if contents == expected_contents => {
+            if let Err(error) = fs::remove_file(path) {
+                warn!(?error, ?path, "could not remove stale serve lock");
             }
         }
-        Err(error) => {
-            warn!(
-                ?error,
-                ?path,
-                "could not inspect moved serve lock; leaving tombstone in place"
-            );
-        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => warn!(?error, ?path, "could not inspect serve lock for stale cleanup"),
     }
 }
 
@@ -299,7 +302,7 @@ pub async fn create_serve_lock(
     addrs: &[SocketAddr],
     web_port: Option<u16>,
     web_bindings: Vec<String>,
-) -> Result<()> {
+) -> Result<ServeLock> {
     let info = ServeInfo {
         node_id: node_id.to_string(),
         pid: std::process::id(),
@@ -310,6 +313,18 @@ pub async fn create_serve_lock(
     };
     let contents = serde_json::to_string_pretty(&info)?;
     let lock_path = Path::new(SERVE_LOCK);
+    let _guard = lock_serve_lock(lock_path)?;
+    publish_serve_lock_reclaiming_stale_locked(lock_path, &contents)?;
+    Ok(ServeLock { contents })
+}
+
+/// Atomically publishes a lock only if no serve process already owns it.
+fn publish_serve_lock(lock_path: &Path, contents: &str) -> Result<()> {
+    let _guard = lock_serve_lock(lock_path)?;
+    publish_serve_lock_locked(lock_path, contents)
+}
+
+fn publish_serve_lock_locked(lock_path: &Path, contents: &str) -> Result<()> {
     let parent = lock_path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -318,17 +333,35 @@ pub async fn create_serve_lock(
         .prefix(".iroh-serve-lock-")
         .tempfile_in(parent)?;
     temporary.write_all(contents.as_bytes())?;
-    temporary.persist(lock_path).map_err(|error| error.error)?;
+    temporary
+        .persist_noclobber(lock_path)
+        .map(|_| ())
+        .map_err(|error| error.error)?;
     Ok(())
 }
 
-/// Removes the serve lock file.
+fn publish_serve_lock_reclaiming_stale_locked(lock_path: &Path, contents: &str) -> Result<()> {
+    if let Ok(existing) = fs::read_to_string(lock_path) {
+        if let Ok(existing_info) = serde_json::from_str::<ServeInfo>(&existing) {
+            if !is_process_alive(existing_info.pid, existing_info.start_time) {
+                remove_stale_serve_lock_locked(lock_path, &existing);
+            }
+        }
+    }
+    publish_serve_lock_locked(lock_path, contents)
+}
+
+/// Removes this serve instance's lock file, if it is still the current owner.
 ///
-/// Called during graceful shutdown to indicate the serve is no longer running.
-/// Errors are silently ignored (file may already be removed).
-pub async fn remove_serve_lock() -> Result<()> {
-    let _ = afs::remove_file(SERVE_LOCK).await;
+/// Called during graceful shutdown. A replacement lock published by another
+/// serve process is preserved.
+pub async fn remove_serve_lock(lock: ServeLock) -> Result<()> {
+    remove_serve_lock_at(Path::new(SERVE_LOCK), &lock.contents);
     Ok(())
+}
+
+fn remove_serve_lock_at(lock_path: &Path, expected_contents: &str) {
+    remove_stale_serve_lock(lock_path, expected_contents);
 }
 /// Options for [`cmd_serve`], mirroring the `serve` CLI flags.
 #[derive(Debug, Clone)]
@@ -1973,7 +2006,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     // Write the lock file before printing status so it exists when callers
     // detect the server via stdout output (integration tests depend on this).
     info!("serve startup: writing serve lock (#190 breadcrumb)");
-    create_serve_lock(&serve_node_id, &local_addrs, web_port, web_binding_addrs).await?;
+    let serve_lock =
+        create_serve_lock(&serve_node_id, &local_addrs, web_port, web_binding_addrs).await?;
     info!("serve startup: serve lock written, printing node status (#190 breadcrumb)");
 
     status!("node: {serve_node_id}");
@@ -2338,7 +2372,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     };
 
     tokio::signal::ctrl_c().await?;
-    remove_serve_lock().await?;
+    remove_serve_lock(serve_lock).await?;
     router.shutdown().await?;
     #[cfg(feature = "web")]
     if let Some(sync_task) = _event_sync_handle {
@@ -2395,9 +2429,96 @@ mod tests {
         let replacement_file = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
         std::fs::write(replacement_file.path(), replacement).unwrap();
         replacement_file.persist(&path).unwrap();
-        remove_stale_serve_lock(&path, stale).await;
+        remove_stale_serve_lock(&path, stale);
 
         assert_eq!(afs::read_to_string(path).await.unwrap(), replacement);
+    }
+
+    #[test]
+    fn competing_serve_starts_publish_only_one_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("serve.lock");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let publishers = [r#"{"pid":1}"#, r#"{"pid":2}"#].map(|contents| {
+            let path = path.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                publish_serve_lock(&path, contents).is_ok()
+            })
+        });
+
+        barrier.wait();
+        let successes = publishers
+            .into_iter()
+            .map(|publisher| publisher.join().unwrap())
+            .filter(|success| *success)
+            .count();
+
+        assert_eq!(successes, 1, "exactly one serve start must own the lock");
+        let contents = std::fs::read_to_string(path).unwrap();
+        assert!(
+            contents == r#"{"pid":1}"# || contents == r#"{"pid":2}"#,
+            "the published lock must be one complete contender's record"
+        );
+    }
+
+    #[test]
+    fn shutdown_preserves_a_replacement_serve_lock_without_vacating_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("serve.lock");
+        let incumbent = r#"{"pid":1}"#;
+        let replacement = r#"{"pid":2}"#;
+        let third = r#"{"pid":3}"#;
+        publish_serve_lock(&path, incumbent).unwrap();
+
+        // Hold the same interprocess guard while installing a replacement and
+        // starting both a late cleanup and a third publisher. Neither may
+        // observe a temporarily vacant public lock path.
+        let guard = lock_serve_lock(&path).unwrap();
+        fs::write(&path, replacement).unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let cleanup_path = path.clone();
+        let cleanup_barrier = barrier.clone();
+        let cleanup = std::thread::spawn(move || {
+            cleanup_barrier.wait();
+            remove_serve_lock_at(&cleanup_path, incumbent);
+        });
+        let publish_path = path.clone();
+        let publish_barrier = barrier.clone();
+        let publisher = std::thread::spawn(move || {
+            publish_barrier.wait();
+            publish_serve_lock(&publish_path, third)
+        });
+        barrier.wait();
+        assert_eq!(fs::read_to_string(&path).unwrap(), replacement);
+        drop(guard);
+
+        cleanup.join().unwrap();
+        assert!(publisher.join().unwrap().is_err());
+        assert_eq!(fs::read_to_string(path).unwrap(), replacement);
+    }
+
+    #[test]
+    fn startup_reclaims_a_dead_process_lock_before_no_clobber_publish() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("serve.lock");
+        let stale = serde_json::to_string(&ServeInfo {
+            node_id: "stale".to_owned(),
+            pid: i32::MAX as u32,
+            addrs: Vec::new(),
+            web_port: None,
+            web_bindings: Vec::new(),
+            start_time: None,
+        })
+        .unwrap();
+        let current = r#"{"pid":42}"#;
+        fs::write(&path, stale).unwrap();
+
+        let _guard = lock_serve_lock(&path).unwrap();
+        publish_serve_lock_reclaiming_stale_locked(&path, current).unwrap();
+
+        assert_eq!(fs::read_to_string(path).unwrap(), current);
     }
 
     fn stale_test_peer(seed: u8) -> id_core::discovery::PeerInfo {
