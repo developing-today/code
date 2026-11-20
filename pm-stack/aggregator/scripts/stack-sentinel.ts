@@ -191,6 +191,23 @@ async function round(state: SentinelStateFile): Promise<void> {
     // the failure streak recorded on the entry.
     const entry = applySentinelProbe(state.services[target.id], verdict, now);
     state.services[target.id] = entry;
+    // C3 health hooks: fire the matching failure-triggered hook on a
+    // transition for the two monitored targets. Fire-and-forget; a hook
+    // failure never blocks the sentinel round.
+    const hookTarget =
+      target.id === "aggregator" ? "pm-stack-reachable" :
+      target.id === "opencode" ? "opencode-working" : null;
+    if (hookTarget && entry.postedState !== entry.state) {
+      const caller = "stack-sentinel";
+      const hookPath = join(homedir(), "git", "code", "pm-stack", "health-hooks", `${hookTarget}.sh`);
+      try {
+        Bun.spawn([hookPath, "--caller", caller, "--detail", entry.detail ?? ""], {
+          stdout: "ignore", stderr: "ignore",
+        });
+      } catch (err) {
+        console.error(`stack-sentinel: failed to spawn C3 hook ${hookTarget}: ${err instanceof Error ? err.message : err}`);
+      }
+    }
     if (entry.postedState !== entry.state) {
       if (!tokenResolved) {
         token = await resolveBwsSecret("pm-aggregator.alerts-intake-token");
