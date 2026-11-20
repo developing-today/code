@@ -65,25 +65,9 @@ is a defect.
 
 ## Filing an issue outside a creator run
 
-**File and enqueue in the same pass.** Any lane that files a GitHub issue
-outside a creator run — a work lane filing a blocker mid-task, an audit
-lane, a hand filing — enqueues that issue's triage packet in the same
-pass, or records in the filing comment why it is deliberately not
-queued. An issue filed without a queue item is invisible to every worker
-lane: nothing dispositions it, and it sits open until someone notices by
-hand (#7016).
-
-```bash
-repo-queue enqueue <packet.json> --queue repo-health-<repo>-pilot
-```
-
-The standing backstop is the coverage reconciliation
-(`scripts/fleet/queue-reconcile/`, `doc` in its README): every open issue
-must hold a **live** task — `queued`, `claimed`, `parked` or `blocked` —
-in its own pilot queue. A `done` task is not coverage, and neither is a
-task in a `*-shadow` queue. When the reconciliation reports uncovered
-issues, the rule above was missed somewhere; fix the filing path, not
-just the import.
+Read the [filing and queue coverage rules](doc/agents/one-queue-claiming-work.md#filing-an-issue-outside-a-creator-run) before filing.
+File and enqueue in the same pass, or record in the filing comment why not.
+Open issues need live pilot tasks; fix uncovered filing paths, not just imports.
 
 ## The one queue: claiming work
 
@@ -100,45 +84,12 @@ only exceptions; the sets are recorded on #8097.
 
 ## Who holds an issue (assignee is not a hold)
 
-Every open issue and PR here used to be auto-assigned to `dezren39`
-(Drew) by a sweeper workflow, so the assignee says nothing about
-ownership. Lanes read it as "Drew-owned" and parked work for an
-"explicit ownership release" that never comes (#7616 collected 50+
-park notes in two days). The rule:
-
-- An issue or PR is **held for a human only** when it carries a hold
-  label: `held`, `user/owned` or `do-not-auto-edit`. `do-not-merge`
-  blocks merging, not working. "Drew-owned" in any runbook means one of
-  these labels, nothing else.
-- **Assignees never hold work**, whoever they are, and neither does a
-  `work/assigned` label. Which worker holds a task is the queue's
-  atomic claim, not a label or an assignee. Never park, and never wait
-  for a "release" or "handoff", because of an assignee.
-- **A PR or branch authored by `dezren39` is not Drew's either.** Fleet
-  agents push and open PRs under that account, so authorship is fleet
-  work product, not a hold. A PR is someone else's only if a live queue
-  claim holds it or it carries a hold label.
-- Check before parking on ownership (exit 0 = workable, 3 = held):
-
-  ```bash
-  python3 pm-stack/lane-guard/lane_guard.py hold --repo <owner/repo> --issue <n>
-  ```
-
-- **One park note, not one per cycle.** Before posting a parked or
-  picked-up agent note, run the note check and skip the comment on
-  exit 3; record the park in the queue checkpoint instead.
-
-  ```bash
-  python3 pm-stack/lane-guard/lane_guard.py note --repo <owner/repo> \
-    --issue <n> --task <task-id> --state parked
-  ```
-
-  When it says to post, start the note with the `header` line it
-  prints. Progress notes (PR opened, blocked, completed) always post.
-
-- A task too big for one run is not a reason to park without code:
-  land the next reviewable slice as a PR (or a checkpointed branch)
-  and park with that slice named as the resume point.
+Read the [ownership and note rules](doc/agents/one-queue-claiming-work.md#who-holds-an-issue-assignee-is-not-a-hold) before acting on ownership.
+Only `held`, `user/owned`, and `do-not-auto-edit` hold for a human;
+`do-not-merge` blocks merging only. Assignee, authorship and `work/assigned`
+are not holds; workers own tasks by atomic claim. Check holds before parking
+for ownership; check notes before posting a park/pickup note. Always post
+progress notes. Land or checkpoint a reviewable slice before parking for size.
 
 ## Research, design and delivery workflow
 
