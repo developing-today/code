@@ -8,7 +8,7 @@
 // Routes and auth: see routes.js and auth.js. The access token is the
 // Worker secret ACCESS_TOKEN; it is never in git.
 import { DurableObject } from "cloudflare:workers";
-import { ackSelector, normalizeChannel, normalizeNew, normalizeQuery } from "./messages.js";
+import { OAUTH_MAX_CLIENTS, OAUTH_MAX_EVENTS, ackSelector, normalizeChannel, normalizeNew, normalizeQuery } from "./messages.js";
 import { route } from "./routes.js";
 
 export class MessageStore extends DurableObject {
@@ -44,6 +44,51 @@ export class MessageStore extends DurableObject {
       exp INTEGER NOT NULL,
       revoked INTEGER NOT NULL DEFAULT 0
     )`);
+    // Registered OAuth clients, keyed by a short random id, and the last
+    // few sign-in events (no secrets) for diagnosing a failed connect.
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS oauth_client (
+      id TEXT PRIMARY KEY,
+      meta TEXT NOT NULL,
+      created INTEGER NOT NULL,
+      used INTEGER
+    )`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS oauth_event (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      detail TEXT NOT NULL
+    )`);
+  }
+
+  /** Stores a new client; false when the table is full. */
+  oauthClientAdd(id, meta) {
+    const now = Math.floor(Date.now() / 1000);
+    // Never-used registrations go after a day, idle ones after 90 days.
+    this.sql.exec("DELETE FROM oauth_client WHERE (used IS NULL AND created < ?) OR used < ?", now - 86400, now - 90 * 86400);
+    const count = this.sql.exec("SELECT COUNT(*) AS n FROM oauth_client").one().n;
+    if (count >= OAUTH_MAX_CLIENTS) return false;
+    this.sql.exec("INSERT INTO oauth_client (id, meta, created) VALUES (?, ?, ?)", id, JSON.stringify(meta), now);
+    return true;
+  }
+
+  /** The client's metadata, or null; touch marks it used. */
+  oauthClientGet(id, touch = false) {
+    const row = this.sql.exec("SELECT meta FROM oauth_client WHERE id = ?", id).toArray()[0];
+    if (!row) return null;
+    if (touch) this.sql.exec("UPDATE oauth_client SET used = ? WHERE id = ?", Math.floor(Date.now() / 1000), id);
+    return JSON.parse(row.meta);
+  }
+
+  oauthLog(kind, detail) {
+    this.sql.exec("INSERT INTO oauth_event (ts, kind, detail) VALUES (?, ?, ?)", new Date().toISOString(), kind, JSON.stringify(detail));
+    this.sql.exec("DELETE FROM oauth_event WHERE id <= (SELECT MAX(id) FROM oauth_event) - ?", OAUTH_MAX_EVENTS);
+  }
+
+  oauthEvents() {
+    return this.sql
+      .exec("SELECT ts, kind, detail FROM oauth_event ORDER BY id DESC")
+      .toArray()
+      .map((r) => ({ ts: r.ts, kind: r.kind, ...JSON.parse(r.detail) }));
   }
 
   /** Marks a code used; false when it already was. */
@@ -176,6 +221,10 @@ function storeFor(env) {
     oauthClaim: (jti, exp) => stub.oauthClaim(jti, exp),
     oauthFamilyStart: (fam, jti, exp) => stub.oauthFamilyStart(fam, jti, exp),
     oauthFamilyRotate: (fam, jti, next, exp) => stub.oauthFamilyRotate(fam, jti, next, exp),
+    oauthClientAdd: (id, meta) => stub.oauthClientAdd(id, meta),
+    oauthClientGet: (id, touch) => stub.oauthClientGet(id, touch),
+    oauthLog: (kind, detail) => stub.oauthLog(kind, detail),
+    oauthEvents: () => stub.oauthEvents(),
   };
 }
 

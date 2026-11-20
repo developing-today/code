@@ -133,12 +133,35 @@ export function normalizeQuery(q = {}) {
  * In-memory store with the same interface as the Durable Object, used
  * by the tests and as the reference for the SQL in index.js.
  */
+export const OAUTH_MAX_CLIENTS = 500;
+export const OAUTH_MAX_EVENTS = 100;
+
 export class MemoryStore {
   constructor(now = () => new Date().toISOString()) {
     this.rows = [];
     this.now = now;
     this.claimed = new Map();
     this.families = new Map();
+    this.clients = new Map();
+    this.events = [];
+  }
+  async oauthClientAdd(id, meta) {
+    if (this.clients.size >= OAUTH_MAX_CLIENTS) return false;
+    this.clients.set(id, { meta: JSON.parse(JSON.stringify(meta)), used: null });
+    return true;
+  }
+  async oauthClientGet(id, touch = false) {
+    const c = this.clients.get(id);
+    if (!c) return null;
+    if (touch) c.used = Date.now();
+    return JSON.parse(JSON.stringify(c.meta));
+  }
+  async oauthLog(kind, detail) {
+    this.events.unshift({ ts: this.now(), kind, ...detail });
+    this.events.length = Math.min(this.events.length, OAUTH_MAX_EVENTS);
+  }
+  async oauthEvents() {
+    return this.events.map((e) => ({ ...e }));
   }
   // OAuth bookkeeping (oauth.js): single-use codes and refresh-token
   // families, same semantics as the Durable Object's SQL.

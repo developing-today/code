@@ -275,7 +275,8 @@ test("approval refuses wrong secrets, foreign origins, bad PKCE and unregistered
 
 test("confidential clients must present their secret", async () => {
   const { call } = harness();
-  const client = await registerClient(call); // defaults to client_secret_basic
+  const client = await registerClient(call); // no method given: client_secret_post, basic accepted too
+  assert.equal(client.token_endpoint_auth_method, "client_secret_post");
   assert.ok(client.client_secret);
   const twin = await registerClient(call);
   assert.notEqual(twin.client_id, client.client_id, "identical metadata still gets its own client");
@@ -296,4 +297,36 @@ test("confidential clients must present their secret", async () => {
     form({ ...body, code: await newCode(), client_id: client.client_id, client_secret: client.client_secret }),
   );
   assert.equal(withPost.status, 200);
+});
+
+test("client ids are short, stored, and sign-ins leave a secret-free trail for the owner", async () => {
+  const { call } = harness();
+  const { client, tokens } = await signIn(call, { secret: `${ORIGIN}/p/${TOKEN}` });
+  assert.match(client.client_id, /^mbc_[A-Za-z0-9_-]{22}$/);
+  assert.ok(tokens.access_token.length < 200, "tokens stay compact");
+  // A made-up or old-style (signed blob) client id is unknown.
+  for (const id of ["mbc_" + "A".repeat(22), "eyJ0eXAiOiJjbGllbnQifQ.abc"]) {
+    const page = await call(authorizeQuery(id));
+    assert.equal(page.status, 400);
+    assert.match(await page.text(), /unknown app/);
+  }
+  const res = await call(`/api/${TOKEN}/oauth-events`);
+  assert.equal(res.status, 200);
+  const { events } = await res.json();
+  const kinds = events.map((e) => e.kind);
+  for (const k of ["registered", "approval_shown", "approved", "token_issued", "authorize_refused"]) assert.ok(kinds.includes(k), k);
+  const reg = events.find((e) => e.kind === "registered");
+  assert.equal(reg.method, "none");
+  assert.deepEqual(reg.redirects, [REDIRECT]);
+  const dump = JSON.stringify(events);
+  for (const secret of [TOKEN, client.client_id, tokens.access_token, tokens.refresh_token]) assert.ok(!dump.includes(secret));
+  // Only the owner sees it.
+  assert.equal((await call(`/api/${GPT}/oauth-events`)).status, 404);
+});
+
+test("a full registry refuses new clients instead of growing", async () => {
+  const { call, store } = harness();
+  for (let i = 0; i < 500; i++) await store.oauthClientAdd(`mbc_${String(i).padStart(22, "0")}`, { r: [REDIRECT], m: "none", n: "" });
+  const res = await call("/register", { method: "POST", body: JSON.stringify({ redirect_uris: [REDIRECT] }) });
+  assert.equal(res.status, 429);
 });

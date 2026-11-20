@@ -37,21 +37,22 @@ an unknown path; the ChatGPT token opens only its `/mcp`. The bare
 address (`/` or `/mcp`, no token) is the same MCP server behind OAuth
 instead: see "Adding it to Claude".
 
-| Route                        | What                                                                                                                                                                                    |
-| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /mcp/<token>`          | MCP server on Claude's channel, Streamable HTTP, stateless JSON answers (`GET` is 405: no server stream)                                                                                |
-| `POST /mcp/<chatgpt token>`  | The same MCP server on ChatGPT's channel                                                                                                                                                |
-| `GET /p/<token>`             | History page: send form + every message, newest first; refreshes every 10 s                                                                                                             |
-| `POST /p/<token>`            | Form post (`body`, optional `sender`, one `to` per recipient, `kind`): stores the inbound messages, redirects to the page                                                               |
-| `GET /api/<token>/messages`  | JSON history: `direction`, `channel` (`claude`/`chatgpt`/`all`), `kind`, `since_id`, `before_id`, `unread_only`, `limit`, `order`                                                       |
-| `POST /api/<token>/messages` | JSON `{"body", "sender", "to", "kind"}`; `to` is `"claude"` (default), `"chatgpt"` or both as a list: one inbound row per recipient; `kind` is `"message"` (default) or `"instruction"` |
-| `POST /api/<token>/ack`      | JSON `{"up_to_id": N}` or `{"ids": [...]}`, with `channel` (default `claude`): marks inbound messages read                                                                              |
-| `GET /healthz`               | `ok`, `configured`, `chatgpt_configured`, `version`, `token_fingerprint`; no data                                                                                                       |
-| `POST /`, `POST /mcp`        | The MCP server with an OAuth bearer token (channel from the approval); 401 with `resource_metadata` without one                                                                         |
-| `/.well-known/oauth-*`       | Protected-resource and authorization-server metadata (also under `/mcp` and as `openid-configuration`)                                                                                  |
-| `POST /register`             | Dynamic client registration: https (or localhost) redirect URIs, public or secret clients                                                                                               |
-| `GET/POST /authorize`        | Approval page (PKCE S256 only): one tap in a browser that opened the history page, otherwise paste the page link or a token                                                             |
-| `POST /token`                | `authorization_code` (with `code_verifier`) and `refresh_token` grants                                                                                                                  |
+| Route                           | What                                                                                                                                                                                    |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /mcp/<token>`             | MCP server on Claude's channel, Streamable HTTP, stateless JSON answers (`GET` is 405: no server stream)                                                                                |
+| `POST /mcp/<chatgpt token>`     | The same MCP server on ChatGPT's channel                                                                                                                                                |
+| `GET /p/<token>`                | History page: send form + every message, newest first; refreshes every 10 s                                                                                                             |
+| `POST /p/<token>`               | Form post (`body`, optional `sender`, one `to` per recipient, `kind`): stores the inbound messages, redirects to the page                                                               |
+| `GET /api/<token>/messages`     | JSON history: `direction`, `channel` (`claude`/`chatgpt`/`all`), `kind`, `since_id`, `before_id`, `unread_only`, `limit`, `order`                                                       |
+| `POST /api/<token>/messages`    | JSON `{"body", "sender", "to", "kind"}`; `to` is `"claude"` (default), `"chatgpt"` or both as a list: one inbound row per recipient; `kind` is `"message"` (default) or `"instruction"` |
+| `POST /api/<token>/ack`         | JSON `{"up_to_id": N}` or `{"ids": [...]}`, with `channel` (default `claude`): marks inbound messages read                                                                              |
+| `GET /api/<token>/oauth-events` | The last 100 connector sign-in events, newest first (registrations with the client's requested metadata, approvals, refusals with the reason); never a secret                           |
+| `GET /healthz`                  | `ok`, `configured`, `chatgpt_configured`, `version`, `token_fingerprint`; no data                                                                                                       |
+| `POST /`, `POST /mcp`           | The MCP server with an OAuth bearer token (channel from the approval); 401 with `resource_metadata` without one                                                                         |
+| `/.well-known/oauth-*`          | Protected-resource and authorization-server metadata (also under `/mcp` and as `openid-configuration`)                                                                                  |
+| `POST /register`                | Dynamic client registration: https (or localhost) redirect URIs, public or secret clients                                                                                               |
+| `GET/POST /authorize`           | Approval page (PKCE S256 only): one tap in a browser that opened the history page, otherwise paste the page link or a token                                                             |
+| `POST /token`                   | `authorization_code` (with `code_verifier`) and `refresh_token` grants                                                                                                                  |
 
 ## MCP tools
 
@@ -81,10 +82,11 @@ To rotate it, edit or delete the Bitwarden secret and deploy again
 (deleting makes the deploy create a fresh one), then update the
 connector URL in Claude (or ChatGPT, or its Site's token). Rotating the
 access token also revokes every OAuth grant: OAuth's signing key is
-derived from it (client ids, codes and tokens are HMAC-signed). The
-message store keeps only each code's use (codes are single-use) and, per
-refresh-token family, the one refresh token still valid; redeeming an
-older one revokes the family. Approving needs the owner's token, its page
+derived from it (codes and tokens are HMAC-signed). The message store
+keeps the registered clients under short random ids (`mbc_...`; never-used
+ones go after a day, idle ones after 90 days, at most 500), each code's
+use (codes are single-use) and, per refresh-token family, the one refresh
+token still valid; redeeming an older one revokes the family. Approving needs the owner's token, its page
 link, or the owner cookie that opening the history page sets
 (`__Host-`, `Secure`, `HttpOnly`, `SameSite=Lax`, a year); approval
 posts must come from the bridge's own origin. The ChatGPT token approves
@@ -179,3 +181,6 @@ Settings > Connectors > Add custom connector, and paste either:
   path: no sign-in step.
 
 No OAuth client id or secret is needed either way.
+
+If connecting fails, `GET /api/<token>/oauth-events` shows how far the
+sign-in got and why it stopped.

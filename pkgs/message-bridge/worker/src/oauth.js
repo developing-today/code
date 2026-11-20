@@ -7,12 +7,15 @@
 // to approve, then trades the code (PKCE S256 only) at /token for a
 // bearer token it sends with every MCP call.
 //
-// Client ids, the pending request, codes, access and refresh tokens are
+// Registered clients live in the message store under a short random id
+// (client ids of a few hundred characters made Claude's connect step
+// fail). The pending request, codes, access and refresh tokens are
 // HMAC-signed blobs. The key is derived from ACCESS_TOKEN, so rotating
-// that token revokes every grant at once. The message store keeps only
-// what signing can't: each code's use (codes are single-use) and, per
-// refresh-token family, the one refresh token still valid. Redeeming an
-// older one revokes the family.
+// that token revokes every grant at once. The store also keeps each
+// code's use (codes are single-use) and, per refresh-token family, the
+// one refresh token still valid; redeeming an older one revokes the
+// family. The last sign-in events (never a secret) are kept for the
+// owner at /api/<token>/oauth-events.
 //
 // Approving needs the owner: a browser that has opened the history page
 // (/p/<token>) carries a signed owner cookie and gets a one-tap Allow;
@@ -40,6 +43,18 @@ const SCOPE = "messages";
 
 const nowSec = () => Math.floor(Date.now() / 1000);
 const randomId = () => b64u(crypto.getRandomValues(new Uint8Array(16)));
+const CLIENT_ID = /^mbc_[A-Za-z0-9_-]{22}$/;
+
+/** Records a sign-in event for the owner; never lets logging break a sign-in. */
+async function note(store, kind, detail) {
+  try {
+    await store.oauthLog(kind, detail);
+  } catch {
+    // diagnostics only
+  }
+}
+
+const uaOf = (request) => (request.headers.get("user-agent") ?? "").slice(0, 60);
 
 function b64u(bytes) {
   let s = "";
@@ -157,7 +172,7 @@ function validRedirect(uri) {
   return u.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
 }
 
-async function register(request, env) {
+async function register(request, env, store) {
   let data;
   try {
     const text = await request.text();
@@ -167,15 +182,35 @@ async function register(request, env) {
     return oauthError("invalid_client_metadata", "body must be JSON");
   }
   const uris = data?.redirect_uris;
+  const asked = data?.token_endpoint_auth_method;
+  const seen = {
+    ua: uaOf(request),
+    method: typeof asked === "string" ? asked.slice(0, 40) : asked === undefined ? "unset" : typeof asked,
+    redirects: Array.isArray(uris) ? uris.map((u) => String(u).slice(0, 120)) : typeof uris,
+    name: typeof data?.client_name === "string" ? data.client_name.slice(0, 80) : null,
+    grant_types: Array.isArray(data?.grant_types) ? data.grant_types.map(String).slice(0, 5) : null,
+    scope: typeof data?.scope === "string" ? data.scope.slice(0, 80) : null,
+  };
+  const refuse = async (error, description, status) => {
+    await note(store, "register_refused", { ...seen, error: description });
+    return oauthError(error, description, status);
+  };
   if (!Array.isArray(uris) || uris.length === 0 || uris.length > MAX_REDIRECTS || !uris.every(validRedirect)) {
-    return oauthError("invalid_redirect_uri", "redirect_uris must be 1 to 5 https (or localhost) URLs");
+    return refuse("invalid_redirect_uri", "redirect_uris must be 1 to 5 https (or localhost) URLs");
   }
-  const method = data.token_endpoint_auth_method ?? "client_secret_basic";
+  // RFC 7591's default is client_secret_basic, but some MCP clients only
+  // parse "none" and "client_secret_post" back, and /token takes the
+  // secret either way, so an unset method answers client_secret_post.
+  const method = asked ?? "client_secret_post";
   if (!["none", "client_secret_basic", "client_secret_post"].includes(method)) {
-    return oauthError("invalid_client_metadata", "unsupported token_endpoint_auth_method");
+    return refuse("invalid_client_metadata", "unsupported token_endpoint_auth_method");
   }
   const name = typeof data.client_name === "string" ? data.client_name.trim().slice(0, 80) : "";
-  const clientId = await seal(env, { typ: "client", id: randomId(), r: uris, m: method, n: name, iat: nowSec() });
+  const clientId = `mbc_${randomId()}`;
+  if (!(await store.oauthClientAdd(clientId, { r: uris, m: method, n: name }))) {
+    return refuse("invalid_client_metadata", "too many registered clients; try again tomorrow", 429);
+  }
+  await note(store, "registered", { ...seen, client: clientId.slice(0, 10) });
   const out = {
     client_id: clientId,
     client_id_issued_at: nowSec(),
@@ -239,8 +274,8 @@ export async function ownerCookie(env) {
 }
 
 /** Looks the client up and settles the redirect URI, or says why not. */
-async function clientAndRedirect(env, clientId, redirectUri) {
-  const client = await unseal(env, clientId, "client");
+async function clientAndRedirect(store, clientId, redirectUri) {
+  const client = typeof clientId === "string" && CLIENT_ID.test(clientId) ? await store.oauthClientGet(clientId) : null;
   if (!client) return { error: "This connection request is from an unknown app. Start again from Claude." };
   const uri = redirectUri || (client.r.length === 1 ? client.r[0] : null);
   if (!uri || !client.r.includes(uri)) return { error: "This connection request has a return address the app didn't register." };
@@ -267,14 +302,21 @@ ${proof}
   return htmlPage("Connect to Message Bridge", inner, error ? 401 : 200, new URL(uri).origin);
 }
 
-async function authorizeGet(request, env, url) {
+async function authorizeGet(request, env, url, store) {
   const p = url.searchParams;
-  const found = await clientAndRedirect(env, p.get("client_id"), p.get("redirect_uri"));
-  if (found.error) return errorPage(found.error);
+  const found = await clientAndRedirect(store, p.get("client_id"), p.get("redirect_uri"));
+  const who = { ua: uaOf(request), client: String(p.get("client_id") ?? "").slice(0, 10) };
+  if (found.error) {
+    await note(store, "authorize_refused", { ...who, error: found.error });
+    return errorPage(found.error);
+  }
   const { client, uri } = found;
   const state = p.get("state") ?? undefined;
   if (state && state.length > MAX_STATE) return errorPage("The request's state is too long.");
-  const fail = (error, description) => redirectTo(uri, { error, error_description: description, state, iss: url.origin });
+  const fail = async (error, description) => {
+    await note(store, "authorize_refused", { ...who, error: description });
+    return redirectTo(uri, { error, error_description: description, state, iss: url.origin });
+  };
   if (p.get("response_type") !== "code") return fail("unsupported_response_type", "only code is supported");
   const challenge = p.get("code_challenge");
   if (!challenge || !/^[A-Za-z0-9_-]{43,128}$/.test(challenge)) return fail("invalid_request", "code_challenge is required");
@@ -287,7 +329,9 @@ async function authorizeGet(request, env, url) {
     s: state,
     exp: nowSec() + REQUEST_TTL,
   });
-  return approvalPage({ client, uri, req, owner: await cookieOwner(request, env), origin: url.origin });
+  const owner = await cookieOwner(request, env);
+  await note(store, "approval_shown", { ...who, one_tap: owner });
+  return approvalPage({ client, uri, req, owner, origin: url.origin });
 }
 
 /** Pulls a token out of a pasted page link, connector URL or bare token. */
@@ -297,7 +341,7 @@ function pastedToken(text) {
   return m ? m[1] : s;
 }
 
-async function authorizePost(request, env, url) {
+async function authorizePost(request, env, url, store) {
   // Same-origin form posts only (the owner cookie is SameSite=Lax too).
   if (request.headers.get("origin") !== url.origin) return errorPage("This form can only be sent from its own page.", 403);
   const text = await request.text();
@@ -305,10 +349,12 @@ async function authorizePost(request, env, url) {
   const form = new URLSearchParams(text);
   const req = await unseal(env, form.get("req"), "req");
   if (!req) return errorPage("This approval page expired. Start the connection again from Claude.");
-  const found = await clientAndRedirect(env, req.c, req.r);
+  const found = await clientAndRedirect(store, req.c, req.r);
   if (found.error) return errorPage(found.error);
   const { client, uri } = found;
+  const who = { ua: uaOf(request), client: req.c.slice(0, 10) };
   if (form.get("action") !== "allow") {
+    await note(store, "denied", who);
     return redirectTo(uri, { error: "access_denied", error_description: "the owner denied access", state: req.s, iss: url.origin });
   }
   let channel = null;
@@ -326,6 +372,7 @@ async function authorizePost(request, env, url) {
     channel = "claude";
   }
   if (!channel) {
+    await note(store, "approval_refused", { ...who, pasted: Boolean(secret) });
     const again = await seal(env, { ...req, exp: nowSec() + REQUEST_TTL });
     return approvalPage({
       client,
@@ -345,6 +392,7 @@ async function authorizePost(request, env, url) {
     ch: channel,
     exp: nowSec() + CODE_TTL,
   });
+  await note(store, "approved", { ...who, channel });
   const res = redirectTo(uri, { code, state: req.s, iss: url.origin });
   if (setCookie) res.headers.append("set-cookie", setCookie);
   return res;
@@ -392,44 +440,50 @@ async function token(request, env, store) {
       return oauthError("invalid_client", "bad client credentials", 401);
     }
   }
-  const client = await unseal(env, clientId, "client");
-  if (!client) return oauthError("invalid_client", "unknown client", 401);
-  if (client.m !== "none" && !safeEqual(secret ?? "", await clientSecretFor(env, clientId))) {
-    return oauthError("invalid_client", "bad client credentials", 401);
-  }
   const grant = form.get("grant_type");
+  const who = { ua: uaOf(request), client: String(clientId ?? "").slice(0, 10), grant: String(grant ?? "").slice(0, 30) };
+  const refuse = async (error, description, status) => {
+    await note(store, "token_refused", { ...who, error: description });
+    return oauthError(error, description, status);
+  };
+  const client = typeof clientId === "string" && CLIENT_ID.test(clientId) ? await store.oauthClientGet(clientId, true) : null;
+  if (!client) return refuse("invalid_client", "unknown client", 401);
+  if (client.m !== "none" && !safeEqual(secret ?? "", await clientSecretFor(env, clientId))) {
+    return refuse("invalid_client", "bad client credentials", 401);
+  }
   if (grant === "authorization_code") {
     const code = await unseal(env, form.get("code"), "code");
-    if (!code || code.c !== clientId) return oauthError("invalid_grant", "the code is invalid or expired");
+    if (!code || code.c !== clientId) return refuse("invalid_grant", "the code is invalid or expired");
     const redirectUri = form.get("redirect_uri");
-    if (redirectUri && redirectUri !== code.r) return oauthError("invalid_grant", "redirect_uri doesn't match");
+    if (redirectUri && redirectUri !== code.r) return refuse("invalid_grant", "redirect_uri doesn't match");
     const verifier = form.get("code_verifier") ?? "";
     if (!/^[A-Za-z0-9._~-]{43,128}$/.test(verifier) || (await pkceChallenge(verifier)) !== code.cc) {
-      return oauthError("invalid_grant", "code_verifier doesn't match");
+      return refuse("invalid_grant", "code_verifier doesn't match");
     }
     if (!code.jti || !(await store.oauthClaim(code.jti, code.exp))) {
-      return oauthError("invalid_grant", "the code was already used");
+      return refuse("invalid_grant", "the code was already used");
     }
     const fam = randomId();
     const jti = randomId();
     const exp = nowSec() + REFRESH_TTL;
     await store.oauthFamilyStart(fam, jti, exp);
+    await note(store, "token_issued", { ...who, channel: code.ch });
     return issueTokens(env, clientId, code.ch, fam, jti, exp);
   }
   if (grant === "refresh_token") {
     const rt = await unseal(env, form.get("refresh_token"), "rt");
     if (!rt || rt.c !== clientId || !rt.fam || !rt.jti) {
-      return oauthError("invalid_grant", "the refresh token is invalid or expired");
+      return refuse("invalid_grant", "the refresh token is invalid or expired");
     }
     const next = randomId();
     const exp = nowSec() + REFRESH_TTL;
     const outcome = await store.oauthFamilyRotate(rt.fam, rt.jti, next, exp);
     if (outcome !== "ok") {
-      return oauthError("invalid_grant", outcome === "replay" ? "the refresh token was already used; sign in again" : "the refresh token is invalid or expired");
+      return refuse("invalid_grant", outcome === "replay" ? "the refresh token was already used; sign in again" : "the refresh token is invalid or expired");
     }
     return issueTokens(env, clientId, rt.ch, rt.fam, next, exp);
   }
-  return oauthError("unsupported_grant_type", "use authorization_code or refresh_token");
+  return refuse("unsupported_grant_type", "use authorization_code or refresh_token");
 }
 
 // --- entry points ----------------------------------------------------
@@ -508,9 +562,9 @@ export async function handleOAuth(request, env, url, getStore) {
     }
     return jsonRes(authServerMetadata(url.origin), 200, CORS);
   }
-  if (path === "/register") return request.method === "POST" ? register(request, env) : oauthError("invalid_request", "use POST", 405);
+  if (path === "/register") return request.method === "POST" ? register(request, env, getStore()) : oauthError("invalid_request", "use POST", 405);
   if (path === "/token") return request.method === "POST" ? token(request, env, getStore()) : oauthError("invalid_request", "use POST", 405);
-  if (request.method === "GET" || request.method === "HEAD") return authorizeGet(request, env, url);
-  if (request.method === "POST") return authorizePost(request, env, url);
+  if (request.method === "GET" || request.method === "HEAD") return authorizeGet(request, env, url, getStore());
+  if (request.method === "POST") return authorizePost(request, env, url, getStore());
   return errorPage("Method not allowed.", 405);
 }

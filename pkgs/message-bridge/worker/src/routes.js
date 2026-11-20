@@ -18,6 +18,9 @@
 //                                     both; kind is "message" (default) or
 //                                     "instruction" (agents see no sender)
 //   POST /api/<token>/ack             JSON {up_to_id | ids, channel}: mark read
+//   GET  /api/<token>/oauth-events    the last connector sign-in events
+//                                     (registrations, approvals, refusals;
+//                                     no secrets), newest first
 //   GET  /healthz                     {ok, configured, chatgpt_configured,
 //                                     version, token_fingerprint}, no data
 //   POST / and POST /mcp              the MCP server for a connector added
@@ -156,6 +159,10 @@ async function handleApi(request, store, rest, url) {
       return json({ message: messages[0], messages }, 201);
     }
     return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET, POST" } });
+  }
+  if (what === "oauth-events") {
+    if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET" } });
+    return json({ events: await store.oauthEvents() });
   }
   if (what === "ack") {
     if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { allow: "POST" } });
