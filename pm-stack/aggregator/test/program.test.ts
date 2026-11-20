@@ -511,14 +511,14 @@ describe("renderProgramProject", () => {
     // parsed markup or a substitute link badge.
     expect(html).toContain("Roadmap timeline by theme");
     expect(html).toContain("Blank notes row");
-    expect(html).toContain('<p class="notes">' + escaped + '</p>');
+    expect(html).toContain('<p class="notes">' + escaped + "</p>");
     expect(html.split('<p class="notes">')).toHaveLength(2);
     expect(html).not.toContain(notes);
     expect(html).not.toContain("Other area notes");
     expect(renderRoadmap([row], items, PROV)).not.toContain(escaped);
     const drill = new Map([[row.subject, { children: [] }]]);
     const sharedHtml = renderRoadmap([row], items, PROV, "quarter", undefined, undefined, undefined, drill);
-    expect(sharedHtml).toContain('<p class="notes">' + escaped + '</p>');
+    expect(sharedHtml).toContain('<p class="notes">' + escaped + "</p>");
     expect(sharedHtml.split('<p class="notes">')).toHaveLength(2);
   });
 

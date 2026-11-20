@@ -3416,7 +3416,10 @@ async function handler(req: Request): Promise<Response> {
     const resolved = await resolveView(url);
     if (!resolved) {
       const annotatedRows = await Promise.all(
-        genealogyRows.map(async (row) => ({ ...row, annotations: await roadmapAnnotationsStore.forObject(row.subject) })),
+        genealogyRows.map(async (row) => ({
+          ...row,
+          annotations: await roadmapAnnotationsStore.forObject(row.subject),
+        })),
       );
       return json({
         rows: annotatedRows,
@@ -3431,7 +3434,10 @@ async function handler(req: Request): Promise<Response> {
     const { rows: keptRows, items: keptItemMap } = filterRoadmapForView(rows, items, poolByRef, resolved.filters);
     const keptItems = [...keptItemMap.values()];
     const annotatedKeptRows = await Promise.all(
-      enrichRoadmapRows(keptRows, pool).map(async (row) => ({ ...row, annotations: await roadmapAnnotationsStore.forObject(row.subject) })),
+      enrichRoadmapRows(keptRows, pool).map(async (row) => ({
+        ...row,
+        annotations: await roadmapAnnotationsStore.forObject(row.subject),
+      })),
     );
     return json({
       rows: annotatedKeptRows,

@@ -1749,7 +1749,9 @@ class TestSyncManifest(ColdStoreTestBase):
         # The first statement was sent three times, unchanged.
         first = self.d1.requests[0]
         for req in self.d1.requests[1:3]:
-            self.assertEqual((req["sql"], req["params"]), (first["sql"], first["params"]))
+            self.assertEqual(
+                (req["sql"], req["params"]), (first["sql"], first["params"])
+            )
 
     def test_sync_retries_503_too(self):
         self.store.d1_backoff_seconds = 0

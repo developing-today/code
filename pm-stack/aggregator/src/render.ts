@@ -1873,9 +1873,7 @@ function roadmapCard(
   const expansion = drill ? roadmapDrilldown(drill, row, forecasts, spend) : "";
   // The program timeline has no drill map; keep its Notes visible without
   // duplicating the same text when a card already has a drilldown.
-  const rowNotes = showRowNotes && !drill && row.notes.trim()
-    ? `<p class="notes">${esc(row.notes)}</p>`
-    : "";
+  const rowNotes = showRowNotes && !drill && row.notes.trim() ? `<p class="notes">${esc(row.notes)}</p>` : "";
   const epicRollup = epicRollups?.get(row.subject);
   const rollupHtml = epicRollup ? epicRollupHtml(epicRollup) : "";
   const notes = annotations?.get(row.subject) ?? [];
@@ -1982,12 +1980,22 @@ export function renderRoadmap(
       };
       return rank(a) - rank(b) || a.title.localeCompare(b.title);
     });
-    body = ordered.length ? ordered.map((row) => {
-      const priority = row.priority ? `<span class="badge src">Priority <a href="${esc(refUrl(row.priority))}">${esc(row.priority)}</a></span>` : '<span class="badge stale">No priority link</span>';
-      const after = row.afterRefs?.length ? `<span class="muted">After: ${row.afterRefs.map((ref) => `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`).join(", ")}</span>` : '<span class="muted">No predecessor recorded</span>';
-      const release = row.releaseRef ? `<span class="badge src">Release <a href="${esc(refUrl(row.releaseRef))}">${esc(row.releaseRef)}</a></span>` : '<span class="muted">No release linked</span>';
-      return `<div class="card priority-row"><strong><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a></strong><br>${priority} ${release}<br>${after}<br><span class="muted">${esc(row.area)} · ${esc(row.horizon)} · ${esc(row.status)}</span></div>`;
-    }).join("") : '<p class="muted">No priority rows in the current roadmap source.</p>';
+    body = ordered.length
+      ? ordered
+          .map((row) => {
+            const priority = row.priority
+              ? `<span class="badge src">Priority <a href="${esc(refUrl(row.priority))}">${esc(row.priority)}</a></span>`
+              : '<span class="badge stale">No priority link</span>';
+            const after = row.afterRefs?.length
+              ? `<span class="muted">After: ${row.afterRefs.map((ref) => `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`).join(", ")}</span>`
+              : '<span class="muted">No predecessor recorded</span>';
+            const release = row.releaseRef
+              ? `<span class="badge src">Release <a href="${esc(refUrl(row.releaseRef))}">${esc(row.releaseRef)}</a></span>`
+              : '<span class="muted">No release linked</span>';
+            return `<div class="card priority-row"><strong><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a></strong><br>${priority} ${release}<br>${after}<br><span class="muted">${esc(row.area)} · ${esc(row.horizon)} · ${esc(row.status)}</span></div>`;
+          })
+          .join("")
+      : '<p class="muted">No priority rows in the current roadmap source.</p>';
   } else if (grain === "quarter") {
     body = timelineTable(buildTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend);
   } else if (grain === "month") {
@@ -2028,13 +2036,16 @@ export function renderRoadmap(
           .join("")
       : '<p class="muted">No roadmap rows.</p>';
   }
-  const releaseCards = releases.filter((release) => release.kind === "release").map((release) => {
-    const counts = release.counts;
-    const carried = release.carriedOverEpics.length
-      ? `<p>Carried-over epics: ${release.carriedOverEpics.map((ref) => `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`).join(", ")}</p>`
-      : '<p class="muted">No carried-over epics.</p>';
-    return `<article class="card release-card"><h3>${esc(release.milestone.title)}</h3><p>Date: <strong>${esc(release.releaseDate ?? "date not set")}</strong></p><p>Issues: ${counts.issues.closed}/${counts.issues.total} closed · Designs: ${counts.designs.closed}/${counts.designs.total} closed · Epics: ${counts.epics.closed}/${counts.epics.total} closed</p>${carried}<p class="muted">${esc(release.descriptionLine)}</p></article>`;
-  }).join("");
+  const releaseCards = releases
+    .filter((release) => release.kind === "release")
+    .map((release) => {
+      const counts = release.counts;
+      const carried = release.carriedOverEpics.length
+        ? `<p>Carried-over epics: ${release.carriedOverEpics.map((ref) => `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`).join(", ")}</p>`
+        : '<p class="muted">No carried-over epics.</p>';
+      return `<article class="card release-card"><h3>${esc(release.milestone.title)}</h3><p>Date: <strong>${esc(release.releaseDate ?? "date not set")}</strong></p><p>Issues: ${counts.issues.closed}/${counts.issues.total} closed · Designs: ${counts.designs.closed}/${counts.designs.total} closed · Epics: ${counts.epics.closed}/${counts.epics.total} closed</p>${carried}<p class="muted">${esc(release.descriptionLine)}</p></article>`;
+    })
+    .join("");
   const releasesHtml = `<section class="release-snapshots"><h2>Releases</h2>${releaseCards || '<p class="muted">No release close-out snapshots are available.</p>'}<p><a href="/api/releases.json">Releases JSON</a></p></section>`;
   return layout(
     "Roadmap",
@@ -7851,7 +7862,9 @@ export function renderProgramProject(
     const rollups = buildEpicRollups(epicPool);
     const rowRollups = new Map<string, EpicRollup>();
     for (const row of detail.roadmapRows) {
-      const epic = row.links.map((link) => epicPool.find((item) => item.ref === link.ref && item.kind === "Epic")).find(Boolean);
+      const epic = row.links
+        .map((link) => epicPool.find((item) => item.ref === link.ref && item.kind === "Epic"))
+        .find(Boolean);
       const rollup = epic ? rollups.get(epic.ref) : undefined;
       if (rollup) rowRollups.set(row.subject, rollup);
     }
