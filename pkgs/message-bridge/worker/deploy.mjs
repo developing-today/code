@@ -90,6 +90,10 @@ import { tokenFingerprint } from "./src/auth.js";
 const here = dirname(fileURLToPath(import.meta.url));
 const WORKER = "message-bridge";
 const MIN_TOKEN_LENGTH = 32;
+// How long to wait out a versions list that hasn't caught up with an
+// upload: 24 reads, 2.5 s apart, about a minute.
+const LIST_LAG_ATTEMPTS = 24;
+const LIST_LAG_DELAY_MS = 2500;
 
 let args;
 try {
@@ -262,10 +266,11 @@ try {
   if (secretsDir) rmSync(secretsDir, { recursive: true, force: true });
 }
 
-// The versions list can lag a just-finished upload by a few seconds.
+// The versions list can lag a just-finished upload, sometimes by more
+// than 20 seconds, and two reads in a row can disagree.
 let matches = [];
-for (let attempt = 1; attempt <= 8 && matches.length === 0; attempt++) {
-  if (attempt > 1) await new Promise((r) => setTimeout(r, 2500));
+for (let attempt = 1; attempt <= LIST_LAG_ATTEMPTS && matches.length === 0; attempt++) {
+  if (attempt > 1) await new Promise((r) => setTimeout(r, LIST_LAG_DELAY_MS));
   matches = (await listVersions()).filter((v) => v.annotations?.["workers/message"] === message);
 }
 if (matches.length !== 1) {
@@ -389,11 +394,11 @@ async function assertTokenInheritsFromLive(uploadedId = null) {
       stray = strayBeforeCodeOnly(await listVersions(), liveId, uploadedId);
       break;
     } catch (err) {
-      if (!(err instanceof VersionListGap) || attempt >= 8) {
+      if (!(err instanceof VersionListGap) || attempt >= LIST_LAG_ATTEMPTS) {
         if (uploadedId && err instanceof VersionListGap) err.message += ` (version ${uploadedId} was uploaded but not deployed)`;
         throw err;
       }
-      await new Promise((r) => setTimeout(r, 2500));
+      await new Promise((r) => setTimeout(r, LIST_LAG_DELAY_MS));
     }
   }
   if (stray) {
