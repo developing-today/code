@@ -578,7 +578,7 @@ export async function fetchProjectBoardsSnapshot(
   for (const board of boards) {
     try {
       const snapshot = await fetchProjectSnapshot(token, fetchFn, generatedAt, board.nodeId, board.id);
-      if (!snapshot.items.length) throw new Error("board returned zero resolvable items");
+      if (!snapshot.items.length && board.role === "overall") throw new Error("board returned zero resolvable items");
       items.push(...snapshot.items);
       audits[board.id] = snapshot.audit;
       snapshots.push(snapshot.board);

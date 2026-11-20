@@ -164,7 +164,7 @@ import {
 } from "./status-taxonomy.ts";
 import type { ConflictEntry, ConflictInbox } from "./conflicts.ts";
 import { buildItemBrief, type ItemBrief } from "./brief.ts";
-import { buildEpicRollups, isEpicChildDone, type EpicRollup } from "./epics.ts";
+import { buildEpicRollups, isEpicChildDone, uniqueProjectItemsByRef, type EpicRollup } from "./epics.ts";
 import { spendCardHtml, unattributedSpendHtml, type SpendCardsView } from "./spend-cards.ts";
 import { effortWeight, handsLine, summarizeWeights, weightedLine } from "./weights.ts";
 import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
@@ -1782,7 +1782,7 @@ export function buildRoadmapDrill(
 ): Map<string, RoadmapDrill> {
   const epicByRow = new Map(reconciliation.matched.map((m) => [m.row.subject, m.epic] as const));
   const childrenByEpic = new Map<string, ProjectPoolItem[]>();
-  for (const item of pool) {
+  for (const item of uniqueProjectItemsByRef(pool)) {
     if (!item.epicRef) continue;
     const list = childrenByEpic.get(item.epicRef) ?? [];
     list.push(item);

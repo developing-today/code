@@ -137,6 +137,42 @@ describe("project board registry and attribution", () => {
     expect(result.items.map((item) => item.boardId)).toEqual(["devtoday-main", "devtoday-main", "forks-main", "forks-main"]);
     expect(Object.keys(result.audits)).toEqual(["devtoday-main", "forks-main"]);
   });
+
+  test("preserves successful empty satellite board snapshots and audits", async () => {
+    const empty = structuredClone(GQL);
+    empty.data.node.items.totalCount = 0;
+    empty.data.node.items.nodes = [];
+    const fetchFn: typeof fetch = Object.assign(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const request = JSON.parse(String(init?.body)) as { variables: { id: string } };
+        return new Response(JSON.stringify(request.variables.id === PROJECT_BOARDS[1]!.nodeId ? empty : GQL));
+      },
+      { preconnect: () => {} },
+    );
+
+    const result = await fetchProjectBoardsSnapshot("test-token", fetchFn, "2026-11-01T21:00:00.000Z");
+    expect(result.failedBoardIds).toEqual([]);
+    expect(result.items).toHaveLength(4);
+    expect(Object.keys(result.audits)).toEqual(["devtoday-main", "forks-main", "lab-cluster"]);
+    expect(result.boards).toHaveLength(3);
+  });
+
+  test("still treats an empty overall board as a failed source", async () => {
+    const empty = structuredClone(GQL);
+    empty.data.node.items.totalCount = 0;
+    empty.data.node.items.nodes = [];
+    const fetchFn: typeof fetch = Object.assign(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const request = JSON.parse(String(init?.body)) as { variables: { id: string } };
+        return new Response(JSON.stringify(request.variables.id === PROJECT_BOARDS[0]!.nodeId ? empty : GQL));
+      },
+      { preconnect: () => {} },
+    );
+
+    const result = await fetchProjectBoardsSnapshot("test-token", fetchFn, "2026-11-01T21:00:00.000Z");
+    expect(result.failedBoardIds).toEqual(["devtoday-main"]);
+    expect(Object.keys(result.audits)).toEqual(["forks-main", "lab-cluster"]);
+  });
 });
 
 function projectPage(hasNextPage: boolean, endCursor: string | null, totalCount = 25) {
