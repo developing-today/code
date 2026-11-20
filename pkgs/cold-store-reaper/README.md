@@ -189,9 +189,13 @@ environment only):
   `/dump`, rebuilds it into a standalone SQLite file (filed only
   when `PRAGMA integrity_check` passes), gzips it, and files it
   with `put-backup turso`. Each dump download allows
-  `TURSO_DUMP_MAX_TIME_SECONDS` seconds (default 1800; a large
-  database's dump is ~500 MB of SQL and outgrew the old fixed 300 s
-  cap) and gets one whole-request retry on transport failure. When
+  `TURSO_DUMP_MAX_TIME_SECONDS` seconds (default 3600; atlas's dump
+  passed 10 GB of SQL by 2026-11-20) and gets retries on transport
+  failure. The whole step keeps inside
+  `TURSO_EXPORT_DEADLINE_SECONDS` (default 10800): no database starts
+  once it is spent, so the nightly's later steps still run. The
+  databases named in `TURSO_EXPORT_LAST` (default `atlas`) go last,
+  so a slow one cannot keep the others from being filed. When
   `TURSO_PLATFORM_API_TOKEN` is
   unset it prints a one-line skip notice and exits 0 — the nightly
   run never fails for a missing Turso setup — but a database that
