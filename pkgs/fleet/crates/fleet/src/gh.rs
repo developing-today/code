@@ -1148,6 +1148,36 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
     let trace = std::env::var("FLEET_GH_TRACE").is_ok_and(|v| v == "1");
     let mut provider = FleetTokenProvider::new(config, cache_addrs(config, &flags));
     let code = run_with_provider(&mut provider, &gh_bin, &call_args, &sources, trace);
+    // Durable audit trail for App-token writes (#9177 control 3):
+    // record the caller/session identity, the call, and its outcome
+    // so an App-identity write is attributable to a component. Gated
+    // on FLEET_GH_TRACE=1 or FLEET_GH_AUDIT=1; default off to keep
+    // the hot path quiet, but any fleet job that wants attribution
+    // sets one of them (and FLEET_GH_CALLER for its identity).
+    let audit_enabled = std::env::var("FLEET_GH_TRACE").is_ok_and(|v| v == "1")
+        || std::env::var("FLEET_GH_AUDIT").is_ok_and(|v| v == "1");
+    if audit_enabled && !is_read_call(&call_args) {
+        let caller = std::env::var("FLEET_GH_CALLER").unwrap_or_else(|_| "unknown".to_string());
+        let path = std::env::var("FLEET_GH_AUDIT_FILE")
+            .unwrap_or_else(|_| {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                format!("{home}/.fleet/gh-audit.jsonl")
+            });
+        if let Some(parent) = std::path::Path::new(&path).parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let entry = serde_json::json!({
+            "ts": gh_closure::now_unix(),
+            "caller": caller,
+            "read_only": false,
+            "args": call_args,
+            "exit_code": code,
+        });
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            use std::io::Write;
+            let _ = writeln!(f, "{}", entry);
+        }
+    }
     if let Some(i) = intent.filter(|_| code == EXIT_OK) {
         let record = i.record(&gh_closure::Binding::from_env(), gh_closure::now_unix());
         if let Err(e) = gh_closure::append(&gh_closure::log_path(), &record) {
