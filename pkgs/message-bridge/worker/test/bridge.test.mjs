@@ -31,7 +31,12 @@ test("safeEqual and token paths", () => {
   assert.ok(safeEqual("abc", "abc"));
   assert.ok(!safeEqual("abc", "abd"));
   assert.ok(!safeEqual("abc", "abcd"));
-  assert.deepEqual(matchTokenPath(`/api/${TOKEN}/messages`, env), { area: "api", rest: ["messages"] });
+  assert.deepEqual(matchTokenPath(`/api/${TOKEN}/messages`, env), {
+    area: "api",
+    rest: ["messages"],
+    role: "owner",
+    channel: "claude",
+  });
   assert.equal(matchTokenPath(`/api/wrong/messages`, env), null);
   assert.equal(matchTokenPath(`/mcp/${TOKEN}`, { ACCESS_TOKEN: "short" }), null, "short token disables access");
   assert.equal(matchTokenPath(`/mcp/${TOKEN}`, {}), null, "no token disables access");
@@ -45,7 +50,13 @@ test("wrong or missing token is a plain 404 everywhere", async () => {
   }
   const health = await (await call("/healthz")).json();
   const { tokenFingerprint } = await import("../src/auth.js");
-  assert.deepEqual(health, { ok: true, configured: true, version: null, token_fingerprint: await tokenFingerprint(TOKEN) });
+  assert.deepEqual(health, {
+    ok: true,
+    configured: true,
+    chatgpt_configured: false,
+    version: null,
+    token_fingerprint: await tokenFingerprint(TOKEN),
+  });
   assert.doesNotMatch(JSON.stringify(health), new RegExp(TOKEN));
 });
 
@@ -426,6 +437,7 @@ test("cloudflare.config.ts matches wrangler.jsonc", async () => {
   assert.equal(pick(/name: "([^"]+)"/, cfg), pick(/"name": "([^"]+)"/, wr));
   assert.equal(pick(/compatibilityDate: "([^"]+)"/, cfg), pick(/"compatibility_date": "([^"]+)"/, wr));
   assert.equal(pick(/PUBLIC_URL: bindings\.text\("([^"]+)"\)/, cfg), pick(/"PUBLIC_URL": "([^"]+)"/, wr));
+  assert.equal(pick(/WORKERS_DEV_URL: bindings\.text\("([^"]+)"\)/, cfg), pick(/"WORKERS_DEV_URL": "([^"]+)"/, wr));
   assert.ok(cfg.includes('MESSAGES: bindings.durableObject({ worker: "message-bridge", exportName: "MessageStore" })'));
   assert.ok(wr.includes('"name": "MESSAGES", "class_name": "MessageStore"'));
 });
@@ -461,4 +473,109 @@ test("healthVersionProblem rejects a different reported version", async () => {
   // a different, configured version is wrong either way
   assert.match(healthVersionProblem({ version: "v3" }, "v1"), /answered from version v3, not v1/);
   assert.match(healthVersionProblem({ version: "v3" }, "v1", { requireVersion: true }), /v3/);
+});
+
+const GPT = "g".repeat(24) + "chatgpt-token-0123456789";
+
+function twoChannels() {
+  const env2 = { ACCESS_TOKEN: TOKEN, CHATGPT_TOKEN: GPT };
+  const store = new MemoryStore(() => "2026-11-19T00:00:00.000Z");
+  const call = (path, init) => route(new Request(BASE + path, init), env2, () => store);
+  let rpcId = 0;
+  const tool = async (token, name, args) => {
+    const res = await call(`/mcp/${token}`, {
+      method: "POST",
+      body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method: "tools/call", params: { name, arguments: args } }),
+    });
+    assert.equal(res.status, 200);
+    return (await res.json()).result;
+  };
+  return { env2, store, call, tool };
+}
+
+test("the ChatGPT token opens only its own MCP channel", async () => {
+  const { env2, call } = twoChannels();
+  assert.deepEqual(matchTokenPath(`/mcp/${GPT}`, env2), { area: "mcp", rest: [], role: "chatgpt", channel: "chatgpt" });
+  for (const path of [`/p/${GPT}`, `/api/${GPT}/messages`, `/api/${GPT}/ack`]) {
+    assert.equal((await call(path)).status, 404, path);
+    assert.equal((await call(path, { method: "POST", body: "{}" })).status, 404, path);
+  }
+  // A ChatGPT token equal to the owner's is ignored rather than trusted.
+  assert.equal(matchTokenPath(`/mcp/${TOKEN}`, { ACCESS_TOKEN: TOKEN, CHATGPT_TOKEN: TOKEN }).role, "owner");
+  const health = await (await call("/healthz")).json();
+  assert.equal(health.chatgpt_configured, true);
+  assert.doesNotMatch(JSON.stringify(health), new RegExp(GPT));
+  const init = await call(`/mcp/${GPT}`, {
+    method: "POST",
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
+  });
+  assert.match((await init.json()).result.instructions, /between ChatGPT and Drew/);
+  const disc = await call(`/mcp/${GPT}`, {
+    method: "POST",
+    body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "server/discover" }),
+  });
+  assert.ok((await disc.json()).result.supportedVersions.includes("2026-07-28"));
+});
+
+test("page sends to one or both; each assistant sees and acks only its own", async () => {
+  const { call, tool } = twoChannels();
+  const both = await call(`/p/${TOKEN}`, {
+    method: "POST",
+    body: "body=to+both&to=claude&to=chatgpt",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+  });
+  assert.equal(both.status, 303);
+  const onlyGpt = await call(`/api/${TOKEN}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ body: "gpt only", to: ["chatgpt"], source: "page" }),
+  });
+  assert.equal(onlyGpt.status, 201);
+  const made = await onlyGpt.json();
+  assert.equal(made.message.channel, "chatgpt");
+  assert.equal(made.messages.length, 1);
+  const defaultTo = await (await call(`/api/${TOKEN}/messages`, { method: "POST", body: JSON.stringify({ body: "old caller" }) })).json();
+  assert.deepEqual(defaultTo.messages.map((m) => m.channel), ["claude"]);
+  for (const bad of [[], ["bard"], 7, "claude,nope"]) {
+    const r = await call(`/api/${TOKEN}/messages`, { method: "POST", body: JSON.stringify({ body: "x", to: bad }) });
+    assert.equal(r.status, 400, JSON.stringify(bad));
+  }
+
+  const gptRead = (await tool(GPT, "read_messages", { unread_only: true, mark_read: true })).structuredContent;
+  assert.deepEqual(gptRead.messages.map((m) => m.body), ["to both", "gpt only"]);
+  assert.equal(gptRead.acked, 2);
+  assert.equal(gptRead.stats.unread_inbound, 0);
+  const sent = (await tool(GPT, "send_message", { body: "hi from chatgpt" })).structuredContent.message;
+  assert.equal(sent.channel, "chatgpt");
+
+  const claudeRead = (await tool(TOKEN, "read_messages", { unread_only: true })).structuredContent;
+  assert.deepEqual(claudeRead.messages.map((m) => m.body), ["to both", "old caller"]);
+  // Claude can't ack ChatGPT's messages by id, and vice versa.
+  const gptIds = gptRead.messages.map((m) => m.id);
+  assert.equal((await tool(TOKEN, "ack_messages", { ids: gptIds })).structuredContent.acked, 0);
+  const claudeIds = claudeRead.messages.map((m) => m.id);
+  assert.equal((await tool(GPT, "ack_messages", { ids: claudeIds })).structuredContent.acked, 0);
+  assert.equal((await tool(GPT, "read_messages", { direction: "all" })).structuredContent.messages.length, 3);
+
+  const all = await (await call(`/api/${TOKEN}/messages?direction=all`)).json();
+  assert.equal(all.messages.length, 5);
+  assert.equal(all.stats.total, 5);
+  const gptOnly = await (await call(`/api/${TOKEN}/messages?channel=chatgpt`)).json();
+  assert.equal(gptOnly.messages.length, 3);
+
+  const page = await (await call(`/p/${TOKEN}`)).text();
+  assert.match(page, /ChatGPT → you/);
+  assert.match(page, /You → ChatGPT/);
+  assert.match(page, /name="to" value="chatgpt"/);
+  assert.doesNotMatch(page, /isn't set up yet/);
+});
+
+test("page notes when the ChatGPT connector has no token yet", () => {
+  const html = renderPage({
+    messages: [],
+    stats: { total: 0, inbound: 0, outbound: 0, unread_inbound: 0, last_id: 0 },
+    basePath: "/p/x",
+    apiPath: "/api/x",
+    chatgptReady: false,
+  });
+  assert.match(html, /isn.t set up yet/);
 });
