@@ -2360,6 +2360,7 @@ func runtimeOf(t *testing.T, e *env, args ...string) string {
 // script.runtime: scripts run on deno by default and on node once the
 // environment names it.
 func TestScriptRuntimeSelectsTheRuntime(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
 	testsupport.RequireBinary(t, "node")
 	e := newEnv(t, oneServer)
 	if rt := runtimeOf(t, e); rt != "deno" {
@@ -2375,6 +2376,7 @@ func TestScriptRuntimeSelectsTheRuntime(t *testing.T) {
 // script.runtimeOrder: the automatic pick is deno by default and node once
 // the environment ranks node first.
 func TestScriptRuntimeOrderRanksTheAutoPick(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
 	testsupport.RequireBinary(t, "node")
 	e := newEnv(t, oneServer)
 	if rt := runtimeOf(t, e); rt != "deno" {
