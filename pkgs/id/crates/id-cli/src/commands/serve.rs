@@ -179,6 +179,15 @@ pub struct ServeInfo {
     pub start_time: Option<u64>,
 }
 
+/// Ownership token for the discovery lock written by one `id serve` process.
+///
+/// The serialized lock contents are retained so shutdown can remove the file
+/// only if it still contains the record published by this serve instance.
+#[derive(Debug)]
+pub struct ServeLock {
+    contents: String,
+}
+
 impl ServeInfo {
     /// Parse the `node_id` string back to an [`EndpointId`].
     pub fn endpoint_id(&self) -> Option<EndpointId> {
@@ -299,7 +308,7 @@ pub async fn create_serve_lock(
     addrs: &[SocketAddr],
     web_port: Option<u16>,
     web_bindings: Vec<String>,
-) -> Result<()> {
+) -> Result<ServeLock> {
     let info = ServeInfo {
         node_id: node_id.to_string(),
         pid: std::process::id(),
@@ -310,6 +319,12 @@ pub async fn create_serve_lock(
     };
     let contents = serde_json::to_string_pretty(&info)?;
     let lock_path = Path::new(SERVE_LOCK);
+    publish_serve_lock(lock_path, &contents)?;
+    Ok(ServeLock { contents })
+}
+
+/// Atomically publishes a lock only if no serve process already owns it.
+fn publish_serve_lock(lock_path: &Path, contents: &str) -> Result<()> {
     let parent = lock_path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -318,17 +333,27 @@ pub async fn create_serve_lock(
         .prefix(".iroh-serve-lock-")
         .tempfile_in(parent)?;
     temporary.write_all(contents.as_bytes())?;
-    temporary.persist(lock_path).map_err(|error| error.error)?;
+    temporary
+        .persist_noclobber(lock_path)
+        .map(|_| ())
+        .map_err(|error| error.error)?;
     Ok(())
 }
 
-/// Removes the serve lock file.
+/// Removes this serve instance's lock file, if it is still the current owner.
 ///
-/// Called during graceful shutdown to indicate the serve is no longer running.
-/// Errors are silently ignored (file may already be removed).
-pub async fn remove_serve_lock() -> Result<()> {
-    let _ = afs::remove_file(SERVE_LOCK).await;
+/// Called during graceful shutdown. A replacement lock published by another
+/// serve process is preserved.
+pub async fn remove_serve_lock(lock: ServeLock) -> Result<()> {
+    remove_serve_lock_at(Path::new(SERVE_LOCK), &lock.contents).await;
     Ok(())
+}
+
+async fn remove_serve_lock_at(lock_path: &Path, expected_contents: &str) {
+    // The tombstone move makes the ownership check and removal safe against a
+    // concurrent no-clobber publisher. If the file changed since this process
+    // wrote it, the stale-lock helper restores the replacement instead.
+    remove_stale_serve_lock(lock_path, expected_contents).await;
 }
 /// Options for [`cmd_serve`], mirroring the `serve` CLI flags.
 #[derive(Debug, Clone)]
@@ -1973,7 +1998,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     // Write the lock file before printing status so it exists when callers
     // detect the server via stdout output (integration tests depend on this).
     info!("serve startup: writing serve lock (#190 breadcrumb)");
-    create_serve_lock(&serve_node_id, &local_addrs, web_port, web_binding_addrs).await?;
+    let serve_lock =
+        create_serve_lock(&serve_node_id, &local_addrs, web_port, web_binding_addrs).await?;
     info!("serve startup: serve lock written, printing node status (#190 breadcrumb)");
 
     status!("node: {serve_node_id}");
@@ -2338,7 +2364,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     };
 
     tokio::signal::ctrl_c().await?;
-    remove_serve_lock().await?;
+    remove_serve_lock(serve_lock).await?;
     router.shutdown().await?;
     #[cfg(feature = "web")]
     if let Some(sync_task) = _event_sync_handle {
@@ -2396,6 +2422,52 @@ mod tests {
         std::fs::write(replacement_file.path(), replacement).unwrap();
         replacement_file.persist(&path).unwrap();
         remove_stale_serve_lock(&path, stale).await;
+
+        assert_eq!(afs::read_to_string(path).await.unwrap(), replacement);
+    }
+
+    #[test]
+    fn competing_serve_starts_publish_only_one_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("serve.lock");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let publishers = [r#"{"pid":1}"#, r#"{"pid":2}"#].map(|contents| {
+            let path = path.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                publish_serve_lock(&path, contents).is_ok()
+            })
+        });
+
+        barrier.wait();
+        let successes = publishers
+            .into_iter()
+            .map(|publisher| publisher.join().unwrap())
+            .filter(|success| *success)
+            .count();
+
+        assert_eq!(successes, 1, "exactly one serve start must own the lock");
+        let contents = std::fs::read_to_string(path).unwrap();
+        assert!(
+            contents == r#"{"pid":1}"# || contents == r#"{"pid":2}"#,
+            "the published lock must be one complete contender's record"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_preserves_a_replacement_serve_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("serve.lock");
+        let incumbent = r#"{"pid":1}"#;
+        let replacement = r#"{"pid":2}"#;
+        publish_serve_lock(&path, incumbent).unwrap();
+
+        // Model the incumbent lock being removed by its owner before a new
+        // serve process publishes. The old process then reaches shutdown late.
+        afs::remove_file(&path).await.unwrap();
+        publish_serve_lock(&path, replacement).unwrap();
+        remove_serve_lock_at(&path, incumbent).await;
 
         assert_eq!(afs::read_to_string(path).await.unwrap(), replacement);
     }
