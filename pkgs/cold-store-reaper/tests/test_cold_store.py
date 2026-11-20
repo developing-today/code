@@ -936,6 +936,11 @@ class FakeD1:
         self.fail = False
         self.mode = None  # "success_false" | "wrong_shape" definitive answers
         self.db = None
+        # Answer the next `throttle` requests with throttle_status (D1's
+        # load shedding), with a Retry-After header when retry_after is set.
+        self.throttle = 0
+        self.throttle_status = 429
+        self.retry_after = None
 
 
 def make_d1_handler(fake: FakeD1):
@@ -965,6 +970,27 @@ def make_d1_handler(fake: FakeD1):
                     "params": payload.get("params", []),
                 }
             )
+            if fake.throttle > 0:
+                fake.throttle -= 1
+                body = json.dumps(
+                    {
+                        "success": False,
+                        "errors": [
+                            {
+                                "message": "Your account is generating too much "
+                                "load on D1 DBs. Please back off and try again later."
+                            }
+                        ],
+                    }
+                ).encode()
+                self.send_response(fake.throttle_status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                if fake.retry_after is not None:
+                    self.send_header("Retry-After", str(fake.retry_after))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if fake.mode == "success_false":
                 self._send(
                     200,
@@ -1706,6 +1732,71 @@ class TestSyncManifest(ColdStoreTestBase):
         self.assertIn("HTTP 500", str(ctx.exception))
         # The D1 API's own error text rides along, not just the status.
         self.assertIn("fake failure", str(ctx.exception))
+
+    def test_sync_retries_a_throttled_statement_and_finishes(self):
+        # Nov 19: one HTTP 429 in the middle of the nightly sync failed
+        # the whole sync-manifest step. A throttled statement is sent
+        # again after a pause, and every row still arrives once.
+        self.store.d1_backoff_seconds = 0
+        with mock.patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "fake-cf-token"}):
+            baseline = self.store.sync_manifest()
+            self.d1.requests.clear()
+            self.d1.throttle = 2
+            result = self.store.sync_manifest()
+        self.assertEqual(result["retries"], 2)
+        self.assertEqual(result["rows"], baseline["rows"])
+        self.assertEqual(len(self.d1.requests), result["statements"] + 2)
+        # The first statement was sent three times, unchanged.
+        first = self.d1.requests[0]
+        for req in self.d1.requests[1:3]:
+            self.assertEqual((req["sql"], req["params"]), (first["sql"], first["params"]))
+
+    def test_sync_retries_503_too(self):
+        self.store.d1_backoff_seconds = 0
+        self.d1.throttle = 1
+        self.d1.throttle_status = 503
+        with mock.patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "fake-cf-token"}):
+            result = self.store.sync_manifest()
+        self.assertEqual(result["retries"], 1)
+
+    def test_sync_gives_up_after_the_last_attempt(self):
+        self.store.d1_backoff_seconds = 0
+        self.d1.throttle = cold_store.D1_SYNC_ATTEMPTS
+        with (
+            mock.patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "fake-cf-token"}),
+            self.assertRaises(cold_store.ColdStoreError) as ctx,
+        ):
+            self.store.sync_manifest()
+        self.assertIn("HTTP 429", str(ctx.exception))
+        self.assertIn("too much load", str(ctx.exception))
+        self.assertEqual(len(self.d1.requests), cold_store.D1_SYNC_ATTEMPTS)
+
+    def test_sync_honours_retry_after_capped(self):
+        self.d1.throttle = 1
+        self.d1.retry_after = 7
+        sleeps = []
+        with (
+            mock.patch.object(cold_store.time, "sleep", sleeps.append),
+            mock.patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "fake-cf-token"}),
+        ):
+            self.store.sync_manifest()
+        self.assertEqual(sleeps, [7.0])
+        self.assertEqual(
+            self.store._d1_retry_delay({"Retry-After": "3600"}, 1),
+            cold_store.D1_SYNC_BACKOFF_CAP_SECONDS,
+        )
+        self.store.d1_backoff_seconds = 2.0
+        self.assertEqual(self.store._d1_retry_delay({}, 3), 6.0)
+        self.assertEqual(self.store._d1_retry_delay({"Retry-After": "soon"}, 1), 2.0)
+
+    def test_sync_does_not_retry_other_errors(self):
+        self.d1.fail = True  # HTTP 500 is not load shedding
+        with (
+            mock.patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "fake-cf-token"}),
+            self.assertRaises(cold_store.ColdStoreError),
+        ):
+            self.store.sync_manifest()
+        self.assertEqual(len(self.d1.requests), 1)
 
     def test_sync_requires_token(self):
         with mock.patch.dict(os.environ, self._env_without_token(), clear=True):
