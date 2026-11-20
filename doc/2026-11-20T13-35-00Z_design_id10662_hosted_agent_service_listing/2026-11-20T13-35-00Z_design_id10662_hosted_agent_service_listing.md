@@ -16,18 +16,18 @@ From v4 §2.1 and decision 1: listings are signed and versioned, bind agent iden
 
 The table names logical fields, not a serialization or a finalized schema.
 
-| Field | Meaning |
-| --- | --- |
-| `schema_version` | How to interpret and verify this record class. An unknown schema is not an eligible candidate; it is not coerced into a known version. |
-| `listing_id` | Stable opaque identifier scoped by its originating owner identity; registry endpoint and bundle hash are not the service identity. |
-| `revision`, `previous_revision_ref` | Monotonic revision and a reference binding the exact previous signed record; absent predecessor only at creation. This is distinct from the artifact version. |
+| Field                                    | Meaning                                                                                                                                                                                                                     |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `schema_version`                         | How to interpret and verify this record class. An unknown schema is not an eligible candidate; it is not coerced into a known version.                                                                                      |
+| `listing_id`                             | Stable opaque identifier scoped by its originating owner identity; registry endpoint and bundle hash are not the service identity.                                                                                          |
+| `revision`, `previous_revision_ref`      | Monotonic revision and a reference binding the exact previous signed record; absent predecessor only at creation. This is distinct from the artifact version.                                                               |
 | `agent_key`, `owner_ref`, `operator_ref` | Agent public identity and accountable principals. Artifact author, agent owner, service operator, registry operator and hiring world owner are not presumed interchangeable. The record does not confer control of any key. |
-| `bundle_ref` | Immutable author/name/version/content-hash tuple; candidate validation must match all four to a verified artifact manifest. Artifact lookup location is a hint, not provenance. |
-| `service_manifest` | Bounded purpose, advertised world surfaces and resource profile. Distinct from the author's artifact manifest; a service claim is not permission or proof of measured resources. |
-| `willing_roles` | Bounded list of world role selectors understood in context. A match is only a willingness claim, never a role grant or authorization to hire. |
-| `availability` | Advertised `always_on`, `scheduled` or `on_demand` terms, with schedule reference/time basis where relevant. Not a claim of current health or presence. |
-| `issued_at`, validity | Attributable issuance time and bounded validity interval or freshness boundary. Time metadata does not substitute for revision ordering. Policy limits and time format remain open. |
-| Provenance proof | Verifiable authorship and owner/operator attribution binding the exact record under a distinct listing context. Verification uses the project identity model; no new trust anchor is granted by indexing. |
+| `bundle_ref`                             | Immutable author/name/version/content-hash tuple; candidate validation must match all four to a verified artifact manifest. Artifact lookup location is a hint, not provenance.                                             |
+| `service_manifest`                       | Bounded purpose, advertised world surfaces and resource profile. Distinct from the author's artifact manifest; a service claim is not permission or proof of measured resources.                                            |
+| `willing_roles`                          | Bounded list of world role selectors understood in context. A match is only a willingness claim, never a role grant or authorization to hire.                                                                               |
+| `availability`                           | Advertised `always_on`, `scheduled` or `on_demand` terms, with schedule reference/time basis where relevant. Not a claim of current health or presence.                                                                     |
+| `issued_at`, validity                    | Attributable issuance time and bounded validity interval or freshness boundary. Time metadata does not substitute for revision ordering. Policy limits and time format remain open.                                         |
+| Provenance proof                         | Verifiable authorship and owner/operator attribution binding the exact record under a distinct listing context. Verification uses the project identity model; no new trust anchor is granted by indexing.                   |
 
 **Signing recommendation.** Bind the whole record including version, predecessor, principals, release link and terms. Require evidence that the listing is authorized by its agent owner and attributable to its advertised operator; a valid artifact signature verifies the artifact author but cannot satisfy listing authorization. A listing proof must not be accepted as an artifact, lifecycle event, hire or world-action proof. Ambiguous or missing identity binding is not eligible. Which existing authority proof, signers, encoding and algorithms are appropriate is an owner/schema decision for a later implementation record; this design neither issues nor changes credentials or delegation.
 
@@ -35,12 +35,12 @@ The table names logical fields, not a serialization or a finalized schema.
 
 ## Lifecycle and audit trail
 
-| Fact | Authority inherited from v4 | Proposed record and effect |
-| --- | --- | --- |
-| Publish / revise | Listing provenance identifies who listed it and under which operator. | Verified signed revision as above; no hire, access or admission is implied. |
-| Suspend | Listing owner or its operator. | Append an authenticated event linked to the listing and observed revision. Treat suspension as applying to the listing identity so a newer revision cannot bypass it; exclude from new candidates and record a drain signal for the separately specified hire lifecycle. |
-| Delist for abuse | Registry operator for that registry. | Append an authenticated, registry-scoped event linked to the listing and observed revision; publish a reason class and safe evidence reference. Exclude there; do not imply a network-wide revocation, silently remove history or delete the artifact. No runtime action is specified here. |
-| Restore eligibility | Not settled by the outline. | If supported, use a distinct attributable event referencing the exact prior event; recommence only after all applicable blocks are resolved. Neither a revision nor an event from another registry overrides a block. Actor authorization, review and restoration policy are deferred. |
+| Fact                | Authority inherited from v4                                           | Proposed record and effect                                                                                                                                                                                                                                                                  |
+| ------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Publish / revise    | Listing provenance identifies who listed it and under which operator. | Verified signed revision as above; no hire, access or admission is implied.                                                                                                                                                                                                                 |
+| Suspend             | Listing owner or its operator.                                        | Append an authenticated event linked to the listing and observed revision. Treat suspension as applying to the listing identity so a newer revision cannot bypass it; exclude from new candidates and record a drain signal for the separately specified hire lifecycle.                    |
+| Delist for abuse    | Registry operator for that registry.                                  | Append an authenticated, registry-scoped event linked to the listing and observed revision; publish a reason class and safe evidence reference. Exclude there; do not imply a network-wide revocation, silently remove history or delete the artifact. No runtime action is specified here. |
+| Restore eligibility | Not settled by the outline.                                           | If supported, use a distinct attributable event referencing the exact prior event; recommence only after all applicable blocks are resolved. Neither a revision nor an event from another registry overrides a block. Actor authorization, review and restoration policy are deferred.      |
 
 Proposed event fields: record class/version, event identity, listing identity, observed revision reference, actor identity and authority scope, recorded time, disposition and safe reason/evidence references. Order lifecycle events within the appropriate authority scope using verified history; do not compare unrelated registry clocks to override a suspension. If required listing or lifecycle proof is missing or contradictory, do not present the listing as currently eligible. Restricted underlying audit content can remain unavailable without, by itself, making a verified lifecycle receipt unresolved. Retain prior events so reviewers can distinguish reversal from erasure.
 
@@ -69,14 +69,14 @@ Synthetic values below are symbolic identifiers and outcomes, not keys, proofs, 
     "limit": 2
   },
   "listings": [
-    {"id": "owner-a/listing-a", "revision": 1, "bundle": "bundle-illustrative-r7", "roles": ["reviewer"], "surfaces": ["documents"], "availability": "scheduled"},
-    {"id": "owner-b/listing-b", "revision": 2, "bundle": "bundle-illustrative-r7", "roles": ["reviewer"], "surfaces": ["documents"], "availability": "scheduled"},
-    {"id": "owner-c/listing-c", "revision": 1, "bundle": "bundle-illustrative-r7", "roles": ["reviewer"], "surfaces": ["documents"], "availability": "scheduled"},
-    {"id": "owner-d/listing-d", "revision": 1, "bundle": "bundle-illustrative-r7", "roles": ["reviewer"], "surfaces": ["documents"], "availability": "on_demand"}
+    { "id": "owner-a/listing-a", "revision": 1, "bundle": "bundle-illustrative-r7", "roles": ["reviewer"], "surfaces": ["documents"], "availability": "scheduled" },
+    { "id": "owner-b/listing-b", "revision": 2, "bundle": "bundle-illustrative-r7", "roles": ["reviewer"], "surfaces": ["documents"], "availability": "scheduled" },
+    { "id": "owner-c/listing-c", "revision": 1, "bundle": "bundle-illustrative-r7", "roles": ["reviewer"], "surfaces": ["documents"], "availability": "scheduled" },
+    { "id": "owner-d/listing-d", "revision": 1, "bundle": "bundle-illustrative-r7", "roles": ["reviewer"], "surfaces": ["documents"], "availability": "on_demand" }
   ],
   "events": [
-    {"id": "event-s", "action": "suspend", "listing": "owner-b/listing-b", "observed_revision": 1, "scope": "listing", "audit_ref": "receipt-s"},
-    {"id": "event-d", "action": "delist", "listing": "owner-c/listing-c", "observed_revision": 1, "scope": "registry-example-a", "audit_ref": "receipt-d"}
+    { "id": "event-s", "action": "suspend", "listing": "owner-b/listing-b", "observed_revision": 1, "scope": "listing", "audit_ref": "receipt-s" },
+    { "id": "event-d", "action": "delist", "listing": "owner-c/listing-c", "observed_revision": 1, "scope": "registry-example-a", "audit_ref": "receipt-d" }
   ],
   "expected": {
     "candidates": ["owner-a/listing-a"],
