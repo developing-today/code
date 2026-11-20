@@ -1,9 +1,11 @@
 """Offline regression tests for the host-health systemd snapshot projection."""
 
 import importlib.util
+import random
 import subprocess
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from itertools import product
 from pathlib import Path
 from unittest.mock import patch
 
@@ -145,6 +147,87 @@ class HostHealthCollectorTests(unittest.TestCase):
         self.assertEqual(
             (completed["result"], completed["lastSuccessAt"]), ("success", DONE_ISO)
         )
+
+    def test_property_missing_completion_witness_never_claims_success(self):
+        # Invariant oracle: removing or invalidating any one witness from the
+        # completed fixture makes its completion unknown, regardless of the
+        # sampled timestamp or whether it is a remain-after-exit service.
+        rng = random.Random(12138)
+        epoch = datetime(2026, 1, 1, tzinfo=UTC)
+        for sample in range(160):
+            exited = self.wire_time(epoch + timedelta(seconds=rng.randrange(31536000)))
+            invalid_witnesses = (
+                ("ExecMainExitTimestamp", ""),
+                ("ExecMainExitTimestamp", f"invalid {rng.getrandbits(32)}"),
+                ("ExecMainCode", ""),
+                ("ExecMainCode", rng.randint(4, 65535)),
+                ("ExecMainStatus", ""),
+                ("ExecMainStatus", f"invalid {rng.getrandbits(32)}"),
+                ("ExecMainStatus", -rng.randint(1, 65535)),
+            )
+            for state, (key, value) in product(
+                (("inactive", "dead"), ("active", "exited")), invalid_witnesses
+            ):
+                with self.subTest(sample=sample, state=state, witness=key, value=value):
+                    record = self.sample(
+                        **{
+                            "ActiveState": state[0],
+                            "SubState": state[1],
+                            "ExecMainExitTimestamp": exited,
+                            key: value,
+                        }
+                    )
+                    self.assertEqual(
+                        (record["result"], record["lastSuccessAt"]), (None, None)
+                    )
+
+    def test_property_retry_only_reuses_a_strictly_prior_exit_while_starting(self):
+        # Model oracle: only the PRIOR/START cell can report the historical
+        # process outcome. Text timestamps are built from offsets with known
+        # ordering, not compared using the collector's timestamp parser.
+        rng = random.Random(12139)
+        epoch = datetime(2026, 1, 2, tzinfo=UTC)
+        for sample in range(96):
+            started = epoch + timedelta(seconds=rng.randrange(31536000))
+            interval = timedelta(seconds=rng.randint(1, 7200))
+            prior, later = started - interval, started + interval
+            exits = ((prior, True), (started, False), (later, False), (None, False))
+            outcomes = (
+                (1, 0, ("success", prior.isoformat())),
+                (1, rng.randint(1, 255), ("exit-code", None)),
+                (2, rng.randint(1, 64), ("signal", None)),
+                (3, rng.randint(1, 64), ("core-dump", None)),
+            )
+            for (exited, is_prior), substate, (code, status, history) in product(
+                exits, ("start", "start-post", "start-pre"), outcomes
+            ):
+                with self.subTest(
+                    sample=sample,
+                    exited=exited,
+                    substate=substate,
+                    code=code,
+                    status=status,
+                ):
+                    record = self.sample(
+                        ActiveState="activating",
+                        SubState=substate,
+                        ExecMainCode=code,
+                        ExecMainStatus=status,
+                        ExecMainExitTimestamp=self.wire_time(exited) if exited else "",
+                        StateChangeTimestamp=self.wire_time(started),
+                    )
+                    expected = (
+                        history
+                        if (is_prior, substate) == (True, "start")
+                        else (None, None)
+                    )
+                    self.assertEqual(
+                        (record["result"], record["lastSuccessAt"]), expected
+                    )
+
+    @staticmethod
+    def wire_time(value):
+        return value.strftime("%Y-%m-%d %H:%M:%S UTC")
 
     def test_missing_show_and_required_code_property(self):
         missing, props = self.read()
