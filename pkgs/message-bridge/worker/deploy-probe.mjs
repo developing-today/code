@@ -62,7 +62,10 @@ export function strayBeforeCodeOnly(versions, liveId, uploadedId = null) {
   let top = Math.max(...versions.map((v) => v.number)) + 1;
   if (uploadedId) {
     const mine = versions.find((v) => v.id === uploadedId);
-    if (!mine || mine.number <= live.number) {
+    // The list can lag an upload, so this run's own version may not be
+    // listed yet: that is a gap to wait out, not a refusal.
+    if (!mine) throw new VersionListGap(`uploaded version ${uploadedId} is not listed yet`);
+    if (mine.number <= live.number) {
       throw new Error(`uploaded version ${uploadedId} is not newer than the live one`);
     }
     top = mine.number;
