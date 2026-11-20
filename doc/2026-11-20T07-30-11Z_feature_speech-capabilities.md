@@ -7,11 +7,11 @@ providers and device-specific execution remain adapter choices.
 
 ## Capabilities and default path
 
-| Capability | Contract |
-| --- | --- |
-| `speech.transcribe` | Transcribe on the client/device by default. Audio stays on that device; the resulting text enters the existing `chat.say`-shaped or form-value path. |
-| `speech.capture` | Optional per-app server-side audio capture for devices without local STT or apps that choose a server provider. It requires consent and uses the existing `media.stream` frame-size and consent rules. |
-| `speech.synthesize` | Turn text into speech through a runtime-selected provider. The taxonomy does not bind this capability to a vendor or a particular device side. |
+| Capability          | Contract                                                                                                                                                                                               |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `speech.transcribe` | Transcribe on the client/device by default. Audio stays on that device; the resulting text enters the existing `chat.say`-shaped or form-value path.                                                   |
+| `speech.capture`    | Optional per-app server-side audio capture for devices without local STT or apps that choose a server provider. It requires consent and uses the existing `media.stream` frame-size and consent rules. |
+| `speech.synthesize` | Turn text into speech through a runtime-selected provider. The taxonomy does not bind this capability to a vendor or a particular device side.                                                         |
 
 The world model consumes text, not a new audio-message type. Client-side
 transcription is therefore the default; enabling server capture is an explicit
@@ -19,11 +19,11 @@ per-app choice, not a global setting.
 
 ## Refusals
 
-| Situation | Code | Reason |
-| --- | --- | --- |
-| Required capture consent has not been given | `cap_denied` | `consent_required` |
-| The device has no microphone affordance | `unknown_cap` | `device_lacks_affordance` |
-| The selected ASR provider is unavailable | `failed` | `asr_unavailable` |
+| Situation                                   | Code          | Reason                    |
+| ------------------------------------------- | ------------- | ------------------------- |
+| Required capture consent has not been given | `cap_denied`  | `consent_required`        |
+| The device has no microphone affordance     | `unknown_cap` | `device_lacks_affordance` |
+| The selected ASR provider is unavailable    | `failed`      | `asr_unavailable`         |
 
 These add reason vocabulary while preserving the stable capability error
 codes. Consent is not itself a durable grant: the grant ledger and the
