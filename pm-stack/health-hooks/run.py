@@ -55,6 +55,19 @@ TARGETS = {
 SEQ_CAP_SECONDS = 60
 
 
+def remaining_seconds(deadline):
+    if deadline is None:
+        return None
+    return max(0.0, deadline - time.monotonic())
+
+
+def bounded_timeout(timeout, deadline):
+    remaining = remaining_seconds(deadline)
+    if remaining is None:
+        return timeout
+    return min(timeout, remaining)
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -71,21 +84,27 @@ def parse_args(argv):
     return args
 
 
-def tcp_probe(host, port, timeout=5):
+def tcp_probe(host, port, timeout=5, deadline=None):
     t0 = time.monotonic()
     try:
-        with socket.create_connection((host, port), timeout=timeout):
+        budget = bounded_timeout(timeout, deadline)
+        if budget <= 0:
+            raise TimeoutError("sequence deadline exceeded")
+        with socket.create_connection((host, port), timeout=budget):
             return {"ok": True, "latencyMs": int((time.monotonic() - t0) * 1000), "error": None}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "latencyMs": int((time.monotonic() - t0) * 1000), "error": str(e)}
 
 
-def http_probe(url, timeout=5, alive=None):
+def http_probe(url, timeout=5, alive=None, deadline=None):
     alive = alive or [200]
     t0 = time.monotonic()
     try:
+        budget = bounded_timeout(timeout, deadline)
+        if budget <= 0:
+            raise TimeoutError("sequence deadline exceeded")
         req = Request(url, method="GET")
-        with urlopen(req, timeout=timeout) as resp:
+        with urlopen(req, timeout=budget) as resp:
             status = resp.getcode()
             body = resp.read(256)
             ok = (alive == "any") or (status in alive)
@@ -105,9 +124,12 @@ def http_probe(url, timeout=5, alive=None):
                 "latencyMs": int((time.monotonic() - t0) * 1000)}
 
 
-def run_cmd(cmd, timeout=5):
+def run_cmd(cmd, timeout=5, deadline=None):
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        budget = bounded_timeout(timeout, deadline)
+        if budget <= 0:
+            return {"rc": -1, "stdout": "", "stderr": "sequence deadline exceeded"}
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=budget)
         return {"rc": proc.returncode, "stdout": proc.stdout.strip(),
                 "stderr": proc.stderr.strip()}
     except subprocess.TimeoutExpired:
@@ -118,13 +140,13 @@ def run_cmd(cmd, timeout=5):
         return {"rc": -2, "stdout": "", "stderr": str(e)}
 
 
-def systemctl_state(unit):
-    r = run_cmd(["systemctl", "--user", "is-active", unit], timeout=5)
+def systemctl_state(unit, deadline=None):
+    r = run_cmd(["systemctl", "--user", "is-active", unit], timeout=5, deadline=deadline)
     # gather properties
     props = {}
     show = run_cmd(["systemctl", "--user", "show", unit,
                     "--property=ActiveState,SubState,Result,ExecMainExitTimestamp,ActiveEnterTimestamp"],
-                   timeout=5)
+                   timeout=5, deadline=deadline)
     if show["rc"] == 0:
         for line in show["stdout"].splitlines():
             if "=" in line:
@@ -144,17 +166,17 @@ def systemctl_state(unit):
     }
 
 
-def git_recent_commits(repo, n=5):
-    r = run_cmd(["git", "-C", repo, "log", "--oneline", f"-{n}"], timeout=5)
+def git_recent_commits(repo, n=5, deadline=None):
+    r = run_cmd(["git", "-C", repo, "log", "--oneline", f"-{n}"], timeout=5, deadline=deadline)
     if r["rc"] != 0:
         return {"ok": False, "commits": [], "error": r["stderr"] or "git failed"}
     commits = [ln for ln in r["stdout"].splitlines() if ln.strip()]
     return {"ok": True, "commits": commits, "error": None}
 
 
-def bws_resolve(name):
+def bws_resolve(name, deadline=None):
     # Best-effort: try the bws CLI if present; never print the secret.
-    r = run_cmd(["bws", "secret", "get", name], timeout=10)
+    r = run_cmd(["bws", "secret", "get", name], timeout=10, deadline=deadline)
     if r["rc"] == 127:
         return {"status": "unknown", "detail": "bws CLI not available"}
     if r["rc"] == 0 and r["stdout"]:
@@ -162,8 +184,8 @@ def bws_resolve(name):
     return {"status": "missing", "detail": (r["stderr"] or "not resolved")[:200]}
 
 
-def read_host_health():
-    path = HOME / ".local" / "state" / "pm-aggregator" / "host-health.json"
+def read_host_health(path=None):
+    path = Path(path) if path else HOME / ".local" / "state" / "pm-aggregator" / "host-health.json"
     if not path.exists():
         return {"collectedAt": None, "unitsDown": [], "present": False}
     try:
@@ -175,17 +197,17 @@ def read_host_health():
     units = data.get("units") or data.get("services") or {}
     if isinstance(units, dict):
         for name, info in units.items():
-            st = (info or {}).get("state") or (info or {}).get("ActiveState")
+            st = (info or {}).get("activeState") or (info or {}).get("state") or (info or {}).get("ActiveState")
             if isinstance(st, str) and st.lower() not in ("active", "up", "running"):
                 units_down.append(name)
     elif isinstance(units, list):
         for info in units:
             name = info.get("id") or info.get("name")
-            st = info.get("state") or info.get("ActiveState")
+            st = info.get("activeState") or info.get("state") or info.get("ActiveState")
             if isinstance(st, str) and st.lower() not in ("active", "up", "running") and name:
                 units_down.append(name)
     return {
-        "collectedAt": data.get("collectedAt") or data.get("timestamp"),
+        "collectedAt": data.get("generatedAt") or data.get("collectedAt") or data.get("timestamp"),
         "unitsDown": units_down,
         "present": True,
     }
@@ -227,7 +249,7 @@ def count_sessions_last_hour():
     return None
 
 
-def probe_pm_stack(caller_detail):
+def probe_pm_stack(caller_detail, deadline=None):
     evidence = {}
     # 1. confirm failure: re-probe aggregator
     intake = os.environ.get("ALERTS_INTAKE_URL", DEFAULT_INTAKE).rstrip("/")
@@ -241,12 +263,12 @@ def probe_pm_stack(caller_detail):
         port = u.port or (443 if u.scheme == "https" else 80)
     except Exception:
         pass
-    reprobe = http_probe(f"{intake}/board", timeout=5, alive=[200])
+    reprobe = http_probe(f"{intake}/board", timeout=5, alive=[200], deadline=deadline)
     evidence["confirmFailure"] = not reprobe["ok"]
 
     # 3. reachability
-    tcp = tcp_probe(host, port, timeout=5)
-    http = http_probe(f"{intake}/board", timeout=5, alive=[200])
+    tcp = tcp_probe(host, port, timeout=5, deadline=deadline)
+    http = http_probe(f"{intake}/board", timeout=5, alive=[200], deadline=deadline)
     evidence["reachability"] = {
         "ok": http["ok"],
         "status": http.get("status"),
@@ -257,15 +279,16 @@ def probe_pm_stack(caller_detail):
     }
 
     # 4. service state
-    evidence["serviceState"] = systemctl_state("pm-aggregator")
+    evidence["serviceState"] = systemctl_state("pm-aggregator", deadline=deadline)
 
     # 5. auth health
-    evidence["authHealth"] = bws_resolve("pm-aggregator.alerts-intake-token")
+    evidence["authHealth"] = bws_resolve("pm-aggregator.alerts-intake-token", deadline=deadline)
 
     # 6. recent changes
+    recent = git_recent_commits(PRIMARY_CHECKOUT, 5, deadline=deadline)
     evidence["recentChanges"] = {
-        "commits": git_recent_commits(PRIMARY_CHECKOUT, 5).get("commits", []),
-        "gitOk": git_recent_commits(PRIMARY_CHECKOUT, 5).get("ok", False),
+        "commits": recent.get("commits", []),
+        "gitOk": recent.get("ok", False),
         "deployMarkerMtime": None,
         "gitSyncOk": None,
     }
@@ -278,16 +301,13 @@ def probe_pm_stack(caller_detail):
     }
 
     # verdict
-    down = (not http["ok"]) and (
-        evidence["serviceState"].get("activeState", "").lower() not in ("active", "up", "running")
-        or not tcp["ok"]
-    )
+    down = not reprobe["ok"] and not http["ok"]
     if reprobe["ok"]:
         state = "transient"
     elif down:
         state = "down"
     else:
-        state = "up"
+        state = "transient"
     summary = {
         "down": f"PM stack unreachable: {http.get('error') or 'HTTP ' + str(http.get('status'))}",
         "transient": "PM stack probe recovered on re-check",
@@ -296,14 +316,14 @@ def probe_pm_stack(caller_detail):
     return state, summary, evidence
 
 
-def probe_opencode(caller_detail):
+def probe_opencode(caller_detail, deadline=None):
     evidence = {}
     url = "http://127.0.0.1:13420/global/health"
-    reprobe = http_probe(url, timeout=5, alive=[200])
+    reprobe = http_probe(url, timeout=5, alive=[200], deadline=deadline)
     evidence["confirmFailure"] = not reprobe["ok"]
 
-    tcp = tcp_probe("127.0.0.1", 13420, timeout=5)
-    http = http_probe(url, timeout=5, alive=[200])
+    tcp = tcp_probe("127.0.0.1", 13420, timeout=5, deadline=deadline)
+    http = http_probe(url, timeout=5, alive=[200], deadline=deadline)
     evidence["reachability"] = {
         "ok": http["ok"],
         "status": http.get("status"),
@@ -314,31 +334,31 @@ def probe_opencode(caller_detail):
     }
 
     # service state: try opencode user unit
-    ss = systemctl_state("opencode")
+    ss = systemctl_state("opencode", deadline=deadline)
     if ss.get("activeState") == "unknown" and ss.get("reason") == "systemctl not available":
         pass
     # detect no-unit
-    show = run_cmd(["systemctl", "--user", "show", "opencode", "--property=Id"], timeout=5)
+    show = run_cmd(["systemctl", "--user", "show", "opencode", "--property=Id"], timeout=5, deadline=deadline)
     if show["rc"] != 0 or "opencode" not in (show["stdout"] or ""):
         ss["noUnit"] = True
     evidence["serviceState"] = ss
 
     evidence["authHealth"] = opencode_route_ref()
 
-    rc = git_recent_commits(PRIMARY_CHECKOUT, 5)
+    rc = git_recent_commits(PRIMARY_CHECKOUT, 5, deadline=deadline)
     evidence["recentChanges"] = {
         "commits": rc.get("commits", []),
         "gitOk": rc.get("ok", False),
     }
     evidence["sessionLiveness"] = {"sessionsLastHour": count_sessions_last_hour()}
 
-    down = (not http["ok"]) and (not tcp["ok"] or ss.get("activeState", "").lower() not in ("active", "up", "running"))
+    down = not reprobe["ok"] and not http["ok"]
     if reprobe["ok"]:
         state = "transient"
     elif down:
         state = "down"
     else:
-        state = "up"
+        state = "transient"
     summary = {
         "down": f"OpenCode unreachable: {http.get('error') or 'HTTP ' + str(http.get('status'))}",
         "transient": "OpenCode probe recovered on re-check",
@@ -347,13 +367,12 @@ def probe_opencode(caller_detail):
     return state, summary, evidence
 
 
-def post_to_throat(record):
+def post_to_throat(record, deadline=None):
     intake = os.environ.get("ALERTS_INTAKE_URL", DEFAULT_INTAKE).rstrip("/")
     # resolve token from bws best-effort; if unavailable, skip posting
-    tok_result = bws_resolve("pm-aggregator.alerts-intake-token")
     token = None
     # bws_resolve doesn't return the secret; try reading via bws secret get value
-    r = run_cmd(["bws", "secret", "get", "pm-aggregator.alerts-intake-token", "--output", "json"], timeout=10)
+    r = run_cmd(["bws", "secret", "get", "pm-aggregator.alerts-intake-token", "--output", "json"], timeout=10, deadline=deadline)
     if r["rc"] == 0 and r["stdout"]:
         try:
             obj = json.loads(r["stdout"])
@@ -382,7 +401,10 @@ def post_to_throat(record):
         req = Request(f"{intake}/api/alerts", data=data, method="POST",
                       headers={"Authorization": f"Bearer {token}",
                                "Content-Type": "application/json"})
-        with urlopen(req, timeout=10) as resp:
+        budget = bounded_timeout(10, deadline)
+        if budget <= 0:
+            return {"posted": False, "reason": "sequence deadline exceeded"}
+        with urlopen(req, timeout=budget) as resp:
             resp.read()
             return {"posted": True, "status": resp.getcode()}
     except Exception as e:  # noqa: BLE001
@@ -398,20 +420,51 @@ def append_incident(record):
     return str(path)
 
 
+def find_open_incident(target):
+    path = Path(os.environ.get("PM_HEALTH_HOOKS_INCIDENT_FILE", str(DEFAULT_INCIDENT_FILE)))
+    if not path.exists():
+        return None
+    open_by_id = {}
+    try:
+        with path.open() as f:
+            for line in f:
+                try:
+                    record = json.loads(line)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if record.get("target") != target:
+                    continue
+                if record.get("state") == "down" and record.get("incidentId"):
+                    open_by_id[record["incidentId"]] = record
+                elif record.get("state") == "up" and record.get("recoveryOf"):
+                    open_by_id.pop(record["recoveryOf"], None)
+    except OSError:
+        return None
+    return next(reversed(open_by_id.values()), None) if open_by_id else None
+
+
 def main(argv):
     args = parse_args(argv)
     target = args.target
     fired_at = now_iso()
     start = time.monotonic()
+    deadline = start + SEQ_CAP_SECONDS
 
     if target == "pm-stack-reachable":
-        state, summary, evidence = probe_pm_stack(args.detail)
+        state, summary, evidence = probe_pm_stack(args.detail, deadline=deadline)
     else:
-        state, summary, evidence = probe_opencode(args.detail)
+        state, summary, evidence = probe_opencode(args.detail, deadline=deadline)
+
+    open_incident = find_open_incident(target) if state in ("transient", "up") else None
+    recovery_of = None
+    if open_incident:
+        state = "up"
+        recovery_of = open_incident["incidentId"]
+        summary = f"{TARGETS[target]} recovered after incident {recovery_of}"
 
     # severity
     if target == "pm-stack-reachable" and state == "down":
-        severity = "error"
+        severity = "critical"
     elif state == "down":
         severity = "warning"
     else:
@@ -430,7 +483,7 @@ def main(argv):
         "firedAt": fired_at,
         "observedAt": args.observed_at,
         "incidentId": incident_id,
-        "recoveryOf": None,
+        "recoveryOf": recovery_of,
         "evidence": evidence,
     }
 
@@ -441,7 +494,7 @@ def main(argv):
     stored_path = None
     if state in ("down", "up"):
         stored_path = append_incident(record)
-        throat_result = post_to_throat(record)
+        throat_result = post_to_throat(record, deadline=deadline)
 
     # category chat note via Muse is left to the caller environment; we
     # print the note text for the caller to dispatch.

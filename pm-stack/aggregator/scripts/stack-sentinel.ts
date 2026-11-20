@@ -34,6 +34,7 @@ import { dirname, join } from "node:path";
 import { resolveBwsSecret } from "../src/secrets.ts";
 import { applySentinelProbe, normalizeSentinelEntry, type SentinelServiceEntry } from "../src/sentinel-damping.ts";
 import { checkPrimaryCheckout } from "../src/primary-checkout.ts";
+import { normalizeHookDispatchState, shouldDispatchHealthHook, type HealthHookState } from "../src/health-hook-dispatch.ts";
 
 const LOOP_MS = 30_000;
 
@@ -97,6 +98,8 @@ const LOCAL_CHECKS: LocalCheck[] = [
 
 interface SentinelStateFile {
   services: Record<string, SentinelServiceEntry>;
+  /** Last C3 hook transition successfully spawned, independent of alert delivery. */
+  hookDispatchedStates: Record<string, HealthHookState>;
 }
 
 const STATE_FILE =
@@ -117,12 +120,15 @@ async function loadState(): Promise<SentinelStateFile> {
         const entry = normalizeSentinelEntry(raw);
         if (entry) services[id] = entry;
       }
-      return { services };
+      return {
+        services,
+        hookDispatchedStates: normalizeHookDispatchState((parsed as Partial<SentinelStateFile>).hookDispatchedStates),
+      };
     }
   } catch {
     // no state yet — first run
   }
-  return { services: {} };
+  return { services: {}, hookDispatchedStates: {} };
 }
 
 async function saveState(state: SentinelStateFile): Promise<void> {
@@ -197,13 +203,14 @@ async function round(state: SentinelStateFile): Promise<void> {
     const hookTarget =
       target.id === "aggregator" ? "pm-stack-reachable" :
       target.id === "opencode" ? "opencode-working" : null;
-    if (hookTarget && entry.postedState !== entry.state) {
+    if (hookTarget && shouldDispatchHealthHook(state.hookDispatchedStates, hookTarget, entry.state)) {
       const caller = "stack-sentinel";
       const hookPath = join(homedir(), "git", "code", "pm-stack", "health-hooks", `${hookTarget}.sh`);
       try {
         Bun.spawn([hookPath, "--caller", caller, "--detail", entry.detail ?? ""], {
           stdout: "ignore", stderr: "ignore",
         });
+        state.hookDispatchedStates[hookTarget] = entry.state;
       } catch (err) {
         console.error(`stack-sentinel: failed to spawn C3 hook ${hookTarget}: ${err instanceof Error ? err.message : err}`);
       }

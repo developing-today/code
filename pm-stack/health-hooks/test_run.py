@@ -5,7 +5,11 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 RUNNER = HERE / "run.py"
@@ -75,6 +79,92 @@ def test_runner_pm_stack():
     assert obj["target"] == "pm-stack-reachable"
     assert "evidence" not in obj  # evidence stays in record, not stdout? runner prints summary only
     # actually runner prints out without evidence; ok
+
+
+def test_host_health_collector_schema():
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "host-health.json"
+        path.write_text(json.dumps({
+            "generatedAt": "2026-11-20T01:00:00Z",
+            "units": {
+                "pm-aggregator.service": {"activeState": "failed"},
+                "opencode.service": {"activeState": "active"},
+            },
+        }))
+        result = R.read_host_health(path)
+    assert result["collectedAt"] == "2026-11-20T01:00:00Z"
+    assert result["unitsDown"] == ["pm-aggregator.service"]
+
+
+def test_http_500_is_down_even_when_tcp_and_unit_are_healthy():
+    failed = {"ok": False, "status": 500, "error": "HTTP 500", "latencyMs": 1}
+    healthy_tcp = {"ok": True, "latencyMs": 1, "error": None}
+    with mock.patch.object(R, "http_probe", return_value=failed), \
+         mock.patch.object(R, "tcp_probe", return_value=healthy_tcp), \
+         mock.patch.object(R, "systemctl_state", return_value={"activeState": "active"}), \
+         mock.patch.object(R, "bws_resolve", return_value={"status": "resolved"}), \
+         mock.patch.object(R, "git_recent_commits", return_value={"ok": True, "commits": []}), \
+         mock.patch.object(R, "read_host_health", return_value={"collectedAt": None, "unitsDown": []}):
+        pm_state, _, _ = R.probe_pm_stack("")
+    with mock.patch.object(R, "http_probe", return_value=failed), \
+         mock.patch.object(R, "tcp_probe", return_value=healthy_tcp), \
+         mock.patch.object(R, "systemctl_state", return_value={"activeState": "active"}), \
+         mock.patch.object(R, "run_cmd", return_value={"rc": 0, "stdout": "opencode", "stderr": ""}), \
+         mock.patch.object(R, "opencode_route_ref", return_value={"status": "resolved"}), \
+         mock.patch.object(R, "git_recent_commits", return_value={"ok": True, "commits": []}), \
+         mock.patch.object(R, "count_sessions_last_hour", return_value=1):
+        oc_state, _, _ = R.probe_opencode("")
+    assert pm_state == "down"
+    assert oc_state == "down"
+
+
+def test_recovery_links_to_open_down_incident():
+    with tempfile.TemporaryDirectory() as td:
+        incident_file = Path(td) / "incidents.jsonl"
+        incident_file.write_text(json.dumps({
+            "target": "opencode-working", "state": "down", "incidentId": "down-123",
+        }) + "\n")
+        env = mock.patch.dict(os.environ, {"PM_HEALTH_HOOKS_INCIDENT_FILE": str(incident_file)})
+        with env, mock.patch.object(R, "probe_opencode", return_value=("transient", "probe recovered", {})), \
+             mock.patch.object(R, "post_to_throat", return_value={"posted": True}):
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                assert R.main(["--target", "opencode-working"]) == 0
+        out = json.loads(stdout.getvalue())
+        records = [json.loads(line) for line in incident_file.read_text().splitlines()]
+    assert out["state"] == "up"
+    assert len(records) == 2
+    assert records[-1]["state"] == "up"
+    assert records[-1]["recoveryOf"] == "down-123"
+
+
+def test_pm_stack_down_uses_supported_critical_severity():
+    with tempfile.TemporaryDirectory() as td:
+        incident_file = Path(td) / "incidents.jsonl"
+        with mock.patch.dict(os.environ, {"PM_HEALTH_HOOKS_INCIDENT_FILE": str(incident_file)}), \
+             mock.patch.object(R, "probe_pm_stack", return_value=("down", "unreachable", {})), \
+             mock.patch.object(R, "post_to_throat", return_value={"posted": False}):
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                assert R.main(["--target", "pm-stack-reachable"]) == 0
+        output = json.loads(stdout.getvalue())
+        record = json.loads(incident_file.read_text().splitlines()[0])
+    assert output["severity"] == record["severity"] == "critical"
+
+
+def test_run_cmd_caps_timeout_to_shared_deadline_and_skips_expired_work():
+    with mock.patch.object(R.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="", stderr="")) as run:
+        R.run_cmd(["example"], timeout=30, deadline=time.monotonic() + 2)
+        assert 0 < run.call_args.kwargs["timeout"] <= 2
+        run.reset_mock()
+        result = R.run_cmd(["example"], timeout=30, deadline=time.monotonic() - 1)
+    run.assert_not_called()
+    assert result["stderr"] == "sequence deadline exceeded"
+
+
+def test_shell_wrappers_are_executable():
+    for wrapper in (HERE / "pm-stack-reachable.sh", HERE / "opencode-working.sh"):
+        assert wrapper.stat().st_mode & 0o111, wrapper
 
 
 if __name__ == "__main__":

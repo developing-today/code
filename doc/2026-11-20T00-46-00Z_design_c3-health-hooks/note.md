@@ -162,7 +162,7 @@ stream. Shape (JSON):
 {
   "source": "health-hook",
   "key": "health-hook:<target>:<incidentId>",
-  "severity": "warning | error",
+  "severity": "critical | warning | info",
   "title": "Health hook: <target> is down" | "Health hook: <target> recovered",
   "body": "<one-line human summary>",
   "target": "pm-stack-reachable | opencode-working",
@@ -184,9 +184,10 @@ stream. Shape (JSON):
 }
 ```
 
-`severity` is `error` when the target is `pm-stack-reachable` and down
-(Drew is blocked), otherwise `warning`. `recoveryOf` links a recovery
-incident to the down incident it closes (by `incidentId`).
+`severity` uses the alert intake's accepted vocabulary: `critical` when
+`pm-stack-reachable` is down (Drew is blocked), `warning` when
+`opencode-working` is down, and `info` for recovery. `recoveryOf` links a
+recovery incident to the down incident it closes (by `incidentId`).
 
 ### Category-chat note (insert-only, never reads the chat)
 
@@ -277,5 +278,3 @@ store; verification against C6/C8 consumers.
    triggers are a C2 concern.
 4. Is 60 s for the whole sequence too tight under load average 8–10?
    Recommend measuring in Slice B and raising to 90 s if needed.
-EOF
-echo "written"
