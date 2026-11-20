@@ -692,8 +692,9 @@ let
           python3
         ];
         extraCommands = ''
-          mkdir -p tmp work
+          mkdir -p tmp work usr/bin
           chmod 1777 tmp work
+          ln -s ${pkgs.coreutils}/bin/env usr/bin/env
         '';
         config = {
           Entrypoint = [ "${pkgs.bash}/bin/bash" ];
@@ -713,17 +714,6 @@ let
           ];
         };
       };
-      mcpxE2ECheck = mcpx.overrideAttrs (_old: {
-        pname = "mcpx-e2e-check";
-        doCheck = true;
-        checkPhase = ''
-          runHook preCheck
-          export MCPX_TEST_BINARY=${mcpx}/bin/mcpx
-          export MCPX_TEST_REQUIRE=deno,bun,node,python3
-          go test ./internal/e2e -count=1 -timeout 30m
-          runHook postCheck
-        '';
-      });
       identity = pkgs.callPackage ../pkgs/identity/package.nix { };
       identityImage = pkgs.callPackage ../pkgs/identity/container-image.nix {
         inherit identity;
@@ -792,7 +782,7 @@ let
         generic-runtime = genericRuntime;
         generic-js-runtime = genericJsRuntime;
         generic-python-runtime = genericPythonRuntime;
-      } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
+      } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
         mcpx-e2e-test-image = mcpxTestImage;
       };
       checks = {
@@ -847,11 +837,12 @@ let
               bash scripts/just-recipes-root-check-test.sh
               touch $out
             '';
-      } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
-        # Run the end-to-end suite against the wrapped flake artifact. This
-        # stays separate from the package checkPhase: those tests spawn daemon
-        # and runtime subprocess trees that do not fit that build's sandbox.
-        mcpx-e2e = mcpxE2ECheck;
+      } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+        # The e2e suite spawns daemon/runtime process trees and needs init to
+        # reap them. Expose the flake-built test image as the check output;
+        # mcpx-test runs the suite in that image with Docker's --init, outside
+        # the Nix build sandbox where those process trees cannot be reaped.
+        mcpx-e2e = mcpxTestImage;
       };
       apps = (pkgs.lib.mapAttrs mkRecipeApp publicRecipes) // {
         id-mail-deploy = mkApp idMailDeploy "Deploy the mail Worker from this checkout (needs Bitwarden and sops access)";
