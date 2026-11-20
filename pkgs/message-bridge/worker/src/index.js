@@ -29,6 +29,10 @@ export class MessageStore extends DurableObject {
     if (!cols.some((c) => c.name === "channel")) {
       this.sql.exec("ALTER TABLE messages ADD COLUMN channel TEXT NOT NULL DEFAULT 'claude'");
     }
+    // Rows from before instructions were all plain messages.
+    if (!cols.some((c) => c.name === "kind")) {
+      this.sql.exec("ALTER TABLE messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'message'");
+    }
     this.sql.exec("CREATE INDEX IF NOT EXISTS messages_unread ON messages (direction, read_at)");
     this.sql.exec("CREATE INDEX IF NOT EXISTS messages_channel ON messages (channel, direction, read_at)");
   }
@@ -38,13 +42,14 @@ export class MessageStore extends DurableObject {
     const ts = new Date().toISOString();
     return this.sql
       .exec(
-        "INSERT INTO messages (ts, direction, source, sender, body, channel) VALUES (?, ?, ?, ?, ?, ?) RETURNING *",
+        "INSERT INTO messages (ts, direction, source, sender, body, channel, kind) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *",
         ts,
         m.direction,
         m.source,
         m.sender,
         m.body,
         m.channel,
+        m.kind,
       )
       .one();
   }
@@ -65,6 +70,10 @@ export class MessageStore extends DurableObject {
     if (q.channel !== "all") {
       where.push("channel = ?");
       args.push(q.channel);
+    }
+    if (q.kind !== "all") {
+      where.push("kind = ?");
+      args.push(q.kind);
     }
     const order = q.order === "desc" ? "DESC" : "ASC";
     const messages = this.sql
@@ -108,6 +117,7 @@ export class MessageStore extends DurableObject {
           COALESCE(SUM(direction = 'inbound'), 0) AS inbound,
           COALESCE(SUM(direction = 'outbound'), 0) AS outbound,
           COALESCE(SUM(direction = 'inbound' AND read_at IS NULL), 0) AS unread_inbound,
+          COALESCE(SUM(kind = 'instruction' AND read_at IS NULL), 0) AS unread_instructions,
           COALESCE(MAX(id), 0) AS last_id
         FROM messages${c === "all" ? "" : " WHERE channel = ?"}`,
         ...(c === "all" ? [] : [c]),

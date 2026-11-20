@@ -6,10 +6,10 @@
 // spec allows. No session id is issued: every call stands alone, and
 // the message store is the only state.
 
-import { CHANNEL_NAMES, InputError, MAX_BODY, MAX_LIMIT } from "./messages.js";
+import { CHANNEL_NAMES, InputError, MAX_BODY, MAX_LIMIT, forAgent } from "./messages.js";
 
 export const SERVER_NAME = "message-bridge";
-export const SERVER_VERSION = "0.1.0";
+export const SERVER_VERSION = "0.2.0";
 export const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 // What the ChatGPT Site answered to server/discover before it forwarded
 // here; kept so its client sees the same handshake.
@@ -23,7 +23,9 @@ export function instructionsFor(channel = "claude") {
     `A message bridge between ${who} and Drew. send_message stores a message from ${who} (outbound). ` +
     `read_messages returns stored messages; inbound ones were sent to ${who} from Drew's page or the JSON API. ` +
     "Use read_messages with unread_only to check for new inbound messages, then ack_messages (or mark_read) " +
-    "so they are not reported as new again. Every message is kept with its direction, source and time."
+    "so they are not reported as new again. Every message is kept with its direction, source and time. " +
+    `An inbound message with kind "instruction" is an instruction for ${who} to act on, sent the same way as other ` +
+    'inbound messages; it has no sender. read_messages with kind "instruction" returns only those.'
   );
 }
 export const INSTRUCTIONS = instructionsFor("claude");
@@ -50,12 +52,19 @@ export const TOOLS = [
     title: "Read messages",
     description:
       "Read (receive) stored messages, oldest first. Defaults to inbound messages (sent to you by Drew). " +
-      "Use since_id with the returned next_since_id to page or to poll for new ones; unread_only returns inbound messages not yet acknowledged; mark_read acknowledges the inbound ones returned.",
+      "Use since_id with the returned next_since_id to page or to poll for new ones; unread_only returns inbound messages not yet acknowledged; mark_read acknowledges the inbound ones returned. " +
+      'Each message has a kind: "message", or "instruction" for an instruction to act on, which carries no sender. kind filters by it.',
     inputSchema: {
       type: "object",
       properties: {
         direction: { type: "string", enum: ["inbound", "outbound", "all"], default: "inbound" },
         since_id: { type: "integer", minimum: 0, description: "Only messages with an id above this." },
+        kind: {
+          type: "string",
+          enum: ["message", "instruction", "all"],
+          default: "all",
+          description: "Only messages of this kind.",
+        },
         unread_only: { type: "boolean", default: false },
         limit: { type: "integer", minimum: 1, maximum: MAX_LIMIT, default: 50 },
         mark_read: { type: "boolean", default: false, description: "Acknowledge the inbound messages returned." },
@@ -108,14 +117,15 @@ export async function callTool(name, args, store, channel = "claude") {
     case "send_message": {
       rejectUnknownArgs(args, ["body", "sender"]);
       const message = await store.add({ body: args.body, sender: args.sender, direction: "outbound", source: "mcp", channel });
-      return { message };
+      return { message: forAgent(message) };
     }
     case "read_messages": {
-      rejectUnknownArgs(args, ["direction", "since_id", "unread_only", "limit", "mark_read"]);
+      rejectUnknownArgs(args, ["direction", "since_id", "kind", "unread_only", "limit", "mark_read"]);
       const direction = args.direction ?? "inbound";
       const { messages } = await store.list({
         direction,
         since_id: args.since_id,
+        kind: args.kind,
         unread_only: args.unread_only,
         limit: args.limit,
         channel,
@@ -127,7 +137,7 @@ export async function callTool(name, args, store, channel = "claude") {
       }
       const stats = await store.stats(channel);
       const nextSinceId = messages.length ? messages[messages.length - 1].id : (args.since_id ?? 0);
-      return { messages, next_since_id: nextSinceId, ...(args.mark_read ? { acked } : {}), stats };
+      return { messages: messages.map(forAgent), next_since_id: nextSinceId, ...(args.mark_read ? { acked } : {}), stats };
     }
     case "ack_messages": {
       rejectUnknownArgs(args, ["up_to_id", "ids"]);
