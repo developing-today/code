@@ -96,6 +96,9 @@ const MIN_TOKEN_LENGTH = 32;
 // upload: 24 reads, 2.5 s apart, about a minute.
 const LIST_LAG_ATTEMPTS = 24;
 const LIST_LAG_DELAY_MS = 2500;
+// Declared before the deploy runs: listVersions is called from the
+// top-level flow above its own definition.
+const VERSIONS_PER_PAGE = 100;
 
 let args;
 try {
@@ -508,7 +511,6 @@ async function cfApiOrNull(path) {
 // Every version, across pages (the API pages 10 at a time by default).
 // Pages until one brings nothing new, deduplicating by id, rather than
 // trusting result_info (which the API may leave out) to say when to stop.
-const VERSIONS_PER_PAGE = 100;
 async function listVersions(params = {}) {
   const byId = new Map();
   for (let page = 1; page <= 50; page++) {
