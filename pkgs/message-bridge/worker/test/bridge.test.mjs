@@ -44,7 +44,8 @@ test("safeEqual and token paths", () => {
 
 test("wrong or missing token is a plain 404 everywhere", async () => {
   const { call } = harness();
-  for (const path of ["/", "/mcp", "/mcp/nope", "/p/nope", "/api/nope/messages", `/x/${TOKEN}`]) {
+  // The bare address ("/", "/mcp") asks for OAuth instead: oauth.test.mjs.
+  for (const path of ["/mcp/nope", "/p/nope", "/api/nope/messages", `/x/${TOKEN}`]) {
     assert.equal((await call(path, { method: "POST", body: "{}" })).status, 404, path);
     assert.equal((await call(path)).status, 404, path);
   }

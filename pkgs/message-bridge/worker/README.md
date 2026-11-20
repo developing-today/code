@@ -33,7 +33,9 @@ The behaviour is deliberately minimal for now; more comes later.
 
 `<token>` is the owner's access token and `<chatgpt token>` the ChatGPT
 connector's (below). A wrong or missing token gets the same plain 404 as
-an unknown path; the ChatGPT token opens only its `/mcp`.
+an unknown path; the ChatGPT token opens only its `/mcp`. The bare
+address (`/` or `/mcp`, no token) is the same MCP server behind OAuth
+instead: see "Adding it to Claude".
 
 | Route                        | What                                                                                                                                                                                    |
 | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -45,6 +47,11 @@ an unknown path; the ChatGPT token opens only its `/mcp`.
 | `POST /api/<token>/messages` | JSON `{"body", "sender", "to", "kind"}`; `to` is `"claude"` (default), `"chatgpt"` or both as a list: one inbound row per recipient; `kind` is `"message"` (default) or `"instruction"` |
 | `POST /api/<token>/ack`      | JSON `{"up_to_id": N}` or `{"ids": [...]}`, with `channel` (default `claude`): marks inbound messages read                                                                              |
 | `GET /healthz`               | `ok`, `configured`, `chatgpt_configured`, `version`, `token_fingerprint`; no data                                                                                                       |
+| `POST /`, `POST /mcp`        | The MCP server with an OAuth bearer token (channel from the approval); 401 with `resource_metadata` without one                                                                         |
+| `/.well-known/oauth-*`       | Protected-resource and authorization-server metadata (also under `/mcp` and as `openid-configuration`)                                                                                  |
+| `POST /register`             | Dynamic client registration: https (or localhost) redirect URIs, public or secret clients                                                                                               |
+| `GET/POST /authorize`        | Approval page (PKCE S256 only): one tap in a browser that opened the history page, otherwise paste the page link or a token                                                             |
+| `POST /token`                | `authorization_code` (with `code_verifier`) and `refresh_token` grants                                                                                                                  |
 
 ## MCP tools
 
@@ -72,8 +79,14 @@ the URL can read and post, so treat the URL like a password. The token:
 
 To rotate it, edit or delete the Bitwarden secret and deploy again
 (deleting makes the deploy create a fresh one), then update the
-connector URL in Claude (or ChatGPT, or its Site's token). OAuth can
-replace the path tokens later.
+connector URL in Claude (or ChatGPT, or its Site's token). Rotating the
+access token also revokes every OAuth grant: OAuth's signing key is
+derived from it, and nothing else is stored (client ids, codes and
+tokens are HMAC-signed). Approving needs the owner's token, its page
+link, or the owner cookie that opening the history page sets
+(`__Host-`, `Secure`, `HttpOnly`, `SameSite=Lax`, a year); approval
+posts must come from the bridge's own origin. The ChatGPT token approves
+ChatGPT's channel only.
 
 ## Deploying
 
@@ -153,5 +166,14 @@ checkPhase).
 
 ## Adding it to Claude
 
-Settings > Connectors > Add custom connector, and paste the `connector:`
-URL that `--print-urls` prints. No OAuth client id or secret is needed.
+Settings > Connectors > Add custom connector, and paste either:
+
+- `https://bridge.security.cab` (or `/mcp`): Claude registers itself and
+  opens the bridge's approval page. Tap Allow if this browser has opened
+  the history page, otherwise paste the page link first. Claude refreshes
+  its token on its own; access tokens last a day, refresh tokens a year
+  from their last use.
+- the `connector:` URL that `--print-urls` prints, with the token in the
+  path: no sign-in step.
+
+No OAuth client id or secret is needed either way.

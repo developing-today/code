@@ -20,11 +20,17 @@
 //   POST /api/<token>/ack             JSON {up_to_id | ids, channel}: mark read
 //   GET  /healthz                     {ok, configured, chatgpt_configured,
 //                                     version, token_fingerprint}, no data
-// Anything else, a wrong token included, is a plain 404. The ChatGPT
-// token opens only its /mcp.
+//   POST / and POST /mcp              the MCP server for a connector added
+//                                     with just the host: OAuth bearer
+//                                     token, 401 without one (oauth.js)
+//   /.well-known/oauth-*, /register,  OAuth discovery, client registration,
+//   /authorize, /token                approval and tokens (oauth.js)
+// Anything else, a wrong path token included, is a plain 404. The
+// ChatGPT token opens only its /mcp.
 
 import { chatgptConfigured, matchTokenPath, tokenConfigured, tokenFingerprint } from "./auth.js";
 import { handleMcp } from "./mcp.js";
+import { bearerChannel, handleOAuth, ownerCookie, unauthorized } from "./oauth.js";
 import { InputError, normalizeKind, normalizeRecipients } from "./messages.js";
 import { renderPage } from "./page.js";
 
@@ -177,6 +183,28 @@ export async function route(request, env, getStore) {
       token_fingerprint: configured ? await tokenFingerprint(env.ACCESS_TOKEN) : null,
     });
   }
+  const oauth = await handleOAuth(request, env, url);
+  if (oauth) return oauth;
+  if (["/", "/mcp", "/mcp/"].includes(url.pathname) && tokenConfigured(env)) {
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          "access-control-allow-origin": "*",
+          "access-control-allow-headers": "authorization, content-type, mcp-protocol-version, mcp-session-id",
+          "access-control-allow-methods": "POST, OPTIONS",
+        },
+      });
+    }
+    const channel = await bearerChannel(request, env);
+    if (!channel) return unauthorized(request, url);
+    try {
+      return withHeaders(await handleMcp(request, getStore(), channel));
+    } catch (err) {
+      if (err instanceof InputError) return withHeaders(json({ error: err.message }, 400));
+      throw err;
+    }
+  }
   const m = matchTokenPath(url.pathname, env);
   if (!m) return notFound();
   const token = env.ACCESS_TOKEN;
@@ -185,9 +213,13 @@ export async function route(request, env, getStore) {
     if (m.area === "mcp" && m.rest.length === 0) return withHeaders(await handleMcp(request, store, m.channel));
     if (m.role !== "owner") return notFound();
     if (m.area === "p" && m.rest.length === 0) {
-      return withHeaders(
+      const res = withHeaders(
         await handlePage(request, store, `/p/${token}`, `/api/${token}`, url, chatgptConfigured(env)),
       );
+      // Opening the page marks this browser as the owner's, so approving
+      // a connector here (oauth.js) is one tap.
+      if (request.method === "GET" && res.status === 200) res.headers.append("set-cookie", await ownerCookie(env));
+      return res;
     }
     if (m.area === "api") return withHeaders(await handleApi(request, store, m.rest, url));
   } catch (err) {
