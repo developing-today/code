@@ -10,11 +10,13 @@
 //   POST /p/<token>                   form post: store an inbound message
 //                                     for each checked recipient (to)
 //   GET  /api/<token>/messages        JSON history (direction, channel,
-//                                     since_id, before_id, unread_only,
+//                                     kind, since_id, before_id, unread_only,
 //                                     limit, order)
-//   POST /api/<token>/messages        JSON {body, sender, to}: store an
-//                                     inbound message per recipient; to is
-//                                     "claude" (default), "chatgpt" or both
+//   POST /api/<token>/messages        JSON {body, sender, to, kind}: store
+//                                     an inbound message per recipient; to
+//                                     is "claude" (default), "chatgpt" or
+//                                     both; kind is "message" (default) or
+//                                     "instruction" (agents see no sender)
 //   POST /api/<token>/ack             JSON {up_to_id | ids, channel}: mark read
 //   GET  /healthz                     {ok, configured, chatgpt_configured,
 //                                     version, token_fingerprint}, no data
@@ -23,7 +25,7 @@
 
 import { chatgptConfigured, matchTokenPath, tokenConfigured, tokenFingerprint } from "./auth.js";
 import { handleMcp } from "./mcp.js";
-import { InputError, normalizeRecipients } from "./messages.js";
+import { InputError, normalizeKind, normalizeRecipients } from "./messages.js";
 import { renderPage } from "./page.js";
 
 const MAX_FORM_BYTES = 64 * 1024;
@@ -58,12 +60,13 @@ async function readBody(request) {
 }
 
 /** Stores one inbound message per recipient; validates all before writing. */
-async function sendToEach(store, { body, sender, to, source }) {
+async function sendToEach(store, { body, sender, to, source, kind }) {
   const channels = normalizeRecipients(to);
+  const k = normalizeKind(kind);
   if (typeof body !== "string" || body.trim() === "") throw new InputError("body must be a non-empty string");
   const messages = [];
   for (const channel of channels) {
-    messages.push(await store.add({ body, sender, direction: "inbound", source, channel }));
+    messages.push(await store.add({ body, sender, direction: "inbound", source, channel, kind: k }));
   }
   return messages;
 }
@@ -78,6 +81,7 @@ async function handlePage(request, store, base, api, url, chatgptReady) {
       body: form.get("body") ?? "",
       sender: form.get("sender"),
       to: to.length ? to : undefined,
+      kind: form.get("kind") ?? undefined,
       source: "page",
     });
     return new Response(null, { status: 303, headers: { location: base } });
@@ -116,6 +120,7 @@ async function handleApi(request, store, rest, url) {
         await store.list({
           direction: p.get("direction") ?? "all",
           channel: p.get("channel") ?? undefined,
+          kind: p.get("kind") ?? undefined,
           since_id: p.get("since_id") ?? undefined,
           before_id: p.get("before_id") ?? undefined,
           unread_only: p.get("unread_only") === "true" || p.get("unread_only") === "1",
@@ -134,7 +139,13 @@ async function handleApi(request, store, rest, url) {
       }
       if (!data || typeof data !== "object") throw new InputError("body must be a JSON object");
       const source = data.source === "page" ? "page" : "api";
-      const messages = await sendToEach(store, { body: data.body, sender: data.sender, to: data.to, source });
+      const messages = await sendToEach(store, {
+        body: data.body,
+        sender: data.sender,
+        to: data.to,
+        kind: data.kind,
+        source,
+      });
       // message stays for callers from before there were two channels.
       return json({ message: messages[0], messages }, 201);
     }

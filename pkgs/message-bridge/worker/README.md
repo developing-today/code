@@ -20,6 +20,12 @@ Durable Object.
   JSON API), one stored row per recipient. They start unread; the
   assistant reads them with `read_messages` and marks them read with
   `mark_read` or `ack_messages`.
+- **Instructions** are inbound messages with `kind` `"instruction"`
+  (plain ones are `"message"`). They are sent and targeted the same way,
+  to one agent or several, but the MCP tools hand them to the agent
+  without a `sender`; the page and the JSON API still show who sent
+  them. `read_messages(kind="instruction")` returns only instructions,
+  and the counts include `unread_instructions`. Agents can't send them.
 
 The behaviour is deliberately minimal for now; more comes later.
 
@@ -34,17 +40,18 @@ an unknown path; the ChatGPT token opens only its `/mcp`.
 | `POST /mcp/<token>`          | MCP server on Claude's channel, Streamable HTTP, stateless JSON answers (`GET` is 405: no server stream)                    |
 | `POST /mcp/<chatgpt token>`  | The same MCP server on ChatGPT's channel                                                                                    |
 | `GET /p/<token>`             | History page: send form + every message, newest first; refreshes every 10 s                                                 |
-| `POST /p/<token>`            | Form post (`body`, optional `sender`, one `to` per recipient): stores the inbound messages, redirects to the page           |
-| `GET /api/<token>/messages`  | JSON history: `direction`, `channel` (`claude`/`chatgpt`/`all`), `since_id`, `before_id`, `unread_only`, `limit`, `order`   |
-| `POST /api/<token>/messages` | JSON `{"body", "sender", "to"}`; `to` is `"claude"` (default), `"chatgpt"` or both as a list: one inbound row per recipient |
+| `POST /p/<token>`            | Form post (`body`, optional `sender`, one `to` per recipient, `kind`): stores the inbound messages, redirects to the page    |
+| `GET /api/<token>/messages`  | JSON history: `direction`, `channel` (`claude`/`chatgpt`/`all`), `kind`, `since_id`, `before_id`, `unread_only`, `limit`, `order`   |
+| `POST /api/<token>/messages` | JSON `{"body", "sender", "to", "kind"}`; `to` is `"claude"` (default), `"chatgpt"` or both as a list: one inbound row per recipient; `kind` is `"message"` (default) or `"instruction"` |
 | `POST /api/<token>/ack`      | JSON `{"up_to_id": N}` or `{"ids": [...]}`, with `channel` (default `claude`): marks inbound messages read                  |
 | `GET /healthz`               | `ok`, `configured`, `chatgpt_configured`, `version`, `token_fingerprint`; no data                                           |
 
 ## MCP tools
 
 - `send_message(body, sender?)` stores an outbound message and returns it.
-- `read_messages(direction="inbound", since_id?, unread_only?, limit?, mark_read?)`
+- `read_messages(direction="inbound", since_id?, kind?, unread_only?, limit?, mark_read?)`
   returns messages oldest first, `next_since_id` for polling, and counts.
+  Instructions come without their `sender`.
 - `ack_messages(up_to_id? | ids?)` marks inbound messages read.
 
 ## What protects it

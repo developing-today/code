@@ -12,6 +12,12 @@
 // source says which door it came through: "mcp", "page" or "api".
 // Inbound messages start unread; read_messages(mark_read) or
 // ack_messages marks them read, so the assistant can tell what is new.
+//
+// kind is "message" (the default) or "instruction". An instruction is
+// an inbound message Drew sends as direction for one or more agents; it
+// is stored and targeted like any message, but the MCP tools hand it to
+// the agent without its sender. The page and the JSON API (Drew's own
+// views) still show the sender.
 
 export const MAX_BODY = 16000;
 export const MAX_SENDER = 80;
@@ -21,22 +27,51 @@ export const DIRECTIONS = ["inbound", "outbound"];
 export const SOURCES = ["mcp", "page", "api"];
 export const CHANNELS = ["claude", "chatgpt"];
 export const CHANNEL_NAMES = { claude: "Claude", chatgpt: "ChatGPT" };
+export const KINDS = ["message", "instruction"];
 
 export class InputError extends Error {}
 
 /** Validates and normalizes a new message; throws InputError. */
-export function normalizeNew({ body, sender, direction, source, channel = "claude" }) {
+export function normalizeNew({ body, sender, direction, source, channel = "claude", kind }) {
   if (typeof body !== "string" || body.trim() === "") throw new InputError("body must be a non-empty string");
   if (body.length > MAX_BODY) throw new InputError(`body is longer than ${MAX_BODY} characters`);
   if (!DIRECTIONS.includes(direction)) throw new InputError(`direction must be one of ${DIRECTIONS.join(", ")}`);
   if (!SOURCES.includes(source)) throw new InputError(`source must be one of ${SOURCES.join(", ")}`);
   if (!CHANNELS.includes(channel)) throw new InputError(`channel must be one of ${CHANNELS.join(", ")}`);
+  const k = normalizeKind(kind);
+  if (k === "instruction" && direction !== "inbound") throw new InputError("only inbound messages can be instructions");
   let s = null;
   if (sender !== undefined && sender !== null && sender !== "") {
     if (typeof sender !== "string") throw new InputError("sender must be a string");
     s = sender.trim().slice(0, MAX_SENDER) || null;
   }
-  return { body, sender: s, direction, source, channel };
+  return { body, sender: s, direction, source, channel, kind: k };
+}
+
+/** Validates a new message's kind; empty means "message". Throws InputError. */
+export function normalizeKind(kind) {
+  if (kind === undefined || kind === null || kind === "") return "message";
+  if (!KINDS.includes(kind)) throw new InputError(`kind must be one of ${KINDS.join(", ")}`);
+  return kind;
+}
+
+/** Validates a kind filter: "all" or one kind; throws InputError. */
+export function normalizeKindFilter(kind) {
+  const k = kind ?? "all";
+  if (k === "" || k === "all") return "all";
+  if (!KINDS.includes(k)) throw new InputError(`kind must be all or one of ${KINDS.join(", ")}`);
+  return k;
+}
+
+/**
+ * What an agent sees of a stored message through its connector. An
+ * instruction carries no sender: Drew sees who it was from on the page,
+ * the agent only that it is an instruction.
+ */
+export function forAgent(m) {
+  if (m?.kind !== "instruction") return m;
+  const { sender: _hidden, ...rest } = m;
+  return rest;
 }
 
 /** Validates a channel filter: "all" or one channel; throws InputError. */
@@ -90,7 +125,8 @@ export function normalizeQuery(q = {}) {
   const order = q.order ?? "asc";
   if (order !== "asc" && order !== "desc") throw new InputError("order must be asc or desc");
   const channel = normalizeChannel(q.channel);
-  return { direction, sinceId, beforeId, limit, unreadOnly: Boolean(q.unread_only), order, channel };
+  const kind = normalizeKindFilter(q.kind);
+  return { direction, sinceId, beforeId, limit, unreadOnly: Boolean(q.unread_only), order, channel, kind };
 }
 
 /**
@@ -116,6 +152,7 @@ export class MemoryStore {
         (q.beforeId === null || r.id < q.beforeId) &&
         (q.direction === "all" || r.direction === q.direction) &&
         (q.channel === "all" || r.channel === q.channel) &&
+        (q.kind === "all" || r.kind === q.kind) &&
         (!q.unreadOnly || (r.direction === "inbound" && r.read_at === null)),
     );
     rows = q.order === "desc" ? rows.slice().reverse() : rows;
@@ -142,6 +179,7 @@ export class MemoryStore {
       inbound: rows.filter((r) => r.direction === "inbound").length,
       outbound: rows.filter((r) => r.direction === "outbound").length,
       unread_inbound: rows.filter((r) => r.direction === "inbound" && r.read_at === null).length,
+      unread_instructions: rows.filter((r) => r.kind === "instruction" && r.read_at === null).length,
       last_id: rows.length ? rows[rows.length - 1].id : 0,
     };
   }

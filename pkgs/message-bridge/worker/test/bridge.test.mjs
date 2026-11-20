@@ -579,3 +579,70 @@ test("page notes when the ChatGPT connector has no token yet", () => {
   });
   assert.match(html, /isn.t set up yet/);
 });
+
+test("instructions target one or more agents, and agents never see their sender", async () => {
+  const { call, tool } = twoChannels();
+  const sent = await call(`/api/${TOKEN}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ body: "rebase onto main", sender: "Muse", to: ["claude", "chatgpt"], kind: "instruction" }),
+  });
+  assert.equal(sent.status, 201);
+  const made = await sent.json();
+  assert.deepEqual(made.messages.map((m) => [m.channel, m.kind, m.sender]), [
+    ["claude", "instruction", "Muse"],
+    ["chatgpt", "instruction", "Muse"],
+  ]);
+  const form = await call(`/p/${TOKEN}`, {
+    method: "POST",
+    body: "body=from+the+form&sender=Aster&to=chatgpt&kind=instruction",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+  });
+  assert.equal(form.status, 303);
+  await call(`/api/${TOKEN}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ body: "plain note", sender: "Drew", to: "chatgpt" }),
+  });
+
+  for (const [token, count] of [[TOKEN, 1], [GPT, 2]]) {
+    const read = (await tool(token, "read_messages", { kind: "instruction" })).structuredContent;
+    assert.equal(read.messages.length, count);
+    for (const m of read.messages) {
+      assert.equal(m.kind, "instruction");
+      assert.ok(!("sender" in m), "an agent never gets an instruction's sender");
+    }
+    assert.doesNotMatch(JSON.stringify(read), /Muse|Aster/);
+    assert.equal(read.stats.unread_instructions, count);
+  }
+  const gptAll = (await tool(GPT, "read_messages", { mark_read: true })).structuredContent;
+  assert.deepEqual(gptAll.messages.map((m) => m.kind), ["instruction", "instruction", "message"]);
+  assert.equal(gptAll.messages[2].sender, "Drew", "a plain message keeps its sender");
+  assert.equal(gptAll.stats.unread_instructions, 0);
+
+  // Drew's own views keep the sender.
+  const api = await (await call(`/api/${TOKEN}/messages?kind=instruction`)).json();
+  assert.deepEqual(api.messages.map((m) => m.sender), ["Muse", "Muse", "Aster"]);
+  const page = await (await call(`/p/${TOKEN}`)).text();
+  assert.match(page, /Instruction → ChatGPT<\/b> · from Aster/);
+  assert.match(page, /name="kind" value="instruction"/);
+
+  // Agents can't send instructions, and the kind must be known.
+  const tryOut = await tool(TOKEN, "send_message", { body: "x", kind: "instruction" });
+  assert.equal(tryOut.isError, true);
+  for (const bad of ["order", 3]) {
+    const r = await call(`/api/${TOKEN}/messages`, { method: "POST", body: JSON.stringify({ body: "x", kind: bad }) });
+    assert.equal(r.status, 400, JSON.stringify(bad));
+  }
+  assert.equal((await call(`/api/${TOKEN}/messages?kind=nope`)).status, 400);
+  const badRead = await tool(TOKEN, "read_messages", { kind: "nope" });
+  assert.equal(badRead.isError, true);
+});
+
+test("only inbound messages can be instructions", async () => {
+  const store = new MemoryStore();
+  await assert.rejects(
+    store.add({ body: "x", direction: "outbound", source: "mcp", kind: "instruction" }),
+    /only inbound/,
+  );
+  const plain = await store.add({ body: "x", direction: "inbound", source: "api" });
+  assert.equal(plain.kind, "message");
+});
