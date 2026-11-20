@@ -7,6 +7,7 @@ import type { OrchestrationSection } from "../src/model.ts";
 import {
   derivedProjectState,
   fetchProjectSnapshot,
+  fetchProjectBoardsSnapshot,
   isProjectAudit,
   parseProjectAudit,
   fetchProjectPool,
@@ -19,6 +20,7 @@ import {
 } from "../src/projects.ts";
 import { renderProjects } from "../src/render.ts";
 import { liveSource } from "../src/sources/live.ts";
+import { PROJECT_BOARDS, validateBoardRegistry } from "../src/board-registry.ts";
 
 // A fixture GraphQL Projects v2 response, shaped exactly like the
 // live read of org Project #4 (one Todo Task, one closed item, one
@@ -95,6 +97,47 @@ const GQL = {
     },
   },
 };
+
+describe("project board registry and attribution", () => {
+  test("ships a valid, unique hierarchy for the three collected boards", () => {
+    expect(validateBoardRegistry(PROJECT_BOARDS)).toEqual([]);
+    expect(PROJECT_BOARDS.map((board) => board.id)).toEqual(["devtoday-main", "forks-main", "lab-cluster"]);
+  });
+
+  test("rejects duplicate identities and dangling parents", () => {
+    const board = PROJECT_BOARDS[0]!;
+    expect(validateBoardRegistry([
+      board,
+      { ...board, id: "duplicate", parentBoardId: "missing" },
+    ])).toEqual(expect.arrayContaining([
+      expect.stringContaining("duplicate project identity"),
+      expect.stringContaining("unknown parent"),
+    ]));
+  });
+
+  test("tags parsed items with their source board id", () => {
+    const items = parseProjectItems(GQL, undefined, "forks-main");
+    expect(items).toHaveLength(2);
+    expect(items.every((item) => item.boardId === "forks-main")).toBe(true);
+  });
+
+  test("keeps healthy board items and attribution when one board read fails", async () => {
+    const fetchFn: typeof fetch = Object.assign(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const request = JSON.parse(String(init?.body)) as { variables: { id: string } };
+        if (request.variables.id === PROJECT_BOARDS[2]!.nodeId) return new Response("unavailable", { status: 503 });
+        return new Response(JSON.stringify(GQL));
+      },
+      { preconnect: () => {} },
+    );
+
+    const result = await fetchProjectBoardsSnapshot("test-token", fetchFn, "2026-11-01T21:00:00.000Z");
+    expect(result.failedBoardIds).toEqual(["lab-cluster"]);
+    expect(result.items).toHaveLength(4);
+    expect(result.items.map((item) => item.boardId)).toEqual(["devtoday-main", "devtoday-main", "forks-main", "forks-main"]);
+    expect(Object.keys(result.audits)).toEqual(["devtoday-main", "forks-main"]);
+  });
+});
 
 function projectPage(hasNextPage: boolean, endCursor: string | null, totalCount = 25) {
   return {

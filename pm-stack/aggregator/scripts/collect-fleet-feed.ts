@@ -38,18 +38,10 @@
 //     <path>` (scripts/check-contract-corpus.ts), which runs this
 //     same validator; the shared corpus lives in
 //     test/contract-corpus/v1/.
-//   - the org GitHub Project "Developing Today" (#4, #910 stage 5) —
-//     read via GraphQL Projects v2 into the feed's `projects` pool.
-//     Token plumbing: GITHUB_PROJECT_TOKEN / GH_TOKEN from the env
-//     when present; otherwise the collector resolves the Bitwarden
-//     secret named `github.project-token` itself (see
-//     resolveProjectToken) using ~/tools/bin/bws + the machine-account
-//     access-token file under $HOME/.config/bitwarden — both already
-//     present under the collector systemd unit's pinned HOME, so no
-//     unit change is needed. The token value is never logged, never
-//     written to the feed, and only ever sent to api.github.com.
-//     Any failure (no token, bws missing, GraphQL error) omits the
-//     section and logs only that it was omitted.
+//   - the registry's GitHub Projects v2 boards — read per board through
+//     `fleet gh`, with personal -> owner-specific App installation
+//     rotation selected for each org. One failed board does not discard
+//     the others; items retain their stable boardId in the feed.
 //   - the AA cost explorer data — Supabase `ainventory` (the AA
 //     import: v_rankings, v_threshold_metrics,
 //     measurement_events — both the AA Intelligence Index rows and the
@@ -171,7 +163,8 @@ import {
 import type { ChargeRow, PaygLine, SaasService, SnapshotRecord } from "../src/model.ts";
 import { recordsFromDns, recordsFromPaygLines, recordsFromSaasServices } from "../src/snapshot-records.ts";
 import { isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
-import { fetchProjectSnapshot } from "../src/projects.ts";
+import { fetchProjectBoardsSnapshot, fetchProjectSnapshot } from "../src/projects.ts";
+import { PROJECT_BOARDS, validateBoardRegistry } from "../src/board-registry.ts";
 import type { ProjectPoolItem } from "../src/model.ts";
 import { REPOS } from "../src/model.ts";
 import { staleIssueSearchQuery, type RepoCensus } from "../src/coverage.ts";
@@ -442,18 +435,37 @@ async function resolveBwsSecret(key: string): Promise<string | null> {
   }
 }
 
-/**
- * Resolve the Projects-scope GitHub token without ever logging it.
- * Order: (1) GITHUB_PROJECT_TOKEN / GH_TOKEN already in the process
- * env (agent runs, manual runs, a future systemd EnvironmentFile);
- * (2) Bitwarden Secrets Manager via resolveBwsSecret.
- * Returns null when neither route yields a token (section omitted).
- */
-async function resolveProjectToken(): Promise<string | null> {
-  const fromEnv = process.env.GITHUB_PROJECT_TOKEN ?? process.env.GH_TOKEN;
-  if (fromEnv && fromEnv.trim()) return fromEnv.trim();
-  return resolveBwsSecret("github.project-token");
+/** Execute gh through the fleet's rotation, preferring the named org's App installations. */
+function runFleetGh(args: string[], owner: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      process.env.FLEET_BIN ?? "fleet",
+      ["gh", ...args],
+      {
+        env: { ...process.env, FLEET_GH_ORDER: `personal,app:${owner},devtoday:${owner},backup:${owner}` },
+        maxBuffer: 16 * 1024 * 1024,
+        timeout: 60_000,
+      },
+      (err, stdout) => (err ? reject(new Error("fleet gh request failed")) : resolve(stdout)),
+    );
+  });
 }
+
+/** Run a read-only GraphQL request through fleet gh's personal/App token rotation. */
+const fleetGhProjectFetch: typeof fetch = async (_input, init) => {
+  const request = JSON.parse(String(init?.body ?? "{}")) as {
+    query?: string;
+    variables?: { id?: string; cursor?: string | null };
+  };
+  if (!request.query || !request.variables?.id) throw new Error("invalid fleet gh project GraphQL request");
+  const board = PROJECT_BOARDS.find((candidate) => candidate.nodeId === request.variables?.id);
+  // The older Ideas board is not in the collected family, but belongs to the same org.
+  const owner = board?.org ?? "developing-today";
+  const args = ["api", "graphql", "-f", `query=${request.query}`, "-F", `id=${request.variables.id}`];
+  if (request.variables.cursor) args.push("-F", `cursor=${request.variables.cursor}`);
+  const body = await runFleetGh(args, owner);
+  return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+};
 
 // --- AA cost explorer (Supabase ainventory) ---------------------------------
 // One SQL statement returns the whole section payload as a single
@@ -1114,110 +1126,90 @@ async function main(): Promise<void> {
   // aggregator's items() falls back to its previous chain.
   let projects: ProjectPoolItem[] | undefined;
   let projectAudit: FleetFeed["projectAudit"];
+  let projectAudits: FleetFeed["projectAudits"];
   const designBoards: NonNullable<FleetFeed["designBoards"]> = [];
-  try {
-    const token = await resolveProjectToken();
-    if (!token) {
-      console.error("collector: no GitHub Project token available (env or bws); projects section omitted");
-      markSection("projects", "skipped");
-    } else {
-      const snapshot = await fetchProjectSnapshot(token, fetch, now.toISOString());
+  const registryProblems = validateBoardRegistry(PROJECT_BOARDS);
+  if (registryProblems.length) {
+    console.error(`collector: invalid project board registry (${registryProblems.join("; ")})`);
+    markSection("projects", "error", "invalid project board registry");
+  } else {
+    const snapshot = await fetchProjectBoardsSnapshot("fleet-gh", fleetGhProjectFetch, now.toISOString(), PROJECT_BOARDS);
+    for (const failedId of snapshot.failedBoardIds) console.error(`collector: project board ${failedId} failed; continuing`);
+    designBoards.push(...snapshot.boards);
+    if (snapshot.items.length) {
       projects = snapshot.items;
-      projectAudit = snapshot.audit;
-      designBoards.push(snapshot.board);
-      // Cache draft ideas separately; their failure must not discard Project #4.
+      projectAudits = snapshot.audits;
+      projectAudit = snapshot.audits["devtoday-main"];
+      const failures = snapshot.failedBoardIds;
+      markSection("projects", failures.length ? "error" : "ok", failures.length ? `boards failed: ${failures.join(", ")}` : undefined, {
+        reportedTotal: snapshot.counts.reportedTotal,
+        emittedEntries: snapshot.counts.emittedEntries,
+      });
+      // Keep the separately curated Ideas board snapshot, but use the same routed identity path.
       try {
-        const ideas = await fetchProjectSnapshot(token, fetch, now.toISOString(), "PVT_kwDOAZNvF84BrQnp");
+        const ideas = await fetchProjectSnapshot("fleet-gh", fleetGhProjectFetch, now.toISOString(), "PVT_kwDOAZNvF84BrQnp");
         designBoards.push(ideas.board);
       } catch (err) {
         console.error(`collector: Ideas board read failed (${sanitizeCollectionError(err)}); ideas snapshot omitted`);
       }
-      if (!projects.length) {
-        // #3979: Project #4 is never legitimately empty, so a zero-item
-        // read is a broken read (lost scope, renamed project, shape
-        // drift) — mark it error like the DNS zero-entries case instead
-        // of reporting ok for a section that was omitted.
-        console.error("collector: GitHub Project read returned zero items; projects section omitted");
-        projects = undefined;
-        markSection("projects", "error", "GitHub Project read returned zero items");
-      } else {
-        markSection("projects", "ok");
-      }
-      markSection("projects", "ok", undefined, {
-        reportedTotal: snapshot.counts.reportedTotal,
-        emittedEntries: snapshot.counts.emittedEntries,
-      });
+    } else {
+      projects = undefined;
+      markSection("projects", snapshot.failedBoardIds.length ? "error" : "skipped", snapshot.failedBoardIds.join(", ") || undefined);
     }
-  } catch (err) {
-    console.error(`collector: GitHub Project read failed (${sanitizeCollectionError(err)}); projects section omitted`);
-    projects = undefined;
-    markSection("projects", "error", err);
   }
 
   // --- Coverage census (#1220) -------------------------------------------
-  // Per-repo open-issue + gate-label counts via the Search API, using
-  // the same token as the Project read. Fail-soft: a repo whose counts
+  // Per-repo open-issue + gate-label counts via the Search API and the
+  // same fleet identity rotation as the Projects reads. Fail-soft: a repo whose counts
   // fail is omitted, and a total failure omits the section — the
   // aggregator panel then renders backlog counts as unavailable.
   let coverage: RepoCensus[] | undefined;
   try {
-    const token = await resolveProjectToken();
-    if (!token) {
-      console.error("collector: no GitHub token available; coverage census omitted");
-      markSection("coverage", "skipped");
+    const count = async (repo: string, q: string): Promise<number> => {
+      const owner = repo.split("/")[0]!;
+      const response = await runFleetGh(["api", `search/issues?per_page=1&q=${encodeURIComponent(q)}`], owner);
+      const body = JSON.parse(response) as { total_count?: number };
+      if (!Number.isInteger(body.total_count)) throw new Error("search: no total_count");
+      return body.total_count as number;
+    };
+    const rows: RepoCensus[] = [];
+    const failedRepos = new Set<string>();
+    for (const repo of REPOS) {
+      let staleOpenIssues: number | null = null;
+      let staleIssuesError: string | null = null;
+      let staleIssuesCollectedAt: string;
+      try {
+        staleOpenIssues = await count(repo, staleIssueSearchQuery(repo, new Date()));
+        staleIssuesCollectedAt = new Date().toISOString();
+      } catch (err) {
+        failedRepos.add(repo);
+        staleIssuesCollectedAt = new Date().toISOString();
+        staleIssuesError = sanitizeCollectionError(err);
+        console.error(`collector: stale-issue census failed for ${repo} (${staleIssuesError})`);
+      }
+      let openIssues: number | null = null;
+      let gateNow: number | null = null;
+      let gateNext: number | null = null;
+      try {
+        const base = `repo:${repo} is:issue is:open`;
+        openIssues = await count(repo, base);
+        gateNow = await count(repo, `${base} label:now`);
+        gateNext = await count(repo, `${base} label:next`);
+      } catch (err) {
+        failedRepos.add(repo);
+        console.error(
+          `collector: coverage census failed for ${repo} (${sanitizeCollectionError(err)}); backlog counts unavailable`,
+        );
+      }
+      rows.push({ repo, openIssues, gateNow, gateNext, staleOpenIssues, staleIssuesCollectedAt, staleIssuesError });
+    }
+    if (rows.length) coverage = rows;
+    if (failedRepos.size === REPOS.length && REPOS.length > 0) {
+      markSection("coverage", "error", "all repository census reads failed");
+    } else if (failedRepos.size > 0) {
+      markSection("coverage", "error", `${failedRepos.size} repository census reads failed`);
     } else {
-      const count = async (q: string): Promise<number> => {
-        const res = await fetch(`https://api.github.com/search/issues?per_page=1&q=${encodeURIComponent(q)}`, {
-          headers: {
-            authorization: `Bearer ${token}`,
-            accept: "application/vnd.github+json",
-            "user-agent": "pm-aggregator-collector",
-          },
-        });
-        if (!res.ok) throw new Error(`search ${res.status}`);
-        const body = (await res.json()) as { total_count?: number };
-        if (!Number.isInteger(body.total_count)) throw new Error("search: no total_count");
-        return body.total_count as number;
-      };
-      const rows: RepoCensus[] = [];
-      const failedRepos = new Set<string>();
-      for (const repo of REPOS) {
-        let staleOpenIssues: number | null = null;
-        let staleIssuesError: string | null = null;
-        let staleIssuesCollectedAt: string;
-        try {
-          staleOpenIssues = await count(staleIssueSearchQuery(repo, new Date()));
-          staleIssuesCollectedAt = new Date().toISOString();
-        } catch (err) {
-          failedRepos.add(repo);
-          staleIssuesCollectedAt = new Date().toISOString();
-          staleIssuesError = sanitizeCollectionError(err);
-          console.error(`collector: stale-issue census failed for ${repo} (${staleIssuesError})`);
-        }
-        let openIssues: number | null = null;
-        let gateNow: number | null = null;
-        let gateNext: number | null = null;
-        try {
-          const base = `repo:${repo} is:issue is:open`;
-          openIssues = await count(base);
-          gateNow = await count(`${base} label:now`);
-          gateNext = await count(`${base} label:next`);
-        } catch (err) {
-          failedRepos.add(repo);
-          console.error(
-            `collector: coverage census failed for ${repo} (${sanitizeCollectionError(err)}); backlog counts unavailable`,
-          );
-        }
-        rows.push({ repo, openIssues, gateNow, gateNext, staleOpenIssues, staleIssuesCollectedAt, staleIssuesError });
-      }
-      if (rows.length) coverage = rows;
-      if (failedRepos.size === REPOS.length && REPOS.length > 0) {
-        markSection("coverage", "error", "all repository census reads failed");
-      } else if (failedRepos.size > 0) {
-        markSection("coverage", "error", `${failedRepos.size} repository census reads failed`);
-      } else {
-        markSection("coverage", "ok");
-      }
+      markSection("coverage", "ok");
     }
   } catch (err) {
     console.error(`collector: coverage census failed (${sanitizeCollectionError(err)}); section omitted`);
@@ -1383,6 +1375,8 @@ async function main(): Promise<void> {
     ...(dedupedSnapshots.length ? { snapshots: dedupedSnapshots } : {}),
     ...(projects ? { projects } : {}),
     ...(projectAudit ? { projectAudit } : {}),
+    ...(projectAudits ? { projectAudits } : {}),
+    ...(projectAudits ? { projectBoardRegistry: [...PROJECT_BOARDS] } : {}),
     ...(designBoards.length ? { designBoards } : {}),
     ...(coverage ? { coverage } : {}),
     aa,
