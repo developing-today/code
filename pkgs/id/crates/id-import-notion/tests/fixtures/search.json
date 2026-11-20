@@ -1,0 +1,18 @@
+{
+  "object": "list",
+  "results": [
+    {
+      "object": "database",
+      "id": "db-alpha",
+      "parent": { "type": "workspace", "workspace": true },
+      "title": [{ "plain_text": "Tasks" }]
+    },
+    {
+      "object": "page",
+      "id": "page-root",
+      "parent": { "type": "workspace", "workspace": true },
+      "last_edited_time": "2026-11-01T10:00:00.000Z"
+    }
+  ],
+  "has_more": false
+}

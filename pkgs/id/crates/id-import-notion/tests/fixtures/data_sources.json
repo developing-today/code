@@ -1,0 +1,14 @@
+{
+  "object": "list",
+  "results": [
+    {
+      "object": "data_source",
+      "id": "source-alpha",
+      "properties": {
+        "Name": { "id": "title", "type": "title", "title": {} },
+        "Status": { "id": "status", "type": "status", "status": {} }
+      }
+    }
+  ],
+  "has_more": false
+}
