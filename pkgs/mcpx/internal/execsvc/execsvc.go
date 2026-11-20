@@ -379,14 +379,32 @@ func ArgsHash(args any) string {
 // is reported to the sink as a call frame. Calls for runs nobody here
 // is executing are dropped, by design: there is no stream to join.
 type CallRegistry struct {
-	mu    sync.Mutex
-	sinks map[string]*callSink
+	mu      sync.Mutex
+	sinks   map[string]*callSink
+	history map[string]*callHistory
 	// dryRuns are the runs whose calls are intercepted rather than
 	// executed (#1927 dry run). The daemon's call path consults
 	// IsDryRun before dispatching; the exec service marks the run
 	// for the length of the run.
 	dryRuns map[string]bool
 }
+
+// callHistory is retained briefly so a CLI-side run can fetch calls made by
+// its generated client in the daemon process. It contains CallInfo only: raw
+// arguments are never retained.
+type callHistory struct {
+	started   time.Time
+	updated   time.Time
+	active    bool
+	truncated bool
+	calls     []CallInfo
+}
+
+const (
+	callHistoryTTL       = 10 * time.Minute
+	callHistoryMaxRuns   = 1024
+	callHistoryMaxPerRun = 1000
+)
 
 // callSink is one run's registered sink plus its delivery lifetime:
 // closed stops new reports, and wg counts the reports in flight, so
@@ -399,7 +417,58 @@ type callSink struct {
 
 // NewCallRegistry builds an empty registry.
 func NewCallRegistry() *CallRegistry {
-	return &CallRegistry{sinks: map[string]*callSink{}, dryRuns: map[string]bool{}}
+	return &CallRegistry{sinks: map[string]*callSink{}, history: map[string]*callHistory{}, dryRuns: map[string]bool{}}
+}
+
+// BeginHistory marks runID as actively collecting calls. The entry is bounded
+// by a TTL and global run cap; an existing entry is replaced to avoid mixing
+// two runs that accidentally reuse an id.
+func (r *CallRegistry) BeginHistory(runID string) {
+	if runID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pruneHistoryLocked(time.Now())
+	if len(r.history) >= callHistoryMaxRuns {
+		var oldestID string
+		var oldest time.Time
+		for id, h := range r.history {
+			if oldestID == "" || h.started.Before(oldest) {
+				oldestID, oldest = id, h.started
+			}
+		}
+		delete(r.history, oldestID)
+	}
+	now := time.Now()
+	r.history[runID] = &callHistory{started: now, updated: now, active: true, calls: []CallInfo{}}
+}
+
+// History returns a copy of a collected run's calls and whether the run was
+// registered. A missing entry is deliberately distinct from an empty history.
+func (r *CallRegistry) History(runID string) ([]CallInfo, bool, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pruneHistoryLocked(time.Now())
+	h, ok := r.history[runID]
+	if !ok {
+		return nil, false, false
+	}
+	if h.active {
+		h.active = false
+		h.updated = time.Now()
+	}
+	calls := make([]CallInfo, len(h.calls))
+	copy(calls, h.calls)
+	return calls, true, h.truncated
+}
+
+func (r *CallRegistry) pruneHistoryLocked(now time.Time) {
+	for id, h := range r.history {
+		if !h.active && now.Sub(h.updated) > callHistoryTTL {
+			delete(r.history, id)
+		}
+	}
 }
 
 // RegisterDryRun marks runID as a dry run until the returned
@@ -435,6 +504,7 @@ func (r *CallRegistry) IsDryRun(runID string) bool {
 // its terminal frames with a guarantee that no call frame lands
 // after them — or after the stream's handler has returned.
 func (r *CallRegistry) Register(runID string, sink func(Frame)) (unregister func()) {
+	r.BeginHistory(runID)
 	entry := &callSink{sink: sink}
 	r.mu.Lock()
 	r.sinks[runID] = entry
@@ -464,13 +534,16 @@ func (r *CallRegistry) ReportCall(runID, server, tool string, args any, dur time
 		// Wait once the entry is closed.
 		entry.wg.Add(1)
 	} else {
-		ok = false
+		entry = nil
 	}
+	_, collecting := r.history[runID]
 	r.mu.Unlock()
-	if !ok {
+	if entry == nil && !collecting {
 		return false
 	}
-	defer entry.wg.Done()
+	if entry != nil {
+		defer entry.wg.Done()
+	}
 	info := &CallInfo{
 		Server: server, Tool: tool, ArgsHash: ArgsHash(args),
 		DurationMs: dur.Milliseconds(), OK: callErr == nil,
@@ -478,6 +551,21 @@ func (r *CallRegistry) ReportCall(runID, server, tool string, args any, dur time
 	}
 	if callErr != nil {
 		info.Error = callErr.Error()
+	}
+	r.mu.Lock()
+	if h := r.history[runID]; h != nil && len(h.calls) < callHistoryMaxPerRun {
+		h.calls = append(h.calls, *info)
+		h.updated = time.Now()
+	} else if h := r.history[runID]; h != nil {
+		h.truncated = true
+		h.updated = time.Now()
+	}
+	r.mu.Unlock()
+	if entry == nil {
+		// A CLI-local run has registered history without owning a daemon-side
+		// exec stream. Its call is collected for the outcome hook, but there
+		// is no frame sink to report delivery to.
+		return false
 	}
 	entry.sink(Frame{Type: FrameCall, RunID: runID, Call: info})
 	return true
@@ -727,6 +815,11 @@ type Service struct {
 	// shares one registry between the services it builds and its call
 	// handlers.
 	Calls *CallRegistry
+	// CallHistory bridges a CLI-local run to the daemon that executes its
+	// generated client's tool calls. Begin is called before the script starts;
+	// Snapshot is called before outcome hooks. A failed snapshot is exposed to
+	// hooks as an unavailable @calls value rather than an empty call list.
+	CallHistory CallHistory
 
 	// Scripts resolves a Request's File when it names a script rather than
 	// a path (#2168). The zero value resolves against the process working
@@ -735,6 +828,12 @@ type Service struct {
 	// resolved paths.scripts setting — the same setting the CLI reads,
 	// not a daemon-specific one.
 	Scripts scriptresolve.Resolver
+}
+
+// CallHistory is the cross-process half of call collection for local CLI runs.
+type CallHistory interface {
+	Begin(context.Context, string) error
+	Snapshot(context.Context, string) ([]CallInfo, error)
 }
 
 // Request is one execution.
@@ -1027,6 +1126,12 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	// wherever the write happened to fail.
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	var callHistoryErr string
+	if s.CallHistory != nil {
+		if err := s.CallHistory.Begin(runCtx, runID); err != nil {
+			callHistoryErr = err.Error()
+		}
+	}
 	//
 	// Serialised: the runner calls the stdout writer and the stderr record
 	// hooks from separate goroutines, and an HTTP sink writing two frames at
@@ -1057,10 +1162,23 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	// hashed-arguments CallInfo is kept, never the arguments.
 	var callsMu sync.Mutex
 	var runCalls []CallInfo
-	snapshotCalls := func() []CallInfo {
+	snapshotCalls := func() ([]CallInfo, string) {
+		if s.CallHistory != nil && s.Calls == nil {
+			callsMu.Lock()
+			historyErr := callHistoryErr
+			callsMu.Unlock()
+			if historyErr != "" {
+				return nil, historyErr
+			}
+			calls, err := s.CallHistory.Snapshot(runCtx, runID)
+			if err != nil {
+				return nil, err.Error()
+			}
+			return calls, ""
+		}
 		callsMu.Lock()
 		defer callsMu.Unlock()
-		return append([]CallInfo(nil), runCalls...)
+		return append([]CallInfo(nil), runCalls...), ""
 	}
 	if s.Calls != nil {
 		unregisterCalls = s.Calls.Register(runID, func(f Frame) {
@@ -1334,7 +1452,7 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	hookCtx.Diagnostic = hookDiagnostic(res.Error)
 	hookCtx.ExitCode, hookCtx.DurationMs = res.ExitCode, res.DurationMs
 	hookCtx.Artifacts = res.Artifacts
-	hookCtx.Calls = snapshotCalls()
+	hookCtx.Calls, hookCtx.CallsError = snapshotCalls()
 	phase := HookOnSuccess
 	if res.Error != "" {
 		phase = HookOnError
@@ -1385,7 +1503,7 @@ func (s *Service) RunWith(ctx context.Context, ropts runner.Options, opts Option
 	if hs := phaseHooks(hooks, HookSuffix); len(hs) > 0 {
 		hookCtx.Phase = HookSuffix
 		hookCtx.Result, hookCtx.Error = res.Result, res.Error
-		hookCtx.Calls = snapshotCalls()
+		hookCtx.Calls, hookCtx.CallsError = snapshotCalls()
 		s.runHooks(runCtx, HookSuffix, hs, hookCtx, ropts, res, emitFrame)
 	}
 
