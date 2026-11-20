@@ -132,21 +132,18 @@ func TestOutputColorIsReachableFromTheEnvironment(t *testing.T) {
 		}
 		defer master.Close()
 
-		// Bubble Tea switches the PTY to raw mode during startup. Repeating q
-		// ensures one reaches the TUI even if the first write lands before that
-		// switch; the test is bounded so a broken TUI cannot hang the suite.
+		// Wait for the fixture namespace in a rendered frame before sending q.
+		// Sending input during startup can quit before the configured color mode
+		// reaches the ready TUI.
+		frameReady := make(chan struct{})
 		stopInput := make(chan struct{})
 		defer close(stopInput)
 		go func() {
-			ticker := time.NewTicker(100 * time.Millisecond)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-stopInput:
-					return
-				case <-ticker.C:
-					_, _ = master.Write([]byte("q\r"))
-				}
+			select {
+			case <-stopInput:
+				return
+			case <-frameReady:
+				_, _ = master.Write([]byte("q\r"))
 			}
 		}()
 
@@ -159,6 +156,13 @@ func TestOutputColorIsReachableFromTheEnvironment(t *testing.T) {
 				n, readErr := master.Read(buf)
 				if n > 0 {
 					captured = append(captured, buf[:n]...)
+					if bytes.Contains(captured, []byte("demo")) {
+						select {
+						case <-frameReady:
+						default:
+							close(frameReady)
+						}
+					}
 					if !answeredCursor && bytes.Contains(captured, []byte("\x1b[6n")) {
 						// Bubble Tea asks the terminal for its cursor position while
 						// initializing. A PTY has no terminal emulator to answer.
