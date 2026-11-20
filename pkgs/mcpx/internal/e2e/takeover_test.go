@@ -425,13 +425,7 @@ func TestUpgradeStartsTheSuccessorThroughTheUnitsStartCommand(t *testing.T) {
 	wrapper := filepath.Join(bin, "mcpx-start")
 	writeUnitScript(t, wrapper, "MCPX_UNIT_TOKEN=rotated\nexport MCPX_UNIT_TOKEN\nexec \"$@\"\n")
 	next := filepath.Join(bin, "mcpx")
-	src, err := os.ReadFile(e.mcpx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(next, src, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	copyDaemonExecutable(t, before.PID, e.mcpx, next)
 	// systemd reports the wrapper and the binary as the unit's ExecStart.
 	writeUnitScript(t, filepath.Join(bin, "systemctl"),
 		fmt.Sprintf("echo '{ path=%s ; argv[]=%s %s daemon ; ignore_errors=no ; pid=0 ; status=0/0 }'\n", wrapper, wrapper, next))
