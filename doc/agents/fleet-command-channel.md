@@ -7,6 +7,14 @@ their mailbox, act on commands, and answer. Bridge side:
 `pkgs/message-bridge/worker/README.md` ("Fleet mailboxes"); client:
 `fleet bridge` (`pkgs/fleet/crates/fleet-bridge`).
 
+## The short way
+
+`fleet agent next` does the mailbox check below and then tries the queue,
+the host's shortlist and GitHub priority, in that order, and returns one
+task. An agent that uses it does not need to run the steps in the next
+section by hand. Enrolment and the full ladder:
+[onboarding an agent](onboarding-an-agent.md).
+
 ## Every lane run (Muse lanes and any other fleet agent)
 
 At the start of each run, before claiming queue work:

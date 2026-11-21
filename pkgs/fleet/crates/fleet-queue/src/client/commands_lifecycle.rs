@@ -825,6 +825,10 @@ pub(super) fn cmd_park(rest: &[String]) -> i32 {
             "ready-condition",
             "execution",
             "required-budget-minutes",
+            // FDR-0013: a park may wait on a person only as a hands
+            // item, named by these two flags.
+            "hands",
+            "action",
         ],
         &[],
     );
@@ -867,6 +871,28 @@ pub(super) fn cmd_park(rest: &[String]) -> i32 {
             die(2, "--ready-condition must be a JSON object");
         }
         body["ready_condition"] = rc;
+    }
+    // FDR-0013: no park waits on a person to decide. Checked before
+    // any broker contact; a hands item is stamped onto the progress so
+    // the row says what a person has to do.
+    let condition_kind = body["ready_condition"]
+        .get("kind")
+        .and_then(|k| k.as_str())
+        .map(str::to_string);
+    let hands_flag = args.get("hands");
+    let action_flag = args.get("action");
+    match crate::person_wait::check(&crate::person_wait::Wait {
+        reason_class: None,
+        condition_kind: condition_kind.as_deref(),
+        text: &reason,
+        hands: hands_flag.as_deref(),
+        action: action_flag.as_deref(),
+    }) {
+        Ok(Some(hands)) => {
+            body["progress"]["hands"] = json!({"kind": hands.kind, "action": hands.action});
+        }
+        Ok(None) => {}
+        Err(message) => die(2, &format!("park: {message}")),
     }
     // --required-budget-minutes <n>: the minimum remaining shift
     // budget a future claimer must declare to take this park
@@ -1004,6 +1030,10 @@ pub(super) fn cmd_block(rest: &[String]) -> i32 {
             "blocked-by-ci",
             "dep-recheck-seconds",
             "dep-max-ttl-seconds",
+            // FDR-0013: a block may wait on a person only as a hands
+            // item, named by these two flags.
+            "hands",
+            "action",
         ],
         &[],
     );
@@ -1014,11 +1044,30 @@ pub(super) fn cmd_block(rest: &[String]) -> i32 {
     let blocker = args
         .get("blocker")
         .unwrap_or_else(|| die(2, "block: --blocker is required"));
+    // FDR-0013: no block waits on a person to decide. Checked before
+    // any broker contact, so a refused block changes nothing.
+    let hands_flag = args.get("hands");
+    let action_flag = args.get("action");
+    let hands = match crate::person_wait::check(&crate::person_wait::Wait {
+        reason_class: Some(&rc),
+        condition_kind: None,
+        text: &blocker,
+        hands: hands_flag.as_deref(),
+        action: action_flag.as_deref(),
+    }) {
+        Ok(hands) => hands,
+        Err(message) => die(2, &format!("block: {message}")),
+    };
     // #8568: the needs-drew payload is live only for an
     // escalated-to-user block that names its ledger item and its
-    // question; every other block keeps today's shape exactly.
+    // question; every other block keeps today's shape exactly. A
+    // hands item's action is the question when none was given, so the
+    // push says what to do.
+    let question = args
+        .get("question")
+        .or_else(|| hands.as_ref().map(|h| h.action.clone()));
     let needs_drew = if rc == "escalated-to-user" {
-        match (args.get("ledger-id"), args.get("question")) {
+        match (args.get("ledger-id"), question) {
             (Some(ledger_id), Some(question)) => Some(crate::needs_drew::BlockNeedsDrew {
                 ledger_id,
                 question,
@@ -1033,6 +1082,9 @@ pub(super) fn cmd_block(rest: &[String]) -> i32 {
         None
     };
     let mut progress = progress_arg(&args).unwrap_or(json!({}));
+    if let Some(hands) = &hands {
+        progress["hands"] = json!({"kind": hands.kind, "action": hands.action});
+    }
     if let Some(nd) = &needs_drew {
         // Stamp the ledger id onto the task row through the
         // progress the CURRENT broker already persists — no

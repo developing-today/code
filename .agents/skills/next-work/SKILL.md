@@ -11,7 +11,9 @@ A result is one of three things: a merged change that makes an unchecked accepta
 
 ## Choosing work
 
-Read the plan's **Now** table first. Then take the first of these that exists:
+The short way is `fleet agent next`: it returns one task from the highest intake rung that has one (a command pushed to you, the queue, the host's shortlist, GitHub priority) and the commands to run when the task is done. When it hands you an issue, do one slice of it. When it tells you the shortlist is low, filling the list is your task for that run.
+
+To choose by hand, read the plan's **Now** table first. Then take the first of these that exists:
 
 1. **Breakage on main in an active track's code.** A red `id` suite outranks every feature slice, because every later verdict reads that signal.
 2. **The next slice of an active track.** Follow [`feature-slice`](../feature-slice/SKILL.md). The track's row names its exit test and its open issues.

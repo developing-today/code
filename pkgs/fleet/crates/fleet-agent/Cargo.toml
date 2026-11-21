@@ -1,0 +1,17 @@
+[package]
+name = "fleet-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The fleet agent domain: one front door for any agent. Enrol a named agent of any kind, check what this seat can reach, ask for the next piece of work down the intake ladder (pushed command, queue claim, local shortlist, highest priority), and open a shell where builds belong."
+
+[dependencies]
+fleet-config = { workspace = true }
+# preserve_order: every verb prints JSON, and the key order is the shape.
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[dev-dependencies]
+# Property tests (AGENTS.md testing doctrine), the same proptest version
+# the other fleet crates use.
+proptest = "1.12"
