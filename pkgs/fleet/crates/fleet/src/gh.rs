@@ -281,6 +281,11 @@ fn classify_failure(output: &str) -> FailureClass {
         || lower.contains("this endpoint requires you to be authenticated")
         || lower.contains("bad credentials")
         || lower.contains("http 401")
+        // GraphQL answers a node this identity cannot see as if it did
+        // not exist ("Could not resolve to a node with the global id",
+        // "Could not resolve to a ProjectV2 ...", "... to an
+        // Organization ..."), with no permission wording (#12154).
+        || lower.contains("could not resolve to a")
     {
         return FailureClass::Permission;
     }
@@ -298,6 +303,7 @@ fn is_read_call(args: &[String]) -> bool {
         return false;
     };
     match verb {
+        "api" if api_endpoint(&args[1..]) == Some("graphql") => is_graphql_read(&args[1..]),
         "api" => {
             // gh api: GET unless --method says otherwise or a field
             // flag (-f/-F/--field/--raw-field/--input) implies POST.
@@ -340,6 +346,98 @@ fn is_read_call(args: &[String]) -> bool {
         }
         "auth" => matches!(args.get(1).map(|s| s.as_str()), Some("status" | "token")),
         _ => false,
+    }
+}
+
+/// `gh api` flags that take the next argument as their value
+/// (`gh api --help`), so that value is not mistaken for the endpoint.
+const GH_API_VALUE_FLAGS: [&str; 17] = [
+    "-f",
+    "-F",
+    "--field",
+    "--raw-field",
+    "--input",
+    "-X",
+    "--method",
+    "-H",
+    "--header",
+    "-q",
+    "--jq",
+    "-t",
+    "--template",
+    "-p",
+    "--preview",
+    "--hostname",
+    "--cache",
+];
+
+/// The endpoint argument of a `gh api` call (the first positional),
+/// given the arguments after `api`.
+fn api_endpoint(args: &[String]) -> Option<&str> {
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if GH_API_VALUE_FLAGS.contains(&a) {
+            i += 2;
+            continue;
+        }
+        if !a.starts_with('-') {
+            return Some(a);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Is this `gh api graphql` call a query rather than a mutation?
+/// GraphQL always POSTs, so the field flags say nothing; the
+/// operation does. Read-only only when the `query` field is given
+/// inline and its operation is an anonymous `{ ... }` selection or a
+/// named `query`. A query read from a file (`query=@path`) or stdin
+/// (`--input`), or any operation that cannot be told apart, counts
+/// as a write (#12154).
+fn is_graphql_read(args: &[String]) -> bool {
+    let mut query: Option<&str> = None;
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--input" || a.starts_with("--input=") {
+            return false;
+        }
+        let field = if a == "-f" || a == "-F" || a == "--field" || a == "--raw-field" {
+            i += 1;
+            args.get(i).map(|s| s.as_str())
+        } else {
+            a.strip_prefix("--field=")
+                .or(a.strip_prefix("--raw-field="))
+                .or(a.strip_prefix("-f").filter(|v| !v.is_empty()))
+                .or(a.strip_prefix("-F").filter(|v| !v.is_empty()))
+        };
+        if let Some(v) = field.and_then(|f| f.strip_prefix("query=")) {
+            query = Some(v);
+        }
+        i += 1;
+    }
+    let Some(query) = query else {
+        return false;
+    };
+    if query.starts_with('@') {
+        return false;
+    }
+    let mut rest = query.trim_start();
+    // Skip leading `#` comments.
+    while let Some(after) = rest.strip_prefix('#') {
+        rest = after
+            .split_once('\n')
+            .map_or("", |(_, tail)| tail)
+            .trim_start();
+    }
+    if rest.starts_with('{') {
+        return true;
+    }
+    match rest.strip_prefix("query") {
+        Some(tail) => !tail.starts_with(|c: char| c.is_alphanumeric() || c == '_'),
+        None => false,
     }
 }
 
@@ -1429,6 +1527,18 @@ mod tests {
             FailureClass::Permission
         );
         assert_eq!(
+            classify_failure(
+                "GraphQL: Could not resolve to a node with the global id of 'PVT_x'. (node)"
+            ),
+            FailureClass::Permission
+        );
+        assert_eq!(
+            classify_failure(
+                "GraphQL: Could not resolve to an Organization with the login of 'x'."
+            ),
+            FailureClass::Permission
+        );
+        assert_eq!(
             classify_failure("gh: Not Found (HTTP 404)"),
             FailureClass::Other
         );
@@ -1473,7 +1583,36 @@ mod tests {
         ]));
         assert!(read(&["issue", "list", "--repo", "developing-today/code"]));
         assert!(read(&["api", "repos/developing-today/code"]));
-        assert!(read(&["api", "graphql", "-f", "query={viewer{login}}"]) == false);
+        // GraphQL: the operation decides, not the field flags (#12154).
+        assert!(read(&["api", "graphql", "-f", "query={viewer{login}}"]));
+        assert!(read(&[
+            "api",
+            "graphql",
+            "-f",
+            "query=query($o:String!){organization(login:$o){projectV2(number:4){id}}}",
+            "-F",
+            "o=developing-today"
+        ]));
+        assert!(read(&[
+            "api",
+            "-H",
+            "X: y",
+            "graphql",
+            "--raw-field=query= # board\n query Q { viewer { login } }"
+        ]));
+        assert!(!read(&[
+            "api",
+            "graphql",
+            "-f",
+            "query=mutation{addStar(input:{starrableId:\"x\"}){clientMutationId}}"
+        ]));
+        assert!(!read(&["api", "graphql", "-f", "query= mutation M { x }"]));
+        assert!(!read(&["api", "graphql", "-f", "query=queryish { x }"]));
+        assert!(!read(&["api", "graphql", "-F", "query=@board.graphql"]));
+        assert!(!read(&["api", "graphql", "--input", "body.json"]));
+        assert!(!read(&["api", "graphql"]));
+        // A field named query on a REST call is still a POST-class write.
+        assert!(!read(&["api", "repos/o/r/issues", "-f", "query=x"]));
         assert!(read(&["api", "user", "--method", "GET"]));
         assert!(!read(&["api", "user", "--method", "PATCH"]));
         assert!(!read(&["issue", "comment", "1", "--body", "x"]));
