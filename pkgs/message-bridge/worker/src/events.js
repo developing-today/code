@@ -41,8 +41,9 @@ const CALLBACK_DOMAINS = ["openai.com", "chatgpt.com"];
 export const EVENT_DEFINITION = {
   name: EVENT_NAME,
   description:
-    "A new message from Drew for ChatGPT arrived on the message bridge. data carries the message; " +
-    "kind \"instruction\" means an instruction to act on. Acknowledge it with ack_messages once handled.",
+    "A new message for ChatGPT arrived on the message bridge, from Drew or (from_addr set) from another assistant " +
+    "or a fleet agent. data carries the message; kind \"instruction\" means an instruction to act on. Answer with " +
+    "send_message reply_to its message_id, and acknowledge it with ack_messages once handled.",
   delivery: ["webhook"],
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
   payloadSchema: {
@@ -51,6 +52,7 @@ export const EVENT_DEFINITION = {
       message_id: { type: "integer" },
       kind: { type: "string", enum: ["message", "instruction"] },
       sender: { type: ["string", "null"] },
+      from_addr: { type: ["string", "null"], description: "Who sent it: null for Drew, channel:<name> or agent:<name>." },
       body: { type: "string" },
       ts: { type: "string" },
     },
@@ -308,7 +310,14 @@ export async function deliverMessages(env, store, messages, note = async () => {
           eventId,
           name: EVENT_NAME,
           timestamp: new Date().toISOString(),
-          data: { message_id: m.id, kind: m.kind ?? "message", sender: m.sender ?? null, body: m.body, ts: m.ts },
+          data: {
+            message_id: m.id,
+            kind: m.kind ?? "message",
+            sender: m.sender ?? null,
+            from_addr: m.from_addr ?? null,
+            body: m.body,
+            ts: m.ts,
+          },
           cursor: null,
         };
         const outcome = await deliverOne(env, sub, eventId, payload);

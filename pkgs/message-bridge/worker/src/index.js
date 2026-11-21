@@ -34,6 +34,10 @@ export class MessageStore extends DurableObject {
     if (!cols.some((c) => c.name === "kind")) {
       this.sql.exec("ALTER TABLE messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'message'");
     }
+    // Rows from before connectors and agents could message each other all came from Drew.
+    if (!cols.some((c) => c.name === "from_addr")) {
+      this.sql.exec("ALTER TABLE messages ADD COLUMN from_addr TEXT");
+    }
     this.sql.exec("CREATE INDEX IF NOT EXISTS messages_unread ON messages (direction, read_at)");
     this.sql.exec("CREATE INDEX IF NOT EXISTS messages_channel ON messages (channel, direction, read_at)");
     // OAuth (oauth.js): used authorization codes, and one row per
@@ -68,6 +72,10 @@ export class MessageStore extends DurableObject {
       kind TEXT NOT NULL,
       detail TEXT NOT NULL
     )`);
+    // Wake hooks (wake.js): one per address, and the last hour's wakes
+    // for the per-address cap.
+    this.sql.exec("CREATE TABLE IF NOT EXISTS wake_hook (address TEXT PRIMARY KEY, data TEXT NOT NULL)");
+    this.sql.exec("CREATE TABLE IF NOT EXISTS wake_log (address TEXT NOT NULL, ts INTEGER NOT NULL)");
     // Fleet mailboxes (fleet.js): agents and their messages, own tables.
     fleetSchema(this.sql);
   }
@@ -125,6 +133,31 @@ export class MessageStore extends DurableObject {
       .exec("SELECT ts, kind, detail FROM oauth_event ORDER BY id DESC")
       .toArray()
       .map((r) => ({ ts: r.ts, kind: r.kind, ...JSON.parse(r.detail) }));
+  }
+
+  wakeHookGet(address) {
+    const row = this.sql.exec("SELECT data FROM wake_hook WHERE address = ?", address).toArray()[0];
+    return row ? JSON.parse(row.data) : null;
+  }
+
+  wakeHookPut(hook) {
+    this.sql.exec("INSERT OR REPLACE INTO wake_hook (address, data) VALUES (?, ?)", hook.address, JSON.stringify(hook));
+  }
+
+  wakeHookDelete(address) {
+    return this.sql.exec("DELETE FROM wake_hook WHERE address = ? RETURNING address", address).toArray().length > 0;
+  }
+
+  wakeHooks() {
+    return this.sql.exec("SELECT data FROM wake_hook ORDER BY address").toArray().map((r) => JSON.parse(r.data));
+  }
+
+  /** Records a wake for address; false when it already had max in the last hour. */
+  wakeClaim(address, now, max) {
+    this.sql.exec("DELETE FROM wake_log WHERE ts <= ?", now - 3600_000);
+    if (this.sql.exec("SELECT COUNT(*) AS n FROM wake_log WHERE address = ?", address).one().n >= max) return false;
+    this.sql.exec("INSERT INTO wake_log (address, ts) VALUES (?, ?)", address, now);
+    return true;
   }
 
   eventSubGet(id) {
@@ -190,7 +223,7 @@ export class MessageStore extends DurableObject {
     const ts = new Date().toISOString();
     return this.sql
       .exec(
-        "INSERT INTO messages (ts, direction, source, sender, body, channel, kind) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *",
+        "INSERT INTO messages (ts, direction, source, sender, body, channel, kind, from_addr) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
         ts,
         m.direction,
         m.source,
@@ -198,6 +231,7 @@ export class MessageStore extends DurableObject {
         m.body,
         m.channel,
         m.kind,
+        m.from_addr,
       )
       .one();
   }
@@ -298,6 +332,11 @@ function storeFor(env) {
     eventSubPut: (sub, max) => stub.eventSubPut(sub, max),
     eventSubDelete: (id) => stub.eventSubDelete(id),
     eventSubsLive: (channel, now) => stub.eventSubsLive(channel, now),
+    wakeHookGet: (address) => stub.wakeHookGet(address),
+    wakeHookPut: (hook) => stub.wakeHookPut(hook),
+    wakeHookDelete: (address) => stub.wakeHookDelete(address),
+    wakeHooks: () => stub.wakeHooks(),
+    wakeClaim: (address, now, max) => stub.wakeClaim(address, now, max),
     fleet: (op, args) => fleetCall(stub, op, args),
   };
 }

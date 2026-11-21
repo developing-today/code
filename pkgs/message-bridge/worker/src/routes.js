@@ -25,6 +25,10 @@
 //                                     deliveries, newest first
 //   GET  /api/<token>/event-subscriptions  live ChatGPT event subscriptions
 //                                     (host and expiry only, events.js)
+//   GET  /api/<token>/wake-hooks      wake hooks (address, kind, host;
+//                                     never the token or path, wake.js)
+//   POST /api/<token>/wake-hooks      JSON {address, url, token?} sets one;
+//                                     {address, url: null} removes it
 //   GET  /healthz                     {ok, configured, chatgpt_configured,
 //                                     version, token_fingerprint}, no data
 //   POST / and POST /mcp              the MCP server for a connector added
@@ -42,6 +46,7 @@ import { EVENT_CHANNELS, deliverMessages, eventsFor } from "./events.js";
 import { MCP_CORS, bearerChannel, handleOAuth, ownerCookie, unauthorized } from "./oauth.js";
 import { InputError, normalizeKind, normalizeRecipients } from "./messages.js";
 import { renderPage } from "./page.js";
+import { normalizeHook, showHook, wakeAll, WAKE_ADDRESS } from "./wake.js";
 
 const MAX_FORM_BYTES = 64 * 1024;
 const PAGE_SIZE = 200;
@@ -95,9 +100,29 @@ const logTo = (store) => async (kind, detail) => {
   }
 };
 
+/** Sets ({address, url, token}) or, with no url, removes a wake hook. */
+async function setWakeHook(store, { address, url, token }) {
+  if (url === undefined || url === null || url === "") {
+    const a = typeof address === "string" ? address.trim().toLowerCase() : "";
+    if (!WAKE_ADDRESS.test(a)) throw new InputError("address must be channel:claude, channel:chatgpt or agent:<name>");
+    return { removed: await store.wakeHookDelete(a) };
+  }
+  const hook = { ...normalizeHook({ address, url, token }), added: Date.now() };
+  await store.wakeHookPut(hook);
+  return { hook: showHook(hook) };
+}
+
 async function handlePage(request, store, base, api, url, chatgptReady, delivered) {
   if (request.method === "POST") {
     const form = new URLSearchParams(await readBody(request));
+    if (form.get("action") === "wake_hook") {
+      await setWakeHook(store, {
+        address: form.get("address") ?? "",
+        url: form.get("remove") ? null : form.get("url"),
+        token: form.get("token"),
+      });
+      return new Response(null, { status: 303, headers: { location: base } });
+    }
     // Without JavaScript the checkboxes post one "to" each; none checked
     // falls back to Claude, as before.
     const to = form.getAll("to");
@@ -129,6 +154,7 @@ async function handlePage(request, store, base, api, url, chatgptReady, delivere
     pageSize: PAGE_SIZE,
     olderOnly: !!beforeId,
     chatgptReady,
+    wakeHooks: (await store.wakeHooks()).map(showHook),
     // The page's own token, so the address is only ever shown to its owner.
     connectorUrl: `${url.origin}/mcp/${base.slice("/p/".length)}`,
   });
@@ -199,6 +225,18 @@ async function handleApi(request, store, rest, url, delivered) {
     }
     return json({ subscriptions: subs });
   }
+  if (what === "wake-hooks") {
+    if (request.method === "GET") return json({ hooks: (await store.wakeHooks()).map(showHook) });
+    if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET, POST" } });
+    let data;
+    try {
+      data = JSON.parse(await readBody(request));
+    } catch (err) {
+      if (err instanceof InputError) throw err;
+      throw new InputError("body must be JSON");
+    }
+    return json(await setWakeHook(store, data ?? {}));
+  }
   if (what === "ack") {
     if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { allow: "POST" } });
     let data;
@@ -211,6 +249,24 @@ async function handleApi(request, store, rest, url, delivered) {
     return json(await store.ack({ up_to_id: data?.up_to_id, ids: data?.ids, channel: data?.channel ?? "claude" }));
   }
   return notFound();
+}
+
+/**
+ * What happens after rows are stored: ChatGPT's MCP Events and every
+ * wake hook (wake.js) for the addresses that got one. Takes the rows as
+ * an array of connector rows or as {messages, fleet}. Never throws.
+ */
+export function deliveredFor(env, store, waitUntil) {
+  return (out) => {
+    const o = Array.isArray(out) ? { messages: out, fleet: [] } : (out ?? {});
+    const log = logTo(store);
+    waitUntil(
+      Promise.all([
+        deliverMessages(env, store, o.messages ?? [], log).catch(() => {}),
+        wakeAll(env, store, { messages: o.messages ?? [], fleet: o.fleet ?? [] }, log).catch(() => {}),
+      ]),
+    );
+  };
 }
 
 /**
@@ -237,23 +293,28 @@ export async function route(request, env, getStore, waitUntil = (p) => p) {
     if (!channel) return unauthorized(request, url);
     try {
       const store = getStore();
-      return withHeaders(await handleMcp(request, store, channel, eventsFor(env, store, channel, logTo(store))), MCP_CORS);
+      return withHeaders(
+        await handleMcp(request, store, channel, eventsFor(env, store, channel, logTo(store)), deliveredFor(env, store, waitUntil)),
+        MCP_CORS,
+      );
     } catch (err) {
       if (err instanceof InputError) return withHeaders(json({ error: err.message }, 400), MCP_CORS);
       throw err;
     }
   }
   // Fleet mailboxes: /fleet/<fleet token>/... and /api/<owner>/fleet/...
-  const fleet = await handleFleet(request, env, url, getStore);
+  const fleet = await handleFleet(request, env, url, getStore, (store) => deliveredFor(env, store, waitUntil));
   if (fleet) return fleet;
   const m = matchTokenPath(url.pathname, env);
   if (!m) return notFound();
   const token = env.ACCESS_TOKEN;
   const store = getStore();
-  const delivered = (messages) => waitUntil(deliverMessages(env, store, messages, logTo(store)).catch(() => {}));
+  const delivered = deliveredFor(env, store, waitUntil);
   try {
     if (m.area === "mcp" && m.rest.length === 0) {
-      return withHeaders(await handleMcp(request, store, m.channel, eventsFor(env, store, m.channel, logTo(store))));
+      return withHeaders(
+        await handleMcp(request, store, m.channel, eventsFor(env, store, m.channel, logTo(store)), delivered),
+      );
     }
     if (m.role !== "owner") return notFound();
     if (m.area === "p" && m.rest.length === 0) {
