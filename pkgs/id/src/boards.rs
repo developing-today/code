@@ -2458,6 +2458,8 @@ mod tests {
                 attachments: Vec::new(),
                 embed_ref: None,
                 note_ref: None,
+                note_anchor: None,
+                note_view: None,
             }),
         )
         .unwrap()
@@ -2482,6 +2484,8 @@ mod tests {
                 attachments: Vec::new(),
                 embed_ref: Some(GamePostRef { object: embed_ref }),
                 note_ref: None,
+                note_anchor: None,
+                note_view: None,
             }),
         )
         .unwrap()
@@ -2506,6 +2510,8 @@ mod tests {
                 attachments: Vec::new(),
                 embed_ref: None,
                 note_ref: Some(note_ref),
+                note_anchor: None,
+                note_view: None,
             }),
         )
         .unwrap()
@@ -3056,6 +3062,8 @@ mod tests {
                 attachments: Vec::new(),
                 embed_ref: None,
                 note_ref: None,
+                note_anchor: None,
+                note_view: None,
             }),
         )
         .unwrap();
@@ -3073,6 +3081,8 @@ mod tests {
                 attachments: Vec::new(),
                 embed_ref: None,
                 note_ref: None,
+                note_anchor: None,
+                note_view: None,
             }),
         )
         .unwrap();
@@ -7058,6 +7068,8 @@ mod tests {
                     attachments: Vec::new(),
                     embed_ref: None,
                     note_ref: Some(bad_sharer),
+                    note_anchor: None,
+                    note_view: None,
                 }),
             )
             .is_err()
@@ -7078,6 +7090,8 @@ mod tests {
                     attachments: Vec::new(),
                     embed_ref: None,
                     note_ref: Some(no_home),
+                    note_anchor: None,
+                    note_view: None,
                 }),
             )
             .is_err()
@@ -7096,6 +7110,8 @@ mod tests {
             attachments: Vec::new(),
             embed_ref: None,
             note_ref: None,
+            note_anchor: None,
+            note_view: None,
         });
         let value = serde_json::to_value(&object).unwrap();
         assert!(value["data"].get("note_ref").is_none());

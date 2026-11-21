@@ -86,6 +86,154 @@ pub struct NoteRef {
     pub sharer: String,
 }
 
+/// A revision candidate from the note's current local projection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoteHead {
+    /// Immutable revision identifier.
+    pub revision: ArtifactHash,
+    /// Content hash for the revision's canonical content.
+    pub content_hash: ArtifactHash,
+    /// Whether this revision descends from the share's pinned revision.
+    pub descends_from_pin: bool,
+}
+
+/// How an embedded note is presented relative to its immutable share pin.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NoteEmbedResolution {
+    /// The only current head is still the pinned revision.
+    Current(NoteHead),
+    /// One current head supersedes the pin; show it live and offer the pin.
+    Updated(NoteHead),
+    /// Multiple heads exist. Preserve all of them; never choose by arrival order.
+    Diverged(Vec<NoteHead>),
+    /// The local head is not on the pinned revision's descendant line.
+    SupersededLine(Vec<NoteHead>),
+    /// No usable current head is available; the pin remains the citation target.
+    Unavailable,
+}
+
+/// The preferred default projection for a note embed. Viewers may still switch
+/// between this view and its counterpart without changing the signed share.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoteEmbedView {
+    /// Follow the authorized current local head (the default when omitted).
+    Live,
+    /// Show the immutable revision named by `NoteRef::pinned_version`.
+    Pinned,
+}
+
+/// Resolve the live-view badge and candidates for an embedded note.
+///
+/// The caller supplies the note subsystem's already-authorized local heads and
+/// their ancestry relation to the immutable pin. This function deliberately
+/// does not fetch note content or pick a winner among concurrent heads.
+pub fn resolve_note_embed(note_ref: &NoteRef, heads: &[NoteHead]) -> NoteEmbedResolution {
+    if heads.is_empty() {
+        return NoteEmbedResolution::Unavailable;
+    }
+    if heads.len() > 1 {
+        return NoteEmbedResolution::Diverged(heads.to_vec());
+    }
+    let head = heads[0].clone();
+    if head.revision == note_ref.pinned_version {
+        NoteEmbedResolution::Current(head)
+    } else if head.descends_from_pin {
+        NoteEmbedResolution::Updated(head)
+    } else {
+        NoteEmbedResolution::SupersededLine(vec![head])
+    }
+}
+
+/// A passage within the pinned note version that a reply is about.
+/// Offsets are byte ranges in the section's canonical text; `quote_hash`
+/// is the content hash of that exact range and is used to relocate it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotePassageSelector {
+    /// Stable section identifier in the note version.
+    pub section_id: String,
+    /// Inclusive byte offset in the section text.
+    pub start_byte: u64,
+    /// Exclusive byte offset in the section text.
+    pub end_byte: u64,
+    /// SHA-256 of the selected passage text.
+    pub quote_hash: ArtifactHash,
+}
+
+/// Immutable anchor from a board reply to the note version discussed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NoteAnchor {
+    /// Note identity on its home server.
+    pub object: ArtifactHash,
+    /// Version discussed by the thread (normally the post's pinned version).
+    pub version: ArtifactHash,
+    /// `None` means the reply is about the note as a whole.
+    pub passage: Option<NotePassageSelector>,
+}
+
+/// Passage candidate found in the current note head.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotePassage {
+    /// Stable section identifier.
+    pub section_id: String,
+    /// Inclusive byte offset in the section text.
+    pub start_byte: u64,
+    /// Exclusive byte offset in the section text.
+    pub end_byte: u64,
+    /// SHA-256 of the candidate passage text.
+    pub quote_hash: ArtifactHash,
+}
+
+/// Where an anchored reply should be displayed relative to the live head.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NoteAnchorResolution {
+    /// The passage remains at its original location.
+    Exact(NotePassageSelector),
+    /// The same section and passage were found at a new location.
+    Relocated(NotePassageSelector),
+    /// The passage no longer exists; keep the reply on its pinned version.
+    Orphaned,
+    /// The reply is anchored to the note as a whole, not a passage.
+    WholeNote,
+}
+
+/// Resolve a passage without ever substituting different text for its anchor.
+pub fn resolve_note_anchor(
+    anchor: &NoteAnchor,
+    current_passages: &[NotePassage],
+) -> NoteAnchorResolution {
+    let Some(selector) = &anchor.passage else {
+        return NoteAnchorResolution::WholeNote;
+    };
+
+    let same_quote = current_passages.iter().filter(|passage| {
+        passage.section_id == selector.section_id && passage.quote_hash == selector.quote_hash
+    });
+    if let Some(exact) = same_quote.clone().find(|passage| {
+        passage.start_byte == selector.start_byte && passage.end_byte == selector.end_byte
+    }) {
+        return NoteAnchorResolution::Exact(NotePassageSelector {
+            section_id: exact.section_id.clone(),
+            start_byte: exact.start_byte,
+            end_byte: exact.end_byte,
+            quote_hash: exact.quote_hash.clone(),
+        });
+    }
+
+    if let Some(relocated) = same_quote.min_by_key(|passage| passage.start_byte) {
+        return NoteAnchorResolution::Relocated(NotePassageSelector {
+            section_id: relocated.section_id.clone(),
+            start_byte: relocated.start_byte,
+            end_byte: relocated.end_byte,
+            quote_hash: relocated.quote_hash.clone(),
+        });
+    }
+
+    NoteAnchorResolution::Orphaned
+}
+
 /// Immutable post or post revision.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -107,6 +255,13 @@ pub struct Post {
     /// field existed decode as .
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note_ref: Option<NoteRef>,
+    /// Passage or whole-note anchor for a reply in a note-sharing thread.
+    /// Older v1 post bodies decode with no anchor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note_anchor: Option<NoteAnchor>,
+    /// Optional signed default for displaying an attached note; absent means live.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note_view: Option<NoteEmbedView>,
 }
 
 /// Metadata-only reference to a content-addressed attachment blob.
@@ -285,4 +440,159 @@ pub struct BoardListing {
     pub contact: Option<String>,
     /// Previous listing for the same board and host, if any.
     pub supersedes: Option<ArtifactHash>,
+}
+
+#[cfg(test)]
+mod note_anchor_tests {
+    use super::*;
+
+    fn hash(ch: char) -> ArtifactHash {
+        ArtifactHash::new(ch.to_string().repeat(64)).unwrap()
+    }
+
+    fn anchor() -> NoteAnchor {
+        NoteAnchor {
+            object: hash('a'),
+            version: hash('b'),
+            passage: Some(NotePassageSelector {
+                section_id: "intro".into(),
+                start_byte: 4,
+                end_byte: 12,
+                quote_hash: hash('c'),
+            }),
+        }
+    }
+
+    fn passage(start_byte: u64, end_byte: u64, quote: char) -> NotePassage {
+        NotePassage {
+            section_id: "intro".into(),
+            start_byte,
+            end_byte,
+            quote_hash: hash(quote),
+        }
+    }
+
+    fn note_head(revision: char, content: char, descends_from_pin: bool) -> NoteHead {
+        NoteHead {
+            revision: hash(revision),
+            content_hash: hash(content),
+            descends_from_pin,
+        }
+    }
+
+    fn note_ref() -> NoteRef {
+        NoteRef {
+            object: hash('a'),
+            home_server: "https://notes.example".into(),
+            pinned_version: hash('b'),
+            pinned_content_hash: hash('c'),
+            sharer: "d".repeat(64),
+        }
+    }
+
+    #[test]
+    fn anchor_resolves_exact_when_quote_stays_at_original_range() {
+        assert_eq!(
+            resolve_note_anchor(&anchor(), &[passage(4, 12, 'c')]),
+            NoteAnchorResolution::Exact(anchor().passage.unwrap())
+        );
+    }
+
+    #[test]
+    fn anchor_resolves_relocated_only_for_same_section_and_quote() {
+        assert_eq!(
+            resolve_note_anchor(&anchor(), &[passage(20, 28, 'c')]),
+            NoteAnchorResolution::Relocated(NotePassageSelector {
+                section_id: "intro".into(),
+                start_byte: 20,
+                end_byte: 28,
+                quote_hash: hash('c'),
+            })
+        );
+    }
+
+    #[test]
+    fn missing_or_changed_quote_is_orphaned_not_repointed() {
+        assert_eq!(
+            resolve_note_anchor(&anchor(), &[passage(4, 12, 'd')]),
+            NoteAnchorResolution::Orphaned
+        );
+    }
+
+    #[test]
+    fn whole_note_anchor_needs_no_passage_match() {
+        let mut whole_note = anchor();
+        whole_note.passage = None;
+        assert_eq!(
+            resolve_note_anchor(&whole_note, &[]),
+            NoteAnchorResolution::WholeNote
+        );
+    }
+
+    #[test]
+    fn embed_resolution_is_current_when_head_is_the_pin() {
+        let head = note_head('b', 'c', true);
+        assert_eq!(
+            resolve_note_embed(&note_ref(), std::slice::from_ref(&head)),
+            NoteEmbedResolution::Current(head)
+        );
+    }
+
+    #[test]
+    fn embed_resolution_marks_a_descendant_as_updated() {
+        let head = note_head('e', 'f', true);
+        assert_eq!(
+            resolve_note_embed(&note_ref(), std::slice::from_ref(&head)),
+            NoteEmbedResolution::Updated(head)
+        );
+    }
+
+    #[test]
+    fn embed_resolution_preserves_all_concurrent_heads() {
+        let heads = vec![note_head('e', 'f', true), note_head('0', '1', true)];
+        assert_eq!(
+            resolve_note_embed(&note_ref(), &heads),
+            NoteEmbedResolution::Diverged(heads)
+        );
+    }
+
+    #[test]
+    fn embed_resolution_badges_a_head_off_the_pinned_line() {
+        let head = note_head('e', 'f', false);
+        assert_eq!(
+            resolve_note_embed(&note_ref(), std::slice::from_ref(&head)),
+            NoteEmbedResolution::SupersededLine(vec![head])
+        );
+    }
+
+    #[test]
+    fn embed_resolution_uses_unavailable_when_there_is_no_local_head() {
+        assert_eq!(
+            resolve_note_embed(&note_ref(), &[]),
+            NoteEmbedResolution::Unavailable
+        );
+    }
+
+    #[test]
+    fn post_note_view_preference_round_trips_and_absence_means_live() {
+        let pinned = NoteEmbedView::Pinned;
+        let encoded = serde_json::to_string(&pinned).unwrap();
+        assert_eq!(
+            serde_json::from_str::<NoteEmbedView>(&encoded).unwrap(),
+            pinned
+        );
+
+        let post = serde_json::json!({
+            "board": "a".repeat(64),
+            "thread": "b".repeat(64),
+            "parent_post": null,
+            "body": "shared",
+            "attachments": [],
+            "embed_ref": null,
+            "note_ref": null,
+            "note_anchor": null
+        });
+        let decoded: Post = serde_json::from_value(post).unwrap();
+        assert_eq!(decoded.note_view, None);
+    }
 }
