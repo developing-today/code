@@ -13,15 +13,18 @@ pub fn write_durable(path: &Path, tmp: &Path, bytes: &[u8]) -> std::io::Result<(
         file.sync_all()?;
     }
     std::fs::rename(tmp, path)?;
-    if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty())
-        && let Ok(dir) = File::open(dir)
-    {
+    let dir = path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    if let Ok(dir) = File::open(dir) {
         let _ = dir.sync_all();
     }
     Ok(())
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::write_durable;
 
