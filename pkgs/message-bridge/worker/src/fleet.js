@@ -18,10 +18,15 @@
 //                                      &unread_only=&mark_read=&limit=: the
 //                                      agent's inbound rows, oldest first
 //   POST /fleet/<fleet token>/ack      {agent, up_to_id | ids}: mark read
-//   POST /fleet/<fleet token>/send     {agent, body, reply_to?}: a message
-//                                      from the agent to central; with
-//                                      reply_to, that inbound row is marked
-//                                      read in the same step
+//   POST /fleet/<fleet token>/send     {agent, body, to?, kind?, reply_to?}:
+//                                      a message from the agent. With no
+//                                      to it goes to central (or, with
+//                                      reply_to, back to whoever sent that
+//                                      row); with to, it goes to any
+//                                      address relay.js knows: drew,
+//                                      claude, chatgpt, connectors,
+//                                      agent:<n>, group:<g>, agents, all.
+//                                      reply_to marks that row read.
 //   GET  /api/<owner>/fleet/agents     registered agents, groups, last seen,
 //                                      unread counts
 //   GET  /api/<owner>/fleet/messages   ?agent=&direction=&kind=&since_id=
@@ -32,19 +37,24 @@
 // `to` names recipients as "agent:<name>" (or a bare name), "group:<name>"
 // (every registered agent in that group) or "all" (every registered
 // agent); a list or a comma-separated string mixes them. kind is
-// "message" (default) or "command". Only central sends commands: the
-// fleet token can read and answer mailboxes, never command an agent.
+// "message" (default) or "command". Central, a connector or another
+// agent (relay.js) can send either; a row another assistant or agent
+// sent carries its address in from_addr ("channel:chatgpt",
+// "agent:muse-3"), and from_addr is null when central sent it.
 //
 // The fleet token is derived from ACCESS_TOKEN (HMAC-SHA256 over a fixed
 // label, base64url), so it needs no Worker secret of its own and rotating
 // the access token rotates it too. It can't open the page, the owner API
 // or either MCP connector. FLEET_TOKEN, when set as a Worker secret of at
 // least 32 characters distinct from the other two, replaces the derived
-// one. Any holder of the fleet token can read any agent's mailbox; an
-// agent's name is what it says it is, like a queue claim's worker name.
+// one. Any holder of the fleet token can read any agent's mailbox and send
+// as any agent: an agent's name is what it says it is, like a queue
+// claim's worker name, so from_addr "agent:<n>" is a claim at the fleet
+// token's trust level, not a proof.
 
 import { MIN_TOKEN_LENGTH, matchTokenPath, safeEqual, tokenConfigured } from "./auth.js";
 import { InputError, MAX_BODY, MAX_SENDER } from "./messages.js";
+import { relay, replyAddress } from "./relay.js";
 
 export const FLEET_KINDS = ["message", "command"];
 export const FLEET_DIRECTIONS = ["inbound", "outbound"];
@@ -171,6 +181,14 @@ export function parseTargets(to) {
   return { agents, groups, all };
 }
 
+const FROM_ADDR = /^(channel:(claude|chatgpt)|agent:[a-z0-9][a-z0-9._-]{0,63})$/;
+
+function normalizeFromAddr(v) {
+  if (v === undefined || v === null) return null;
+  if (typeof v !== "string" || !FROM_ADDR.test(v)) throw new InputError("from_addr must be channel:<name> or agent:<name>");
+  return v;
+}
+
 function ackArgs(data) {
   const hasUpTo = data?.up_to_id !== undefined && data?.up_to_id !== null;
   const ids = Array.isArray(data?.ids) ? data.ids : [];
@@ -213,7 +231,15 @@ export function normalizeFleetOp(op, a = {}) {
         kind: normalizeFleetKind(a.kind),
         sender: normalizeSender(a.sender),
         batch: typeof a.batch === "string" && /^[A-Za-z0-9_-]{8,40}$/.test(a.batch) ? a.batch : null,
+        from_addr: normalizeFromAddr(a.from_addr),
+        // relay.js: the sending agent never gets its own message, and
+        // "all" reaching no agent yet isn't an error when it also
+        // reached a connector.
+        exclude: a.exclude === undefined || a.exclude === null ? null : normalizeName(a.exclude),
+        lenient: a.lenient === true,
       };
+    case "origin":
+      return { agent: normalizeName(a.agent), id: intParam(a.id, "id", { min: 1 }) };
     case "agents":
       return {};
     case "messages": {
@@ -260,6 +286,9 @@ export function fleetSchema(sql) {
     reply_to INTEGER,
     read_at TEXT
   )`);
+  // Rows from before connectors and agents could message agents all came from central.
+  const cols = sql.exec("PRAGMA table_info(fleet_message)").toArray();
+  if (!cols.some((c) => c.name === "from_addr")) sql.exec("ALTER TABLE fleet_message ADD COLUMN from_addr TEXT");
   sql.exec("CREATE INDEX IF NOT EXISTS fleet_message_mailbox ON fleet_message (agent, direction, read_at)");
 }
 
@@ -398,12 +427,14 @@ export function fleetOp(sql, op, a, now = new Date().toISOString()) {
     case "send": {
       const registered = rows(sql.exec("SELECT * FROM fleet_agent ORDER BY name")).map(agentRow);
       const names = new Set(a.targets.agents);
+      if (a.exclude && names.has(a.exclude)) return { error: "an agent can't send to itself" };
+      const others = registered.filter((r) => r.name !== a.exclude);
       if (a.targets.all) {
-        if (!registered.length) return { error: "no agents have registered yet" };
-        for (const r of registered) names.add(r.name);
+        if (!others.length && !a.lenient) return { error: "no agents have registered yet" };
+        for (const r of others) names.add(r.name);
       }
       for (const g of a.targets.groups) {
-        const members = registered.filter((r) => r.groups.includes(g));
+        const members = others.filter((r) => r.groups.includes(g));
         if (!members.length) return { error: `no registered agent is in group ${g}` };
         for (const r of members) names.add(r.name);
       }
@@ -415,19 +446,27 @@ export function fleetOp(sql, op, a, now = new Date().toISOString()) {
         messages.push({
           ...sql
             .exec(
-              `INSERT INTO fleet_message (ts, agent, direction, kind, sender, body, batch)
-               VALUES (?, ?, 'inbound', ?, ?, ?, ?) RETURNING *`,
+              `INSERT INTO fleet_message (ts, agent, direction, kind, sender, body, batch, from_addr)
+               VALUES (?, ?, 'inbound', ?, ?, ?, ?, ?) RETURNING *`,
               now,
               agent,
               a.kind,
               a.sender,
               a.body,
               batch,
+              a.from_addr,
             )
             .toArray()[0],
         });
       }
       return { batch, messages, unregistered: [...names].filter((n) => !known.has(n)).sort() };
+    }
+    case "origin": {
+      const orig = sql
+        .exec("SELECT id, from_addr, batch FROM fleet_message WHERE id = ? AND agent = ? AND direction = 'inbound'", a.id, a.agent)
+        .toArray()[0];
+      if (!orig) return { error: `reply_to ${a.id} is not a message to ${a.agent}` };
+      return { id: orig.id, from_addr: orig.from_addr ?? null, batch: orig.batch ?? null };
     }
     case "agents": {
       const agents = rows(sql.exec("SELECT * FROM fleet_agent ORDER BY name"))
@@ -505,7 +544,33 @@ async function readJson(request) {
 
 const query = (url) => Object.fromEntries(url.searchParams.entries());
 
-async function agentRoute(request, store, what, url) {
+/**
+ * An agent's send: to central as before, or (with to, or reply_to a row
+ * another assistant or agent sent) through relay.js to any address.
+ */
+async function agentSend(store, d, delivered) {
+  if (d.to === undefined || d.to === null || d.to === "") {
+    let origin = null;
+    if (d.reply_to !== undefined && d.reply_to !== null) {
+      origin = await store.fleet("origin", { agent: d.agent, id: d.reply_to });
+    }
+    if (!origin?.from_addr) {
+      // To central: always a message, whatever kind says (as before to existed).
+      return await store.fleet("post", { agent: d.agent, body: d.body, reply_to: d.reply_to });
+    }
+    d = { ...d, to: replyAddress(origin.from_addr) };
+  }
+  const agent = normalizeName(d.agent);
+  if (d.reply_to !== undefined && d.reply_to !== null) {
+    await store.fleet("origin", { agent, id: d.reply_to }); // must be a row to this agent
+  }
+  const out = await relay(store, { from: `agent:${agent}`, to: d.to, body: d.body, kind: d.kind, sender: d.sender ?? agent });
+  if (d.reply_to !== undefined && d.reply_to !== null) await store.fleet("ack", { agent, ids: [d.reply_to] });
+  delivered(out);
+  return out;
+}
+
+async function agentRoute(request, store, what, url, delivered) {
   if (what === "hello") {
     if (request.method !== "POST") return notAllowed("POST");
     return json(await store.fleet("hello", await readJson(request)));
@@ -520,12 +585,12 @@ async function agentRoute(request, store, what, url) {
   }
   if (what === "send") {
     if (request.method !== "POST") return notAllowed("POST");
-    return json(await store.fleet("post", await readJson(request)), 201);
+    return json(await agentSend(store, await readJson(request), delivered), 201);
   }
   return notFound();
 }
 
-async function ownerRoute(request, store, what, url) {
+async function ownerRoute(request, store, what, url, delivered) {
   if (what === "agents") {
     if (request.method !== "GET") return notAllowed("GET");
     return json(await store.fleet("agents", {}));
@@ -537,7 +602,9 @@ async function ownerRoute(request, store, what, url) {
   if (what === "send") {
     if (request.method !== "POST") return notAllowed("POST");
     const d = await readJson(request);
-    return json(await store.fleet("send", { body: d.body, to: d.to, kind: d.kind, sender: d.sender }), 201);
+    const out = await store.fleet("send", { body: d.body, to: d.to, kind: d.kind, sender: d.sender });
+    delivered({ messages: [], fleet: out.messages });
+    return json(out, 201);
   }
   return notFound();
 }
@@ -547,20 +614,22 @@ async function ownerRoute(request, store, what, url) {
  * returns null for any other path so the caller routes it as before. A
  * wrong token is a plain 404, like everywhere else.
  */
-export async function handleFleet(request, env, url, getStore) {
+export async function handleFleet(request, env, url, getStore, deliveredFor = () => () => {}) {
   const parts = url.pathname.split("/").filter(Boolean);
   try {
     if (parts[0] === "fleet") {
       if (parts.length !== 3) return notFound();
       const expected = await fleetToken(env);
       if (!expected || !safeEqual(parts[1], expected)) return notFound();
-      return await agentRoute(request, getStore(), parts[2], url);
+      const store = getStore();
+      return await agentRoute(request, store, parts[2], url, deliveredFor(store));
     }
     if (parts[0] === "api" && parts[2] === "fleet") {
       const m = matchTokenPath(url.pathname, env);
       if (!m || m.role !== "owner") return null; // not ours: the caller 404s
       if (parts.length !== 4) return notFound();
-      return await ownerRoute(request, getStore(), parts[3], url);
+      const store = getStore();
+      return await ownerRoute(request, store, parts[3], url, deliveredFor(store));
     }
   } catch (err) {
     if (err instanceof InputError) return json({ error: err.message }, 400);

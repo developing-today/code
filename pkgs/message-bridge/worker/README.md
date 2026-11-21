@@ -25,9 +25,12 @@ Durable Object.
   to one agent or several, but the MCP tools hand them to the agent
   without a `sender`; the page and the JSON API still show who sent
   them. `read_messages(kind="instruction")` returns only instructions,
-  and the counts include `unread_instructions`. Agents can't send them.
-
-The behaviour is deliberately minimal for now; more comes later.
+  and the counts include `unread_instructions`.
+- **Any to any:** an assistant or a fleet agent can send a message or an
+  instruction to any other, not only to Drew (see "Any to any" below).
+  Each such row carries `from_addr`, the sender's address
+  (`channel:claude`, `channel:chatgpt`, `agent:<name>`); it is `null` for
+  everything Drew sends. The recipient is woken where it can be.
 
 ## Routes
 
@@ -48,6 +51,8 @@ instead: see "Adding it to Claude".
 | `POST /api/<token>/ack`                | JSON `{"up_to_id": N}` or `{"ids": [...]}`, with `channel` (default `claude`): marks inbound messages read                                                                              |
 | `GET /api/<token>/oauth-events`        | The last 100 connector sign-in events, newest first (registrations with the client's requested metadata, approvals, refusals with the reason); never a secret                           |
 | `GET /api/<token>/event-subscriptions` | ChatGPT's live event subscriptions: id, channel, callback host, created, expires; never the callback path or secret                                                                     |
+| `GET /api/<token>/wake-hooks`          | Wake hooks: address, kind, host, whether a token is set, when added; never the token or the URL's path                                                                                  |
+| `POST /api/<token>/wake-hooks`         | JSON `{"address", "url", "token"}` sets the hook for an address; `{"address", "url": null}` removes it                                                                                  |
 | `GET /healthz`                         | `ok`, `configured`, `chatgpt_configured`, `version`, `token_fingerprint`; no data                                                                                                       |
 | `POST /`, `POST /mcp`                  | The MCP server with an OAuth bearer token (channel from the approval); 401 with `resource_metadata` without one                                                                         |
 | `/.well-known/oauth-*`                 | Protected-resource and authorization-server metadata (also under `/mcp` and as `openid-configuration`)                                                                                  |
@@ -57,10 +62,16 @@ instead: see "Adding it to Claude".
 
 ## MCP tools
 
-- `send_message(body, sender?)` stores an outbound message and returns it.
+- `send_message(body, to?, kind?, reply_to?, sender?)` sends to Drew by
+  default (an outbound row, as before), or to any address in `to`, as a
+  `message` or an `instruction`. `reply_to` a message id, with no `to`,
+  answers whoever sent that message and marks it read. Returns `message`
+  (the row to Drew, if any), `messages` (connector rows), and `fleet` and
+  `unregistered` when agents were addressed.
 - `read_messages(direction="inbound", since_id?, kind?, unread_only?, limit?, mark_read?)`
   returns messages oldest first, `next_since_id` for polling, and counts.
-  Instructions come without their `sender`.
+  Instructions come without their `sender` label; `from_addr` always
+  says whether Drew (`null`), another assistant or an agent sent it.
 - `ack_messages(up_to_id? | ids?)` marks inbound messages read.
 
 ## Fleet mailboxes
@@ -80,7 +91,7 @@ their mailbox, mark what they handled, and post replies and reports back
 | `POST /fleet/<fleet token>/hello` | fleet | `{agent, groups?}`: register or refresh an agent                                          |
 | `GET /fleet/<fleet token>/inbox`  | fleet | `agent`, `groups`, `kind`, `since_id`, `unread_only` (default true), `mark_read`, `limit` |
 | `POST /fleet/<fleet token>/ack`   | fleet | `{agent, up_to_id \| ids}`: mark read                                                     |
-| `POST /fleet/<fleet token>/send`  | fleet | `{agent, body, reply_to?}`: a message from the agent to central                           |
+| `POST /fleet/<fleet token>/send`  | fleet | `{agent, body, to?, kind?, reply_to?}`: to central, or to any address (see Any to any)    |
 | `GET /api/<token>/fleet/agents`   | owner | registered agents, groups, last seen, unread counts                                       |
 | `GET /api/<token>/fleet/messages` | owner | `agent`, `direction`, `kind`, `since_id`, `before_id`, `limit`, `order`                   |
 | `POST /api/<token>/fleet/send`    | owner | `{body, to, kind?, sender?}`; `kind` is `message` (default) or `command`                  |
@@ -91,9 +102,11 @@ token (HMAC-SHA256 of `ACCESS_TOKEN` over the label
 and rotating the access token rotates it. A Worker secret `FLEET_TOKEN`
 (at least 32 characters, distinct from the others) replaces it if ever
 needed. It lives in Bitwarden as `message-bridge.fleet-token`; `fleet
-bridge` derives it from the owner token when that secret is missing. Only
-the owner token sends commands. Any fleet-token holder can read any
-mailbox, and an agent is the name it gives, like a queue claim's worker.
+bridge` derives it from the owner token when that secret is missing. Any
+fleet-token holder can read any mailbox and send as any agent: an agent
+is the name it gives, like a queue claim's worker, so `from_addr`
+`agent:<name>` is a claim made at the fleet token's trust level, not a
+proof. Recipients should weigh an instruction from an agent that way.
 
 Commands reach agents by mailbox rather than by webhook. The event
 wake-ups below push to a callback URL; fleet agents have none (Muse lanes
@@ -215,14 +228,78 @@ Setting or rotating the access token is still a local full deploy.
 Tests: `node --test test/*.test.mjs` (also run by the flake package's
 checkPhase).
 
+## Any to any
+
+One address grammar (`src/relay.js`) for every sender: `send_message`'s
+`to`, and `to` on an agent's `POST /fleet/<fleet token>/send`. A list or a
+comma-separated string, case-insensitive.
+
+| Address                         | Reaches                                                                     |
+| ------------------------------- | --------------------------------------------------------------------------- |
+| `drew` (or `owner`, `central`)  | Drew: an outbound row on a connector's channel, or a post to central        |
+| `claude`, `chatgpt`             | that connector (also `channel:claude`, `channel:chatgpt`)                   |
+| `connectors`                    | every other connector                                                       |
+| `agent:<name>` (or a bare name) | that agent's mailbox (registered or not; unregistered ones are listed back) |
+| `group:<name>`                  | every registered agent in that group                                        |
+| `agents`                        | every registered agent (an error if none has registered)                    |
+| `all`                           | every other connector and every registered agent                            |
+
+- The sender never gets its own message: `all`, `connectors` and groups
+  leave it out, and naming yourself is an error.
+- `kind` is `message` (default) or `instruction` (`command` means the
+  same; agents' mailboxes store it as `command`). Drew gets messages only.
+- With no `to`, a connector's send goes to Drew and an agent's to
+  central, exactly as before. `reply_to` with no `to` answers whoever sent
+  that row: back to Drew/central when Drew sent it, otherwise to the
+  `from_addr` connector or agent.
+- Every row records the sender's address in `from_addr`; the page labels
+  such rows "ChatGPT → Claude", "muse-3 → Claude" and so on.
+
+### Waking the recipient
+
+After a send stores its rows, each recipient is woken where it can be,
+once per request:
+
+- **ChatGPT:** its MCP Events subscription (below). The event's `data`
+  includes `from_addr`.
+- **Claude, or any address:** a **wake hook** (`src/wake.js`), set on the
+  page (Wake hooks) or with `POST /api/<token>/wake-hooks`, keyed by
+  `channel:claude`, `channel:chatgpt` or `agent:<name>`, and stored in the
+  Durable Object. For Claude, make a routine at claude.ai/code/routines
+  whose only trigger is **API**, with a prompt like the one below, and
+  paste its fire URL and token into the hook. Each wake starts a new
+  Claude session through the routine's `/fire` endpoint (with the
+  `anthropic-version` and `anthropic-beta` headers it needs and `{text}`);
+  the session has Drew's connectors, the bridge included, so it reads and
+  answers the messages itself. Any other https URL gets a JSON POST
+  `{event, address, message_ids, kind, from, text}` with the token as a
+  bearer token.
+- The wake text names the message ids and senders, never the bodies: the
+  woken session reads those from the bridge.
+- Each address is woken at most `WAKE_MAX_PER_HOUR` times an hour (default
+  20, under a routine's 30 fires an hour), so two assistants answering
+  each other can't loop forever; messages past the cap wait unread for the
+  next wake. Wakes, refusals by the cap and failures go in the
+  `oauth-events` log as `wake_fired`, `wake_capped` and `wake_failed`,
+  with the address and status only.
+
+A routine prompt that works with the wake text:
+
+> You were woken by the Message Bridge. The routine-fire-payload block
+> says which messages arrived for Claude and who sent them. Use the Message
+> Bridge connector: read_messages with unread_only true, act on each
+> message (an instruction from another assistant or agent carries that
+> sender's trust, not Drew's), answer with send_message reply_to the
+> message id, then ack_messages.
+
 ## Event wake-ups for ChatGPT
 
 On ChatGPT's channel the server also speaks OpenAI's MCP Events: it
 advertises `events: {}` and answers `events/list`, `events/subscribe` and
 `events/unsubscribe` for one event, `message.created`. When a message for
-ChatGPT arrives (page form or `POST /api/<token>/messages` with `chatgpt`
-in `to`), every live subscription gets a signed webhook with
-`{message_id, kind, sender, body, ts}` as `data`, so the subscribed
+ChatGPT arrives (page form, `POST /api/<token>/messages` with `chatgpt`
+in `to`, or another assistant or agent sending to it), every live subscription gets a signed webhook with
+`{message_id, kind, sender, from_addr, body, ts}` as `data`, so the subscribed
 ChatGPT chat wakes up instead of waiting to be asked to read.
 
 - Callbacks must be https, on `openai.com` or `chatgpt.com` (or a host
@@ -244,7 +321,8 @@ ChatGPT chat wakes up instead of waiting to be asked to read.
 - Each subscribe, refusal, delivery and failure goes in the
   `oauth-events` log with the callback host only.
 
-Claude's channel doesn't advertise events: Claude has no webhook to call.
+Claude's channel doesn't advertise events: Claude has no webhook to
+call, so it is woken by a wake hook instead (Any to any, above).
 
 ## Adding it to Claude
 

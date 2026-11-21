@@ -1,5 +1,8 @@
 // The history page: a form to send a message or an instruction to
-// Claude, ChatGPT or both, and every message sent and received on either, newest first. Works without JavaScript
+// Claude, ChatGPT or both, and every message sent and received on either,
+// newest first, including what the assistants and agents send each other
+// ("ChatGPT → Claude"). It also sets the wake hooks (wake.js), which
+// are never shown back beyond their host. Works without JavaScript
 // (the form posts and the server redirects back); with it, sending
 // doesn't reload the page and the list refreshes every 10 seconds.
 
@@ -13,8 +16,15 @@ export function escapeHtml(s) {
 const NAMES = { claude: "Claude", chatgpt: "ChatGPT" };
 const nameOf = (m) => NAMES[m.channel] ?? "Claude";
 
+/** Who sent a row another assistant or agent sent: "ChatGPT", "muse-3". */
+const fromName = (addr) => {
+  const [type, name] = String(addr).split(":");
+  return type === "channel" ? (NAMES[name] ?? name) : name;
+};
+
 function label(m) {
   if (m.direction === "outbound") return `${nameOf(m)} → you`;
+  if (m.from_addr) return `${escapeHtml(fromName(m.from_addr))} → ${nameOf(m)}${m.kind === "instruction" ? " (instruction)" : ""}`;
   if (m.kind === "instruction") return `Instruction → ${nameOf(m)}`;
   return `You → ${nameOf(m)}`;
 }
@@ -53,6 +63,7 @@ export function renderPage({
   olderOnly = false,
   chatgptReady = true,
   connectorUrl = "",
+  wakeHooks = [],
 }) {
   const rows = messages.map(renderRow).join("\n");
   // A full page means there may be more; the link pages back by id and
@@ -115,13 +126,33 @@ ${
 </details>`
     : ""
 }
+<details class="connect"><summary>Wake hooks (${wakeHooks.length})</summary>
+<p class="notice">A message for an address with a hook calls the hook, so Claude (or an agent) starts on it at once. For Claude: make a routine at claude.ai/code/routines with an API trigger, then paste its fire URL and token here. ChatGPT wakes through its own connector and needs none.</p>
+${
+  wakeHooks.length
+    ? `<ul class="hooks">${wakeHooks
+        .map(
+          (h) =>
+            `<li>${escapeHtml(h.address)}: ${escapeHtml(h.kind)} at ${escapeHtml(h.host)}${h.has_token ? " (token set)" : ""}, added <time datetime="${escapeHtml(h.added)}">${escapeHtml(h.added)}</time></li>`,
+        )
+        .join("")}</ul>`
+    : ""
+}
+<form method="post" action="${escapeHtml(basePath)}" id="wake">
+  <input type="hidden" name="action" value="wake_hook">
+  <div class="row"><input type="text" name="address" value="channel:claude" required maxlength="80" aria-label="Address"></div>
+  <div class="row"><input type="url" name="url" maxlength="2048" placeholder="Fire URL" aria-label="Hook URL"></div>
+  <div class="row"><input type="password" name="token" maxlength="1024" placeholder="Token" autocomplete="off" aria-label="Hook token">
+  <button type="submit">Save hook</button><button type="submit" name="remove" value="1">Remove</button></div>
+</form>
+</details>
 <form method="post" action="${escapeHtml(basePath)}" id="send">
   <textarea name="body" required maxlength="16000" placeholder="Message"></textarea>
   <div class="to" role="radiogroup" aria-label="Kind">
     <span>Send as</span>
     <label><input type="radio" name="kind" value="message" checked> Message</label>
     <label><input type="radio" name="kind" value="instruction"> Instruction</label>
-    <span class="notice">Agents see an instruction without its sender.</span>
+    <span class="notice">Assistants see your instruction without its "From" label.</span>
   </div>
   <div class="to" role="group" aria-label="Send to">
     <span>Send to</span>
@@ -154,6 +185,7 @@ ${olderOnly ? `<p class="nav"><a href="${escapeHtml(basePath)}">Back to newest</
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   const NAMES = { claude: "Claude", chatgpt: "ChatGPT" };
   const nameOf = (m) => NAMES[m.channel] || "Claude";
+  const fromName = (a) => { const [t, n] = String(a).split(":"); return t === "channel" ? (NAMES[n] || n) : n; };
   const statsLine = (s) => s.total + " messages · " + s.inbound + " from you (" + s.unread_inbound + " unread) · " + s.outbound + " to you";
   const boxes = [...form.querySelectorAll('input[name="to"]')];
   try {
@@ -162,7 +194,9 @@ ${olderOnly ? `<p class="nav"><a href="${escapeHtml(basePath)}">Back to newest</
   } catch {}
   const row = (m) => {
     const ins = m.kind === "instruction";
-    const lab = m.direction === "outbound" ? nameOf(m) + " → you" : (ins ? "Instruction → " : "You → ") + nameOf(m);
+    const lab = m.direction === "outbound" ? nameOf(m) + " → you"
+      : m.from_addr ? esc(fromName(m.from_addr)) + " → " + nameOf(m) + (ins ? " (instruction)" : "")
+      : (ins ? "Instruction → " : "You → ") + nameOf(m);
     const st = m.direction === "outbound" ? "" : (m.read_at ? " · read by " + nameOf(m) : " · unread");
     const who = m.sender ? " · " + (ins ? "from " : "") + esc(m.sender) : "";
     return '<li class="msg ' + esc(m.direction) + " " + esc(m.channel || "claude") + (ins ? " instruction" : "") + '"><div class="meta"><b>' + lab + "</b>" + who +

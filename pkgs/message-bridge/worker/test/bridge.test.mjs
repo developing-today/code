@@ -184,8 +184,11 @@ test("bad input is a tool error or a 400, never stored", async () => {
   const { tool, call, store } = harness();
   const empty = await tool("send_message", { body: "   " });
   assert.equal(empty.isError, true);
-  const extra = await tool("send_message", { body: "x", to: "someone" });
+  const extra = await tool("send_message", { body: "x", colour: "red" });
   assert.equal(extra.isError, true);
+  for (const bad of [{ to: "not a name!" }, { to: "claude" }, { to: "channel:nobody" }, { to: "drew", kind: "instruction" }, { kind: "shout" }, { to: [] , kind: "instruction" }]) {
+    assert.equal((await tool("send_message", { body: "x", ...bad })).isError, true, JSON.stringify(bad));
+  }
   const big = await tool("send_message", { body: "x".repeat(16001) });
   assert.equal(big.isError, true);
   const badDir = await tool("read_messages", { direction: "sideways" });
@@ -512,7 +515,7 @@ test("the ChatGPT token opens only its own MCP channel", async () => {
     method: "POST",
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
   });
-  assert.match((await init.json()).result.instructions, /between ChatGPT and Drew/);
+  assert.match((await init.json()).result.instructions, /between ChatGPT, Drew/);
   const disc = await call(`/mcp/${GPT}`, {
     method: "POST",
     body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "server/discover" }),

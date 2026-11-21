@@ -18,13 +18,20 @@
 // is stored and targeted like any message, but the MCP tools hand it to
 // the agent without its sender. The page and the JSON API (Drew's own
 // views) still show the sender.
+//
+// from_addr says who sent an inbound row when it wasn't Drew: another
+// connector ("channel:claude", "channel:chatgpt") or a fleet agent
+// ("agent:<name>"); see relay.js. It is null for everything Drew sends,
+// so an assistant can always tell an instruction from Drew from one
+// another assistant or agent sent. Rows with from_addr come in through
+// source "mcp" (a connector) or "fleet" (an agent).
 
 export const MAX_BODY = 16000;
 export const MAX_SENDER = 80;
 export const DEFAULT_LIMIT = 50;
 export const MAX_LIMIT = 200;
 export const DIRECTIONS = ["inbound", "outbound"];
-export const SOURCES = ["mcp", "page", "api"];
+export const SOURCES = ["mcp", "page", "api", "fleet"];
 export const CHANNELS = ["claude", "chatgpt"];
 export const CHANNEL_NAMES = { claude: "Claude", chatgpt: "ChatGPT" };
 export const KINDS = ["message", "instruction"];
@@ -32,7 +39,7 @@ export const KINDS = ["message", "instruction"];
 export class InputError extends Error {}
 
 /** Validates and normalizes a new message; throws InputError. */
-export function normalizeNew({ body, sender, direction, source, channel = "claude", kind }) {
+export function normalizeNew({ body, sender, direction, source, channel = "claude", kind, from_addr }) {
   if (typeof body !== "string" || body.trim() === "") throw new InputError("body must be a non-empty string");
   if (body.length > MAX_BODY) throw new InputError(`body is longer than ${MAX_BODY} characters`);
   if (!DIRECTIONS.includes(direction)) throw new InputError(`direction must be one of ${DIRECTIONS.join(", ")}`);
@@ -45,8 +52,21 @@ export function normalizeNew({ body, sender, direction, source, channel = "claud
     if (typeof sender !== "string") throw new InputError("sender must be a string");
     s = sender.trim().slice(0, MAX_SENDER) || null;
   }
-  return { body, sender: s, direction, source, channel, kind: k };
+  let from = null;
+  if (from_addr !== undefined && from_addr !== null) {
+    if (typeof from_addr !== "string" || !FROM_ADDR.test(from_addr)) throw new InputError("from_addr must be channel:<name> or agent:<name>");
+    if (from_addr === `channel:${channel}`) throw new InputError("a connector can't send to its own channel");
+    if (direction !== "inbound" || (source !== "mcp" && source !== "fleet")) {
+      throw new InputError("from_addr is only for messages a connector or an agent sends");
+    }
+    from = from_addr;
+  } else if (direction === "inbound" && (source === "mcp" || source === "fleet")) {
+    throw new InputError("an inbound message from a connector or an agent must name from_addr");
+  }
+  return { body, sender: s, direction, source, channel, kind: k, from_addr: from };
 }
+
+const FROM_ADDR = /^(channel:(claude|chatgpt)|agent:[a-z0-9][a-z0-9._-]{0,63})$/;
 
 /** Validates a new message's kind; empty means "message". Throws InputError. */
 export function normalizeKind(kind) {
@@ -69,6 +89,7 @@ export function normalizeKindFilter(kind) {
  * the agent only that it is an instruction.
  */
 export function forAgent(m) {
+  if (m && !("from_addr" in m)) m = { ...m, from_addr: null };
   if (m?.kind !== "instruction") return m;
   const { sender: _hidden, ...rest } = m;
   return rest;
@@ -154,6 +175,28 @@ export class MemoryStore {
     this.registrations = [];
     this.events = [];
     this.subs = new Map();
+    this.hooks = new Map();
+    this.wakes = [];
+  }
+  // Wake hooks (wake.js), same semantics as the Durable Object.
+  async wakeHookGet(address) {
+    const h = this.hooks.get(address);
+    return h ? { ...h } : null;
+  }
+  async wakeHookPut(hook) {
+    this.hooks.set(hook.address, { ...hook });
+  }
+  async wakeHookDelete(address) {
+    return this.hooks.delete(address);
+  }
+  async wakeHooks() {
+    return [...this.hooks.values()].sort((a, b) => a.address.localeCompare(b.address)).map((h) => ({ ...h }));
+  }
+  async wakeClaim(address, now, max) {
+    this.wakes = this.wakes.filter((w) => w.ts > now - 3600_000);
+    if (this.wakes.filter((w) => w.address === address).length >= max) return false;
+    this.wakes.push({ address, ts: now });
+    return true;
   }
   // ChatGPT event subscriptions (events.js), same semantics as the Durable Object.
   async eventSubGet(id) {
