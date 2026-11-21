@@ -121,7 +121,7 @@ func TestSweepReportsAProcessExecutingFromABuildDir(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	cmd := plantSleeper(t, dir)
 
-	removed, leftover := SweepBuildTempDirs()
+	removed, leftover := sweepBuildTempDirs([]string{dir})
 	found := false
 	for _, p := range leftover {
 		if p.PID == cmd.Process.Pid {
@@ -181,7 +181,7 @@ func TestSweepDoesNotReportAProcessThatExitsWithinTheGraceBudget(t *testing.T) {
 	}
 	t.Cleanup(func() { _, _ = cmd.Process.Wait() })
 
-	_, leftover := SweepBuildTempDirs()
+	_, leftover := sweepBuildTempDirs([]string{dir})
 	for _, p := range leftover {
 		if p.PID == cmd.Process.Pid {
 			t.Fatalf("sweep reported a process that exited within the grace budget: %v", p)
@@ -213,7 +213,7 @@ func TestSweepIgnoresProcessesExecutingFromElsewhere(t *testing.T) {
 		_, _ = cmd.Process.Wait()
 	})
 
-	_, leftover := SweepBuildTempDirs()
+	_, leftover := sweepBuildTempDirs([]string{dir})
 	for _, p := range leftover {
 		if p.PID == cmd.Process.Pid {
 			t.Fatalf("sweep reported a process executing from outside the build dirs: %v", p)
@@ -229,7 +229,7 @@ func TestSweepWithNoLeftoversRemovesDirsAndReportsNone(t *testing.T) {
 	registerBuildTempDir(dir)
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
-	removed, leftover := SweepBuildTempDirs()
+	removed, leftover := sweepBuildTempDirs([]string{dir})
 	if len(leftover) != 0 {
 		t.Fatalf("sweep reported leftovers where none were planted: %v", leftover)
 	}

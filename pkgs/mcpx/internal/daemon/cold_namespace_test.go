@@ -60,7 +60,7 @@ func TestGeneratedColdCall1868(t *testing.T) {
 			if !strings.Contains(string(raw), "odd-name") {
 				t.Fatalf("wrong routed tool: %s", raw)
 			}
-			raw, err = r.CallGenerated(context.Background(), "report-fixture", language, "cold", "odd_name", config.CallContext{SessionID: "isolated"}, map[string]any{})
+			_, err = r.CallGenerated(context.Background(), "report-fixture", language, "cold", "odd_name", config.CallContext{SessionID: "isolated"}, map[string]any{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -212,7 +212,7 @@ func TestGeneratedColdInflight1868(t *testing.T) {
 				var method struct {
 					Method string `json:"method"`
 				}
-				json.Unmarshal(data, &method)
+				_ = json.Unmarshal(data, &method)
 				if method.Method == "tools/call" {
 					calls.Add(1)
 				}

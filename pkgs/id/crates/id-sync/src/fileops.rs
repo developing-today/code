@@ -582,7 +582,20 @@ impl<'a> FileOps<'a> {
                 let Some(archive_name) = tag.value.as_ref().and_then(|value| value.as_str()) else {
                     continue;
                 };
-                let current_owner = archive_owner(self.tags, archive_name).await.ok().flatten();
+                let current_owner = match read_archive_owner(self.tags, archive_name).await {
+                    Ok(OwnerRead::Owner(owner)) => Some(owner),
+                    Ok(OwnerRead::Absent) => None,
+                    Ok(OwnerRead::Undecodable) => {
+                        tracing::warn!(
+                            "archive.owner on {archive_name} is undecodable; left unchanged"
+                        );
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to read archive.owner on {archive_name}: {e:#}");
+                        continue;
+                    }
+                };
                 let created_here = archived_original.as_deref() == Some(archive_name)
                     || archived_replaced.as_deref() == Some(archive_name);
                 let follows_from = current_owner.as_deref() == Some(from);
@@ -771,16 +784,53 @@ impl<'a> FileOps<'a> {
 /// archive and maintains across renames (#8815). Peers cannot forge the
 /// back-reference: the key is reserved at the protocol layer.
 async fn archive_owner(tags: &TagStore, archive_name: &str) -> Result<Option<String>> {
-    let mut owner = None;
+    Ok(match read_archive_owner(tags, archive_name).await? {
+        OwnerRead::Owner(owner) => Some(owner),
+        OwnerRead::Absent | OwnerRead::Undecodable => None,
+    })
+}
+
+/// What an `archive.owner` lookup proved. A failed lookup is an `Err`, and
+/// an undecodable value is kept apart from absence: neither may be treated
+/// as proof that the archive has no owner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OwnerRead {
+    Absent,
+    Owner(String),
+    Undecodable,
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_OWNER_READS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn injected_owner_read_failure() -> Result<()> {
+    if FAIL_OWNER_READS.with(std::cell::Cell::get) {
+        anyhow::bail!("injected archive.owner read failure");
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn injected_owner_read_failure() -> Result<()> {
+    Ok(())
+}
+
+async fn read_archive_owner(tags: &TagStore, archive_name: &str) -> Result<OwnerRead> {
+    injected_owner_read_failure()?;
+    let mut read = OwnerRead::Absent;
     for tag in tags
         .get_by_key(&tags.global, archive_name.as_bytes(), b"archive.owner")
         .await?
     {
-        if let Some(value) = tag.value.as_ref().and_then(|value| value.as_str()) {
-            owner = Some(value.to_owned());
-        }
+        read = match tag.value.as_ref().and_then(|value| value.as_str()) {
+            Some(value) if read != OwnerRead::Undecodable => OwnerRead::Owner(value.to_owned()),
+            _ => OwnerRead::Undecodable,
+        };
     }
-    Ok(owner)
+    Ok(read)
 }
 
 /// Stamp the `archive.owner` back-reference on an archive (best-effort
@@ -843,6 +893,118 @@ mod archive_reference_tests {
             "my-file",
             "my-file.archive.nope"
         ));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod archive_owner_read_tests {
+    use iroh::endpoint::{Endpoint, RelayMode, presets};
+    use iroh_blobs::{Hash, api::Store, store::mem::MemStore};
+    use iroh_docs::protocol::Docs;
+    use iroh_gossip::net::Gossip;
+
+    use super::*;
+
+    const ARCHIVE: &str = "a.archive.123";
+
+    struct Env {
+        store: Store,
+        tags: TagStore,
+        _dir: tempfile::TempDir,
+        _endpoint: Endpoint,
+        _docs: Docs,
+    }
+
+    /// File `a` is renamed to `b`; `b` carries a rename reference to the
+    /// archive `a` left behind, which is the case legacy inference covers.
+    async fn env_with_archive_reference() -> Env {
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let store: Store = MemStore::new().into();
+        let gossip = Gossip::builder().spawn(endpoint.clone());
+        let docs = Docs::memory()
+            .spawn(endpoint.clone(), store.clone(), gossip)
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let tags = TagStore::init_in(&docs, "archive-owner-read-test", dir.path().join("meta"))
+            .await
+            .unwrap();
+        store.tags().set("a", Hash::from([1; 32])).await.unwrap();
+        tags.set_tag(
+            &tags.global,
+            b"b",
+            b"archive.rename",
+            Some(ARCHIVE.as_bytes()),
+            b"",
+        )
+        .await
+        .unwrap();
+        Env {
+            store,
+            tags,
+            _dir: dir,
+            _endpoint: endpoint,
+            _docs: docs,
+        }
+    }
+
+    async fn owner_values(tags: &TagStore, archive: &str) -> Vec<Vec<u8>> {
+        tags.get_by_key(&tags.global, archive.as_bytes(), b"archive.owner")
+            .await
+            .unwrap()
+            .into_iter()
+            .filter_map(|tag| tag.value.map(TagValue::into_bytes))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn absent_owner_with_successful_lookup_still_infers_legacy_owner() {
+        let env = env_with_archive_reference().await;
+        FileOps::new(&env.store, &env.tags)
+            .rename("a", "b", false)
+            .await
+            .unwrap();
+        assert_eq!(owner_values(&env.tags, ARCHIVE).await, vec![b"b".to_vec()]);
+    }
+
+    #[tokio::test]
+    async fn failed_owner_read_leaves_owner_unchanged_and_skips_inference() {
+        let env = env_with_archive_reference().await;
+        FAIL_OWNER_READS.with(|fail| fail.set(true));
+        let result = FileOps::new(&env.store, &env.tags)
+            .rename("a", "b", false)
+            .await;
+        FAIL_OWNER_READS.with(|fail| fail.set(false));
+        result.unwrap();
+        assert!(owner_values(&env.tags, ARCHIVE).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn undecodable_owner_is_not_absence_and_is_not_rewritten() {
+        let env = env_with_archive_reference().await;
+        env.tags
+            .set_tag(
+                &env.tags.global,
+                ARCHIVE.as_bytes(),
+                b"archive.owner",
+                Some(&[0xff_u8, 0xfe][..]),
+                b"",
+            )
+            .await
+            .unwrap();
+        FileOps::new(&env.store, &env.tags)
+            .rename("a", "b", false)
+            .await
+            .unwrap();
+        assert_eq!(
+            owner_values(&env.tags, ARCHIVE).await,
+            vec![vec![0xff_u8, 0xfe]]
+        );
     }
 }
 

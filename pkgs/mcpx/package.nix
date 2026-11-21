@@ -64,7 +64,7 @@ buildMcpxGoModule {
       !(base == "bin" || base == "result" || lib.hasPrefix "result-" base || base == "mcpx-client.ts");
   };
 
-  # Eleven direct Go dependencies.
+  # Twelve direct Go dependencies, including pty for the PTY-backed e2e test.
   #
   # modernc.org/sqlite backs the log index. It is a pure-Go translation rather
   # than the usual mattn driver, because a cgo driver would make this
@@ -101,7 +101,7 @@ buildMcpxGoModule {
   #
   # Everything else -- the MCP client, the process pools, the JSON Schema to
   # TypeScript compiler, the CLI -- is standard library.
-  vendorHash = "sha256-xif8jcKtFei4vd7bh8way+KnHS6O0I/JFxrTMyVlTKo=";
+  vendorHash = "sha256-WixeikMvYYYvvOssmUiVqlglEprQjP2p1pMXpkOLTME=";
 
   subPackages = [ "cmd/mcpx" ];
 

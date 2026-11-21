@@ -47,6 +47,7 @@ var implementedEffectProbes = map[string]string{
 	"pool.sharing":                       "TestPoolDefaultsAreReachableFromTheEnvironment",
 	"pool.scope":                         "TestPoolDefaultsAreReachableFromTheEnvironment",
 	"output.json":                        "TestOutputJSONIsReachableFromTheEnvironment",
+	"output.color":                       "TestOutputColorIsReachableFromTheEnvironment",
 	"script.prefix":                      "TestScriptPrefixIsReachableFromTheEnvironment",
 	"script.cwd":                         "TestScriptCwdIsReachableFromTheEnvironment",
 	"script.interpreter":                 "TestScriptInterpreterIsReachableFromTheEnvironment",
@@ -265,6 +266,7 @@ var implementedEffectProbes = map[string]string{
 var effectProbeFuncs = map[string]func(*testing.T){
 	"TestLoggingFileOffWritesNoDurableLog":                                           TestLoggingFileOffWritesNoDurableLog,
 	"TestOutputJSONIsReachableFromTheEnvironment":                                    TestOutputJSONIsReachableFromTheEnvironment,
+	"TestOutputColorIsReachableFromTheEnvironment":                                   TestOutputColorIsReachableFromTheEnvironment,
 	"TestPathsConfigFileChangesWhichConfigLoads":                                     TestPathsConfigFileChangesWhichConfigLoads,
 	"TestPathsScriptsFindsRecipesThatLiveOnlyThere":                                  TestPathsScriptsFindsRecipesThatLiveOnlyThere,
 	"TestPathsCacheChangesTheDoctorDirectory":                                        TestPathsCacheChangesTheDoctorDirectory,
@@ -2357,8 +2359,9 @@ func runtimeOf(t *testing.T, e *env, args ...string) string {
 }
 
 // TestScriptRuntimeSelectsTheRuntime is the effect probe for
-// script.runtime: scripts run on deno by default and on node once the
-// environment names it.
+// script.runtime: scripts run on deno by default (the first installed
+// entry of the documented runtimeOrder default, deno,bun,node) and on
+// node once the environment names it.
 func TestScriptRuntimeSelectsTheRuntime(t *testing.T) {
 	testsupport.RequireBinary(t, "deno")
 	testsupport.RequireBinary(t, "node")
@@ -2373,8 +2376,9 @@ func TestScriptRuntimeSelectsTheRuntime(t *testing.T) {
 }
 
 // TestScriptRuntimeOrderRanksTheAutoPick is the effect probe for
-// script.runtimeOrder: the automatic pick is deno by default and node once
-// the environment ranks node first.
+// script.runtimeOrder: the automatic pick is deno by default (the
+// documented runtimeOrder default is deno,bun,node) and node once the
+// environment ranks node first.
 func TestScriptRuntimeOrderRanksTheAutoPick(t *testing.T) {
 	testsupport.RequireBinary(t, "deno")
 	testsupport.RequireBinary(t, "node")

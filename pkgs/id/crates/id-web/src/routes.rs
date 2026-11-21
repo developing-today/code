@@ -2359,8 +2359,40 @@ mod save_publication_tests {
         // The current version is A's, untouched by B's refused save.
         let current = current_filename_hash(&state.store, "notes.md")
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(current.to_string(), h2);
+    }
+
+    #[tokio::test]
+    async fn save_is_refused_when_the_current_version_cannot_be_read() {
+        // #12146: a tag-store read failure must not read as "no binding".
+        // That would skip the #8524 stale-save check and let the save
+        // supersede whatever the name points to.
+        let (mut state, _endpoint, _docs) = state().await;
+        state.save_limiter = SaveRateLimiter::new(Duration::ZERO);
+
+        let first = save(state.clone(), "notes.md", "original").await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let h1 = response_json(first).await["hash"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        state.store.shutdown().await.unwrap();
+        assert!(
+            current_filename_hash(&state.store, "notes.md")
+                .await
+                .is_err(),
+            "a store that cannot be read reports an error, not an unbound name"
+        );
+
+        let refused = save_based_on(state.clone(), "notes.md", "edit", &h1).await;
+        assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response_json(refused).await["reason"],
+            "current_version_unavailable"
+        );
     }
 
     #[tokio::test]
@@ -2427,6 +2459,7 @@ mod save_publication_tests {
         .await;
         let current = current_filename_hash(&state.store, "notes.md")
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(current.to_string(), winner_body["hash"].as_str().unwrap());
     }
