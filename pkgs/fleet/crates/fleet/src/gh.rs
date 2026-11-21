@@ -294,9 +294,26 @@ fn classify_failure(output: &str) -> FailureClass {
 fn audit_args(args: &[String]) -> Vec<String> {
     const REDACTED: &str = "[redacted]";
     let is_secret = args.first().map(|s| s.as_str()) == Some("secret");
-    let auth_header = |v: &str| {
-        v.split_once(':')
-            .is_some_and(|(name, _)| name.trim().eq_ignore_ascii_case("authorization"))
+    // A header is redacted when its name can carry a credential: the
+    // standard auth and cookie headers, and any custom header whose name
+    // mentions a token, key, secret, password, session or auth.
+    let redact_header = |v: &str| -> Option<String> {
+        let (name, _) = v.split_once(':')?;
+        let name = name.trim();
+        let lower = name.to_ascii_lowercase();
+        let sensitive = [
+            "auth",
+            "cookie",
+            "token",
+            "secret",
+            "key",
+            "password",
+            "session",
+            "credential",
+        ]
+        .iter()
+        .any(|w| lower.contains(w));
+        sensitive.then(|| format!("{name}: {REDACTED}"))
     };
     let mut out = Vec::with_capacity(args.len());
     let mut i = 0;
@@ -320,20 +337,23 @@ fn audit_args(args: &[String]) -> Vec<String> {
             i += 1;
             continue;
         }
-        if (a == "-H" || a == "--header") && args.get(i + 1).is_some_and(|v| auth_header(v)) {
-            out.push(a.to_string());
-            out.push(format!("Authorization: {REDACTED}"));
-            i += 2;
-            continue;
+        if a == "-H" || a == "--header" {
+            if let Some(r) = args.get(i + 1).and_then(|v| redact_header(v)) {
+                out.push(a.to_string());
+                out.push(r);
+                i += 2;
+                continue;
+            }
         }
-        if let Some(v) = a.strip_prefix("--header=").or_else(|| a.strip_prefix("-H")) {
-            if auth_header(v) {
-                let flag = if a.starts_with("--header=") {
-                    "--header="
-                } else {
-                    "-H"
-                };
-                out.push(format!("{flag}Authorization: {REDACTED}"));
+        // Attached spellings: --header=V, -HV and -H=V all send V.
+        let attached = a
+            .strip_prefix("--header=")
+            .map(|v| ("--header=", v))
+            .or_else(|| a.strip_prefix("-H=").map(|v| ("-H=", v)))
+            .or_else(|| a.strip_prefix("-H").map(|v| ("-H", v)));
+        if let Some((flag, v)) = attached {
+            if let Some(r) = redact_header(v) {
+                out.push(format!("{flag}{r}"));
                 i += 1;
                 continue;
             }
@@ -1603,12 +1623,43 @@ mod tests {
                 "-X",
                 "PATCH",
                 "-H",
-                "Authorization: [redacted]"
+                "authorization: [redacted]"
             ])
         );
         assert_eq!(
             audit_args(&v(&["api", "user", "--header=Authorization: bearer abc"])),
             v(&["api", "user", "--header=Authorization: [redacted]"])
+        );
+        assert_eq!(
+            audit_args(&v(&["api", "user", "-H=Authorization: bearer abc"])),
+            v(&["api", "user", "-H=Authorization: [redacted]"])
+        );
+        assert_eq!(
+            audit_args(&v(&[
+                "api",
+                "user",
+                "-X",
+                "POST",
+                "-H",
+                "Cookie: session=SECRET"
+            ])),
+            v(&["api", "user", "-X", "POST", "-H", "Cookie: [redacted]"])
+        );
+        assert_eq!(
+            audit_args(&v(&[
+                "api",
+                "user",
+                "-HX-Api-Key: k1",
+                "--header",
+                "Accept: json"
+            ])),
+            v(&[
+                "api",
+                "user",
+                "-HX-Api-Key: [redacted]",
+                "--header",
+                "Accept: json"
+            ])
         );
         // Ordinary bodies and headers stay readable.
         let plain = v(&[
