@@ -18,12 +18,6 @@
 #                                     tonight's ledger rows) to D1
 #   5. cold-store status              one-screen summary (head)
 #
-# The former step 2, `cold-store backup-supabase`, is retired: the
-# Supabase project it filed dumps of has been replaced by Turso (Drew,
-# 2026-11-18), so no new dump reaches R2. Filings already in
-# db-backups/supabase/ keep their retention under prune-backups, and
-# `cold-store backup-supabase` stays available to run by hand.
-#
 # Steps are ISOLATED: a step that fails never starves the steps after
 # it (the 2026-10-27 run lost retention, manifest sync, and status to
 # one failed Turso export). Each step prints a per-step outcome line

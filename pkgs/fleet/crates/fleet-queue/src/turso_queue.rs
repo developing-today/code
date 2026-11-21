@@ -1,21 +1,10 @@
 //! queue-broker Turso backend — the queue core on libSQL (#6741).
 //!
-//! The Postgres queue core (agent.tasks / leases / lanes / workers /
-//! checkpoints / repo_task_lane_ledger / events in muse-dev2) was the
-//! one piece of the 2026-11-04..06 migration (#5689/#5690 series)
-//! deliberately kept on Postgres for transactional coupling. When
-//! the muse-dev2 data plane went down on 2026-11-06 (#6619, Supabase
-//! platform fault) the queue core had no live home; the GitHub
-//! fallback mode (doc/fleet/queue-fallback-mode.md) carried the work.
-//! This module is the dedicated-Turso replacement Drew ordered the
-//! same evening: a dedicated database (`fleet-queue`, org dezren39,
-//! group great-star-lord; rw token in BWS as
-//! `turso.fleet-queue-rw-token`) behind the SAME broker protocol, so
-//! no client changes: backend selection is the broker's config.
-//!
-//! Selection: `QUEUE_BROKER_BACKEND=turso` (default `postgres` — the
-//! production default does NOT flip with this code; cutover is the
-//! runbook in doc/fleet/queue-turso-cutover.md). URL:
+//! The queue core (tasks / leases / lanes / workers / checkpoints /
+//! repo_task_lane_ledger / events) on a dedicated Turso database
+//! (`fleet-queue`, org dezren39, group great-star-lord; rw token in
+//! BWS as `turso.fleet-queue-rw-token`) behind the broker protocol.
+//! It is the queue broker's only backend. URL:
 //! `QUEUE_BROKER_TURSO_URL` (default the fleet-queue HTTPS URL).
 //! Token: `QUEUE_BROKER_TURSO_TOKEN_FILE`, else the secrets broker
 //! by the name above.
@@ -39,8 +28,7 @@
 //! stream's consumers get broker verbs here: /events-append,
 //! /events-seen (the event_seen ready-condition primitive),
 //! /events-count (observability + health), /events-prune (the
-//! prune_events port). All of it exists only on this backend; the
-//! Postgres dispatch is untouched.
+//! prune_events port).
 //!
 //! Atomicity: libSQL is single-writer. A claim is ONE conditional
 //! UPDATE whose WHERE clause re-checks claimability (status in
@@ -413,8 +401,7 @@ mod tests {
         // #9420 oracle: exact-task readback works on the Turso
         // verb_list — the task filter, a dedupe_key filter, and a
         // queue predicate that applies only when a queue is named (an
-        // unnamed queue must not degenerate into queue = ''). The
-        // PostgREST /list handler carries the same contract.
+        // unnamed queue must not degenerate into queue = '').
         let src = &test_source();
         let seg = seg8217(src, "fn verb_list(", "\nfn verb_health");
         assert!(
@@ -429,15 +416,6 @@ mod tests {
         assert!(
             seg.contains("if !queue.is_empty()"),
             "queue predicate is conditional on a named queue"
-        );
-        let broker = include_str!("queue_broker.rs");
-        assert!(
-            broker.contains("dedupe_key=eq."),
-            "PostgREST /list applies the dedupe_key filter"
-        );
-        assert!(
-            broker.contains("queue_pred"),
-            "PostgREST /list omits the queue predicate when unnamed"
         );
     }
 

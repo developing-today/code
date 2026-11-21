@@ -18,8 +18,7 @@ EnvironmentFile=%h/pm-stack/dispatch/.env
 # Operator secrets that are NOT in the sops file (mode 600, laptop-only):
 # DISPATCH_API_TOKEN only. Optional-file syntax so a missing file
 # degrades to bearer-auth-off, not a crash loop. This file is read
-# AFTER the rendered file, so it wins on any collision. SUPABASE_*
-# lines are obsolete since #9028 (install.sh warns; delete them).
+# AFTER the rendered file, so it wins on any collision.
 EnvironmentFile=-%h/secrets/dispatch.env
 Restart=on-failure
 RestartSec=5

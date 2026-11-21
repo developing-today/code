@@ -586,14 +586,6 @@ pub(crate) fn list_rows(resp: &Value) -> Result<Vec<Value>, String> {
         })
 }
 
-/// The total in a PostgREST `Content-Range` header (#10376):
-/// `0-49/237` -> 237, `*/0` -> 0. A `*` total (no count was
-/// requested) or an unparseable header yields None — unknown,
-/// never a fabricated zero.
-pub(crate) fn content_range_total(content_range: &str) -> Option<i64> {
-    content_range.rsplit('/').next()?.trim().parse::<i64>().ok()
-}
-
 /// The /list reply envelope (#10376; contract #6622 rule 3 —
 /// complete, bounded, or say so): alongside the rows, the total
 /// number of matching tasks when the backend knows it (null when

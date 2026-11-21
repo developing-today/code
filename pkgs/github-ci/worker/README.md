@@ -1,15 +1,12 @@
 # github-ci Worker
 
-The GitHub webhook receiver (developing-today/code#5693), re-homed
-off the Supabase Edge Function of the same name — the last Edge
-Function on muse-dev2. Ported behavior-for-behavior from the Edge
-Function (ACTIVE v8) so the two receivers can run side by side
-during the dual-run diff period.
+The GitHub webhook receiver (developing-today/code#5693). It writes
+only to Turso; it is the sole receiver for every fleet repo.
 
 ## Shape
 
-- `src/index.ts` — HMAC-SHA256 gate (Web Crypto, same semantics as
-  the Edge Function), routing, workflow_run ingest. The gate is
+- `src/index.ts` — HMAC-SHA256 gate (Web Crypto), routing,
+  workflow_run ingest. The gate is
   unconditional (#6936): with `GITHUB_WEBHOOK_SECRET` unset or empty,
   every POST is rejected 503 "webhook secret not configured" before
   any write — the Worker fails closed, never open.
@@ -74,9 +71,8 @@ npm test        # vitest + @cloudflare/vitest-pool-workers
 npm run deploy  # wrangler deploy (fleet Cloudflare account)
 ```
 
-Cutover state lives on #5693: deploy dark → replay smoke → one
-repo-level dual-run webhook → (later, separately) org/App flip.
-The Edge Function stays deployed as rollback until then.
+The cutover from the earlier Postgres receiver is complete (#5693,
+closeout below).
 
 ## Cutover closeout (2026-11-14, task 16806)
 
@@ -94,16 +90,11 @@ The flip is complete and the Edge Function is retired:
   produced ~16k Turso events. No sender still reaches the old
   receiver; every fleet repo's webhook points at this Worker
   (verified per repo: code, opencode, openchamber, darwin-nix).
-- **Edge Function retired.** `github-ci` (the last Edge Function
-  on muse-dev2, v9) was deleted via the Supabase Management API
-  on 2026-11-14; the project now has zero Edge Functions. The
-  Worker → Turso write path was verified live after the deletion
-  (new `ci_events` rows within a minute). Rollback, if ever
-  needed, is a redeploy of this Worker — its behavior is the
-  behavior-for-behavior port of the Edge Function.
-- **The Postgres table stays.** `ci.events` remains read-only in
-  place for one retention window; dropping it is a separate,
-  separately-approved decision (not part of the cutover).
+- **Old receiver retired.** The previous receiver was deleted on
+  2026-11-14, and its database project has since been deleted too;
+  Turso is the only store. The Worker → Turso write path was
+  verified live after the deletion (new `ci_events` rows within a
+  minute). Rollback, if ever needed, is a redeploy of this Worker.
 
 ## Retention (90 days hot)
 

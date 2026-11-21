@@ -59,7 +59,7 @@ import {
 } from "./coverage.ts";
 import { loadConfig } from "./config.ts";
 import { getTursoStoreClient } from "./turso-stores.ts";
-import { createSupabaseRemotes } from "./remote-stores.ts";
+import { createTursoRemotes } from "./remote-stores.ts";
 import { itemServiceLinks } from "./service-links.ts";
 import { loadFeed } from "./feed.ts";
 import { AA_PLAN_FACTS, sectionPoolIdsFromConfig } from "./aa.ts";
@@ -351,15 +351,10 @@ async function coverageSnapshot(
   return next;
 }
 // #6815: the four formerly laptop-local stores (actions, activity
-// ingestion, usage snapshots, aa-last-good) move to muse-dev2 when
-// PM_AGG_STORE_BACKEND=supabase. Exactly one backend is active: with
+// ingestion, usage snapshots, aa-last-good) live in Turso when
+// PM_AGG_STORE_BACKEND=turso. Exactly one backend is active: with
 // "file" (the default) no remote exists and no database call is made.
-const storeRemotes =
-  cfg.storeBackend === "turso"
-    ? createSupabaseRemotes(getTursoStoreClient)
-    : cfg.storeBackend === "supabase"
-      ? createSupabaseRemotes()
-      : null;
+const storeRemotes = cfg.storeBackend === "turso" ? createTursoRemotes(getTursoStoreClient) : null;
 const actionsStore = new ActionsStore(cfg.actionsFile, undefined, storeRemotes?.actions);
 const viewsStore = new ViewsStore(cfg.viewsFile);
 const eventsStore = new EventsStore(cfg.eventsFile);

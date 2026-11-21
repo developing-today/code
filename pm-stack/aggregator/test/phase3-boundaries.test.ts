@@ -4,12 +4,9 @@
 // boundary — retain (error entry), drop-and-count, or refuse — never a
 // throw, a fabricated row, or live out-of-range data.
 import { describe, expect, test } from "bun:test";
-import { applySupabaseExport, extractSaasServices, type SupabaseExportDoc } from "../src/saas-extract.ts";
 import { entryFromFileExport, entryFromResult, entryFromTurso } from "../src/quota-gather-map.ts";
 import { extractQuotaPools } from "../src/quota-extract.ts";
 import { aggregateBillingUsage } from "../src/sources/github-billing.ts";
-
-const NOW = Date.parse("2026-10-29T15:00:00Z");
 
 function metaDoc(overrides: Record<string, unknown> = {}) {
   return {
@@ -126,74 +123,6 @@ describe("entryFromTurso (#2553)", () => {
     expect(
       entry.windows.every((w) => w.pctOfLimit !== null && Number.isFinite(w.pctOfLimit) && w.pctOfLimit >= 0),
     ).toBe(true);
-  });
-});
-
-const SUPABASE_VIEW = `
-## Summary (b) — subscriptions, infrastructure, account tooling
-
-| Service | Plan / price | Allowance sketch | Usage / status | Next date recorded |
-|---|---|---|---|---|
-| Supabase | Free plan (muse-dev) | DB + egress + storage | manual dashboard read needed | unknown |
-
-## Service details (b)
-
-### Supabase
-- **Plan / price:** Free plan (muse-dev); numerical quotas unknown in local records.
-- **Usage / dates:** Not measured — manual dashboard read needed.
-- **Last checked:** 2026-10-28.
-`;
-
-function supabaseDoc(overrides: Partial<SupabaseExportDoc> = {}): SupabaseExportDoc {
-  return {
-    service: "supabase",
-    source: "file-export/supabase",
-    status: "partial",
-    measuredAt: "2026-10-29T14:55:00Z",
-    project: "muse-dev",
-    metrics: [{ id: "egress", label: "Egress", used: 1.25, limit: 5, unit: "gb" }],
-    billing: { measured: true, billedUsd: 0 },
-    ...overrides,
-  };
-}
-
-describe("applySupabaseExport (#2508)", () => {
-  test("a non-string measuredAt cannot pass the freshness gate", () => {
-    const services = extractSaasServices(SUPABASE_VIEW);
-    const out = applySupabaseExport(services, supabaseDoc({ measuredAt: [2026, 10, 29] as never }), NOW);
-    expect(out).toEqual(services);
-  });
-
-  test("an impossible measuredAt is rejected, not rolled over", () => {
-    const services = extractSaasServices(SUPABASE_VIEW);
-    const out = applySupabaseExport(services, supabaseDoc({ measuredAt: "2026-02-30T00:00:00Z" }), NOW);
-    expect(out).toEqual(services);
-  });
-
-  test("negative used/limit are dropped; valid siblings still apply", () => {
-    const services = extractSaasServices(SUPABASE_VIEW);
-    const out = applySupabaseExport(
-      services,
-      supabaseDoc({
-        metrics: [
-          { id: "egress", label: "Egress", used: 1.25, limit: 5, unit: "gb" },
-          { id: "db-size", label: "DB", used: -1, limit: 0.5, unit: "gb" },
-          { id: "storage", label: "Storage", used: 0.5, limit: -2, unit: "gb" },
-        ],
-      }),
-      NOW,
-    );
-    const supabase = out.find((s) => s.id === "supabase")!;
-    const egress = supabase.metrics.find((m) => m.id === "egress")!;
-    expect(egress.used).toBe(1.25);
-    const db = supabase.metrics.find((m) => m.id === "db-size")!;
-    expect(db.used).not.toBe(-1);
-  });
-
-  test("negative billedUsd is refused", () => {
-    const services = extractSaasServices(SUPABASE_VIEW);
-    const out = applySupabaseExport(services, supabaseDoc({ billing: { measured: true, billedUsd: -5 } }), NOW);
-    expect(out.find((s) => s.id === "supabase")!.billedUsd).toBeNull();
   });
 });
 

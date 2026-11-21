@@ -1008,9 +1008,9 @@ pub(crate) fn verb_outbox_metrics(t: &TursoBackend, _req: &Value) -> Value {
         Err(e) => terr(e),
     }
 }
-/// The Turso backend's half of the broker dispatch: every verb the
-/// Postgres path serves except /validate (purely local) and
-/// /healthz (transport-level), which stay in queue_broker::dispatch.
+/// The Turso backend's half of the broker dispatch: every verb
+/// except /validate (purely local) and /healthz (transport-level),
+/// which stay in queue_broker::dispatch.
 pub fn dispatch(t: &TursoBackend, path: &str, req: &Value) -> Value {
     match path {
         "/enqueue" => verb_enqueue(t, req),

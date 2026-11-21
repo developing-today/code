@@ -12,7 +12,8 @@
 # Jobs:
 # - pm-dashboard-backup (daily ~04:30): the PM dashboard / orchestration
 #   state set as a dated tar.zst with a sha256 manifest to the local
-#   backup dir, Cloudflare R2 (supabase-backups) and Google Drive
+#   backup dir, Cloudflare R2 (bucket supabase-backups, a legacy R2
+#   bucket name) and Google Drive
 #   (Cloud/cold-store/db-backups/pm-aggregator/<date>/), every copy
 #   sha256-verified, 30-day retention. Runs the code#1514 DB-dump script
 #   first when it exists at ~/tools/pm-stack-db-backup.sh, and its dumps
@@ -46,12 +47,6 @@
 #   The agent state DB is snapshotted with sqlite3 .backup so the
 #   archived copy is transaction-consistent. Script:
 #   ./openclaw-backup.sh (vendored here; same credential pattern).
-# - supabase-backup (twice daily 04:42 + 16:42): pg_dump of the muse-dev
-#   Supabase project to R2 (supabase-backups), content-hashed names.
-#   Migrated from the sandbox 2026-10-28 (developing-today/code#1723);
-#   the unit is declared here per Drew's all-services-in-nix rule the
-#   same day. Script: ~/tools/supabase-backup.sh (wrapper; the dump
-#   program + config live in ~/tools/supabase-backup/).
 # - atlas-backup (daily ~04:47): the canonical local atlas.db
 #   (~/atlas/turso-atlas/data/atlas.db) snapshotted with sqlite3
 #   .backup, gzipped deterministically, and filed to the local backup
@@ -141,7 +136,7 @@ let
 in
 {
   options.services.laptop-backups = {
-    enable = lib.mkEnableOption "the laptop backup jobs (dashboard, repo archive, openclaw, supabase, cold-store, atlas)";
+    enable = lib.mkEnableOption "the laptop backup jobs (dashboard, repo archive, openclaw, cold-store, atlas)";
 
     dashboard = {
       enable = lib.mkOption {
@@ -184,27 +179,6 @@ in
         type = lib.types.str;
         default = "04:05";
         description = "Daily run time (local) for the OpenClaw backup.";
-      };
-    };
-
-    supabase = {
-      enable = lib.mkOption {
-        type = lib.types.bool;
-        default = true;
-        description = "Twice-daily pg_dump backup of the muse-dev Supabase project to R2 (code#1723).";
-      };
-      onCalendar = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
-        default = [
-          "04:42"
-          "16:42"
-        ];
-        description = "Daily run times (local) for the Supabase backup.";
-      };
-      script = lib.mkOption {
-        type = lib.types.str;
-        default = "${home}/tools/supabase-backup.sh";
-        description = "Path of the Supabase backup wrapper script to run.";
       };
     };
 
@@ -337,16 +311,6 @@ in
           };
         };
       })
-      (lib.mkIf cfg.supabase.enable {
-        supabase-backup = {
-          Unit.Description = "Twice-daily Supabase muse-dev pg_dump backup to R2 (code#1723)";
-          Service = {
-            Type = "oneshot";
-            ExecStart = cfg.supabase.script;
-            TimeoutStartSec = "30m";
-          };
-        };
-      })
       (lib.mkIf cfg.atlas.enable {
         atlas-backup = {
           Unit.Description = "Daily atlas.db backup - local + R2 + Drive (code#1515)";
@@ -452,17 +416,6 @@ in
           Unit.Description = "Run the OpenClaw backup daily";
           Timer = {
             OnCalendar = cfg.openclaw.onCalendar;
-            Persistent = true;
-            RandomizedDelaySec = "15m";
-          };
-          Install.WantedBy = [ "timers.target" ];
-        };
-      })
-      (lib.mkIf cfg.supabase.enable {
-        supabase-backup = {
-          Unit.Description = "Run the Supabase muse-dev backup twice daily";
-          Timer = {
-            OnCalendar = cfg.supabase.onCalendar;
             Persistent = true;
             RandomizedDelaySec = "15m";
           };

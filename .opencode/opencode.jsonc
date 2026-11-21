@@ -4492,7 +4492,7 @@
         // seat is the CLAUDE bucket, same stage, equal weight 10.
         // 2026-11-09 (Drew, AA-match rule): the Sonnet seat drops
         // #high -> #medium. A pool is matched by its AA score, not
-        // its effort label. AA v5 (Supabase ainventory via the
+        // its effort label. AA v5 (ainventory via the
         // aggregator collector's aa-last-good, generated
         // 2026-11-10T00:40Z, read tonight): this pool sits at Luna
         // #xhigh II 23, Gemini 3.8 Flash #high II 31, and Spark

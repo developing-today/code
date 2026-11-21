@@ -1,7 +1,7 @@
 // The alert throat (#3676; design #3450 as amended by Drew
 // 2026-11-01): every sentinel posts incidents to ONE intake; this
 // module owns dedupe, delivery, escalation, and ack state; every
-// transition lands in the Supabase muse-dev2 `alerts` ledger
+// transition lands in the Turso `alerts_*` ledger tables
 // (incidents / incident_events / push_subscriptions /
 // notification_sends). Delivery is Web Push per the #1254 design
 // (doc/2026-11-01T03-54-00Z_design_pwa_push_notifications.md): the
@@ -23,7 +23,7 @@
 import type { Config } from "./config.ts";
 import { sendPush, type PushOutcome, type PushTarget } from "./push.ts";
 import { getTursoStoreClient } from "./turso-stores.ts";
-import { getSupabaseClient, sqlInt, sqlJson, sqlStr, type SupabaseClient } from "./supabase.ts";
+import { sqlInt, sqlJson, sqlStr, type SqlClient } from "./sql-client.ts";
 import {
   buildNotificationCandidates,
   classTestObjectRef,
@@ -381,7 +381,7 @@ export function validateNewSubscription(
   };
 }
 
-// --- The store (Supabase `alerts` schema) ------------------------------------
+// --- The store (Turso `alerts_*` tables) ------------------------------------
 
 interface PendingIncidentCursor {
   timestamp: string;
@@ -396,7 +396,7 @@ export class AlertsStore {
   private readonly deliveryCursor: { last: PendingIncidentCursor | null } = { last: null };
   private readonly escalationCursor: { last: PendingIncidentCursor | null } = { last: null };
 
-  constructor(private readonly db: SupabaseClient) {}
+  constructor(private readonly db: SqlClient) {}
 
   private async pendingBatch(
     eligibility: string,
@@ -786,7 +786,7 @@ export async function sendTestPush(
  * Lazy-init contract (success-only memoization): README "Lazy-initialization contract" (#3879).
  */
 export function createAlertsStoreGetter(
-  getClient: typeof getSupabaseClient = getTursoStoreClient,
+  getClient: () => Promise<SqlClient | null> = getTursoStoreClient,
 ): () => Promise<AlertsStore | null> {
   let storePromise: Promise<AlertsStore | null> | null = null;
 
@@ -807,7 +807,7 @@ export function createAlertsStoreGetter(
   };
 }
 
-/** The shared store; null when the Supabase path is unavailable. */
+/** The shared store; null when the Turso store client is unavailable. */
 export const getAlertsStore = createAlertsStoreGetter();
 
 // --- The engine ---------------------------------------------------------------

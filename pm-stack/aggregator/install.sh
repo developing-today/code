@@ -185,9 +185,9 @@ if [ "$CHANGED" -eq 1 ]; then
     echo "PM_AGG_ROADMAP_ANNOTATIONS_FILE=${STATE_DIR}/roadmap-annotations.json"
     # #6815: the four stores that used to be laptop-local files
     # (actions, activity-ingestion, usage snapshots, aa-last-good) are
-    # canonical in Supabase muse-dev2; the local files remain a
+    # canonical in Turso (src/turso-stores.ts); the local files remain a
     # rebuildable cache. PM_AGG_STORE_BACKEND=file is the rollback.
-    echo "PM_AGG_STORE_BACKEND=supabase"
+    echo "PM_AGG_STORE_BACKEND=turso"
     echo "PM_AGG_STORE_WRITER=pm-aggregator.service"
     echo "BWS_BIN=/run/current-system/sw/bin/bws"
     echo "BWS_ACCESS_TOKEN_FILE=${HOME}/.config/bws/access-token"

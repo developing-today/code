@@ -57,7 +57,6 @@ import { summarizeDns } from "../dns.ts";
 import {
   applyCloudflareExport,
   applyPaygSettlements,
-  applySupabaseExport,
   extractCharges,
   extractPaygLines,
   extractSaasServices,
@@ -65,7 +64,7 @@ import {
   extractUninstrumentedServices,
 } from "../saas-extract.ts";
 import { mergeChargeRows } from "../charges-collect.ts";
-import type { CloudflareExportDoc, SupabaseExportDoc } from "../saas-extract.ts";
+import type { CloudflareExportDoc } from "../saas-extract.ts";
 import { poolItemToGhItem } from "../projects.ts";
 import { createNeedsDrewSweeper, type NeedsDrewCensus } from "../needs-drew.ts";
 import { INITIAL_STANDING_AUTO, sanitizeTierItemExtensions, withUserFallbacks } from "../tier-items.ts";
@@ -919,7 +918,7 @@ export function liveSource(
     // reissue an undated delivery id that dedupe would discard.
     seenActivityIds?: (source: string) => Promise<readonly string[]> | readonly string[];
     /** #6815: usage-snapshot backend. Set only when
-     *  PM_AGG_STORE_BACKEND=supabase; otherwise the local snapshot
+     *  PM_AGG_STORE_BACKEND=turso; otherwise the local snapshot
      *  directory is the store (the dev/test and rollback path). */
     snapshotRemote?: SnapshotsRemote;
   },
@@ -1964,13 +1963,6 @@ export function liveSource(
               domainCount: feed.dns.entries.length,
             }
           : null;
-      // The Supabase export overlay applies to BOTH service sources:
-      // the collector's feed.saas cards are built with plain
-      // extractSaasServices, so without this the fresh export would be
-      // ignored exactly when the fleet collector is operating (#1050).
-      const supabaseExport = await readFile(cfg.supabaseExportFile, "utf8")
-        .then((text) => JSON.parse(text) as SupabaseExportDoc)
-        .catch(() => null);
       // Charges evidence + unmatched-charge flags (#3124): computed
       // once, before the branch. The feed's charge data is not a
       // byproduct of the saas section, so every return path below
@@ -2013,7 +2005,7 @@ export function liveSource(
           .then((text) => JSON.parse(text) as CloudflareExportDoc)
           .catch(() => null);
         const partial = {
-          services: applySupabaseExport(applyCloudflareExport(feed.saas, cfExport), supabaseExport),
+          services: applyCloudflareExport(feed.saas, cfExport),
           uninstrumentedServices,
           // #1056: feed lines are built by the collector without
           // settlements — reconcile them against local history here,
@@ -2055,7 +2047,7 @@ export function liveSource(
         // full-row equality would display it twice; automatic
         // evidence (the feed rows) takes precedence.
         const partial = {
-          services: applySupabaseExport(applyCloudflareExport(extractSaasServices(doc), cfExport), supabaseExport),
+          services: applyCloudflareExport(extractSaasServices(doc), cfExport),
           uninstrumentedServices,
           payg: extractPaygLines(doc, registryText, { settlements: Object.values(history).flat() }),
           charges: mergeChargeRows(feedCharges, extractCharges(doc, registryText)),
@@ -2277,7 +2269,7 @@ export function liveSource(
     },
     async aa(batch?: string | null): Promise<AaFeedSection | null> {
       // AA cost explorer: the section rides the fleet feed, read from
-      // Supabase ainventory by the collector. Its absent form is a real
+      // Turso ainventory tables by the collector. Its absent form is a real
       // section (the page renders the reason); a missing section means
       // the collector has not embedded one yet.
       const feed = await getFeed();

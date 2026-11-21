@@ -143,9 +143,9 @@ export interface FleetFeed {
    * Absent when the collector had no GitHub token or the census failed. */
   coverage?: RepoCensus[];
   /** AA cost explorer section: the ainventory (AA import) data read
-   * by the collector from Supabase, plus pool/catalog coverage computed
+   * by the collector from Turso, plus pool/catalog coverage computed
    * against the repo's opencode config. Present-but-absent
-   * ({status:"absent", reason}) when Supabase was unreachable — the
+   * ({status:"absent", reason}) when Turso was unreachable — the
    * section degrades, the feed never fails over it. */
   aa?: AaFeedSection;
   /** Optional collector outcomes. Older feeds have no metadata and keep

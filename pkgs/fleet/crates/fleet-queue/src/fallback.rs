@@ -2,7 +2,7 @@
 //! ordered 2026-11-06; tracking issue developing-today/code#6619's
 //! outage is the motivating incident).
 //!
-//! When the queue backend (queue-broker → Supabase PostgREST) is
+//! When the queue backend (queue-broker → Turso fleet-queue) is
 //! unreachable, the queue's workers starve: they cannot claim, and the
 //! fleet's work sits in GitHub issues doing nothing. Fallback mode
 //! moves the queue's coordination surface into the issues themselves,

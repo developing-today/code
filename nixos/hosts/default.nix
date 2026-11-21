@@ -147,8 +147,6 @@ in
         home-manager.users.user = {
           imports = [ ../home/laptop-backups.nix ];
           services.laptop-backups.enable = true;
-          # muse-dev2 deleted; preserve existing dumps, retire failed source backup.
-          services.laptop-backups.supabase.enable = false;
         };
       }
       {
@@ -222,21 +220,6 @@ in
             ../home/cloudflare-quota-export.nix
           ];
           services.cloudflare-quota-export.enable = true;
-        };
-      }
-      {
-        # Supabase -> Turso coord mirror (code#1723): the daily
-        # sync_agent_to_turso duty that moved to the laptop with
-        # the Tier-2 migration but was never scheduled (its
-        # watermark sat at 2026-10-28). Declared in this flake
-        # (nixos/home/supabase-turso-coord-mirror.nix) per Drew's
-        # all-laptop-services-in-nix rule. The identical hand
-        # units were installed 2026-11-11 ahead of the switch so
-        # the schedule was live; the switch replaces them with
-        # the store units below.
-        home-manager.users.user = {
-          imports = [ ../home/supabase-turso-coord-mirror.nix ];
-          services.supabase-turso-coord-mirror.enable = false; # source retired 2026-11-18
         };
       }
       {

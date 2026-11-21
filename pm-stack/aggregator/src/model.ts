@@ -880,8 +880,8 @@ export interface DnsSection {
 }
 
 // ---------------------------------------------------------------------------
-// AA cost explorer: the Artificial Analysis import data (Supabase
-// `ainventory`, latest import batch) as the collector embeds it in the
+// AA cost explorer: the Artificial Analysis import data (Turso
+// `ainventory_*`, latest import batch) as the collector embeds it in the
 // fleet feed. The figures are the import snapshot's — AA Intelligence
 // Index v4.3.2, Test_Runs snapshots of Sep–Oct 2026 — not a live AA pull;
 // the section's provenance says exactly which batch and files they are.
@@ -1226,7 +1226,7 @@ export interface AaSection {
   staleReason?: string;
 }
 
-/** The section's degraded form: the collector could not reach Supabase
+/** The section's degraded form: the collector could not reach Turso
  * (or the payload failed its check) and no last good payload exists
  * to fall back to (code#3332) — the page renders the reason, and the
  * feed never fails over it. */

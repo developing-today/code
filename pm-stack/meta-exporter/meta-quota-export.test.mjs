@@ -278,7 +278,7 @@ test("documents: page-not-ready is a distinct status/exit and recovery is record
 // so any symlinked invocation silently skipped main() and exited 0 —
 // the #2350 bug, restored by the #6333 re-home. The guard now resolves
 // symlinks on both sides (realpathSync, mirroring
-// supabase-quota-export.mjs / cloudflare-quota-export.mjs). Oracle: a run
+// cloudflare-quota-export.mjs). Oracle: a run
 // against an unreachable CDP port must produce the cdp-unavailable
 // failure document with exit 4, identically for direct and symlinked
 // invocation; a silent exit 0 is the counterexample.

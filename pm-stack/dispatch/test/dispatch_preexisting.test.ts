@@ -6,8 +6,7 @@
 //
 // The enqueue RPC dedupes on dedupe_key against ALL rows incl. terminal
 // ones and returns the old row as-is. These tests drive the server-level
-// orchestration (enqueueDispatchTask) with a stubbed queue — no network,
-// no Supabase.
+// orchestration (enqueueDispatchTask) with a stubbed queue — no network.
 import { describe, expect, test } from "bun:test";
 // src/server.ts loads config at import; the broker token file fixture keeps the queue unconfigured.
 // (#5120), so pin a fixture project before the dynamic import below.

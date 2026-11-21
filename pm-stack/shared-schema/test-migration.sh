@@ -46,7 +46,8 @@ psql_test() {
   docker exec -i "$container" psql -X -v ON_ERROR_STOP=1 -U postgres -d pm_actions_test "$@"
 }
 
-# Supabase's service_role carries BYPASSRLS; model that so the test proves
+# The migrations' service_role is a BYPASSRLS role (the hosted-Postgres
+# convention the DDL was written for); model that so the test proves
 # the role can actually operate under the RLS model, not just hold grants.
 psql_test -c 'CREATE ROLE service_role BYPASSRLS LOGIN;'
 psql_test <"$up"
@@ -82,8 +83,8 @@ if [[ $privileges != "true:true:true:false:true" ]]; then
 fi
 echo "ok - RLS and service_role privileges"
 
-# The service_role must actually be able to operate under RLS (Supabase's
-# service_role carries BYPASSRLS); a role that only holds grants but is
+# The service_role must actually be able to operate under RLS (it is
+# modelled as BYPASSRLS above); a role that only holds grants but is
 # blocked by RLS would pass the privilege probe above while being
 # unusable in production.
 svc_hash="$(printf '%064d' 7)"

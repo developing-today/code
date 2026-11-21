@@ -3,8 +3,6 @@
 // this process at all (#9028): dispatch talks to the fleet queue broker
 // with the broker token, which stays in its token file
 // (~/.config/queue-broker/token) and is read at client construction.
-// The previous config required SUPABASE_URL and carried the Supabase
-// service-role key — the direct-PostgREST producer that #9028 removed.
 import { homedir } from "node:os";
 import { join } from "node:path";
 

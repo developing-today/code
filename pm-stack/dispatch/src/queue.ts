@@ -5,12 +5,7 @@
 // laptop transport reads). The broker is backed by the live Turso
 // queue store and validates every packet on /enqueue.
 //
-// This replaces the direct PostgREST producer this module used to be:
-// pm-dispatch held the Supabase service-role key and wrote task rows
-// (enqueue RPC + claim PATCH) straight into the legacy Supabase store,
-// bypassing the packet validator and the broker, while the fleet's
-// live queue moved to Turso — its writes landed where no lane claims.
-// There is no service-role key in this process anymore, and no generic
+// No database credential lives in this process and there is no generic
 // row PATCH: the broker's verbs are the whole surface —
 //   enqueue    -> POST /enqueue    {packet, queue}   (validated)
 //   claimTask  -> POST /claim-flow {task_id, worker, queue, session_id,

@@ -1,6 +1,6 @@
-// #6815: the four aggregator stores move to Supabase muse-dev2 behind
+// #6815: the four aggregator stores move to a remote store (Turso) behind
 // PM_AGG_STORE_BACKEND. These tests pin the one-backend-at-a-time
-// contract: in supabase mode the store reads/writes only its remote and
+// contract: in turso mode the store reads/writes only its remote and
 // creates no local canonical file; in file mode no remote is touched.
 //
 // The fakes are the oracles: each implements the store's remote
@@ -25,13 +25,13 @@ import { AA_LAST_GOOD_DOCUMENT, parseStoreBackend } from "../src/store-backend.t
 import {
   actionFromRow,
   actionRowValues,
-  createSupabaseActionsRemote,
-  createSupabaseDocumentRemote,
-  createSupabaseSnapshotsRemote,
+  createTursoActionsRemote,
+  createTursoDocumentRemote,
+  createTursoSnapshotsRemote,
   snapshotFromRow,
   snapshotRowValues,
 } from "../src/remote-stores.ts";
-import type { SupabaseClient } from "../src/supabase.ts";
+import type { SqlClient } from "../src/sql-client.ts";
 
 const tmp = (label: string): string => mkdtempSync(join(tmpdir(), `agg-stores-${label}-`));
 
@@ -129,9 +129,15 @@ describe("PM_AGG_STORE_BACKEND parsing", () => {
     expect(parseStoreBackend({})).toBe("file");
     expect(parseStoreBackend({ PM_AGG_STORE_BACKEND: "  " })).toBe("file");
     expect(parseStoreBackend({ PM_AGG_STORE_BACKEND: "file" })).toBe("file");
-    expect(parseStoreBackend({ PM_AGG_STORE_BACKEND: "supabase" })).toBe("supabase");
+    expect(parseStoreBackend({ PM_AGG_STORE_BACKEND: "turso" })).toBe("turso");
     expect(() => parseStoreBackend({ PM_AGG_STORE_BACKEND: "postgres" })).toThrow(/PM_AGG_STORE_BACKEND/);
-    expect(() => parseStoreBackend({ PM_AGG_STORE_BACKEND: "SUPABASE" })).toThrow(/PM_AGG_STORE_BACKEND/);
+    expect(() => parseStoreBackend({ PM_AGG_STORE_BACKEND: "TURSO" })).toThrow(/PM_AGG_STORE_BACKEND/);
+  });
+
+  test("the retired supabase backend fails loudly, naming the valid values", () => {
+    expect(() => parseStoreBackend({ PM_AGG_STORE_BACKEND: "supabase" })).toThrow(
+      'Invalid PM_AGG_STORE_BACKEND="supabase"; expected "file" or "turso"',
+    );
   });
 });
 
@@ -278,7 +284,7 @@ describe("empty local state dir boots from the remote (#6815 acceptance)", () =>
 
 function recordingClient(responder: (sql: string) => unknown[] = () => []): {
   seen: string[];
-  client: SupabaseClient;
+  client: SqlClient;
 } {
   const seen: string[] = [];
   return {
@@ -293,7 +299,7 @@ function recordingClient(responder: (sql: string) => unknown[] = () => []): {
   };
 }
 
-describe("Supabase row mapping", () => {
+describe("remote store row mapping", () => {
   test("action row -> DashAction -> row values preserves the #3142 contract", () => {
     const row = {
       id: "da-1",
@@ -359,7 +365,7 @@ describe("Supabase row mapping", () => {
 
   test("actions remote orders inserts parent-first and upserts by id", async () => {
     const rec = recordingClient(() => []);
-    const remote = createSupabaseActionsRemote(async () => rec.client);
+    const remote = createTursoActionsRemote(async () => rec.client);
     const child: DashAction = {
       id: "da-child",
       clientToken: "ct-2-abcdefgh",
@@ -389,22 +395,22 @@ describe("Supabase row mapping", () => {
 
   test("snapshots remote inserts with on-conflict-do-nothing and counts returned rows", async () => {
     const rec = recordingClient(() => [{ snapshot_key: "k" }]);
-    const remote = createSupabaseSnapshotsRemote(async () => rec.client);
+    const remote = createTursoSnapshotsRemote(async () => rec.client);
     expect(await remote.append([snapshot()])).toBe(1);
     expect(rec.seen[0]).toContain("on conflict (snapshot_key) do nothing returning snapshot_key");
   });
 
   test("document remote upserts the aa-last-good document with the writer recorded", async () => {
     const rec = recordingClient((sql) => (sql.startsWith("select") ? [{ version: 1, document: { batch: "b" } }] : []));
-    const remote = createSupabaseDocumentRemote(async () => rec.client, "pm-aggregator-migrate");
+    const remote = createTursoDocumentRemote(async () => rec.client, "pm-aggregator-migrate");
     expect(await remote.load(AA_LAST_GOOD_DOCUMENT)).toEqual({ version: 1, document: { batch: "b" } });
     await remote.save(AA_LAST_GOOD_DOCUMENT, 1, { batch: "b" });
     expect(rec.seen[1]).toContain("on conflict (store) do update");
     expect(rec.seen[1]).toContain("'pm-aggregator-migrate'");
   });
 
-  test("supabase mode without a client fails closed instead of using a local file", async () => {
-    const remote = createSupabaseActionsRemote(async () => null);
+  test("turso mode without a client fails closed instead of using a local file", async () => {
+    const remote = createTursoActionsRemote(async () => null);
     await expect(remote.loadAll()).rejects.toThrow(/refusing to fall back/);
   });
 });

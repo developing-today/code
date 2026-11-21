@@ -2,10 +2,10 @@ import { test, expect } from "bun:test";
 import { Database } from "bun:sqlite";
 import { storeStatement, decodeStoreRow, createTursoStoreClient } from "../src/turso-stores.ts";
 import {
-  createSupabaseActionsRemote,
-  createSupabaseActivityRemote,
-  createSupabaseDocumentRemote,
-  createSupabaseSnapshotsRemote,
+  createTursoActionsRemote,
+  createTursoActivityRemote,
+  createTursoDocumentRemote,
+  createTursoSnapshotsRemote,
 } from "../src/remote-stores.ts";
 import { AlertsStore } from "../src/alerts.ts";
 
@@ -37,8 +37,8 @@ test("activity arrays and document JSON round trip", async () => {
     create table agg_store_documents(store text primary key, version integer, document text, writer text, updated_at text);`);
   const c = localClient(db),
     get = async () => c;
-  const activity = createSupabaseActivityRemote(get);
-  const doc = createSupabaseDocumentRemote(get);
+  const activity = createTursoActivityRemote(get);
+  const doc = createTursoDocumentRemote(get);
   const value = {
     version: 1 as const,
     checkpoints: {},
@@ -111,7 +111,7 @@ test("snapshots preserve numeric and range JSON values and replay dedupes", asyn
     `create table agg_usage_snapshots(snapshot_key text primary key,ts text,service_id text,metric_id text,unit text,source text,value text,limit_value real,resets_at text,observed_by text)`,
   );
   const c = localClient(db),
-    store = createSupabaseSnapshotsRemote(async () => c);
+    store = createTursoSnapshotsRemote(async () => c);
   const base = {
     ts: "2026-11-18T00:00:00.000Z",
     serviceId: "service",
@@ -146,7 +146,7 @@ test("actions JSON and self references round trip with real FK constraints", asy
   const db = new Database(":memory:");
   db.exec(`pragma foreign_keys=on;
  create table agg_actions(id text primary key,client_token text,kind text,verb text,object_ref text,target_ref text,session_id text,session_source text,payload text,author text,created_at text,state text,applied_at text,applied_by_run text,result_note text,supersedes_action_id text references agg_actions(id),duplicate_of_action_id text references agg_actions(id));`);
-  const store = createSupabaseActionsRemote(async () => localClient(db));
+  const store = createTursoActionsRemote(async () => localClient(db));
   const base = {
     id: "one",
     kind: "task",
