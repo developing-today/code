@@ -520,7 +520,12 @@ def find_open_incident(target):
                     continue
                 if record.get("state") == "down" and record.get("incidentId"):
                     open_by_id[record["incidentId"]] = record
-                elif record.get("state") == "up" and record.get("recoveryOf"):
+                elif (record.get("state") == "up" and record.get("recoveryOf")
+                      and record.get("recoveryDelivered", True)):
+                    # A recovery closes its outage only once the intake
+                    # took it; an undelivered one leaves the outage open
+                    # so the next hook run posts the recovery again.
+                    # Records written before this field count as delivered.
                     open_by_id.pop(record["recoveryOf"], None)
     except OSError:
         return None
@@ -579,7 +584,12 @@ def main(argv):
     # recorded as audit-only (no throat post) to keep noise low.
     throat_result = {"posted": False, "reason": "transient/not-posted"}
     stored_path = None
-    if state in ("down", "up"):
+    if state == "up" and recovery_of:
+        # Post first, then record whether the intake took the recovery.
+        throat_result = post_to_throat(record, deadline=deadline)
+        record["recoveryDelivered"] = bool(throat_result.get("posted"))
+        stored_path = append_incident(record)
+    elif state in ("down", "up"):
         stored_path = append_incident(record)
         throat_result = post_to_throat(record, deadline=deadline)
 

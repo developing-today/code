@@ -138,6 +138,31 @@ def test_recovery_links_to_open_down_incident():
     assert records[-1]["recoveryOf"] == "down-123"
 
 
+def test_undelivered_recovery_is_posted_again_on_the_next_run():
+    with tempfile.TemporaryDirectory() as td:
+        incident_file = Path(td) / "incidents.jsonl"
+        incident_file.write_text(json.dumps({
+            "target": "opencode-working", "state": "down", "incidentId": "down-123",
+            "key": "health-hook:opencode-working:down-123",
+        }) + "\n")
+        env = mock.patch.dict(os.environ, {"PM_HEALTH_HOOKS_INCIDENT_FILE": str(incident_file)})
+        probe = mock.patch.object(R, "probe_opencode", return_value=("transient", "probe recovered", {}))
+        with env, probe, mock.patch.object(R, "post_to_throat", return_value={"posted": False, "reason": "HTTP 503"}):
+            with redirect_stdout(StringIO()):
+                assert R.main(["--target", "opencode-working"]) == 0
+            assert R.find_open_incident("opencode-working")["incidentId"] == "down-123"
+        with env, probe, mock.patch.object(R, "post_to_throat", return_value={"posted": True}) as post:
+            stdout = StringIO()
+            with redirect_stdout(stdout):
+                assert R.main(["--target", "opencode-working"]) == 0
+            assert R.find_open_incident("opencode-working") is None
+        out = json.loads(stdout.getvalue())
+        records = [json.loads(line) for line in incident_file.read_text().splitlines()]
+    assert out["state"] == "up"
+    assert post.call_args.args[0]["key"] == "health-hook:opencode-working:down-123"
+    assert [r.get("recoveryDelivered") for r in records] == [None, False, True]
+
+
 def test_pm_stack_down_uses_supported_critical_severity():
     with tempfile.TemporaryDirectory() as td:
         incident_file = Path(td) / "incidents.jsonl"
