@@ -330,3 +330,44 @@ test("a full registry refuses new clients instead of growing", async () => {
   const res = await call("/register", { method: "POST", body: JSON.stringify({ redirect_uris: [REDIRECT] }) });
   assert.equal(res.status, 429);
 });
+
+test("the approval form works when the browser sends Origin: null", async () => {
+  const { call } = harness();
+  const client = await registerClient(call, { token_endpoint_auth_method: "none" });
+  const page = await call(authorizeQuery(client.client_id));
+  assert.equal(page.headers.get("referrer-policy"), "same-origin");
+  const req = hiddenReq(await page.text());
+  const post = (headers) =>
+    call("/authorize", { ...form({ req, action: "allow", secret: TOKEN }), headers: { "content-type": "application/x-www-form-urlencoded", ...headers } });
+  assert.equal((await post({ origin: "null", "sec-fetch-site": "same-origin" })).status, 302);
+  assert.equal((await post({ "sec-fetch-site": "same-origin" })).status, 302);
+  assert.equal((await post({ origin: "null" })).status, 403);
+  assert.equal((await post({ origin: "null", "sec-fetch-site": "cross-site" })).status, 403);
+  assert.equal((await post({ origin: "https://evil.example", "sec-fetch-site": "same-origin" })).status, 403);
+});
+
+test("rotating the ChatGPT token revokes ChatGPT grants, not Claude's", async () => {
+  const { call, store } = harness();
+  const gpt = await signIn(call, { secret: GPT });
+  const claude = await signIn(call, { secret: TOKEN });
+  const rotated = { ...env, CHATGPT_TOKEN: "h".repeat(20) + "0123456789abcdefXYZ_-" };
+  const call2 = (path, init) => route(new Request(ORIGIN + path, init), rotated, () => store);
+  assert.equal((await mcp(call2, "/", gpt.tokens.access_token, "ping")).status, 401);
+  const refresh = await call2("/token", form({ grant_type: "refresh_token", refresh_token: gpt.tokens.refresh_token, client_id: gpt.client.client_id }));
+  assert.equal(refresh.status, 400);
+  assert.equal((await mcp(call2, "/", claude.tokens.access_token, "ping")).status, 200);
+  // Unset entirely: ChatGPT grants stop too.
+  const { CHATGPT_TOKEN, ...none } = env;
+  const call3 = (path, init) => route(new Request(ORIGIN + path, init), none, () => store);
+  assert.equal((await mcp(call3, "/", gpt.tokens.access_token, "ping")).status, 401);
+});
+
+test("a failed token request doesn't mark a client used", async () => {
+  const { call, store } = harness();
+  const client = await registerClient(call);
+  const bad = await call("/token", form({ grant_type: "refresh_token", refresh_token: "x", client_id: client.client_id }));
+  assert.equal(bad.status, 401);
+  assert.equal(store.clients.get(client.client_id).used, null);
+  const { client: used } = await signIn(call, { secret: TOKEN });
+  assert.notEqual(store.clients.get(used.client_id).used, null);
+});

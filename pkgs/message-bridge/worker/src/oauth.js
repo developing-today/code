@@ -107,6 +107,22 @@ export async function unseal(env, value, typ) {
 
 const clientSecretFor = (env, clientId) => mac(env, `client-secret:${clientId}`);
 
+/**
+ * Ties a grant to the credential that approved it: ChatGPT grants carry
+ * a digest of CHATGPT_TOKEN, so rotating that token revokes them (Claude
+ * grants are already tied to ACCESS_TOKEN through the signing key).
+ */
+async function channelBinding(env, channel) {
+  if (channel !== "chatgpt") return "";
+  if (!chatgptConfigured(env)) return null;
+  return (await mac(env, `chatgpt-binding:${env.CHATGPT_TOKEN}`)).slice(0, 16);
+}
+
+const bindingHolds = async (env, payload) => {
+  const want = await channelBinding(env, payload.ch);
+  return want !== null && (payload.k ?? "") === want;
+};
+
 async function pkceChallenge(verifier) {
   return b64u(new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(verifier))));
 }
@@ -247,7 +263,9 @@ function htmlPage(title, inner, status = 200, formTarget = null) {
       headers: {
         "content-type": "text/html; charset=utf-8",
         "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; form-action ${formAction}; frame-ancestors 'none'; base-uri 'none'`,
-        "referrer-policy": "no-referrer",
+        // Not no-referrer: with it, browsers send "Origin: null" on the
+        // approval form's POST, which the same-origin check refuses.
+        "referrer-policy": "same-origin",
         "x-robots-tag": "noindex, nofollow",
         ...NO_STORE,
       },
@@ -341,9 +359,20 @@ function pastedToken(text) {
   return m ? m[1] : s;
 }
 
+/**
+ * True for a post from this origin: Origin matches, or a browser that
+ * withheld it ("null" or absent) says Sec-Fetch-Site: same-origin, a
+ * header pages can't set.
+ */
+function sameOriginPost(request, url) {
+  const origin = request.headers.get("origin");
+  if (origin === url.origin) return true;
+  return (origin === null || origin === "null") && request.headers.get("sec-fetch-site") === "same-origin";
+}
+
 async function authorizePost(request, env, url, store) {
   // Same-origin form posts only (the owner cookie is SameSite=Lax too).
-  if (request.headers.get("origin") !== url.origin) return errorPage("This form can only be sent from its own page.", 403);
+  if (!sameOriginPost(request, url)) return errorPage("This form can only be sent from its own page.", 403);
   const text = await request.text();
   if (text.length > MAX_BODY) return errorPage("Request too large.", 413);
   const form = new URLSearchParams(text);
@@ -390,6 +419,7 @@ async function authorizePost(request, env, url, store) {
     r: uri,
     cc: req.cc,
     ch: channel,
+    k: (await channelBinding(env, channel)) || undefined,
     exp: nowSec() + CODE_TTL,
   });
   await note(store, "approved", { ...who, channel });
@@ -401,12 +431,13 @@ async function authorizePost(request, env, url, store) {
 // --- token -----------------------------------------------------------
 
 async function issueTokens(env, clientId, channel, fam, jti, exp) {
+  const k = (await channelBinding(env, channel)) || undefined;
   return jsonRes(
     {
-      access_token: await seal(env, { typ: "at", ch: channel, exp: nowSec() + ACCESS_TTL }),
+      access_token: await seal(env, { typ: "at", ch: channel, k, exp: nowSec() + ACCESS_TTL }),
       token_type: "Bearer",
       expires_in: ACCESS_TTL,
-      refresh_token: await seal(env, { typ: "rt", c: clientId, ch: channel, fam, jti, exp }),
+      refresh_token: await seal(env, { typ: "rt", c: clientId, ch: channel, k, fam, jti, exp }),
       scope: SCOPE,
     },
     200,
@@ -446,14 +477,22 @@ async function token(request, env, store) {
     await note(store, "token_refused", { ...who, error: description });
     return oauthError(error, description, status);
   };
-  const client = typeof clientId === "string" && CLIENT_ID.test(clientId) ? await store.oauthClientGet(clientId, true) : null;
+  const client = typeof clientId === "string" && CLIENT_ID.test(clientId) ? await store.oauthClientGet(clientId) : null;
   if (!client) return refuse("invalid_client", "unknown client", 401);
+  // Only a grant that succeeds marks the client used (and keeps it past
+  // the one-day cleanup of never-used registrations).
+  const issue = async (channel, fam, jti, exp) => {
+    await store.oauthClientGet(clientId, true);
+    return issueTokens(env, clientId, channel, fam, jti, exp);
+  };
   if (client.m !== "none" && !safeEqual(secret ?? "", await clientSecretFor(env, clientId))) {
     return refuse("invalid_client", "bad client credentials", 401);
   }
   if (grant === "authorization_code") {
     const code = await unseal(env, form.get("code"), "code");
-    if (!code || code.c !== clientId) return refuse("invalid_grant", "the code is invalid or expired");
+    if (!code || code.c !== clientId || !(await bindingHolds(env, code))) {
+      return refuse("invalid_grant", "the code is invalid or expired");
+    }
     const redirectUri = form.get("redirect_uri");
     if (redirectUri && redirectUri !== code.r) return refuse("invalid_grant", "redirect_uri doesn't match");
     const verifier = form.get("code_verifier") ?? "";
@@ -468,11 +507,11 @@ async function token(request, env, store) {
     const exp = nowSec() + REFRESH_TTL;
     await store.oauthFamilyStart(fam, jti, exp);
     await note(store, "token_issued", { ...who, channel: code.ch });
-    return issueTokens(env, clientId, code.ch, fam, jti, exp);
+    return issue(code.ch, fam, jti, exp);
   }
   if (grant === "refresh_token") {
     const rt = await unseal(env, form.get("refresh_token"), "rt");
-    if (!rt || rt.c !== clientId || !rt.fam || !rt.jti) {
+    if (!rt || rt.c !== clientId || !rt.fam || !rt.jti || !(await bindingHolds(env, rt))) {
       return refuse("invalid_grant", "the refresh token is invalid or expired");
     }
     const next = randomId();
@@ -481,7 +520,7 @@ async function token(request, env, store) {
     if (outcome !== "ok") {
       return refuse("invalid_grant", outcome === "replay" ? "the refresh token was already used; sign in again" : "the refresh token is invalid or expired");
     }
-    return issueTokens(env, clientId, rt.ch, rt.fam, next, exp);
+    return issue(rt.ch, rt.fam, next, exp);
   }
   return refuse("unsupported_grant_type", "use authorization_code or refresh_token");
 }
@@ -494,8 +533,7 @@ export async function bearerChannel(request, env) {
   const m = (request.headers.get("authorization") ?? "").match(/^Bearer\s+(\S+)$/i);
   if (!m) return null;
   const at = await unseal(env, m[1], "at");
-  if (!at) return null;
-  if (at.ch === "chatgpt" && !chatgptConfigured(env)) return null;
+  if (!at || !(await bindingHolds(env, at))) return null;
   return at.ch === "chatgpt" ? "chatgpt" : "claude";
 }
 
