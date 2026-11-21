@@ -281,11 +281,6 @@ fn classify_failure(output: &str) -> FailureClass {
         || lower.contains("this endpoint requires you to be authenticated")
         || lower.contains("bad credentials")
         || lower.contains("http 401")
-        // GraphQL answers a node this identity cannot see as if it did
-        // not exist ("Could not resolve to a node with the global id",
-        // "Could not resolve to a ProjectV2 ...", "... to an
-        // Organization ..."), with no permission wording (#12154).
-        || lower.contains("could not resolve to a")
     {
         return FailureClass::Permission;
     }
@@ -422,6 +417,16 @@ fn is_graphql_read(args: &[String]) -> bool {
         return false;
     };
     if query.starts_with('@') {
+        return false;
+    }
+    // A document can hold several operations and `operationName` picks
+    // one, so a mutation or subscription anywhere in it makes the call
+    // a write. The word scan is coarse on purpose: a `mutation` inside
+    // a string or comment only errs toward treating a read as a write.
+    let has_write_operation = query
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .any(|word| word == "mutation" || word == "subscription");
+    if has_write_operation {
         return false;
     }
     let mut rest = query.trim_start();
@@ -1527,18 +1532,6 @@ mod tests {
             FailureClass::Permission
         );
         assert_eq!(
-            classify_failure(
-                "GraphQL: Could not resolve to a node with the global id of 'PVT_x'. (node)"
-            ),
-            FailureClass::Permission
-        );
-        assert_eq!(
-            classify_failure(
-                "GraphQL: Could not resolve to an Organization with the login of 'x'."
-            ),
-            FailureClass::Permission
-        );
-        assert_eq!(
             classify_failure("gh: Not Found (HTTP 404)"),
             FailureClass::Other
         );
@@ -1607,6 +1600,22 @@ mod tests {
             "query=mutation{addStar(input:{starrableId:\"x\"}){clientMutationId}}"
         ]));
         assert!(!read(&["api", "graphql", "-f", "query= mutation M { x }"]));
+        // operationName can select a mutation from a document that opens
+        // with a query.
+        assert!(!read(&[
+            "api",
+            "graphql",
+            "-f",
+            "query=query Q { viewer { login } } mutation M { x }",
+            "-f",
+            "operationName=M"
+        ]));
+        assert!(!read(&[
+            "api",
+            "graphql",
+            "-f",
+            "query={ a } subscription S { b }"
+        ]));
         assert!(!read(&["api", "graphql", "-f", "query=queryish { x }"]));
         assert!(!read(&["api", "graphql", "-F", "query=@board.graphql"]));
         assert!(!read(&["api", "graphql", "--input", "body.json"]));
