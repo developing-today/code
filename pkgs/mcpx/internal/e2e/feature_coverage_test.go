@@ -39,7 +39,12 @@ func recordFeature(t *testing.T, kind, name string) {
 	recordFeatureForTest(t.Name(), kind, name)
 }
 
-var featureLedgerPersistMu sync.Mutex
+var (
+	featureLedgerPersistMu sync.Mutex
+	// lastFeatureLedgerPath is the path the most recent successful
+	// checkpoint wrote, guarded by featureLedgerPersistMu.
+	lastFeatureLedgerPath string
+)
 
 func featureCoverageLedgerPath() string {
 	path := os.Getenv(featureLedgerEnv)
@@ -58,7 +63,22 @@ func featureCoverageLedgerPath() string {
 func persistFeatureCoverage() {
 	featureLedgerPersistMu.Lock()
 	defer featureLedgerPersistMu.Unlock()
-	_ = writeFeatureCoverageLedger(featureCoverageLedgerPath(), featureCoverageSnapshot())
+	path := featureCoverageLedgerPath()
+	if err := writeFeatureCoverageLedger(path, featureCoverageSnapshot()); err != nil {
+		return
+	}
+	lastFeatureLedgerPath = path
+}
+
+// featureLedgerNeedsWrite reports whether the ledger path in effect now
+// has not yet received a checkpoint. Rows are global to the test binary,
+// but the ledger path can change between runs (a fresh t.TempDir() per
+// -count iteration, or a different MCPX_FEATURE_COVERAGE_LEDGER): a row
+// already seen in the map must still be written to the new path.
+func featureLedgerNeedsWrite() bool {
+	featureLedgerPersistMu.Lock()
+	defer featureLedgerPersistMu.Unlock()
+	return lastFeatureLedgerPath != featureCoverageLedgerPath()
 }
 
 func recordFeatureForTest(test, kind, name string) {
@@ -70,7 +90,7 @@ func recordFeatureForTest(test, kind, name string) {
 	_, seen := featureCoverage.rows[row]
 	featureCoverage.rows[row] = struct{}{}
 	featureCoverage.Unlock()
-	if !seen {
+	if !seen || featureLedgerNeedsWrite() {
 		persistFeatureCoverage()
 	}
 }

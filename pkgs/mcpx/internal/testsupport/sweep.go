@@ -123,7 +123,18 @@ const leftoverPollInterval = 100 * time.Millisecond
 // process still there after the budget is a leak and is reported for
 // the caller (the e2e TestMain) to fail on.
 func SweepBuildTempDirs() (removed []string, leftover []LeftoverProcess) {
-	dirs := BuildTempDirs()
+	return sweepBuildTempDirs(BuildTempDirs())
+}
+
+// sweepBuildTempDirs applies the sweep to exactly dirs. SweepBuildTempDirs
+// is the suite-wide call over every registered dir, made once the tests
+// have all returned. This package's own sweep tests use the scoped form:
+// calling the suite-wide sweep mid-run would also remove the fixture
+// builders' cached temp dirs (the once-built mcpx and fakemcp binaries
+// live in registered dirs), so later tests in the same binary would fail
+// to exec a binary this test had swept out from under them under
+// -count=3.
+func sweepBuildTempDirs(dirs []string) (removed []string, leftover []LeftoverProcess) {
 	leftover = processesExecutingFrom(dirs)
 	for deadline := time.Now().Add(leftoverGracePeriod); len(leftover) > 0 && time.Now().Before(deadline); {
 		time.Sleep(leftoverPollInterval)
