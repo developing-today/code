@@ -2501,5 +2501,31 @@ mod tests {
         )
         .unwrap();
         assert!(SignedReplicationEnvelope::sign(env, &key).is_none());
+        // 9. Claimed journal header version disagreeing with the
+        //    payload's own Created header (#12218): both versions are
+        //    supported, so only the header-agreement rule can refuse
+        //    it. The control signs the same claim over a payload whose
+        //    header matches it, proving the refusal is the mismatch
+        //    and not the claim itself.
+        let control = ReplicationEnvelope::snapshot(
+            WORLD,
+            source,
+            2,
+            NONCE,
+            [0; 32],
+            entry_payload_with_version(2),
+        )
+        .unwrap();
+        assert!(SignedReplicationEnvelope::sign(control, &key).is_some());
+        let env = ReplicationEnvelope::snapshot(
+            WORLD,
+            source,
+            2,
+            NONCE,
+            [0; 32],
+            payload.clone(),
+        )
+        .unwrap();
+        assert!(SignedReplicationEnvelope::sign(env, &key).is_none());
     }
 }
