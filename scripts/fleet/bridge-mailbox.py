@@ -13,13 +13,17 @@ the sandbox install until ~/tools/fleet is reprovisioned.
     bridge-mailbox.py ack --agent muse-3 --up-to 42
 
 The fleet token is resolved by name, never passed on the command line:
-`fleet secrets get message-bridge.fleet-token` (broker first, then bws).
+`fleet secrets get message-bridge.fleet-token` (broker first, then bws),
+or derived from `message-bridge.access-token` when that one is missing.
 Agent and groups default to $FLEET_AGENT / $FLEET_AGENT_GROUPS, the URL to
 $FLEET_BRIDGE_URL or https://bridge.security.cab. Output is the bridge's
 JSON. Exit: 0 ok, 2 usage, 3 transport or token, 4 the bridge refused.
 """
 
 import argparse
+import base64
+import hashlib
+import hmac
 import json
 import os
 import subprocess
@@ -30,6 +34,8 @@ import urllib.parse
 import urllib.request
 
 TOKEN_NAME = "message-bridge.fleet-token"
+OWNER_TOKEN_NAME = "message-bridge.access-token"
+FLEET_TOKEN_LABEL = b"message-bridge/fleet-token/v1"
 DEFAULT_URL = "https://bridge.security.cab"
 
 
@@ -40,21 +46,37 @@ def fail(code, msg, token=None):
     sys.exit(code)
 
 
-def fleet_token():
+def secret(name):
+    """A secret's value by name through `fleet secrets get`, or None, plus the error text."""
     try:
         out = subprocess.run(
-            ["fleet", "secrets", "get", TOKEN_NAME],
+            ["fleet", "secrets", "get", name],
             capture_output=True,
             text=True,
             timeout=60,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as e:
-        fail(3, f"could not run 'fleet secrets get {TOKEN_NAME}': {e}")
-    token = out.stdout.strip()
-    if out.returncode != 0 or not token:
-        fail(3, f"fleet token '{TOKEN_NAME}' unresolved: {out.stderr.strip()[:300]}")
-    return token
+        return None, f"could not run 'fleet secrets get {name}': {e}"
+    value = out.stdout.strip()
+    if out.returncode != 0 or not value:
+        return None, out.stderr.strip()[:300]
+    return value, ""
+
+
+def fleet_token():
+    """The fleet token, or derived from the owner token as the bridge does."""
+    token, err = secret(TOKEN_NAME)
+    if token:
+        return token
+    owner, _ = secret(OWNER_TOKEN_NAME)
+    if owner:
+        mac = hmac.new(owner.encode(), FLEET_TOKEN_LABEL, hashlib.sha256).digest()
+        return base64.urlsafe_b64encode(mac).decode().rstrip("=")
+    fail(
+        3,
+        f"fleet token '{TOKEN_NAME}' unresolved ({err}) and no '{OWNER_TOKEN_NAME}' to derive it from",
+    )
 
 
 def call(base, token, method, path, body=None):
