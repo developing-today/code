@@ -60,6 +60,7 @@
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
+use anyhow::{Context, Result};
 use futures_lite::StreamExt;
 use iroh::EndpointAddr;
 use iroh::endpoint::{Connection, Endpoint};
@@ -1307,9 +1308,14 @@ impl MetaProtocol {
                     message: e.to_string(),
                 },
             },
-            MetaRequest::Find { query, prefer_name } => MetaResponse::Find {
-                matches: self.find(&query, prefer_name).await,
-            },
+            MetaRequest::Find { query, prefer_name } => {
+                match self.find(&query, prefer_name).await {
+                    Ok(matches) => MetaResponse::Find { matches },
+                    Err(e) => MetaResponse::Error {
+                        message: format!("failed to list file tags for Find: {e:#}"),
+                    },
+                }
+            }
             MetaRequest::SetTag { key, .. } if is_reserved_archive_reference_key(&key) => {
                 // These keys are FileOps-owned references, not user metadata.
                 // Allowing protocol peers to write them lets a later delete
@@ -1501,28 +1507,49 @@ impl MetaProtocol {
     }
 
     /// Rank blob names and hashes against `query`.
-    async fn find(&self, query: &str, prefer_name: bool) -> Vec<FindMatch> {
+    async fn find(&self, query: &str, prefer_name: bool) -> Result<Vec<FindMatch>> {
+        Self::find_in_tag_list(
+            self.store
+                .tags()
+                .list()
+                .await
+                .map_err(anyhow::Error::from),
+            query,
+            prefer_name,
+        )
+        .await
+    }
+
+    async fn find_in_tag_list<S, E>(
+        list: Result<S>,
+        query: &str,
+        prefer_name: bool,
+    ) -> Result<Vec<FindMatch>>
+    where
+        S: futures_lite::Stream<Item = std::result::Result<TagInfo, E>> + Unpin,
+        E: std::fmt::Display,
+    {
+        let mut list = list.context("starting blob tag listing")?;
         let mut matches = Vec::new();
         let query_lower = query.to_lowercase();
-        if let Ok(mut list) = self.store.tags().list().await {
-            while let Some(Ok(item)) = list.next().await {
-                let name = String::from_utf8_lossy(item.name.as_ref()).into_owned();
-                let hash_str = item.hash.to_string();
-                if let Some(kind) = match_kind(&name.to_lowercase(), &query_lower) {
-                    matches.push(FindMatch {
-                        hash: item.hash,
-                        name,
-                        kind,
-                        is_hash_match: false,
-                    });
-                } else if let Some(kind) = match_kind(&hash_str, &query_lower) {
-                    matches.push(FindMatch {
-                        hash: item.hash,
-                        name,
-                        kind,
-                        is_hash_match: true,
-                    });
-                }
+        while let Some(item) = list.next().await {
+            let item = item.map_err(|e| anyhow::anyhow!("reading blob tag listing: {e}"))?;
+            let name = String::from_utf8_lossy(item.name.as_ref()).into_owned();
+            let hash_str = item.hash.to_string();
+            if let Some(kind) = match_kind(&name.to_lowercase(), &query_lower) {
+                matches.push(FindMatch {
+                    hash: item.hash,
+                    name,
+                    kind,
+                    is_hash_match: false,
+                });
+            } else if let Some(kind) = match_kind(&hash_str, &query_lower) {
+                matches.push(FindMatch {
+                    hash: item.hash,
+                    name,
+                    kind,
+                    is_hash_match: true,
+                });
             }
         }
         // Best kind first; ties prefer name matches (`prefer_name`) or hash matches.
@@ -1535,7 +1562,7 @@ impl MetaProtocol {
                 }
             })
         });
-        matches
+        Ok(matches)
     }
 
     pub async fn accept_connection(
@@ -2621,5 +2648,71 @@ mod publication_control_tests {
             MetaResponse::Publications { items } => assert!(items.is_empty()),
             other => panic!("expected Publications, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod find_storage_error_tests {
+    use super::MetaProtocol;
+
+    #[tokio::test]
+    async fn find_returns_tag_listing_setup_errors() {
+        type EmptyTagStream = futures_lite::stream::Empty<
+            std::result::Result<iroh_blobs::api::tags::TagInfo, anyhow::Error>,
+        >;
+
+        let error = MetaProtocol::find_in_tag_list::<EmptyTagStream, anyhow::Error>(
+            Err(anyhow::anyhow!("tag store unavailable")),
+            "needle",
+            false,
+        )
+        .await
+        .unwrap_err();
+
+        let error = format!("{error:#}");
+        assert!(error.contains("starting blob tag listing"));
+        assert!(error.contains("tag store unavailable"));
+    }
+
+    #[tokio::test]
+    async fn find_returns_tag_listing_stream_errors_instead_of_partial_results() {
+        let list = futures_lite::stream::iter([
+            Ok(iroh_blobs::api::tags::TagInfo {
+                name: "needle.txt".into(),
+                format: iroh_blobs::BlobFormat::Raw,
+                hash: iroh_blobs::Hash::from_bytes([123; 32]),
+            }),
+            Err(anyhow::anyhow!("tag stream failed")),
+        ]);
+
+        let error = MetaProtocol::find_in_tag_list(Ok(list), "needle", false)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("reading blob tag listing"));
+        assert!(error.to_string().contains("tag stream failed"));
+    }
+
+    #[tokio::test]
+    async fn find_accepts_empty_and_successful_tag_listings() {
+        let empty = futures_lite::stream::empty();
+        let matches = MetaProtocol::find_in_tag_list::<_, anyhow::Error>(Ok(empty), "needle", false)
+            .await
+            .unwrap();
+        assert!(matches.is_empty());
+
+        let list = futures_lite::stream::iter([Ok::<_, anyhow::Error>(
+            iroh_blobs::api::tags::TagInfo {
+                name: "needle.txt".into(),
+                format: iroh_blobs::BlobFormat::Raw,
+                hash: iroh_blobs::Hash::from_bytes([123; 32]),
+            },
+        )]);
+        let matches = MetaProtocol::find_in_tag_list(Ok(list), "needle", false)
+            .await
+            .unwrap();
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].name, "needle.txt");
     }
 }
