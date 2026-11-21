@@ -237,6 +237,7 @@ import { SloJournal, groupSamplesByFacet } from "./slo-journal.ts";
 import { sampleSloFacets } from "./slo-sampler.ts";
 import { SLO_DEFINITIONS, summarizeSloFacet, type SloFacetSummary } from "./slo.ts";
 import { computeFlowAnalytics } from "./flow-analytics.ts";
+import { fireOpenCodeWorkingHook } from "./health-hook-fire.ts";
 import {
   FORECAST_CONTRACT_VERSION,
   quotaForecastContract,
@@ -483,6 +484,9 @@ function pickSource(): Source {
         onSourceGap: recordSourceGap,
         seenActivityIds: (source) => activityStore.seenIds(source),
         snapshotRemote: storeRemotes?.usage,
+        onLaptopUnreachable: (detail) => {
+          fireOpenCodeWorkingHook("aggregator-tick", detail);
+        },
       })
     : fixtureSource();
 }
