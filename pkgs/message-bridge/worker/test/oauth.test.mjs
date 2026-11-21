@@ -324,11 +324,32 @@ test("client ids are short, stored, and sign-ins leave a secret-free trail for t
   assert.equal((await call(`/api/${GPT}/oauth-events`)).status, 404);
 });
 
-test("a full registry refuses new clients instead of growing", async () => {
+test("a full registry makes room from stale never-used registrations, never from used clients", async () => {
   const { call, store } = harness();
-  for (let i = 0; i < 500; i++) await store.oauthClientAdd(`mbc_${String(i).padStart(22, "0")}`, { r: [REDIRECT], m: "none", n: "" });
-  const res = await call("/register", { method: "POST", body: JSON.stringify({ redirect_uris: [REDIRECT] }) });
-  assert.equal(res.status, 429);
+  const register = () => call("/register", { method: "POST", body: JSON.stringify({ redirect_uris: [REDIRECT] }) });
+  const now = Math.floor(Date.now() / 1000);
+  const id = (i) => `mbc_${String(i).padStart(22, "0")}`;
+  const meta = { r: [REDIRECT], m: "none", n: "" };
+  // 500 fresh registrations (inside the grace period): a flood can't evict them yet.
+  for (let i = 0; i < 500; i++) await store.oauthClientAdd(id(i), meta, now - 60);
+  assert.equal((await register()).status, 429);
+  // Once they are past the grace period, the oldest one makes room.
+  store.clients.clear();
+  for (let i = 0; i < 500; i++) await store.oauthClientAdd(id(i), meta, now - 700 - (500 - i));
+  assert.equal((await register()).status, 201);
+  assert.equal(store.clients.size, 500);
+  assert.equal(await store.oauthClientGet(id(0)), null, "the oldest never-used one went");
+  // Used clients are never evicted, and outlive a refresh token's idle year.
+  store.clients.clear();
+  for (let i = 0; i < 500; i++) {
+    await store.oauthClientAdd(id(i), meta, now - 900);
+    store.clients.get(id(i)).used = now - 300 * 86400;
+  }
+  assert.equal((await register()).status, 429);
+  assert.equal(store.clients.size, 500);
+  store.clients.get(id(7)).used = now - 367 * 86400;
+  assert.equal((await register()).status, 201);
+  assert.equal(await store.oauthClientGet(id(7)), null, "a client idle past every refresh token goes");
 });
 
 test("the approval form works when the browser sends Origin: null", async () => {

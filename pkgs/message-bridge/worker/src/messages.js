@@ -135,6 +135,11 @@ export function normalizeQuery(q = {}) {
  */
 export const OAUTH_MAX_CLIENTS = 500;
 export const OAUTH_MAX_EVENTS = 100;
+// A used client stays while its refresh tokens can (a year from last use).
+export const OAUTH_CLIENT_IDLE = 366 * 86400;
+// When the registry is full, a never-used registration older than this
+// makes room, so a flood of registrations can't lock the owner out.
+export const OAUTH_PENDING_GRACE = 600;
 
 export class MemoryStore {
   constructor(now = () => new Date().toISOString()) {
@@ -145,15 +150,25 @@ export class MemoryStore {
     this.clients = new Map();
     this.events = [];
   }
-  async oauthClientAdd(id, meta) {
-    if (this.clients.size >= OAUTH_MAX_CLIENTS) return false;
-    this.clients.set(id, { meta: JSON.parse(JSON.stringify(meta)), used: null });
+  async oauthClientAdd(id, meta, now = Math.floor(Date.now() / 1000)) {
+    for (const [k, c] of this.clients) {
+      if (c.used === null ? c.created < now - 86400 : c.used < now - OAUTH_CLIENT_IDLE) this.clients.delete(k);
+    }
+    if (this.clients.size >= OAUTH_MAX_CLIENTS) {
+      let oldest = null;
+      for (const [k, c] of this.clients) {
+        if (c.used === null && c.created < now - OAUTH_PENDING_GRACE && (!oldest || c.created < this.clients.get(oldest).created)) oldest = k;
+      }
+      if (!oldest) return false;
+      this.clients.delete(oldest);
+    }
+    this.clients.set(id, { meta: JSON.parse(JSON.stringify(meta)), created: now, used: null });
     return true;
   }
   async oauthClientGet(id, touch = false) {
     const c = this.clients.get(id);
     if (!c) return null;
-    if (touch) c.used = Date.now();
+    if (touch) c.used = Math.floor(Date.now() / 1000);
     return JSON.parse(JSON.stringify(c.meta));
   }
   async oauthLog(kind, detail) {

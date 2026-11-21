@@ -8,7 +8,7 @@
 // Routes and auth: see routes.js and auth.js. The access token is the
 // Worker secret ACCESS_TOKEN; it is never in git.
 import { DurableObject } from "cloudflare:workers";
-import { OAUTH_MAX_CLIENTS, OAUTH_MAX_EVENTS, ackSelector, normalizeChannel, normalizeNew, normalizeQuery } from "./messages.js";
+import { OAUTH_CLIENT_IDLE, OAUTH_MAX_CLIENTS, OAUTH_MAX_EVENTS, OAUTH_PENDING_GRACE, ackSelector, normalizeChannel, normalizeNew, normalizeQuery } from "./messages.js";
 import { route } from "./routes.js";
 
 export class MessageStore extends DurableObject {
@@ -60,13 +60,22 @@ export class MessageStore extends DurableObject {
     )`);
   }
 
-  /** Stores a new client; false when the table is full. */
+  /** Stores a new client; false when the table is full of clients worth keeping. */
   oauthClientAdd(id, meta) {
     const now = Math.floor(Date.now() / 1000);
-    // Never-used registrations go after a day, idle ones after 90 days.
-    this.sql.exec("DELETE FROM oauth_client WHERE (used IS NULL AND created < ?) OR used < ?", now - 86400, now - 90 * 86400);
+    // Never-used registrations go after a day; used ones outlive their refresh tokens.
+    this.sql.exec("DELETE FROM oauth_client WHERE (used IS NULL AND created < ?) OR used < ?", now - 86400, now - OAUTH_CLIENT_IDLE);
     const count = this.sql.exec("SELECT COUNT(*) AS n FROM oauth_client").one().n;
-    if (count >= OAUTH_MAX_CLIENTS) return false;
+    if (count >= OAUTH_MAX_CLIENTS) {
+      // Full: the oldest never-used registration past its grace makes room.
+      const evicted = this.sql
+        .exec(
+          "DELETE FROM oauth_client WHERE id = (SELECT id FROM oauth_client WHERE used IS NULL AND created < ? ORDER BY created LIMIT 1) RETURNING id",
+          now - OAUTH_PENDING_GRACE,
+        )
+        .toArray();
+      if (evicted.length === 0) return false;
+    }
     this.sql.exec("INSERT INTO oauth_client (id, meta, created) VALUES (?, ?, ?)", id, JSON.stringify(meta), now);
     return true;
   }
