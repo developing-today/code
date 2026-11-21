@@ -6107,7 +6107,7 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance, 
   if (!section) {
     return layout(
       "Cost Explorer",
-      `<h1>Cost Explorer</h1><div class="banner">The AA data has not reached the dashboard yet — the fleet-feed collector reads it from Supabase (ainventory), and no AA section is in the current feed. The data of record is the ainventory import; this page only renders it.</div>`,
+      `<h1>Cost Explorer</h1><div class="banner">The AA data has not reached the dashboard yet — the fleet-feed collector reads it from the Turso fleet-platform store (ainventory), and no AA section is in the current feed. The data of record is the ainventory import; this page only renders it.</div>`,
       provenance,
       "/aa",
       "",
@@ -7993,7 +7993,7 @@ export function renderAlerts(view: AlertsPageView, provenance: Provenance, vapid
   if (!view.available) {
     return layout(
       "Alerts",
-      `<h1>Alerts</h1><p class="muted">The alerts ledger (Supabase <code>alerts</code> schema) is unreachable from this process right now — intake, delivery, and ack are paused with it. The rest of the dashboard is unaffected.</p>`,
+      `<h1>Alerts</h1><p class="muted">The alerts ledger (Turso fleet-platform <code>alerts_*</code> tables) is unreachable from this process right now — intake, delivery, and ack are paused with it. The rest of the dashboard is unaffected.</p>`,
       provenance,
       "/alerts",
     );
@@ -8217,7 +8217,7 @@ export function renderNotificationPreferences(
   if (!view.available) {
     return layout(
       "Notification preferences",
-      `<h1>Notification preferences</h1><p class="muted">The alerts ledger (Supabase <code>alerts</code> schema) is unreachable from this process right now — subscription preferences cannot be read or saved until it is back. The rest of the dashboard is unaffected.</p>`,
+      `<h1>Notification preferences</h1><p class="muted">The alerts ledger (Turso fleet-platform <code>alerts_*</code> tables) is unreachable from this process right now — subscription preferences cannot be read or saved until it is back. The rest of the dashboard is unaffected.</p>`,
       provenance,
       "/alerts/preferences",
     );
@@ -8388,7 +8388,7 @@ export function renderNotifications(view: NotificationsPageView, provenance: Pro
   if (!view.available || !view.rollup) {
     return layout(
       "Notifications",
-      `<h1>Notifications</h1><p class="muted">The notification send ledger (Supabase <code>alerts.notification_sends</code>) is unreachable from this process right now — the roll-up is paused with it. The rest of the dashboard is unaffected.</p>`,
+      `<h1>Notifications</h1><p class="muted">The notification send ledger (Turso fleet-platform <code>alerts_notification_sends</code>) is unreachable from this process right now — the roll-up is paused with it. The rest of the dashboard is unaffected.</p>`,
       provenance,
       "/notifications",
     );

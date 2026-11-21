@@ -61,6 +61,29 @@ test("Turso AA preserves workbook metrics, boolean JSON and historical batches",
     row("Threshold_Metrics", 2, ["test", "model", "v1", "2", "40"]);
   }
   db.query("insert into ainventory_ingest_batches values(?,?,?)").run(latest, "2026-11-11T00:00:00Z", '{"rows":3}');
+  db.query("insert into ainventory_sheet_rows values(?,?,?,?)").run(old, "Test_Runs", 2, '{"cells":["test","model"]}');
+  for (const [benchmark, metric, raw] of [
+    ["AA Intelligence Index v1", "intelligence_index", "{}"],
+    ["Artificial Analysis Coding Agent Index v1", "cai_index_score", '{"benchmark_version":"v1"}'],
+  ]) {
+    db.query("insert into ainventory_measurement_events values(?,?,?,?,?,?,?,?,?,?,?,?)").run(
+      old,
+      "workbook-import",
+      "2026-11-10T01:00:00Z",
+      "model",
+      benchmark,
+      "high",
+      50,
+      2,
+      100,
+      metric,
+      null,
+      raw,
+    );
+  }
+  db.exec(
+    "insert into ainventory_price_events(id,model_name,provider,input_usd_per_1m,effective_date) values(1,'model','p',1,'2026-01-01'),(2,'model','p',2,'2026-11-01');",
+  );
   const run = (sql: string) => {
     const stmt = storeStatement(sql);
     const r = db.query(stmt.sql).get(...stmt.args.map((a) => a.value)) as any;
@@ -68,6 +91,12 @@ test("Turso AA preserves workbook metrics, boolean JSON and historical batches",
   };
   const a = run(aaPayloadSql(old)),
     b = run(aaPayloadSql(null));
+  for (const key of ["sources", "rankings", "thresholds", "configs", "testRunRows", "cai", "prices"])
+    expect(Array.isArray(a[key])).toBe(true);
+  expect(a.configs).toHaveLength(1);
+  expect(a.testRunRows).toHaveLength(1);
+  expect(a.cai).toHaveLength(1);
+  expect(a.prices).toHaveLength(1);
   expect(rankAaValues(db.query(aaRankingValuesSql(old)).all() as any[])).toEqual(a.rankings);
   expect(Object.keys(aaSectionQueries(old))).toHaveLength(8);
   expect(a.batch).toBe(old);
@@ -80,10 +109,6 @@ test("Turso AA preserves workbook metrics, boolean JSON and historical batches",
   expect(a.thresholds[0].usable).toBe(true);
   expect(a.thresholds[0].usdPerUsablePoint).toBeCloseTo(2 / 11);
   expect(run(AA_BATCH_INDEX_SQL)[0].insertedCounts).toEqual({ rows: 3 });
-  expect(run(AA_PRICES_SQL)).toEqual([]);
-  db.exec(
-    `insert into ainventory_price_events(id,model_name,provider,input_usd_per_1m,effective_date) values(1,'model','p',1,'2026-01-01'),(2,'model','p',2,'2026-11-01');`,
-  );
   expect(run(AA_PRICES_SQL)[0].inputPer1M).toBe(2);
   db.close();
 });

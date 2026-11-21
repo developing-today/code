@@ -33,7 +33,7 @@ func TestReportCallFrameWritesPayloadFreeLedgerWithoutRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ledger.Close()
+	defer func() { _ = ledger.Close() }()
 	s := &Server{callLedger: ledger}
 	start := time.Now().Add(-25 * time.Millisecond)
 	s.reportCallFrame(context.Background(), "srv", "tool", "session-7", map[string]any{"secret": "do-not-write"}, start,
