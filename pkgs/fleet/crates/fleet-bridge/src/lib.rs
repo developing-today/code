@@ -74,8 +74,13 @@ agent (fleet token):
         [--since-id N] [--limit N] [--take] [--wait SECS] [--interval SECS]
         unread by default; --all includes read ones; --take marks what it
         returns as read; --wait polls until something arrives or SECS pass.
-  post [--agent A] [--reply-to ID] <text | ->  message to central; with
-        --reply-to, answers that command and marks it read
+  post [--agent A] [--reply-to ID] [--to ADDR] [--instruction | --kind K] <text | ->
+        message to central by default; with --reply-to, answers that row
+        (and marks it read). --to sends to any address instead: drew,
+        claude, chatgpt, connectors, agent:<name> (or a bare name),
+        group:<name>, agents, all; repeat or separate with commas.
+        --instruction (or --kind instruction) makes it an instruction,
+        which needs --to.
   ack [--agent A] (--up-to ID | ID...)        mark messages read
 
   health                       the bridge's /healthz (no token)
@@ -686,10 +691,38 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
             }
         }
         "post" => {
-            let a = parse(rest, &[], &["--agent", "--reply-to"])?;
+            let a = parse(
+                rest,
+                &["--instruction", "--command"],
+                &["--agent", "--reply-to", "--to", "--kind"],
+            )?;
             let agent = agent_of(&a, &ctx.settings)?;
+            let to: Vec<String> = a.all("--to").iter().flat_map(|t| split_list(t)).collect();
+            let kind = if a.has("--instruction") || a.has("--command") {
+                Some("instruction".to_string())
+            } else {
+                a.last("--kind")
+            };
+            if let Some(k) = &kind
+                && !matches!(k.as_str(), "message" | "instruction" | "command")
+            {
+                return Err(usage(format!(
+                    "--kind is message or instruction, not '{k}'"
+                )));
+            }
+            if kind.is_some() && to.is_empty() {
+                return Err(usage(
+                    "an instruction needs --to (central and replies take messages only)",
+                ));
+            }
             let body = text_of(&a, ctx.stdin)?;
             let mut payload = json!({ "agent": agent, "body": body });
+            if !to.is_empty() {
+                payload["to"] = json!(to);
+            }
+            if let Some(k) = kind {
+                payload["kind"] = json!(k);
+            }
             if let Some(id) = a.uint("--reply-to")? {
                 payload["reply_to"] = json!(id);
             }

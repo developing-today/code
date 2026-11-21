@@ -10,6 +10,7 @@ the sandbox install until ~/tools/fleet is reprovisioned.
     bridge-mailbox.py hello --agent muse-3 --groups muse
     bridge-mailbox.py inbox --agent muse-3 --groups muse --commands --take
     bridge-mailbox.py post --agent muse-3 --reply-to 42 "done: ..."
+    bridge-mailbox.py post --agent muse-3 --to claude --instruction "..."
     bridge-mailbox.py ack --agent muse-3 --up-to 42
 
 The fleet token is resolved by name, never passed on the command line:
@@ -137,6 +138,8 @@ def main():
     i.add_argument("--interval", type=int, default=15)
     po = sub.add_parser("post")
     po.add_argument("--reply-to", type=int)
+    po.add_argument("--to", action="append", default=[])
+    po.add_argument("--instruction", action="store_true")
     po.add_argument("text", nargs="+")
     a = sub.add_parser("ack")
     a.add_argument("--up-to", type=int)
@@ -183,6 +186,13 @@ def main():
             time.sleep(max(1, min(args.interval, deadline - time.monotonic())))
     elif args.verb == "post":
         body = {"agent": agent, "body": text_arg(args.text)}
+        to = [t.strip() for x in args.to for t in x.split(",") if t.strip()]
+        if args.instruction and not to:
+            fail(2, "an instruction needs --to (central and replies take messages only)")
+        if to:
+            body["to"] = to
+        if args.instruction:
+            body["kind"] = "instruction"
         if args.reply_to is not None:
             body["reply_to"] = args.reply_to
         out = call(base, token, "POST", "send", body)
