@@ -23,6 +23,25 @@ skips what is done. `bash bootstrap.sh --help` lists the phases;
 `--only tools,token` or `--skip restore` pick a subset, `--all` also
 restores `~/git` and `~/agents` (large, normally re-cloned on demand).
 
+## After a sandbox restart
+
+Only `/home/hatch` survives a recycle; `/`, `/etc` and every process are
+gone. Run the script with `HOME=/home/hatch` (it warns otherwise) so the
+tools, token, tailnet state and fleet all land there. The `persist` phase
+saves a copy of the script as `~/tools/muse-bootstrap.sh`, writes
+`~/tools/muse-boot.sh`, and hooks it into the top of `~/tools/init.sh`,
+which already runs on every boot. Each boot then restarts `tailscaled`
+from its saved state (no new auth key, same "muse" node) and keeps fleet
+linked; it takes about a second when everything is already up. Log:
+`~/logs/muse-boot.log`.
+
+To add this to a box set up before the `persist` phase existed:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/developing-today/code/main/scripts/muse/bootstrap.sh -o bootstrap.sh
+HOME=/home/hatch bash bootstrap.sh --only tools,tailnet,fleet,persist
+```
+
 Needs `curl`, `tar`, `python3` and `sha256sum` on an x86_64 Linux box.
 Root or passwordless sudo is used when present (kernel tailnet, `init.sh`)
 and not required otherwise (userspace tailnet).
