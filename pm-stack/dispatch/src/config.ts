@@ -71,6 +71,10 @@ export interface Config {
   githubAppId: string | null;
   /** Decoded PEM for the GitHub App private key (memory only). */
   githubAppPrivateKeyPem: string | null;
+  /** Where launches into a primary clone get their own worktree
+   * (PM_DISPATCH_WORKTREE_ROOT, default ~/git/fleet; "off" runs in the
+   * requested directory as before). code#12213. */
+  worktreeRoot: string | null;
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -115,5 +119,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     opencodeAuthFile: s(env.OPENCODE_AUTH_FILE, join(homedir(), ".local", "state", "opencode", "service-prod.json")),
     githubAppId: env.GITHUB_APP_ID?.trim() ? env.GITHUB_APP_ID.trim() : null,
     githubAppPrivateKeyPem: appPem,
+    worktreeRoot:
+      env.PM_DISPATCH_WORKTREE_ROOT?.trim().toLowerCase() === "off"
+        ? null
+        : s(env.PM_DISPATCH_WORKTREE_ROOT, join(homedir(), "git", "fleet")),
   };
 }
