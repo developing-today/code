@@ -1136,14 +1136,15 @@ async function main(): Promise<void> {
     const snapshot = await fetchProjectBoardsSnapshot("fleet-gh", fleetGhProjectFetch, now.toISOString(), PROJECT_BOARDS);
     for (const failedId of snapshot.failedBoardIds) console.error(`collector: project board ${failedId} failed; continuing`);
     designBoards.push(...snapshot.boards);
+    const auditList = Object.values(snapshot.audits);
+    const main = snapshot.audits["devtoday-main"];
+    // Audits are useful even when no board has a linked issue/PR item.
+    // Keep the validated Project #4 audit internally consistent; expose the
+    // all-board total separately for the rendered pool banner.
+    projectAudits = auditList.length ? snapshot.audits : undefined;
+    projectAudit = main && auditList.length ? { ...main, poolTotalItems: auditList.reduce((sum, a) => sum + a.totalItems, 0) } : main;
     if (snapshot.items.length) {
       projects = snapshot.items;
-      projectAudits = snapshot.audits;
-      // Keep the validated Project #4 audit internally consistent; expose the
-      // all-board total separately for the rendered pool banner.
-      const auditList = Object.values(snapshot.audits);
-      const main = snapshot.audits["devtoday-main"];
-      projectAudit = main && auditList.length ? { ...main, poolTotalItems: auditList.reduce((sum, a) => sum + a.totalItems, 0) } : main;
       const failures = snapshot.failedBoardIds;
       markSection("projects", failures.length ? "error" : "ok", failures.length ? `boards failed: ${failures.join(", ")}` : undefined, {
         reportedTotal: snapshot.counts.reportedTotal,
