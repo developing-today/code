@@ -164,7 +164,7 @@ import {
 } from "./status-taxonomy.ts";
 import type { ConflictEntry, ConflictInbox } from "./conflicts.ts";
 import { buildItemBrief, type ItemBrief } from "./brief.ts";
-import { buildEpicRollups, isEpicChildDone, type EpicRollup } from "./epics.ts";
+import { buildEpicRollups, isEpicChildDone, uniqueProjectItemsByRef, type EpicRollup } from "./epics.ts";
 import { spendCardHtml, unattributedSpendHtml, type SpendCardsView } from "./spend-cards.ts";
 import { effortWeight, handsLine, summarizeWeights, weightedLine } from "./weights.ts";
 import { blockedSummary, depthLayout, hasGraphEdges } from "./graph.ts";
@@ -1782,7 +1782,7 @@ export function buildRoadmapDrill(
 ): Map<string, RoadmapDrill> {
   const epicByRow = new Map(reconciliation.matched.map((m) => [m.row.subject, m.epic] as const));
   const childrenByEpic = new Map<string, ProjectPoolItem[]>();
-  for (const item of pool) {
+  for (const item of uniqueProjectItemsByRef(pool)) {
     if (!item.epicRef) continue;
     const list = childrenByEpic.get(item.epicRef) ?? [];
     list.push(item);
@@ -6868,11 +6868,11 @@ export function projectsBodyHtml(
   const areaWeights = areas
     .map((a) => {
       const items = pool.filter((p) => p.area === a);
-      const w = summarizeWeights(items);
+      const w = summarizeWeights(uniqueProjectItemsByRef(items));
       return `<div class="card"><strong>${esc(a)}</strong> — ${esc(weightedLine(w))}<br><span class="muted">${esc(handsLine(w))}</span></div>`;
     })
     .join("");
-  const shownWeights = summarizeWeights(shown);
+  const shownWeights = summarizeWeights(uniqueProjectItemsByRef(shown));
   const epicRollups = buildEpicRollups(pool);
   const cards = shown
     .map((p) => {
@@ -6966,7 +6966,7 @@ export function projectsBodyHtml(
         ]
       : []),
   ].join("")}</div>
-${opts.audit && opts.audit.totalItems > pool.length ? `<div class="banner">Board total ${opts.audit.totalItems} items; this pool renders ${pool.length} linked issue/PR items. ${opts.audit.totalItems - pool.length} board item${opts.audit.totalItems - pool.length === 1 ? " is" : "s are"} draft or unlinked (no issue/PR to link to) and not rendered as cards \u2014 counted in the audit in <a href="/api/projects.json">/api/projects.json</a>, never silently dropped.</div>` : ""}
+${opts.audit && (opts.audit.poolTotalItems ?? opts.audit.totalItems) > pool.length ? `<div class="banner">Board total ${opts.audit.poolTotalItems ?? opts.audit.totalItems} items; this pool renders ${pool.length} linked issue/PR items. ${(opts.audit.poolTotalItems ?? opts.audit.totalItems) - pool.length} board item${(opts.audit.poolTotalItems ?? opts.audit.totalItems) - pool.length === 1 ? " is" : "s are"} draft or unlinked (no issue/PR to link to) and not rendered as cards \u2014 counted in the audit in <a href="/api/projects.json">/api/projects.json</a>, never silently dropped.</div>` : ""}
 ${shown.length !== pool.length ? `<p class="muted">Filters show ${shown.length} of ${pool.length} pool items.</p>` : ""}
 ${unsetCount > 0 ? `<div class="banner">${unsetCount} pool item${unsetCount === 1 ? "" : "s"} carry no Area — they belong to no project page until Area is set on the Project. Setting Area is the orchestrator's reconciliation job; this count keeps the gap visible. <a href="${base}?area=${encodeURIComponent(UNSET_AREA)}">View the (unset) bucket →</a></div>` : ""}
 ${coverageSectionHtml(opts.coverage)}

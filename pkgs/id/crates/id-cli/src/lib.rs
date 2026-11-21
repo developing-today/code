@@ -84,9 +84,10 @@ pub use crate::protocol::{
 };
 pub use crate::repl::run_repl;
 pub use id_core::discovery::{
-    ANNOUNCE_INTERVAL, DEFAULT_TOPIC, DEFAULT_TOPIC_SECRET, Defaults, MAX_PEER_NAME_BYTES,
-    MAX_PEERS, PeerAnnouncement, PeerDiscovery, PeerInfo, ResolvedConfig, STALE_CHECK_INTERVAL,
-    STALE_THRESHOLD, defaults, parse_defaults, resolve_config,
+    ANNOUNCE_INTERVAL, DEFAULT_TOPIC, DEFAULT_TOPIC_SECRET, Defaults, DefaultsMode,
+    DefaultsProvenance, DefaultsSource, MAX_PEER_NAME_BYTES, MAX_PEERS, PeerAnnouncement,
+    PeerDiscovery, PeerInfo, ResolvedConfig, STALE_CHECK_INTERVAL, STALE_THRESHOLD, defaults,
+    defaults_provenance, resolve_config,
 };
 pub use id_store::store::{StoreType, load_or_create_keypair, open_store};
 

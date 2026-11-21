@@ -1,6 +1,6 @@
 import type { ProjectPoolItem, RefKey, RoadmapRow } from "./model.ts";
 
-export type GenealogyRelation = "parent" | "primary-parent" | "spawned-by" | "roadmap" | "priority";
+export type GenealogyRelation = "parent" | "historical-parent" | "primary-parent" | "spawned-by" | "roadmap" | "priority";
 
 export interface GenealogyAncestor {
   ref: RefKey;
@@ -27,7 +27,13 @@ const labelTarget = (labels: string[], prefix: string): string | null =>
 
 /** Derive the item's known genealogy using only verified pool edges and labels. */
 export function deriveGenealogy(item: ProjectPoolItem, pool: readonly ProjectPoolItem[]): ItemGenealogy {
-  const byRef = new Map(pool.map((entry) => [entry.ref, entry]));
+  // Board memberships are separate pool rows, but Kind is canonical issue
+  // metadata. Preserve a populated Kind when a later satellite copy omits it.
+  const byRef = new Map<RefKey, ProjectPoolItem>();
+  for (const entry of pool) {
+    const existing = byRef.get(entry.ref);
+    byRef.set(entry.ref, existing ? { ...existing, kind: existing.kind ?? entry.kind } : entry);
+  }
   const chain: ProjectPoolItem[] = [];
   const seen = new Set<RefKey>([item.ref]);
   let cursor = item.parentRef ? byRef.get(item.parentRef) : undefined;
@@ -47,17 +53,8 @@ export function deriveGenealogy(item: ProjectPoolItem, pool: readonly ProjectPoo
   const historicalParents = (item.historicalParentRefs ?? []).flatMap((ref) => {
     const former = byRef.get(ref);
     if (!former) return [];
-    add(former, "parent");
-    const formerChain: ProjectPoolItem[] = [former];
-    const formerSeen = new Set<RefKey>([item.ref, former.ref]);
-    let oldCursor = former.parentRef ? byRef.get(former.parentRef) : undefined;
-    while (oldCursor && !formerSeen.has(oldCursor.ref)) {
-      formerChain.push(oldCursor);
-      formerSeen.add(oldCursor.ref);
-      add(oldCursor, "parent");
-      oldCursor = oldCursor.parentRef ? byRef.get(oldCursor.parentRef) : undefined;
-    }
-    return formerChain;
+    add(former, "historical-parent");
+    return [former];
   });
 
   const nearestEpic = chain.find((entry) => entry.kind === "Epic");
@@ -107,7 +104,7 @@ export function deriveGenealogy(item: ProjectPoolItem, pool: readonly ProjectPoo
   const priorityPhrase = priority ? `, overall priority ${priority.title} (${priority.ref})` : "";
   const releasePhrase = release ? `; release ${release.title}${release.dueOn ? ` due ${release.dueOn}` : ""}` : "";
   const historicalPhrase = historicalParents.length
-    ? ` Formerly part of ${historicalParents.map((former) => `${former.title} (${former.ref})`).join(" → ")}.`
+    ? ` ${historicalParents.map((former) => `Formerly part of ${former.title} (${former.ref})`).join(". ")}.`
     : "";
   return {
     ancestors,

@@ -131,4 +131,17 @@ describe("roadmap drill-down (#1168)", () => {
     // Cross-surface: the shared rollup rule counts the same pool identically.
     expect(buildEpicRollups(pool).get("a/b#40" as ProjectPoolItem["ref"])).toMatchObject({ total: 4, done: 3 });
   });
+
+  test("counts a cross-board issue once in roadmap and epic progress", () => {
+    const rows = [row(8, "Identity epic", ["a/b#50"])];
+    const epic = poolItem("a/b#50", "Identity epic", { kind: "Epic" });
+    const completed = poolItem("a/b#51", "Completed child", { state: "closed", epicRef: "a/b#50" });
+    const other = poolItem("a/b#52", "Open child", { state: "open", epicRef: "a/b#50" });
+    const pool = [epic, completed, other, { ...epic, boardId: "forks-main" }, { ...completed, boardId: "forks-main" }];
+
+    const html = render(rows, pool);
+    expect(html).toContain("1/2 child issues done");
+    expect(buildEpicRollups(pool).get("a/b#50" as ProjectPoolItem["ref"]))
+      .toMatchObject({ total: 2, done: 1 });
+  });
 });

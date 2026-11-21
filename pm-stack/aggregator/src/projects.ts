@@ -10,6 +10,8 @@
 // whose fetch is injectable for tests), shared by the collector and
 // the live source so the wire shape is parsed exactly once.
 import type { BoardSnapshot, BoardEntry } from "./design-boards.ts";
+import type { BoardDef } from "./board-registry.ts";
+import { PROJECT_BOARDS as REGISTERED_PROJECT_BOARDS, validateBoardRegistry } from "./board-registry.ts";
 import type {
   GhItem,
   MilestoneRef,
@@ -28,6 +30,9 @@ export const PROJECT_ID = "PVT_kwDOAZNvF84Bouay";
 export const PROJECT_URL = "https://github.com/orgs/developing-today/projects/4";
 export const PROJECT_ORG = "developing-today";
 export const PROJECT_NUMBER = 4;
+
+/** Registry-backed board metadata; kept here as the shared collector API. */
+export { PROJECT_BOARDS } from "./board-registry.ts";
 
 /** GraphQL for one page of project items plus the board's audit schema. */
 export const PROJECT_QUERY = `query($id: ID!, $cursor: String) {
@@ -191,7 +196,7 @@ function edgeNodes(
  * Epic membership (epicRef) is NOT resolved here:
  * it needs the whole pool (parents may sit on other pages), so
  * resolveEpicRefs runs over the aggregate after all pages parse. */
-export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): ProjectPoolItem[] {
+export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL, boardId?: string): ProjectPoolItem[] {
   const nodes = (json as GqlProjectPage)?.data?.node?.items?.nodes ?? [];
   const out: ProjectPoolItem[] = [];
   for (const item of nodes) {
@@ -220,6 +225,7 @@ export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): Proj
       : [];
     out.push({
       id: item.id,
+      ...(boardId ? { boardId } : {}),
       // Normalize the nullable GraphQL databaseId to the model's optional
       // number: null becomes absent, so a valid item is never dropped by
       // isProjectPoolItem for an upstream null (Codex P2 on PR #4181).
@@ -295,17 +301,24 @@ export function historicalParentsFromMetadata(body: string): RefKey[] {
  * items with no epic ancestor, and chains that leave the pool keep the
  * field absent. Cycle-safe: a parent loop ends the walk with no epic. */
 export function resolveEpicRefs(items: ProjectPoolItem[]): ProjectPoolItem[] {
-  const byRef = new Map(items.map((p) => [p.ref, p] as const));
+  // An item appearing on several boards is one epic if any board classifies it as Epic.
+  const epicRefs = new Set(items.filter((p) => p.kind === "Epic").map((p) => p.ref));
+  const byRef = new Map<string, ProjectPoolItem>();
+  // Conflicting copies can have different parents; choose deterministically.
+  for (const p of [...items].sort((a, b) => a.ref.localeCompare(b.ref) || (a.parentRef ?? "").localeCompare(b.parentRef ?? ""))) {
+    if (!byRef.has(p.ref)) byRef.set(p.ref, p);
+  }
   return items.map((p) => {
-    if (p.kind === "Epic" || !p.parentRef) return p;
+    const { epicRef: _staleEpicRef, ...withoutEpicRef } = p;
+    if (epicRefs.has(p.ref) || !p.parentRef) return withoutEpicRef;
     const seen = new Set<string>([p.ref]);
     let cursor: ProjectPoolItem | undefined = byRef.get(p.parentRef);
     while (cursor && !seen.has(cursor.ref)) {
-      if (cursor.kind === "Epic") return { ...p, epicRef: cursor.ref };
+      if (epicRefs.has(cursor.ref)) return { ...withoutEpicRef, epicRef: cursor.ref };
       seen.add(cursor.ref);
       cursor = cursor.parentRef ? byRef.get(cursor.parentRef) : undefined;
     }
-    return p;
+    return withoutEpicRef;
   });
 }
 
@@ -411,6 +424,8 @@ export function isProjectAudit(value: unknown): value is ProjectAudit {
     isTimestampNotFuture(value.generatedAt) &&
     Number.isInteger(value.totalItems) &&
     (value.totalItems as number) >= 0 &&
+    (value.poolTotalItems === undefined ||
+      (Number.isInteger(value.poolTotalItems) && (value.poolTotalItems as number) >= (value.totalItems as number))) &&
     Array.isArray(value.fields) &&
     value.fields.every(
       (field) =>
@@ -457,12 +472,16 @@ export interface ProjectSnapshot {
   counts: { reportedTotal: number; emittedEntries: number };
 }
 
+/** Narrow fetch shape the pool readers need; fleet gh's routed adapter satisfies it without Bun's preconnect. */
+export type ProjectFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
 /** Fetch the whole pool, board schema, views, and distributions (paginated). */
 export async function fetchProjectSnapshot(
   token: string,
-  fetchFn: typeof fetch = fetch,
+  fetchFn: ProjectFetch = fetch,
   generatedAt = new Date().toISOString(),
   projectId = PROJECT_ID,
+  boardId?: string,
 ): Promise<ProjectSnapshot> {
   const parsedItems: ProjectPoolItem[] = [];
   const auditItems: GqlItem[] = [];
@@ -508,7 +527,7 @@ export async function fetchProjectSnapshot(
     auditItems.push(...freshNodes);
     const freshIds = new Set(freshNodes.map((node) => node.id));
     parsedItems.push(
-      ...parseProjectItems(json, (json as GqlProjectPage).data?.node?.url ?? PROJECT_URL).filter((item) =>
+      ...parseProjectItems(json, (json as GqlProjectPage).data?.node?.url ?? PROJECT_URL, boardId).filter((item) =>
         freshIds.has(item.id),
       ),
     );
@@ -545,6 +564,45 @@ export async function fetchProjectSnapshot(
   throw new Error("github GraphQL project pagination ended unexpectedly");
 }
 
+export interface ProjectBoardsSnapshot {
+  items: ProjectPoolItem[];
+  audits: Record<string, ProjectAudit>;
+  boards: BoardSnapshot[];
+  failedBoardIds: string[];
+  counts: { reportedTotal: number; emittedEntries: number };
+}
+
+/** Collect the configured board family independently; a broken satellite never discards a healthy board. */
+export async function fetchProjectBoardsSnapshot(
+  token: string,
+  fetchFn: ProjectFetch,
+  generatedAt = new Date().toISOString(),
+  boards: readonly BoardDef[] = REGISTERED_PROJECT_BOARDS,
+): Promise<ProjectBoardsSnapshot> {
+  const problems = validateBoardRegistry(boards);
+  if (problems.length) throw new Error(`invalid project board registry: ${problems.join("; ")}`);
+  const items: ProjectPoolItem[] = [];
+  const audits: Record<string, ProjectAudit> = {};
+  const snapshots: BoardSnapshot[] = [];
+  const failedBoardIds: string[] = [];
+  let reportedTotal = 0;
+  let emittedEntries = 0;
+  for (const board of boards) {
+    try {
+      const snapshot = await fetchProjectSnapshot(token, fetchFn, generatedAt, board.nodeId, board.id);
+      if (!snapshot.items.length && board.role === "overall") throw new Error("board returned zero resolvable items");
+      items.push(...snapshot.items);
+      audits[board.id] = snapshot.audit;
+      snapshots.push(snapshot.board);
+      reportedTotal += snapshot.counts.reportedTotal;
+      emittedEntries += snapshot.counts.emittedEntries;
+    } catch {
+      failedBoardIds.push(board.id);
+    }
+  }
+  return { items: resolveEpicRefs(items), audits, boards: snapshots, failedBoardIds, counts: { reportedTotal, emittedEntries } };
+}
+
 /** Fetch the whole pool (paginated). Throws on HTTP/GraphQL errors so
  * the collector can fail-soft and omit the section. Never logs the token.
  * Pool-only path: it must NOT route through fetchProjectSnapshot — the
@@ -552,7 +610,7 @@ export async function fetchProjectSnapshot(
  * responses (e.g. the contract corpus) do not carry, and a missing audit
  * must never cost the pool. The collector uses fetchProjectSnapshot
  * for the audited section instead. */
-export async function fetchProjectPool(token: string, fetchFn: typeof fetch = fetch): Promise<ProjectPoolItem[]> {
+export async function fetchProjectPool(token: string, fetchFn: ProjectFetch = fetch): Promise<ProjectPoolItem[]> {
   const out: ProjectPoolItem[] = [];
   let cursor: string | null = null;
   let lastPageInfo: ReturnType<typeof projectPageInfo> | null = null;
@@ -669,6 +727,9 @@ export function poolItemToGhItem(p: ProjectPoolItem): GhItem {
   };
 }
 
+/** Keep the first board membership for each canonical issue ref. Use only
+ * where an issue-level calculation must not count cross-board copies; the
+ * pool itself retains every membership for board attribution and rendering. */
 /** The derived state IS a canonical status (#1198): the derived side
  * and every source side speak the one taxonomy in status-taxonomy.ts. */
 export type DerivedProjectState = CanonicalStatus;

@@ -100,3 +100,8 @@ secrets = ["dep:fleet-secrets"]
 # if ever needed, it is not a daemon role.
 gh = ["dep:fleet-secrets", "dep:ureq"]
 laptop-agent = ["dep:fleet-secrets", "dep:fleet-laptop-agent"]
+
+[dev-dependencies]
+# Property tests for the gh read classifier (AGENTS.md testing
+# doctrine), the same proptest version the other fleet crates use.
+proptest = "1.12"

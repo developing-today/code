@@ -20,11 +20,29 @@ export function isEpicChildDone(child: ProjectPoolItem): boolean {
   return child.state === "closed" || child.state === "merged" || child.status?.trim() === "Done";
 }
 
+/** Collapse multiple board memberships to one canonical issue for issue-level progress. */
+export function uniqueProjectItemsByRef(pool: readonly ProjectPoolItem[]): ProjectPoolItem[] {
+  const byRef = new Map<RefKey, ProjectPoolItem>();
+  for (const item of pool) {
+    if (!byRef.has(item.ref)) byRef.set(item.ref, item);
+  }
+  return [...byRef.values()];
+}
+
+/** One representative for every ref classified as an Epic on any board. */
+export function uniqueEpicItemsByRef(pool: readonly ProjectPoolItem[]): ProjectPoolItem[] {
+  const byRef = new Map<RefKey, ProjectPoolItem>();
+  for (const item of pool) if (item.kind === "Epic" && !byRef.has(item.ref)) byRef.set(item.ref, item);
+  return [...byRef.values()];
+}
+
 /** Build rollups for epics in the pool, using only explicit epicRef edges. */
 export function buildEpicRollups(pool: readonly ProjectPoolItem[]): Map<RefKey, EpicRollup> {
-  const byRef = new Map(pool.map((item) => [item.ref, item]));
+  const epicRefs = new Set(uniqueEpicItemsByRef(pool).map((epic) => epic.ref));
+  const uniquePool = uniqueProjectItemsByRef(pool);
+  const byRef = new Map(uniquePool.map((item) => [item.ref, item]));
   const childrenByEpic = new Map<RefKey, ProjectPoolItem[]>();
-  for (const item of pool) {
+  for (const item of uniquePool) {
     if (!isValidRef(item.epicRef)) continue;
     const children = childrenByEpic.get(item.epicRef) ?? [];
     children.push(item);
@@ -32,8 +50,8 @@ export function buildEpicRollups(pool: readonly ProjectPoolItem[]): Map<RefKey, 
   }
 
   const rollups = new Map<RefKey, EpicRollup>();
-  for (const epic of pool) {
-    if (epic.kind !== "Epic") continue;
+  for (const epic of uniquePool) {
+    if (!epicRefs.has(epic.ref)) continue;
     const children = childrenByEpic.get(epic.ref) ?? [];
     const statuses = new Map<string, number>();
     let done = 0;

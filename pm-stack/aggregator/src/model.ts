@@ -72,6 +72,8 @@ export interface MilestoneRef {
  * linked issue's state) but not arbitrary issues.
  */
 export interface ProjectPoolItem {
+  /** Stable local board-registry key; refs remain board-agnostic. */
+  boardId?: string;
   /** Project item node id (PVTI_…). */
   id: string;
   /** Project item database id, used in the item URL's itemId param. */
@@ -164,6 +166,9 @@ export interface ProjectAudit {
   url: string;
   generatedAt: string;
   totalItems: number;
+  /** Total across all registered boards in a multi-board feed. The audit's
+   *  distributions and totalItems remain scoped to its own board. */
+  poolTotalItems?: number;
   fields: ProjectAuditField[];
   views: ProjectAuditView[];
   counts: {

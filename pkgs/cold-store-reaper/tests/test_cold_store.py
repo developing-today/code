@@ -2042,6 +2042,40 @@ class TestPruneBackups(ColdStoreTestBase):
             self.store.prune_backups("oracle")
 
 
+class TestLegacyBackupFamily(ColdStoreTestBase):
+    """Supabase is retired: nothing new is filed, no folder is created,
+    but dumps already in db-backups/supabase/ stay readable and pruned."""
+
+    def test_fresh_install_creates_no_legacy_folder(self):
+        folders = self.store.ensure_folders()
+        self.assertNotIn("db-backups/supabase", folders)
+        self.assertFalse(any(f["name"] == "supabase" for f in self.fake.folders))
+        self.assertEqual(self.store.list_backups("supabase"), [])
+        plans = self.store.prune_backups()
+        self.assertEqual([p["db"] for p in plans], list(cold_store.BACKUP_DBS))
+        with self.assertRaisesRegex(cold_store.ColdStoreError, "no supabase backups"):
+            self.store.get_backup("supabase", "x", str(Path(self.tmp.name) / "x"))
+
+    def test_existing_legacy_backups_stay_readable(self):
+        parent = self.store.ensure_folders()["db-backups"]
+        legacy = self.store._create_folder("supabase", parent)
+        name = "supabase-20261001T020000Z-db.backup.gz"
+        self.seed_drive_file(name, legacy, data=b"old dump")
+
+        rows = self.store.list_backups("supabase")
+        self.assertEqual([r["name"] for r in rows], [name])
+        self.assertIn("supabase", [r["db"] for r in self.store.list_backups()])
+        out = Path(self.tmp.name) / "old.gz"
+        self.store.get_backup("supabase", name, str(out))
+        self.assertEqual(out.read_bytes(), b"old dump")
+        plans = self.store.prune_backups()
+        self.assertEqual([p["db"] for p in plans], ["turso", "d1", "supabase"])
+
+        dump = self.write_src("dump.sql", b"x")
+        with self.assertRaises(cold_store.ColdStoreError):
+            self.store.put_backup("supabase", str(dump))
+
+
 class TestGetBackup(ColdStoreTestBase):
     def test_get_backup_roundtrip(self):
         data = b"-- turso dump\n" + bytes(range(256)) * 4

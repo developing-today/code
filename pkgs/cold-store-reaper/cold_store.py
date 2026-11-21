@@ -64,6 +64,11 @@ SUBFOLDERS = ("bundles", "manifests", "db-backups")
 # DB-backup class (DESIGN.md section 5): nightly dumps live unbundled under
 # db-backups/<db>/, one subfolder per database.
 BACKUP_DBS = ("turso", "d1")
+# Retired families: no longer filed, but dumps already under
+# db-backups/<db>/ stay listable, retrievable and under retention.
+# Their folder is found, never created.
+LEGACY_BACKUP_DBS = ("supabase",)
+READ_BACKUP_DBS = BACKUP_DBS + LEGACY_BACKUP_DBS
 # Backup families whose folder holds one file per source database per
 # run, named <family>-<stamp>-<database>.<ext>: retention runs per
 # source database (keyed by the name after the stamp), not across the
@@ -939,6 +944,12 @@ class ColdStore:
                 folders[key] = self._find_folder(
                     db, folders["db-backups"]
                 ) or self._create_folder(db, folders["db-backups"])
+        for db in LEGACY_BACKUP_DBS:
+            key = f"db-backups/{db}"
+            if not folders.get(key):
+                found = self._find_folder(db, folders["db-backups"])
+                if found:
+                    folders[key] = found
         state["folders"] = folders
         self.save_state(state)
         return folders
@@ -948,6 +959,21 @@ class ColdStore:
         if key not in folders:
             folders = self.ensure_folders()
         return folders[key]
+
+    def _legacy_backup_folder_id(self, db: str) -> str | None:
+        """Folder id of a retired backup family, or None when this
+        install never filed one (legacy folders are never created)."""
+        folders = self.load_state().get("folders") or {}
+        key = f"db-backups/{db}"
+        if key not in folders:
+            folders = self.ensure_folders()
+        return folders.get(key)
+
+    def _readable_backup_dbs(self) -> list[str]:
+        """Active families plus each retired family that has a folder."""
+        return list(BACKUP_DBS) + [
+            db for db in LEGACY_BACKUP_DBS if self._legacy_backup_folder_id(db)
+        ]
 
     # ------------------------------------------------------------------ pack
     def _run_zstd(self, args, **kwargs):
@@ -1396,14 +1422,19 @@ class ColdStore:
         }
 
     def list_backups(self, db_name: str | None = None) -> list[dict]:
-        if db_name is not None and db_name not in BACKUP_DBS:
+        if db_name is not None and db_name not in READ_BACKUP_DBS:
             raise ColdStoreError(
-                f"unknown backup db {db_name!r} — expected one of {', '.join(BACKUP_DBS)}"
+                f"unknown backup db {db_name!r} — expected one of {', '.join(READ_BACKUP_DBS)}"
             )
-        dbs = [db_name] if db_name else list(BACKUP_DBS)
+        dbs = [db_name] if db_name else self._readable_backup_dbs()
         out = []
         for db in dbs:
-            folder_id = self._folder_id(f"db-backups/{db}")
+            if db in LEGACY_BACKUP_DBS:
+                folder_id = self._legacy_backup_folder_id(db)
+                if not folder_id:
+                    continue
+            else:
+                folder_id = self._folder_id(f"db-backups/{db}")
             q = f"'{folder_id}' in parents and trashed = false"
             page_token = None
             seen_tokens = set()
@@ -1567,11 +1598,11 @@ class ColdStore:
         transfer_ledger row per file is written (direction 'trash',
         kind 'backup-prune', ref = filename).
         """
-        if db_name is not None and db_name not in BACKUP_DBS:
+        if db_name is not None and db_name not in READ_BACKUP_DBS:
             raise ColdStoreError(
-                f"unknown backup db {db_name!r} — expected one of {', '.join(BACKUP_DBS)}"
+                f"unknown backup db {db_name!r} — expected one of {', '.join(READ_BACKUP_DBS)}"
             )
-        dbs = [db_name] if db_name else list(BACKUP_DBS)
+        dbs = [db_name] if db_name else self._readable_backup_dbs()
         plans = []
         for db in dbs:
             rows = self.list_backups(db)
@@ -1631,13 +1662,18 @@ class ColdStore:
 
     def get_backup(self, db_name: str, name: str, out_path: str) -> dict:
         """Download one backup file, in full, by its exact Drive name."""
-        if db_name not in BACKUP_DBS:
+        if db_name not in READ_BACKUP_DBS:
             raise ColdStoreError(
-                f"unknown backup db {db_name!r} — expected one of {', '.join(BACKUP_DBS)}"
+                f"unknown backup db {db_name!r} — expected one of {', '.join(READ_BACKUP_DBS)}"
             )
         if "'" in name:
             raise ColdStoreError("backup name must not contain a single quote")
-        folder_id = self._folder_id(f"db-backups/{db_name}")
+        if db_name in LEGACY_BACKUP_DBS:
+            folder_id = self._legacy_backup_folder_id(db_name)
+            if not folder_id:
+                raise ColdStoreError(f"no {db_name} backups on this install")
+        else:
+            folder_id = self._folder_id(f"db-backups/{db_name}")
         q = f"'{folder_id}' in parents and name = '{name}' and trashed = false"
         url = (
             self.drive_base
@@ -2540,7 +2576,7 @@ def main(argv=None) -> int:
     p_list_backups = sub.add_parser(
         "list-backups", help="list DB backups in Drive, newest first"
     )
-    p_list_backups.add_argument("--db", choices=BACKUP_DBS, default=None)
+    p_list_backups.add_argument("--db", choices=READ_BACKUP_DBS, default=None)
     p_sync = sub.add_parser(
         "sync-manifest",
         help="push the local manifest to the D1 cold-store-manifest database (idempotent upserts)",
@@ -2554,7 +2590,7 @@ def main(argv=None) -> int:
         "prune-backups",
         help="enforce backup retention (30 daily / 12 weekly / 12 monthly, trash-not-delete); dry-run unless --apply",
     )
-    p_prune.add_argument("--db", choices=BACKUP_DBS, default=None)
+    p_prune.add_argument("--db", choices=READ_BACKUP_DBS, default=None)
     p_prune.add_argument(
         "--apply",
         action="store_true",
@@ -2563,7 +2599,7 @@ def main(argv=None) -> int:
     p_get_backup = sub.add_parser(
         "get-backup", help="download one backup file in full by its exact name"
     )
-    p_get_backup.add_argument("db", choices=BACKUP_DBS)
+    p_get_backup.add_argument("db", choices=READ_BACKUP_DBS)
     p_get_backup.add_argument("name")
     p_get_backup.add_argument("out_path")
     sub.add_parser(

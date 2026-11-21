@@ -188,6 +188,27 @@ function utcDateKey(now: number): string {
   return `${y}-${m}-${day}`;
 }
 
+function isDateKey(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const timestamp = Date.parse(`${value}T00:00:00.000Z`);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === value;
+}
+
+function normalizeDailyCounter(value: unknown, now: number, cap: number): DailyCounter {
+  if (
+    value &&
+    typeof value === "object" &&
+    isDateKey((value as DailyCounter).date) &&
+    Number.isSafeInteger((value as DailyCounter).count) &&
+    (value as DailyCounter).count >= 0
+  ) {
+    return { date: (value as DailyCounter).date, count: (value as DailyCounter).count };
+  }
+  // Malformed persisted usage is not evidence that today's budget is unused.
+  // Fail closed for the rest of the UTC day rather than resetting the cap.
+  return { date: utcDateKey(now), count: cap };
+}
+
 export function emptyState(now: number): RemediationState {
   return {
     actions: {},
@@ -580,14 +601,18 @@ export function recordAttempt(
 
   // Daily counters.
   const dateKey = utcDateKey(now);
-  const facetCounter = next.dailyPerFacet[facet];
+  const storedFacetCounter = next.dailyPerFacet[facet];
+  const facetCounter = storedFacetCounter
+    ? normalizeDailyCounter(storedFacetCounter, now, FACET_DAILY_CAP)
+    : { date: dateKey, count: 0 };
   if (facetCounter && facetCounter.date === dateKey) {
     next.dailyPerFacet[facet] = { date: dateKey, count: facetCounter.count + 1 };
   } else {
     next.dailyPerFacet[facet] = { date: dateKey, count: 1 };
   }
-  if (next.dailyGlobal.date === dateKey) {
-    next.dailyGlobal = { date: dateKey, count: next.dailyGlobal.count + 1 };
+  const globalCounter = normalizeDailyCounter(next.dailyGlobal, now, GLOBAL_DAILY_CAP);
+  if (globalCounter.date === dateKey) {
+    next.dailyGlobal = { date: dateKey, count: globalCounter.count + 1 };
   } else {
     next.dailyGlobal = { date: dateKey, count: 1 };
   }
@@ -636,11 +661,12 @@ export function deserializeState(raw: string, now: number): RemediationState {
         parsed.circuitBreakers && typeof parsed.circuitBreakers === "object" ? parsed.circuitBreakers : {},
       exhaustedIncidents:
         parsed.exhaustedIncidents && typeof parsed.exhaustedIncidents === "object" ? parsed.exhaustedIncidents : {},
-      dailyPerFacet: parsed.dailyPerFacet && typeof parsed.dailyPerFacet === "object" ? parsed.dailyPerFacet : {},
-      dailyGlobal:
-        parsed.dailyGlobal && typeof parsed.dailyGlobal === "object" && parsed.dailyGlobal.date
-          ? parsed.dailyGlobal
-          : { date: utcDateKey(now), count: 0 },
+      dailyPerFacet: Object.fromEntries(
+        Object.entries(parsed.dailyPerFacet && typeof parsed.dailyPerFacet === "object" ? parsed.dailyPerFacet : {}).map(
+          ([facet, counter]) => [facet, normalizeDailyCounter(counter, now, FACET_DAILY_CAP)],
+        ),
+      ),
+      dailyGlobal: normalizeDailyCounter(parsed.dailyGlobal, now, GLOBAL_DAILY_CAP),
       inFlight: parsed.inFlight ?? null,
     };
   } catch {

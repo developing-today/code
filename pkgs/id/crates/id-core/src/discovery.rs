@@ -35,9 +35,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use iroh_base::EndpointId;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 // ============================================================================
 // Constants
@@ -50,7 +51,7 @@ use serde::{Deserialize, Serialize};
 /// hashes the string via SHA-512 to produce a stable 32-byte topic hash.
 ///
 /// Can be overridden with `--topic` CLI flag for private networks, or
-/// by editing `defaults.conf` at build time.
+/// by editing `defaults.json` at build time.
 pub const DEFAULT_TOPIC: &str = "id-peer-discovery-v1";
 
 /// Default shared secret for the public discovery network (hardcoded fallback).
@@ -59,7 +60,7 @@ pub const DEFAULT_TOPIC: &str = "id-peer-discovery-v1";
 /// records. Only nodes with the same secret can discover each other via DHT.
 ///
 /// Can be overridden with `--topic-secret` CLI flag for private networks, or
-/// by editing `defaults.conf` at build time.
+/// by editing `defaults.json` at build time.
 ///
 /// **Note:** This is public knowledge -- anyone can join the default network.
 /// Private networks should use a unique secret.
@@ -69,136 +70,162 @@ pub const DEFAULT_TOPIC_SECRET: &[u8] = b"id-public-discovery-v1";
 // Build-time defaults
 // ============================================================================
 
-/// Raw content of `defaults.conf`, embedded at compile time.
-const DEFAULTS_CONF: &str = include_str!("defaults.conf");
+/// Raw content of `defaults.json`, embedded at compile time.
+const DEFAULTS_JSON: &str = include_str!("defaults.json");
 
-/// Parsed build-time defaults, initialized once on first access.
-static PARSED_DEFAULTS: LazyLock<Defaults> = LazyLock::new(|| parse_defaults(DEFAULTS_CONF));
+/// Build-time replace/append policy for list defaults.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DefaultsMode {
+    /// Keep built-in defaults and append file values.
+    #[default]
+    Append,
+    /// Use file lists instead of built-in lists.
+    Replace,
+}
 
-/// Build-time defaults parsed from `defaults.conf`.
-///
-/// Values in this struct come from `src/defaults.conf`, which is embedded
-/// into the binary via `include_str!()`. Edit that file before compiling
-/// to change the defaults for a specific deployment.
-///
-/// # Resolution Order
-///
-/// ```text
-/// const fallback (hardcoded in source)  ←  used if no conf file entry
-///     ↓
-/// build defaults (defaults.conf)        ←  --replace-defaults: use ONLY conf, skip hardcoded
-///     ↓
-///     + CLI --bootstrap, --topic, --topic-secret at serve time
-///     ↓
-///     - --no-default-bootstrap, --no-default-topic: skip defaults
-///     ↓
-/// effective config
-/// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Typed defaults parsed from the embedded JSON file.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Defaults {
-    /// Bootstrap node IDs from the `[bootstrap]` section.
+    /// Bootstrap node IDs.
     pub bootstrap: Vec<String>,
-    /// Topic name from the `[topic]` section (first non-comment line).
+    /// Topic name (must be supplied with `topic_secret`).
     pub topic: Option<String>,
-    /// Topic secret from the `[topic_secret]` section (first non-comment line).
+    /// Topic secret (must be supplied with `topic`).
     pub topic_secret: Option<String>,
-    /// Web listener addresses from the `[web_bindings]` section (#2145),
-    /// kept as raw `IP:PORT` strings: parsing and validation happen at
-    /// serve startup, where a malformed line fails startup naming the line.
+    /// Web listener addresses.
     pub web_bindings: Vec<String>,
+    /// Relay policy selector.
+    pub relay: crate::connectivity::RelayPolicy,
+    /// Whether gossip is enabled by default.
+    pub gossip: bool,
+    /// List merge mode.
+    pub mode: DefaultsMode,
 }
 
-/// Parses a `defaults.conf`-formatted string into a [`Defaults`] struct.
-///
-/// Format:
-/// - `[section]` starts a section
-/// - `# comment` lines are ignored
-/// - Blank lines are ignored
-/// - Values are one per line; `[topic]` and `[topic_secret]` use only
-///   the first non-comment value
-///
-/// # Example
-///
-/// ```rust
-/// use id_core::discovery::parse_defaults;
-///
-/// let conf = r#"
-/// [bootstrap]
-/// abc123
-/// def456
-///
-/// [topic]
-/// my-custom-topic
-///
-/// [topic_secret]
-/// my-secret
-/// "#;
-///
-/// let defaults = parse_defaults(conf);
-/// assert_eq!(defaults.bootstrap, vec!["abc123", "def456"]);
-/// assert_eq!(defaults.topic.as_deref(), Some("my-custom-topic"));
-/// assert_eq!(defaults.topic_secret.as_deref(), Some("my-secret"));
-/// ```
-pub fn parse_defaults(conf: &str) -> Defaults {
-    let mut bootstrap = Vec::new();
-    let mut web_bindings: Vec<String> = Vec::new();
-    let mut topic: Option<String> = None;
-    let mut topic_secret: Option<String> = None;
-
-    let mut current_section: Option<&str> = None;
-
-    for line in conf.lines() {
-        let trimmed = line.trim();
-
-        // Skip empty lines and comments
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
+impl Default for Defaults {
+    fn default() -> Self {
+        Self {
+            bootstrap: Vec::new(),
+            topic: None,
+            topic_secret: None,
+            web_bindings: Vec::new(),
+            relay: crate::connectivity::RelayPolicy::N0,
+            gossip: true,
+            mode: DefaultsMode::Append,
         }
-
-        // Section header
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            current_section = Some(match &trimmed[1..trimmed.len() - 1] {
-                "bootstrap" => "bootstrap",
-                "web_bindings" => "web_bindings",
-                "topic" => "topic",
-                "topic_secret" => "topic_secret",
-                _ => "unknown",
-            });
-            continue;
-        }
-
-        // Value line — dispatch to the current section
-        match current_section {
-            Some("bootstrap") => {
-                bootstrap.push(trimmed.to_owned());
-            }
-            Some("web_bindings") => {
-                web_bindings.push(trimmed.to_owned());
-            }
-            Some("topic") if topic.is_none() => {
-                topic = Some(trimmed.to_owned());
-            }
-            Some("topic_secret") if topic_secret.is_none() => {
-                topic_secret = Some(trimmed.to_owned());
-            }
-            _ => {} // ignore unknown sections or extra values
-        }
-    }
-
-    Defaults {
-        bootstrap,
-        topic,
-        topic_secret,
-        web_bindings,
     }
 }
 
-/// Returns the parsed build-time defaults from `defaults.conf`.
-///
-/// This is a cheap accessor — the file is parsed once and cached in a
-/// `LazyLock`. The returned reference is `'static`.
+impl DefaultsMode {
+    /// Stable lowercase spelling used in provenance output.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Append => "append",
+            Self::Replace => "replace",
+        }
+    }
+}
+
+/// Origin metadata for the embedded defaults.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefaultsProvenance {
+    /// Whether the binary uses only the code constants or an effective file.
+    pub source: DefaultsSource,
+    /// SHA-256 of the exact embedded JSON bytes, when effective file values exist.
+    pub sha256: Option<String>,
+    /// List merge mode when file values are effective.
+    pub mode: Option<DefaultsMode>,
+}
+
+impl DefaultsProvenance {
+    /// Formats the origin in a stable form suitable for logs and `--version`.
+    pub fn describe(&self) -> String {
+        match self.source {
+            DefaultsSource::ConstsOnly => "defaults: consts".to_owned(),
+            DefaultsSource::File => format!(
+                "defaults: file sha256={} mode={}",
+                self.sha256.as_deref().unwrap_or("unknown"),
+                self.mode.unwrap_or_default().as_str(),
+            ),
+        }
+    }
+}
+
+/// Defaults source reported by the binary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefaultsSource {
+    /// Embedded file has no effective values.
+    ConstsOnly,
+    /// One or more embedded-file values affect defaults.
+    File,
+}
+
+static PARSED_DEFAULTS: LazyLock<(Defaults, DefaultsProvenance)> = LazyLock::new(|| {
+    parse_embedded_defaults(DEFAULTS_JSON).unwrap_or_else(|error| panic!("{error:#}"))
+});
+
+fn parse_embedded_defaults(json: &str) -> Result<(Defaults, DefaultsProvenance)> {
+    let defaults: Defaults = serde_json::from_str(json)
+        .context("parsing embedded defaults.json")
+        .and_then(validate_defaults)?;
+    // `mode` by itself is policy, not a customization. An empty or
+    // mode-only file is therefore the const-only build promised by the
+    // defaults format.
+    let effective = defaults.bootstrap.len() > 0
+        || defaults.topic.is_some()
+        || defaults.topic_secret.is_some()
+        || !defaults.web_bindings.is_empty()
+        || defaults.relay != crate::connectivity::RelayPolicy::N0
+        || !defaults.gossip;
+    let provenance = DefaultsProvenance {
+        source: if effective {
+            DefaultsSource::File
+        } else {
+            DefaultsSource::ConstsOnly
+        },
+        sha256: effective.then(|| {
+            Sha256::digest(json.as_bytes())
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        }),
+        mode: effective.then_some(defaults.mode),
+    };
+    Ok((defaults, provenance))
+}
+
+fn validate_defaults(defaults: Defaults) -> Result<Defaults> {
+    ensure_topic_pair(
+        defaults.topic.as_deref(),
+        defaults.topic_secret.as_deref(),
+        "defaults.json",
+    )?;
+    if defaults.mode == DefaultsMode::Replace
+        && (defaults.topic.is_none() || defaults.topic_secret.is_none())
+    {
+        bail!("defaults.json mode=replace requires both topic and topic_secret");
+    }
+    Ok(defaults)
+}
+
+fn ensure_topic_pair(topic: Option<&str>, secret: Option<&str>, layer: &str) -> Result<()> {
+    match (topic, secret) {
+        (Some(_), None) => bail!("{layer} supplies topic without topic_secret"),
+        (None, Some(_)) => bail!("{layer} supplies topic_secret without topic"),
+        _ => Ok(()),
+    }
+}
+
+/// Returns the parsed defaults. Invalid embedded configuration fails loudly.
 pub fn defaults() -> &'static Defaults {
-    &PARSED_DEFAULTS
+    &PARSED_DEFAULTS.0
+}
+
+/// Returns provenance for this binary's embedded defaults.
+pub fn defaults_provenance() -> &'static DefaultsProvenance {
+    &PARSED_DEFAULTS.1
 }
 
 /// Resolved configuration for peer discovery after applying the full
@@ -206,7 +233,7 @@ pub fn defaults() -> &'static Defaults {
 ///
 /// Produced by [`resolve_config`]. All fields are ready to use — no
 /// further defaulting is needed.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedConfig {
     /// Bootstrap node IDs to contact on startup.
     pub bootstrap: Vec<String>,
@@ -214,6 +241,10 @@ pub struct ResolvedConfig {
     pub topic: String,
     /// Shared secret bytes for DHT record encryption.
     pub topic_secret: Vec<u8>,
+    /// Relay policy selected from defaults and runtime override.
+    pub relay: crate::connectivity::RelayPolicy,
+    /// Whether gossip is enabled by default.
+    pub gossip: bool,
 }
 
 /// Resolves the effective peer discovery configuration by applying the
@@ -221,20 +252,7 @@ pub struct ResolvedConfig {
 ///
 /// # Resolution Order
 ///
-/// 1. Start with hardcoded fallback constants.
-/// 2. Override with values from `defaults.conf` (if present).
-/// 3. If `replace_defaults` is `true`, skip the hardcoded fallback
-///    entirely — only `defaults.conf` values are used.
-/// 4. Append CLI-provided `bootstrap` node IDs.
-/// 5. Override topic/secret with CLI values (if `Some`).
-/// 6. If `no_default_bootstrap` is `true`, drop all default bootstrap
-///    nodes (keep only CLI-provided ones).
-/// 7. If `no_default_topic` is `true`, the topic and secret resolve
-///    together as a pair: both CLI values when both are provided, or
-///    both hardcoded constants when neither is. A single-sided CLI
-///    pair is refused with an error naming the missing half, so a
-///    custom value is never paired with the public default for the
-///    other half.
+/// consts → defaults.json → CLI additions/overrides → runtime skip flags.
 ///
 /// # Errors
 ///
@@ -247,30 +265,37 @@ pub struct ResolvedConfig {
 /// * `cli_bootstrap` - Node IDs supplied via `--bootstrap`
 /// * `cli_topic` - Topic name supplied via `--topic`
 /// * `cli_topic_secret` - Secret supplied via `--topic-secret`
-/// * `replace_defaults` - `--replace-defaults`: use ONLY conf file values
 /// * `no_default_bootstrap` - `--no-default-bootstrap`: skip default bootstrap nodes
 /// * `no_default_topic` - `--no-default-topic`: skip default topic/secret
 pub fn resolve_config(
     cli_bootstrap: &[String],
     cli_topic: Option<&str>,
     cli_topic_secret: Option<&str>,
-    replace_defaults: bool,
     no_default_bootstrap: bool,
     no_default_topic: bool,
 ) -> Result<ResolvedConfig> {
-    let defs = defaults();
+    resolve_config_with_defaults(
+        defaults(),
+        cli_bootstrap,
+        cli_topic,
+        cli_topic_secret,
+        no_default_bootstrap,
+        no_default_topic,
+    )
+}
 
+fn resolve_config_with_defaults(
+    defs: &Defaults,
+    cli_bootstrap: &[String],
+    cli_topic: Option<&str>,
+    cli_topic_secret: Option<&str>,
+    no_default_bootstrap: bool,
+    no_default_topic: bool,
+) -> Result<ResolvedConfig> {
     // --- Bootstrap ---
     let mut bootstrap: Vec<String> = if no_default_bootstrap {
-        // Skip all defaults — only CLI-provided
         Vec::new()
-    } else if replace_defaults {
-        // Only conf file values (skip hardcoded — but there are no hardcoded
-        // bootstrap nodes currently, so this is the same as the default path)
-        defs.bootstrap.clone()
     } else {
-        // Hardcoded fallback + conf file (currently no hardcoded bootstrap
-        // nodes, so this is just the conf file values)
         defs.bootstrap.clone()
     };
     // Append CLI-provided bootstrap nodes, then deduplicate (preserving order)
@@ -279,59 +304,25 @@ pub fn resolve_config(
     bootstrap.retain(|v| seen.insert(v.clone()));
 
     // --- Topic + Secret (resolved as a pair) ---
-    // Under `no_default_topic` the two halves must come from the same
-    // source: both CLI-provided, or both hardcoded. Anything else
-    // would pair a private value with the public default half.
-    let (topic, topic_secret) = if no_default_topic {
-        match (cli_topic, cli_topic_secret) {
-            (Some(t), Some(s)) => (t.to_owned(), s.as_bytes().to_vec()),
-            (None, None) => (DEFAULT_TOPIC.to_owned(), DEFAULT_TOPIC_SECRET.to_vec()),
-            (Some(_), None) => {
-                bail!(
-                    "--no-default-topic with --topic requires --topic-secret: refusing to pair a custom topic with the public default secret"
-                );
-            }
-            (None, Some(_)) => {
-                bail!(
-                    "--no-default-topic with --topic-secret requires --topic: refusing to pair a custom secret with the public default topic"
-                );
-            }
+    ensure_topic_pair(cli_topic, cli_topic_secret, "CLI flags")?;
+    let (topic, secret) = if let (Some(topic), Some(secret)) = (cli_topic, cli_topic_secret) {
+        (topic.to_owned(), secret.as_bytes().to_vec())
+    } else if !no_default_topic {
+        if let (Some(topic), Some(secret)) = (&defs.topic, &defs.topic_secret) {
+            (topic.clone(), secret.as_bytes().to_vec())
+        } else {
+            (DEFAULT_TOPIC.to_owned(), DEFAULT_TOPIC_SECRET.to_vec())
         }
     } else {
-        let topic = if let Some(t) = cli_topic {
-            // CLI takes precedence
-            t.to_owned()
-        } else if replace_defaults {
-            // Only conf file value
-            defs.topic
-                .clone()
-                .unwrap_or_else(|| DEFAULT_TOPIC.to_owned())
-        } else {
-            // Conf file value, falling back to hardcoded
-            defs.topic
-                .clone()
-                .unwrap_or_else(|| DEFAULT_TOPIC.to_owned())
-        };
-
-        // --- Topic Secret ---
-        let topic_secret = if let Some(s) = cli_topic_secret {
-            s.as_bytes().to_vec()
-        } else if replace_defaults {
-            defs.topic_secret
-                .as_ref()
-                .map_or_else(|| DEFAULT_TOPIC_SECRET.to_vec(), |s| s.as_bytes().to_vec())
-        } else {
-            defs.topic_secret
-                .as_ref()
-                .map_or_else(|| DEFAULT_TOPIC_SECRET.to_vec(), |s| s.as_bytes().to_vec())
-        };
-        (topic, topic_secret)
+        (DEFAULT_TOPIC.to_owned(), DEFAULT_TOPIC_SECRET.to_vec())
     };
 
     Ok(ResolvedConfig {
         bootstrap,
         topic,
-        topic_secret,
+        topic_secret: secret,
+        relay: defs.relay,
+        gossip: defs.gossip,
     })
 }
 
@@ -1180,131 +1171,156 @@ mod tests {
     }
 
     // ========================================================================
-    // parse_defaults / resolve_config tests
-    // ========================================================================
+    // defaults / resolve_config tests
 
     #[test]
-    fn test_parse_defaults_full() {
-        let conf = r"
-[bootstrap]
-abc123
-def456
-
-[topic]
-my-topic
-
-[topic_secret]
-my-secret
-";
-        let d = parse_defaults(conf);
-        assert_eq!(d.bootstrap, vec!["abc123", "def456"]);
-        assert_eq!(d.topic.as_deref(), Some("my-topic"));
-        assert_eq!(d.topic_secret.as_deref(), Some("my-secret"));
+    fn embedded_defaults_are_valid_and_have_provenance() {
+        let parsed: Defaults = serde_json::from_str(DEFAULTS_JSON).unwrap();
+        validate_defaults(parsed).unwrap();
+        assert_eq!(defaults().topic.as_deref(), Some(DEFAULT_TOPIC));
+        assert_eq!(
+            defaults().topic_secret.as_deref(),
+            Some("id-public-discovery-v1")
+        );
+        assert_eq!(defaults_provenance().source, DefaultsSource::File);
+        assert!(
+            defaults_provenance()
+                .sha256
+                .as_ref()
+                .is_some_and(|hash| hash.len() == 64)
+        );
     }
 
     #[test]
-    fn test_parse_defaults_web_bindings() {
-        // #2145: [web_bindings] lines are collected raw, in order;
-        // comments and other sections do not leak in.
-        let conf = r"
-[web_bindings]
-127.0.0.1:3000
-# a comment
-192.0.2.10:3001
-
-[topic]
-my-topic
-";
-        let d = parse_defaults(conf);
-        assert_eq!(d.web_bindings, vec!["127.0.0.1:3000", "192.0.2.10:3001"]);
-        assert_eq!(d.topic.as_deref(), Some("my-topic"));
+    fn empty_json_is_const_equivalent_and_unknown_fields_fail() {
+        let empty: Defaults = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty, Defaults::default());
+        let unknown = serde_json::from_str::<Defaults>(r#"{"topc":"typo"}"#);
+        assert!(unknown.is_err());
+        assert!(serde_json::from_str::<Defaults>(r#"{"bootstrap":"not-a-list"}"#).is_err());
     }
 
     #[test]
-    fn test_parse_defaults_no_web_bindings_section() {
-        let d = parse_defaults("");
-        assert!(d.web_bindings.is_empty());
+    fn provenance_is_absent_for_consts_and_has_stable_file_format() {
+        let (_, consts) = parse_embedded_defaults(r#"{"mode":"append"}"#).unwrap();
+        assert_eq!(consts.source, DefaultsSource::ConstsOnly);
+        assert_eq!(consts.sha256, None);
+        assert_eq!(consts.mode, None);
+        assert_eq!(consts.describe(), "defaults: consts");
+
+        let json = r#"{"topic":"private","topic_secret":"secret"}"#;
+        let (_, file) = parse_embedded_defaults(json).unwrap();
+        let expected_hash = Sha256::digest(json.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(file.source, DefaultsSource::File);
+        assert_eq!(file.sha256.as_deref(), Some(expected_hash.as_str()));
+        assert_eq!(file.mode, Some(DefaultsMode::Append));
+        assert_eq!(
+            file.describe(),
+            format!("defaults: file sha256={expected_hash} mode=append")
+        );
     }
 
     #[test]
-    fn test_parse_defaults_empty() {
-        let d = parse_defaults("");
-        assert!(d.bootstrap.is_empty());
-        assert!(d.topic.is_none());
-        assert!(d.topic_secret.is_none());
+    fn empty_and_const_valued_file_matrices_match_const_defaults() {
+        let empty: Defaults = serde_json::from_str("{}").unwrap();
+        let const_valued: Defaults = serde_json::from_str(
+            r#"{"topic":"id-peer-discovery-v1","topic_secret":"id-public-discovery-v1"}"#,
+        )
+        .unwrap();
+        let topic_pair = [(None, None), (Some("cli-topic"), Some("cli-secret"))];
+        for no_bootstrap in [false, true] {
+            for no_topic in [false, true] {
+                for (topic, secret) in topic_pair {
+                    let consts = resolve_config_with_defaults(
+                        &empty,
+                        &[],
+                        topic,
+                        secret,
+                        no_bootstrap,
+                        no_topic,
+                    )
+                    .unwrap();
+                    let file = resolve_config_with_defaults(
+                        &const_valued,
+                        &[],
+                        topic,
+                        secret,
+                        no_bootstrap,
+                        no_topic,
+                    )
+                    .unwrap();
+                    assert_eq!(consts, file);
+                }
+            }
+        }
     }
 
     #[test]
-    fn test_parse_defaults_comments_only() {
-        let conf = r"
-# just a comment
-[bootstrap]
-# no actual bootstrap nodes
+    fn build_defaults_override_relay_gossip_and_pair_together() {
+        let defs: Defaults = serde_json::from_str(
+            r#"{"topic":"private","topic_secret":"secret","relay":"disabled","gossip":false}"#,
+        )
+        .unwrap();
+        let actual = resolve_config_with_defaults(&defs, &[], None, None, false, false).unwrap();
+        assert_eq!(actual.topic, "private");
+        assert_eq!(actual.topic_secret, b"secret");
+        assert_eq!(actual.relay, crate::connectivity::RelayPolicy::Disabled);
+        assert!(!actual.gossip);
 
-[topic]
-# no topic either
-";
-        let d = parse_defaults(conf);
-        assert!(d.bootstrap.is_empty());
-        assert!(d.topic.is_none());
+        let cli =
+            resolve_config_with_defaults(&defs, &[], Some("cli"), Some("cli-secret"), false, false)
+                .unwrap();
+        assert_eq!(cli.topic, "cli");
+        assert_eq!(cli.topic_secret, b"cli-secret");
     }
 
     #[test]
-    fn test_parse_defaults_only_first_topic_value() {
-        let conf = r"
-[topic]
-first-topic
-second-topic-ignored
-";
-        let d = parse_defaults(conf);
-        assert_eq!(d.topic.as_deref(), Some("first-topic"));
+    fn file_pair_is_atomic_and_replace_requires_pair() {
+        let partial: Defaults = serde_json::from_str(r#"{"topic":"private"}"#).unwrap();
+        assert!(
+            validate_defaults(partial)
+                .unwrap_err()
+                .to_string()
+                .contains("topic_secret")
+        );
+        let replace: Defaults = serde_json::from_str(r#"{"mode":"replace"}"#).unwrap();
+        assert!(
+            validate_defaults(replace)
+                .unwrap_err()
+                .to_string()
+                .contains("requires both")
+        );
+
+        let replace_with_pair: Defaults =
+            serde_json::from_str(r#"{"mode":"replace","topic":"private","topic_secret":"secret"}"#)
+                .unwrap();
+        assert!(validate_defaults(replace_with_pair).is_ok());
     }
 
     #[test]
-    fn test_parse_defaults_unknown_section_ignored() {
-        let conf = r"
-[unknown]
-some-value
-[bootstrap]
-node1
-";
-        let d = parse_defaults(conf);
-        assert_eq!(d.bootstrap, vec!["node1"]);
+    fn cli_bootstrap_nodes_append_and_deduplicate_in_order() {
+        let defs: Defaults = serde_json::from_str(r#"{"bootstrap":["file-a","file-b"]}"#).unwrap();
+        let cli = vec!["file-b".to_owned(), "cli-c".to_owned()];
+        let resolved = resolve_config_with_defaults(&defs, &cli, None, None, false, false).unwrap();
+        assert_eq!(resolved.bootstrap, ["file-a", "file-b", "cli-c"]);
     }
 
     #[test]
-    fn test_parse_defaults_embedded_file() {
-        // The actual embedded defaults.conf should parse without error
-        let d = parse_defaults(DEFAULTS_CONF);
-        // The shipped file has a topic and topic_secret but no bootstrap nodes
-        assert!(d.bootstrap.is_empty());
-        assert_eq!(d.topic.as_deref(), Some("id-peer-discovery-v1"));
-        assert_eq!(d.topic_secret.as_deref(), Some("id-public-discovery-v1"));
-    }
+    fn test_resolve_config_defaults_and_cli_overrides() {
+        let cfg = resolve_config(&[], None, None, false, false).unwrap();
+        assert_eq!(cfg.topic, DEFAULT_TOPIC);
+        assert_eq!(cfg.topic_secret, DEFAULT_TOPIC_SECRET);
+        assert!(cfg.gossip);
+        assert_eq!(cfg.relay, crate::connectivity::RelayPolicy::N0);
 
-    #[test]
-    fn test_defaults_accessor() {
-        let d = defaults();
-        // Should match the embedded file
-        assert_eq!(d.topic.as_deref(), Some("id-peer-discovery-v1"));
-    }
-
-    #[test]
-    fn test_resolve_config_all_defaults() {
-        let cfg = resolve_config(&[], None, None, false, false, false).unwrap();
-        assert_eq!(cfg.topic, "id-peer-discovery-v1");
-        assert_eq!(cfg.topic_secret, b"id-public-discovery-v1");
-        assert!(cfg.bootstrap.is_empty()); // no bootstrap in default conf
-    }
-
-    #[test]
-    fn test_resolve_config_cli_overrides() {
         let cli_bs = vec!["node1".to_owned()];
         let cfg = resolve_config(
             &cli_bs,
             Some("custom-topic"),
             Some("custom-secret"),
-            false,
             false,
             false,
         )
@@ -1315,83 +1331,20 @@ node1
     }
 
     #[test]
-    fn test_resolve_config_no_default_bootstrap() {
-        let cli_bs = vec!["cli-node".to_owned()];
-        let cfg = resolve_config(&cli_bs, None, None, false, true, false).unwrap();
-        // Only CLI bootstrap, no defaults
-        assert_eq!(cfg.bootstrap, vec!["cli-node"]);
+    fn topic_pair_cannot_be_overridden_halfway() {
+        let error = resolve_config(&[], Some("private"), None, false, false).unwrap_err();
+        assert!(error.to_string().contains("topic_secret"));
+        let error = resolve_config(&[], None, Some("secret"), false, false).unwrap_err();
+        assert!(error.to_string().contains("topic"));
     }
 
     #[test]
-    fn test_resolve_config_no_default_topic() {
-        let cfg = resolve_config(&[], None, None, false, false, true).unwrap();
-        // Falls back to hardcoded constant
+    fn no_default_flags_keep_cli_values_only_or_const_pair() {
+        let nodes = vec!["cli-node".to_owned()];
+        let cfg = resolve_config(&nodes, None, None, true, true).unwrap();
+        assert_eq!(cfg.bootstrap, nodes);
         assert_eq!(cfg.topic, DEFAULT_TOPIC);
-        assert_eq!(cfg.topic_secret, DEFAULT_TOPIC_SECRET);
-    }
-
-    #[test]
-    fn test_resolve_config_no_default_topic_with_cli() {
-        let cfg = resolve_config(
-            &[],
-            Some("cli-topic"),
-            Some("cli-secret"),
-            false,
-            false,
-            true,
-        )
-        .unwrap();
-        // CLI takes precedence even when no_default_topic is set
-        assert_eq!(cfg.topic, "cli-topic");
-        assert_eq!(cfg.topic_secret, b"cli-secret");
-    }
-
-    #[test]
-    fn test_resolve_config_replace_defaults() {
-        let cfg = resolve_config(&[], None, None, true, false, false).unwrap();
-        // replace_defaults uses conf file values (which match hardcoded for default conf)
-        assert_eq!(cfg.topic, "id-peer-discovery-v1");
-    }
-
-    #[test]
-    fn test_resolve_config_cli_bootstrap_appended_to_defaults() {
-        // Even with no default bootstrap in the conf file, CLI nodes are appended
-        let cli_bs = vec!["a".to_owned(), "b".to_owned()];
-        let cfg = resolve_config(&cli_bs, None, None, false, false, false).unwrap();
-        assert_eq!(cfg.bootstrap, vec!["a", "b"]);
-    }
-
-    #[test]
-    fn test_resolve_config_deduplicates_bootstrap() {
-        // Duplicate entries should be removed, preserving first occurrence order
-        let cli_bs = vec![
-            "a".to_owned(),
-            "b".to_owned(),
-            "a".to_owned(),
-            "c".to_owned(),
-        ];
-        let cfg = resolve_config(&cli_bs, None, None, false, false, false).unwrap();
-        assert_eq!(cfg.bootstrap, vec!["a", "b", "c"]);
-    }
-
-    #[test]
-    fn test_resolve_config_no_default_topic_with_only_cli_topic_is_refused() {
-        let err = resolve_config(&[], Some("my-private-net"), None, false, false, true)
-            .expect_err("single-sided --topic under --no-default-topic must be refused");
-        // The error names the missing half so the caller knows what to add.
-        assert!(
-            err.to_string().contains("requires --topic-secret"),
-            "unexpected error: {err:#}"
-        );
-    }
-
-    #[test]
-    fn test_resolve_config_no_default_topic_with_only_cli_secret_is_refused() {
-        let err = resolve_config(&[], None, Some("my-private-secret"), false, false, true)
-            .expect_err("single-sided --topic-secret under --no-default-topic must be refused");
-        assert!(
-            err.to_string().contains("requires --topic:"),
-            "unexpected error: {err:#}"
-        );
+        let cfg = resolve_config(&[], Some("private"), Some("secret"), false, true).unwrap();
+        assert_eq!(cfg.topic, "private");
     }
 }

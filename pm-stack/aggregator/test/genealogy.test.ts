@@ -61,6 +61,22 @@ describe("genealogy read model", () => {
     expect(result.sentence).toContain("release Release 1 due 2026-12-01");
   });
 
+  test("preserves canonical Kind when a later board membership omits it", () => {
+    const child = item(20, { parentRef: ref(19) });
+    const canonicalEpic = item(19, { title: "Canonical epic", kind: "Epic" });
+    const satelliteCopy = item(19, { title: "Canonical epic", kind: null, boardId: "satellite" });
+
+    const result = deriveGenealogy(child, [child, canonicalEpic, satelliteCopy]);
+
+    expect(result.ancestors).toContainEqual({
+      ref: ref(19),
+      title: "Canonical epic",
+      kind: "Epic",
+      relation: "primary-parent",
+    });
+    expect(result.sentence).toContain("as part of epic Canonical epic");
+  });
+
   test("renders chain breaks honestly and enriches roadmap rows with known overlay refs", () => {
     const lone = item(7, { title: "Orphan" });
     const result = deriveGenealogy(lone, [lone]);
@@ -114,5 +130,43 @@ describe("genealogy read model", () => {
     expect(deriveGenealogy(current, [current, former]).sentence).toContain(
       "Formerly part of Former epic (developing-today/code#99)",
     );
+  });
+
+  test("keeps a historical parent's current ancestry out of the historical relationship", () => {
+    const oldGrandparent = item(97, { title: "Former grandparent", kind: "Epic" });
+    const former = item(99, { title: "Former epic", kind: "Epic", parentRef: ref(97) });
+    const currentParent = item(101, { title: "Current epic", kind: "Epic" });
+    const current = item(100, {
+      title: "Split task",
+      parentRef: ref(101),
+      historicalParentRefs: [ref(99)],
+    });
+
+    const result = deriveGenealogy(current, [oldGrandparent, former, currentParent, current]);
+
+    expect(result.ancestors.map(({ ref: ancestorRef, relation }) => [ancestorRef, relation])).toEqual([
+      [ref(101), "parent"],
+      [ref(99), "historical-parent"],
+      [ref(101), "primary-parent"],
+    ]);
+    expect(result.sentence).toContain("Formerly part of Former epic (developing-today/code#99)");
+    expect(result.sentence).not.toContain("Former grandparent");
+  });
+
+  test("renders independent historical parents as separate chains", () => {
+    const formerOne = item(99, { title: "Former epic one", kind: "Epic" });
+    const formerTwo = item(98, { title: "Former epic two", kind: "Epic" });
+    const current = item(100, {
+      title: "Split task",
+      historicalParentRefs: [ref(99), ref(98)],
+    });
+
+    const result = deriveGenealogy(current, [formerOne, formerTwo, current]);
+
+    expect(result.ancestors.filter(({ relation }) => relation === "historical-parent").map(({ ref: ancestorRef }) => ancestorRef))
+      .toEqual([ref(99), ref(98)]);
+    expect(result.sentence).toContain("Formerly part of Former epic one (developing-today/code#99)");
+    expect(result.sentence).toContain("Formerly part of Former epic two (developing-today/code#98)");
+    expect(result.sentence).not.toContain("Former epic one (developing-today/code#99) →");
   });
 });
