@@ -199,9 +199,13 @@ async function maybeCreateIssue(
  * Missing/bad registry state is an explicit retained outcome rather
  * than a guessed path or an exception that could replace the launch
  * error. */
-async function retireFailedWorktree(worktree: string | null) {
+async function retireFailedWorktree(worktree: string | null, sessionId: string | null = null) {
   if (!worktree) return null;
   try {
+    // A previous registry bind may have failed even though createSession
+    // returned. Retry the durable binding after the failure handler has
+    // deleted that known session, so cleanup can use confirmed evidence.
+    if (sessionId != null) await worktreeRegistry.setSessionId(worktree, sessionId);
     const record = (await worktreeRegistry.load()).find((r) => r.worktree === worktree && r.state === "active");
     if (!record) return { worktree, removed: false, reason: "no active registry record; retained" };
     return await cleanupDispatchWorktree({
@@ -384,7 +388,7 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
           e,
           failureContext.sessionId,
           (sessionId) => opencode.deleteSession(sessionId),
-          () => retireFailedWorktree(failureContext.worktree),
+          (sessionId) => retireFailedWorktree(failureContext.worktree, sessionId),
         );
       }
     })();
@@ -414,7 +418,7 @@ async function handleSessions(req: Request, caller: CallerIdentity): Promise<Res
       e,
       failureContext.sessionId,
       (sessionId) => opencode.deleteSession(sessionId),
-      () => retireFailedWorktree(failureContext.worktree),
+      (failedSessionId) => retireFailedWorktree(failureContext.worktree, failedSessionId),
     );
     // A lost claim race is a conflict, not an upstream failure: the
     // task is running under the worker that claimed it (#10737).

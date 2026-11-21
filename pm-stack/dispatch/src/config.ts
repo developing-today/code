@@ -138,8 +138,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     worktreeSweepSeconds: (() => {
       const v = s(env.PM_DISPATCH_WORKTREE_SWEEP_SECONDS, "900");
       if (v.toLowerCase() === "off") return null;
-      if (!/^\d+$/.test(v) || Number(v) < 1) {
-        throw new Error(`Invalid PM_DISPATCH_WORKTREE_SWEEP_SECONDS "${v}": expected a positive integer or "off"`);
+      if (!/^\d+$/.test(v) || Number(v) < 1 || Number(v) > 2_147_483) {
+        throw new Error(
+          `Invalid PM_DISPATCH_WORKTREE_SWEEP_SECONDS "${v}": expected a positive integer from 1 to 2147483, or "off"`,
+        );
       }
       return Number(v);
     })(),

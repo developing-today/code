@@ -84,7 +84,8 @@ export interface LaunchFailureContext {
  * failure was established. Returns the cleanup outcome for the note,
  * or null when there is nothing to retire. Never throws: a worktree
  * outcome must not mask the launch failure being reported. */
-export type RetireWorktree = () => Promise<{ worktree: string; removed: boolean; reason: string } | null>;
+export type RetireWorktree = (sessionId?: string | null) => Promise<{ worktree: string; removed: boolean; reason: string } | null>;
+export type ReportRetirement = (outcome: { worktree: string; removed: boolean; reason: string }) => void;
 
 /**
  * Run the part of a launch that follows successful session creation.
@@ -110,17 +111,33 @@ export async function handleLaunchFailure(
   sessionId: string | null = null,
   deleteSession?: (sessionId: string) => Promise<void>,
   retireWorktree?: RetireWorktree,
+  reportRetirement: ReportRetirement = (outcome) => {
+    if (!outcome.removed) {
+      console.warn(`[pm-dispatch] task worktree ${outcome.worktree} retained: ${outcome.reason}`);
+    }
+  },
 ): Promise<string> {
   const msg = e instanceof Error ? e.message : String(e);
   // #12217: best-effort worktree retirement, reported, never thrown —
   // and never attempted while the session may still be live.
-  const retireSafely = async (): Promise<{ worktree: string; removed: boolean; reason: string } | null> => {
+  const retireSafely = async (retiredSessionId: string | null = sessionId): Promise<{ worktree: string; removed: boolean; reason: string } | null> => {
     if (!retireWorktree) return null;
     try {
-      return await retireWorktree();
+      const outcome = await retireWorktree(retiredSessionId);
+      if (outcome && !outcome.removed) safelyReportRetirement(outcome);
+      return outcome;
     } catch (re) {
       const reason = re instanceof Error ? re.message : String(re);
-      return { worktree: "unknown", removed: false, reason };
+      const outcome = { worktree: "unknown", removed: false, reason };
+      safelyReportRetirement(outcome);
+      return outcome;
+    }
+  };
+  const safelyReportRetirement = (outcome: { worktree: string; removed: boolean; reason: string }) => {
+    try {
+      reportRetirement(outcome);
+    } catch {
+      /* reporting must not mask the original launch failure */
     }
   };
   if (e instanceof ClaimLostError) {
@@ -130,9 +147,11 @@ export async function handleLaunchFailure(
     if (sessionId != null && deleteSession) {
       try {
         await deleteSession(sessionId);
-        await retireSafely();
+        await retireSafely(sessionId);
       } catch {
-        /* best-effort: the session never received the task's claim */
+        // Deletion may have failed while the session is still live. Run
+        // the fail-closed evidence check so the retained worktree is visible.
+        await retireSafely(sessionId);
       }
     }
     return msg;
@@ -148,9 +167,16 @@ export async function handleLaunchFailure(
   let cleanupError: string | null = null;
   let worktreeNote = "";
   if (sessionId == null) {
-    // No session was ever recorded: nothing to wait for on the session
-    // side, so the worktree decision runs on its own evidence now.
-    const outcome = await retireSafely();
+    // createSession can time out or lose its response after the server
+    // accepted the request. The session may still come up later, so the
+    // tree cannot be retired on an empty session-list snapshot.
+    const outcome = retireWorktree
+      ? await retireSafely(null) ?? {
+          worktree: "unknown",
+          removed: false,
+          reason: "session creation outcome is unknown; a session may still be live",
+        }
+      : null;
     if (outcome) {
       worktreeNote = outcome.removed
         ? `\n\nTask worktree ${outcome.worktree} was removed after the failed launch.`
@@ -171,6 +197,12 @@ export async function handleLaunchFailure(
       }
     } catch (de) {
       cleanupError = de instanceof Error ? de.message : String(de);
+      const outcome = await retireSafely(sessionId);
+      if (outcome) {
+        worktreeNote = outcome.removed
+          ? `\n\nTask worktree ${outcome.worktree} was removed after the failed launch.`
+          : `\n\nTask worktree ${outcome.worktree} was retained: ${outcome.reason}.`;
+      }
     }
   }
   if (issueNumber != null) {

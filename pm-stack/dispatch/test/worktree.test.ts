@@ -117,6 +117,11 @@ describe("helpers and config", () => {
     expect(loadConfig({ PM_DISPATCH_WORKTREE_ROOT: "/srv/wt" }).worktreeRoot).toBe("/srv/wt");
     expect(loadConfig({ PM_DISPATCH_WORKTREE_ROOT: "off" }).worktreeRoot).toBeNull();
   });
+
+  test("worktree sweep interval fits setInterval's supported millisecond range", () => {
+    expect(loadConfig({ PM_DISPATCH_WORKTREE_SWEEP_SECONDS: "2147483" }).worktreeSweepSeconds).toBe(2147483);
+    expect(() => loadConfig({ PM_DISPATCH_WORKTREE_SWEEP_SECONDS: "2147484" })).toThrow("2147483");
+  });
 });
 
 describe("dispatch worktree cleanup (#12217)", () => {
@@ -195,6 +200,56 @@ describe("dispatch worktree cleanup (#12217)", () => {
     expect(existsSync(unknown.worktree)).toBe(true);
   });
 
+  test("retains an unbound session record without querying the session server", async () => {
+    const existing = await registeredTree();
+    const record = await registry.add({ ...existing, sessionId: null });
+    let queried = false;
+    const result = await cleanupDispatchWorktree({
+      record,
+      registry,
+      getSession: async () => { queried = true; return null; },
+      listSessions: async () => { queried = true; return []; },
+      isOccupied: unoccupied,
+    });
+    expect(result.removed).toBe(false);
+    expect(result.worktree).toBe(record.worktree);
+    expect(result.reason).toContain("unbound or uncertain");
+    expect(queried).toBe(false);
+    expect(existsSync(record.worktree)).toBe(true);
+  });
+
+  test("retains a session list containing an entry without a usable directory", async () => {
+    const record = await registeredTree();
+    const result = await cleanupDispatchWorktree({
+      record,
+      registry,
+      getSession: goneSession,
+      listSessions: async () => [{ id: "session-without-directory" }],
+      isOccupied: unoccupied,
+    });
+    expect(result.removed).toBe(false);
+    expect(result.reason).toContain("without a usable directory");
+    expect(existsSync(record.worktree)).toBe(true);
+  });
+
+  test("a corrupt registry produces one retained sweep outcome without touching sessions", async () => {
+    const file = join(tmp, "corrupt-registry", "worktrees.json");
+    mkdirSync(join(tmp, "corrupt-registry"), { recursive: true });
+    writeFileSync(file, "{broken json\n");
+    const brokenRegistry = new WorktreeRegistry(file);
+    let queried = false;
+    const { sweepDispatchWorktrees } = await import("../src/worktree_cleanup.ts");
+    const results = await sweepDispatchWorktrees({
+      registry: brokenRegistry,
+      getSession: async () => { queried = true; return null; },
+      listSessions: async () => { queried = true; return []; },
+    });
+    expect(results).toHaveLength(1);
+    expect(results[0].removed).toBe(false);
+    expect(results[0].reason).toContain("not valid JSON");
+    expect(queried).toBe(false);
+  });
+
   test("retains uncommitted, untracked, and unpublished work", async () => {
     const dirty = await registeredTree();
     writeFileSync(join(dirty.worktree, "untracked.txt"), "keep me\n");
@@ -222,6 +277,97 @@ describe("dispatch worktree cleanup (#12217)", () => {
     expect(unpublishedResult.removed).toBe(false);
     expect(existsSync(unpublished.worktree)).toBe(true);
     expect(unpublishedResult.reason).toContain("HEAD is not the recorded base");
+  });
+
+  test("retains ignored files instead of deleting them with the worktree", async () => {
+    const ignored = await registeredTree();
+    writeFileSync(join(ignored.worktree, ".gitignore"), ".env\n");
+    writeFileSync(join(ignored.worktree, ".env"), "keep this secret\n");
+    const result = await cleanupDispatchWorktree({
+      record: ignored,
+      registry,
+      getSession: goneSession,
+      listSessions: emptyList,
+      isOccupied: unoccupied,
+    });
+    expect(result.removed).toBe(false);
+    expect(result.reason).toContain("uncommitted or untracked work");
+    expect(existsSync(join(ignored.worktree, ".env"))).toBe(true);
+  });
+
+  test("only one concurrent cleanup can remove a registered tree", async () => {
+    const record = await registeredTree();
+    let unblock!: () => void;
+    const paused = new Promise<void>((resolve) => { unblock = resolve; });
+    let entered!: () => void;
+    const inList = new Promise<void>((resolve) => { entered = resolve; });
+    const first = cleanupDispatchWorktree({
+      record,
+      registry,
+      getSession: goneSession,
+      listSessions: async () => { entered(); await paused; return []; },
+      isOccupied: unoccupied,
+    });
+    await inList;
+    const second = await cleanupDispatchWorktree({
+      record,
+      registry,
+      getSession: goneSession,
+      listSessions: emptyList,
+      isOccupied: unoccupied,
+    });
+    expect(second.removed).toBe(false);
+    expect(second.reason).toContain("already in progress");
+    unblock();
+    const firstResult = await first;
+    expect(firstResult.removed).toBe(true);
+    expect(existsSync(record.worktree)).toBe(false);
+  });
+
+  test("holds the worktree HEAD lock through git worktree removal", async () => {
+    const record = await registeredTree();
+    const { runGit } = await import("../src/worktree.ts");
+    let sawLockDuringRemove = false;
+    let blockedExternalHeadMove = false;
+    const result = await cleanupDispatchWorktree({
+      record,
+      registry,
+      getSession: goneSession,
+      listSessions: emptyList,
+      isOccupied: unoccupied,
+      git: async (args) => {
+        if (args.includes("status")) {
+          const attempt = Bun.spawnSync(["git", "-C", record.worktree, "reset", "--hard", "HEAD"], { env });
+          blockedExternalHeadMove = attempt.exitCode !== 0;
+        }
+        if (args.includes("remove")) {
+          const head = git("-C", record.worktree, "rev-parse", "--git-path", "HEAD");
+          sawLockDuringRemove = existsSync(`${head}.lock`);
+        }
+        return runGit(args);
+      },
+    });
+    expect(result.removed).toBe(true);
+    expect(blockedExternalHeadMove).toBe(true);
+    expect(sawLockDuringRemove).toBe(true);
+  });
+
+  test("retains an existing HEAD lock without deleting another process's lock", async () => {
+    const record = await registeredTree();
+    const head = git("-C", record.worktree, "rev-parse", "--git-path", "HEAD");
+    const lock = `${head}.lock`;
+    writeFileSync(lock, "owned elsewhere\n");
+    const result = await cleanupDispatchWorktree({
+      record,
+      registry,
+      getSession: goneSession,
+      listSessions: emptyList,
+      isOccupied: unoccupied,
+    });
+    expect(result.removed).toBe(false);
+    expect(result.reason).toContain("cannot lock worktree HEAD");
+    expect(await Bun.file(lock).text()).toBe("owned elsewhere\n");
+    expect(existsSync(record.worktree)).toBe(true);
   });
 
   test("retains on an occupied tree and reports git removal failure without throwing", async () => {

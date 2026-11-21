@@ -25,14 +25,18 @@
 //     its record) and every cleanup failure is reported as an outcome,
 //     never thrown past the caller, so it can never mask a
 //     dispatch/session result.
-import { existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { runGit, type GitRunner } from "./worktree.ts";
 
 export class WorktreeCleanupError extends Error {}
 
 const msg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 const nowIso = (): string => new Date().toISOString();
+
+// A sweep, startup pass, or launch-failure handler may arrive at the same
+// record concurrently. Serialize destructive checks per exact registered path.
+const cleanupClaims = new Set<string>();
 
 // ---------------------------------------------------------------------------
 // Registry: the durable worktree <-> task/session association
@@ -43,9 +47,9 @@ const nowIso = (): string => new Date().toISOString();
  * acted on destructively. */
 export interface WorktreeRecord {
   taskId: number;
-  /** The OpenCode session bound to the tree, or null when the launch
-   * died before the session id was recorded (the session-list check
-   * still protects that tree — see worktreeSessionEvidence). */
+  /** The OpenCode session bound to the tree. Null means session creation
+   * may be pending or its outcome was lost; such records are never
+   * auto-removed, including after a dispatch restart. */
   sessionId: string | null;
   repo: string;
   /** The primary clone the tree was created from (git -C target). */
@@ -119,8 +123,9 @@ export class WorktreeRegistry {
     let raw: string;
     try {
       raw = readFileSync(this.file, "utf8");
-    } catch {
-      return []; // no file yet: nothing was ever registered under this path
+    } catch (e) {
+      if (typeof e === "object" && e !== null && "code" in e && e.code === "ENOENT") return [];
+      throw new WorktreeCleanupError(`cannot read worktree registry ${this.file}: ${msg(e)}`);
     }
     return parseRecords(raw, this.file);
   }
@@ -250,10 +255,11 @@ export async function worktreeSessionEvidence(args: {
       return { terminated: false, reason: `session ${args.record.sessionId} exists (live or resumable)` };
     }
   }
-  if (args.confirmedTerminated !== true && args.record.sessionId == null) {
-    // No session id recorded: a crash between worktree creation and
-    // session creation may still have left a live session in the tree,
-    // so the session list below decides — nothing else can.
+  if (args.record.sessionId == null) {
+    // An empty list cannot prove that an in-flight/timed-out createSession
+    // request will not complete after this read. Retain indefinitely; an
+    // operator can reconcile these records separately after restart.
+    return { terminated: false, reason: "session creation is unbound or uncertain; retained" };
   }
   try {
     const sessions = await args.listSessions();
@@ -270,7 +276,10 @@ export async function worktreeSessionEvidence(args: {
     }
     for (const raw of list) {
       const dir = sessionDirectory(raw);
-      if (dir !== null && containsPath(dir, treeReal)) {
+      if (dir === null || dir.trim() === "") {
+        return { terminated: false, reason: "session list contains an entry without a usable directory; retained" };
+      }
+      if (containsPath(dir, treeReal)) {
         const id = sessionIdOf(raw) ?? "(unknown id)";
         return { terminated: false, reason: `session ${id} still occupies the worktree` };
       }
@@ -302,7 +311,7 @@ function isProcessUsingPath(worktree: string): boolean {
   try {
     treeReal = realpathSync(worktree);
   } catch {
-    return false;
+    return true;
   }
   let pids: string[];
   try {
@@ -315,9 +324,11 @@ function isProcessUsingPath(worktree: string): boolean {
     try {
       const cwd = readlinkSync(`/proc/${pid}/cwd`);
       if (containsPath(cwd, treeReal)) return true;
-    } catch {
-      // A process exiting during the scan is harmless; unreadable cwd
-      // for an existing PID is handled by the next pass / session list.
+    } catch (e) {
+      const code = typeof e === "object" && e !== null && "code" in e ? e.code : null;
+      // Only confirmed process disappearance is harmless. EACCES and
+      // other ambiguous inspection failures retain the tree.
+      if (code !== "ENOENT" && code !== "ESRCH") return true;
     }
   }
   return false;
@@ -368,8 +379,14 @@ export async function cleanupDispatchWorktree(args: {
     }
     return { worktree: record.worktree, removed, reason };
   };
+  if (record.state === "removed") return { worktree: record.worktree, removed: true, reason: "already removed" };
+  if (cleanupClaims.has(record.worktree)) {
+    return { worktree: record.worktree, removed: false, reason: "cleanup already in progress; retained" };
+  }
+  cleanupClaims.add(record.worktree);
+  let headLockPath: string | null = null;
+  let headLockFd: number | null = null;
   try {
-    if (record.state === "removed") return { worktree: record.worktree, removed: true, reason: "already removed" };
     if (!existsSync(record.worktree)) return finish(true, "worktree already absent");
 
     const evidence = await worktreeSessionEvidence({
@@ -385,11 +402,25 @@ export async function cleanupDispatchWorktree(args: {
     if (isLocked(record.primary, record.worktree)) return finish(false, "worktree is locked");
 
     const git = args.git ?? runGit;
+    const headPathResult = await git(["-C", record.worktree, "rev-parse", "--git-path", "HEAD"]);
+    if (headPathResult.code !== 0 || !headPathResult.stdout.trim()) {
+      return finish(false, `cannot locate worktree HEAD for locking: ${headPathResult.stderr.trim() || "unavailable"}; retained`);
+    }
+    const headPath = resolve(record.worktree, headPathResult.stdout.trim());
+    const candidateLockPath = `${headPath}.lock`;
+    try {
+      headLockFd = openSync(candidateLockPath, "wx", 0o600);
+      headLockPath = candidateLockPath;
+      writeFileSync(headLockFd, `${process.pid}\n`);
+    } catch (e) {
+      return finish(false, `cannot lock worktree HEAD: ${msg(e)}; retained`);
+    }
+
     const head = await git(["-C", record.worktree, "rev-parse", "--verify", "HEAD"]);
     if (head.code !== 0 || head.stdout.trim() !== record.base) {
       return finish(false, `HEAD is not the recorded base commit (${head.stdout.trim() || "unavailable"}); retained`);
     }
-    const status = await git(["-C", record.worktree, "status", "--porcelain", "--untracked-files=all"]);
+    const status = await git(["-C", record.worktree, "status", "--porcelain", "--untracked-files=all", "--ignored"]);
     if (status.code !== 0) return finish(false, `git status failed: ${status.stderr.trim()}; retained`);
     if (status.stdout.trim()) return finish(false, `worktree has uncommitted or untracked work; retained`);
 
@@ -398,6 +429,14 @@ export async function cleanupDispatchWorktree(args: {
     return finish(true, "session ended and worktree was clean, unoccupied, unlocked, and at its recorded base commit; removed");
   } catch (e) {
     return finish(false, `cleanup check failed: ${msg(e)} — retained`);
+  } finally {
+    if (headLockFd !== null) {
+      try { closeSync(headLockFd); } catch { /* best effort; do not replace the cleanup outcome */ }
+    }
+    if (headLockPath !== null) {
+      try { unlinkSync(headLockPath); } catch { /* worktree removal may already have removed its administrative directory */ }
+    }
+    cleanupClaims.delete(record.worktree);
   }
 }
 
