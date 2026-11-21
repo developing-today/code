@@ -298,6 +298,10 @@ fn is_read_call(args: &[String]) -> bool {
         return false;
     };
     match verb {
+        // A clustered short option such as `-it VALUE` hides which
+        // token is the endpoint and which is a value, so it is never
+        // trusted as a read (#12157 review).
+        "api" if args[1..].iter().any(|a| is_short_option_cluster(a)) => false,
         "api" if api_endpoint(&args[1..]) == Some("graphql") => is_graphql_read(&args[1..]),
         "api" => {
             // gh api: GET unless --method says otherwise or a field
@@ -370,6 +374,19 @@ const GH_API_VALUE_FLAGS: [&str; 17] = [
 
 /// The endpoint argument of a `gh api` call (the first positional),
 /// given the arguments after `api`.
+/// Is `a` several short flags run together, like `-it`? gh api's
+/// short options that take a value (`-f -F -H -X -p -q -t`) may carry
+/// it attached (`-tTEMPLATE`), which is one option, not a cluster.
+/// Any other short option longer than two characters starts with a
+/// boolean flag (`-i`) followed by more flags.
+fn is_short_option_cluster(a: &str) -> bool {
+    let mut chars = a.chars();
+    chars.next() == Some('-')
+        && a.len() > 2
+        && !a.starts_with("--")
+        && !matches!(chars.next(), Some('f' | 'F' | 'H' | 'X' | 'p' | 'q' | 't'))
+}
+
 fn api_endpoint(args: &[String]) -> Option<&str> {
     let mut i = 0;
     while i < args.len() {
@@ -1518,6 +1535,30 @@ fn summarize_status(resp: &serde_json::Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn clustered_short_options_are_never_reads() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // -i then -t (which takes "graphql"): the endpoint is the issues URL.
+        assert!(!is_read_call(&v(&[
+            "api",
+            "-it",
+            "graphql",
+            "repos/o/r/issues",
+            "-f",
+            "title=x",
+            "-f",
+            "query={viewer{login}}"
+        ])));
+        assert!(!is_read_call(&v(&["api", "-it", "x", "repos/o/r/issues"])));
+        // An attached value is one option, not a cluster.
+        assert!(is_read_call(&v(&["api", "repos/o/r/issues", "-q.[]"])));
+        assert!(is_read_call(&v(&["api", "repos/o/r/issues", "-tx", "-i"])));
+        assert!(is_short_option_cluster("-it"));
+        assert!(!is_short_option_cluster("-i"));
+        assert!(!is_short_option_cluster("-tfoo"));
+        assert!(!is_short_option_cluster("--paginate"));
+    }
+
     use super::*;
 
     // oracle: GitHub's refusal strings as observed in fleet logs
