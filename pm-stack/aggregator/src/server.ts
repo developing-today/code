@@ -26,6 +26,7 @@ import {
   queuedComments,
   validateNewComment,
 } from "./comments.ts";
+import { PROMPT_STATUSES, PromptsStore, validateNewPrompt, type PromptStatus } from "./prompts.ts";
 import type { SavedView, ViewFilters, ViewItemLike } from "./views.ts";
 import { ViewsStore, filtersFromQuery, itemMatchesView, ownerKey } from "./views.ts";
 import { filterBoardForView, filterRoadmapForView, fragBoardUrl, linkedLike } from "./board-view.ts";
@@ -142,6 +143,7 @@ import { SpendRollupStore } from "./spend-rollups.ts";
 import { buildSpendCards, type SpendCardsView } from "./spend-cards.ts";
 import { buildProgramData, programRefs } from "./program.ts";
 import { buildReleaseSnapshots } from "./releases.ts";
+import { deriveGenealogy, enrichRoadmapRows } from "./genealogy.ts";
 import {
   PROJECT_CONFIGS,
   allProjectRefs,
@@ -260,6 +262,7 @@ const cfg = loadConfig();
 // the first request after a deploy serves it instead of a 503.
 const dashboardResponseWithinDeadline = createDashboardResponseDeadline({ persistDir: cfg.lastGoodDir });
 const commentsStore = new CommentsStore(cfg.commentsFile);
+const promptsStore = new PromptsStore(cfg.promptsFile);
 const roadmapAnnotationsStore = new RoadmapAnnotationsStore(cfg.roadmapAnnotationsFile);
 const coverageStore = new CoverageSnapshotStore(cfg.coverageSnapshotFile);
 const itemHistoryStore = new ItemHistoryStore(cfg.itemHistoryFile);
@@ -2226,6 +2229,30 @@ async function handler(req: Request): Promise<Response> {
     }
   }
 
+  if (req.method === "POST" && path === "/api/prompt") {
+    const parsed = validateNewPrompt(await readJsonBody(req).catch(() => null));
+    if (!parsed.ok) return json({ error: parsed.error }, 400);
+    try {
+      return json({ prompt: await promptsStore.add(parsed.value) }, 201);
+    } catch (err) {
+      return json({ error: `prompt persistence failed: ${err instanceof Error ? err.message : err}` }, 500);
+    }
+  }
+  if (req.method === "GET" && path === "/api/prompt") {
+    const status = url.searchParams.get("status");
+    const page = url.searchParams.get("page") ?? undefined;
+    const filter = {
+      page,
+      status: PROMPT_STATUSES.includes(status as PromptStatus) ? (status as PromptStatus) : undefined,
+    };
+    return json({ prompts: await promptsStore.list(filter) });
+  }
+  if (req.method === "GET" && path.startsWith("/api/prompt/")) {
+    const id = decodeURIComponent(path.slice("/api/prompt/".length));
+    const prompt = await promptsStore.get(id);
+    if (!prompt) return json({ error: "prompt not found" }, 404);
+    return json({ id: prompt.id, status: prompt.status, answer: prompt.answer, error: prompt.error });
+  }
   if (req.method === "POST" && path === "/api/comments") {
     try {
       const parsed = validateNewComment(await readJsonBody(req));
@@ -2784,6 +2811,8 @@ async function handler(req: Request): Promise<Response> {
     // the same way — the Roadmap charts render exactly this object.
     const flowAnalytics = computeFlowAnalytics(await itemHistoryStore.readAll().catch(() => []));
     const spendCards = await loadSpendCards();
+    const releaseSnapshots = buildReleaseSnapshots(pool);
+    const prioritiesView = url.searchParams.get("view") === "priorities";
     const g = url.searchParams.get("h") ?? "quarter";
     const grain: RoadmapGrain = GRAINS.has(g) ? (g as RoadmapGrain) : "quarter";
     const resolved = await resolveView(url);
@@ -2817,6 +2846,8 @@ async function handler(req: Request): Promise<Response> {
           forecasts,
           flowAnalytics,
           spendCards,
+          releaseSnapshots,
+          prioritiesView,
         ),
       );
     }
@@ -2842,6 +2873,8 @@ async function handler(req: Request): Promise<Response> {
         forecasts,
         flowAnalytics,
         spendCards,
+        releaseSnapshots,
+        prioritiesView,
       ),
     );
   }
@@ -3395,10 +3428,24 @@ async function handler(req: Request): Promise<Response> {
   }
   if (path === "/api/roadmap.json") {
     const { rows, items, reconciliation } = await roadmapContext();
+    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
+    const genealogyRows = enrichRoadmapRows(rows, pool);
+    if (url.searchParams.get("view") === "priorities") {
+      genealogyRows.sort((a, b) => {
+        const rank = (row: typeof a) => {
+          const match = /#(\d+)$/.exec(row.priority ?? "");
+          return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+        };
+        return rank(a) - rank(b) || a.title.localeCompare(b.title);
+      });
+    }
     const resolved = await resolveView(url);
     if (!resolved) {
       const annotatedRows = await Promise.all(
-        rows.map(async (row) => ({ ...row, annotations: await roadmapAnnotationsStore.forObject(row.subject) })),
+        genealogyRows.map(async (row) => ({
+          ...row,
+          annotations: await roadmapAnnotationsStore.forObject(row.subject),
+        })),
       );
       return json({
         rows: annotatedRows,
@@ -3407,14 +3454,16 @@ async function handler(req: Request): Promise<Response> {
         annotationAliases: await roadmapAnnotationsStore.aliasEntries(),
       });
     }
-    const pool = await source.projects().catch(() => [] as ProjectPoolItem[]);
     const poolByRef = new Map(pool.map((p) => [p.ref, p]));
     // #8723: the same rule as the HTML twin -- items linked from a
     // kept row ship even when they fail the view themselves.
     const { rows: keptRows, items: keptItemMap } = filterRoadmapForView(rows, items, poolByRef, resolved.filters);
     const keptItems = [...keptItemMap.values()];
     const annotatedKeptRows = await Promise.all(
-      keptRows.map(async (row) => ({ ...row, annotations: await roadmapAnnotationsStore.forObject(row.subject) })),
+      enrichRoadmapRows(keptRows, pool).map(async (row) => ({
+        ...row,
+        annotations: await roadmapAnnotationsStore.forObject(row.subject),
+      })),
     );
     return json({
       rows: annotatedKeptRows,
@@ -4356,6 +4405,7 @@ async function handler(req: Request): Promise<Response> {
       // #1154: when one of the item's refs is in the Project pool, the
       // item page carries the status-request control for that pool item.
       const pooled = pool.find((p) => refs.includes(p.ref));
+      const genealogy = pooled ? deriveGenealogy(pooled, pool) : null;
       const epicRollup = pooled?.kind === "Epic" ? buildEpicRollups(pool).get(pooled.ref) : undefined;
       const dispatchStates = await readyAgentDispatchStates(items);
       if (itemJsonMatch) {
@@ -4363,6 +4413,7 @@ async function handler(req: Request): Promise<Response> {
           subject,
           linkedItems: [...items.values()],
           dispatchStates,
+          ...(genealogy ? { ancestors: genealogy.ancestors, release: genealogy.release } : {}),
         });
       }
       const extras = {
@@ -4383,6 +4434,7 @@ async function handler(req: Request): Promise<Response> {
             }
           : {}),
         ...(epicRollup ? { epicRollup } : {}),
+        ...(genealogy ? { genealogySentence: genealogy.sentence } : {}),
         briefs,
         ...(dispatchStates.length ? { dispatchStates } : {}),
         activity: {

@@ -47,6 +47,7 @@ var implementedEffectProbes = map[string]string{
 	"pool.sharing":                       "TestPoolDefaultsAreReachableFromTheEnvironment",
 	"pool.scope":                         "TestPoolDefaultsAreReachableFromTheEnvironment",
 	"output.json":                        "TestOutputJSONIsReachableFromTheEnvironment",
+	"output.color":                       "TestOutputColorIsReachableFromTheEnvironment",
 	"script.prefix":                      "TestScriptPrefixIsReachableFromTheEnvironment",
 	"script.cwd":                         "TestScriptCwdIsReachableFromTheEnvironment",
 	"script.interpreter":                 "TestScriptInterpreterIsReachableFromTheEnvironment",
@@ -265,6 +266,7 @@ var implementedEffectProbes = map[string]string{
 var effectProbeFuncs = map[string]func(*testing.T){
 	"TestLoggingFileOffWritesNoDurableLog":                                           TestLoggingFileOffWritesNoDurableLog,
 	"TestOutputJSONIsReachableFromTheEnvironment":                                    TestOutputJSONIsReachableFromTheEnvironment,
+	"TestOutputColorIsReachableFromTheEnvironment":                                   TestOutputColorIsReachableFromTheEnvironment,
 	"TestPathsConfigFileChangesWhichConfigLoads":                                     TestPathsConfigFileChangesWhichConfigLoads,
 	"TestPathsScriptsFindsRecipesThatLiveOnlyThere":                                  TestPathsScriptsFindsRecipesThatLiveOnlyThere,
 	"TestPathsCacheChangesTheDoctorDirectory":                                        TestPathsCacheChangesTheDoctorDirectory,

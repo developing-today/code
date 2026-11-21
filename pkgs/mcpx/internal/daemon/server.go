@@ -918,6 +918,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.route(mux, "GET /v1/client.ts", s.handleClient)
 	s.route(mux, "GET /v1/globals.d.ts", s.handleGlobals)
 	s.route(mux, "POST /v1/call", s.handleCall)
+	s.route(mux, "POST /v1/calls/{run}", s.handleCallHistoryBegin)
+	s.route(mux, "GET /v1/calls/{run}", s.handleCallHistorySnapshot)
 	s.route(mux, "POST /v1/batch", s.handleBatch)
 	s.route(mux, "POST /v1/resource", s.handleResource)
 	s.route(mux, "POST /v1/session/release", s.handleRelease)
@@ -1947,6 +1949,26 @@ func (s *Server) handleLogRecord(w http.ResponseWriter, r *http.Request) {
 func (s *Server) callRegistry() *execsvc.CallRegistry {
 	s.callOnce.Do(func() { s.calls = execsvc.NewCallRegistry() })
 	return s.calls
+}
+
+func (s *Server) handleCallHistoryBegin(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("run")
+	if runID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "run id is required"})
+		return
+	}
+	s.callRegistry().BeginHistory(runID)
+	writeJSON(w, http.StatusOK, map[string]any{"available": true})
+}
+
+func (s *Server) handleCallHistorySnapshot(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("run")
+	calls, ok, truncated := s.callRegistry().History(runID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "call history is unavailable or expired"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"available": true, "truncated": truncated, "calls": calls})
 }
 
 // reportCallFrame tells the exec stream that is running this call, if

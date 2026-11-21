@@ -82,6 +82,41 @@ class WriterTests(unittest.TestCase):
             self.assertEqual(db.query("select count(*) n from orch_runs")[0]["n"], 3)
             db.db.close()
 
+    def test_refuses_bad_documents_before_any_write(self):
+        db = Database()
+        item = dict(
+            id="a",
+            kind="decision",
+            title="a",
+            source="test",
+            reason="test",
+            since="2026-11-18",
+            lastSeenAt="2026-11-18",
+        )
+        bad = [
+            # generatedAt set to the runId sorted above every later run.
+            dict(runId="orch-x", generatedAt="orch-x", version=1, tiers={}),
+            dict(
+                runId="r1",
+                generatedAt="2026-11-20T21:44:10Z",
+                version=1,
+                tiers={"needsDrew": [item], "needsOrchestrator": [item]},
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            p = Path(directory) / "doc.json"
+            for d in bad:
+                p.write_text(json.dumps(d))
+                with (
+                    patch.object(sys, "argv", [str(path), str(p)]),
+                    patch.object(writer, "Turso", return_value=db),
+                ):
+                    with self.assertRaises(SystemExit) as caught:
+                        writer.main()
+                self.assertIn("refused before writing", str(caught.exception))
+            self.assertEqual(db.query("select count(*) n from orch_runs")[0]["n"], 0)
+        db.db.close()
+
 
 if __name__ == "__main__":
     unittest.main()

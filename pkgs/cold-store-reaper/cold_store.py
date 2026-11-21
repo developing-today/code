@@ -96,6 +96,17 @@ D1_MAX_PARAMS_PER_QUERY = 100
 LIST_MAX_PAGES = 10_000
 LIST_MAX_RESULTS = 1_000_000
 D1_SYNC_PARAM_BUDGET = 90
+# D1 answers a burst of REST queries with HTTP 429 ("Your account is
+# generating too much load on D1 DBs") or 503 when it is shedding load.
+# Nov 19: one 429 in the middle of a 47-statement sync failed the whole
+# nightly sync-manifest step, though the account was far below its
+# limits. Every sync statement is an idempotent upsert, so the same
+# statement is simply sent again after a pause: Retry-After when D1
+# gives one (capped), otherwise D1_SYNC_BACKOFF_SECONDS x attempt.
+D1_SYNC_ATTEMPTS = 5
+D1_SYNC_RETRY_STATUSES = (429, 503)
+D1_SYNC_BACKOFF_SECONDS = 2.0
+D1_SYNC_BACKOFF_CAP_SECONDS = 30.0
 
 
 # R2 (DESIGN.md sections 4-5): the supabase-backups bucket is both a
@@ -483,6 +494,9 @@ class ColdStore:
         # Injectable so tests can zero it: transport-retry backoff for
         # the S3 layer (see _s3_request).
         self.s3_backoff_seconds = S3_TRANSPORT_BACKOFF_SECONDS
+        # Injectable so tests can zero it: the pause between D1 sync
+        # retries after a 429/503 (see _d1_sync_post).
+        self.d1_backoff_seconds = D1_SYNC_BACKOFF_SECONDS
 
     # ------------------------------------------------------------------ init
     def init(self) -> dict:
@@ -1788,18 +1802,10 @@ class ColdStore:
         if dry_run:
             return total
         token, url = self._d1_endpoint()
+        retries = 0
         for stmt in statements:
-            status, _h, resp = http_request(
-                "POST",
-                url,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json",
-                },
-                data=json.dumps(
-                    {"sql": stmt["sql"], "params": stmt["params"]}
-                ).encode(),
-            )
+            status, resp, used = self._d1_sync_post(token, url, stmt)
+            retries += used
             if status != 200:
                 raise ColdStoreError(
                     f"D1 sync failed (HTTP {status}) on table {stmt['table']}: "
@@ -1814,7 +1820,44 @@ class ColdStore:
                     f"D1 sync rejected a {stmt['table']} statement: "
                     f"{_d1_first_error_message(payload) or 'unknown error'}"
                 )
+        total["retries"] = retries
         return total
+
+    def _d1_retry_delay(self, headers: dict, attempt: int) -> float:
+        """Seconds to wait before retry number `attempt` (1-based)."""
+        retry_after = None
+        for key, value in (headers or {}).items():
+            if key.lower() == "retry-after":
+                try:
+                    retry_after = float(value)
+                except (TypeError, ValueError):
+                    retry_after = None
+                break
+        if retry_after is not None and retry_after >= 0:
+            return min(retry_after, D1_SYNC_BACKOFF_CAP_SECONDS)
+        return min(self.d1_backoff_seconds * attempt, D1_SYNC_BACKOFF_CAP_SECONDS)
+
+    def _d1_sync_post(self, token: str, url: str, stmt: dict):
+        """POST one sync statement, retrying D1's load-shedding answers.
+
+        Returns (status, body, retries used). A 429 or 503 is retried up
+        to D1_SYNC_ATTEMPTS times in all; any other status, or the last
+        throttled answer, goes back to the caller unchanged.
+        """
+        data = json.dumps({"sql": stmt["sql"], "params": stmt["params"]}).encode()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        attempt = 1
+        while True:
+            status, resp_headers, resp = http_request(
+                "POST", url, headers=headers, data=data
+            )
+            if status not in D1_SYNC_RETRY_STATUSES or attempt >= D1_SYNC_ATTEMPTS:
+                return status, resp, attempt - 1
+            time.sleep(self._d1_retry_delay(resp_headers, attempt))
+            attempt += 1
 
     # ------------------------------------------------------------- backup-d1
     @staticmethod

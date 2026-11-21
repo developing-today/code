@@ -173,7 +173,7 @@ func (a *App) localStore() (*artifacts.Store, error) {
 // has launchers, phases and a typecheck mode that the wire Options
 // deliberately do not mirror. Everything after the process starts is the
 // shared implementation.
-func (a *App) localService(store *artifacts.Store, socket string, cfg *config.Config) *execsvc.Service {
+func (a *App) localService(store *artifacts.Store, c *Client, cfg *config.Config) *execsvc.Service {
 	set := a.Settings()
 	lim := execsvc.DefaultLimits()
 	lim.Interpreter = set.String("script.interpreter")
@@ -191,8 +191,11 @@ func (a *App) localService(store *artifacts.Store, socket string, cfg *config.Co
 		// store it is has to be the same one for a path to mean anything to
 		// both. A socket is the evidence for that: a remote endpoint has
 		// none, and then artifact({path}) sends bytes instead.
-		Local:  socket != "",
-		Limits: lim,
+		Local: c.Socket() != "",
+		// Tool calls made by this local script execute in the daemon process.
+		// Bridge their hashed call history back before outcome hooks run.
+		CallHistory: c,
+		Limits:      lim,
 	}
 	// Prompt hooks (#5276) on a local run resolve through the same
 	// configured model layer the daemon uses, minus the broker samplers
@@ -232,6 +235,39 @@ func (a *App) localService(store *artifacts.Store, socket string, cfg *config.Co
 		}
 	}
 	return svc
+}
+
+// Begin registers a local CLI run's cross-process call history with the
+// daemon before its generated client starts making calls.
+func (c *Client) Begin(ctx context.Context, runID string) error {
+	_, err := c.do(ctx, http.MethodPost, "/v1/calls/"+url.PathEscape(runID), nil)
+	return err
+}
+
+// Snapshot fetches the hashed-only call history collected by the daemon.
+func (c *Client) Snapshot(ctx context.Context, runID string) ([]execsvc.CallInfo, error) {
+	body, err := c.do(ctx, http.MethodGet, "/v1/calls/"+url.PathEscape(runID), nil)
+	if err != nil {
+		return nil, err
+	}
+	var rep struct {
+		Available bool               `json:"available"`
+		Truncated bool               `json:"truncated"`
+		Calls     []execsvc.CallInfo `json:"calls"`
+	}
+	if err := json.Unmarshal(body, &rep); err != nil {
+		return nil, err
+	}
+	if !rep.Available {
+		return nil, errors.New("daemon reported call history unavailable")
+	}
+	if rep.Truncated {
+		return nil, errors.New("daemon call history exceeded its retention limit")
+	}
+	if rep.Calls == nil {
+		rep.Calls = []execsvc.CallInfo{}
+	}
+	return rep.Calls, nil
 }
 
 // ---- the remote path ----

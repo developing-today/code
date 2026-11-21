@@ -45,6 +45,7 @@
 pub use id_core::port;
 
 pub mod blob_gate;
+pub mod chat_anchor_render;
 pub mod groups;
 pub mod program_bundle;
 pub mod program_gallery;

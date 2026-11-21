@@ -1,4 +1,14 @@
-# Native Sites dummy probe
+# ChatGPT connector Site
+
+The private Site's Worker is now the ChatGPT side of the message bridge:
+after Sites signs the caller in, it passes each `/mcp` request to the
+bridge's `/mcp/<chatgpt token>` (see `worker/index.js`), so ChatGPT runs
+the same tools as Claude over the same store. Set the bridge's ChatGPT
+token (Bitwarden `message-bridge.chatgpt-token`) as the Site secret
+`MESSAGE_BRIDGE_TOKEN`, or, where the Site has no secrets, upload it as
+the R2 object `config/message-bridge-token` in `BUCKET`. Optional:
+`MESSAGE_BRIDGE_URL` (default `https://bridge.security.cab`) and
+`OWNER_USER_ID` (only that Sites user). The packaging below is unchanged.
 
 Run `bash scripts/test-helpers.sh` for hermetic build and staging checks. Run `node test.mjs` to test the Worker with synthetic identity/storage.
 For a local artifact, set `SITE_PROJECT_ID` and run `npm run build` and
@@ -30,4 +40,4 @@ For a local artifact, set `SITE_PROJECT_ID` and run `npm run build` and
    Owner publication/installation and ordinary ChatGPT acceptance are distinct
    gates; do not infer them from successful local tests or a Dot-only check.
 
-The probe uses only a fixed marker. Do not route real messages through it.
+Real messages now flow through this Worker; keep the Site private.
