@@ -202,14 +202,28 @@ impl<F: ListenerFactory, M: MountSink> PublicationManager<F, M> {
             }
         };
 
-        if let Err(error) = candidate.save(&self.registry_path) {
-            // Save failed: close the staged listener without
-            // changing the active set.
-            if let Some(listener) = staged {
-                listener.close();
+        let durability_error = match candidate.save(&self.registry_path) {
+            Ok(()) => None,
+            Err(error)
+                if error
+                    .downcast_ref::<id_core::durable_write::DurableWriteError>()
+                    .is_some_and(|write| {
+                        write.stage() == id_core::durable_write::WriteStage::AfterRename
+                    }) =>
+            {
+                // The rename installed this candidate, despite the directory
+                // sync failure. Continue applying it so memory, disk and live
+                // resources agree; report the uncertain durability afterward.
+                Some(error)
             }
-            return Err(error).context("persisting the publications registry");
-        }
+            Err(error) => {
+                // A pre-rename save failure leaves the previous set installed.
+                if let Some(listener) = staged {
+                    listener.close();
+                }
+                return Err(error).context("persisting the publications registry");
+            }
+        };
         self.registry = candidate;
 
         match &publication.placement {
@@ -247,6 +261,11 @@ impl<F: ListenerFactory, M: MountSink> PublicationManager<F, M> {
                 self.mounted.push(path.clone());
             }
         }
+        if let Some(error) = durability_error {
+            return Err(error).context(
+                "publication was applied, but syncing the registry directory failed after rename",
+            );
+        }
         Ok(warning)
     }
 
@@ -266,9 +285,21 @@ impl<F: ListenerFactory, M: MountSink> PublicationManager<F, M> {
         let previous = self.registry.clone();
         let mut candidate = self.registry.clone();
         let removed = candidate.unpublish(placement)?;
-        candidate
-            .save(&self.registry_path)
-            .context("persisting the publications registry")?;
+        let durability_error = match candidate.save(&self.registry_path) {
+            Ok(()) => None,
+            Err(error)
+                if error
+                    .downcast_ref::<id_core::durable_write::DurableWriteError>()
+                    .is_some_and(|write| {
+                        write.stage() == id_core::durable_write::WriteStage::AfterRename
+                    }) =>
+            {
+                // The candidate is already installed; finish removing its live
+                // resource before returning the durability warning.
+                Some(error)
+            }
+            Err(error) => return Err(error).context("persisting the publications registry"),
+        };
         self.registry = candidate;
 
         // Act on the REMOVED record's placement, never the caller's
@@ -306,6 +337,11 @@ impl<F: ListenerFactory, M: MountSink> PublicationManager<F, M> {
                     self.mounted.retain(|mounted| mounted != path);
                 }
             }
+        }
+        if let Some(error) = durability_error {
+            return Err(error).context(
+                "publication was removed, but syncing the registry directory failed after rename",
+            );
         }
         Ok(removed)
     }
