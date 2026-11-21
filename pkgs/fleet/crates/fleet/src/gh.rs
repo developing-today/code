@@ -287,6 +287,123 @@ fn classify_failure(output: &str) -> FailureClass {
     FailureClass::Other
 }
 
+/// The `gh` command word, past any inherited flags given before it
+/// (`gh -R o/r secret set ...`). `-R`/`--repo` take a value.
+fn command_word(args: &[String]) -> Option<&str> {
+    let mut i = 0;
+    while let Some(a) = args.get(i) {
+        let a = a.as_str();
+        if a == "-R" || a == "--repo" {
+            i += 2;
+        } else if a.starts_with('-') {
+            i += 1;
+        } else {
+            return Some(a);
+        }
+    }
+    None
+}
+
+/// The call's arguments as they go into the audit log, with the
+/// values that are themselves secrets replaced: `gh secret set`
+/// bodies and `Authorization` headers. Only the logged copy changes;
+/// `gh` still gets the real arguments.
+fn audit_args(args: &[String]) -> Vec<String> {
+    const REDACTED: &str = "[redacted]";
+    let is_secret = command_word(args) == Some("secret");
+    // A header is redacted when its name can carry a credential: the
+    // standard auth and cookie headers, and any custom header whose name
+    // mentions a token, key, secret, password, session or auth.
+    let redact_header = |v: &str| -> Option<String> {
+        let (name, _) = v.split_once(':')?;
+        let name = name.trim();
+        let lower = name.to_ascii_lowercase();
+        let sensitive = [
+            "auth",
+            "cookie",
+            "token",
+            "secret",
+            "key",
+            "password",
+            "session",
+            "credential",
+        ]
+        .iter()
+        .any(|w| lower.contains(w));
+        sensitive.then(|| format!("{name}: {REDACTED}"))
+    };
+    let mut out = Vec::with_capacity(args.len());
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if is_secret && (a == "--body" || a == "-b") {
+            out.push(a.to_string());
+            if i + 1 < args.len() {
+                out.push(REDACTED.to_string());
+            }
+            i += 2;
+            continue;
+        }
+        if is_secret && (a.starts_with("--body=") || (a.starts_with("-b") && a.len() > 2)) {
+            let flag = if a.starts_with("--body=") {
+                "--body="
+            } else {
+                "-b"
+            };
+            out.push(format!("{flag}{REDACTED}"));
+            i += 1;
+            continue;
+        }
+        if a == "-H" || a == "--header" {
+            if let Some(r) = args.get(i + 1).and_then(|v| redact_header(v)) {
+                out.push(a.to_string());
+                out.push(r);
+                i += 2;
+                continue;
+            }
+        }
+        // Attached spellings: --header=V, -HV and -H=V all send V.
+        let attached = a
+            .strip_prefix("--header=")
+            .map(|v| ("--header=", v))
+            .or_else(|| a.strip_prefix("-H=").map(|v| ("-H=", v)))
+            .or_else(|| a.strip_prefix("-H").map(|v| ("-H", v)));
+        if let Some((flag, v)) = attached {
+            if let Some(r) = redact_header(v) {
+                out.push(format!("{flag}{r}"));
+                i += 1;
+                continue;
+            }
+        }
+        out.push(a.to_string());
+        i += 1;
+    }
+    out
+}
+
+/// Append one audit record as a single locked write, so records from
+/// concurrent fleet processes sharing the file never interleave.
+fn append_audit_record(path: &std::path::Path, entry: &serde_json::Value) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::fd::AsRawFd;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    let line = format!("{entry}\n");
+    // SAFETY: flock on an fd this function owns for its whole lifetime.
+    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let written = f.write_all(line.as_bytes()).and_then(|()| f.flush());
+    // Closing the file releases the lock too; unlock explicitly anyway.
+    unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_UN) };
+    written
+}
+
 /// Is this `gh` invocation read-only? Only the shapes the fleet
 /// actually scripts are whitelisted; anything unrecognized is a
 /// write (the safe default: writes repeat only on pre-execution
@@ -1301,6 +1418,35 @@ pub fn run(config: &Config, args: &[String]) -> i32 {
     let trace = std::env::var("FLEET_GH_TRACE").is_ok_and(|v| v == "1");
     let mut provider = FleetTokenProvider::new(config, cache_addrs(config, &flags));
     let code = run_with_provider(&mut provider, &gh_bin, &call_args, &sources, trace);
+    // Durable audit trail for App-token writes (#9177 control 3):
+    // record the caller/session identity, the call, and its outcome
+    // so an App-identity write is attributable to a component. Gated
+    // on FLEET_GH_TRACE=1 or FLEET_GH_AUDIT=1; default off to keep
+    // the hot path quiet, but any fleet job that wants attribution
+    // sets one of them (and FLEET_GH_CALLER for its identity).
+    let audit_enabled = std::env::var("FLEET_GH_TRACE").is_ok_and(|v| v == "1")
+        || std::env::var("FLEET_GH_AUDIT").is_ok_and(|v| v == "1");
+    if audit_enabled && !is_read_call(&call_args) {
+        let caller = std::env::var("FLEET_GH_CALLER").unwrap_or_else(|_| "unknown".to_string());
+        let path = std::env::var("FLEET_GH_AUDIT_FILE").unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            format!("{home}/.fleet/gh-audit.jsonl")
+        });
+        let entry = serde_json::json!({
+            "ts": gh_closure::now_unix(),
+            "caller": caller,
+            "read_only": false,
+            "args": audit_args(&call_args),
+            "exit_code": code,
+        });
+        // The call already ran; a lost record must not change its
+        // outcome or repeat it, so report the gap and carry on.
+        if let Err(e) = append_audit_record(std::path::Path::new(&path), &entry) {
+            eprintln!(
+                "fleet gh: the call finished (exit {code}), but its audit record was not written to {path}: {e}"
+            );
+        }
+    }
     if let Some(i) = intent.filter(|_| code == EXIT_OK) {
         let record = i.record(&gh_closure::Binding::from_env(), gh_closure::now_unix());
         if let Err(e) = gh_closure::append(&gh_closure::log_path(), &record) {
@@ -1631,6 +1777,143 @@ mod tests {
     // oracle: `gh <verb> --help` — list/view/status surfaces mutate
     // nothing; create/comment/edit surfaces mutate; `api` mutates
     // only with field flags or a non-GET method.
+    #[test]
+    fn audit_args_redact_secret_values() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            audit_args(&v(&[
+                "secret", "set", "TOKEN", "--body", "hunter2", "--repo", "o/r"
+            ])),
+            v(&[
+                "secret",
+                "set",
+                "TOKEN",
+                "--body",
+                "[redacted]",
+                "--repo",
+                "o/r"
+            ])
+        );
+        assert_eq!(
+            audit_args(&v(&["secret", "set", "TOKEN", "-bhunter2"])),
+            v(&["secret", "set", "TOKEN", "-b[redacted]"])
+        );
+        assert_eq!(
+            audit_args(&v(&["secret", "set", "TOKEN", "--body=hunter2"])),
+            v(&["secret", "set", "TOKEN", "--body=[redacted]"])
+        );
+        // Inherited flags before the command word.
+        assert_eq!(
+            audit_args(&v(&[
+                "-R", "o/r", "secret", "set", "TOKEN", "--body", "hunter2"
+            ])),
+            v(&[
+                "-R",
+                "o/r",
+                "secret",
+                "set",
+                "TOKEN",
+                "--body",
+                "[redacted]"
+            ])
+        );
+        assert_eq!(
+            audit_args(&v(&["--repo=o/r", "secret", "set", "TOKEN", "-bhunter2"])),
+            v(&["--repo=o/r", "secret", "set", "TOKEN", "-b[redacted]"])
+        );
+        assert_eq!(
+            audit_args(&v(&[
+                "api",
+                "user",
+                "-X",
+                "PATCH",
+                "-H",
+                "authorization: token abc"
+            ])),
+            v(&[
+                "api",
+                "user",
+                "-X",
+                "PATCH",
+                "-H",
+                "authorization: [redacted]"
+            ])
+        );
+        assert_eq!(
+            audit_args(&v(&["api", "user", "--header=Authorization: bearer abc"])),
+            v(&["api", "user", "--header=Authorization: [redacted]"])
+        );
+        assert_eq!(
+            audit_args(&v(&["api", "user", "-H=Authorization: bearer abc"])),
+            v(&["api", "user", "-H=Authorization: [redacted]"])
+        );
+        assert_eq!(
+            audit_args(&v(&[
+                "api",
+                "user",
+                "-X",
+                "POST",
+                "-H",
+                "Cookie: session=SECRET"
+            ])),
+            v(&["api", "user", "-X", "POST", "-H", "Cookie: [redacted]"])
+        );
+        assert_eq!(
+            audit_args(&v(&[
+                "api",
+                "user",
+                "-HX-Api-Key: k1",
+                "--header",
+                "Accept: json"
+            ])),
+            v(&[
+                "api",
+                "user",
+                "-HX-Api-Key: [redacted]",
+                "--header",
+                "Accept: json"
+            ])
+        );
+        // Ordinary bodies and headers stay readable.
+        let plain = v(&[
+            "issue",
+            "comment",
+            "1",
+            "--body",
+            "hello",
+            "-H",
+            "Accept: x",
+        ]);
+        assert_eq!(audit_args(&plain), plain);
+    }
+
+    #[test]
+    fn audit_records_append_whole_lines() {
+        let dir = std::env::temp_dir().join(format!("fleet-audit-{}", std::process::id()));
+        let path = dir.join("nested").join("gh-audit.jsonl");
+        let _ = std::fs::remove_dir_all(&dir);
+        let threads: Vec<_> = (0..8)
+            .map(|n| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for k in 0..50 {
+                        let entry = serde_json::json!({"n": n, "k": k, "pad": "x".repeat(2000)});
+                        append_audit_record(&path, &entry).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        let log = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(log.lines().count(), 400);
+        for line in log.lines() {
+            serde_json::from_str::<serde_json::Value>(line).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn read_call_whitelist() {
         let read = |a: &[&str]| is_read_call(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
