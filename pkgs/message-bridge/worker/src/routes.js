@@ -113,6 +113,8 @@ async function handlePage(request, store, base, api, url, chatgptReady) {
     pageSize: PAGE_SIZE,
     olderOnly: !!beforeId,
     chatgptReady,
+    // The page's own token, so the address is only ever shown to its owner.
+    connectorUrl: `${url.origin}/mcp/${base.slice("/p/".length)}`,
   });
   return new Response(html, {
     headers: { "content-type": "text/html; charset=utf-8", "content-security-policy": PAGE_CSP },
