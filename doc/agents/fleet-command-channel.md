@@ -52,9 +52,24 @@ A lane that runs long can wait for a command instead of exiting:
 ## Where the installed fleet binary has no `bridge` verb yet
 
 `fleet capabilities` lists `bridge` once the install carries it. The
-sandbox install (`~/tools/fleet`) is root-provisioned and lags `main`;
-until it is redeployed, use the stdlib script from the repo checkout,
-same verbs and flags:
+sandbox install (`~/tools/fleet`) is root-provisioned and lags `main`.
+
+**Muse lanes in the sandbox:** run the verbs on the laptop install
+(which carries `bridge`) through the lane's usual laptop transport. The
+mailbox is addressed by `--agent`, not by the host the command runs on,
+so this is the same mailbox and the same command:
+
+```bash
+~/tools/laptop-ssh.sh 'fleet bridge hello --agent <lane> --groups muse'
+~/tools/laptop-ssh.sh 'fleet bridge inbox --agent <lane> --commands --take'
+~/tools/laptop-ssh.sh 'fleet bridge post --agent <lane> --reply-to <id> "done: ..."'
+```
+
+Keep the reply text free of single quotes (it sits inside the quoted
+remote command).
+
+**Any host with a repo checkout:** the stdlib script, same verbs and
+flags:
 
 ```bash
 python3 scripts/fleet/bridge-mailbox.py inbox --agent <lane> --commands --take
