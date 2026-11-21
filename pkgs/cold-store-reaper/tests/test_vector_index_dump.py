@@ -23,9 +23,7 @@ DUMP = (
     "CREATE TABLE IF NOT EXISTS vec_idx_shadow (index_key  INTEGER , data BLOB, PRIMARY KEY (index_key));\n"
     "INSERT INTO vec_idx_shadow VALUES(1,X'02');\n"
     "PRAGMA writable_schema=ON;\n"
-    "CREATE INDEX vec_idx_shadow_idx ON vec_idx_shadow (index_key);\n"
-    + INDEX
-    + "\n"
+    "CREATE INDEX vec_idx_shadow_idx ON vec_idx_shadow (index_key);\n" + INDEX + "\n"
     "PRAGMA writable_schema=OFF;\n"
     "COMMIT;\n"
 )
@@ -33,7 +31,10 @@ DUMP = (
 
 def run(text):
     return subprocess.run(
-        [sys.executable, str(FILTER)], input=text.encode(), capture_output=True, check=False
+        [sys.executable, str(FILTER)],
+        input=text.encode(),
+        capture_output=True,
+        check=False,
     )
 
 
@@ -48,15 +49,24 @@ class TestVectorIndexDump(unittest.TestCase):
             conn = sqlite3.connect(Path(tmp) / "out.db")
             try:
                 conn.executescript(out)
-                self.assertEqual(conn.execute("PRAGMA integrity_check").fetchone(), ("ok",))
                 self.assertEqual(
-                    conn.execute("SELECT name, sql FROM cold_store_libsql_vector_indexes").fetchall(),
+                    conn.execute("PRAGMA integrity_check").fetchone(), ("ok",)
+                )
+                self.assertEqual(
+                    conn.execute(
+                        "SELECT name, sql FROM cold_store_libsql_vector_indexes"
+                    ).fetchall(),
                     [("vec_idx", INDEX)],
                 )
                 # The index data itself is kept in the shadow tables.
-                self.assertEqual(conn.execute("SELECT count(*) FROM vec_idx_shadow").fetchone(), (1,))
                 self.assertEqual(
-                    conn.execute("SELECT name FROM libsql_vector_meta_shadow").fetchall(), [("vec_idx",)]
+                    conn.execute("SELECT count(*) FROM vec_idx_shadow").fetchone(), (1,)
+                )
+                self.assertEqual(
+                    conn.execute(
+                        "SELECT name FROM libsql_vector_meta_shadow"
+                    ).fetchall(),
+                    [("vec_idx",)],
                 )
             finally:
                 conn.close()
@@ -79,7 +89,9 @@ class TestVectorIndexDump(unittest.TestCase):
         try:
             conn.executescript(result.stdout.decode())
             self.assertEqual(
-                conn.execute("SELECT name, sql FROM cold_store_libsql_vector_indexes").fetchall(),
+                conn.execute(
+                    "SELECT name, sql FROM cold_store_libsql_vector_indexes"
+                ).fetchall(),
                 [("it's", index)],
             )
         finally:

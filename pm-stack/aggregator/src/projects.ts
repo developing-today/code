@@ -51,7 +51,7 @@ export const PROJECT_QUERY = `query($id: ID!, $cursor: String) {
           databaseId
           type
           content {
-            ... on Issue { number title state url repository { nameWithOwner } updatedAt closedAt milestone { title dueOn closedAt } author { login } labels(first: 20) { nodes { name } } parent { number url repository { nameWithOwner } } blockedBy(first: 50) { nodes { number url repository { nameWithOwner } } } blocking(first: 50) { nodes { number url repository { nameWithOwner } } } }
+            ... on Issue { number title body state url repository { nameWithOwner } updatedAt closedAt milestone { title dueOn closedAt } author { login } labels(first: 20) { nodes { name } } parent { number url repository { nameWithOwner } } blockedBy(first: 50) { nodes { number url repository { nameWithOwner } } } blocking(first: 50) { nodes { number url repository { nameWithOwner } } } }
             ... on PullRequest { number title state url repository { nameWithOwner } updatedAt mergedAt closedAt milestone { title dueOn closedAt } author { login } isDraft }
             ... on DraftIssue { title }
           }
@@ -82,6 +82,7 @@ interface GqlEdgeNode {
 interface GqlContent {
   number?: number;
   title?: string;
+  body?: string;
   state?: string;
   url?: string;
   repository?: { nameWithOwner?: string } | null;
@@ -211,6 +212,7 @@ export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): Proj
           .map((n) => edgeRef(n, "blockedBy", edgeDiagnostics))
           .filter((x): x is RefKey => x !== null)
       : [];
+    const historicalParentRefs = !isPr && typeof c.body === "string" ? historicalParentsFromMetadata(c.body) : [];
     const blocks = !isPr
       ? edgeNodes(c.blocking, "blocks", edgeDiagnostics)
           .map((n) => edgeRef(n, "blocks", edgeDiagnostics))
@@ -253,10 +255,38 @@ export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL): Proj
       ...(parentRef ? { parentRef } : {}),
       ...(blockedBy.length ? { blockedBy } : {}),
       ...(blocks.length ? { blocks } : {}),
+      ...(historicalParentRefs.length ? { historicalParentRefs } : {}),
       ...(edgeDiagnostics.length ? { edgeDiagnostics } : {}),
     });
   }
   return out;
+}
+
+/** Read only explicitly historical parent links from the canonical PM metadata block. */
+export function historicalParentsFromMetadata(body: string): RefKey[] {
+  const block = /<!--\s*pm-metadata:start\s*-->([\s\S]*?)<!--\s*pm-metadata:end\s*-->/.exec(body)?.[1];
+  if (!block) return [];
+  const json = /```json\s*([\s\S]*?)```/i.exec(block)?.[1];
+  if (!json) return [];
+  try {
+    const metadata: unknown = JSON.parse(json);
+    if (!isRecord(metadata) || !Array.isArray(metadata.links)) return [];
+    return [
+      ...new Set(
+        metadata.links.flatMap((link) => {
+          if (!isRecord(link) || link.relation !== "parent" || link.status !== "historical" || !isRecord(link.target))
+            return [];
+          const target = link.target;
+          if (typeof target.repo !== "string" || !Number.isSafeInteger(target.number) || (target.number as number) <= 0)
+            return [];
+          const ref = refKey({ repo: target.repo, number: target.number as number });
+          return isValidRef(ref) ? [ref] : [];
+        }),
+      ),
+    ];
+  } catch {
+    return [];
+  }
 }
 
 /** Resolve epic membership over a fully parsed pool (#2399): every
@@ -603,6 +633,8 @@ export function isProjectPoolItem(v: unknown): v is ProjectPoolItem {
     (p.state === "open" || p.state === "closed" || p.state === "merged") &&
     (p.parentRef === undefined || isValidRef(p.parentRef)) &&
     (p.epicRef === undefined || isValidRef(p.epicRef)) &&
+    (p.historicalParentRefs === undefined ||
+      (Array.isArray(p.historicalParentRefs) && p.historicalParentRefs.every(isValidRef))) &&
     (p.blockedBy === undefined || (Array.isArray(p.blockedBy) && p.blockedBy.every(isValidRef))) &&
     (p.blocks === undefined || (Array.isArray(p.blocks) && p.blocks.every(isValidRef))) &&
     (p.edgeDiagnostics === undefined ||

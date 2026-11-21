@@ -65,7 +65,10 @@ use iroh::EndpointAddr;
 use iroh::endpoint::{Connection, Endpoint};
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh_base::EndpointId;
-use iroh_blobs::{Hash, api::Store};
+use iroh_blobs::{
+    Hash,
+    api::{RequestResult, Store, tags::TagInfo},
+};
 use serde::{Deserialize, Serialize};
 use tokio::{sync::Semaphore, task::JoinSet};
 
@@ -1038,6 +1041,34 @@ impl MetaResponse {
     }
 }
 
+// A failed lookup is not proof of absence. Keep backend diagnostics off
+// the wire; callers only need the failing operation and lookup stage.
+fn get_file_lookup(lookup: RequestResult<Option<TagInfo>>) -> MetaResponse {
+    match lookup {
+        Ok(tag) => MetaResponse::Get {
+            hash: tag.map(|tag| tag.hash),
+        },
+        Err(_) => MetaResponse::Error {
+            message: "failed to look up file tag for Get".to_owned(),
+        },
+    }
+}
+
+fn send_file_lookup(
+    name: &str,
+    lookup: RequestResult<Option<TagInfo>>,
+) -> Result<Hash, MetaResponse> {
+    match lookup {
+        Ok(Some(tag)) => Ok(tag.hash),
+        Ok(None) => Err(MetaResponse::Error {
+            message: format!("not found: {name}"),
+        }),
+        Err(_) => Err(MetaResponse::Error {
+            message: "failed to look up file tag for Send".to_owned(),
+        }),
+    }
+}
+
 /// Protocol handler for the meta protocol.
 ///
 /// Implements Iroh's [`ProtocolHandler`] trait. When a remote node connects
@@ -1208,15 +1239,7 @@ impl MetaProtocol {
                 },
             },
             MetaRequest::Get { filename } => {
-                let hash = self
-                    .store
-                    .tags()
-                    .get(&filename)
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|t| t.hash);
-                MetaResponse::Get { hash }
+                get_file_lookup(self.store.tags().get(&filename).await)
             }
             MetaRequest::List => {
                 let mut items = Vec::new();
@@ -1371,24 +1394,17 @@ impl MetaProtocol {
                 // The write gate above has already authorized the initiator
                 // at this (source) node. The transfer itself is performed
                 // with this node's server identity by the transfer module.
-                let hash = self
-                    .store
-                    .tags()
-                    .get(&name)
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|t| t.hash);
-                match (hash, &self.endpoint) {
-                    (None, _) => MetaResponse::Error {
-                        message: format!("not found: {name}"),
-                    },
-                    (Some(_), None) => MetaResponse::Error {
+                let hash = match send_file_lookup(&name, self.store.tags().get(&name).await) {
+                    Ok(hash) => hash,
+                    Err(response) => return response,
+                };
+                match &self.endpoint {
+                    None => MetaResponse::Error {
                         message: "this node cannot initiate server-to-server \
                                   transfers (no endpoint configured)"
                             .to_owned(),
                     },
-                    (Some(hash), Some(endpoint)) => {
+                    Some(endpoint) => {
                         let dest_name = dest_name.unwrap_or_else(|| name.clone());
                         match crate::transfer::send_file(
                             &self.store,
@@ -1830,6 +1846,52 @@ mod tests {
             MetaRequest::Put { filename, .. } => assert_eq!(filename, "test.txt"),
             _ => panic!("Wrong variant"),
         }
+    }
+
+    fn lookup_failure() -> iroh_blobs::api::RequestError {
+        std::io::Error::other("synthetic backend diagnostic").into()
+    }
+
+    #[test]
+    fn file_lookup_get_distinguishes_failure_from_missing() {
+        let failure = get_file_lookup(Err(lookup_failure()));
+        assert_eq!(
+            failure.error_message(),
+            Some("failed to look up file tag for Get"),
+        );
+        assert!(matches!(
+            get_file_lookup(Ok(None)),
+            MetaResponse::Get { hash: None }
+        ));
+    }
+
+    #[test]
+    fn file_lookup_send_distinguishes_failure_from_missing() {
+        let response = send_file_lookup("report.txt", Err(lookup_failure())).unwrap_err();
+        assert_eq!(
+            response.error_message(),
+            Some("failed to look up file tag for Send"),
+        );
+        let missing = send_file_lookup("report.txt", Ok(None)).unwrap_err();
+        assert_eq!(missing.error_message(), Some("not found: report.txt"));
+    }
+
+    #[test]
+    fn file_lookup_preserves_present_hash_for_get_and_send() {
+        let expected = Hash::from_bytes([5; 32]);
+        let tag = || TagInfo {
+            name: "report.txt".into(),
+            format: iroh_blobs::BlobFormat::Raw,
+            hash: expected,
+        };
+        assert!(matches!(
+            get_file_lookup(Ok(Some(tag()))),
+            MetaResponse::Get { hash: Some(hash) } if hash == expected
+        ));
+        assert_eq!(
+            send_file_lookup("report.txt", Ok(Some(tag()))).unwrap(),
+            expected
+        );
     }
 
     #[test]

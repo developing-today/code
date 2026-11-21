@@ -65,25 +65,9 @@ is a defect.
 
 ## Filing an issue outside a creator run
 
-**File and enqueue in the same pass.** Any lane that files a GitHub issue
-outside a creator run — a work lane filing a blocker mid-task, an audit
-lane, a hand filing — enqueues that issue's triage packet in the same
-pass, or records in the filing comment why it is deliberately not
-queued. An issue filed without a queue item is invisible to every worker
-lane: nothing dispositions it, and it sits open until someone notices by
-hand (#7016).
-
-```bash
-repo-queue enqueue <packet.json> --queue repo-health-<repo>-pilot
-```
-
-The standing backstop is the coverage reconciliation
-(`scripts/fleet/queue-reconcile/`, `doc` in its README): every open issue
-must hold a **live** task — `queued`, `claimed`, `parked` or `blocked` —
-in its own pilot queue. A `done` task is not coverage, and neither is a
-task in a `*-shadow` queue. When the reconciliation reports uncovered
-issues, the rule above was missed somewhere; fix the filing path, not
-just the import.
+Read the [filing and queue coverage rules](doc/agents/one-queue-claiming-work.md#filing-an-issue-outside-a-creator-run) before filing.
+File and enqueue in the same pass, or record in the filing comment why not.
+Open issues need live pilot tasks; fix uncovered filing paths, not just imports.
 
 ## The one queue: claiming work
 
@@ -97,6 +81,15 @@ expression, empty by default on both sides; filters are never registry
 bindings, and claimer identity is recorded, never itself a filter.
 Designated filtered lanes (5 code-only, 3 not-code per surface) are the
 only exceptions; the sets are recorded on #8097.
+
+## Who holds an issue (assignee is not a hold)
+
+Read the [ownership and note rules](doc/agents/one-queue-claiming-work.md#who-holds-an-issue-assignee-is-not-a-hold) before acting on ownership.
+Only `held`, `user/owned`, and `do-not-auto-edit` hold for a human;
+`do-not-merge` blocks merging only. Assignee, authorship and `work/assigned`
+are not holds; workers own tasks by atomic claim. Check holds before parking
+for ownership; check notes before posting a park/pickup note. Always post
+progress notes. Land or checkpoint a reviewable slice before parking for size.
 
 ## Research, design and delivery workflow
 

@@ -77,7 +77,10 @@ class Block:
         self.count += 1
 
     def same_rows(self, other):
-        return (self.count, self.digest.digest()) == (other.count, other.digest.digest())
+        return (self.count, self.digest.digest()) == (
+            other.count,
+            other.digest.digest(),
+        )
 
 
 def ends_statement(line):
@@ -112,7 +115,11 @@ def main():
             if in_create:
                 block.create.append(line)
                 in_create = not ends_statement(line)
-                if not in_create and original is not None and block.create != original.create:
+                if (
+                    not in_create
+                    and original is not None
+                    and block.create != original.create
+                ):
                     fail(
                         f"table {block.label} is created twice with different "
                         "definitions; not dropping either copy"
@@ -146,7 +153,9 @@ def main():
         out.write(line)
     if block is not None and original is not None:
         if in_create:
-            fail(f"table {block.label}: the dump ends inside a repeated CREATE statement")
+            fail(
+                f"table {block.label}: the dump ends inside a repeated CREATE statement"
+            )
         finish_repeat(original, block)
     out.flush()
 

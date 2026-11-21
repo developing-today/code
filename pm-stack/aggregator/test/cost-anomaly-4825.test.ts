@@ -7,23 +7,56 @@ import { decodeStoreRow, storeStatement } from "../src/turso-stores.ts";
 
 const now = new Date("2026-11-19T12:00:00Z");
 const spend: SpendRollup = {
-  kind: "spend-rollup/v1", windowKind: "week",
-  windowStart: "2026-11-09T00:00:00.000Z", windowEnd: "2026-11-16T00:00:00.000Z",
-  scopeKind: "epic", scopeId: "example/code#4825", unit: "tokens", pool: "eco",
-  value: 100, coverage: "complete", coverageStart: "2026-11-01", attributionVersion: "v1",
+  kind: "spend-rollup/v1",
+  windowKind: "week",
+  windowStart: "2026-11-09T00:00:00.000Z",
+  windowEnd: "2026-11-16T00:00:00.000Z",
+  scopeKind: "epic",
+  scopeId: "example/code#4825",
+  unit: "tokens",
+  pool: "eco",
+  value: 100,
+  coverage: "complete",
+  coverageStart: "2026-11-01",
+  attributionVersion: "v1",
 };
 const window = {
-  windowKind: spend.windowKind, windowStart: spend.windowStart, windowEnd: spend.windowEnd,
-  attributionVersion: spend.attributionVersion, coverage: spend.coverage,
+  windowKind: spend.windowKind,
+  windowStart: spend.windowStart,
+  windowEnd: spend.windowEnd,
+  attributionVersion: spend.attributionVersion,
+  coverage: spend.coverage,
 };
-const burn = { kind: "burn-without-progress", spend, closedChildren: { ...window, scopeKind: "epic", scopeId: spend.scopeId, count: 0 } } as const;
-const dominant = { kind: "single-session-dominance", spend, busiestRoot: { ...window, scopeKind: "epic", scopeId: spend.scopeId, pool: "eco", tokens: 51 } } as const;
+const burn = {
+  kind: "burn-without-progress",
+  spend,
+  closedChildren: { ...window, scopeKind: "epic", scopeId: spend.scopeId, count: 0 },
+} as const;
+const dominant = {
+  kind: "single-session-dominance",
+  spend,
+  busiestRoot: { ...window, scopeKind: "epic", scopeId: spend.scopeId, pool: "eco", tokens: 51 },
+} as const;
 const growth = {
   kind: "unattributed-growth",
   current: { ...spend, scopeKind: "unattributed", scopeId: "unattributed", value: 21 },
-  previous: { ...spend, scopeKind: "unattributed", scopeId: "unattributed", value: 10, windowStart: "2026-11-02T00:00:00.000Z", windowEnd: spend.windowStart },
+  previous: {
+    ...spend,
+    scopeKind: "unattributed",
+    scopeId: "unattributed",
+    value: 10,
+    windowStart: "2026-11-02T00:00:00.000Z",
+    windowEnd: spend.windowStart,
+  },
   currentTotal: { ...window, unit: "tokens", pool: "eco", value: 100 },
-  previousTotal: { ...window, unit: "tokens", pool: "eco", value: 100, windowStart: "2026-11-02T00:00:00.000Z", windowEnd: spend.windowStart },
+  previousTotal: {
+    ...window,
+    unit: "tokens",
+    pool: "eco",
+    value: 100,
+    windowStart: "2026-11-02T00:00:00.000Z",
+    windowEnd: spend.windowStart,
+  },
 } as const;
 const charge = {
   kind: "charge-without-activity",
@@ -36,7 +69,9 @@ test("burn requires positive spend and certified zero closures for the same scop
   expect(detectCostAnomaly(burn, now)?.body).toContain("100 tokens");
   expect(detectCostAnomaly({ ...burn, spend: { ...spend, value: 0 } }, now)).toBeNull();
   expect(detectCostAnomaly({ ...burn, closedChildren: { ...burn.closedChildren, count: 1 } }, now)).toBeNull();
-  expect(detectCostAnomaly({ ...burn, closedChildren: { ...burn.closedChildren, coverage: "partial" } }, now)).toBeNull();
+  expect(
+    detectCostAnomaly({ ...burn, closedChildren: { ...burn.closedChildren, coverage: "partial" } }, now),
+  ).toBeNull();
   expect(detectCostAnomaly({ ...burn, closedChildren: { ...burn.closedChildren, scopeId: "wrong" } }, now)).toBeNull();
   expect(detectCostAnomaly(burn, new Date(spend.windowStart))).toBeNull();
 });
@@ -46,7 +81,9 @@ test("dominance uses like-for-like tokens and strict 50% threshold", () => {
   for (const tokens of [49, 50, 101, NaN]) {
     expect(detectCostAnomaly({ ...dominant, busiestRoot: { ...dominant.busiestRoot, tokens } }, now)).toBeNull();
   }
-  expect(detectCostAnomaly({ ...dominant, busiestRoot: { ...dominant.busiestRoot, coverage: "partial" } }, now)).toBeNull();
+  expect(
+    detectCostAnomaly({ ...dominant, busiestRoot: { ...dominant.busiestRoot, coverage: "partial" } }, now),
+  ).toBeNull();
   expect(detectCostAnomaly({ ...dominant, busiestRoot: { ...dominant.busiestRoot, pool: "wrong" } }, now)).toBeNull();
 });
 
@@ -58,7 +95,12 @@ test("growth requires adjacent complete comparable windows and strictly over ten
   expect(detectCostAnomaly({ ...growth, previous: { ...growth.previous, coverage: "partial" } }, now)).toBeNull();
   expect(detectCostAnomaly({ ...growth, previous: { ...growth.previous, attributionVersion: "v2" } }, now)).toBeNull();
   expect(detectCostAnomaly({ ...growth, currentTotal: null }, now)).toBeNull();
-  for (const delta of [{ pool: "wrong" }, { unit: "usd" as const }, { coverage: "partial" as const }, { windowStart: growth.previous.windowStart }]) {
+  for (const delta of [
+    { pool: "wrong" },
+    { unit: "usd" as const },
+    { coverage: "partial" as const },
+    { windowStart: growth.previous.windowStart },
+  ]) {
     expect(detectCostAnomaly({ ...growth, currentTotal: { ...growth.currentTotal, ...delta } }, now)).toBeNull();
   }
 });
@@ -77,7 +119,9 @@ test("charge requires matched dollars and complete, service-wide zero activity i
 });
 
 test("intake is disabled by default and does not call its sources", async () => {
-  const unexpected = async (): Promise<never> => { throw new Error("unexpected I/O"); };
+  const unexpected = async (): Promise<never> => {
+    throw new Error("unexpected I/O");
+  };
   expect(await postCostAnomalyTick({ now, loadEvidence: unexpected, store: { postIncident: unexpected } })).toBe(0);
 });
 
@@ -91,23 +135,37 @@ test("actual alert ledger dedupes repeat ticks and queues no push for warnings",
       ref: "fixture",
       async query<T>(input: string): Promise<T[]> {
         const { sql, args } = storeStatement(input);
-        return db.query(sql).all(...args.map((a) => a.value)).map((r) => decodeStoreRow(r as Record<string, unknown>)) as T[];
+        return db
+          .query(sql)
+          .all(...args.map((a) => a.value))
+          .map((r) => decodeStoreRow(r as Record<string, unknown>)) as T[];
       },
     });
     const loadEvidence = async (): Promise<readonly CostEvidence[]> => [burn, burn];
     const opts = { enabled: true, now, loadEvidence, store };
     expect(await postCostAnomalyTick(opts)).toBe(1);
     expect(await postCostAnomalyTick(opts)).toBe(1);
-    expect(db.query("select severity, occurrences from alerts_incidents").all()).toEqual([{ severity: "warning", occurrences: 2 }]);
+    expect(db.query("select severity, occurrences from alerts_incidents").all()).toEqual([
+      { severity: "warning", occurrences: 2 },
+    ]);
     expect(await store.pendingDeliveries()).toEqual([]);
     expect(await store.pendingEscalations(0)).toEqual([]);
-  } finally { db.close(); }
+  } finally {
+    db.close();
+  }
 });
 
 test("disagreeing warning evidence for one key is not posted in either input order", async () => {
   const changed = { ...charge, charges: { ...charge.charges, totalUsd: 12 } };
-  const store = { postIncident: async (): Promise<never> => { throw new Error("order selected evidence"); } };
-  for (const facts of [[charge, changed], [changed, charge, changed]]) {
+  const store = {
+    postIncident: async (): Promise<never> => {
+      throw new Error("order selected evidence");
+    },
+  };
+  for (const facts of [
+    [charge, changed],
+    [changed, charge, changed],
+  ]) {
     expect(await postCostAnomalyTick({ enabled: true, now, store, loadEvidence: async () => facts })).toBe(0);
   }
 });

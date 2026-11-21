@@ -31,7 +31,12 @@ test("safeEqual and token paths", () => {
   assert.ok(safeEqual("abc", "abc"));
   assert.ok(!safeEqual("abc", "abd"));
   assert.ok(!safeEqual("abc", "abcd"));
-  assert.deepEqual(matchTokenPath(`/api/${TOKEN}/messages`, env), { area: "api", rest: ["messages"] });
+  assert.deepEqual(matchTokenPath(`/api/${TOKEN}/messages`, env), {
+    area: "api",
+    rest: ["messages"],
+    role: "owner",
+    channel: "claude",
+  });
   assert.equal(matchTokenPath(`/api/wrong/messages`, env), null);
   assert.equal(matchTokenPath(`/mcp/${TOKEN}`, { ACCESS_TOKEN: "short" }), null, "short token disables access");
   assert.equal(matchTokenPath(`/mcp/${TOKEN}`, {}), null, "no token disables access");
@@ -45,7 +50,13 @@ test("wrong or missing token is a plain 404 everywhere", async () => {
   }
   const health = await (await call("/healthz")).json();
   const { tokenFingerprint } = await import("../src/auth.js");
-  assert.deepEqual(health, { ok: true, configured: true, version: null, token_fingerprint: await tokenFingerprint(TOKEN) });
+  assert.deepEqual(health, {
+    ok: true,
+    configured: true,
+    chatgpt_configured: false,
+    version: null,
+    token_fingerprint: await tokenFingerprint(TOKEN),
+  });
   assert.doesNotMatch(JSON.stringify(health), new RegExp(TOKEN));
 });
 
@@ -288,6 +299,8 @@ test("code-only deploys refuse to inherit a token from a full deploy newer than 
   // A version the list hasn't caught up with yet could be a full deploy: no verdict on a gap.
   assert.throws(() => strayBeforeCodeOnly([v("mine", 7, code), v("live", 5, code)], "live", "mine"), VersionListGap);
   assert.throws(() => strayBeforeCodeOnly([v("c2", 7, code), v("live", 5, code)], "live"), VersionListGap);
+  // This run's own upload not listed yet is list lag, so it is retried.
+  assert.throws(() => strayBeforeCodeOnly([v("live", 5, code)], "live", "mine"), VersionListGap);
   assert.throws(() => strayBeforeCodeOnly([v("x", 1, code)], "live"), /not in the versions list/);
   assert.throws(() => strayBeforeCodeOnly([v("live", 6, code), v("mine", 5, code)], "live", "mine"), /not newer/);
   assert.throws(() => strayBeforeCodeOnly([{ id: "live" }], "live"), /no version number/);
@@ -426,6 +439,7 @@ test("cloudflare.config.ts matches wrangler.jsonc", async () => {
   assert.equal(pick(/name: "([^"]+)"/, cfg), pick(/"name": "([^"]+)"/, wr));
   assert.equal(pick(/compatibilityDate: "([^"]+)"/, cfg), pick(/"compatibility_date": "([^"]+)"/, wr));
   assert.equal(pick(/PUBLIC_URL: bindings\.text\("([^"]+)"\)/, cfg), pick(/"PUBLIC_URL": "([^"]+)"/, wr));
+  assert.equal(pick(/WORKERS_DEV_URL: bindings\.text\("([^"]+)"\)/, cfg), pick(/"WORKERS_DEV_URL": "([^"]+)"/, wr));
   assert.ok(cfg.includes('MESSAGES: bindings.durableObject({ worker: "message-bridge", exportName: "MessageStore" })'));
   assert.ok(wr.includes('"name": "MESSAGES", "class_name": "MessageStore"'));
 });
@@ -461,4 +475,194 @@ test("healthVersionProblem rejects a different reported version", async () => {
   // a different, configured version is wrong either way
   assert.match(healthVersionProblem({ version: "v3" }, "v1"), /answered from version v3, not v1/);
   assert.match(healthVersionProblem({ version: "v3" }, "v1", { requireVersion: true }), /v3/);
+});
+
+const GPT = "g".repeat(24) + "chatgpt-token-0123456789";
+
+function twoChannels() {
+  const env2 = { ACCESS_TOKEN: TOKEN, CHATGPT_TOKEN: GPT };
+  const store = new MemoryStore(() => "2026-11-19T00:00:00.000Z");
+  const call = (path, init) => route(new Request(BASE + path, init), env2, () => store);
+  let rpcId = 0;
+  const tool = async (token, name, args) => {
+    const res = await call(`/mcp/${token}`, {
+      method: "POST",
+      body: JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method: "tools/call", params: { name, arguments: args } }),
+    });
+    assert.equal(res.status, 200);
+    return (await res.json()).result;
+  };
+  return { env2, store, call, tool };
+}
+
+test("the ChatGPT token opens only its own MCP channel", async () => {
+  const { env2, call } = twoChannels();
+  assert.deepEqual(matchTokenPath(`/mcp/${GPT}`, env2), { area: "mcp", rest: [], role: "chatgpt", channel: "chatgpt" });
+  for (const path of [`/p/${GPT}`, `/api/${GPT}/messages`, `/api/${GPT}/ack`]) {
+    assert.equal((await call(path)).status, 404, path);
+    assert.equal((await call(path, { method: "POST", body: "{}" })).status, 404, path);
+  }
+  // A ChatGPT token equal to the owner's is ignored rather than trusted.
+  assert.equal(matchTokenPath(`/mcp/${TOKEN}`, { ACCESS_TOKEN: TOKEN, CHATGPT_TOKEN: TOKEN }).role, "owner");
+  const health = await (await call("/healthz")).json();
+  assert.equal(health.chatgpt_configured, true);
+  assert.doesNotMatch(JSON.stringify(health), new RegExp(GPT));
+  const init = await call(`/mcp/${GPT}`, {
+    method: "POST",
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
+  });
+  assert.match((await init.json()).result.instructions, /between ChatGPT and Drew/);
+  const disc = await call(`/mcp/${GPT}`, {
+    method: "POST",
+    body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "server/discover" }),
+  });
+  assert.ok((await disc.json()).result.supportedVersions.includes("2026-07-28"));
+});
+
+test("page sends to one or both; each assistant sees and acks only its own", async () => {
+  const { call, tool } = twoChannels();
+  const both = await call(`/p/${TOKEN}`, {
+    method: "POST",
+    body: "body=to+both&to=claude&to=chatgpt",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+  });
+  assert.equal(both.status, 303);
+  const onlyGpt = await call(`/api/${TOKEN}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ body: "gpt only", to: ["chatgpt"], source: "page" }),
+  });
+  assert.equal(onlyGpt.status, 201);
+  const made = await onlyGpt.json();
+  assert.equal(made.message.channel, "chatgpt");
+  assert.equal(made.messages.length, 1);
+  const defaultTo = await (await call(`/api/${TOKEN}/messages`, { method: "POST", body: JSON.stringify({ body: "old caller" }) })).json();
+  assert.deepEqual(defaultTo.messages.map((m) => m.channel), ["claude"]);
+  for (const bad of [[], ["bard"], 7, "claude,nope"]) {
+    const r = await call(`/api/${TOKEN}/messages`, { method: "POST", body: JSON.stringify({ body: "x", to: bad }) });
+    assert.equal(r.status, 400, JSON.stringify(bad));
+  }
+
+  const gptRead = (await tool(GPT, "read_messages", { unread_only: true, mark_read: true })).structuredContent;
+  assert.deepEqual(gptRead.messages.map((m) => m.body), ["to both", "gpt only"]);
+  assert.equal(gptRead.acked, 2);
+  assert.equal(gptRead.stats.unread_inbound, 0);
+  const sent = (await tool(GPT, "send_message", { body: "hi from chatgpt" })).structuredContent.message;
+  assert.equal(sent.channel, "chatgpt");
+
+  const claudeRead = (await tool(TOKEN, "read_messages", { unread_only: true })).structuredContent;
+  assert.deepEqual(claudeRead.messages.map((m) => m.body), ["to both", "old caller"]);
+  // Claude can't ack ChatGPT's messages by id, and vice versa.
+  const gptIds = gptRead.messages.map((m) => m.id);
+  assert.equal((await tool(TOKEN, "ack_messages", { ids: gptIds })).structuredContent.acked, 0);
+  const claudeIds = claudeRead.messages.map((m) => m.id);
+  assert.equal((await tool(GPT, "ack_messages", { ids: claudeIds })).structuredContent.acked, 0);
+  assert.equal((await tool(GPT, "read_messages", { direction: "all" })).structuredContent.messages.length, 3);
+
+  const all = await (await call(`/api/${TOKEN}/messages?direction=all`)).json();
+  assert.equal(all.messages.length, 5);
+  assert.equal(all.stats.total, 5);
+  const gptOnly = await (await call(`/api/${TOKEN}/messages?channel=chatgpt`)).json();
+  assert.equal(gptOnly.messages.length, 3);
+
+  const page = await (await call(`/p/${TOKEN}`)).text();
+  assert.match(page, /ChatGPT → you/);
+  assert.match(page, /You → ChatGPT/);
+  assert.match(page, /name="to" value="chatgpt"/);
+  assert.doesNotMatch(page, /isn't set up yet/);
+});
+
+test("page notes when the ChatGPT connector has no token yet", () => {
+  const html = renderPage({
+    messages: [],
+    stats: { total: 0, inbound: 0, outbound: 0, unread_inbound: 0, last_id: 0 },
+    basePath: "/p/x",
+    apiPath: "/api/x",
+    chatgptReady: false,
+  });
+  assert.match(html, /isn.t set up yet/);
+});
+
+test("instructions target one or more agents, and agents never see their sender", async () => {
+  const { call, tool } = twoChannels();
+  const sent = await call(`/api/${TOKEN}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ body: "rebase onto main", sender: "Muse", to: ["claude", "chatgpt"], kind: "instruction" }),
+  });
+  assert.equal(sent.status, 201);
+  const made = await sent.json();
+  assert.deepEqual(made.messages.map((m) => [m.channel, m.kind, m.sender]), [
+    ["claude", "instruction", "Muse"],
+    ["chatgpt", "instruction", "Muse"],
+  ]);
+  const form = await call(`/p/${TOKEN}`, {
+    method: "POST",
+    body: "body=from+the+form&sender=Aster&to=chatgpt&kind=instruction",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+  });
+  assert.equal(form.status, 303);
+  await call(`/api/${TOKEN}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ body: "plain note", sender: "Drew", to: "chatgpt" }),
+  });
+
+  for (const [token, count] of [[TOKEN, 1], [GPT, 2]]) {
+    const read = (await tool(token, "read_messages", { kind: "instruction" })).structuredContent;
+    assert.equal(read.messages.length, count);
+    for (const m of read.messages) {
+      assert.equal(m.kind, "instruction");
+      assert.ok(!("sender" in m), "an agent never gets an instruction's sender");
+    }
+    assert.doesNotMatch(JSON.stringify(read), /Muse|Aster/);
+    assert.equal(read.stats.unread_instructions, count);
+  }
+  const gptAll = (await tool(GPT, "read_messages", { mark_read: true })).structuredContent;
+  assert.deepEqual(gptAll.messages.map((m) => m.kind), ["instruction", "instruction", "message"]);
+  assert.equal(gptAll.messages[2].sender, "Drew", "a plain message keeps its sender");
+  assert.equal(gptAll.stats.unread_instructions, 0);
+
+  // Drew's own views keep the sender.
+  const api = await (await call(`/api/${TOKEN}/messages?kind=instruction`)).json();
+  assert.deepEqual(api.messages.map((m) => m.sender), ["Muse", "Muse", "Aster"]);
+  const page = await (await call(`/p/${TOKEN}`)).text();
+  assert.match(page, /Instruction → ChatGPT<\/b> · from Aster/);
+  assert.match(page, /name="kind" value="instruction"/);
+
+  // Agents can't send instructions, and the kind must be known.
+  const tryOut = await tool(TOKEN, "send_message", { body: "x", kind: "instruction" });
+  assert.equal(tryOut.isError, true);
+  for (const bad of ["order", 3]) {
+    const r = await call(`/api/${TOKEN}/messages`, { method: "POST", body: JSON.stringify({ body: "x", kind: bad }) });
+    assert.equal(r.status, 400, JSON.stringify(bad));
+  }
+  assert.equal((await call(`/api/${TOKEN}/messages?kind=nope`)).status, 400);
+  const badRead = await tool(TOKEN, "read_messages", { kind: "nope" });
+  assert.equal(badRead.isError, true);
+});
+
+test("only inbound messages can be instructions", async () => {
+  const store = new MemoryStore();
+  await assert.rejects(
+    store.add({ body: "x", direction: "outbound", source: "mcp", kind: "instruction" }),
+    /only inbound/,
+  );
+  const plain = await store.add({ body: "x", direction: "inbound", source: "api" });
+  assert.equal(plain.kind, "message");
+});
+
+test("the deploy reads the uploaded version id from cf's output", async () => {
+  const { uploadedVersionId, describeVersions } = await import("../deploy-probe.mjs");
+  const out = "│  Uploaded message-bridge (0.92 sec)\n│  Worker Version ID: C8467CA5-4aae-4e33-bfcd-4ed13b280d06\n│\n";
+  assert.equal(uploadedVersionId(out), "c8467ca5-4aae-4e33-bfcd-4ed13b280d06");
+  assert.equal(uploadedVersionId("Uploaded, no id here"), null);
+  assert.equal(uploadedVersionId(undefined), null);
+  const line = describeVersions(
+    [
+      { id: "a", number: 1, annotations: { "workers/message": "one" } },
+      { id: "b", number: 3, annotations: {} },
+    ],
+    "c",
+  );
+  assert.match(line, /2 listed, numbers 1\.\.3/);
+  assert.match(line, /^versions list.*#3 b/);
+  assert.match(line, /c is not listed/);
 });

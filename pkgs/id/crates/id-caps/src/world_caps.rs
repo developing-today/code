@@ -67,8 +67,11 @@
 //! `os_permission_denied` (the OS refused the permission), `outside_ceiling`
 //! with reason `precision_ceiling` (the fix is less precise than the
 //! ceiling allows), and `failed` with reason `no_fix` (no fix available).
+//! Speech refusals also reuse these codes: `unknown_cap` with
+//! `device_lacks_affordance`, and `failed` with `asr_unavailable` (#2344).
 //!
-//! **Sensor caps are per-use.** The `loc.*` capabilities are sensor caps:
+//! **Sensor caps are per-use.** The `loc.*` capabilities and microphone
+//! input capabilities are sensor caps:
 //! a wildcard (`*`) grant never reaches them and grant-on-use never mints
 //! a durable grant for them — a world needs an explicit ceiling entry
 //! *and* an explicit grant, and each use still passes the consent seam.
@@ -440,6 +443,14 @@ const LOC_POSITION_BOUNDS: &[ProviderBound] = &[ProviderBound::ArgsBytes(MAX_ARG
 /// floor ([`MIN_LOC_WATCH_INTERVAL_MS`]) is enforced by
 /// [`parse_loc_watch_interval_ms`].
 const LOC_WATCH_BOUNDS: &[ProviderBound] = &[ProviderBound::Items(MAX_LOC_WATCHES)];
+/// `speech.capture` frames use the same event-sized ceiling as `media.stream`.
+const SPEECH_CAPTURE_BOUNDS: &[ProviderBound] = &[ProviderBound::ResponseBytes(MAX_EVENT_BYTES)];
+/// `speech.synthesize` accepts text; voice selection is a runtime concern.
+const SPEECH_SYNTHESIZE_ARGUMENTS: &[ProviderArgument] = &[ProviderArgument {
+    name: "text",
+    value_type: ArgumentType::String,
+    required: true,
+}];
 /// Forms share the request argument bound and have a bounded pending set.
 const FORM_BOUNDS: &[ProviderBound] = &[
     ProviderBound::ArgsBytes(MAX_ARGS_BYTES),
@@ -585,6 +596,32 @@ define_provider_registry! {
         bounds: LOC_WATCH_BOUNDS,
         required_scope: RequiredScope::Join,
         default_ceiling: DefaultCeiling::Excluded,
+    },
+    // Microphone capabilities require an explicit ceiling/grant and a
+    // per-use consent decision. Capture frames share the media event ceiling.
+    "speech.transcribe" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(NO_ARGUMENTS),
+        bounds: COMMON_REQUEST_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Excluded,
+    },
+    "speech.capture" => {
+        version: 1,
+        kind: ProviderKind::Subscription,
+        argument_schema: ArgumentSchema::Subscription("speech.capture"),
+        bounds: SPEECH_CAPTURE_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Excluded,
+    },
+    "speech.synthesize" => {
+        version: 1,
+        kind: ProviderKind::Request,
+        argument_schema: ArgumentSchema::JsonObject(SPEECH_SYNTHESIZE_ARGUMENTS),
+        bounds: COMMON_REQUEST_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Included,
     },
     "Key" => {
         version: 1,
@@ -1269,6 +1306,15 @@ impl CapError {
         }
     }
 
+    /// The device lacks the requested capability affordance.
+    #[must_use]
+    pub fn unknown_with(reason: impl Into<String>) -> Self {
+        Self {
+            code: CapErrorCode::Unknown,
+            reason: Some(reason.into()),
+        }
+    }
+
     /// The request's arguments were not acceptable.
     #[must_use]
     pub const fn bad_args() -> Self {
@@ -1312,6 +1358,18 @@ impl CapError {
             code: CapErrorCode::Failed,
             reason: Some(reason.into()),
         }
+    }
+
+    /// The device has no microphone affordance: `unknown_cap`.
+    #[must_use]
+    pub fn device_lacks_affordance() -> Self {
+        Self::unknown_with("device_lacks_affordance")
+    }
+
+    /// The selected automatic speech recognition provider is unavailable.
+    #[must_use]
+    pub fn asr_unavailable() -> Self {
+        Self::failed_with("asr_unavailable")
     }
 
     /// Location use without per-use consent (#2341): `cap_denied`.
@@ -1406,14 +1464,13 @@ impl CapError {
     }
 }
 
-/// Whether `cap` is a sensor capability (#2341). Sensor caps are
-/// per-use by default: a wildcard grant never reaches them, and
-/// grant-on-use never mints a durable grant for them. Today the sensor
-/// caps are the `loc.*` family; naming the prefix here keeps the ledger
-/// rule in one place when more sensor families land.
+/// Whether `cap` is a sensor capability. Sensor caps are per-use by default:
+/// a wildcard grant never reaches them, and grant-on-use never mints a
+/// durable grant for them. Microphone input (`speech.transcribe` and
+/// `speech.capture`) follows the same rule as the `loc.*` family.
 #[must_use]
 pub fn is_sensor_cap(cap: &str) -> bool {
-    cap.starts_with("loc.")
+    cap.starts_with("loc.") || matches!(cap, "speech.transcribe" | "speech.capture")
 }
 
 /// Where a location reading came from (#2341). The source is part of
@@ -1670,6 +1727,48 @@ impl LocationConsent {
     }
 }
 
+/// Per-use consent for sending microphone audio to a server provider.
+/// The host supplies this state; the pure capability layer only maps it to
+/// the stable refusal vocabulary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpeechCaptureConsent {
+    /// Consent granted for this app and use.
+    Granted,
+    /// The app has not received per-use consent.
+    ConsentRequired,
+}
+
+impl SpeechCaptureConsent {
+    /// The refusal for this consent state, or `None` when capture may proceed.
+    #[must_use]
+    pub fn refusal(&self) -> Option<CapError> {
+        match self {
+            Self::Granted => None,
+            Self::ConsentRequired => Some(CapError::consent_required()),
+        }
+    }
+}
+
+/// Whether a device exposes a microphone to its speech adapter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpeechMicrophone {
+    /// A microphone affordance is available.
+    Available,
+    /// The device has no microphone affordance.
+    Unavailable,
+}
+
+impl SpeechMicrophone {
+    /// The refusal for a device without a microphone, or `None` when present.
+    #[must_use]
+    pub fn refusal(&self) -> Option<CapError> {
+        match self {
+            Self::Available => None,
+            Self::Unavailable => Some(CapError::device_lacks_affordance()),
+        }
+    }
+}
+
 /// Parse a `loc.watch` subscription spec (#2341): `loc.watch` alone
 /// takes the interval floor, `loc.watch:<milliseconds>` names an
 /// interval at or above the floor.
@@ -1821,9 +1920,10 @@ impl CapLedger {
             return Decision::Allow;
         }
         if is_sensor_cap(cap) {
-            // Sensor caps are per-use (#2341): neither a wildcard grant
-            // nor grant-on-use reaches them, so an ungranted use is a
-            // consent refusal — never a silently minted durable grant.
+            // Sensor caps and microphone input are per-use: neither a
+            // wildcard grant nor grant-on-use reaches them, so an
+            // ungranted use is a consent refusal — never a silently
+            // minted durable grant.
             entry.denied += 1;
             return Decision::Deny(CapError::consent_required());
         }
@@ -2413,6 +2513,9 @@ mod tests {
                 "form.cancel",
                 "loc.position",
                 "loc.watch",
+                "speech.transcribe",
+                "speech.capture",
+                "speech.synthesize",
                 "Key",
                 "Screen",
                 "RocJson",
@@ -2420,7 +2523,7 @@ mod tests {
                 "RocCap",
                 "RocText",
             ],
-            "registry retains the catalog names and order (plus form.* and loc.*)"
+            "registry retains the catalog names and order (plus form.*, loc.* and speech.*)"
         );
         assert_eq!(
             PROVIDER_REGISTRY.entries().len(),
@@ -2464,17 +2567,27 @@ mod tests {
                 .contains(&ProviderBound::ResponseBytes(MAX_RECORDS_RESULT_PAGE_BYTES))
         );
         // Every non-sensor provider opted in explicitly. The sensor
-        // caps (#2341) registered as Excluded, so the default ceiling
-        // is the catalog minus loc.* — registering them widened no
-        // existing world's authority. The RegistryProbe is Excluded
+        // caps (#2341) and microphone input caps register as Excluded,
+        // so the default ceiling is the catalog minus loc.* and speech
+        // input — registering them widened no existing world's authority.
+        // The RegistryProbe is Excluded
         // for the same reason (#838), so under `test-provider` it is
         // subtracted the same way.
         // client.file.read (F13.7 step 5) is likewise Excluded: it is
         // in the registry's name set but joins no default ceiling.
-        let mut excluded_from_ceiling =
-            names(&["loc.position", "loc.watch", CLIENT_FILE_READ_NAME]);
+        let excluded_from_ceiling = names(&[
+            "loc.position",
+            "loc.watch",
+            "speech.transcribe",
+            "speech.capture",
+            CLIENT_FILE_READ_NAME,
+        ]);
         #[cfg(feature = "test-provider")]
-        excluded_from_ceiling.insert(TEST_PROVIDER_NAME.to_owned());
+        let excluded_from_ceiling = {
+            let mut excluded = excluded_from_ceiling;
+            excluded.insert(TEST_PROVIDER_NAME.to_owned());
+            excluded
+        };
         assert_eq!(
             default_ceiling_names(),
             catalog_names()
@@ -2492,6 +2605,49 @@ mod tests {
         assert_eq!(
             PROVIDER_REGISTRY.get("loc.watch").unwrap().default_ceiling,
             DefaultCeiling::Excluded
+        );
+        assert_eq!(
+            PROVIDER_REGISTRY.get("speech.capture").unwrap().bounds,
+            SPEECH_CAPTURE_BOUNDS
+        );
+        assert!(SPEECH_CAPTURE_BOUNDS.contains(&ProviderBound::ResponseBytes(MAX_EVENT_BYTES)));
+        assert_eq!(
+            PROVIDER_REGISTRY
+                .get("speech.capture")
+                .unwrap()
+                .default_ceiling,
+            DefaultCeiling::Excluded
+        );
+        assert_eq!(
+            PROVIDER_REGISTRY
+                .get("speech.synthesize")
+                .unwrap()
+                .default_ceiling,
+            DefaultCeiling::Included
+        );
+    }
+
+    #[test]
+    fn speech_refusals_reuse_stable_codes_and_reasons() {
+        let no_consent = SpeechCaptureConsent::ConsentRequired.refusal().unwrap();
+        assert_eq!(no_consent.code(), "cap_denied");
+        assert_eq!(
+            no_consent.reason().map(String::as_str),
+            Some("consent_required")
+        );
+
+        let no_microphone = SpeechMicrophone::Unavailable.refusal().unwrap();
+        assert_eq!(no_microphone.code(), "unknown_cap");
+        assert_eq!(
+            no_microphone.reason().map(String::as_str),
+            Some("device_lacks_affordance")
+        );
+
+        let asr_unavailable = CapError::asr_unavailable();
+        assert_eq!(asr_unavailable.code(), "failed");
+        assert_eq!(
+            asr_unavailable.reason().map(String::as_str),
+            Some("asr_unavailable")
         );
     }
 
@@ -2764,6 +2920,27 @@ mod tests {
         );
         // The same wildcard still reaches ordinary caps.
         assert_eq!(ledger.decide("time.now"), Decision::Allow);
+    }
+
+    #[test]
+    fn microphone_caps_require_explicit_grants_even_with_a_wildcard() {
+        let mut ledger = CapLedger::new(names(&["*"]), false);
+        let mut allowed = default_ceiling_names();
+        allowed.extend(names(&["speech.transcribe", "speech.capture"]));
+        ledger.set_allowed(allowed);
+
+        for cap in ["speech.transcribe", "speech.capture"] {
+            assert!(!ledger.is_granted(cap));
+            assert_eq!(
+                ledger.decide(cap),
+                Decision::Deny(CapError::consent_required()),
+                "a wildcard grant must not reach {cap}"
+            );
+            assert!(!ledger.effective().contains(cap));
+        }
+
+        ledger.set_granted(names(&["speech.capture"]));
+        assert_eq!(ledger.decide("speech.capture"), Decision::Allow);
     }
 
     #[test]

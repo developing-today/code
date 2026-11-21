@@ -584,17 +584,20 @@ export function aaPayloadSql(batch: string | null): string {
   const b = batchExpression(batch);
   const rankings = RANKINGS_BODY.replace("{{BATCH}}", b);
   const thresholds = THRESHOLD_BODY.replace("{{BATCH}}", b);
+  // SQLite drops the JSON subtype when an aggregate crosses a scalar-subquery
+  // boundary. Re-parse each array there so json_object embeds it as an array,
+  // not as a quoted JSON string.
   return `
 select json_object(
   'batch', ${b},
-  'sources', coalesce((
+  'sources', json(coalesce((
     select json_group_array(json_object(
       'name', name, 'kind', kind, 'importedAt', imported_at, 'driveModifiedAt', drive_modified_at
     ) order by id)
     from ainventory_sources
     where import_batch = ${b}
-  ), json('[]')),
-  'rankings', coalesce((
+  ), json('[]'))),
+  'rankings', json(coalesce((
     select json_group_array(json_object(
       'rowIndex', row_index, 'testRunKey', test_run_key, 'modelVariantKey', model_variant_key,
       'family', family, 'creator', creator, 'effort', effort,
@@ -609,16 +612,16 @@ select json_object(
       'rankLowCost', rank_low_cost
     ) order by rank_balanced nulls last, row_index)
     from (${rankings}) vr
-  ), json('[]')),
-  'thresholds', coalesce((
+  ), json('[]'))),
+  'thresholds', json(coalesce((
     select json_group_array(json_object(
       'testRunKey', test_run_key, 'target', target, 'usable', json(case when usable = 1 then 'true' else 'false' end),
       'levelledScore', levelled_score, 'costTask', cost_task, 'timeMin', time_min,
       'usdPerUsablePoint', usd_per_usable_point
     ) order by test_run_key, target)
     from (${thresholds}) vt
-  ), json('[]')),
-  'configs', coalesce((
+  ), json('[]'))),
+  'configs', json(coalesce((
     select json_group_array(json_object(
       'modelName', model_name, 'benchmark', benchmark, 'effort', effort,
       'intelligence', value_num, 'costPerTaskUsd', cost_per_task_usd, 'speedTps', output_tps
@@ -634,14 +637,14 @@ select json_object(
       and br.benchmark like 'AA Intelligence Index%'
       and br.metric = 'intelligence_index'
       and br.benchmark_version is null
-  ), json('[]')),
-  'testRunRows', coalesce((
+  ), json('[]'))),
+  'testRunRows', json(coalesce((
     select json_group_array(json_object('rowIndex', row_index, 'cells', data->'cells') order by row_index)
     from ainventory_sheet_rows sr
     where sr.import_batch = ${b}
       and sr.sheet_name = 'Test_Runs'
-  ), json('[]')),
-  'cai', coalesce((
+  ), json('[]'))),
+  'cai', json(coalesce((
     select json_group_array(json_object(
       'modelName', model_name, 'effort', effort, 'version', raw->>'benchmark_version',
       'score', value_num, 'cost', cost_per_task_usd,
@@ -665,8 +668,8 @@ select json_object(
       and br.benchmark like 'Artificial Analysis Coding Agent Index%'
       and br.metric = 'cai_index_score'
       and br.raw->>'benchmark_version' is not null
-  ), json('[]')),
-  'prices', coalesce((
+  ), json('[]'))),
+  'prices', json(coalesce((
     select json_group_array(json_object(
       'modelName', model_name, 'inputPer1M', input_usd_per_1m, 'outputPer1M', output_usd_per_1m,
       'cacheReadPer1M', cached_input_usd_per_1m, 'cacheWritePer1M', cache_write_usd_per_1m,
@@ -674,7 +677,7 @@ select json_object(
       'windowKind', window_kind
     ) order by model_name, context_min_tokens nulls first)
     from (select * from (select *, row_number() over (partition by model_name, coalesce(provider, ''), context_min_tokens, context_max_tokens, window_kind order by effective_date desc nulls last, source_date desc nulls last, ingested_at desc, id desc) as price_rank from ainventory_price_events) where price_rank = 1)
-  ), json('[]'))
+  ), json('[]')))
 ) as aa`;
 }
 

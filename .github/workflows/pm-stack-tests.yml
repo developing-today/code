@@ -182,6 +182,18 @@ jobs:
           done
           python3 -m unittest "$@"
 
+      # Lane guard: assignee-is-not-a-hold and park-note dedupe checks
+      # that queue lanes run before parking or commenting (#7616).
+      - name: Test lane guard
+        working-directory: pm-stack/lane-guard
+        run: |
+          set -euo pipefail
+          if [ ! -f test_lane_guard.py ]; then
+            echo "::error::Missing suite file pm-stack/lane-guard/test_lane_guard.py; the lane guard tests did not run."
+            exit 1
+          fi
+          python3 -m unittest test_lane_guard.py
+
       # Bun suite for #6091: pm-stack/opencode-claimant/
       # test/install.test.mjs (13 tests, the #3278 typo'd-flag
       # install guard) was run by no workflow — #5951 wired only

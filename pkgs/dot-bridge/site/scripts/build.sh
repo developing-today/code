@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ $# != 0 ]]; then echo "Usage: SITE_PROJECT_ID=<id> bash scripts/build.sh" >&2; exit 2; fi
+if [[ $# != 0 ]]; then
+  echo "Usage: SITE_PROJECT_ID=<id> bash scripts/build.sh" >&2
+  exit 2
+fi
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 node --input-type=module - <<'JS'
 import fs from "node:fs";

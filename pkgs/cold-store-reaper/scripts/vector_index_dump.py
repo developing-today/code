@@ -65,10 +65,20 @@ def main():
         name = index_name(match.group(1))
         if not created:
             out.write(
-                b"CREATE TABLE IF NOT EXISTS " + TABLE + b"(name TEXT PRIMARY KEY, sql TEXT NOT NULL);\n"
+                b"CREATE TABLE IF NOT EXISTS "
+                + TABLE
+                + b"(name TEXT PRIMARY KEY, sql TEXT NOT NULL);\n"
             )
             created = True
-        out.write(b"INSERT INTO " + TABLE + b" VALUES(" + literal(name) + b"," + literal(statement) + b");\n")
+        out.write(
+            b"INSERT INTO "
+            + TABLE
+            + b" VALUES("
+            + literal(name)
+            + b","
+            + literal(statement)
+            + b");\n"
+        )
         sys.stderr.write(
             f"vector_index_dump: kept libsql vector index {name.decode(errors='replace')} "
             f"as a recorded statement in {TABLE.decode()}\n"
