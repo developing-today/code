@@ -226,9 +226,15 @@ async function register(request, env, store) {
     return refuse("invalid_client_metadata", "unsupported token_endpoint_auth_method");
   }
   const name = typeof data.client_name === "string" ? data.client_name.trim().slice(0, 80) : "";
+  // One source can't keep the registry full: the address is counted as a
+  // keyed hash (never stored as is), a few registrations per ten minutes.
+  const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
+  if (!(await store.oauthRegisterAllowed((await mac(env, `reg-source:${ip}`)).slice(0, 16)))) {
+    return refuse("invalid_client_metadata", "too many registrations from this address; try again in a few minutes", 429);
+  }
   const clientId = `mbc_${randomId()}`;
   if (!(await store.oauthClientAdd(clientId, { r: uris, m: method, n: name }))) {
-    return refuse("invalid_client_metadata", "too many registered clients; try again tomorrow", 429);
+    return refuse("invalid_client_metadata", "too many registered clients; try again later", 429);
   }
   await note(store, "registered", { ...seen, client: clientId.slice(0, 10) });
   const out = {

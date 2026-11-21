@@ -352,6 +352,21 @@ test("a full registry makes room from stale never-used registrations, never from
   assert.equal(await store.oauthClientGet(id(7)), null, "a client idle past every refresh token goes");
 });
 
+test("one address can't flood registrations, and others still register", async () => {
+  const { call } = harness();
+  const from = (ip) =>
+    call("/register", {
+      method: "POST",
+      headers: { "content-type": "application/json", "cf-connecting-ip": ip },
+      body: JSON.stringify({ redirect_uris: [REDIRECT] }),
+    });
+  for (let i = 0; i < 10; i++) assert.equal((await from("203.0.113.9")).status, 201);
+  const flooded = await from("203.0.113.9");
+  assert.equal(flooded.status, 429);
+  assert.match((await flooded.json()).error_description, /this address/);
+  assert.equal((await from("198.51.100.4")).status, 201, "another source still onboards");
+});
+
 test("the approval form works when the browser sends Origin: null", async () => {
   const { call } = harness();
   const client = await registerClient(call, { token_endpoint_auth_method: "none" });

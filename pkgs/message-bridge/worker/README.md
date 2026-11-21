@@ -86,7 +86,8 @@ derived from it (codes and tokens are HMAC-signed). The message store
 keeps the registered clients under short random ids (`mbc_...`; never-used
 ones go after a day, used ones only once their refresh tokens could no
 longer work; at most 500, and when full the oldest never-used one more
-than ten minutes old makes room), each code's
+than ten minutes old makes room; one network address may register ten
+per ten minutes), each code's
 use (codes are single-use) and, per refresh-token family, the one refresh
 token still valid; redeeming an older one revokes the family. Approving needs the owner's token, its page
 link, or the owner cookie that opening the history page sets

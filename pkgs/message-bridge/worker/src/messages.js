@@ -140,6 +140,9 @@ export const OAUTH_CLIENT_IDLE = 366 * 86400;
 // When the registry is full, a never-used registration older than this
 // makes room, so a flood of registrations can't lock the owner out.
 export const OAUTH_PENDING_GRACE = 600;
+// Registrations one network address may make per grace window, so a single
+// source can't keep the registry full; a real client registers once or twice.
+export const OAUTH_REG_PER_SOURCE = 10;
 
 export class MemoryStore {
   constructor(now = () => new Date().toISOString()) {
@@ -148,6 +151,7 @@ export class MemoryStore {
     this.claimed = new Map();
     this.families = new Map();
     this.clients = new Map();
+    this.registrations = [];
     this.events = [];
   }
   async oauthClientAdd(id, meta, now = Math.floor(Date.now() / 1000)) {
@@ -163,6 +167,12 @@ export class MemoryStore {
       this.clients.delete(oldest);
     }
     this.clients.set(id, { meta: JSON.parse(JSON.stringify(meta)), created: now, used: null });
+    return true;
+  }
+  async oauthRegisterAllowed(source, now = Math.floor(Date.now() / 1000)) {
+    this.registrations = this.registrations.filter((r) => r.ts >= now - OAUTH_PENDING_GRACE);
+    if (this.registrations.filter((r) => r.source === source).length >= OAUTH_REG_PER_SOURCE) return false;
+    this.registrations.push({ source, ts: now });
     return true;
   }
   async oauthClientGet(id, touch = false) {

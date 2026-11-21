@@ -8,7 +8,7 @@
 // Routes and auth: see routes.js and auth.js. The access token is the
 // Worker secret ACCESS_TOKEN; it is never in git.
 import { DurableObject } from "cloudflare:workers";
-import { OAUTH_CLIENT_IDLE, OAUTH_MAX_CLIENTS, OAUTH_MAX_EVENTS, OAUTH_PENDING_GRACE, ackSelector, normalizeChannel, normalizeNew, normalizeQuery } from "./messages.js";
+import { OAUTH_CLIENT_IDLE, OAUTH_MAX_CLIENTS, OAUTH_MAX_EVENTS, OAUTH_PENDING_GRACE, OAUTH_REG_PER_SOURCE, ackSelector, normalizeChannel, normalizeNew, normalizeQuery } from "./messages.js";
 import { route } from "./routes.js";
 
 export class MessageStore extends DurableObject {
@@ -52,6 +52,7 @@ export class MessageStore extends DurableObject {
       created INTEGER NOT NULL,
       used INTEGER
     )`);
+    this.sql.exec("CREATE TABLE IF NOT EXISTS oauth_reg (source TEXT NOT NULL, ts INTEGER NOT NULL)");
     this.sql.exec(`CREATE TABLE IF NOT EXISTS oauth_event (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       ts TEXT NOT NULL,
@@ -77,6 +78,16 @@ export class MessageStore extends DurableObject {
       if (evicted.length === 0) return false;
     }
     this.sql.exec("INSERT INTO oauth_client (id, meta, created) VALUES (?, ?, ?)", id, JSON.stringify(meta), now);
+    return true;
+  }
+
+  /** Counts a registration from source (a hashed address); false past the per-source limit. */
+  oauthRegisterAllowed(source) {
+    const now = Math.floor(Date.now() / 1000);
+    this.sql.exec("DELETE FROM oauth_reg WHERE ts < ?", now - OAUTH_PENDING_GRACE);
+    const n = this.sql.exec("SELECT COUNT(*) AS n FROM oauth_reg WHERE source = ?", source).one().n;
+    if (n >= OAUTH_REG_PER_SOURCE) return false;
+    this.sql.exec("INSERT INTO oauth_reg (source, ts) VALUES (?, ?)", source, now);
     return true;
   }
 
@@ -231,6 +242,7 @@ function storeFor(env) {
     oauthFamilyStart: (fam, jti, exp) => stub.oauthFamilyStart(fam, jti, exp),
     oauthFamilyRotate: (fam, jti, next, exp) => stub.oauthFamilyRotate(fam, jti, next, exp),
     oauthClientAdd: (id, meta) => stub.oauthClientAdd(id, meta),
+    oauthRegisterAllowed: (source) => stub.oauthRegisterAllowed(source),
     oauthClientGet: (id, touch) => stub.oauthClientGet(id, touch),
     oauthLog: (kind, detail) => stub.oauthLog(kind, detail),
     oauthEvents: () => stub.oauthEvents(),
