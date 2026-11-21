@@ -307,8 +307,8 @@ export function epicGraph(
   cap: number = EPIC_GRAPH_DEFAULT_CAP,
 ): EpicGraph {
   const byRef = new Map(pool.map((p) => [p.ref, p]));
-  const epicItem = byRef.get(epicRef);
-  if (!epicItem || epicItem.kind !== "Epic") {
+  const epicItem = pool.find((p) => p.ref === epicRef && p.kind === "Epic");
+  if (!epicItem) {
     return unavailable(`epic ${epicRef} is not in this pool, so its dependency graph is unavailable`);
   }
   const members = pool.filter((p) => p.epicRef === epicRef);

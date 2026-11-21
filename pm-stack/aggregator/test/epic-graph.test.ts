@@ -61,6 +61,17 @@ describe("epicSelector", () => {
     expect(epicSelector([item({ number: 1 }), item({ number: 2 })])).toEqual([]);
   });
 
+  test("a satellite copy without Kind does not hide the canonical epic's graph", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic", boardId: "devtoday-main" }),
+      item({ number: 1, title: "Epic", kind: null, boardId: "forks-main" }),
+      item({ number: 2, epicRef: R(1) }),
+    ];
+    const graph = epicGraph(pool, R(1));
+    expect(graph.status).toBe("ok");
+    expect(graph.nodes.map((n) => n.ref)).toContain(R(2));
+  });
+
   test("invalid-only blockers do not inflate selector or graph blocked counts", () => {
     const pool = [
       item({ number: 1, title: "Epic", kind: "Epic" }),
