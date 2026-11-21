@@ -201,6 +201,19 @@ exits `2` with the rule and what to do instead.
   sentence of at most 200 characters.
 - A hands item blocks that step only. The agent takes the next task.
 
+On GitHub a hands item carries `user/escalated` and one marker line in its
+body: `<!-- hands:v1 kind=<kind> action="<one sentence>" -->`. Three places
+read it:
+
+- `fleet agent next` never hands such an issue to an agent, and it skips
+  `kind/tracker` issues, which index work without being work.
+- The dashboard's census (`pm-stack/aggregator/src/needs-drew.ts`) splits the
+  items carrying `user/review` or `user/escalated` into three groups: needs a
+  person's hands, review requested, and parked on the owner by an agent. Only
+  the first two count as needing the owner. The third is listed as fleet work
+  whose count should fall to zero.
+- The digest's "Needs Drew" section lists the first two groups only.
+
 ### 8. Secrets: `op` beside `bws`
 
 The secrets chain gains an optional third source, the 1Password CLI. It joins
@@ -225,8 +238,8 @@ Each is made, with how to undo it.
 
 ## How it was checked
 
-- The whole fleet workspace passes with the locked dependencies: 942 tests.
-- `fleet-agent`: 44 tests, three of them property tests. The shortlist order
+- The whole fleet workspace passes with the locked dependencies: 943 tests. The aggregator passes its 3,037 tests and its typecheck.
+- `fleet-agent`: 45 tests, three of them property tests. The shortlist order
   is checked against a sort, the file against a round trip, and shell quoting
   against the real `/bin/sh`. Time limits are checked against real child
   processes. The quoting property found a real fault before merge: a bare `~`
@@ -235,9 +248,9 @@ Each is made, with how to undo it.
   binary against a fake broker that counts connections, so "refused before
   the broker is asked" is observed.
 - Placement: 7 new tests for `dispatch_as`. Secrets: 4 new tests for `op`.
-- 25 hand-made faults across the ladder, the shortlist, the shell plan, the
-  guard and its wiring, placement and the secrets source were each caught by
-  a test.
+- 34 hand-made faults were each caught by a test: 27 across the ladder, the
+  shortlist, the shell plan, the guard and its wiring, placement and the
+  secrets source, and 7 in the dashboard census.
 - The built binary was run end to end: the park and block refusals exit `2`,
   `fleet shell --print` plans the laptop build command, the serve variant
   answers `fleet agent` and `fleet shell` with exit `69`, and
@@ -255,5 +268,6 @@ Each is made, with how to undo it.
 3. A dry-run enrolment checks that the bridge answers, not that this seat
    holds the fleet token, so it can report the push rung as working where a
    real enrolment would not.
-4. The PM stack does not yet show which rung fed each agent's task.
+4. The PM stack does not yet show which rung fed each agent's task. It does
+   now separate hands items from choices an agent parked on the owner.
 5. A `feature_slice` queue kind, so slices can also be scheduled centrally.

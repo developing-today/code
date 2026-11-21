@@ -54,8 +54,8 @@ const census: NeedsDrewCensus = {
       kind: "issue",
       title: "decide the thing",
       url: "https://github.com/developing-today/code/issues/42",
-      labels: ["user/escalated"],
-      needsLabels: ["user/escalated"],
+      labels: ["user/review"],
+      needsLabels: ["user/review"],
       reason: "needs a budget call",
       updatedAt: "2026-11-02T09:00:00Z",
     },
@@ -128,6 +128,41 @@ describe("buildDigest", () => {
     const outlook = section(d, "quota");
     expect(outlook.items.map((i) => i.ref)).toEqual(["pool-hot"]);
     expect(outlook.items[0].note).toContain("near wall");
+  });
+
+  // FDR-0013: a choice an agent parked on the owner is fleet work.
+  // Oracle: the decision record's rule — only hands items and review
+  // requests are the owner's.
+  test("needs-drew lists hands items and reviews, not choices an agent parked on the owner", () => {
+    const withAll: NeedsDrewCensus = {
+      ...census,
+      items: [
+        ...census.items,
+        {
+          ...census.items[0],
+          ref: "developing-today/code#43",
+          number: 43,
+          url: "https://github.com/developing-today/code/issues/43",
+          labels: ["user/escalated"],
+          needsLabels: ["user/escalated"],
+          reason: "which encoding should this use?",
+        },
+        {
+          ...census.items[0],
+          ref: "developing-today/code#44",
+          number: 44,
+          url: "https://github.com/developing-today/code/issues/44",
+          labels: ["user/escalated"],
+          needsLabels: ["user/escalated"],
+          reason: null,
+          hands: { kind: "interactive-login", action: "Run gh auth refresh and approve the code." },
+        },
+      ],
+    };
+    const needs = section(buildDigest(inputs({ needsDrew: withAll })), "needsDrew");
+    expect(needs.items.map((i) => i.ref)).toEqual(["developing-today/code#42", "developing-today/code#44"]);
+    // A hands item's note is its one action.
+    expect(needs.items[1].note).toBe("Run gh auth refresh and approve the code.");
   });
 
   test("weekly window reaches back seven days", () => {

@@ -34,6 +34,12 @@ use crate::{
 
 /// Labels that hold an issue (FDR-0012): a person set them on purpose.
 pub const HOLD_LABELS: [&str; 3] = ["held", "user/owned", "do-not-auto-edit"];
+/// Labels on an issue that indexes other work and is not itself a
+/// piece of work to hand out.
+pub const NOT_WORK_LABELS: [&str; 1] = ["kind/tracker"];
+/// How an issue body marks a hands item
+/// (`<!-- hands:v1 kind=... action="..." -->`).
+pub const HANDS_MARKER: &str = "<!-- hands:v1 ";
 /// Labels that say someone is already on it, or it waits on something real.
 pub const BUSY_LABELS: [&str; 5] = [
     "status/in-progress",
@@ -190,10 +196,18 @@ pub fn candidates(world: &dyn World, repo: &str, want: usize) -> Result<Vec<Entr
                 continue;
             };
             let labels = label_names(issue);
-            let kept_out = labels
-                .iter()
-                .any(|l| HOLD_LABELS.contains(&l.as_str()) || BUSY_LABELS.contains(&l.as_str()));
-            if kept_out || found.iter().any(|e| e.issue == number) {
+            let kept_out = labels.iter().any(|l| {
+                HOLD_LABELS.contains(&l.as_str())
+                    || BUSY_LABELS.contains(&l.as_str())
+                    || NOT_WORK_LABELS.contains(&l.as_str())
+            });
+            // A hands item waits on a person's hands (FDR-0013): no
+            // agent can do it, so no agent is handed it.
+            let hands_item = issue
+                .get("body")
+                .and_then(Value::as_str)
+                .is_some_and(|body| body.contains(HANDS_MARKER));
+            if kept_out || hands_item || found.iter().any(|e| e.issue == number) {
                 continue;
             }
             found.push(Entry {

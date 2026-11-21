@@ -524,6 +524,29 @@ fn candidates_fall_back_from_fleet_gh_to_plain_gh() {
     assert_eq!(found[0].issue, 557);
 }
 
+#[test]
+fn hands_items_and_trackers_are_never_handed_out() {
+    // Oracle: FDR-0013 — a hands item is a person's to do; and a
+    // tracker indexes work without being work.
+    let fake = Fake::new();
+    let mut hands = issue(12237, &["now", "user/escalated"]);
+    hands["body"] = json!("text\n<!-- hands:v1 kind=interactive-login action=\"Sign in.\" -->");
+    let mut decided = issue(805, &["now", "user/escalated"]);
+    decided["body"] = json!("<!-- decision:v1 -->\nDecided: option B.");
+    fake.on(
+        "labels=now",
+        vec![ok(json!([
+            hands,
+            issue(12238, &["now", "kind/tracker"]),
+            decided,
+        ]))],
+    )
+    .on("gh api", vec![ok(json!([]))]);
+    let found = crate::next::candidates(&fake, "developing-today/code", 10).unwrap();
+    // Positive control: the owner park with a decision record stays.
+    assert_eq!(found.iter().map(|e| e.issue).collect::<Vec<_>>(), vec![805]);
+}
+
 fn count_calls(fake: &Fake, prefix: &str) -> usize {
     fake.calls()
         .iter()
