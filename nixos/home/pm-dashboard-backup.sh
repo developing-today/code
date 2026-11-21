@@ -6,7 +6,7 @@
 # script's archive build, unchanged: a dated tar.zst with a sha256 manifest
 # in ~/backups/dashboard/<date>/, verified against its own manifest, 30-day
 # retention. The offsite legs copy the same archive to Cloudflare R2
-# (supabase-backups bucket, dashboard/<date>/) and to Google Drive
+# (bucket supabase-backups, a legacy R2 bucket name, dashboard/<date>/) and to Google Drive
 # (Cloud/cold-store/db-backups/pm-aggregator/<date>/), each verified by
 # sha256 against the local archive, with the same 30-day retention.
 #
@@ -37,14 +37,9 @@
 # while the rest of projector.db (a rebuildable projection) is never
 # archived.
 #
-# The archive also carries the canonical copy of the four aggregator
-# stores that #6815 moved to Supabase muse-dev2 (actions, activity
-# ingestion, usage snapshots, aa-last-good). When the deployed backend
-# is supabase the local files are only a rebuildable cache, so the
-# archive exports the five tables as JSON (supabase/agg_*.json) and
-# records them as conditionally-required manifest members — required
-# whenever the export ran. This is the RPO path recorded on code#6815
-# for #1514: without it a restore would have no store to restore from.
+# The archive also carries a JSON export of the canonical aggregator
+# stores (Turso is the store) as conditionally-required manifest members:
+# required whenever the export ran.
 #
 # Credentials come from Bitwarden Secrets Manager at runtime, referenced
 # by key name only and never logged (the repo-archive-backup pattern):
@@ -343,9 +338,9 @@ mkdir -p "$STAGE/aggregator" "$STAGE/meta-quota-export" "$STAGE/journals" "$OUTD
 # are required (their WARN-for-missing becomes a failed run at verify);
 # retired meta-quota-export files, the snapshots tree and active journal
 # logs are optional; journals keep their tolerated-unavailable
-# placeholder, but are now recorded; db-dumps and the supabase/ table
+# placeholder, but are now recorded; db-dumps and the turso/ table
 # exports are CONDITIONALLY required — required when their step ran
-# (DUMP_RAN=1 / SUPA_RAN=1), optional otherwise.
+# (DUMP_RAN=1 / TURSO_RAN=1), optional otherwise.
 EXPECTED_SET="required file aggregator/actions.json
 required file aggregator/comments.json
 required file aggregator/fleet-feed.json
@@ -372,11 +367,6 @@ optional file aggregator/prefix-program.json
 optional tree aggregator/digests
 optional file meta-quota-export/latest.json
 optional file meta-quota-export/history.jsonl
-conditional file supabase/agg_actions.json
-conditional file supabase/agg_activity_ingestion.json
-conditional file supabase/agg_activity_gaps.json
-conditional file supabase/agg_usage_snapshots.json
-conditional file supabase/agg_store_documents.json
 conditional file turso/agg_actions.json
 conditional file turso/agg_activity_ingestion.json
 conditional file turso/agg_activity_gaps.json
@@ -603,81 +593,26 @@ else
   log "no projector DB at $PMP_DB — pmp_links export not applicable"
 fi
 
-# --- canonical remote stores (#6815, the #1514 RPO path) -----------------
-# While the deployed backend is PM_AGG_STORE_BACKEND=file the four stores
-# live in $AGG as files and the copies above are the backup. Once it is
-# supabase they are canonical in muse-dev2 and a restore can only come
-# from an export of those tables — the local files may be absent (fresh
-# state dir) or stale. Read the backend from the aggregator .env the unit
-# actually loads (LAST assignment wins, same rule as the pmp_links
-# DATABASE_URL read) and export the five tables as JSON when it is
-# supabase. PM_AGG_SUPABASE_EXPORT=off opts out (tests, deliberate
-# file-only hosts); the default is auto.
-#
-# Transport is psql through the project's pooler host: the direct
-# db.<ref>.supabase.co hostname is IPv6-only on this network, the pooler
-# is dual-stack. User/host/port are muse-dev2 facts, overridable for a
-# relocated project; the password and project ref come from Bitwarden by
-# key name only and are never logged.
-SUPA_RAN=0
+# --- canonical remote stores (Turso is the store) -----------------------
+# While the deployed backend is PM_AGG_STORE_BACKEND=file the stores live
+# in $AGG as files and the copies above are the backup. When it is turso
+# they are canonical there, so export the tables as JSON. Read the backend
+# from the aggregator .env the unit actually loads (LAST assignment wins,
+# same rule as the pmp_links DATABASE_URL read). PM_AGG_STORE_EXPORT=off
+# opts out (tests, deliberate file-only hosts); the default is auto.
 TURSO_RAN=0
-SUPA_MODE="${PM_AGG_SUPABASE_EXPORT:-auto}"
-case "$SUPA_MODE" in
+STORE_EXPORT_MODE="${PM_AGG_STORE_EXPORT:-auto}"
+case "$STORE_EXPORT_MODE" in
 auto | off) ;;
-*) fail "PM_AGG_SUPABASE_EXPORT must be auto or off, got '$SUPA_MODE'" ;;
+*) fail "PM_AGG_STORE_EXPORT must be auto or off, got '$STORE_EXPORT_MODE'" ;;
 esac
-SUPA_BACKEND="${PM_AGG_STORE_BACKEND:-}"
-if [ -z "$SUPA_BACKEND" ] && [ -f "$AGG/.env" ]; then
-  SUPA_BACKEND="$(grep -E '^[[:space:]]*(export[[:space:]]+)?PM_AGG_STORE_BACKEND[[:space:]]*=' "$AGG/.env" 2>/dev/null |
+STORE_BACKEND="${PM_AGG_STORE_BACKEND:-}"
+if [ -z "$STORE_BACKEND" ] && [ -f "$AGG/.env" ]; then
+  STORE_BACKEND="$(grep -E '^[[:space:]]*(export[[:space:]]+)?PM_AGG_STORE_BACKEND[[:space:]]*=' "$AGG/.env" 2>/dev/null |
     tail -n 1 | sed -E 's/^[[:space:]]*(export[[:space:]]+)?PM_AGG_STORE_BACKEND[[:space:]]*=[[:space:]]*//')"
-  SUPA_BACKEND="$(pmp_trim_value "$SUPA_BACKEND")"
+  STORE_BACKEND="$(pmp_trim_value "$STORE_BACKEND")"
 fi
-if [ "$SUPA_MODE" = "auto" ] && [ "$SUPA_BACKEND" = "supabase" ]; then
-  command -v psql >/dev/null 2>&1 ||
-    fail "psql not found — cannot export the canonical aggregator stores from Supabase"
-  SUPA_HOST="${PM_AGG_SUPABASE_POOLER_HOST:-aws-0-us-east-2.pooler.supabase.com}"
-  SUPA_PORT="${PM_AGG_SUPABASE_POOLER_PORT:-6543}"
-  SUPA_PASSWORD="$(bws_get supabase.muse-dev2.db-password)"
-  SUPA_REF="$(bws_get supabase.muse-dev2.project-ref)"
-  [ -n "$SUPA_PASSWORD" ] && [ -n "$SUPA_REF" ] ||
-    fail "Supabase credentials incomplete in Bitwarden (supabase.muse-dev2.db-password / .project-ref)"
-  mkdir -p "$STAGE/supabase"
-  # Ordered so a restore can replay rows in FK-safe order; agg_actions has
-  # a self-FK (supersedes/duplicate_of), so it is ordered by creation.
-  supa_export() { # <table> <order-by>
-    PGSSLMODE=require PGPASSWORD="$SUPA_PASSWORD" \
-      psql -X -q -h "$SUPA_HOST" -p "$SUPA_PORT" -U "postgres.$SUPA_REF" -d postgres \
-      -v ON_ERROR_STOP=1 -tA \
-      -c "select coalesce(jsonb_agg(t), '[]'::jsonb)::text from (select * from public.$1 order by $2) t" \
-      >"$STAGE/supabase/$1.json" ||
-      fail "Supabase export failed: $1"
-  }
-  supa_export agg_actions "created_at, id"
-  supa_export agg_activity_ingestion "source"
-  supa_export agg_activity_gaps "id"
-  supa_export agg_usage_snapshots "snapshot_key"
-  supa_export agg_store_documents "store"
-  # An export that wrote something psql did not print as a JSON array is
-  # a failed export, not a backup of zero rows.
-  SUPA_COUNTS="$(
-    python3 - "$STAGE/supabase" <<'PYEOF'
-import json, os, sys
-d = sys.argv[1]
-out = []
-for name in sorted(os.listdir(d)):
-    if not name.endswith(".json"):
-        continue
-    with open(os.path.join(d, name)) as fh:
-        rows = json.load(fh)
-    if not isinstance(rows, list):
-        sys.exit(f"{name}: not a JSON array")
-    out.append(f"{name[:-5]}={len(rows)}")
-print(" ".join(out))
-PYEOF
-  )" || fail "Supabase export produced unreadable JSON"
-  SUPA_RAN=1
-  log "canonical aggregator stores exported from Supabase: $SUPA_COUNTS"
-elif [ "$SUPA_MODE" = "auto" ] && [ "$SUPA_BACKEND" = "turso" ]; then
+if [ "$STORE_EXPORT_MODE" = "auto" ] && [ "$STORE_BACKEND" = "turso" ]; then
   TURSO_EXPORT_BIN="${PM_AGG_TURSO_EXPORT_BIN:-pm-aggregator-export-turso-stores}"
   command -v "$TURSO_EXPORT_BIN" >/dev/null 2>&1 || fail "Turso exporter not found"
   "$TURSO_EXPORT_BIN" --output-dir "$STAGE/turso" || fail "Turso canonical store export failed"
@@ -693,7 +628,7 @@ PYEOF
   TURSO_RAN=1
   log "canonical aggregator stores exported from Turso"
 else
-  log "aggregator store backend is '${SUPA_BACKEND:-file}' — Supabase store export not applicable"
+  log "aggregator store backend is '${STORE_BACKEND:-file}' — remote store export not applicable"
 fi
 
 # --- journals: window start = min(last successful run, 24h ago) ---
@@ -713,7 +648,7 @@ done
 # --- manifest (files as staged + the expected set's per-member status) ---
 AGG_DIR="$AGG" AGG_DERIVED="$AGG_DERIVED" \
   EXPECTED_SET="$EXPECTED_SET" DUMP_RAN="$DUMP_RAN" PMP_RAN="$PMP_RAN" \
-  SUPA_RAN="$SUPA_RAN" TURSO_RAN="$TURSO_RAN" \
+  TURSO_RAN="$TURSO_RAN" \
   python3 - "$STAGE" "$DATE" "$CREATED_AT" <<'PYEOF'
 import hashlib, json, os, sys
 stage, date, created = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -740,9 +675,7 @@ for line in os.environ.get("EXPECTED_SET", "").splitlines():
         continue
     cls, kind, rel = parts
     if cls == "conditional":
-        if rel.startswith("supabase/"):
-            ran = os.environ.get("SUPA_RAN")
-        elif rel.startswith("turso/"):
+        if rel.startswith("turso/"):
             ran = os.environ.get("TURSO_RAN")
         elif rel.startswith("projector/"):
             ran = os.environ.get("PMP_RAN")

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { APP_INSTALLED_REPOS, FLEET_REPOS, REPO_DIRS, REPO_QUEUES, loadConfig } from "../src/config.ts";
 
-/** loadConfig needs no fixture secrets (#9028: no Supabase config remains). */
+/** loadConfig needs no fixture secrets (#9028). */
 const ENV = {};
 
 describe("fleet config", () => {

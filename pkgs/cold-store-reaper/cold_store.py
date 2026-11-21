@@ -63,7 +63,7 @@ SUBFOLDERS = ("bundles", "manifests", "db-backups")
 
 # DB-backup class (DESIGN.md section 5): nightly dumps live unbundled under
 # db-backups/<db>/, one subfolder per database.
-BACKUP_DBS = ("supabase", "turso", "d1")
+BACKUP_DBS = ("turso", "d1")
 # Backup families whose folder holds one file per source database per
 # run, named <family>-<stamp>-<database>.<ext>: retention runs per
 # source database (keyed by the name after the stamp), not across the
@@ -109,9 +109,8 @@ D1_SYNC_BACKOFF_SECONDS = 2.0
 D1_SYNC_BACKOFF_CAP_SECONDS = 30.0
 
 
-# R2 (DESIGN.md sections 4-5): the supabase-backups bucket is both a
-# nightly filing source (backup-supabase) and the first eviction trial
-# bucket. Access is the S3 API at the account's R2 host, with
+# R2 (DESIGN.md sections 4-5): the supabase-backups bucket (a legacy
+# R2 bucket name) is the first eviction trial bucket. Access is the S3 API at the account's R2 host, with
 # bucket-scoped credentials from the environment only.
 DEFAULT_R2_HOST = "234b866b99ce2b142d7963d8d139cbfa.r2.cloudflarestorage.com"
 DEFAULT_R2_BUCKET = "supabase-backups"
@@ -1999,7 +1998,7 @@ class ColdStore:
         method is GET, make exactly ONE curl attempt for the same URL
         (_s3_request_via_curl) before giving up: on a hostile-proxy
         night every urllib retry can truncate at a different offset
-        (seen live 2026-10-28, when backup-supabase died at its LIST),
+        (seen live 2026-10-28, when an R2 filing died at its LIST),
         while curl is immune. The curl response returns through the
         same (status, headers, body) shape, so callers' status
         handling (_s3_check) sees an HTTP error from curl exactly as
@@ -2122,10 +2121,9 @@ class ColdStore:
         truncate intermittently and retries absorb them, but
         multi-megabyte responses truncate systematically through this
         proxy (every attempt cut at the same byte count), while curl
-        is immune — the same reason the Supabase backup tooling
-        replays downloads with curl. `expected_size`, when the caller
-        knows it (backup-supabase has it from the listing), is the
-        byte count the curl body is verified against.
+        is immune. `expected_size`, when the caller knows it (e.g. from
+        the listing), is the byte count the curl body is verified
+        against.
         """
         problem = "no attempt made"
         for _attempt in range(S3_GET_ATTEMPTS):
@@ -2296,38 +2294,6 @@ class ColdStore:
     def s3_delete_object(self, bucket: str, key: str) -> None:
         status, _h, resp = self._s3_request("DELETE", bucket, key=key)
         self._s3_check(status, resp, f"DELETE {bucket}/{key}")
-
-    # ---------------------------------------------------------- backup from R2
-    def backup_supabase(self, bucket: str = DEFAULT_R2_BUCKET) -> dict:
-        """File the newest Supabase backup object from R2 as a supabase
-        backup (DESIGN section 5), via the put-backup machinery.
-
-        'Newest' is by S3 LastModified among the bucket's backup
-        objects; manifest.json is excluded — it is the backup system's
-        own index, not a dump. The download is byte-count verified
-        (s3_get_object). Filing is point-in-time, exactly like
-        backup-d1: unchanged content is filed again, and the content
-        sha256 is reported so the duplication is visible.
-        """
-        epoch = datetime.min.replace(tzinfo=timezone.utc)
-        objects = [
-            o
-            for o in self.s3_list_objects(bucket)
-            if o["key"].rsplit("/", 1)[-1] != "manifest.json"
-        ]
-        if not objects:
-            raise ColdStoreError(f"no backup objects found in R2 bucket {bucket}")
-        newest = max(objects, key=lambda o: (o["last_modified"] or epoch, o["key"]))
-        data = self.s3_get_object(bucket, newest["key"], expected_size=newest["size"])
-        staging = self.home / "staging"
-        staging.mkdir(parents=True, exist_ok=True)
-        path = staging / newest["key"].rsplit("/", 1)[-1]
-        path.write_bytes(data)
-        result = self.put_backup("supabase", str(path))
-        result["sha256"] = hashlib.sha256(data).hexdigest()
-        result["source_bucket"] = bucket
-        result["source_key"] = newest["key"]
-        return result
 
     # --------------------------------------------------------------- eviction
     def _object_cold_verified(self, conn, obj_hash: str):
@@ -2604,11 +2570,6 @@ def main(argv=None) -> int:
         "backup-d1",
         help="export the D1 cold-store-manifest database and file it as a d1 backup",
     )
-    p_backup_sb = sub.add_parser(
-        "backup-supabase",
-        help="file the newest Supabase backup object from R2 into db-backups/supabase/",
-    )
-    p_backup_sb.add_argument("--bucket", default=DEFAULT_R2_BUCKET)
     p_evict_scan = sub.add_parser(
         "evict-scan",
         help="dry-run: verdict per R2 object — evictable only if cold in a verified bundle, old enough, and not among the newest kept (never deletes)",
@@ -2743,14 +2704,6 @@ def main(argv=None) -> int:
                 f"backup {result['name']}: {_human(result['bytes'])}, "
                 f"uploaded to Drive as {result['drive_file_id']} "
                 f"({result['rows']} row(s) across {len(result['tables'])} table(s))"
-            )
-        elif args.cmd == "backup-supabase":
-            result = store.backup_supabase(args.bucket)
-            print(
-                f"backup {result['name']}: {_human(result['bytes'])}, "
-                f"sha256 {result['sha256']}, "
-                f"uploaded to Drive as {result['drive_file_id']} "
-                f"(from r2://{result['source_bucket']}/{result['source_key']})"
             )
         elif args.cmd == "evict-scan":
             scan = store.evict_scan(args.bucket, args.min_age_days, args.keep_newest)

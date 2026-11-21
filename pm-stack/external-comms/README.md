@@ -13,15 +13,15 @@ with its approval basis: (a) per-item approval, (b) surfaced-with-link
 
 ## Where things live
 
-| Piece               | Location                                                                                                                                                                                                                      |
-| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Table               | `agent_external_comms` in the Turso database **fleet-platform** (repointed 2026-11-07; before that `agent.external_comms` in Supabase project muse-dev2 — the 58 pre-repoint rows stay in Postgres until the finalize top-up) |
-| Migration           | `migration-0001-agent-external-comms.sql` (original Postgres DDL) + `migration-0002-agent-external-comms-turso.sql` (Turso DDL, executed 2026-11-07)                                                                          |
-| Writer CLI + pusher | `record-external-send` (this directory; deployed from the primary clone `~/git/code` on the laptop)                                                                                                                           |
-| Outbox (spill)      | `~/.local/state/external-comms/outbox.jsonl` on the laptop                                                                                                                                                                    |
-| Pusher health       | `~/.local/state/external-comms/pusher-health.json` on the laptop                                                                                                                                                              |
-| Pusher supervision  | systemd **user** units `external-comms-pusher.service` / `.timer` (this directory; installed to `~/.config/systemd/user/`, timer every minute)                                                                                |
-| Backfill            | `backfill-2026-11-05.jsonl` — the 68 sends enumerated by the 2026-11-05 audit, loaded once via `record-many`                                                                                                                  |
+| Piece               | Location                                                                                                                                             |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Table               | `agent_external_comms` in the Turso database **fleet-platform**                                                                                      |
+| Migration           | `migration-0001-agent-external-comms.sql` (original Postgres DDL) + `migration-0002-agent-external-comms-turso.sql` (Turso DDL, executed 2026-11-07) |
+| Writer CLI + pusher | `record-external-send` (this directory; deployed from the primary clone `~/git/code` on the laptop)                                                  |
+| Outbox (spill)      | `~/.local/state/external-comms/outbox.jsonl` on the laptop                                                                                           |
+| Pusher health       | `~/.local/state/external-comms/pusher-health.json` on the laptop                                                                                     |
+| Pusher supervision  | systemd **user** units `external-comms-pusher.service` / `.timer` (this directory; installed to `~/.config/systemd/user/`, timer every minute)       |
+| Backfill            | `backfill-2026-11-05.jsonl` — the 68 sends enumerated by the 2026-11-05 audit, loaded once via `record-many`                                         |
 
 ## Write pattern: database-first, spill to outbox, pusher drains
 

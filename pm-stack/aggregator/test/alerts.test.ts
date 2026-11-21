@@ -42,7 +42,7 @@ import {
 } from "../src/push.ts";
 import { renderAlerts } from "../src/render.ts";
 import type { Provenance } from "../src/model.ts";
-import { sqlInt, sqlJson, sqlStr, type SupabaseClient } from "../src/supabase.ts";
+import { sqlInt, sqlJson, sqlStr, type SqlClient } from "../src/sql-client.ts";
 import { needsDrewIncidentKey } from "../src/needs-drew.ts";
 import type { Config } from "../src/config.ts";
 import type { NotificationHistoryEntry, NotificationSnapshot } from "../src/notifications.ts";
@@ -50,15 +50,15 @@ import type { NotificationHistoryEntry, NotificationSnapshot } from "../src/noti
 describe("getAlertsStore retry-after-null memoization", () => {
   test("retries a null client, shares the next in-flight attempt, and caches success", async () => {
     let clientCalls = 0;
-    let resolveFirst!: (value: SupabaseClient | null) => void;
-    const firstResult = new Promise<SupabaseClient | null>((resolve) => {
+    let resolveFirst!: (value: SqlClient | null) => void;
+    const firstResult = new Promise<SqlClient | null>((resolve) => {
       resolveFirst = resolve;
     });
-    let resolveRetry!: (value: SupabaseClient | null) => void;
-    const retryResult = new Promise<SupabaseClient | null>((resolve) => {
+    let resolveRetry!: (value: SqlClient | null) => void;
+    const retryResult = new Promise<SqlClient | null>((resolve) => {
       resolveRetry = resolve;
     });
-    const fakeClient: SupabaseClient = {
+    const fakeClient: SqlClient = {
       ref: "test-project",
       async query<T>() {
         return [] as T[];
@@ -264,7 +264,7 @@ describe("stored subscription preference reads (#4978)", () => {
       },
     ];
     const queries: string[] = [];
-    const db: SupabaseClient = {
+    const db: SqlClient = {
       ref: "test",
       async query<T>(sql: string): Promise<T[]> {
         queries.push(sql);
@@ -469,7 +469,7 @@ function alertTickStore(
 }
 
 function pendingIncidentStore(rows: Incident[]): AlertsStore {
-  const db: SupabaseClient = {
+  const db: SqlClient = {
     ref: "test",
     async query<T>(sql: string): Promise<T[]> {
       const orderColumn = /order by (first_seen_at|delivered_at)/i.exec(sql)?.[1] as
@@ -1126,7 +1126,7 @@ describe("subscription class preservation (#7193 Codex)", () => {
 describe("closeOpenIncidentByKey — the needs-drew answer close (#8605)", () => {
   function storeWith(rows: Incident[]) {
     const calls: string[] = [];
-    const db: SupabaseClient = {
+    const db: SqlClient = {
       ref: "test",
       async query<T>(sql: string): Promise<T[]> {
         calls.push(sql);

@@ -103,9 +103,8 @@
 //      OPENCHAMBER_LIB_INSTALL_CMD (override for the lib checkout's
 //      dependency install step, shell-split like QUOTA_SUBCOMMAND;
 //      default is bun install at the checkout root, #8759),
-//      TURSO_QUOTA_SINK=0 (or the legacy SUPABASE_QUOTA_SINK=0)
-//      disables the Turso sink (default on; token resolved by name
-//      via the resolveBwsSecret plumbing:
+//      TURSO_QUOTA_SINK=0 disables the Turso sink (default on; token
+//      resolved by name via the resolveBwsSecret plumbing:
 //      turso.fleet-platform-rw-token).
 import { execFile } from "node:child_process";
 import { access, appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -378,7 +377,7 @@ async function runOpenDesignRenewal(tickAt: string): Promise<void> {
  * alert episode dispatches a Web Push (class "incident", the
  * breakthrough class) to every stored subscription, with the same
  * sends-ledger bookkeeping the digest delivery uses. No alerts store
- * (Supabase unavailable) = no delivery surface; the state-file alert
+ * (Turso store unavailable) = no delivery surface; the state-file alert
  * still stands and the outcome string records the skip.
  */
 async function notifyMetaAuthPush(notice: { title: string; body: string }): Promise<string> {
@@ -785,7 +784,7 @@ function sqlString(v: string): string {
  * (source, id, ts) PK.
  */
 async function writeTursoRecords(entries: QuotaCurrentEntry[], tickAt: string): Promise<void> {
-  if (process.env.TURSO_QUOTA_SINK === "0" || process.env.SUPABASE_QUOTA_SINK === "0") return;
+  if (process.env.TURSO_QUOTA_SINK === "0") return;
   try {
     const token = await resolveBwsSecret(TURSO_TOKEN_NAME);
     if (!token) {

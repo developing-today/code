@@ -1,7 +1,6 @@
-# github-ci Worker (#5693): the GitHub webhook receiver, re-homed off
-# the Supabase Edge Function of the same name. Deployed to the fleet
-# Cloudflare account. Dark until the #5693 cutover steps run: no
-# webhook points here until a repo-level dual-run webhook is added.
+# github-ci Worker (#5693): the GitHub webhook receiver, writing to
+# Turso. Deployed to the fleet Cloudflare account; every fleet repo's
+# webhook points here.
 #
 # Secrets (wrangler secret put; values never in this file):
 #   GITHUB_WEBHOOK_SECRET   HMAC gate; NEW value minted for this

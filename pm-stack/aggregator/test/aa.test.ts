@@ -16,7 +16,7 @@ import {
   caiFamily,
   num,
   aaApplyPriceOverlay,
-  aaSectionFromSupabase,
+  aaSectionFromPayload,
   computeAaCoverage,
   effortRank,
   isAaSection,
@@ -273,7 +273,7 @@ function rawPayload(): AaRawPayload {
 
 describe("payload assembly + section shape", () => {
   test("string numerics from the Management API are coerced; coverage computed when config parses", () => {
-    const section = aaSectionFromSupabase(rawPayload(), CONFIG_SNIPPET, "2026-10-26T18:05:00Z");
+    const section = aaSectionFromPayload(rawPayload(), CONFIG_SNIPPET, "2026-10-26T18:05:00Z");
     expect(section).not.toBeNull();
     expect(section!.status).toBe("ok");
     expect(section!.rankings[0].costTask).toBe(0.07);
@@ -285,7 +285,7 @@ describe("payload assembly + section shape", () => {
   });
 
   test("the same config read also builds the Model Explorer catalog", () => {
-    const section = aaSectionFromSupabase(rawPayload(), CONFIG_SNIPPET, "2026-10-26T18:05:00Z");
+    const section = aaSectionFromPayload(rawPayload(), CONFIG_SNIPPET, "2026-10-26T18:05:00Z");
     const catalog = section!.catalog;
     expect(catalog).toBeDefined();
     const luna = catalog!.find((e) => e.id === "openai/gpt-6-luna")!;
@@ -300,19 +300,19 @@ describe("payload assembly + section shape", () => {
   });
 
   test("unparseable config omits the catalog with the coverage", () => {
-    const section = aaSectionFromSupabase(rawPayload(), "{ nope", "2026-10-26T18:05:00Z");
+    const section = aaSectionFromPayload(rawPayload(), "{ nope", "2026-10-26T18:05:00Z");
     expect(section?.catalog).toBeUndefined();
   });
 
   test("unparseable config omits coverage but keeps the section", () => {
-    const section = aaSectionFromSupabase(rawPayload(), "{ nope", "2026-10-26T18:05:00Z");
+    const section = aaSectionFromPayload(rawPayload(), "{ nope", "2026-10-26T18:05:00Z");
     expect(section?.status).toBe("ok");
     expect(section?.coverage).toBeUndefined();
     expect(isAaSection(section)).toBe(true);
   });
 
   test("isAaSection accepts the absent form, rejects junk", () => {
-    expect(isAaSection(aaAbsent("Supabase unreachable", "2026-10-26T18:05:00Z"))).toBe(true);
+    expect(isAaSection(aaAbsent("Turso unreachable", "2026-10-26T18:05:00Z"))).toBe(true);
     expect(isAaSection(null)).toBe(false);
     expect(isAaSection({ status: "ok" })).toBe(false);
     expect(isAaSection({ status: "absent", reason: 42 })).toBe(false);
@@ -320,9 +320,9 @@ describe("payload assembly + section shape", () => {
   });
 
   test("isAaSection rejects the absent form with impossible generatedAt dates (#3441)", () => {
-    expect(isAaSection(aaAbsent("Supabase unreachable", "2026-10-26T18:05:00Z"))).toBe(true);
+    expect(isAaSection(aaAbsent("Turso unreachable", "2026-10-26T18:05:00Z"))).toBe(true);
     for (const generatedAt of ["2026-02-30T00:00:00Z", "2026-02-29T00:00:00Z", "2026-04-31T00:00:00Z"]) {
-      expect(isAaSection(aaAbsent("Supabase unreachable", generatedAt))).toBe(false);
+      expect(isAaSection(aaAbsent("Turso unreachable", generatedAt))).toBe(false);
     }
   });
 
@@ -619,7 +619,7 @@ describe("price overlay re-derivation (#8211)", () => {
     const raw = rawPayload();
     raw.batch = batch;
     raw.prices = prices;
-    return aaSectionFromSupabase(raw, CONFIG_SNIPPET, "2026-10-26T18:05:00Z")!;
+    return aaSectionFromPayload(raw, CONFIG_SNIPPET, "2026-10-26T18:05:00Z")!;
   };
 
   test("two cached batches with differing prices both report the refreshed overlay's rates", () => {
@@ -736,8 +736,8 @@ describe("aa-explorer manifest + render", () => {
   test("null and absent sections render honest banners, no tables", () => {
     const missing = renderAa(null, PROV);
     expect(missing).toContain("has not reached the dashboard yet");
-    const absent = renderAa(aaAbsent("Supabase query failed (HTTP 500)", "2026-10-26T18:05:00Z"), PROV);
-    expect(absent).toContain("Supabase query failed (HTTP 500)");
+    const absent = renderAa(aaAbsent("Turso store query failed (HTTP 500)", "2026-10-26T18:05:00Z"), PROV);
+    expect(absent).toContain("Turso store query failed (HTTP 500)");
     expect(absent).not.toContain("Rankings");
   });
 
@@ -1004,7 +1004,7 @@ describe("prototype-key lookups in aa maps (#3056)", () => {
       cost: "1",
       wallSec: "60",
     });
-    const section = aaSectionFromSupabase(
+    const section = aaSectionFromPayload(
       { ...rawPayload(), cai: [caiRow("constructor"), caiRow("__proto__"), caiRow("deepseek"), caiRow("acme")] },
       null,
       "2026-10-26T18:05:00Z",

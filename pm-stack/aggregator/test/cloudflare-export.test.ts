@@ -56,7 +56,7 @@ describe("applyCloudflareExport", () => {
     expect(cf.sourceNote).toContain("invoice-only");
   });
 
-  test("a negative used value is refused, like the Supabase overlay", () => {
+  test("a negative used value is refused, not stamped as live data", () => {
     const doc = freshDoc();
     doc.metrics = [
       { id: "workers-requests", used: -500, unit: "count", source: "cloudflare-graphql-analytics" },

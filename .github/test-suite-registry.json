@@ -629,14 +629,13 @@
       "id": "quota-exporters",
       "paths": [
         "pm-stack/opencode-usage-export/opencode-usage-export.test.mjs",
-        "pm-stack/cloudflare-export/cloudflare-quota-export.test.mjs",
-        "pm-stack/supabase-export/supabase-quota-export.test.mjs"
+        "pm-stack/cloudflare-export/cloudflare-quota-export.test.mjs"
       ],
       "invocation": "Node/Bun tests; exact per-package commands not established",
       "venue": null,
       "status": "uncovered",
       "phase2_issue": 6084,
-      "reason": "Three exporter suites have no venue."
+      "reason": "Two exporter suites have no venue."
     },
     {
       "id": "github-backup.worker",

@@ -1366,8 +1366,7 @@ pub(crate) fn envelope_is_ok(v: &Value) -> bool {
 /// `claim_flow_partial` naming the failed step), never as an
 /// error envelope — a retryable error there would make the
 /// client's call_result replay the WHOLE flow and claim a
-/// second task, leaking this one (Codex P1 on PR #8493; the
-/// PostgREST broker in queue_broker.rs follows the same rule).
+/// second task, leaking this one (Codex P1 on PR #8493).
 /// The caller finishes the failed step with the single-verb
 /// /lane or /bind call for this task id. The answer carries
 /// every step's row: `row` is the claimed task row (the shape

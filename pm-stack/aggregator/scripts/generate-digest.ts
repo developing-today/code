@@ -115,7 +115,7 @@ async function main(): Promise<void> {
   if (process.argv.includes("--no-deliver")) return;
   // Delivery: Web Push to every stored subscription, mirroring the
   // alert throat's send bookkeeping (gone subscriptions are noted,
-  // sends are logged under class "digest"). No store (Supabase
+  // sends are logged under class "digest"). No store (Turso store
   // unavailable) = no delivery surface; the archive still stands.
   const store = await getAlertsStore();
   if (!store) {

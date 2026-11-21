@@ -43,8 +43,8 @@
 # ~/pm-stack/dispatch/.env (rendered by pm-stack/dispatch/install.sh
 # from the same SOPS file — it carries the GitHub App material and the
 # queue broker URL; the queue itself is the Turso-backed fleet queue
-# broker, reached with the token in ~/.config/queue-broker/token, so no
-# Supabase config is read anymore, #9028) and ~/secrets/dispatch.env
+# broker, reached with the token in ~/.config/queue-broker/token) and
+# ~/secrets/dispatch.env
 # (operator-only secrets that are not in SOPS: DISPATCH_API_TOKEN). install.sh remains the env
 # renderer and the fallback installer; this module owns the unit
 # lifecycle.
@@ -353,8 +353,7 @@ in
             # unit's semantics — a missing operator file degrades the
             # service instead of crash-looping it. systemd applies the
             # files in order, so the operator file wins on a collision.
-            # Leftover SUPABASE_* lines in either file are ignored since
-            # #9028 (install.sh warns about them). The build version in
+            # The build version in
             # /health comes from the package wrapper, not these files.
             EnvironmentFile = [
               "${stackDir}/dispatch/.env"

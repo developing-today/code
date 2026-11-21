@@ -107,7 +107,7 @@ test("an ok-but-null provider result retains the last good quota row", async () 
         QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
         OPENDESIGN_RENEWAL_DISABLED: "1",
         META_RENEWAL_DISABLED: "1",
-        SUPABASE_QUOTA_SINK: "0",
+        TURSO_QUOTA_SINK: "0",
         OPENCHAMBER_LIB_DIR: libDir,
       },
     });
@@ -231,7 +231,6 @@ test("a lapsed Meta session retains the last good windows and reports lapsed, no
         QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
         OPENDESIGN_RENEWAL_DISABLED: "1",
         META_RENEWAL_DISABLED: "1",
-        SUPABASE_QUOTA_SINK: "0",
         TURSO_QUOTA_SINK: "0",
       },
     });
@@ -346,7 +345,6 @@ test("a lapsed Go workspace survives ingest instead of being replaced by last-kn
         QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
         OPENDESIGN_RENEWAL_DISABLED: "1",
         META_RENEWAL_DISABLED: "1",
-        SUPABASE_QUOTA_SINK: "0",
         TURSO_QUOTA_SINK: "0",
       },
     });
@@ -474,7 +472,6 @@ test("a lapsed Go workspace survives retention when a sibling workspace fails", 
         QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
         OPENDESIGN_RENEWAL_DISABLED: "1",
         META_RENEWAL_DISABLED: "1",
-        SUPABASE_QUOTA_SINK: "0",
         TURSO_QUOTA_SINK: "0",
       },
     });
@@ -601,7 +598,7 @@ test("an uninstalled lib checkout dependency is installed and the OpenDesign kee
         QUOTA_SUBCOMMAND: process.execPath + " " + subcommandPath,
         QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
         META_RENEWAL_DISABLED: "1",
-        SUPABASE_QUOTA_SINK: "0",
+        TURSO_QUOTA_SINK: "0",
         OPENCHAMBER_LIB_DIR: libDir,
         OPENCHAMBER_LIB_INSTALL_CMD: process.execPath + " " + installerPath,
         OPENDESIGN_RENEWAL_STATE_PATH: renewalStatePath,
@@ -706,7 +703,7 @@ test("a folded OpenAI answer under the pre-rename 'codex' spelling keys its hear
         QUOTA_SUBCOMMAND_TIMEOUT_MS: "5000",
         OPENDESIGN_RENEWAL_DISABLED: "1",
         META_RENEWAL_DISABLED: "1",
-        SUPABASE_QUOTA_SINK: "0",
+        TURSO_QUOTA_SINK: "0",
         OPENCHAMBER_LIB_DIR: join(dir, "fake-openchamber-lib"),
       },
     });
@@ -780,7 +777,7 @@ test("a Claude 429 that clears within the tick lands a fresh row, not a retained
         STUB_MODE: "clear429",
         OPENDESIGN_RENEWAL_DISABLED: "1",
         META_RENEWAL_DISABLED: "1",
-        SUPABASE_QUOTA_SINK: "0",
+        TURSO_QUOTA_SINK: "0",
         OPENCHAMBER_LIB_DIR: join(dir, "fake-openchamber-lib"),
       },
     });
@@ -895,7 +892,7 @@ test("a persistent Claude 429 retains the last good row marked rate_limited, nev
         STUB_MODE: "always429",
         OPENDESIGN_RENEWAL_DISABLED: "1",
         META_RENEWAL_DISABLED: "1",
-        SUPABASE_QUOTA_SINK: "0",
+        TURSO_QUOTA_SINK: "0",
         OPENCHAMBER_LIB_DIR: join(dir, "fake-openchamber-lib"),
       },
     });

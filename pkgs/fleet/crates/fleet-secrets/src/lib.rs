@@ -1104,7 +1104,7 @@ mod tests {
             assert!(validate_name(bad).is_err(), "name {bad:?} must be rejected");
         }
         for good in [
-            "supabase.service-role-key",
+            "turso.fleet-queue-rw-token",
             "openclaw.gateway-token",
             "a.b-c_d",
         ] {

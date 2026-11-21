@@ -113,14 +113,6 @@ class TestNightlyBackup(unittest.TestCase):
         self.assertIn("step prune-backups: ok", result.stdout)
         self.assertIn("step sync-manifest: ok", result.stdout)
 
-    def test_supabase_filing_is_retired_even_with_r2_credentials(self):
-        # The Supabase project was replaced by Turso; R2 credentials in
-        # the environment must not bring the nightly filing back.
-        result = self.run_script()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn("backup-supabase", self.calls())
-        self.assertNotIn("backup-supabase", result.stdout + result.stderr)
-
     def test_long_status_output_still_ok_and_truncated(self):
         # Regression: status printing >20 lines must not trip pipefail/SIGPIPE.
         # The verdict depends only on cold-store's own exit code; display is
