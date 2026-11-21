@@ -413,6 +413,7 @@ fn api_endpoint(args: &[String]) -> Option<&str> {
 fn is_graphql_read(args: &[String]) -> bool {
     let mut query: Option<&str> = None;
     let mut queries = 0;
+    let mut typed = false;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
@@ -426,6 +427,12 @@ fn is_graphql_read(args: &[String]) -> bool {
             i += 2;
             continue;
         }
+        // `-F`/`--field` values are typed: gh fills `{owner}`, `{repo}`
+        // and `{branch}` in them before sending.
+        let is_typed = a == "-F"
+            || a == "--field"
+            || a.starts_with("--field=")
+            || (a.starts_with("-F") && a.len() > 2);
         let field = if is_field_flag {
             i += 1;
             args.get(i).map(|s| s.as_str())
@@ -437,6 +444,7 @@ fn is_graphql_read(args: &[String]) -> bool {
         };
         if let Some(v) = field.and_then(|f| f.strip_prefix("query=")) {
             query = Some(v);
+            typed = is_typed;
             queries += 1;
         }
         i += 1;
@@ -449,6 +457,16 @@ fn is_graphql_read(args: &[String]) -> bool {
         return false;
     }
     if query.starts_with('@') {
+        return false;
+    }
+    // A typed field's placeholders are expanded by gh, so the text we
+    // see is not the operation gh sends; `{repo}` could become
+    // `mutation`. Treat any expandable placeholder as a write.
+    if typed
+        && ["{owner}", "{repo}", "{branch}"]
+            .iter()
+            .any(|p| query.contains(p))
+    {
         return false;
     }
     // A document can hold several operations and `operationName` picks
@@ -1699,6 +1717,26 @@ mod tests {
             "query={ b }"
         ]));
         assert!(!read(&["api", "graphql", "-F", "query=@board.graphql"]));
+        // gh expands placeholders in typed fields, so what it sends is
+        // unknown; raw fields keep them literally.
+        assert!(!read(&[
+            "api",
+            "graphql",
+            "-F",
+            "query={repo} {addComment(input:{}){x}}"
+        ]));
+        assert!(!read(&[
+            "api",
+            "graphql",
+            "--field=query={owner} { viewer { login } }"
+        ]));
+        assert!(!read(&["api", "graphql", "-Fquery={branch} { x }"]));
+        assert!(read(&[
+            "api",
+            "graphql",
+            "-f",
+            "query={ viewer { login } } # {repo}"
+        ]));
         assert!(!read(&["api", "graphql", "--input", "body.json"]));
         assert!(!read(&["api", "graphql"]));
         // A field named query on a REST call is still a POST-class write.
