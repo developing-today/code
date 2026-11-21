@@ -47,8 +47,10 @@ export function validateNewPrompt(body: unknown): { ok: true; value: NewPrompt }
     return { ok: false, error: "body must be a JSON object" };
   }
   const b = body as Record<string, unknown>;
-  if (!PROMPT_SCOPES.includes(b.scope as PromptScope)) return { ok: false, error: "scope must be section, page, stack or agent" };
-  if (!PROMPT_TARGETS.includes(b.target as PromptTarget)) return { ok: false, error: "target must be claude, muse or pool:auto" };
+  if (!PROMPT_SCOPES.includes(b.scope as PromptScope))
+    return { ok: false, error: "scope must be section, page, stack or agent" };
+  if (!PROMPT_TARGETS.includes(b.target as PromptTarget))
+    return { ok: false, error: "target must be claude, muse or pool:auto" };
   if (!PROMPT_MODES.includes(b.mode as PromptMode)) return { ok: false, error: "mode must be async" };
   if (typeof b.page !== "string" || !PAGE_ID.test(b.page)) return { ok: false, error: "page must be a page id" };
   if (b.sectionRef !== null && b.sectionRef !== undefined && typeof b.sectionRef !== "string") {
@@ -57,7 +59,8 @@ export function validateNewPrompt(body: unknown): { ok: true; value: NewPrompt }
   if (b.scope === "section" && (typeof b.sectionRef !== "string" || b.sectionRef === "")) {
     return { ok: false, error: "section scope requires sectionRef" };
   }
-  if (typeof b.prompt !== "string" || b.prompt.trim() === "") return { ok: false, error: "prompt must be non-empty text" };
+  if (typeof b.prompt !== "string" || b.prompt.trim() === "")
+    return { ok: false, error: "prompt must be non-empty text" };
   if (b.prompt.length > MAX_PROMPT_CHARS) return { ok: false, error: `prompt exceeds ${MAX_PROMPT_CHARS} characters` };
   return {
     ok: true,
@@ -110,7 +113,9 @@ export class PromptsStore {
   async list(filter: { page?: string; status?: PromptStatus } = {}): Promise<PromptRecord[]> {
     await this.load();
     return this.prompts.filter(
-      (p) => (filter.page === undefined || p.page === filter.page) && (filter.status === undefined || p.status === filter.status),
+      (p) =>
+        (filter.page === undefined || p.page === filter.page) &&
+        (filter.status === undefined || p.status === filter.status),
     );
   }
 

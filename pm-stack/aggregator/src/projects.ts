@@ -305,7 +305,9 @@ export function resolveEpicRefs(items: ProjectPoolItem[]): ProjectPoolItem[] {
   const epicRefs = new Set(items.filter((p) => p.kind === "Epic").map((p) => p.ref));
   const byRef = new Map<string, ProjectPoolItem>();
   // Conflicting copies can have different parents; choose deterministically.
-  for (const p of [...items].sort((a, b) => a.ref.localeCompare(b.ref) || (a.parentRef ?? "").localeCompare(b.parentRef ?? ""))) {
+  for (const p of [...items].sort(
+    (a, b) => a.ref.localeCompare(b.ref) || (a.parentRef ?? "").localeCompare(b.parentRef ?? ""),
+  )) {
     if (!byRef.has(p.ref)) byRef.set(p.ref, p);
   }
   return items.map((p) => {
@@ -600,7 +602,13 @@ export async function fetchProjectBoardsSnapshot(
       failedBoardIds.push(board.id);
     }
   }
-  return { items: resolveEpicRefs(items), audits, boards: snapshots, failedBoardIds, counts: { reportedTotal, emittedEntries } };
+  return {
+    items: resolveEpicRefs(items),
+    audits,
+    boards: snapshots,
+    failedBoardIds,
+    counts: { reportedTotal, emittedEntries },
+  };
 }
 
 /** Fetch the whole pool (paginated). Throws on HTTP/GraphQL errors so

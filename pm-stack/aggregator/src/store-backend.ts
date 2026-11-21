@@ -21,7 +21,9 @@ export function parseStoreBackend(env: Record<string, string | undefined> = proc
   const raw = (env.PM_AGG_STORE_BACKEND ?? "").trim();
   if (raw === "" || raw === "file") return "file";
   if (raw === "turso") return "turso";
-  throw new Error(`Invalid PM_AGG_STORE_BACKEND=${JSON.stringify(env.PM_AGG_STORE_BACKEND)}; expected "file" or "turso"`);
+  throw new Error(
+    `Invalid PM_AGG_STORE_BACKEND=${JSON.stringify(env.PM_AGG_STORE_BACKEND)}; expected "file" or "turso"`,
+  );
 }
 
 /** Recorded on every remote write so the single writer is auditable. */

@@ -104,10 +104,7 @@ export const EXHAUSTED_BUDGET_MAX_ATTEMPTS = 1;
  * exhausted incident (cap or breaker) gets no further attempt, and an
  * exhausted budget allows at most one. The tightest applicable cap wins.
  */
-function remediationCap(
-  incident: EscalationIncident,
-  facetClass: FacetClass,
-): number | null {
+function remediationCap(incident: EscalationIncident, facetClass: FacetClass): number | null {
   const caps: number[] = [];
   if (facetClass === "stateful") caps.push(0);
   if (incident.phase === "exhausted" || incident.circuitBreakerOpen === true) {
@@ -120,28 +117,18 @@ function remediationCap(
   return caps.length === 0 ? null : Math.min(...caps);
 }
 
-function decide(
-  incident: EscalationIncident,
-  badCount: number,
-): EscalationDecision {
+function decide(incident: EscalationIncident, badCount: number): EscalationDecision {
   const decision = decideRoute(incident, badCount);
-  decision.maxRemediationAttempts = remediationCap(
-    incident,
-    decision.facetClass,
-  );
+  decision.maxRemediationAttempts = remediationCap(incident, decision.facetClass);
   return decision;
 }
 
-function decideRoute(
-  incident: EscalationIncident,
-  badCount: number,
-): EscalationDecision {
+function decideRoute(incident: EscalationIncident, badCount: number): EscalationDecision {
   const facetClass = FACET_CLASSES[incident.facet];
   const budget = incident.budgetRemainingPercent;
   const budgetExhausted = budget !== null && budget <= BUDGET_EXHAUSTED_PERCENT;
   const budgetTightened = budget !== null && budget < BUDGET_TIGHTEN_PERCENT;
-  const exhausted =
-    incident.phase === "exhausted" || incident.circuitBreakerOpen === true;
+  const exhausted = incident.phase === "exhausted" || incident.circuitBreakerOpen === true;
 
   // §4 page rules, in design order. A page always wins; NEEDS
   // ORCHESTRATOR is the fallthrough.
@@ -152,8 +139,7 @@ function decideRoute(
       facet: incident.facet,
       facetClass,
       route: "page",
-      reason:
-        "stateful service is bad: always a page, never an auto-action (design §4)",
+      reason: "stateful service is bad: always a page, never an auto-action (design §4)",
       push: true,
       maxRemediationAttempts: 0,
     };
@@ -167,9 +153,7 @@ function decideRoute(
       route: "page",
       reason: `${badCount} facets are bad simultaneously: correlated failure, per-facet remediation is the wrong tool (design §4)`,
       push: true,
-      maxRemediationAttempts: budgetExhausted
-        ? EXHAUSTED_BUDGET_MAX_ATTEMPTS
-        : null,
+      maxRemediationAttempts: budgetExhausted ? EXHAUSTED_BUDGET_MAX_ATTEMPTS : null,
     };
   }
 
@@ -201,10 +185,7 @@ function decideRoute(
 
   // "A user-facing facet (Aggregator, Intake, Tunnel) is down and the
   // first verification fails — after one failed fix, not three."
-  if (
-    facetClass === "user-facing" &&
-    incident.phase === "verification-failed"
-  ) {
+  if (facetClass === "user-facing" && incident.phase === "verification-failed") {
     return {
       facet: incident.facet,
       facetClass,
@@ -257,10 +238,7 @@ function decideRoute(
   // "A non-user-facing facet (projector, quota) burns at ≤ 2× rate."
   if (facetClass === "non-user-facing") {
     const burn = incident.burnRate1h;
-    const burnText =
-      burn === null
-        ? "burn rate unknown"
-        : `burning at ${burn.toFixed(2)}× the window-share budget`;
+    const burnText = burn === null ? "burn rate unknown" : `burning at ${burn.toFixed(2)}× the window-share budget`;
     const qualifying = burn === null || burn <= NON_USER_FACING_BURN_MAX;
     return {
       facet: incident.facet,
@@ -281,8 +259,7 @@ function decideRoute(
     facet: incident.facet,
     facetClass,
     route: "needs-orchestrator",
-    reason:
-      "facet is bad but no §4 page rule matches yet: orchestrator work until the first verification (design §4)",
+    reason: "facet is bad but no §4 page rule matches yet: orchestrator work until the first verification (design §4)",
     push: false,
     maxRemediationAttempts: null,
   };
@@ -337,16 +314,9 @@ export interface DeliveredEscalation {
  *  turned into its error text; null when the push was delivered (or the
  *  sink returned nothing, which a throwing sink uses to mean success). */
 function pushRefusal(outcome: unknown): string | null {
-  if (
-    outcome !== null &&
-    typeof outcome === "object" &&
-    "ok" in outcome &&
-    (outcome as { ok: unknown }).ok === false
-  ) {
+  if (outcome !== null && typeof outcome === "object" && "ok" in outcome && (outcome as { ok: unknown }).ok === false) {
     const err = (outcome as { error?: unknown }).error;
-    return typeof err === "string" && err.length > 0
-      ? err
-      : "push was not delivered";
+    return typeof err === "string" && err.length > 0 ? err : "push was not delivered";
   }
   return null;
 }

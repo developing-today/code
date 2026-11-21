@@ -1127,8 +1127,14 @@ async function main(): Promise<void> {
     console.error(`collector: invalid project board registry (${registryProblems.join("; ")})`);
     markSection("projects", "error", "invalid project board registry");
   } else {
-    const snapshot = await fetchProjectBoardsSnapshot("fleet-gh", fleetGhProjectFetch, now.toISOString(), PROJECT_BOARDS);
-    for (const failedId of snapshot.failedBoardIds) console.error(`collector: project board ${failedId} failed; continuing`);
+    const snapshot = await fetchProjectBoardsSnapshot(
+      "fleet-gh",
+      fleetGhProjectFetch,
+      now.toISOString(),
+      PROJECT_BOARDS,
+    );
+    for (const failedId of snapshot.failedBoardIds)
+      console.error(`collector: project board ${failedId} failed; continuing`);
     designBoards.push(...snapshot.boards);
     const auditList = Object.values(snapshot.audits);
     const main = snapshot.audits["devtoday-main"];
@@ -1136,24 +1142,41 @@ async function main(): Promise<void> {
     // Keep the validated Project #4 audit internally consistent; expose the
     // all-board total separately for the rendered pool banner.
     projectAudits = auditList.length ? snapshot.audits : undefined;
-    projectAudit = main && auditList.length ? { ...main, poolTotalItems: auditList.reduce((sum, a) => sum + a.totalItems, 0) } : main;
+    projectAudit =
+      main && auditList.length
+        ? { ...main, poolTotalItems: auditList.reduce((sum, a) => sum + a.totalItems, 0) }
+        : main;
     if (snapshot.items.length) {
       projects = snapshot.items;
       const failures = snapshot.failedBoardIds;
-      markSection("projects", failures.length ? "error" : "ok", failures.length ? `boards failed: ${failures.join(", ")}` : undefined, {
-        reportedTotal: snapshot.counts.reportedTotal,
-        emittedEntries: snapshot.counts.emittedEntries,
-      });
+      markSection(
+        "projects",
+        failures.length ? "error" : "ok",
+        failures.length ? `boards failed: ${failures.join(", ")}` : undefined,
+        {
+          reportedTotal: snapshot.counts.reportedTotal,
+          emittedEntries: snapshot.counts.emittedEntries,
+        },
+      );
       // Keep the separately curated Ideas board snapshot, but use the same routed identity path.
       try {
-        const ideas = await fetchProjectSnapshot("fleet-gh", fleetGhProjectFetch, now.toISOString(), "PVT_kwDOAZNvF84BrQnp");
+        const ideas = await fetchProjectSnapshot(
+          "fleet-gh",
+          fleetGhProjectFetch,
+          now.toISOString(),
+          "PVT_kwDOAZNvF84BrQnp",
+        );
         designBoards.push(ideas.board);
       } catch (err) {
         console.error(`collector: Ideas board read failed (${sanitizeCollectionError(err)}); ideas snapshot omitted`);
       }
     } else {
       projects = undefined;
-      markSection("projects", snapshot.failedBoardIds.length ? "error" : "skipped", snapshot.failedBoardIds.join(", ") || undefined);
+      markSection(
+        "projects",
+        snapshot.failedBoardIds.length ? "error" : "skipped",
+        snapshot.failedBoardIds.join(", ") || undefined,
+      );
     }
   }
 

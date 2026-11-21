@@ -163,8 +163,11 @@ describe("genealogy read model", () => {
 
     const result = deriveGenealogy(current, [formerOne, formerTwo, current]);
 
-    expect(result.ancestors.filter(({ relation }) => relation === "historical-parent").map(({ ref: ancestorRef }) => ancestorRef))
-      .toEqual([ref(99), ref(98)]);
+    expect(
+      result.ancestors
+        .filter(({ relation }) => relation === "historical-parent")
+        .map(({ ref: ancestorRef }) => ancestorRef),
+    ).toEqual([ref(99), ref(98)]);
     expect(result.sentence).toContain("Formerly part of Former epic one (developing-today/code#99)");
     expect(result.sentence).toContain("Formerly part of Former epic two (developing-today/code#98)");
     expect(result.sentence).not.toContain("Former epic one (developing-today/code#99) →");

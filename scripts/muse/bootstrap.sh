@@ -46,14 +46,15 @@ TS_URL="https://pkgs.tailscale.com/stable/tailscale_1.104.7_amd64.tgz"
 TS_SHA256="e56693ff74a64f2591b7e819c280635a100aae1ddfb0ef058fcd052b7cd8d16c"
 
 R2_BASE="s3:https://234b866b99ce2b142d7963d8d139cbfa.r2.cloudflarestorage.com/supabase-backups"
-SANDBOX_HOME=/home/hatch   # the old sandbox's home; the restored tools hard-code it
+SANDBOX_HOME=/home/hatch # the old sandbox's home; the restored tools hard-code it
 LAPTOP_TAILNET_IP=100.99.113.103
 TS_HOSTNAME="${TS_HOSTNAME:-muse}"
 AGENT="${FLEET_AGENT:-muse}"
 
 PHASES="tools token restore tailnet fleet persist init check"
 ALL=0
-SELF=""; [ -f "${BASH_SOURCE[0]:-}" ] && SELF=$(readlink -f "${BASH_SOURCE[0]}")
+SELF=""
+[ -f "${BASH_SOURCE[0]:-}" ] && SELF=$(readlink -f "${BASH_SOURCE[0]}")
 usage() {
   sed -n '2,/^set -euo pipefail/p' "$SELF" | sed '$d' | sed 's/^# \{0,1\}//'
   echo
@@ -62,22 +63,47 @@ usage() {
 }
 ONLY="" SKIP=""
 phases_arg() { # phases_arg FLAG VALUE: a comma list of known phases, or a usage error
-  case "${2-}" in ""|-*) echo "bootstrap: $1 needs a phase list (one of: $PHASES)" >&2; exit 2 ;; esac
+  case "${2-}" in "" | -*)
+    echo "bootstrap: $1 needs a phase list (one of: $PHASES)" >&2
+    exit 2
+    ;;
+  esac
   local p
   for p in ${2//,/ }; do
-    case " $PHASES " in *" $p "*) ;; *) echo "bootstrap: $1: unknown phase '$p' (one of: $PHASES)" >&2; exit 2 ;; esac
+    case " $PHASES " in *" $p "*) ;; *)
+      echo "bootstrap: $1: unknown phase '$p' (one of: $PHASES)" >&2
+      exit 2
+      ;;
+    esac
   done
 }
 while [ $# -gt 0 ]; do
   case "$1" in
-    --only) phases_arg --only "${2-}"; ONLY=$2; shift 2 ;;
-    --skip) phases_arg --skip "${2-}"; SKIP=$2; shift 2 ;;
-    --all) ALL=1; shift ;;
-    -h|--help) usage 0 ;;
-    *) echo "bootstrap: unknown argument $1" >&2; usage 2 ;;
+  --only)
+    phases_arg --only "${2-}"
+    ONLY=$2
+    shift 2
+    ;;
+  --skip)
+    phases_arg --skip "${2-}"
+    SKIP=$2
+    shift 2
+    ;;
+  --all)
+    ALL=1
+    shift
+    ;;
+  -h | --help) usage 0 ;;
+  *)
+    echo "bootstrap: unknown argument $1" >&2
+    usage 2
+    ;;
   esac
 done
-[ -z "$ONLY" ] || [ -z "$SKIP" ] || { echo "bootstrap: --only and --skip exclude each other" >&2; exit 2; }
+[ -z "$ONLY" ] || [ -z "$SKIP" ] || {
+  echo "bootstrap: --only and --skip exclude each other" >&2
+  exit 2
+}
 want() {
   case ",$SKIP," in *",$1,"*) return 1 ;; esac
   [ -z "$ONLY" ] && return 0
@@ -85,7 +111,10 @@ want() {
   return 1
 }
 say() { printf '[bootstrap] %s\n' "$*" >&2; }
-die() { printf '[bootstrap] FAILED: %s\n' "$*" >&2; exit 1; }
+die() {
+  printf '[bootstrap] FAILED: %s\n' "$*" >&2
+  exit 1
+}
 
 [ "$(uname -m)" = x86_64 ] || die "this script pins x86_64 binaries; uname -m says $(uname -m)"
 for c in curl tar python3 sha256sum; do command -v "$c" >/dev/null || die "needs $c on PATH"; done
@@ -115,18 +144,25 @@ sys.exit(0 if any(x["name"] == "bridge" and x["available"] for x in d.get("domai
 }
 fetch() { # fetch URL SHA256 DEST
   local url=$1 sum=$2 dest=$3 tmp
-  case "$sum" in @*@|"") die "no pinned sha256 for $url (unpublished build?)" ;; esac
+  case "$sum" in @*@ | "") die "no pinned sha256 for $url (unpublished build?)" ;; esac
   tmp=$(mktemp)
   curl -fsSL --retry 4 --retry-delay 2 -o "$tmp" "$url" 2>/dev/null || {
-    rm -f "$tmp"; [ -n "${FETCH_SOFT:-}" ] && return 1; die "download failed: $url"; }
-  echo "$sum  $tmp" | sha256sum -c --quiet - || { rm -f "$tmp"; die "sha256 mismatch: $url"; }
+    rm -f "$tmp"
+    [ -n "${FETCH_SOFT:-}" ] && return 1
+    die "download failed: $url"
+  }
+  echo "$sum  $tmp" | sha256sum -c --quiet - || {
+    rm -f "$tmp"
+    die "sha256 mismatch: $url"
+  }
   mv "$tmp" "$dest"
 }
 
 # ---- tools ----
 if want tools; then
   if [ ! -x "$FLEET_DL" ] || ! has_bridge "$FLEET_DL"; then
-    fetch "$FLEET_URL" "$FLEET_SHA256" "$FLEET_DL"; chmod 755 "$FLEET_DL"
+    fetch "$FLEET_URL" "$FLEET_SHA256" "$FLEET_DL"
+    chmod 755 "$FLEET_DL"
   fi
   if [ ! -x "$BIN/bws" ]; then
     fetch "$BWS_URL" "$BWS_SHA256" "$BIN/bws.zip"
@@ -136,12 +172,14 @@ z = zipfile.ZipFile(sys.argv[1])
 name = next(n for n in z.namelist() if os.path.basename(n) == "bws")
 open(os.path.join(sys.argv[2], "bws"), "wb").write(z.read(name))
 PY
-    rm -f "$BIN/bws.zip"; chmod 755 "$BIN/bws"
+    rm -f "$BIN/bws.zip"
+    chmod 755 "$BIN/bws"
   fi
   if [ ! -x "$BIN/restic" ]; then
     fetch "$RESTIC_URL" "$RESTIC_SHA256" "$BIN/restic.bz2"
     python3 -c 'import bz2,sys; open(sys.argv[2],"wb").write(bz2.open(sys.argv[1]).read())' "$BIN/restic.bz2" "$BIN/restic"
-    rm -f "$BIN/restic.bz2"; chmod 755 "$BIN/restic"
+    rm -f "$BIN/restic.bz2"
+    chmod 755 "$BIN/restic"
   fi
   if [ ! -x "$BIN/tailscale" ] || [ ! -x "$BIN/tailscaled" ]; then
     # Not fatal: a box that can't reach pkgs.tailscale.com still gets
@@ -159,8 +197,12 @@ fi
 # ---- token ----
 TOKEN_FILE="$HOME/.config/bitwarden/access-token"
 store_token() { # store_token VALUE: the supplied token, mode 600
-  mkdir -p "$(dirname "$TOKEN_FILE")"; chmod 700 "$(dirname "$TOKEN_FILE")"
-  (umask 077; printf '%s' "$1" > "$TOKEN_FILE.tmp") && mv -f "$TOKEN_FILE.tmp" "$TOKEN_FILE"
+  mkdir -p "$(dirname "$TOKEN_FILE")"
+  chmod 700 "$(dirname "$TOKEN_FILE")"
+  (
+    umask 077
+    printf '%s' "$1" >"$TOKEN_FILE.tmp"
+  ) && mv -f "$TOKEN_FILE.tmp" "$TOKEN_FILE"
 }
 # A token passed in the environment is the one the operator supplied now:
 # it replaces whatever file is on disk (a restored or stale one).
@@ -168,16 +210,22 @@ if want token && [ -n "${BWS_ACCESS_TOKEN:-}" ]; then
   store_token "$(printf '%s' "$BWS_ACCESS_TOKEN" | tr -d '[:space:]')"
 fi
 if want token && [ ! -s "$TOKEN_FILE" ]; then
-  mkdir -p "$(dirname "$TOKEN_FILE")"; chmod 700 "$(dirname "$TOKEN_FILE")"
-  if [ -n "${BWS_ACCESS_TOKEN:-}" ]; then tok=$BWS_ACCESS_TOKEN
-  elif [ -t 0 ]; then read -rsp "Bitwarden Secrets Manager access token (hidden): " tok; echo >&2
+  mkdir -p "$(dirname "$TOKEN_FILE")"
+  chmod 700 "$(dirname "$TOKEN_FILE")"
+  if [ -n "${BWS_ACCESS_TOKEN:-}" ]; then
+    tok=$BWS_ACCESS_TOKEN
+  elif [ -t 0 ]; then
+    read -rsp "Bitwarden Secrets Manager access token (hidden): " tok
+    echo >&2
   else tok=$(cat); fi
   tok=$(printf '%s' "$tok" | tr -d '[:space:]')
   [ -n "$tok" ] || die "token: empty"
-  store_token "$tok"; unset tok
+  store_token "$tok"
+  unset tok
 fi
 if [ -s "$TOKEN_FILE" ]; then
-  BWS_ACCESS_TOKEN=$(cat "$TOKEN_FILE"); export BWS_ACCESS_TOKEN
+  BWS_ACCESS_TOKEN=$(cat "$TOKEN_FILE")
+  export BWS_ACCESS_TOKEN
 fi
 secret() { # secret NAME -> value on stdout, nothing else
   [ -n "${BWS_ACCESS_TOKEN:-}" ] || die "no bws token (run the token phase)"
@@ -190,21 +238,25 @@ for s in json.load(sys.stdin):
 sys.exit(1)' "$1" || die "secret $1 not found in Bitwarden"
 }
 if want token; then
-  bws secret list -o json >/dev/null 2>&1 \
-    || die "token: bws cannot list secrets with the token in $TOKEN_FILE (pass a fresh one: BWS_ACCESS_TOKEN=... or remove the file and rerun)"
+  bws secret list -o json >/dev/null 2>&1 ||
+    die "token: bws cannot list secrets with the token in $TOKEN_FILE (pass a fresh one: BWS_ACCESS_TOKEN=... or remove the file and rerun)"
   say "token: stored and verified"
 fi
 
 # ---- restore ----
 restic_env() { # restic_env REPO PASSWORD_SECRET
-  AWS_ACCESS_KEY_ID=$(secret cloudflare.r2-backups-access-key-id); export AWS_ACCESS_KEY_ID
-  AWS_SECRET_ACCESS_KEY=$(secret cloudflare.r2-backups-secret-access-key); export AWS_SECRET_ACCESS_KEY
-  RESTIC_PASSWORD=$(secret "$2"); export RESTIC_PASSWORD
+  AWS_ACCESS_KEY_ID=$(secret cloudflare.r2-backups-access-key-id)
+  export AWS_ACCESS_KEY_ID
+  AWS_SECRET_ACCESS_KEY=$(secret cloudflare.r2-backups-secret-access-key)
+  export AWS_SECRET_ACCESS_KEY
+  RESTIC_PASSWORD=$(secret "$2")
+  export RESTIC_PASSWORD
   export RESTIC_REPOSITORY="$R2_BASE/$1"
 }
 if want restore; then
   if [ "$HOME" = "$SANDBOX_HOME" ]; then ROOT=/; else
-    ROOT="$HOME/restore"; mkdir -p "$ROOT"
+    ROOT="$HOME/restore"
+    mkdir -p "$ROOT"
     say "restore: HOME is $HOME, not $SANDBOX_HOME; restoring under $ROOT (the restored tools expect $SANDBOX_HOME)"
   fi
   restic_env restic-sandbox-config restic.sandbox-config-password
@@ -216,7 +268,9 @@ if want restore; then
   if ! restic restore latest --no-lock --target "$ROOT" --path "$SANDBOX_HOME/.config" >/dev/null 2>"$rlog"; then
     other=$(grep -v -e '^[[:space:]]*$' -e 'operation not permitted' -e 'xattr' -E -e '^Fatal: There were [0-9]+ errors' "$rlog" | head -5 || true)
     if [ -n "$other" ] || ! grep -q 'operation not permitted' "$rlog"; then
-      { [ -n "$other" ] && printf "%s\n" "$other" || tail -5 "$rlog"; } >&2; rm -f "$rlog"; die "restore: ~/.config"
+      { [ -n "$other" ] && printf "%s\n" "$other" || tail -5 "$rlog"; } >&2
+      rm -f "$rlog"
+      die "restore: ~/.config"
     fi
     say "restore: ~/.config restored; $(grep -cE 'operation not permitted|xattr' "$rlog") ownership/xattr errors ignored (this box cannot set them)"
   fi
@@ -225,8 +279,8 @@ if want restore; then
   # supplied for this run.
   if [ "$ROOT" = / ]; then store_token "$BWS_ACCESS_TOKEN"; fi
   restic_env restic-sandbox-home restic.sandbox-home-password
-  restic snapshots --no-lock --json > "$HOME/.bootstrap-snapshots.json" || die "restore: cannot list home snapshots"
-  python3 - "$HOME/.bootstrap-snapshots.json" "$SANDBOX_HOME" "$ALL" > "$HOME/.bootstrap-restore-plan" <<'PY'
+  restic snapshots --no-lock --json >"$HOME/.bootstrap-snapshots.json" || die "restore: cannot list home snapshots"
+  python3 - "$HOME/.bootstrap-snapshots.json" "$SANDBOX_HOME" "$ALL" >"$HOME/.bootstrap-restore-plan" <<'PY'
 import json, sys
 snaps, home, everything = json.load(open(sys.argv[1])), sys.argv[2], sys.argv[3] == "1"
 latest = {}
@@ -245,19 +299,21 @@ for p in sorted(latest):
         continue
     print(latest[p]["short_id"], p)
 PY
-  n=$(wc -l < "$HOME/.bootstrap-restore-plan"); i=0
+  n=$(wc -l <"$HOME/.bootstrap-restore-plan")
+  i=0
   say "restore: $n home entries (latest snapshot each)"
   while read -r sid path; do
     i=$((i + 1))
     restic restore "$sid" --no-lock --target "$ROOT" >/dev/null 2>&1 || say "restore: entry $i/$n $path FAILED (continuing)"
-  done < "$HOME/.bootstrap-restore-plan"
+  done <"$HOME/.bootstrap-restore-plan"
   rm -f "$HOME/.bootstrap-snapshots.json"
   unset RESTIC_PASSWORD AWS_SECRET_ACCESS_KEY AWS_ACCESS_KEY_ID
   say "restore: done (plan kept at ~/.bootstrap-restore-plan)"
 fi
 
 # ---- tailnet ----
-TS_STATE="$HOME/.local/state/tailscale"; TS_SOCK="$TS_STATE/tailscaled.sock"
+TS_STATE="$HOME/.local/state/tailscale"
+TS_SOCK="$TS_STATE/tailscaled.sock"
 if want tailnet && { [ ! -x "$BIN/tailscaled" ] || [ ! -x "$BIN/tailscale" ]; }; then
   say "tailnet: no tailscale binaries (download failed); skipping, the laptop link will not work"
 elif want tailnet; then
@@ -266,33 +322,41 @@ elif want tailnet; then
     MODE=userspace
     if [ -c /dev/net/tun ] && { [ "$(id -u)" = 0 ] || [ -n "$SUDO" ]; }; then MODE=kernel; fi
     if pgrep -f -- "--state=$TS_STATE/tailscaled.state" >/dev/null 2>&1; then
-      MODE=$(cat "$TS_STATE/mode" 2>/dev/null || echo "$MODE")   # daemon alive, only logged out
+      MODE=$(cat "$TS_STATE/mode" 2>/dev/null || echo "$MODE") # daemon alive, only logged out
     elif [ "$MODE" = kernel ]; then
-      rm -f "$TS_SOCK"   # a recycle leaves the old socket file on the durable volume
+      rm -f "$TS_SOCK" # a recycle leaves the old socket file on the durable volume
       $SUDO setsid nohup "$BIN/tailscaled" --state="$TS_STATE/tailscaled.state" --socket="$TS_SOCK" \
-        > "$TS_STATE/tailscaled.log" 2>&1 < /dev/null &
+        >"$TS_STATE/tailscaled.log" 2>&1 </dev/null &
     else
       rm -f "$TS_SOCK"
       setsid nohup "$BIN/tailscaled" --tun=userspace-networking --state="$TS_STATE/tailscaled.state" \
         --socket="$TS_SOCK" --outbound-http-proxy-listen=127.0.0.1:3130 \
-        > "$TS_STATE/tailscaled.log" 2>&1 < /dev/null &
+        >"$TS_STATE/tailscaled.log" 2>&1 </dev/null &
     fi
-    echo "$MODE" > "$TS_STATE/mode"
+    echo "$MODE" >"$TS_STATE/mode"
     # The node key in $TS_STATE survives a recycle, so after a restart
     # tailscaled logs itself back in; the auth key is only for a new node.
-    ts_backend() { "$BIN/tailscale" --socket="$TS_SOCK" status --json 2>/dev/null \
-      | python3 -c 'import json,sys; print(json.load(sys.stdin).get("BackendState",""))' 2>/dev/null || true; }
+    ts_backend() { "$BIN/tailscale" --socket="$TS_SOCK" status --json 2>/dev/null |
+      python3 -c 'import json,sys; print(json.load(sys.stdin).get("BackendState",""))' 2>/dev/null || true; }
     state=""
     for _ in $(seq 1 30); do
       state=$(ts_backend)
-      case "$state" in Running|NeedsLogin|NoState|Stopped) [ "$state" = NoState ] || break ;; esac
+      case "$state" in Running | NeedsLogin | NoState | Stopped) [ "$state" = NoState ] || break ;; esac
       sleep 1
     done
     if [ "$state" != Running ]; then
-      keyfile=$(mktemp); (umask 077; secret tailscale.auth-key > "$keyfile")
-      TSUDO=""; [ "$MODE" = kernel ] && TSUDO=$SUDO
+      keyfile=$(mktemp)
+      (
+        umask 077
+        secret tailscale.auth-key >"$keyfile"
+      )
+      TSUDO=""
+      [ "$MODE" = kernel ] && TSUDO=$SUDO
       $TSUDO "$BIN/tailscale" --socket="$TS_SOCK" up --auth-key="file:$keyfile" --hostname="$TS_HOSTNAME" \
-        --operator="$(id -un)" --accept-dns=false >/dev/null 2>&1 || { rm -f "$keyfile"; die "tailnet: tailscale up refused (see $TS_STATE/tailscaled.log)"; }
+        --operator="$(id -un)" --accept-dns=false >/dev/null 2>&1 || {
+        rm -f "$keyfile"
+        die "tailnet: tailscale up refused (see $TS_STATE/tailscaled.log)"
+      }
       rm -f "$keyfile"
     fi
   fi
@@ -300,7 +364,9 @@ elif want tailnet; then
   # fleet's laptop link: kernel mode dials the laptop directly; userspace
   # mode goes through tailscaled's CONNECT proxy, which fleet expects on
   # the tailnet proxy port 3130 of HTTPS_PROXY's host.
-  FT="$HOME/.config/fleet/fleet.toml"; mkdir -p "$(dirname "$FT")"; touch "$FT"
+  FT="$HOME/.config/fleet/fleet.toml"
+  mkdir -p "$(dirname "$FT")"
+  touch "$FT"
   python3 - "$FT" "$MODE" <<'PY'
 import re, sys
 path, mode = sys.argv[1], sys.argv[2]
@@ -319,7 +385,7 @@ else:
 open(path, "w").write(text)
 PY
   if [ "$MODE" = userspace ]; then
-    echo 'export HTTPS_PROXY=http://127.0.0.1:3130' > "$TS_STATE/fleet-proxy.env"
+    echo 'export HTTPS_PROXY=http://127.0.0.1:3130' >"$TS_STATE/fleet-proxy.env"
     say "tailnet: userspace mode; start fleet proxy with HTTPS_PROXY from $TS_STATE/fleet-proxy.env"
   fi
   say "tailnet: up as $TS_HOSTNAME ($MODE mode)"
@@ -348,13 +414,13 @@ fi
 # script. When the tailnet is already up the hook returns in about a second.
 if want persist; then
   if [ -n "$SELF" ]; then
-    [ "$SELF" = "$HOME/tools/muse-bootstrap.sh" ] \
-      || install -m 755 "$SELF" "$HOME/tools/muse-bootstrap.sh"
+    [ "$SELF" = "$HOME/tools/muse-bootstrap.sh" ] ||
+      install -m 755 "$SELF" "$HOME/tools/muse-bootstrap.sh"
   elif [ ! -f "$HOME/tools/muse-bootstrap.sh" ]; then
     die "persist: run this script from a file (bash bootstrap.sh), not a pipe, so it can keep a copy"
   fi
   mkdir -p "$HOME/logs"
-  cat > "$HOME/tools/muse-boot.sh.tmp" <<EOF
+  cat >"$HOME/tools/muse-boot.sh.tmp" <<EOF
 #!/usr/bin/env bash
 # muse-boot.sh — written by scripts/muse/bootstrap.sh (persist phase).
 # Run from ~/tools/init.sh on every boot: restarts the tailnet after a
@@ -370,7 +436,10 @@ exec timeout 300 bash "\$HOME/tools/muse-bootstrap.sh" --only tailnet,fleet
 EOF
   chmod 755 "$HOME/tools/muse-boot.sh.tmp" && mv -f "$HOME/tools/muse-boot.sh.tmp" "$HOME/tools/muse-boot.sh"
   INIT="$HOME/tools/init.sh"
-  if [ ! -f "$INIT" ]; then printf '#!/usr/bin/env bash\n' > "$INIT"; chmod 755 "$INIT"; fi
+  if [ ! -f "$INIT" ]; then
+    printf '#!/usr/bin/env bash\n' >"$INIT"
+    chmod 755 "$INIT"
+  fi
   if ! grep -q 'muse-boot.sh' "$INIT"; then
     # Right after the shebang, so an early exit in init.sh cannot skip it.
     python3 - "$INIT" "$HOME/tools/muse-boot.sh" <<'PY'
@@ -393,7 +462,8 @@ fi
 if want init; then
   if [ -x "$HOME/tools/init.sh" ]; then
     say "init: running ~/tools/init.sh"
-    if [ -n "$SUDO" ]; then $SUDO env HOME="$HOME" bash "$HOME/tools/init.sh" || say "init: init.sh returned non-zero (see ~/logs/init.log)"
+    if [ -n "$SUDO" ]; then
+      $SUDO env HOME="$HOME" bash "$HOME/tools/init.sh" || say "init: init.sh returned non-zero (see ~/logs/init.log)"
     else bash "$HOME/tools/init.sh" || say "init: init.sh returned non-zero (see ~/logs/init.log)"; fi
   else
     say "init: no ~/tools/init.sh (restore skipped or failed); nothing to run"
@@ -404,7 +474,10 @@ fi
 if want check; then
   rc=0
   say "check: running"
-  has_bridge "$(command -v fleet)" || { say "check: fleet has no bridge capability"; rc=1; }
+  has_bridge "$(command -v fleet)" || {
+    say "check: fleet has no bridge capability"
+    rc=1
+  }
   # Reach the laptop agent port the way fleet does: directly in kernel
   # mode, or by CONNECT through tailscaled's local proxy in userspace
   # mode. Only a TCP connect to the laptop (or the proxy's 200 to the
@@ -427,14 +500,19 @@ except OSError:
 ' "$LAPTOP_TAILNET_IP" 4799 "$TS_PROXY"; then
     say "check: laptop agent port answers on the tailnet"
   else
-    say "check: laptop agent port did not answer"; rc=1
+    say "check: laptop agent port did not answer"
+    rc=1
   fi
-  if fleet secrets get tailscale.auth-key >/dev/null 2>&1; then say "check: fleet secrets resolve"; else say "check: fleet secrets get failed"; rc=1; fi
+  if fleet secrets get tailscale.auth-key >/dev/null 2>&1; then say "check: fleet secrets resolve"; else
+    say "check: fleet secrets get failed"
+    rc=1
+  fi
   if fleet secrets list >/dev/null 2>&1; then say "check: session broker answers"; else say "check: no session broker answering yet (init.sh starts it; bws fallback still works)"; fi
   if fleet bridge hello --agent "$AGENT" --groups muse >/dev/null 2>&1; then
     say "check: bridge hello as $AGENT ok; unread commands: $(fleet bridge inbox --agent "$AGENT" --commands 2>/dev/null | python3 -c 'import json,sys;d=json.load(sys.stdin);print(len(d if isinstance(d,list) else d.get("messages",d.get("items",[]))))' 2>/dev/null || echo '?')"
   else
-    say "check: bridge hello failed"; rc=1
+    say "check: bridge hello failed"
+    rc=1
   fi
   [ "$rc" = 0 ] || die "check: see the lines above"
   say "check: all good"

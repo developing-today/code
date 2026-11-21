@@ -60,38 +60,30 @@ describe("SLO watchdog escalation routing (#9991, design §4)", () => {
     expect(result.reason).toContain("circuit breaker");
   });
 
-  test.each(["aggregator", "dispatch", "tunnel"] as const)(
-    "%s pages after its first failed verification",
-    (facet) => {
-      const result = route({
-        facet,
-        phase: "verification-failed",
-        attemptsRemaining: 2,
-      });
-      expect(result.route).toBe("page");
-      expect(result.push).toBe(true);
-      expect(result.reason).toContain("first remediation failed verification");
-    },
-  );
+  test.each(["aggregator", "dispatch", "tunnel"] as const)("%s pages after its first failed verification", (facet) => {
+    const result = route({
+      facet,
+      phase: "verification-failed",
+      attemptsRemaining: 2,
+    });
+    expect(result.route).toBe("page");
+    expect(result.push).toBe(true);
+    expect(result.reason).toContain("first remediation failed verification");
+  });
 
-  test.each(["pad", "grist", "database"] as const)(
-    "stateful %s always pages",
-    (facet) => {
-      const result = route({ facet, phase: "detected" });
-      expect(result.route).toBe("page");
-      expect(result.push).toBe(true);
-      expect(result.maxRemediationAttempts).toBe(0);
-    },
-  );
+  test.each(["pad", "grist", "database"] as const)("stateful %s always pages", (facet) => {
+    const result = route({ facet, phase: "detected" });
+    expect(result.route).toBe("page");
+    expect(result.push).toBe(true);
+    expect(result.maxRemediationAttempts).toBe(0);
+  });
 
   test("two simultaneous bad facets page both, regardless of class", () => {
     const results = routeEscalations({
       incidents: [incident(), incident({ facet: "aggregator" })],
     });
     expect(results.map((result) => result.route)).toEqual(["page", "page"]);
-    expect(results.every((result) => result.reason.includes("2 facets"))).toBe(
-      true,
-    );
+    expect(results.every((result) => result.reason.includes("2 facets"))).toBe(true);
   });
 
   test("budget below 25% pages on the first failed verification for any facet class", () => {
@@ -105,9 +97,7 @@ describe("SLO watchdog escalation routing (#9991, design §4)", () => {
   });
 
   test("25% is not below the tightening threshold", () => {
-    expect(
-      route({ phase: "verification-failed", budgetRemainingPercent: 25 }).route,
-    ).toBe("needs-orchestrator");
+    expect(route({ phase: "verification-failed", budgetRemainingPercent: 25 }).route).toBe("needs-orchestrator");
   });
 
   test("exhausted budget pages on detection and caps remediation at one attempt", () => {
@@ -139,12 +129,7 @@ describe("SLO watchdog escalation routing (#9991, design §4)", () => {
       "grist",
       "database",
     ] as const;
-    const phases = [
-      "detected",
-      "remediating",
-      "verification-failed",
-      "exhausted",
-    ] as const;
+    const phases = ["detected", "remediating", "verification-failed", "exhausted"] as const;
     for (const facet of facets) {
       for (const phase of phases) {
         for (const budgetRemainingPercent of [null, 50, 24, 0]) {
@@ -177,16 +162,10 @@ describe("SLO watchdog escalation routing (#9991, design §4)", () => {
       "grist",
       "database",
     ] as const;
-    const phases = [
-      "detected",
-      "remediating",
-      "verification-failed",
-      "exhausted",
-    ] as const;
+    const phases = ["detected", "remediating", "verification-failed", "exhausted"] as const;
     const model = (i: EscalationIncident, badCount: number) => {
       const b = i.budgetRemainingPercent;
-      const remediationExhausted =
-        i.phase === "exhausted" || i.circuitBreakerOpen === true;
+      const remediationExhausted = i.phase === "exhausted" || i.circuitBreakerOpen === true;
       const budgetExhausted = b !== null && b <= 0;
       const pages =
         remediationExhausted ||
@@ -221,9 +200,7 @@ describe("SLO watchdog escalation routing (#9991, design §4)", () => {
                 });
                 const incidents = [
                   subject,
-                  ...Array.from({ length: others }, () =>
-                    incident({ facet: "feed", phase: "remediating" }),
-                  ),
+                  ...Array.from({ length: others }, () => incident({ facet: "feed", phase: "remediating" })),
                 ];
                 const decision = routeEscalations({ incidents })[0]!;
                 const want = model(subject, incidents.length);
@@ -256,9 +233,7 @@ describe("SLO watchdog escalation routing (#9991, design §4)", () => {
     // represent independent incidents from separate watchdog passes.
     const decisions: EscalationDecision[] = [
       ...routeEscalations({
-        incidents: [
-          incident({ facet: "aggregator", phase: "verification-failed" }),
-        ],
+        incidents: [incident({ facet: "aggregator", phase: "verification-failed" })],
       }),
       ...routeEscalations({
         incidents: [incident({ facet: "quota", phase: "remediating" })],
@@ -285,10 +260,7 @@ describe("SLO watchdog escalation routing (#9991, design §4)", () => {
 
   test("a failed sink is reported and does not prevent later incidents from being delivered", async () => {
     const decisions = routeEscalations({
-      incidents: [
-        incident({ facet: "aggregator", phase: "verification-failed" }),
-        incident({ facet: "pad" }),
-      ],
+      incidents: [incident({ facet: "aggregator", phase: "verification-failed" }), incident({ facet: "pad" })],
     });
     let pushes = 0;
     const delivered = await deliverEscalations(

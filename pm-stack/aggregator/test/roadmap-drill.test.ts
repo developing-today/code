@@ -141,7 +141,6 @@ describe("roadmap drill-down (#1168)", () => {
 
     const html = render(rows, pool);
     expect(html).toContain("1/2 child issues done");
-    expect(buildEpicRollups(pool).get("a/b#50" as ProjectPoolItem["ref"]))
-      .toMatchObject({ total: 2, done: 1 });
+    expect(buildEpicRollups(pool).get("a/b#50" as ProjectPoolItem["ref"])).toMatchObject({ total: 2, done: 1 });
   });
 });

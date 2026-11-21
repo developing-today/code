@@ -2324,7 +2324,9 @@ class TestS3GetObject(S3TestBase):
         # the first GET arrives truncated (the live proxy failure mode);
         # the client must retry the whole GET
         self.s3.truncate_once.add(key)
-        data = self.store.s3_get_object("supabase-backups", key, expected_size=len(body))
+        data = self.store.s3_get_object(
+            "supabase-backups", key, expected_size=len(body)
+        )
         self.assertEqual(data, body)
         self.assertGreaterEqual(len(self.s3.get_requests(key)), 2)
 
@@ -2413,7 +2415,9 @@ class TestS3CurlFallback(S3TestBase):
         self.s3.put(key, body, "2026-10-21T02:00:00.000Z")
         patcher, calls = self._stub_curl(body)
         with patcher:
-            data = self.store.s3_get_object("supabase-backups", key, expected_size=len(body))
+            data = self.store.s3_get_object(
+                "supabase-backups", key, expected_size=len(body)
+            )
         self.assertEqual(calls, [])
         self.assertEqual(data, body)
 

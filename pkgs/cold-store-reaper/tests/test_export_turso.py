@@ -352,7 +352,6 @@ class TestExportTursoArgv(unittest.TestCase):
         # stale leftovers included.
         self.assertFalse(work.exists())
 
-
     def dump_urls(self):
         urls = []
         for argv_log in sorted(

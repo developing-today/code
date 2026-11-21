@@ -1,6 +1,12 @@
 import type { ProjectPoolItem, RefKey, RoadmapRow } from "./model.ts";
 
-export type GenealogyRelation = "parent" | "historical-parent" | "primary-parent" | "spawned-by" | "roadmap" | "priority";
+export type GenealogyRelation =
+  | "parent"
+  | "historical-parent"
+  | "primary-parent"
+  | "spawned-by"
+  | "roadmap"
+  | "priority";
 
 export interface GenealogyAncestor {
   ref: RefKey;

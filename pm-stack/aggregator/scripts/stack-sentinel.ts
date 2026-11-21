@@ -34,7 +34,11 @@ import { dirname, join } from "node:path";
 import { resolveBwsSecret } from "../src/secrets.ts";
 import { applySentinelProbe, normalizeSentinelEntry, type SentinelServiceEntry } from "../src/sentinel-damping.ts";
 import { checkPrimaryCheckout } from "../src/primary-checkout.ts";
-import { normalizeHookDispatchState, shouldDispatchHealthHook, type HealthHookState } from "../src/health-hook-dispatch.ts";
+import {
+  normalizeHookDispatchState,
+  shouldDispatchHealthHook,
+  type HealthHookState,
+} from "../src/health-hook-dispatch.ts";
 
 const LOOP_MS = 30_000;
 
@@ -206,13 +210,15 @@ async function round(state: SentinelStateFile): Promise<void> {
     // transition for the two monitored targets. Fire-and-forget; a hook
     // failure never blocks the sentinel round.
     const hookTarget =
-      target.id === "aggregator" ? "pm-stack-reachable" :
-      target.id === "opencode" ? "opencode-working" : null;
+      target.id === "aggregator" ? "pm-stack-reachable" : target.id === "opencode" ? "opencode-working" : null;
     if (hookTarget && state.hookDispatchedStates[hookTarget] === undefined && entry.state === "up") {
       // Baseline only; see shouldDispatchHealthHook.
       state.hookDispatchedStates[hookTarget] = "up";
-    } else if (hookTarget && shouldDispatchHealthHook(state.hookDispatchedStates, hookTarget, entry.state)
-      && runningHooks.get(hookTarget)?.exitCode === null) {
+    } else if (
+      hookTarget &&
+      shouldDispatchHealthHook(state.hookDispatchedStates, hookTarget, entry.state) &&
+      runningHooks.get(hookTarget)?.exitCode === null
+    ) {
       // Left undispatched, so a later round retries it once the
       // running hook has exited.
       console.log(`stack-sentinel: ${hookTarget} hook still running; ${entry.state} dispatch waits`);
@@ -221,12 +227,15 @@ async function round(state: SentinelStateFile): Promise<void> {
       const hookPath = join(homedir(), "git", "code", "pm-stack", "health-hooks", `${hookTarget}.sh`);
       try {
         const proc = Bun.spawn([hookPath, "--caller", caller, "--detail", entry.detail ?? ""], {
-          stdout: "ignore", stderr: "ignore",
+          stdout: "ignore",
+          stderr: "ignore",
         });
         runningHooks.set(hookTarget, proc);
         state.hookDispatchedStates[hookTarget] = entry.state;
       } catch (err) {
-        console.error(`stack-sentinel: failed to spawn C3 hook ${hookTarget}: ${err instanceof Error ? err.message : err}`);
+        console.error(
+          `stack-sentinel: failed to spawn C3 hook ${hookTarget}: ${err instanceof Error ? err.message : err}`,
+        );
       }
     }
     if (entry.postedState !== entry.state) {

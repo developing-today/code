@@ -709,7 +709,21 @@ let
             "HOME=/tmp"
             "MCPX_TEST_BINARY=${mcpxContainerBinary}/bin/mcpx"
             "MCPX_TEST_REQUIRE=deno,bun,node,python3"
-            "PATH=${pkgs.lib.makeBinPath (with pkgs; [ bash bun coreutils deno git go_1_27 nodejs python3 ])}:${mcpxContainerBinary}/bin"
+            "PATH=${
+              pkgs.lib.makeBinPath (
+                with pkgs;
+                [
+                  bash
+                  bun
+                  coreutils
+                  deno
+                  git
+                  go_1_27
+                  nodejs
+                  python3
+                ]
+              )
+            }:${mcpxContainerBinary}/bin"
             "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
           ];
         };
@@ -782,7 +796,8 @@ let
         generic-runtime = genericRuntime;
         generic-js-runtime = genericJsRuntime;
         generic-python-runtime = genericPythonRuntime;
-      } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+      }
+      // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
         mcpx-e2e-test-image = mcpxTestImage;
       };
       checks = {
@@ -837,7 +852,8 @@ let
               bash scripts/just-recipes-root-check-test.sh
               touch $out
             '';
-      } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+      }
+      // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
         # The e2e suite spawns daemon/runtime process trees and needs init to
         # reap them. Expose the flake-built test image as the check output;
         # mcpx-test runs the suite in that image with Docker's --init, outside

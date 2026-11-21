@@ -106,13 +106,12 @@ describe("project board registry and attribution", () => {
 
   test("rejects duplicate identities and dangling parents", () => {
     const board = PROJECT_BOARDS[0]!;
-    expect(validateBoardRegistry([
-      board,
-      { ...board, id: "duplicate", parentBoardId: "missing" },
-    ])).toEqual(expect.arrayContaining([
-      expect.stringContaining("duplicate project identity"),
-      expect.stringContaining("unknown parent"),
-    ]));
+    expect(validateBoardRegistry([board, { ...board, id: "duplicate", parentBoardId: "missing" }])).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("duplicate project identity"),
+        expect.stringContaining("unknown parent"),
+      ]),
+    );
   });
 
   test("tags parsed items with their source board id", () => {
@@ -134,7 +133,12 @@ describe("project board registry and attribution", () => {
     const result = await fetchProjectBoardsSnapshot("test-token", fetchFn, "2026-11-01T21:00:00.000Z");
     expect(result.failedBoardIds).toEqual(["lab-cluster"]);
     expect(result.items).toHaveLength(4);
-    expect(result.items.map((item) => item.boardId)).toEqual(["devtoday-main", "devtoday-main", "forks-main", "forks-main"]);
+    expect(result.items.map((item) => item.boardId)).toEqual([
+      "devtoday-main",
+      "devtoday-main",
+      "forks-main",
+      "forks-main",
+    ]);
     expect(Object.keys(result.audits)).toEqual(["devtoday-main", "forks-main"]);
   });
 
@@ -692,8 +696,16 @@ describe("collector graph edges (#2399 contract)", () => {
 
   test("resolveEpicRefs clears stale membership and resolves duplicate parents deterministically", () => {
     const base = {
-      url: "u", projectUrl: "p", repo: "o/r", issueUrl: "i", title: "item",
-      state: "open" as const, contentKind: "issue" as const, status: null, area: null, horizon: null,
+      url: "u",
+      projectUrl: "p",
+      repo: "o/r",
+      issueUrl: "i",
+      title: "item",
+      state: "open" as const,
+      contentKind: "issue" as const,
+      status: null,
+      area: null,
+      horizon: null,
     };
     const refs = resolveEpicRefs([
       { ...base, id: "child", ref: "o/r#3", number: 3, kind: "Task", parentRef: "o/r#2", epicRef: "o/r#99" },
@@ -894,8 +906,20 @@ describe("renderProjects", () => {
 
   test("Area weighted progress counts duplicate board memberships once", () => {
     const base = parseProjectItems(GQL);
-    const closed = { ...base[0]!, ref: "developing-today/code#500" as RefKey, state: "closed" as const, area: "lab-cluster", labels: ["effort/s"] };
-    const open = { ...base[1]!, ref: "developing-today/code#501" as RefKey, state: "open" as const, area: "lab-cluster", labels: ["effort/s"] };
+    const closed = {
+      ...base[0]!,
+      ref: "developing-today/code#500" as RefKey,
+      state: "closed" as const,
+      area: "lab-cluster",
+      labels: ["effort/s"],
+    };
+    const open = {
+      ...base[1]!,
+      ref: "developing-today/code#501" as RefKey,
+      state: "open" as const,
+      area: "lab-cluster",
+      labels: ["effort/s"],
+    };
     const html = renderProjects([closed, { ...closed, boardId: "satellite" }, open], PROV, {});
 
     expect(html).toContain("<strong>lab-cluster</strong> — 50% weighted");

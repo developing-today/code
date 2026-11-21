@@ -19,11 +19,13 @@ describe("health hook dispatch transitions", () => {
   });
 
   test("normalizes persisted dispatch state and ignores malformed values", () => {
-    expect(normalizeHookDispatchState({
-      "pm-stack-reachable": "down",
-      "opencode-working": "up",
-      bad: "unknown",
-    })).toEqual({ "pm-stack-reachable": "down", "opencode-working": "up" });
+    expect(
+      normalizeHookDispatchState({
+        "pm-stack-reachable": "down",
+        "opencode-working": "up",
+        bad: "unknown",
+      }),
+    ).toEqual({ "pm-stack-reachable": "down", "opencode-working": "up" });
     expect(normalizeHookDispatchState(null)).toEqual({});
   });
 });

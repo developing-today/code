@@ -43,9 +43,13 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 HOME = Path.home()
-DEFAULT_INCIDENT_FILE = HOME / ".local" / "state" / "pm-aggregator" / "health-hook-incidents.jsonl"
+DEFAULT_INCIDENT_FILE = (
+    HOME / ".local" / "state" / "pm-aggregator" / "health-hook-incidents.jsonl"
+)
 DEFAULT_INTAKE = "http://127.0.0.1:4870"
-PRIMARY_CHECKOUT = os.environ.get("PM_PRIMARY_CHECKOUT_DIR", "").strip() or str(HOME / "git" / "code")
+PRIMARY_CHECKOUT = os.environ.get("PM_PRIMARY_CHECKOUT_DIR", "").strip() or str(
+    HOME / "git" / "code"
+)
 
 TARGETS = {
     "pm-stack-reachable": "PM stack reachable",
@@ -78,11 +82,14 @@ def parse_args(argv):
     if sum(1 for a in argv if a == "--target" or a.startswith("--target=")) > 1:
         print("run.py: --target may be given only once", file=sys.stderr)
         raise SystemExit(2)
-    p = argparse.ArgumentParser(prog="run.py", allow_abbrev=False,
-                                description="C3 health hook runner")
+    p = argparse.ArgumentParser(
+        prog="run.py", allow_abbrev=False, description="C3 health hook runner"
+    )
     p.add_argument("--target", required=True, choices=sorted(TARGETS))
     p.add_argument("--caller", default="unknown", help="who fired the hook")
-    p.add_argument("--observed-at", default=None, help="caller's observation timestamp (ISO)")
+    p.add_argument(
+        "--observed-at", default=None, help="caller's observation timestamp (ISO)"
+    )
     p.add_argument("--detail", default="", help="caller-supplied failure detail")
     p.add_argument("--json", action="store_true", help="print JSON (default)")
     args = p.parse_args(argv)
@@ -96,9 +103,17 @@ def tcp_probe(host, port, timeout=5, deadline=None):
         if budget <= 0:
             raise TimeoutError("sequence deadline exceeded")
         with socket.create_connection((host, port), timeout=budget):
-            return {"ok": True, "latencyMs": int((time.monotonic() - t0) * 1000), "error": None}
+            return {
+                "ok": True,
+                "latencyMs": int((time.monotonic() - t0) * 1000),
+                "error": None,
+            }
     except Exception as e:  # noqa: BLE001
-        return {"ok": False, "latencyMs": int((time.monotonic() - t0) * 1000), "error": str(e)}
+        return {
+            "ok": False,
+            "latencyMs": int((time.monotonic() - t0) * 1000),
+            "error": str(e),
+        }
 
 
 def http_probe(url, timeout=5, alive=None, deadline=None):
@@ -113,20 +128,36 @@ def http_probe(url, timeout=5, alive=None, deadline=None):
             status = resp.getcode()
             body = resp.read(256)
             ok = (alive == "any") or (status in alive)
-            return {"ok": ok, "status": status, "error": None,
-                    "latencyMs": int((time.monotonic() - t0) * 1000),
-                    "bodyPreview": body.decode("utf-8", "replace")[:120]}
+            return {
+                "ok": ok,
+                "status": status,
+                "error": None,
+                "latencyMs": int((time.monotonic() - t0) * 1000),
+                "bodyPreview": body.decode("utf-8", "replace")[:120],
+            }
     except HTTPError as e:
         status = e.code
         ok = (alive == "any") or (status in (alive if alive != "any" else []))
-        return {"ok": ok, "status": status, "error": f"HTTP {status}",
-                "latencyMs": int((time.monotonic() - t0) * 1000)}
+        return {
+            "ok": ok,
+            "status": status,
+            "error": f"HTTP {status}",
+            "latencyMs": int((time.monotonic() - t0) * 1000),
+        }
     except (URLError, TimeoutError, OSError) as e:
-        return {"ok": False, "status": None, "error": str(e),
-                "latencyMs": int((time.monotonic() - t0) * 1000)}
+        return {
+            "ok": False,
+            "status": None,
+            "error": str(e),
+            "latencyMs": int((time.monotonic() - t0) * 1000),
+        }
     except Exception as e:  # noqa: BLE001
-        return {"ok": False, "status": None, "error": str(e),
-                "latencyMs": int((time.monotonic() - t0) * 1000)}
+        return {
+            "ok": False,
+            "status": None,
+            "error": str(e),
+            "latencyMs": int((time.monotonic() - t0) * 1000),
+        }
 
 
 def run_cmd(cmd, timeout=5, deadline=None, env=None):
@@ -134,9 +165,14 @@ def run_cmd(cmd, timeout=5, deadline=None, env=None):
         budget = bounded_timeout(timeout, deadline)
         if budget <= 0:
             return {"rc": -1, "stdout": "", "stderr": "sequence deadline exceeded"}
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=budget, env=env)
-        return {"rc": proc.returncode, "stdout": proc.stdout.strip(),
-                "stderr": proc.stderr.strip()}
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=budget, env=env
+        )
+        return {
+            "rc": proc.returncode,
+            "stdout": proc.stdout.strip(),
+            "stderr": proc.stderr.strip(),
+        }
     except subprocess.TimeoutExpired:
         return {"rc": -1, "stdout": "", "stderr": "timeout"}
     except FileNotFoundError:
@@ -146,24 +182,40 @@ def run_cmd(cmd, timeout=5, deadline=None, env=None):
 
 
 def systemctl_state(unit, deadline=None):
-    r = run_cmd(["systemctl", "--user", "is-active", unit], timeout=5, deadline=deadline)
+    r = run_cmd(
+        ["systemctl", "--user", "is-active", unit], timeout=5, deadline=deadline
+    )
     # gather properties
     props = {}
-    show = run_cmd(["systemctl", "--user", "show", unit,
-                    "--property=ActiveState,SubState,Result,ExecMainExitTimestamp,ActiveEnterTimestamp"],
-                   timeout=5, deadline=deadline)
+    show = run_cmd(
+        [
+            "systemctl",
+            "--user",
+            "show",
+            unit,
+            "--property=ActiveState,SubState,Result,ExecMainExitTimestamp,ActiveEnterTimestamp",
+        ],
+        timeout=5,
+        deadline=deadline,
+    )
     if show["rc"] == 0:
         for line in show["stdout"].splitlines():
             if "=" in line:
                 k, v = line.split("=", 1)
                 props[k] = v
     if r["rc"] == 127:
-        return {"unit": unit, "activeState": "unknown", "subState": "unknown",
-                "result": "unknown", "exitTimestamp": None,
-                "reason": "systemctl not available"}
+        return {
+            "unit": unit,
+            "activeState": "unknown",
+            "subState": "unknown",
+            "result": "unknown",
+            "exitTimestamp": None,
+            "reason": "systemctl not available",
+        }
     return {
         "unit": unit,
-        "activeState": props.get("ActiveState") or ("active" if r["rc"] == 0 else "inactive"),
+        "activeState": props.get("ActiveState")
+        or ("active" if r["rc"] == 0 else "inactive"),
         "subState": props.get("SubState", ""),
         "result": props.get("Result", ""),
         "exitTimestamp": props.get("ExecMainExitTimestamp") or None,
@@ -172,7 +224,9 @@ def systemctl_state(unit, deadline=None):
 
 
 def git_recent_commits(repo, n=5, deadline=None):
-    r = run_cmd(["git", "-C", repo, "log", "--oneline", f"-{n}"], timeout=5, deadline=deadline)
+    r = run_cmd(
+        ["git", "-C", repo, "log", "--oneline", f"-{n}"], timeout=5, deadline=deadline
+    )
     if r["rc"] != 0:
         return {"ok": False, "commits": [], "error": r["stderr"] or "git failed"}
     commits = [ln for ln in r["stdout"].splitlines() if ln.strip()]
@@ -195,13 +249,21 @@ def bws_lookup(key, deadline=None):
     "missing" or "unknown"; value is only set when resolved and is never
     logged or put in evidence.
     """
-    bws = os.environ.get("BWS_BIN") or _first_existing(
-        ["/run/current-system/sw/bin/bws", HOME / "tools" / "bin" / "bws"]) or "bws"
+    bws = (
+        os.environ.get("BWS_BIN")
+        or _first_existing(
+            ["/run/current-system/sw/bin/bws", HOME / "tools" / "bin" / "bws"]
+        )
+        or "bws"
+    )
     env = os.environ.copy()
     if not env.get("BWS_ACCESS_TOKEN"):
         token_file = os.environ.get("BWS_ACCESS_TOKEN_FILE") or _first_existing(
-            [HOME / ".config" / "bws" / "access-token",
-             HOME / ".config" / "bitwarden" / "access-token"])
+            [
+                HOME / ".config" / "bws" / "access-token",
+                HOME / ".config" / "bitwarden" / "access-token",
+            ]
+        )
         if not token_file:
             return "unknown", None
         try:
@@ -211,8 +273,12 @@ def bws_lookup(key, deadline=None):
         if not access:
             return "unknown", None
         env["BWS_ACCESS_TOKEN"] = access
-    listed = run_cmd([bws, "secret", "list", "--output", "json"], timeout=10,
-                     deadline=deadline, env=env)
+    listed = run_cmd(
+        [bws, "secret", "list", "--output", "json"],
+        timeout=10,
+        deadline=deadline,
+        env=env,
+    )
     if listed["rc"] == 127:
         return "unknown", None
     if listed["rc"] != 0:
@@ -221,12 +287,22 @@ def bws_lookup(key, deadline=None):
         entries = json.loads(listed["stdout"] or "[]")
     except json.JSONDecodeError:
         return "unknown", None
-    secret_id = next((e.get("id") for e in entries
-                      if isinstance(e, dict) and e.get("key") == key and e.get("id")), None)
+    secret_id = next(
+        (
+            e.get("id")
+            for e in entries
+            if isinstance(e, dict) and e.get("key") == key and e.get("id")
+        ),
+        None,
+    )
     if not secret_id:
         return "missing", None
-    got = run_cmd([bws, "secret", "get", secret_id, "--output", "json"], timeout=10,
-                  deadline=deadline, env=env)
+    got = run_cmd(
+        [bws, "secret", "get", secret_id, "--output", "json"],
+        timeout=10,
+        deadline=deadline,
+        env=env,
+    )
     if got["rc"] != 0:
         return "unknown", None
     try:
@@ -248,7 +324,11 @@ def bws_resolve(name, deadline=None):
 
 
 def read_host_health(path=None):
-    path = Path(path) if path else HOME / ".local" / "state" / "pm-aggregator" / "host-health.json"
+    path = (
+        Path(path)
+        if path
+        else HOME / ".local" / "state" / "pm-aggregator" / "host-health.json"
+    )
     if not path.exists():
         return {"collectedAt": None, "unitsDown": [], "present": False}
     try:
@@ -261,14 +341,18 @@ def read_host_health(path=None):
     if isinstance(units, dict):
         items = list(units.items())
     elif isinstance(units, list):
-        items = [((info or {}).get("id") or (info or {}).get("name"), info) for info in units]
+        items = [
+            ((info or {}).get("id") or (info or {}).get("name"), info) for info in units
+        ]
     else:
         items = []
     for name, info in items:
         if name and unit_is_down(info or {}):
             units_down.append(name)
     return {
-        "collectedAt": data.get("generatedAt") or data.get("collectedAt") or data.get("timestamp"),
+        "collectedAt": data.get("generatedAt")
+        or data.get("collectedAt")
+        or data.get("timestamp"),
         "unitsDown": units_down,
         "present": True,
     }
@@ -311,6 +395,7 @@ def opencode_route_ref():
         return {"status": "error", "detail": str(e)}
     # naive: find "model" key
     import re
+
     m = re.search(r'"model"\s*:\s*"([^"]+)"', text)
     if m:
         return {"status": "resolved", "detail": m.group(1)}
@@ -323,8 +408,12 @@ def count_sessions_last_hour(db_path=None, now_ms=None):
     pm-stack/opencode-usage-export/README.md). Opened read-only; returns
     None when the store or its v2 table is not there."""
     import sqlite3
-    path = Path(db_path or os.environ.get("OPENCODE_USAGE_DB", "").strip()
-                or HOME / ".local" / "share" / "opencode" / "opencode.db")
+
+    path = Path(
+        db_path
+        or os.environ.get("OPENCODE_USAGE_DB", "").strip()
+        or HOME / ".local" / "share" / "opencode" / "opencode.db"
+    )
     if not path.exists():
         return None
     now_ms = int(time.time() * 1000) if now_ms is None else now_ms
@@ -333,8 +422,10 @@ def count_sessions_last_hour(db_path=None, now_ms=None):
     except sqlite3.Error:
         return None
     try:
-        row = db.execute("SELECT count(*) FROM session_v2 WHERE time_updated >= ?",
-                         (now_ms - 3_600_000,)).fetchone()
+        row = db.execute(
+            "SELECT count(*) FROM session_v2 WHERE time_updated >= ?",
+            (now_ms - 3_600_000,),
+        ).fetchone()
         return int(row[0]) if row else 0
     except sqlite3.Error:
         return None
@@ -351,6 +442,7 @@ def probe_pm_stack(caller_detail, deadline=None):
     port = 4870
     try:
         from urllib.parse import urlparse
+
         u = urlparse(intake)
         host = u.hostname or host
         port = u.port or (443 if u.scheme == "https" else 80)
@@ -375,7 +467,9 @@ def probe_pm_stack(caller_detail, deadline=None):
     evidence["serviceState"] = systemctl_state("pm-aggregator", deadline=deadline)
 
     # 5. auth health
-    evidence["authHealth"] = bws_resolve("pm-aggregator.alerts-intake-token", deadline=deadline)
+    evidence["authHealth"] = bws_resolve(
+        "pm-aggregator.alerts-intake-token", deadline=deadline
+    )
 
     # 6. recent changes
     recent = git_recent_commits(PRIMARY_CHECKOUT, 5, deadline=deadline)
@@ -428,10 +522,17 @@ def probe_opencode(caller_detail, deadline=None):
 
     # service state: try opencode user unit
     ss = systemctl_state("opencode", deadline=deadline)
-    if ss.get("activeState") == "unknown" and ss.get("reason") == "systemctl not available":
+    if (
+        ss.get("activeState") == "unknown"
+        and ss.get("reason") == "systemctl not available"
+    ):
         pass
     # detect no-unit
-    show = run_cmd(["systemctl", "--user", "show", "opencode", "--property=Id"], timeout=5, deadline=deadline)
+    show = run_cmd(
+        ["systemctl", "--user", "show", "opencode", "--property=Id"],
+        timeout=5,
+        deadline=deadline,
+    )
     if show["rc"] != 0 or "opencode" not in (show["stdout"] or ""):
         ss["noUnit"] = True
     evidence["serviceState"] = ss
@@ -482,9 +583,15 @@ def post_to_throat(record, deadline=None):
     }
     try:
         data = json.dumps(body).encode()
-        req = Request(f"{intake}/api/alerts", data=data, method="POST",
-                      headers={"Authorization": f"Bearer {token}",
-                               "Content-Type": "application/json"})
+        req = Request(
+            f"{intake}/api/alerts",
+            data=data,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+        )
         budget = bounded_timeout(10, deadline)
         if budget <= 0:
             return {"posted": False, "reason": "sequence deadline exceeded"}
@@ -496,8 +603,9 @@ def post_to_throat(record, deadline=None):
 
 
 def append_incident(record):
-    path = Path(os.environ.get("PM_HEALTH_HOOKS_INCIDENT_FILE",
-                               str(DEFAULT_INCIDENT_FILE)))
+    path = Path(
+        os.environ.get("PM_HEALTH_HOOKS_INCIDENT_FILE", str(DEFAULT_INCIDENT_FILE))
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as f:
         f.write(json.dumps(record) + "\n")
@@ -505,7 +613,9 @@ def append_incident(record):
 
 
 def find_open_incident(target):
-    path = Path(os.environ.get("PM_HEALTH_HOOKS_INCIDENT_FILE", str(DEFAULT_INCIDENT_FILE)))
+    path = Path(
+        os.environ.get("PM_HEALTH_HOOKS_INCIDENT_FILE", str(DEFAULT_INCIDENT_FILE))
+    )
     if not path.exists():
         return None
     open_by_id = {}
@@ -520,8 +630,11 @@ def find_open_incident(target):
                     continue
                 if record.get("state") == "down" and record.get("incidentId"):
                     open_by_id[record["incidentId"]] = record
-                elif (record.get("state") == "up" and record.get("recoveryOf")
-                      and record.get("recoveryDelivered", True)):
+                elif (
+                    record.get("state") == "up"
+                    and record.get("recoveryOf")
+                    and record.get("recoveryDelivered", True)
+                ):
                     # A recovery closes its outage only once the intake
                     # took it; an undelivered one leaves the outage open
                     # so the next hook run posts the recovery again.
@@ -547,7 +660,9 @@ def main(argv):
     # A down diagnosis during an open outage reuses that outage (its id
     # and intake key) instead of opening a second alert that a single
     # recovery could not close.
-    open_incident = find_open_incident(target) if state in ("transient", "up", "down") else None
+    open_incident = (
+        find_open_incident(target) if state in ("transient", "up", "down") else None
+    )
     recovery_of = None
     if open_incident and state != "down":
         state = "up"
@@ -568,7 +683,9 @@ def main(argv):
         incident_id = str(uuid.uuid4())
     # A recovery reuses its outage's intake key: the intake closes only
     # the incident whose source and key match.
-    intake_key = (open_incident or {}).get("key") or f"health-hook:{target}:{incident_id}"
+    intake_key = (open_incident or {}).get(
+        "key"
+    ) or f"health-hook:{target}:{incident_id}"
     record = {
         "source": "health-hook",
         "key": intake_key,

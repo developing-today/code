@@ -26,10 +26,15 @@ MIN = 60_000
 
 def session(sid, title, created_min_ago, updated_min_ago=None):
     updated = updated_min_ago if updated_min_ago is not None else created_min_ago
-    return {"id": sid, "title": title,
-            "location": {"directory": "/home/user/git/code"},
-            "time": {"created": NOW - created_min_ago * MIN,
-                     "updated": NOW - updated * MIN}}
+    return {
+        "id": sid,
+        "title": title,
+        "location": {"directory": "/home/user/git/code"},
+        "time": {
+            "created": NOW - created_min_ago * MIN,
+            "updated": NOW - updated * MIN,
+        },
+    }
 
 
 class FakeServer:
@@ -47,10 +52,12 @@ class FakeServer:
                 search = q.get("search", [""])[0]
                 start = int(q.get("cursor", ["0"])[0])
                 hits = [s for s in outer.sessions if search in s["title"]]
-                page = hits[start:start + outer.page_size]
+                page = hits[start : start + outer.page_size]
                 nxt = start + outer.page_size
-                body = {"data": page,
-                        "cursor": {"next": str(nxt) if nxt < len(hits) else None}}
+                body = {
+                    "data": page,
+                    "cursor": {"next": str(nxt) if nxt < len(hits) else None},
+                }
                 data = json.dumps(body).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -88,62 +95,84 @@ class OverlapTest(unittest.TestCase):
         self.addCleanup(os.environ.__setitem__, "PATH", old)
         out = io.StringIO()
         with redirect_stdout(out):
-            rc = loc.main(["code-f", "--server", server.url, "--page-size", "2", *extra])
+            rc = loc.main(
+                ["code-f", "--server", server.url, "--page-size", "2", *extra]
+            )
         return rc, json.loads(out.getvalue()), server
 
     def test_clear_when_earlier_occurrences_are_idle(self):
-        rc, res, _ = self.run_check([
-            session("s3", "Queue lane (scheduled) - code-f 22:40", 1),
-            session("s2", "Queue lane (scheduled) - code-f 22:00", 40),
-            session("s1", "Queue lane (scheduled) - code-f 21:00", 100),
-        ], {})
+        rc, res, _ = self.run_check(
+            [
+                session("s3", "Queue lane (scheduled) - code-f 22:40", 1),
+                session("s2", "Queue lane (scheduled) - code-f 22:00", 40),
+                session("s1", "Queue lane (scheduled) - code-f 21:00", 100),
+            ],
+            {},
+        )
         self.assertEqual((rc, res["verdict"]), (0, "clear"))
         self.assertEqual(res["self"]["id"], "s3")
         self.assertEqual([e["id"] for e in res["earlier"]], ["s1", "s2"])
 
     def test_overlap_when_an_earlier_occurrence_is_busy(self):
-        rc, res, _ = self.run_check([
-            session("s3", "Queue lane (scheduled) - code-f 22:40", 1),
-            session("s2", "Queue lane (scheduled) - code-f 22:00", 40, 0),
-        ], {"s2": "busy"})
+        rc, res, _ = self.run_check(
+            [
+                session("s3", "Queue lane (scheduled) - code-f 22:40", 1),
+                session("s2", "Queue lane (scheduled) - code-f 22:00", 40, 0),
+            ],
+            {"s2": "busy"},
+        )
         self.assertEqual((rc, res["verdict"]), (3, "overlap"))
 
     def test_other_lanes_with_the_same_stem_are_ignored(self):
-        rc, res, _ = self.run_check([
-            session("s3", "Queue lane (scheduled) - code-f 22:40", 1),
-            session("x", "Queue lane (scheduled) - code-f2 22:30", 10, 0),
-        ], {"x": "busy"})
+        rc, res, _ = self.run_check(
+            [
+                session("s3", "Queue lane (scheduled) - code-f 22:40", 1),
+                session("x", "Queue lane (scheduled) - code-f2 22:30", 10, 0),
+            ],
+            {"x": "busy"},
+        )
         self.assertEqual((rc, res["verdict"]), (0, "clear"))
         self.assertEqual(res["earlier"], [])
 
     def test_paging_stops_once_past_the_window(self):
-        old = [session("o%d" % i, "Queue lane (scheduled) - code-f old%d" % i,
-                       300 + i) for i in range(20)]
+        old = [
+            session("o%d" % i, "Queue lane (scheduled) - code-f old%d" % i, 300 + i)
+            for i in range(20)
+        ]
         rc, res, server = self.run_check(
-            [session("s3", "Queue lane (scheduled) - code-f 22:40", 1)] + old, {})
+            [session("s3", "Queue lane (scheduled) - code-f 22:40", 1)] + old, {}
+        )
         self.assertEqual(rc, 0)
         self.assertLessEqual(server.requests, 2)
 
     def test_unknown_when_the_server_is_unreachable(self):
         out = io.StringIO()
         with redirect_stdout(out):
-            rc = loc.main(["code-f", "--server", "http://127.0.0.1:9",
-                           "--http-timeout", "1"])
+            rc = loc.main(
+                ["code-f", "--server", "http://127.0.0.1:9", "--http-timeout", "1"]
+            )
         self.assertEqual((rc, json.loads(out.getvalue())["verdict"]), (4, "unknown"))
 
     def test_self_id_picks_this_occurrence(self):
-        rc, res, _ = self.run_check([
-            session("s3", "Queue lane (scheduled) - code-f 22:40", 1, 0),
-            session("s2", "Queue lane (scheduled) - code-f 22:00", 40),
-        ], {"s3": "busy"}, "--self", "s2")
+        rc, res, _ = self.run_check(
+            [
+                session("s3", "Queue lane (scheduled) - code-f 22:40", 1, 0),
+                session("s2", "Queue lane (scheduled) - code-f 22:00", 40),
+            ],
+            {"s3": "busy"},
+            "--self",
+            "s2",
+        )
         # s3 is newer than this occurrence, so it is not an earlier one.
         self.assertEqual((rc, res["verdict"]), (0, "clear"))
 
     def test_abbreviated_options_are_usage_errors(self):
         for flag in ("--serv", "--window"):
-            with self.assertRaises(SystemExit) as cm, \
-                    redirect_stdout(io.StringIO()), \
-                    contextlib.redirect_stderr(io.StringIO()):
+            with (
+                self.assertRaises(SystemExit) as cm,
+                redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
                 loc.main(["code-f", flag, "x"])
             self.assertEqual(cm.exception.code, 2)
 

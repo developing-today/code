@@ -5,7 +5,14 @@ import { join } from "node:path";
 import { PromptsStore, validateNewPrompt, type NewPrompt } from "./prompts.ts";
 import { renderPromptWidget } from "./prompt-widget.ts";
 
-const valid: NewPrompt = { scope: "page", target: "claude", mode: "async", page: "queue", sectionRef: null, prompt: "reprioritize" };
+const valid: NewPrompt = {
+  scope: "page",
+  target: "claude",
+  mode: "async",
+  page: "queue",
+  sectionRef: null,
+  prompt: "reprioritize",
+};
 
 describe("validateNewPrompt", () => {
   test("accepts a well-formed submission", () => {

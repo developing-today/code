@@ -74,7 +74,11 @@ def list_lane_sessions(args, prefix, since_ms):
         if time.monotonic() > deadline:
             raise TimeoutError("listing did not finish within the deadline")
         page, cursor = fetch_page(
-            args.server, args.dir, prefix.strip(), cursor, args.page_size,
+            args.server,
+            args.dir,
+            prefix.strip(),
+            cursor,
+            args.page_size,
             args.http_timeout,
         )
         oldest = None
@@ -98,15 +102,18 @@ def list_lane_sessions(args, prefix, since_ms):
 def main(argv=None):
     # Strict parsing (operator script argument contract, #3352): no
     # abbreviated long options, so a typo is a usage error, not a guess.
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0],
-                                allow_abbrev=False)
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     p.add_argument("lane", help="lane id, e.g. code-f")
     p.add_argument("--dir", default="/home/user/git/code")
-    p.add_argument("--self", dest="self_id",
-                   help="this occurrence's session id (default: the newest)")
+    p.add_argument(
+        "--self",
+        dest="self_id",
+        help="this occurrence's session id (default: the newest)",
+    )
     p.add_argument("--window-minutes", type=int, default=180)
-    p.add_argument("--server", default=os.environ.get(
-        "OPENCHAMBER_URL", "http://127.0.0.1:3000"))
+    p.add_argument(
+        "--server", default=os.environ.get("OPENCHAMBER_URL", "http://127.0.0.1:3000")
+    )
     p.add_argument("--page-size", type=int, default=200)
     p.add_argument("--max-pages", type=int, default=20)
     p.add_argument("--http-timeout", type=float, default=10)
@@ -117,8 +124,7 @@ def main(argv=None):
     prefix = PREFIX + args.lane + " "
     now_ms = int(time.time() * 1000)
     since_ms = now_ms - args.window_minutes * 60_000
-    result = {"lane": args.lane, "prefix": prefix,
-              "windowMinutes": args.window_minutes}
+    result = {"lane": args.lane, "prefix": prefix, "windowMinutes": args.window_minutes}
     try:
         sessions = list_lane_sessions(args, prefix, since_ms)
     except Exception as e:  # noqa: BLE001 - any failure means unknown
@@ -132,23 +138,30 @@ def main(argv=None):
     else:
         me = sessions[-1] if sessions else None
     if me is None:
-        result.update(verdict="unknown",
-                      error="this occurrence was not found in the listing")
+        result.update(
+            verdict="unknown", error="this occurrence was not found in the listing"
+        )
         print(json.dumps(result, indent=2))
         return 4
 
     my_created = (me.get("time") or {}).get("created") or 0
-    result["self"] = {"id": me["id"], "title": me.get("title"),
-                      "created": my_created}
+    result["self"] = {"id": me["id"], "title": me.get("title"), "created": my_created}
     earlier = []
     for s in sessions:
         created = (s.get("time") or {}).get("created") or 0
         if s["id"] == me["id"] or created > my_created:
             continue
-        status = session_status(s["id"], directory_of(s) or args.dir,
-                                args.status_timeout)
-        earlier.append({"id": s["id"], "title": s.get("title"),
-                        "created": created, "status": status})
+        status = session_status(
+            s["id"], directory_of(s) or args.dir, args.status_timeout
+        )
+        earlier.append(
+            {
+                "id": s["id"],
+                "title": s.get("title"),
+                "created": created,
+                "status": status,
+            }
+        )
     result["earlier"] = earlier
     running = [e for e in earlier if e["status"] != "idle"]
     result["verdict"] = "overlap" if running else "clear"

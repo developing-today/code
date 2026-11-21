@@ -48,13 +48,13 @@ and not required otherwise (userspace tailnet).
 
 ## Where things come from
 
-| Piece | Source |
-| --- | --- |
-| `fleet` | GitHub release `fleet-static-<rev>` on this repo, asset `fleet-x86_64-linux-musl` (`nix build .#fleet-static`) |
-| `bws`, `restic`, `tailscale` | upstream releases, pinned by version and sha256 in the script |
-| `~/.config` | restic repo `restic-sandbox-config` in R2 |
-| `~/tools`, dotfiles, the rest of home | restic repo `restic-sandbox-home` (one snapshot per top-level entry; latest of each) |
-| tailnet | `tailscale.auth-key`, joins as `muse` |
+| Piece                                 | Source                                                                                                         |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `fleet`                               | GitHub release `fleet-static-<rev>` on this repo, asset `fleet-x86_64-linux-musl` (`nix build .#fleet-static`) |
+| `bws`, `restic`, `tailscale`          | upstream releases, pinned by version and sha256 in the script                                                  |
+| `~/.config`                           | restic repo `restic-sandbox-config` in R2                                                                      |
+| `~/tools`, dotfiles, the rest of home | restic repo `restic-sandbox-home` (one snapshot per top-level entry; latest of each)                           |
+| tailnet                               | `tailscale.auth-key`, joins as `muse`                                                                          |
 
 ## Publishing a new fleet build for Muse
 

@@ -44,16 +44,16 @@ test.
 
 ### What counts as failure-to-connect
 
-A *failure-to-connect* is any attempt by a caller to reach a monitored
+A _failure-to-connect_ is any attempt by a caller to reach a monitored
 target that does not yield the target's "alive" answer within the
 target's timeout. Concretely, per target:
 
-| Target id | Monitored surface | Alive answer | Timeout |
-|-----------|-------------------|--------------|---------|
-| `pm-stack-reachable` | aggregator HTTP API (`$ALERTS_INTAKE_URL` / board) | HTTP 2xx | 10 s |
-| `opencode-working` | OpenCode global health (`http://127.0.0.1:13420/global/health`) | HTTP 200 | 10 s |
+| Target id            | Monitored surface                                               | Alive answer | Timeout |
+| -------------------- | --------------------------------------------------------------- | ------------ | ------- |
+| `pm-stack-reachable` | aggregator HTTP API (`$ALERTS_INTAKE_URL` / board)              | HTTP 2xx     | 10 s    |
+| `opencode-working`   | OpenCode global health (`http://127.0.0.1:13420/global/health`) | HTTP 200     | 10 s    |
 
-A *connect* is any of: an HTTP fetch that throws or times out, an HTTP
+A _connect_ is any of: an HTTP fetch that throws or times out, an HTTP
 response outside the alive set, or a caller-reported failure (a lane
 launch, an aggregator tick, a PM-stack surface) that names the target as
 unreachable. The hook is **caller-agnostic**: any caller may invoke it;
@@ -104,7 +104,7 @@ is capped at 60 s.
 ### Common prelude (both targets)
 
 1. **Confirm the failure** — re-probe the target once (same alive answer,
-   5 s timeout). If it now answers, record a *transient* outcome and
+   5 s timeout). If it now answers, record a _transient_ outcome and
    exit (no incident, no report). This absorbs single slow probes.
 2. **Timestamp + caller** — capture `firedAt` (ISO, UTC), `caller`,
    `observedAt` (caller's observation), `target`.
@@ -199,6 +199,7 @@ health-hook <target> <state> @<firedAt> caller=<caller> incident=<incidentId> �
 ```
 
 Escalation:
+
 - **Exception** (target down AND not a known-flap per damping) → also
   note to **Reports** category chat.
 - **Drew blocked** (`pm-stack-reachable` down) → also note to **main chat**
@@ -217,17 +218,17 @@ contract (30 days / 5000).
 
 ## Escalation rules
 
-| Condition | PM-health note | Reports note | Main chat |
-|-----------|---------------|--------------|-----------|
-| target down, first occurrence | yes | no | no |
-| target down, exception (not a known flap; damping confirms) | yes | yes | only if pm-stack-reachable |
-| target down, Drew blocked (pm-stack-reachable) | yes | yes | yes |
-| recovery (after a recorded down) | yes | yes if down was escalated | no |
-| transient (confirm-failure passed) | no | no | no |
+| Condition                                                   | PM-health note | Reports note              | Main chat                  |
+| ----------------------------------------------------------- | -------------- | ------------------------- | -------------------------- |
+| target down, first occurrence                               | yes            | no                        | no                         |
+| target down, exception (not a known flap; damping confirms) | yes            | yes                       | only if pm-stack-reachable |
+| target down, Drew blocked (pm-stack-reachable)              | yes            | yes                       | yes                        |
+| recovery (after a recorded down)                            | yes            | yes if down was escalated | no                         |
+| transient (confirm-failure passed)                          | no             | no                        | no                         |
 
 Flap damping: a target flips to `down` only after 3 consecutive failed
 hook firings within 5 minutes (reusing `src/sentinel-damping.ts`
-semantics). A single firing records a *pending* incident that is
+semantics). A single firing records a _pending_ incident that is
 upgraded to a real incident on the 3rd consecutive failure; transient
 firings in between reset the streak. Recovery posts only after a down
 was actually posted.
@@ -235,6 +236,7 @@ was actually posted.
 ## Cutover test (overlap with fleet-watchdog / fleet-minder)
 
 The hooks prove out when, for **14 consecutive days**:
+
 1. Every `pm-stack-reachable` and `opencode-working` down recorded by
    `fleet-watchdog` is also recorded by the corresponding hook within
    60 s of the first caller failure, with matching `incidentId` lineage.

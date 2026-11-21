@@ -484,8 +484,18 @@ describe("project registry", () => {
   });
 
   test("project weighted progress counts each canonical issue once across board memberships", () => {
-    const closed = poolItem({ ref: "developing-today/code#500" as RefKey, state: "closed", area: "pm-dashboard", labels: ["effort/s"] });
-    const open = poolItem({ ref: "developing-today/code#501" as RefKey, state: "open", area: "pm-dashboard", labels: ["effort/s"] });
+    const closed = poolItem({
+      ref: "developing-today/code#500" as RefKey,
+      state: "closed",
+      area: "pm-dashboard",
+      labels: ["effort/s"],
+    });
+    const open = poolItem({
+      ref: "developing-today/code#501" as RefKey,
+      state: "open",
+      area: "pm-dashboard",
+      labels: ["effort/s"],
+    });
     const duplicateClosed = { ...closed, boardId: "satellite" };
     const summary = buildProjectSummaries(PROJECT_CONFIGS, [closed, duplicateClosed, open], [])[0]!;
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Tests for C3 health hook runner (pm-stack/health-hooks/run.py)."""
+
 import json
 import os
 import subprocess
@@ -23,7 +24,11 @@ def test_argparse_requires_target():
 
 
 def test_argparse_rejects_bad_target():
-    r = subprocess.run([sys.executable, str(RUNNER), "--target", "nope"], capture_output=True, text=True)
+    r = subprocess.run(
+        [sys.executable, str(RUNNER), "--target", "nope"],
+        capture_output=True,
+        text=True,
+    )
     assert r.returncode == 2, r
 
 
@@ -59,8 +64,20 @@ def test_git_recent_commits():
 def test_runner_runs_and_prints_json():
     env = os.environ.copy()
     env["PM_HEALTH_HOOKS_INCIDENT_FILE"] = str(Path(tempfile.mkdtemp()) / "inc.jsonl")
-    r = subprocess.run([sys.executable, str(RUNNER), "--target", "opencode-working",
-                        "--caller", "test", "--json"], capture_output=True, text=True, env=env)
+    r = subprocess.run(
+        [
+            sys.executable,
+            str(RUNNER),
+            "--target",
+            "opencode-working",
+            "--caller",
+            "test",
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
     assert r.returncode == 0, r.stderr
     obj = json.loads(r.stdout)
     assert obj["target"] == "opencode-working"
@@ -72,25 +89,42 @@ def test_runner_runs_and_prints_json():
 def test_runner_pm_stack():
     env = os.environ.copy()
     env["PM_HEALTH_HOOKS_INCIDENT_FILE"] = str(Path(tempfile.mkdtemp()) / "inc.jsonl")
-    r = subprocess.run([sys.executable, str(RUNNER), "--target", "pm-stack-reachable",
-                        "--caller", "test"], capture_output=True, text=True, env=env)
+    r = subprocess.run(
+        [
+            sys.executable,
+            str(RUNNER),
+            "--target",
+            "pm-stack-reachable",
+            "--caller",
+            "test",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
     assert r.returncode == 0, r.stderr
     obj = json.loads(r.stdout)
     assert obj["target"] == "pm-stack-reachable"
-    assert "evidence" not in obj  # evidence stays in record, not stdout? runner prints summary only
+    assert (
+        "evidence" not in obj
+    )  # evidence stays in record, not stdout? runner prints summary only
     # actually runner prints out without evidence; ok
 
 
 def test_host_health_collector_schema():
     with tempfile.TemporaryDirectory() as td:
         path = Path(td) / "host-health.json"
-        path.write_text(json.dumps({
-            "generatedAt": "2026-11-20T01:00:00Z",
-            "units": {
-                "pm-aggregator.service": {"activeState": "failed"},
-                "opencode.service": {"activeState": "active"},
-            },
-        }))
+        path.write_text(
+            json.dumps(
+                {
+                    "generatedAt": "2026-11-20T01:00:00Z",
+                    "units": {
+                        "pm-aggregator.service": {"activeState": "failed"},
+                        "opencode.service": {"activeState": "active"},
+                    },
+                }
+            )
+        )
         result = R.read_host_health(path)
     assert result["collectedAt"] == "2026-11-20T01:00:00Z"
     assert result["unitsDown"] == ["pm-aggregator.service"]
@@ -99,20 +133,32 @@ def test_host_health_collector_schema():
 def test_http_500_is_down_even_when_tcp_and_unit_are_healthy():
     failed = {"ok": False, "status": 500, "error": "HTTP 500", "latencyMs": 1}
     healthy_tcp = {"ok": True, "latencyMs": 1, "error": None}
-    with mock.patch.object(R, "http_probe", return_value=failed), \
-         mock.patch.object(R, "tcp_probe", return_value=healthy_tcp), \
-         mock.patch.object(R, "systemctl_state", return_value={"activeState": "active"}), \
-         mock.patch.object(R, "bws_resolve", return_value={"status": "resolved"}), \
-         mock.patch.object(R, "git_recent_commits", return_value={"ok": True, "commits": []}), \
-         mock.patch.object(R, "read_host_health", return_value={"collectedAt": None, "unitsDown": []}):
+    with (
+        mock.patch.object(R, "http_probe", return_value=failed),
+        mock.patch.object(R, "tcp_probe", return_value=healthy_tcp),
+        mock.patch.object(R, "systemctl_state", return_value={"activeState": "active"}),
+        mock.patch.object(R, "bws_resolve", return_value={"status": "resolved"}),
+        mock.patch.object(
+            R, "git_recent_commits", return_value={"ok": True, "commits": []}
+        ),
+        mock.patch.object(
+            R, "read_host_health", return_value={"collectedAt": None, "unitsDown": []}
+        ),
+    ):
         pm_state, _, _ = R.probe_pm_stack("")
-    with mock.patch.object(R, "http_probe", return_value=failed), \
-         mock.patch.object(R, "tcp_probe", return_value=healthy_tcp), \
-         mock.patch.object(R, "systemctl_state", return_value={"activeState": "active"}), \
-         mock.patch.object(R, "run_cmd", return_value={"rc": 0, "stdout": "opencode", "stderr": ""}), \
-         mock.patch.object(R, "opencode_route_ref", return_value={"status": "resolved"}), \
-         mock.patch.object(R, "git_recent_commits", return_value={"ok": True, "commits": []}), \
-         mock.patch.object(R, "count_sessions_last_hour", return_value=1):
+    with (
+        mock.patch.object(R, "http_probe", return_value=failed),
+        mock.patch.object(R, "tcp_probe", return_value=healthy_tcp),
+        mock.patch.object(R, "systemctl_state", return_value={"activeState": "active"}),
+        mock.patch.object(
+            R, "run_cmd", return_value={"rc": 0, "stdout": "opencode", "stderr": ""}
+        ),
+        mock.patch.object(R, "opencode_route_ref", return_value={"status": "resolved"}),
+        mock.patch.object(
+            R, "git_recent_commits", return_value={"ok": True, "commits": []}
+        ),
+        mock.patch.object(R, "count_sessions_last_hour", return_value=1),
+    ):
         oc_state, _, _ = R.probe_opencode("")
     assert pm_state == "down"
     assert oc_state == "down"
@@ -121,12 +167,26 @@ def test_http_500_is_down_even_when_tcp_and_unit_are_healthy():
 def test_recovery_links_to_open_down_incident():
     with tempfile.TemporaryDirectory() as td:
         incident_file = Path(td) / "incidents.jsonl"
-        incident_file.write_text(json.dumps({
-            "target": "opencode-working", "state": "down", "incidentId": "down-123",
-        }) + "\n")
-        env = mock.patch.dict(os.environ, {"PM_HEALTH_HOOKS_INCIDENT_FILE": str(incident_file)})
-        with env, mock.patch.object(R, "probe_opencode", return_value=("transient", "probe recovered", {})), \
-             mock.patch.object(R, "post_to_throat", return_value={"posted": True}):
+        incident_file.write_text(
+            json.dumps(
+                {
+                    "target": "opencode-working",
+                    "state": "down",
+                    "incidentId": "down-123",
+                }
+            )
+            + "\n"
+        )
+        env = mock.patch.dict(
+            os.environ, {"PM_HEALTH_HOOKS_INCIDENT_FILE": str(incident_file)}
+        )
+        with (
+            env,
+            mock.patch.object(
+                R, "probe_opencode", return_value=("transient", "probe recovered", {})
+            ),
+            mock.patch.object(R, "post_to_throat", return_value={"posted": True}),
+        ):
             stdout = StringIO()
             with redirect_stdout(stdout):
                 assert R.main(["--target", "opencode-working"]) == 0
@@ -141,17 +201,42 @@ def test_recovery_links_to_open_down_incident():
 def test_undelivered_recovery_is_posted_again_on_the_next_run():
     with tempfile.TemporaryDirectory() as td:
         incident_file = Path(td) / "incidents.jsonl"
-        incident_file.write_text(json.dumps({
-            "target": "opencode-working", "state": "down", "incidentId": "down-123",
-            "key": "health-hook:opencode-working:down-123",
-        }) + "\n")
-        env = mock.patch.dict(os.environ, {"PM_HEALTH_HOOKS_INCIDENT_FILE": str(incident_file)})
-        probe = mock.patch.object(R, "probe_opencode", return_value=("transient", "probe recovered", {}))
-        with env, probe, mock.patch.object(R, "post_to_throat", return_value={"posted": False, "reason": "HTTP 503"}):
+        incident_file.write_text(
+            json.dumps(
+                {
+                    "target": "opencode-working",
+                    "state": "down",
+                    "incidentId": "down-123",
+                    "key": "health-hook:opencode-working:down-123",
+                }
+            )
+            + "\n"
+        )
+        env = mock.patch.dict(
+            os.environ, {"PM_HEALTH_HOOKS_INCIDENT_FILE": str(incident_file)}
+        )
+        probe = mock.patch.object(
+            R, "probe_opencode", return_value=("transient", "probe recovered", {})
+        )
+        with (
+            env,
+            probe,
+            mock.patch.object(
+                R,
+                "post_to_throat",
+                return_value={"posted": False, "reason": "HTTP 503"},
+            ),
+        ):
             with redirect_stdout(StringIO()):
                 assert R.main(["--target", "opencode-working"]) == 0
             assert R.find_open_incident("opencode-working")["incidentId"] == "down-123"
-        with env, probe, mock.patch.object(R, "post_to_throat", return_value={"posted": True}) as post:
+        with (
+            env,
+            probe,
+            mock.patch.object(
+                R, "post_to_throat", return_value={"posted": True}
+            ) as post,
+        ):
             stdout = StringIO()
             with redirect_stdout(stdout):
                 assert R.main(["--target", "opencode-working"]) == 0
@@ -166,9 +251,15 @@ def test_undelivered_recovery_is_posted_again_on_the_next_run():
 def test_pm_stack_down_uses_supported_critical_severity():
     with tempfile.TemporaryDirectory() as td:
         incident_file = Path(td) / "incidents.jsonl"
-        with mock.patch.dict(os.environ, {"PM_HEALTH_HOOKS_INCIDENT_FILE": str(incident_file)}), \
-             mock.patch.object(R, "probe_pm_stack", return_value=("down", "unreachable", {})), \
-             mock.patch.object(R, "post_to_throat", return_value={"posted": False}):
+        with (
+            mock.patch.dict(
+                os.environ, {"PM_HEALTH_HOOKS_INCIDENT_FILE": str(incident_file)}
+            ),
+            mock.patch.object(
+                R, "probe_pm_stack", return_value=("down", "unreachable", {})
+            ),
+            mock.patch.object(R, "post_to_throat", return_value={"posted": False}),
+        ):
             stdout = StringIO()
             with redirect_stdout(stdout):
                 assert R.main(["--target", "pm-stack-reachable"]) == 0
@@ -178,7 +269,9 @@ def test_pm_stack_down_uses_supported_critical_severity():
 
 
 def test_run_cmd_caps_timeout_to_shared_deadline_and_skips_expired_work():
-    with mock.patch.object(R.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="", stderr="")) as run:
+    with mock.patch.object(
+        R.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="", stderr="")
+    ) as run:
         R.run_cmd(["example"], timeout=30, deadline=time.monotonic() + 2)
         assert 0 < run.call_args.kwargs["timeout"] <= 2
         run.reset_mock()
@@ -190,13 +283,28 @@ def test_run_cmd_caps_timeout_to_shared_deadline_and_skips_expired_work():
 def test_recovery_reuses_the_outage_intake_key():
     with tempfile.TemporaryDirectory() as td:
         incident_file = Path(td) / "incidents.jsonl"
-        incident_file.write_text(json.dumps({
-            "target": "opencode-working", "state": "down", "incidentId": "down-123",
-            "key": "health-hook:opencode-working:down-123",
-        }) + "\n")
-        with mock.patch.dict(os.environ, {"PM_HEALTH_HOOKS_INCIDENT_FILE": str(incident_file)}), \
-             mock.patch.object(R, "probe_opencode", return_value=("transient", "ok", {})), \
-             mock.patch.object(R, "post_to_throat", return_value={"posted": True}) as post:
+        incident_file.write_text(
+            json.dumps(
+                {
+                    "target": "opencode-working",
+                    "state": "down",
+                    "incidentId": "down-123",
+                    "key": "health-hook:opencode-working:down-123",
+                }
+            )
+            + "\n"
+        )
+        with (
+            mock.patch.dict(
+                os.environ, {"PM_HEALTH_HOOKS_INCIDENT_FILE": str(incident_file)}
+            ),
+            mock.patch.object(
+                R, "probe_opencode", return_value=("transient", "ok", {})
+            ),
+            mock.patch.object(
+                R, "post_to_throat", return_value={"posted": True}
+            ) as post,
+        ):
             with redirect_stdout(StringIO()):
                 assert R.main(["--target", "opencode-working"]) == 0
     assert post.call_args.args[0]["key"] == "health-hook:opencode-working:down-123"
@@ -205,15 +313,31 @@ def test_recovery_reuses_the_outage_intake_key():
 def test_repeated_down_reuses_the_open_outage():
     with tempfile.TemporaryDirectory() as td:
         incident_file = Path(td) / "incidents.jsonl"
-        env = mock.patch.dict(os.environ, {"PM_HEALTH_HOOKS_INCIDENT_FILE": str(incident_file)})
-        with env, mock.patch.object(R, "probe_opencode", return_value=("down", "unreachable", {})), \
-             mock.patch.object(R, "post_to_throat", return_value={"posted": True}) as post:
+        env = mock.patch.dict(
+            os.environ, {"PM_HEALTH_HOOKS_INCIDENT_FILE": str(incident_file)}
+        )
+        with (
+            env,
+            mock.patch.object(
+                R, "probe_opencode", return_value=("down", "unreachable", {})
+            ),
+            mock.patch.object(
+                R, "post_to_throat", return_value={"posted": True}
+            ) as post,
+        ):
             with redirect_stdout(StringIO()):
                 assert R.main(["--target", "opencode-working"]) == 0
                 assert R.main(["--target", "opencode-working"]) == 0
         keys = [c.args[0]["key"] for c in post.call_args_list]
-        with env, mock.patch.object(R, "probe_opencode", return_value=("transient", "ok", {})), \
-             mock.patch.object(R, "post_to_throat", return_value={"posted": True}) as rec:
+        with (
+            env,
+            mock.patch.object(
+                R, "probe_opencode", return_value=("transient", "ok", {})
+            ),
+            mock.patch.object(
+                R, "post_to_throat", return_value={"posted": True}
+            ) as rec,
+        ):
             with redirect_stdout(StringIO()):
                 assert R.main(["--target", "opencode-working"]) == 0
             assert R.find_open_incident("opencode-working") is None
@@ -222,8 +346,11 @@ def test_repeated_down_reuses_the_open_outage():
 
 
 def test_wrapper_target_cannot_be_overridden():
-    r = subprocess.run([str(HERE / "pm-stack-reachable.sh"), "--target", "opencode-working"],
-                       capture_output=True, text=True)
+    r = subprocess.run(
+        [str(HERE / "pm-stack-reachable.sh"), "--target", "opencode-working"],
+        capture_output=True,
+        text=True,
+    )
     assert r.returncode == 2, r
     assert "only once" in r.stderr
 
@@ -235,12 +362,23 @@ def test_bws_lookup_resolves_the_key_to_its_id_before_get():
         calls.append(cmd[1:])
         assert env and env.get("BWS_ACCESS_TOKEN") == "access"
         if cmd[1:3] == ["secret", "list"]:
-            return {"rc": 0, "stdout": json.dumps([{"id": "id-1", "key": "other"},
-                                                    {"id": "id-2", "key": "wanted"}]), "stderr": ""}
-        return {"rc": 0, "stdout": json.dumps({"id": "id-2", "value": " tok "}), "stderr": ""}
+            return {
+                "rc": 0,
+                "stdout": json.dumps(
+                    [{"id": "id-1", "key": "other"}, {"id": "id-2", "key": "wanted"}]
+                ),
+                "stderr": "",
+            }
+        return {
+            "rc": 0,
+            "stdout": json.dumps({"id": "id-2", "value": " tok "}),
+            "stderr": "",
+        }
 
-    with mock.patch.dict(os.environ, {"BWS_ACCESS_TOKEN": "access", "BWS_BIN": "bws"}), \
-         mock.patch.object(R, "run_cmd", side_effect=fake):
+    with (
+        mock.patch.dict(os.environ, {"BWS_ACCESS_TOKEN": "access", "BWS_BIN": "bws"}),
+        mock.patch.object(R, "run_cmd", side_effect=fake),
+    ):
         assert R.bws_lookup("wanted") == ("resolved", "tok")
         assert R.bws_lookup("absent")[0] == "missing"
         evidence = R.bws_resolve("wanted")
@@ -257,13 +395,16 @@ def test_inactive_successful_oneshot_is_not_down():
 
 def test_sessions_last_hour_reads_the_live_store():
     import sqlite3
+
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "opencode.db"
         db = sqlite3.connect(db_path)
         db.execute("CREATE TABLE session_v2 (id text, time_updated integer)")
         now = 10_000_000_000
-        db.executemany("INSERT INTO session_v2 VALUES (?, ?)",
-                       [("a", now - 60_000), ("b", now - 3_000_000), ("c", now - 7_200_000)])
+        db.executemany(
+            "INSERT INTO session_v2 VALUES (?, ?)",
+            [("a", now - 60_000), ("b", now - 3_000_000), ("c", now - 7_200_000)],
+        )
         db.commit()
         db.close()
         assert R.count_sessions_last_hour(db_path, now_ms=now) == 2
@@ -277,6 +418,7 @@ def test_shell_wrappers_are_executable():
 
 if __name__ == "__main__":
     import traceback
+
     tests = [v for k, v in globals().items() if k.startswith("test_")]
     failed = 0
     for t in tests:

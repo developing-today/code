@@ -188,7 +188,9 @@ def main():
         body = {"agent": agent, "body": text_arg(args.text)}
         to = [t.strip() for x in args.to for t in x.split(",") if t.strip()]
         if args.instruction and not to:
-            fail(2, "an instruction needs --to (central and replies take messages only)")
+            fail(
+                2, "an instruction needs --to (central and replies take messages only)"
+            )
         if to:
             body["to"] = to
         if args.instruction:

@@ -83,13 +83,26 @@ export function reconcileRoadmap(rows: RoadmapRow[], pool: ProjectPoolItem[]): R
   }
 
   const unmatchedEpics = epics.filter((e) => !used.has(e.ref));
-  return { availability: "available", matched, unmatchedRows, unmatchedEpics, drift: unmatchedRows.length + unmatchedEpics.length };
+  return {
+    availability: "available",
+    matched,
+    unmatchedRows,
+    unmatchedEpics,
+    drift: unmatchedRows.length + unmatchedEpics.length,
+  };
 }
 
 /** The reconciliation when either side was not successfully read:
  *  no matches, no unmatched lists, no drift — just the reason. */
 export function unavailableRoadmapReconciliation(reason: string): RoadmapReconciliation {
-  return { availability: "unavailable", unavailableReason: reason, matched: [], unmatchedRows: [], unmatchedEpics: [], drift: 0 };
+  return {
+    availability: "unavailable",
+    unavailableReason: reason,
+    matched: [],
+    unmatchedRows: [],
+    unmatchedEpics: [],
+    drift: 0,
+  };
 }
 
 /** The published shape for /api/roadmap.json: counts plus both lists. */

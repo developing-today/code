@@ -573,8 +573,7 @@ in
     variables = {
       EDITOR = "nvim";
       NIX_REMOTE = "daemon";
-      PLAYWRIGHT_BROWSERS_PATH = "${unstablePkgs.playwright-driver.browsers
-      }";
+      PLAYWRIGHT_BROWSERS_PATH = "${unstablePkgs.playwright-driver.browsers}";
     };
     # things should end up in systempackages if
     # they are required for boot or login or

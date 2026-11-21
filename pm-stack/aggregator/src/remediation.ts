@@ -662,9 +662,9 @@ export function deserializeState(raw: string, now: number): RemediationState {
       exhaustedIncidents:
         parsed.exhaustedIncidents && typeof parsed.exhaustedIncidents === "object" ? parsed.exhaustedIncidents : {},
       dailyPerFacet: Object.fromEntries(
-        Object.entries(parsed.dailyPerFacet && typeof parsed.dailyPerFacet === "object" ? parsed.dailyPerFacet : {}).map(
-          ([facet, counter]) => [facet, normalizeDailyCounter(counter, now, FACET_DAILY_CAP)],
-        ),
+        Object.entries(
+          parsed.dailyPerFacet && typeof parsed.dailyPerFacet === "object" ? parsed.dailyPerFacet : {},
+        ).map(([facet, counter]) => [facet, normalizeDailyCounter(counter, now, FACET_DAILY_CAP)]),
       ),
       dailyGlobal: normalizeDailyCounter(parsed.dailyGlobal, now, GLOBAL_DAILY_CAP),
       inFlight: parsed.inFlight ?? null,
