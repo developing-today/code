@@ -116,7 +116,7 @@ const clientSecretFor = (env, clientId) => mac(env, `client-secret:${clientId}`)
  * a digest of CHATGPT_TOKEN, so rotating that token revokes them (Claude
  * grants are already tied to ACCESS_TOKEN through the signing key).
  */
-async function channelBinding(env, channel) {
+export async function channelBinding(env, channel) {
   if (channel !== "chatgpt") return "";
   if (!chatgptConfigured(env)) return null;
   return (await mac(env, `chatgpt-binding:${env.CHATGPT_TOKEN}`)).slice(0, 16);
