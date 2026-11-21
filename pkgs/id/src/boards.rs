@@ -22,14 +22,15 @@
 //! [`BoardGraph::replay_game_lineage`] folds a verified turn lineage through
 //! the exact package bytes the game post pins, under the sandbox limits, so
 //! every peer recomputes the same state from the same signed inputs.
-//! Note sharing (#7587, slice 1 of the #5830 model) adds [`Post::note_ref`]:
+//! Note sharing (#7587, slices 1–2 of the #5830 model) adds [`Post::note_ref`]:
 //! a board post may carry a [`NoteRef`] — the note object id, home server,
 //! pinned version id and content hash, and sharer attribution — and never
 //! the note content. The reference is an embeds edge from the post to a
 //! note that need not live in this graph (it lives on its home server);
 //! [`BoardGraph::note_embeds`] / [`BoardGraph::note_backlinks`] project the
-//! edge set. Rendering, reply anchoring, and cross-server resolution are
-//! later slices.
+//! edge set. Slice 2 adds pure live/pinned presentation and reply-anchor
+//! projections; fetching note content and rendering markup remain caller work.
+//! Cross-server resolution is a later slice.
 //! Duplicate `Rules` objects for the same board and revision are legal signed
 //! history. [`BoardGraph::resolve_rules`] selects the greater content hash
 //! within a revision; current rules are the highest revision, using that same

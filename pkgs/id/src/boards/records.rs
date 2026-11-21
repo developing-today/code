@@ -145,6 +145,90 @@ pub fn resolve_note_embed(note_ref: &NoteRef, heads: &[NoteHead]) -> NoteEmbedRe
     }
 }
 
+/// The immutable target selected for an embedded note's presentation.
+/// Markup renderers consume this projection and fetch/verify the content
+/// against `content_hash`; this module never fetches note content itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NoteEmbedTarget {
+    /// A single authorized live head.
+    Live(NoteHead),
+    /// All live candidates are retained when the note has concurrent heads.
+    LiveCandidates(Vec<NoteHead>),
+    /// The version and hash signed into the board post.
+    Pinned {
+        /// Immutable note version id.
+        version: ArtifactHash,
+        /// Expected canonical content hash.
+        content_hash: ArtifactHash,
+    },
+}
+
+/// Presentation decision for a note embed, independent of any UI or markup.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoteEmbedPresentation {
+    /// Requested/default view, retained so the UI can expose a view switch.
+    pub preferred_view: NoteEmbedView,
+    /// View represented by `target`; live-unavailable falls back to pinned.
+    pub displayed_view: NoteEmbedView,
+    /// Immutable content target(s) the renderer may display.
+    pub target: NoteEmbedTarget,
+    /// Whether an available live head differs from the post's pinned version.
+    pub changed_since_posted: bool,
+}
+
+/// Select a live or pinned display target without choosing between concurrent
+/// heads. `resolution` must be the result of [`resolve_note_embed`] for this
+/// `note_ref`; inconsistent revision/content hashes are still reported as
+/// changed, while the caller remains responsible for verifying fetched bytes.
+/// If the live view is unavailable, fall back to the signed pin.
+pub fn present_note_embed(
+    note_ref: &NoteRef,
+    preferred_view: Option<NoteEmbedView>,
+    resolution: &NoteEmbedResolution,
+) -> NoteEmbedPresentation {
+    let preferred_view = preferred_view.unwrap_or(NoteEmbedView::Live);
+    let heads: Vec<&NoteHead> = match resolution {
+        NoteEmbedResolution::Current(head) | NoteEmbedResolution::Updated(head) => vec![head],
+        NoteEmbedResolution::Diverged(heads) | NoteEmbedResolution::SupersededLine(heads) => {
+            heads.iter().collect()
+        }
+        NoteEmbedResolution::Unavailable => Vec::new(),
+    };
+    let changed_since_posted = heads.iter().any(|head| {
+        head.revision != note_ref.pinned_version
+            || head.content_hash != note_ref.pinned_content_hash
+    });
+
+    let pinned = || NoteEmbedTarget::Pinned {
+        version: note_ref.pinned_version.clone(),
+        content_hash: note_ref.pinned_content_hash.clone(),
+    };
+    let displayed_view = match (preferred_view, resolution) {
+        (NoteEmbedView::Live, NoteEmbedResolution::Unavailable) => NoteEmbedView::Pinned,
+        (view, _) => view,
+    };
+    let target = match (preferred_view, resolution) {
+        (NoteEmbedView::Pinned, _) | (NoteEmbedView::Live, NoteEmbedResolution::Unavailable) => {
+            pinned()
+        }
+        (NoteEmbedView::Live, NoteEmbedResolution::Current(head))
+        | (NoteEmbedView::Live, NoteEmbedResolution::Updated(head)) => {
+            NoteEmbedTarget::Live(head.clone())
+        }
+        (NoteEmbedView::Live, NoteEmbedResolution::Diverged(heads))
+        | (NoteEmbedView::Live, NoteEmbedResolution::SupersededLine(heads)) => {
+            NoteEmbedTarget::LiveCandidates(heads.clone())
+        }
+    };
+
+    NoteEmbedPresentation {
+        preferred_view,
+        displayed_view,
+        target,
+        changed_since_posted,
+    }
+}
+
 /// A passage within the pinned note version that a reply is about.
 /// Offsets are byte ranges in the section's canonical text; `quote_hash`
 /// is the content hash of that exact range and is used to relocate it.
@@ -232,6 +316,47 @@ pub fn resolve_note_anchor(
     }
 
     NoteAnchorResolution::Orphaned
+}
+
+/// A display target for a reply anchored to a note passage.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoteReplyPresentation {
+    /// Version whose text the reply should be shown against.
+    pub version: ArtifactHash,
+    /// `Some` only when the passage is exact or safely relocated.
+    pub passage: Option<NotePassageSelector>,
+    /// Orphaned replies stay on their original version and are never remapped.
+    pub orphaned: bool,
+}
+
+/// Project a resolution produced by [`resolve_note_anchor`] into a display
+/// version. An orphan always uses the immutable version named by the anchor,
+/// never a guessed replacement. The caller must pair the resolution with the
+/// same anchor; this projection does not revalidate passage hashes.
+pub fn present_note_reply(
+    anchor: &NoteAnchor,
+    current_version: &ArtifactHash,
+    resolution: &NoteAnchorResolution,
+) -> NoteReplyPresentation {
+    match resolution {
+        NoteAnchorResolution::Exact(selector) | NoteAnchorResolution::Relocated(selector) => {
+            NoteReplyPresentation {
+                version: current_version.clone(),
+                passage: Some(selector.clone()),
+                orphaned: false,
+            }
+        }
+        NoteAnchorResolution::Orphaned => NoteReplyPresentation {
+            version: anchor.version.clone(),
+            passage: anchor.passage.clone(),
+            orphaned: true,
+        },
+        NoteAnchorResolution::WholeNote => NoteReplyPresentation {
+            version: current_version.clone(),
+            passage: None,
+            orphaned: false,
+        },
+    }
 }
 
 /// Immutable post or post revision.
@@ -571,6 +696,136 @@ mod note_anchor_tests {
             resolve_note_embed(&note_ref(), &[]),
             NoteEmbedResolution::Unavailable
         );
+    }
+
+    #[test]
+    fn embed_presentation_defaults_to_live_and_reports_changed_head() {
+        let head = note_head('e', 'f', true);
+        let presentation = present_note_embed(
+            &note_ref(),
+            None,
+            &NoteEmbedResolution::Updated(head.clone()),
+        );
+        assert_eq!(presentation.preferred_view, NoteEmbedView::Live);
+        assert_eq!(presentation.displayed_view, NoteEmbedView::Live);
+        assert_eq!(presentation.target, NoteEmbedTarget::Live(head));
+        assert!(presentation.changed_since_posted);
+    }
+
+    #[test]
+    fn embed_presentation_for_unchanged_head_is_not_badged() {
+        let head = note_head('b', 'c', true);
+        let presentation = present_note_embed(
+            &note_ref(),
+            None,
+            &NoteEmbedResolution::Current(head.clone()),
+        );
+        assert_eq!(presentation.target, NoteEmbedTarget::Live(head));
+        assert!(!presentation.changed_since_posted);
+    }
+
+    #[test]
+    fn embed_presentation_can_pin_and_falls_back_to_pin_when_live_is_unavailable() {
+        let reference = note_ref();
+        let pinned = NoteEmbedTarget::Pinned {
+            version: reference.pinned_version.clone(),
+            content_hash: reference.pinned_content_hash.clone(),
+        };
+        assert_eq!(
+            present_note_embed(
+                &reference,
+                Some(NoteEmbedView::Pinned),
+                &NoteEmbedResolution::Updated(note_head('e', 'f', true)),
+            )
+            .target,
+            pinned
+        );
+        let unavailable = present_note_embed(&reference, None, &NoteEmbedResolution::Unavailable);
+        assert_eq!(unavailable.target, pinned);
+        assert_eq!(unavailable.preferred_view, NoteEmbedView::Live);
+        assert_eq!(unavailable.displayed_view, NoteEmbedView::Pinned);
+    }
+
+    #[test]
+    fn embed_presentation_preserves_all_live_candidates() {
+        let heads = vec![note_head('e', 'f', true), note_head('0', '1', true)];
+        let presentation = present_note_embed(
+            &note_ref(),
+            Some(NoteEmbedView::Live),
+            &NoteEmbedResolution::Diverged(heads.clone()),
+        );
+        assert_eq!(presentation.target, NoteEmbedTarget::LiveCandidates(heads));
+        assert!(presentation.changed_since_posted);
+    }
+
+    #[test]
+    fn embed_presentation_keeps_off_line_live_head_and_marks_it_changed() {
+        let head = note_head('e', 'f', false);
+        let presentation = present_note_embed(
+            &note_ref(),
+            Some(NoteEmbedView::Live),
+            &NoteEmbedResolution::SupersededLine(vec![head.clone()]),
+        );
+        assert_eq!(
+            presentation.target,
+            NoteEmbedTarget::LiveCandidates(vec![head])
+        );
+        assert!(presentation.changed_since_posted);
+    }
+
+    #[test]
+    fn orphaned_reply_stays_on_its_anchored_version_and_passage() {
+        let anchor = anchor();
+        let presentation = present_note_reply(&anchor, &hash('e'), &NoteAnchorResolution::Orphaned);
+        assert_eq!(presentation.version, anchor.version);
+        assert_eq!(presentation.passage, anchor.passage);
+        assert!(presentation.orphaned);
+    }
+
+    #[test]
+    fn exact_reply_uses_the_current_version_at_the_original_passage() {
+        let anchor = anchor();
+        let current = hash('e');
+        let selector = anchor.passage.clone().unwrap();
+        let presentation = present_note_reply(
+            &anchor,
+            &current,
+            &NoteAnchorResolution::Exact(selector.clone()),
+        );
+        assert_eq!(presentation.version, current);
+        assert_eq!(presentation.passage, Some(selector));
+        assert!(!presentation.orphaned);
+    }
+
+    #[test]
+    fn resolved_reply_uses_the_current_version_and_resolved_passage() {
+        let anchor = anchor();
+        let current = hash('e');
+        let relocated = NotePassageSelector {
+            section_id: "intro".into(),
+            start_byte: 20,
+            end_byte: 28,
+            quote_hash: hash('c'),
+        };
+        let presentation = present_note_reply(
+            &anchor,
+            &current,
+            &NoteAnchorResolution::Relocated(relocated.clone()),
+        );
+        assert_eq!(presentation.version, current);
+        assert_eq!(presentation.passage, Some(relocated));
+        assert!(!presentation.orphaned);
+    }
+
+    #[test]
+    fn whole_note_reply_uses_the_current_version_without_a_passage() {
+        let mut anchor = anchor();
+        anchor.passage = None;
+        let current = hash('e');
+        let presentation = present_note_reply(&anchor, &current, &NoteAnchorResolution::WholeNote);
+        assert_eq!(presentation.version, current);
+        assert_eq!(presentation.passage, None);
+        assert!(!presentation.orphaned);
     }
 
     #[test]
