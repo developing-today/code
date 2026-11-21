@@ -76,6 +76,12 @@ jobs:
           bash pm-stack/scripts/seed-smoke.test.sh
           bash pm-stack/scripts/deploy-install-smoke.test.sh
 
+      # pm-git-sync's clone hygiene (2026-11-20): untracked files in
+      # ~/git/code are moved aside with content kept, tracked edits and
+      # a non-main branch still refuse.
+      - name: Test pm-git-sync quarantine
+        run: bash pm-stack/scripts/pm-git-sync-quarantine.test.sh
+
       # Script suite for #5993: pm-stack/scripts/
       # tailnet-bindings.test.sh (the #781 regression pin for the
       # Pad/Grist tailnet bindings) was run by no workflow. The
