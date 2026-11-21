@@ -9,6 +9,7 @@
 // Worker secret ACCESS_TOKEN; it is never in git.
 import { DurableObject } from "cloudflare:workers";
 import { OAUTH_CLIENT_IDLE, OAUTH_MAX_CLIENTS, OAUTH_MAX_EVENTS, OAUTH_PENDING_GRACE, OAUTH_REG_PER_SOURCE, ackSelector, normalizeChannel, normalizeNew, normalizeQuery } from "./messages.js";
+import { fleetCall, fleetOp, fleetSchema } from "./fleet.js";
 import { route } from "./routes.js";
 
 export class MessageStore extends DurableObject {
@@ -59,6 +60,13 @@ export class MessageStore extends DurableObject {
       kind TEXT NOT NULL,
       detail TEXT NOT NULL
     )`);
+    // Fleet mailboxes (fleet.js): agents and their messages, own tables.
+    fleetSchema(this.sql);
+  }
+
+  /** One fleet mailbox operation over arguments fleetCall validated. */
+  fleet(op, args) {
+    return fleetOp(this.sql, op, args);
   }
 
   /** Stores a new client; false when the table is full of clients worth keeping. */
@@ -246,6 +254,7 @@ function storeFor(env) {
     oauthClientGet: (id, touch) => stub.oauthClientGet(id, touch),
     oauthLog: (kind, detail) => stub.oauthLog(kind, detail),
     oauthEvents: () => stub.oauthEvents(),
+    fleet: (op, args) => fleetCall(stub, op, args),
   };
 }
 

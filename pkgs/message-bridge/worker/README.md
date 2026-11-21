@@ -62,6 +62,38 @@ instead: see "Adding it to Claude".
   Instructions come without their `sender`.
 - `ack_messages(up_to_id? | ids?)` marks inbound messages read.
 
+## Fleet mailboxes
+
+The fleet binary (`fleet bridge ...`, `pkgs/fleet`) and the agents that
+run it (Muse lanes and any other fleet agent) use the bridge too, through
+mailboxes kept in their own tables (`src/fleet.js`). Every agent has a
+mailbox named after it and registers itself with optional groups (such as
+`muse`). Central sends a **message** or a **command** to one agent
+(`agent:<name>`), a group (`group:<name>`, every registered agent in it)
+or `all`; one row lands in each mailbox, sharing a `batch` id. Agents read
+their mailbox, mark what they handled, and post replies and reports back
+(`reply_to` links an answer to the command and marks it read).
+
+| Route                               | Token  | What                                                                                     |
+| ----------------------------------- | ------ | ---------------------------------------------------------------------------------------- |
+| `POST /fleet/<fleet token>/hello`   | fleet  | `{agent, groups?}`: register or refresh an agent                                         |
+| `GET /fleet/<fleet token>/inbox`    | fleet  | `agent`, `groups`, `kind`, `since_id`, `unread_only` (default true), `mark_read`, `limit` |
+| `POST /fleet/<fleet token>/ack`     | fleet  | `{agent, up_to_id \| ids}`: mark read                                                    |
+| `POST /fleet/<fleet token>/send`    | fleet  | `{agent, body, reply_to?}`: a message from the agent to central                          |
+| `GET /api/<token>/fleet/agents`     | owner  | registered agents, groups, last seen, unread counts                                      |
+| `GET /api/<token>/fleet/messages`   | owner  | `agent`, `direction`, `kind`, `since_id`, `before_id`, `limit`, `order`                  |
+| `POST /api/<token>/fleet/send`      | owner  | `{body, to, kind?, sender?}`; `kind` is `message` (default) or `command`                  |
+
+The **fleet token** opens only `/fleet/...`. It is derived from the access
+token (HMAC-SHA256 of `ACCESS_TOKEN` over the label
+`message-bridge/fleet-token/v1`, base64url), so it needs no Worker secret
+and rotating the access token rotates it. A Worker secret `FLEET_TOKEN`
+(at least 32 characters, distinct from the others) replaces it if ever
+needed. It lives in Bitwarden as `message-bridge.fleet-token`; `fleet
+bridge` derives it from the owner token when that secret is missing. Only
+the owner token sends commands. Any fleet-token holder can read any
+mailbox, and an agent is the name it gives, like a queue claim's worker.
+
 ## What protects it
 
 The connector, page and API are on the public internet behind one

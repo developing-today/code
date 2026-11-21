@@ -32,6 +32,7 @@
 // ChatGPT token opens only its /mcp.
 
 import { chatgptConfigured, matchTokenPath, tokenConfigured, tokenFingerprint } from "./auth.js";
+import { handleFleet } from "./fleet.js";
 import { handleMcp } from "./mcp.js";
 import { MCP_CORS, bearerChannel, handleOAuth, ownerCookie, unauthorized } from "./oauth.js";
 import { InputError, normalizeKind, normalizeRecipients } from "./messages.js";
@@ -205,6 +206,9 @@ export async function route(request, env, getStore) {
       throw err;
     }
   }
+  // Fleet mailboxes: /fleet/<fleet token>/... and /api/<owner>/fleet/...
+  const fleet = await handleFleet(request, env, url, getStore);
+  if (fleet) return fleet;
   const m = matchTokenPath(url.pathname, env);
   if (!m) return notFound();
   const token = env.ACCESS_TOKEN;

@@ -602,6 +602,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fleet-bridge"
+version = "0.1.0"
+dependencies = [
+ "fleet-config",
+ "fleet-secrets",
+ "serde_json",
+ "sha2",
+ "tiny_http",
+ "ureq",
+]
+
+[[package]]
 name = "fleet-config"
 version = "0.1.0"
 dependencies = [
