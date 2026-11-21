@@ -86,6 +86,8 @@ use crate::world_session::{
 /// ALPN for world sessions. Within version 1 frames may gain fields and
 /// variants; removing or changing one needs `/id-world/2`.
 pub const WORLD_ALPN: &[u8] = b"/id-world/1";
+/// Versioned world-session transport for negotiated binary view patches.
+pub const WORLD_ALPN_V2: &[u8] = b"/id-world/2";
 
 /// Public module state returned by a world's `info` frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -117,6 +119,7 @@ pub use crate::frames::{read_frame, write_frame};
 #[derive(Clone, Debug)]
 pub struct WorldProtocol {
     hub: WorldHub,
+    binary_view_patches: bool,
     /// The shared #2244 P0-A abuse evaluator: one bucket set per remote
     /// endpoint, shared across every stream and connection that
     /// endpoint opens, plus the counter registry operators read via
@@ -140,6 +143,19 @@ impl WorldProtocol {
     #[must_use]
     pub fn new(hub: impl Into<WorldHub>) -> Self {
         Self::with_local_node(hub, [0; 32])
+    }
+
+    /// Serve the explicitly versioned protocol with binary screen patches.
+    #[must_use]
+    pub fn new_v2(hub: impl Into<WorldHub>) -> Self {
+        Self::new(hub).with_binary_view_patches()
+    }
+
+    /// Use binary view-patch frames for a separately registered v2 ALPN.
+    #[must_use]
+    pub fn with_binary_view_patches(mut self) -> Self {
+        self.binary_view_patches = true;
+        self
     }
 
     /// Like [`WorldProtocol::new`], with the serving node's id recorded
@@ -196,6 +212,7 @@ impl WorldProtocol {
         }
         Self {
             hub: hub.into(),
+            binary_view_patches: false,
             abuse: Arc::new(Mutex::new(evaluator)),
             connection_cap_refusals: Arc::new(AtomicU64::new(0)),
         }
@@ -356,9 +373,10 @@ impl ProtocolHandler for WorldProtocol {
             };
             let hub = self.hub.clone();
             let abuse = Arc::clone(&self.abuse);
+            let binary_view_patches = self.binary_view_patches;
             sessions.spawn(async move {
                 let _permit = permit;
-                let mut io = StreamIo::new(send, recv, abuse, remote_endpoint);
+                let mut io = StreamIo::new(send, recv, abuse, remote_endpoint, binary_view_patches);
                 run_session(&hub, &mut io).await;
                 io.finish();
             });
@@ -380,6 +398,7 @@ struct StreamIo {
     abuse: Arc<Mutex<AbuseEvaluator>>,
     remote: AbuseEndpointId,
     authorized: Arc<AtomicBool>,
+    binary_view_patches: bool,
 }
 
 impl StreamIo {
@@ -388,6 +407,7 @@ impl StreamIo {
         mut recv: RecvStream,
         abuse: Arc<Mutex<AbuseEvaluator>>,
         remote: AbuseEndpointId,
+        binary_view_patches: bool,
     ) -> Self {
         let (tx, frames) = mpsc::channel(8);
         let reader_abuse = Arc::clone(&abuse);
@@ -442,6 +462,7 @@ impl StreamIo {
             abuse,
             remote,
             authorized: reader_authorized,
+            binary_view_patches,
         }
     }
 
@@ -476,6 +497,21 @@ impl SessionIo for StreamIo {
             return false;
         }
         write_frame(&mut self.send, frame.as_bytes()).await.is_ok()
+    }
+
+    fn binary_view_patches(&self) -> bool {
+        self.binary_view_patches
+    }
+
+    async fn send_binary(&mut self, frame: Vec<u8>) -> bool {
+        let admitted = charge_frame_with_backpressure(
+            &self.abuse,
+            self.remote,
+            self.authorized.load(Ordering::Acquire),
+            frame.len(),
+        )
+        .await;
+        admitted && write_frame(&mut self.send, &frame).await.is_ok()
     }
 
     fn mark_authorized(&mut self) {

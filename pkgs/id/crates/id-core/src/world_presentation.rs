@@ -1514,15 +1514,100 @@ mod tests {
     #[test]
     fn screen_codec_matches_versioned_messagepack_golden_vector() {
         let golden = [
-            0x82, 0xa7, b'v', b'e', b'r', b's', b'i', b'o', b'n', 0x01, 0xa5, b'p', b'a',
-            b't', b'c', b'h', 0x84, 0xa7, b'v', b'e', b'r', b's', b'i', b'o', b'n', 0x01,
-            0xa5, b'w', b'i', b'd', b't', b'h', 0x02, 0xa6, b'h', b'e', b'i', b'g', b'h',
-            b't', 0x01, 0xa4, b'r', b'u', b'n', b's', 0x90,
+            0x82, 0xa7, b'v', b'e', b'r', b's', b'i', b'o', b'n', 0x01, 0xa5, b'p', b'a', b't',
+            b'c', b'h', 0x84, 0xa7, b'v', b'e', b'r', b's', b'i', b'o', b'n', 0x01, 0xa5, b'w',
+            b'i', b'd', b't', b'h', 0x02, 0xa6, b'h', b'e', b'i', b'g', b'h', b't', 0x01, 0xa4,
+            b'r', b'u', b'n', b's', 0x90,
         ];
 
         let encoded = crate::screen_codec::encode_patch(&codec_patch()).unwrap();
         assert_eq!(encoded, golden);
-        assert_eq!(crate::screen_codec::decode_patch(&golden).unwrap(), codec_patch());
+        assert_eq!(
+            crate::screen_codec::decode_patch(&golden).unwrap(),
+            codec_patch()
+        );
+    }
+
+    #[test]
+    fn screen_codec_round_trips_complete_view_patch_metadata() {
+        let patch = codec_patch();
+        let encoded =
+            crate::screen_codec::encode_view_patch(41, 9, 8, Some("resume-9"), &patch).unwrap();
+        let decoded = crate::screen_codec::decode_view_patch(&encoded).unwrap();
+        assert_eq!(decoded.sequence, 41);
+        assert_eq!(decoded.view_revision, 9);
+        assert_eq!(decoded.base_view_revision, 8);
+        assert_eq!(decoded.resume_token.as_deref(), Some("resume-9"));
+        assert_eq!(decoded.patch, patch);
+    }
+
+    #[test]
+    fn screen_codec_view_patch_matches_cross_language_golden_vector() {
+        let golden = [
+            0x87, 0xa7, b'v', b'e', b'r', b's', b'i', b'o', b'n', 0x01, 0xa4, b't', b'y', b'p',
+            b'e', 0xa4, b'v', b'i', b'e', b'w', 0xa8, b's', b'e', b'q', b'u', b'e', b'n', b'c',
+            b'e', 0x29, 0xad, b'v', b'i', b'e', b'w', b'_', b'r', b'e', b'v', b'i', b's', b'i',
+            b'o', b'n', 0x09, 0xb2, b'b', b'a', b's', b'e', b'_', b'v', b'i', b'e', b'w', b'_',
+            b'r', b'e', b'v', b'i', b's', b'i', b'o', b'n', 0x08, 0xac, b'r', b'e', b's', b'u',
+            b'm', b'e', b'_', b't', b'o', b'k', b'e', b'n', 0xa8, b'r', b'e', b's', b'u', b'm',
+            b'e', b'-', b'9', 0xa5, b'p', b'a', b't', b'c', b'h', 0x84, 0xa7, b'v', b'e', b'r',
+            b's', b'i', b'o', b'n', 0x01, 0xa5, b'w', b'i', b'd', b't', b'h', 0x02, 0xa6, b'h',
+            b'e', b'i', b'g', b'h', b't', 0x01, 0xa4, b'r', b'u', b'n', b's', 0x90,
+        ];
+        let encoded =
+            crate::screen_codec::encode_view_patch(41, 9, 8, Some("resume-9"), &codec_patch())
+                .unwrap();
+        assert_eq!(encoded, golden);
+        assert_eq!(
+            crate::screen_codec::decode_view_patch(&golden)
+                .unwrap()
+                .sequence,
+            41
+        );
+    }
+
+    #[test]
+    fn screen_codec_view_patch_rejects_unsupported_malformed_and_trailing_frames() {
+        use crate::screen_codec::{MAX_SCREEN_FRAME_BYTES, ScreenCodecError, decode_view_patch};
+
+        let mut unsupported =
+            crate::screen_codec::encode_view_patch(41, 9, 8, Some("resume-9"), &codec_patch())
+                .unwrap();
+        unsupported[9] = 2;
+        assert!(matches!(
+            decode_view_patch(&unsupported),
+            Err(ScreenCodecError::UnsupportedVersion(2))
+        ));
+
+        let mut wrong_type =
+            crate::screen_codec::encode_view_patch(41, 9, 8, Some("resume-9"), &codec_patch())
+                .unwrap();
+        // The key `type` is followed by the four-byte value `view`.
+        wrong_type[16] = b'e';
+        assert!(matches!(
+            decode_view_patch(&wrong_type),
+            Err(ScreenCodecError::InvalidFrameType)
+        ));
+
+        assert!(matches!(
+            decode_view_patch(&[0xc1]),
+            Err(ScreenCodecError::Invalid(_))
+        ));
+
+        let mut trailing =
+            crate::screen_codec::encode_view_patch(41, 9, 8, Some("resume-9"), &codec_patch())
+                .unwrap();
+        trailing.push(0xc0);
+        assert!(matches!(
+            decode_view_patch(&trailing),
+            Err(ScreenCodecError::TrailingBytes)
+        ));
+
+        let oversized = vec![0; MAX_SCREEN_FRAME_BYTES + 1];
+        assert!(matches!(
+            decode_view_patch(&oversized),
+            Err(ScreenCodecError::TooLarge)
+        ));
     }
 
     #[test]

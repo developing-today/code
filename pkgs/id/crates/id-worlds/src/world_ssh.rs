@@ -162,6 +162,8 @@ impl iroh::protocol::ProtocolHandler for SshTunnelProtocol {
 /// The exec command that carries the frame protocol (shell contract
 /// transport `ssh-exec`).
 pub const WORLD_EXEC_COMMAND: &str = "id-world/1";
+/// Versioned frame command with binary screen-patch support.
+pub const WORLD_EXEC_COMMAND_V2: &str = "id-world/2";
 /// Unread frame bytes one exec channel may queue before the host ends its
 /// session. The handler must never wait for space (it shares the loop that
 /// flushes output), and dropping bytes would corrupt the framing, so a flood
@@ -421,7 +423,8 @@ impl Handler for SshClient {
     ) -> Result<(), russh::Error> {
         // The frame protocol is the only command, and one session (shell or
         // frames) runs per connection.
-        if data != WORLD_EXEC_COMMAND.as_bytes()
+        let binary_view_patches = data == WORLD_EXEC_COMMAND_V2.as_bytes();
+        if (data != WORLD_EXEC_COMMAND.as_bytes() && !binary_view_patches)
             || self.login.is_none()
             || self.input.is_some()
             || self.exec.is_some()
@@ -437,6 +440,7 @@ impl Handler for SshClient {
             bytes,
             buffer: FrameBuffer::default(),
             backlog: Arc::clone(&self.exec_backlog),
+            binary_view_patches,
         };
         let hub = self.hub.clone();
         let documents_store = self.blobs.clone();
@@ -736,6 +740,7 @@ struct SshFrameIo {
     bytes: mpsc::UnboundedReceiver<Vec<u8>>,
     buffer: FrameBuffer,
     backlog: Arc<AtomicUsize>,
+    binary_view_patches: bool,
 }
 
 impl SessionIo for SshFrameIo {
@@ -760,6 +765,17 @@ impl SessionIo for SshFrameIo {
 
     async fn send(&mut self, frame: String) -> bool {
         match encode_frame(frame.as_bytes()) {
+            Ok(bytes) => self.handle.data(self.channel, bytes).await.is_ok(),
+            Err(_) => false,
+        }
+    }
+
+    fn binary_view_patches(&self) -> bool {
+        self.binary_view_patches
+    }
+
+    async fn send_binary(&mut self, frame: Vec<u8>) -> bool {
+        match encode_frame(&frame) {
             Ok(bytes) => self.handle.data(self.channel, bytes).await.is_ok(),
             Err(_) => false,
         }

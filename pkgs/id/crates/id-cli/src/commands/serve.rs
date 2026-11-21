@@ -1796,7 +1796,11 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     #[cfg(feature = "world")]
     let router_builder = match (world_hub.as_ref(), world_protocol) {
         (Some(hub), Some(world_protocol)) => router_builder
-            .accept(id_worlds::world_net::WORLD_ALPN, world_protocol)
+            .accept(id_worlds::world_net::WORLD_ALPN, world_protocol.clone())
+            .accept(
+                id_worlds::world_net::WORLD_ALPN_V2,
+                world_protocol.with_binary_view_patches(),
+            )
             .accept(
                 id_worlds::world_replication_net::REPLICATION_ALPN,
                 id_worlds::world_replication_net::WorldReplicationProtocol::new(

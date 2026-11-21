@@ -62,6 +62,15 @@ pub trait SessionIo: Send {
     fn recv(&mut self) -> impl Future<Output = Inbound> + Send;
     /// Send one frame. Returns `false` when the peer is gone.
     fn send(&mut self, frame: String) -> impl Future<Output = bool> + Send;
+    /// Whether this negotiated transport sends screen patches as binary v2.
+    fn binary_view_patches(&self) -> bool {
+        false
+    }
+    /// Send one binary screen-patch frame. Unsupported transports keep the
+    /// default fail-closed behavior; v1 continues to use [`Self::send`].
+    fn send_binary(&mut self, _frame: Vec<u8>) -> impl Future<Output = bool> + Send {
+        async { false }
+    }
     /// Mark this session authorized after its application-level
     /// capability or admin credential has been validated.
     fn mark_authorized(&mut self) {}
@@ -192,6 +201,10 @@ pub(crate) enum ClientFrame {
         /// Opt in to revisioned JSON screen patches. Omitted by v1 clients.
         #[serde(default)]
         screen_patches: bool,
+        /// Opt in to binary MessagePack view patches on transports that support
+        /// them. Requires `screen_patches`; omitted by v1 clients.
+        #[serde(default)]
+        binary_view_patches: bool,
         /// Resume token from this client's last applied view. A cursor, not a
         /// credential: the join capability above still authorizes the session,
         /// and an unknown, stale or foreign token simply gets a full view.

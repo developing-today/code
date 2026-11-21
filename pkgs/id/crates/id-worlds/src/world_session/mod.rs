@@ -1122,6 +1122,7 @@ async fn joined<I: SessionIo>(
     token: JoinCapability,
     after: Option<u64>,
     screen_patches: bool,
+    binary_view_patches: bool,
     resume_token: Option<String>,
     agent_profile: bool,
     documents_store: Option<Store>,
@@ -1146,6 +1147,7 @@ async fn joined<I: SessionIo>(
     let mut viewport = None;
     let mut view_state = ViewRevisionState::default();
     view_state.participant = participant_id;
+    view_state.binary_view_patches = binary_view_patches && screen_patches;
     // Agent profile (contract revision 11, #6300 section 4.2): the join
     // flag is the capability advertisement; it changes only what this
     // session is sent (semantic diffs for its subscription), never its

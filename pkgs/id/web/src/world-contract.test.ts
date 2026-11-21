@@ -200,6 +200,13 @@ describe("shell contract validator", () => {
       ok: true,
       type: "join",
     });
+    expect(
+      checkClientFrame(
+        contract,
+        { type: "join", capability: cap, screen_patches: true, binary_view_patches: true },
+        "opening",
+      ).ok,
+    ).toBe(true);
     expect(checkClientFrame(contract, { type: "resize", width: 500, height: 200 }, "joined").ok).toBe(true);
     expect(checkClientFrame(contract, { type: "input", data_hex: "1b5b41" }, "joined").ok).toBe(true);
     expect(checkClientFrame(contract, { type: "records", capability: cap, after: "k" }, "joined").ok).toBe(true);
@@ -379,6 +386,10 @@ class FakeSocket extends EventTarget {
     this.dispatchEvent(new MessageEvent("message", { data }));
   }
 
+  deliverBinary(data: Uint8Array): void {
+    this.dispatchEvent(new MessageEvent("message", { data: data.buffer }));
+  }
+
   sent(type: string): Array<Record<string, unknown>> {
     return this.transcript
       .filter((entry) => entry.from === "client" && (entry.frame as { type?: string }).type === type)
@@ -434,6 +445,36 @@ describe("web shell conformance", () => {
     // Join.
     q<HTMLInputElement>("[data-world-capability]").value = "guest-capability";
     q<HTMLButtonElement>("[data-world-join]").click();
+    const v2Attempt = FakeSocket.all.at(-1) as FakeSocket;
+    expect(v2Attempt.url).toMatch(/\/ws\/world\/2$/);
+    v2Attempt.open();
+    expect(v2Attempt.sent("join")[0]).toMatchObject({
+      binary_view_patches: true,
+      screen_patches: true,
+    });
+    v2Attempt.deliver({
+      type: "snapshot",
+      snapshot: { world_id: "lobby", current_sequence: 3, participants: [] },
+    });
+    v2Attempt.deliver({ type: "view", sequence: 3, data: "resume base", view_revision: 1, resume_token: "resume-1" });
+    const resizeCount = v2Attempt.sent("resize").length;
+    v2Attempt.deliverBinary(new Uint8Array([0xc1]));
+    expect(v2Attempt.sent("resize")).toHaveLength(resizeCount + 1);
+
+    // Rejoin keeps the v2 route and resumes from the latest applied view.
+    q<HTMLButtonElement>("[data-world-join]").click();
+    const v2Reconnect = FakeSocket.all.at(-1) as FakeSocket;
+    v2Reconnect.open();
+    expect(v2Reconnect.sent("join")[0]).toMatchObject({
+      binary_view_patches: true,
+      resume_token: "resume-1",
+    });
+
+    // A host without the v2 route refuses an upgrade before opening it;
+    // the browser retries the unchanged JSON session on the v1 path.
+    q<HTMLButtonElement>("[data-world-join]").click();
+    const rejectedV2Upgrade = FakeSocket.all.at(-1) as FakeSocket;
+    rejectedV2Upgrade.close();
     const session = FakeSocket.all.at(-1) as FakeSocket;
     expect(session.url).toMatch(/\/ws\/world$/);
     session.open();

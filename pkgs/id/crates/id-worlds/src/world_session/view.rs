@@ -42,6 +42,8 @@ pub(crate) struct ViewRevisionState {
     screen: Option<(u64, crate::world_presentation::ScreenSurface)>,
     /// The participant this connection joined as, bound into resume tokens.
     pub(crate) participant: u64,
+    /// Client opt-in, additionally gated by the selected transport adapter.
+    pub(crate) binary_view_patches: bool,
     /// A resume token presented at join and not yet consumed by a view send.
     pub(crate) pending_resume: Option<String>,
     /// Agent profile (contract revision 11): set from the join frame's
@@ -268,15 +270,42 @@ pub(crate) async fn send_view<I: SessionIo>(
                         patch: None,
                         resume_token: resume_token.as_deref(),
                     };
-                    let delta_size = serde_json::to_vec(&delta_frame).map(|bytes| bytes.len());
                     let full_size = serde_json::to_vec(&full_frame).map(|bytes| bytes.len());
-                    if matches!((delta_size, full_size), (Ok(delta), Ok(full)) if delta < full) {
-                        let sent = send_json(service.frame_meter(), io, &delta_frame).await;
-                        if sent {
-                            view_state.screen = Some((view_revision, screen.clone()));
-                            view_state.note_view_sent(view_revision, Some(screen));
+                    if view_state.binary_view_patches && io.binary_view_patches() {
+                        if let (Ok(binary), Ok(full)) = (
+                            id_core::screen_codec::encode_view_patch(
+                                sequence,
+                                view_revision,
+                                *base_view_revision,
+                                resume_token.as_deref(),
+                                &patch,
+                            ),
+                            full_size,
+                        ) {
+                            if binary.len() < full {
+                                let bytes = binary.len() as u64;
+                                let sent = io.send_binary(binary).await;
+                                if sent {
+                                    service.frame_meter().add_frame_bytes(bytes);
+                                }
+                                if sent {
+                                    view_state.screen = Some((view_revision, screen.clone()));
+                                    view_state.note_view_sent(view_revision, Some(screen));
+                                }
+                                return sent;
+                            }
                         }
-                        return sent;
+                    } else {
+                        let delta_size = serde_json::to_vec(&delta_frame).map(|bytes| bytes.len());
+                        if matches!((delta_size, full_size), (Ok(delta), Ok(full)) if delta < full)
+                        {
+                            let sent = send_json(service.frame_meter(), io, &delta_frame).await;
+                            if sent {
+                                view_state.screen = Some((view_revision, screen.clone()));
+                                view_state.note_view_sent(view_revision, Some(screen));
+                            }
+                            return sent;
+                        }
                     }
                 }
             }

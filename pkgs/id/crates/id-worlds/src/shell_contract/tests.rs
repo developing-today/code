@@ -138,6 +138,18 @@ fn the_embedded_contract_is_version_one_and_matches_the_host_limits() {
 }
 
 #[test]
+fn protocol_v2_adds_only_versioned_ephemeral_binary_view_patches() {
+    let contract: serde_json::Value = serde_json::from_str(SHELL_CONTRACT_JSON).unwrap();
+    let v2 = &contract["protocol_v2"];
+    assert_eq!(v2["transports"]["iroh"]["alpn"], "/id-world/2");
+    assert_eq!(v2["transports"]["websocket"]["path"], "/ws/world/2");
+    assert_eq!(v2["transports"]["ssh-exec"]["command"], "id-world/2");
+    assert_eq!(v2["server_view_patch"]["class"], "ephemeral");
+    assert_eq!(v2["server_view_patch"]["codec_version"], 1);
+    assert_eq!(v2["server_view_patch"]["compression"], "not negotiated");
+}
+
+#[test]
 fn every_client_frame_variant_is_in_the_contract_and_nothing_else_is() {
     let named: BTreeSet<String> = contract().client_frames.keys().cloned().collect();
     assert_eq!(client_frame_variants(), named);
@@ -606,7 +618,7 @@ fn pointer_and_hover_frames_conform_to_the_input_event_model() {
     // (class event), hover is ephemeral, refusals name a reason from
     // the design's table, and scroll deltas are signed cell units.
     let contract = contract();
-    assert_eq!(contract.revision, 11);
+    assert_eq!(contract.revision, 12);
     assert_eq!(contract.client_frames["pointer"].class, FrameClass::Event);
     assert_eq!(contract.client_frames["hover"].class, FrameClass::Ephemeral);
     assert_eq!(
@@ -719,7 +731,7 @@ fn agent_profile_frames_conform_and_are_additive() {
     // stale-decision token on agent input frames. Human shells, which
     // never set the flag or send the new frames, are unaffected.
     let contract = contract();
-    assert_eq!(contract.revision, 11);
+    assert_eq!(contract.revision, 12);
     assert_eq!(
         contract.client_frames["screen_subscribe"].class,
         FrameClass::Ephemeral

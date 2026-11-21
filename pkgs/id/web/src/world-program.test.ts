@@ -120,10 +120,18 @@ describe("program-only surface (#2146 phase 2)", () => {
     q<HTMLInputElement>("[data-world-capability]").value = "guest-capability";
     q<HTMLButtonElement>("[data-world-join]").click();
     const session = FakeSocket.all.at(-1) as FakeSocket;
-    expect(session.url).toMatch(/\/ws\/world$/);
+    expect(session.url).toMatch(/\/ws\/world\/2$/);
     session.open();
     expect(session.sent("join")).toEqual([
-      { type: "join", capability: "guest-capability", after: null, world: "arena", screen_patches: true },
+      {
+        type: "join",
+        capability: "guest-capability",
+        after: null,
+        world: "arena",
+        screen_patches: true,
+        binary_view_patches: true,
+        resume_token: null,
+      },
     ]);
 
     // Text rendering through the trusted presenter: guest output
