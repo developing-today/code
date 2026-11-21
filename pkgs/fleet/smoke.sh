@@ -75,7 +75,7 @@ run() {
   ok "$name"
 }
 
-FULL_CAPS="Enabled capabilities: proxy-connect, proxy-serve, proxy-raw-splice, queue, queue-broker, secrets-broker, search, search-serve, dispatch, dispatch-test, laptop-agent, secrets, gh"
+FULL_CAPS="Enabled capabilities: proxy-connect, proxy-serve, proxy-raw-splice, queue, queue-broker, secrets-broker, search, search-serve, dispatch, dispatch-test, laptop-agent, secrets, gh, bridge"
 SERVE_CAPS="Enabled capabilities: proxy-connect, proxy-serve, proxy-raw-splice, queue-broker, secrets-broker, search-serve, secrets"
 CONNECT_CAPS="Enabled capabilities: proxy-connect"
 

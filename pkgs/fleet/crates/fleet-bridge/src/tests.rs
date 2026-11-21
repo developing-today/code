@@ -186,15 +186,26 @@ fn missing_credentials_exit_3_and_name_the_secret() {
     let url = "http://127.0.0.1:9";
     let e = run_with(url, &s, &["agents"], "").unwrap_err();
     assert_eq!(e.exit_code(), EXIT_TRANSPORT);
-    assert!(e.to_string().contains(DEFAULT_BRIDGE_OWNER_TOKEN_NAME), "{e}");
+    assert!(
+        e.to_string().contains(DEFAULT_BRIDGE_OWNER_TOKEN_NAME),
+        "{e}"
+    );
     let e = run_with(url, &s, &["inbox", "--agent", "a"], "").unwrap_err();
     assert_eq!(e.exit_code(), EXIT_TRANSPORT);
-    assert!(e.to_string().contains(DEFAULT_BRIDGE_FLEET_TOKEN_NAME), "{e}");
+    assert!(
+        e.to_string().contains(DEFAULT_BRIDGE_FLEET_TOKEN_NAME),
+        "{e}"
+    );
 }
 
 #[test]
 fn central_send_uses_the_owner_token_and_shapes_the_body() {
-    let (url, seen) = fake_bridge(|_, _, _| (201, r#"{"batch":"b1","messages":[],"unregistered":[]}"#.into()));
+    let (url, seen) = fake_bridge(|_, _, _| {
+        (
+            201,
+            r#"{"batch":"b1","messages":[],"unregistered":[]}"#.into(),
+        )
+    });
     let s = secrets(&[(DEFAULT_BRIDGE_OWNER_TOKEN_NAME, OWNER)]);
     let out = run_with(
         &url,
@@ -252,7 +263,13 @@ fn text_can_come_from_stdin() {
 fn agent_verbs_derive_the_fleet_token_from_the_owner_token() {
     let (url, seen) = fake_bridge(|_, _, _| (200, r#"{"agent":{"name":"m"}}"#.into()));
     let s = secrets(&[(DEFAULT_BRIDGE_OWNER_TOKEN_NAME, OWNER)]);
-    run_with(&url, &s, &["hello", "--agent", "m", "--groups", "muse, code-lanes"], "").unwrap();
+    run_with(
+        &url,
+        &s,
+        &["hello", "--agent", "m", "--groups", "muse, code-lanes"],
+        "",
+    )
+    .unwrap();
     let seen = seen.lock().unwrap();
     assert_eq!(seen[0].url, format!("/fleet/{OWNER_FLEET}/hello"));
     assert_eq!(
@@ -271,7 +288,10 @@ fn inbox_builds_its_query_and_waits_until_something_arrives() {
         if *n < 3 {
             (200, r#"{"messages":[],"next_since_id":0}"#.into())
         } else {
-            (200, r#"{"messages":[{"id":5,"kind":"command"}],"next_since_id":5}"#.into())
+            (
+                200,
+                r#"{"messages":[{"id":5,"kind":"command"}],"next_since_id":5}"#.into(),
+            )
         }
     });
     let s = secrets(&[(DEFAULT_BRIDGE_FLEET_TOKEN_NAME, "f".repeat(40).as_str())]);
@@ -290,7 +310,15 @@ fn inbox_builds_its_query_and_waits_until_something_arrives() {
     };
     let out = execute(
         &mut ctx,
-        &sv(&["inbox", "--commands", "--take", "--wait", "600", "--interval", "2"]),
+        &sv(&[
+            "inbox",
+            "--commands",
+            "--take",
+            "--wait",
+            "600",
+            "--interval",
+            "2",
+        ]),
     )
     .unwrap();
     assert_eq!(out["messages"][0]["id"], 5);
@@ -310,11 +338,23 @@ fn inbox_builds_its_query_and_waits_until_something_arrives() {
 fn inbox_without_wait_returns_empty_at_once() {
     let (url, seen) = fake_bridge(|_, _, _| (200, r#"{"messages":[]}"#.into()));
     let s = secrets(&[(DEFAULT_BRIDGE_FLEET_TOKEN_NAME, "f".repeat(40).as_str())]);
-    let out = run_with(&url, &s, &["inbox", "--agent", "a", "--all", "--since-id", "9"], "").unwrap();
+    let out = run_with(
+        &url,
+        &s,
+        &["inbox", "--agent", "a", "--all", "--since-id", "9"],
+        "",
+    )
+    .unwrap();
     assert_eq!(out["messages"], json!([]));
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 1);
-    assert!(seen[0].url.ends_with("?agent=a&since_id=9&unread_only=false"), "{}", seen[0].url);
+    assert!(
+        seen[0]
+            .url
+            .ends_with("?agent=a&since_id=9&unread_only=false"),
+        "{}",
+        seen[0].url
+    );
 }
 
 #[test]
@@ -327,13 +367,27 @@ fn ack_log_and_agents_shapes() {
     run_with(
         &url,
         &s,
-        &["log", "--agent", "muse 1", "--direction", "outbound", "--limit", "5"],
+        &[
+            "log",
+            "--agent",
+            "muse 1",
+            "--direction",
+            "outbound",
+            "--limit",
+            "5",
+        ],
         "",
     )
     .unwrap();
     let seen = seen.lock().unwrap();
-    assert_eq!(seen[0].body.as_ref().unwrap(), &json!({"agent": "a", "ids": [3, 4]}));
-    assert_eq!(seen[1].body.as_ref().unwrap(), &json!({"agent": "a", "up_to_id": 9}));
+    assert_eq!(
+        seen[0].body.as_ref().unwrap(),
+        &json!({"agent": "a", "ids": [3, 4]})
+    );
+    assert_eq!(
+        seen[1].body.as_ref().unwrap(),
+        &json!({"agent": "a", "up_to_id": 9})
+    );
     assert_eq!(seen[2].url, format!("/api/{OWNER}/fleet/agents"));
     assert_eq!(
         seen[3].url,
@@ -345,7 +399,10 @@ fn ack_log_and_agents_shapes() {
 fn http_errors_exit_4_and_never_show_the_token() {
     let (url, _) = fake_bridge(|_, path, _| {
         if path.contains("/send") {
-            (400, r#"{"error":"no registered agent is in group muse"}"#.into())
+            (
+                400,
+                r#"{"error":"no registered agent is in group muse"}"#.into(),
+            )
         } else {
             // A misbehaving proxy echoing the request path back.
             (502, format!("bad gateway for {path}"))

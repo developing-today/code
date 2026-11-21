@@ -95,6 +95,17 @@ bridge` derives it from the owner token when that secret is missing. Only
 the owner token sends commands. Any fleet-token holder can read any
 mailbox, and an agent is the name it gives, like a queue claim's worker.
 
+Commands reach agents by mailbox rather than by webhook. The event
+wake-ups below push to a callback URL; fleet agents have none (Muse lanes
+are cron-started runs in a sandbox with no inbound address), so they wait
+with `fleet bridge inbox --wait <secs>`, which polls the mailbox until
+something arrives. Unread rows and `ack` are the replay that webhook
+delivery lacks: a command sent while an agent was asleep is still there on
+its next run. Rows carry the same fields as the `message.created` payload
+(`id`, `kind`, `sender`, `body`, `ts`), so an agent that does have an https
+endpoint can later get a `fleet.message.created` event from the same
+delivery code without a new message shape.
+
 ## What protects it
 
 The connector, page and API are on the public internet behind one

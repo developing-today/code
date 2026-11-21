@@ -56,6 +56,10 @@ pub enum Capability {
     /// rotating token (personal + the developing.today App's
     /// installation tokens), code#8887.
     Gh,
+    /// `fleet bridge …` — send and receive through the message bridge's
+    /// fleet mailboxes: central commands one agent, a group or all;
+    /// agents read, answer and ack.
+    Bridge,
 }
 
 impl Capability {
@@ -76,6 +80,7 @@ impl Capability {
             Capability::LaptopAgent => "laptop-agent",
             Capability::Secrets => "secrets",
             Capability::Gh => "gh",
+            Capability::Bridge => "bridge",
         }
     }
 
@@ -95,6 +100,7 @@ impl Capability {
         Capability::LaptopAgent,
         Capability::Secrets,
         Capability::Gh,
+        Capability::Bridge,
     ];
 }
 
@@ -293,6 +299,16 @@ pub const DOMAINS: &[Domain] = &[
         primary: Capability::Gh,
         aliases: &[],
         subcommands: &[],
+    },
+    Domain {
+        name: "bridge",
+        summary: "Fleet messaging through the message bridge: central sends messages or commands to an agent, a group or all; agents read their mailbox, answer and ack.",
+        capabilities: &[Capability::Bridge],
+        primary: Capability::Bridge,
+        aliases: &[],
+        subcommands: &[
+            "send", "agents", "log", "hello", "inbox", "post", "ack", "health",
+        ],
     },
     Domain {
         name: "search",

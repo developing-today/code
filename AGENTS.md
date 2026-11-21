@@ -72,6 +72,7 @@ Open issues need live pilot tasks; fix uncovered filing paths, not just imports.
 ## The one queue: claiming work
 
 Full text: [`doc/agents/one-queue-claiming-work.md`](doc/agents/one-queue-claiming-work.md).
+Before claiming, read [central commands](doc/agents/fleet-command-channel.md).
 In short: there is ONE fleet queue; per-repo `queue` values are stream
 labels, not separate queues. The default claim is unfiltered —
 `repo-queue claim --worker <worker> --lane <lane>` returns the

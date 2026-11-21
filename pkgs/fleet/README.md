@@ -55,6 +55,13 @@ crates/fleet-proxy/         the proxy domain (step 3): `proxy serve`
                             services map). The `serve` half is the
                             fleet-proxy/serve cargo feature, present
                             only in builds carrying proxy-serve.
+crates/fleet-bridge/        the bridge domain: fleet mailboxes on the
+                            message bridge. Central sends messages or
+                            commands to an agent, a group or all
+                            (owner token); agents hello/inbox/post/ack
+                            (fleet token, derived from the owner token
+                            when its own secret is missing). Runbook:
+                            doc/agents/fleet-command-channel.md.
 crates/fleet-queue/         the queue domain (step 2): the repo-queue
                             client, the queue-broker and secrets-broker
                             roles, and packet validation — the broker
@@ -192,9 +199,9 @@ their domain through argv0.
 
 | nix attr               | profile | capabilities                                                                    |
 | ---------------------- | ------- | ------------------------------------------------------------------------------- |
-| `fleet`                | full    | all ten                                                                         |
+| `fleet`                | full    | every capability                                                                |
 | `fleet-serve`          | serve   | proxy-connect, proxy-serve, queue-broker, secrets-broker, search-serve, secrets |
-| `fleet-static`         | full    | all nine (musl static; the sandbox's artifact)                                  |
+| `fleet-static`         | full    | every capability (musl static; the sandbox's artifact)                          |
 | `fleet-connect`        | connect | proxy-connect (dynamic)                                                         |
 | `fleet-connect-static` | connect | proxy-connect (musl static, runs anywhere)                                      |
 | `fleet-brokers`        | —       | standalone repo-queue / queue-broker / secrets-broker (rollback)                |
@@ -244,7 +251,7 @@ behind them — lives in one place,
 and every build compiles it, so no build can know a domain another
 build forgot. The registered domains are `fleet queue`, `fleet serve`,
 `fleet proxy`, `fleet dispatch`, `fleet dispatch-test`,
-`fleet secrets`, `fleet gh`, `fleet search` and
+`fleet secrets`, `fleet gh`, `fleet bridge`, `fleet search` and
 `fleet laptop-agent`, plus the built-ins `fleet init`,
 `fleet version`, `fleet capabilities` and `fleet help`.
 

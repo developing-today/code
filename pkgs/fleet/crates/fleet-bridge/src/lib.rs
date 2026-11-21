@@ -369,9 +369,7 @@ impl Client {
             };
             return Err(BridgeError::Http { status, message });
         }
-        parsed.ok_or_else(|| {
-            BridgeError::Transport("the bridge's answer was not JSON".to_string())
-        })
+        parsed.ok_or_else(|| BridgeError::Transport("the bridge's answer was not JSON".to_string()))
     }
 }
 
@@ -657,13 +655,13 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
             if wait > MAX_WAIT_SECS {
                 return Err(usage(format!("--wait is at most {MAX_WAIT_SECS} seconds")));
             }
-            let interval = a.uint("--interval")?.unwrap_or(DEFAULT_INTERVAL_SECS).max(1);
+            let interval = a
+                .uint("--interval")?
+                .unwrap_or(DEFAULT_INTERVAL_SECS)
+                .max(1);
             let q = query(&[
                 ("agent", Some(agent)),
-                (
-                    "groups",
-                    groups_of(&a, &ctx.settings).map(|g| g.join(",")),
-                ),
+                ("groups", groups_of(&a, &ctx.settings).map(|g| g.join(","))),
                 ("kind", kind),
                 ("since_id", a.uint("--since-id")?.map(|n| n.to_string())),
                 ("limit", a.uint("--limit")?.map(|n| n.to_string())),
@@ -701,16 +699,15 @@ pub fn execute(ctx: &mut Ctx, args: &[String]) -> R<Value> {
         "ack" => {
             let a = parse(rest, &[], &["--agent", "--up-to"])?;
             let agent = agent_of(&a, &ctx.settings)?;
-            let ids: Vec<u64> = a
-                .positional
-                .iter()
-                .map(|p| {
-                    p.parse::<u64>()
-                        .ok()
-                        .filter(|n| *n > 0)
-                        .ok_or_else(|| usage(format!("message id '{p}' is not a positive number")))
-                })
-                .collect::<R<_>>()?;
+            let ids: Vec<u64> =
+                a.positional
+                    .iter()
+                    .map(|p| {
+                        p.parse::<u64>().ok().filter(|n| *n > 0).ok_or_else(|| {
+                            usage(format!("message id '{p}' is not a positive number"))
+                        })
+                    })
+                    .collect::<R<_>>()?;
             let up_to = a.uint("--up-to")?;
             if up_to.is_none() && ids.is_empty() {
                 return Err(usage("ack needs --up-to ID or one or more IDs"));

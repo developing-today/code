@@ -68,6 +68,7 @@ Client for the repo-queue broker (`crates/fleet-queue/src/client.rs`).
 | `dispatch-test scan`, `submit`, `status`                              | Test-dispatch scan, submit and status (`crates/fleet-dispatch-test`).                 |
 | `secrets get`, `list`                                                 | Secret lookup and listing.                                                            |
 | `gh <args>`, `tiers`, `cache-serve`, `cache-status`, `--raw`          | Pass-through to `gh`; tier information; cache serve and status.                       |
+| `bridge send`, `agents`, `log`, `hello`, `inbox`, `post`, `ack`, `health` | Fleet mailboxes on the message bridge: central sends; agents read, answer and ack.     |
 | `search search`, `get-chunk`                                          | Search the index and fetch a chunk. The `serve` alias is also accepted.               |
 | `laptop-agent health`, `jobs`, `kill`, `exec`, `run`, `poll`, `fetch` | Laptop-agent broker operations.                                                       |
 
