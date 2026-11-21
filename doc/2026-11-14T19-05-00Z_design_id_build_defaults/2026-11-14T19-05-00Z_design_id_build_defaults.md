@@ -106,9 +106,10 @@ consts must also be identical. This is a test, not a hope (§8): a
 flag-matrix test resolves both builds' configs and asserts equality.
 
 **Optionality.** The file is optional at build in the only sense that
-matters: `{}` (or a file with only `"mode"`) is a complete, valid build
-input meaning "pure consts". A deployment build substitutes its own
-file in the source tree (or via the Nix overlay pattern in §4) — the
+matters: `{}` (or a file with only `"mode": "append"`) is a complete,
+valid build input meaning "pure consts". A replace-mode file must also
+provide the topic/secret pair per §3. A deployment build substitutes its
+own file in the source tree (or via the Nix overlay pattern in §4) — the
 binary never reads a defaults path at runtime.
 
 ## 3. Decision 2 — replace vs append: one build-time mode, in the file

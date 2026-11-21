@@ -2,6 +2,7 @@ package execsvc_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -13,6 +14,59 @@ import (
 	"github.com/developing-today/code/pkgs/mcpx/internal/execsvc"
 	"github.com/developing-today/code/pkgs/mcpx/internal/runner"
 )
+
+func TestCallHistoryDistinguishesEmptyFromMissingAndRetainsHashesOnly(t *testing.T) {
+	r := execsvc.NewCallRegistry()
+	if _, ok, _ := r.History("unknown"); ok {
+		t.Fatal("unregistered run must not look like a collected empty history")
+	}
+	r.BeginHistory("empty")
+	if calls, ok, truncated := r.History("empty"); !ok || truncated || len(calls) != 0 {
+		t.Fatalf("registered empty history = (%v, %v, %v)", calls, ok, truncated)
+	}
+
+	r.BeginHistory("run-1")
+	r.Register("run-1", func(execsvc.Frame) {})
+	args := map[string]any{"token": "do-not-retain"}
+	r.ReportCall("run-1", "srv", "tool", args, time.Millisecond, nil, nil)
+	calls, ok, truncated := r.History("run-1")
+	if !ok || truncated || len(calls) != 1 {
+		t.Fatalf("history = (%v, %v, %v)", calls, ok, truncated)
+	}
+	if calls[0].ArgsHash != execsvc.ArgsHash(args) || calls[0].Server != "srv" || calls[0].Tool != "tool" || !calls[0].OK {
+		t.Fatalf("call info = %+v", calls[0])
+	}
+	raw, err := json.Marshal(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "do-not-retain") {
+		t.Fatalf("history retained raw arguments: %s", raw)
+	}
+}
+
+func TestCallHistoryCollectsLocalRunCallsWithoutDaemonExecSink(t *testing.T) {
+	r := execsvc.NewCallRegistry()
+	r.BeginHistory("local-run")
+	args := map[string]any{"private": "not-retained"}
+	if r.ReportCall("local-run", "srv", "tool", args, time.Millisecond, nil, nil) {
+		t.Fatal("history-only collection must not claim an exec frame was delivered")
+	}
+	calls, ok, truncated := r.History("local-run")
+	if !ok || truncated || len(calls) != 1 {
+		t.Fatalf("history = (%v, %v, %v), want one collected call", calls, ok, truncated)
+	}
+	if calls[0].ArgsHash != execsvc.ArgsHash(args) || calls[0].Tool != "tool" {
+		t.Fatalf("collected call = %+v", calls[0])
+	}
+	data, err := json.Marshal(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "not-retained") {
+		t.Fatalf("history retained raw arguments: %s", data)
+	}
+}
 
 func TestCallRegistryReportsOnlyToTheRegisteredRun(t *testing.T) {
 	reg := execsvc.NewCallRegistry()

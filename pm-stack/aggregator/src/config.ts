@@ -54,6 +54,7 @@ export interface Config {
   feedFile: string;
   /** Dashboard comments store (#906 §2) — the aggregator's own writable data. */
   commentsFile: string;
+  promptsFile: string;
   /** Append-only roadmap annotation store (#1284), separate from comments. */
   roadmapAnnotationsFile: string;
   /** Checkout of developing-today/code on the aggregator host; the
@@ -215,6 +216,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     hosts: parseAggregatorHosts(env.PM_AGG_HOSTS),
     feedFile: s(env.PM_AGG_FEED_FILE, join(process.cwd(), "fleet-feed.json")),
     commentsFile: s(env.PM_AGG_COMMENTS_FILE, join(process.cwd(), "comments.json")),
+    promptsFile: s(env.PM_AGG_PROMPTS_FILE, join(process.cwd(), "prompts.json")),
     roadmapAnnotationsFile: s(env.PM_AGG_ROADMAP_ANNOTATIONS_FILE, join(process.cwd(), "roadmap-annotations.json")),
     codeCheckout: s(env.PM_AGG_CODE_CHECKOUT, join(homedir(), "git", "code")),
     nixCheckout: s(env.PM_AGG_NIX_CHECKOUT, join(homedir(), "code", "dezren39-nix")),

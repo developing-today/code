@@ -6,10 +6,20 @@ import type { ProjectPoolItem, RefKey, RoadmapRow } from "../src/model.ts";
 const ref = (n: number) => `developing-today/code#${n}` as RefKey;
 function item(n: number, partial: Partial<ProjectPoolItem> = {}): ProjectPoolItem {
   return {
-    id: `PVTI_${n}`, url: "https://example.test/board", projectUrl: "https://example.test/board",
-    ref: ref(n), repo: "developing-today/code", number: n,
-    issueUrl: `https://github.com/developing-today/code/issues/${n}`, title: `Item ${n}`,
-    state: "open", contentKind: "issue", status: null, area: null, horizon: null, kind: null,
+    id: `PVTI_${n}`,
+    url: "https://example.test/board",
+    projectUrl: "https://example.test/board",
+    ref: ref(n),
+    repo: "developing-today/code",
+    number: n,
+    issueUrl: `https://github.com/developing-today/code/issues/${n}`,
+    title: `Item ${n}`,
+    state: "open",
+    contentKind: "issue",
+    status: null,
+    area: null,
+    horizon: null,
+    kind: null,
     ...partial,
   };
 }
@@ -17,16 +27,33 @@ function item(n: number, partial: Partial<ProjectPoolItem> = {}): ProjectPoolIte
 describe("genealogy read model", () => {
   test("derives the verified parent, epic, roadmap, priority, release and blocker chain", () => {
     const pool = [
-      item(1, { title: "Overall priority", kind: "Roadmap item", labels: ["kind/roadmap-item"], milestone: { title: "Release 1", dueOn: "2026-12-01", closedAt: null } }),
-      item(2, { title: "Project roadmap", kind: "Roadmap item", labels: ["kind/roadmap-item"], parentRef: ref(1), blockedBy: [ref(9)] }),
+      item(1, {
+        title: "Overall priority",
+        kind: "Roadmap item",
+        labels: ["kind/roadmap-item"],
+        milestone: { title: "Release 1", dueOn: "2026-12-01", closedAt: null },
+      }),
+      item(2, {
+        title: "Project roadmap",
+        kind: "Roadmap item",
+        labels: ["kind/roadmap-item"],
+        parentRef: ref(1),
+        blockedBy: [ref(9)],
+      }),
       item(3, { title: "Design", kind: "Design", labels: ["kind/design", "design/crate-split"], parentRef: ref(2) }),
       item(4, { title: "Epic", kind: "Epic", labels: ["epic/crate-split"], parentRef: ref(3) }),
       item(5, { title: "Task", parentRef: ref(4), labels: ["design/crate-split"] }),
     ];
     const result = deriveGenealogy(pool[4]!, pool);
     expect(result.ancestors.map(({ ref: r, relation }) => [r, relation])).toEqual([
-      [ref(4), "parent"], [ref(3), "parent"], [ref(2), "parent"], [ref(1), "parent"],
-      [ref(4), "primary-parent"], [ref(3), "spawned-by"], [ref(2), "roadmap"], [ref(1), "priority"],
+      [ref(4), "parent"],
+      [ref(3), "parent"],
+      [ref(2), "parent"],
+      [ref(1), "parent"],
+      [ref(4), "primary-parent"],
+      [ref(3), "spawned-by"],
+      [ref(2), "roadmap"],
+      [ref(1), "priority"],
     ]);
     expect(result.release).toEqual({ title: "Release 1", dueOn: "2026-12-01", ref: ref(1) });
     expect(result.afterRefs).toEqual([ref(9)]);
@@ -39,15 +66,35 @@ describe("genealogy read model", () => {
     const result = deriveGenealogy(lone, [lone]);
     expect(result.sentence).toContain("no epic yet");
     expect(result.sentence).toContain("no roadmap item yet");
-    const row = { id: 1, subject: "grist:x/y/1", title: "Roadmap", area: "ID", status: "Now", horizon: "Now", source: "test", notes: "", links: [{ ref: ref(7), relation: "tracks" }] } satisfies RoadmapRow;
+    const row = {
+      id: 1,
+      subject: "grist:x/y/1",
+      title: "Roadmap",
+      area: "ID",
+      status: "Now",
+      horizon: "Now",
+      source: "test",
+      notes: "",
+      links: [{ ref: ref(7), relation: "tracks" }],
+    } satisfies RoadmapRow;
     expect(enrichRoadmapRows([row], [lone])[0]).toMatchObject({ priority: null, afterRefs: [], releaseRef: null });
   });
 
   test("reconstructs the design's crate-split worked chain from its real refs", () => {
     const pool = [
       item(2056, { title: "ID program", kind: "Epic", labels: ["epic/id-program"] }),
-      item(3195, { title: "Crate split design", kind: "Design", labels: ["kind/design", "design/id-crate-split"], parentRef: ref(2056) }),
-      item(3447, { title: "Crate split epic", kind: "Epic", labels: ["epic/id-crate-split", "design/id-crate-split"], parentRef: ref(3195) }),
+      item(3195, {
+        title: "Crate split design",
+        kind: "Design",
+        labels: ["kind/design", "design/id-crate-split"],
+        parentRef: ref(2056),
+      }),
+      item(3447, {
+        title: "Crate split epic",
+        kind: "Epic",
+        labels: ["epic/id-crate-split", "design/id-crate-split"],
+        parentRef: ref(3195),
+      }),
       item(4403, { title: "First crate-split step", parentRef: ref(3447), labels: ["design/id-crate-split"] }),
     ];
     const result = deriveGenealogy(pool[3]!, pool);
@@ -64,6 +111,46 @@ describe("genealogy read model", () => {
     expect(refs).toEqual([ref(99)]);
     const former = item(99, { title: "Former epic" });
     const current = item(100, { title: "Split task", historicalParentRefs: refs });
-    expect(deriveGenealogy(current, [current, former]).sentence).toContain("Formerly part of Former epic (developing-today/code#99)");
+    expect(deriveGenealogy(current, [current, former]).sentence).toContain(
+      "Formerly part of Former epic (developing-today/code#99)",
+    );
+  });
+
+  test("keeps a historical parent's current ancestry out of the historical relationship", () => {
+    const oldGrandparent = item(97, { title: "Former grandparent", kind: "Epic" });
+    const former = item(99, { title: "Former epic", kind: "Epic", parentRef: ref(97) });
+    const currentParent = item(101, { title: "Current epic", kind: "Epic" });
+    const current = item(100, {
+      title: "Split task",
+      parentRef: ref(101),
+      historicalParentRefs: [ref(99)],
+    });
+
+    const result = deriveGenealogy(current, [oldGrandparent, former, currentParent, current]);
+
+    expect(result.ancestors.map(({ ref: ancestorRef, relation }) => [ancestorRef, relation])).toEqual([
+      [ref(101), "parent"],
+      [ref(99), "historical-parent"],
+      [ref(101), "primary-parent"],
+    ]);
+    expect(result.sentence).toContain("Formerly part of Former epic (developing-today/code#99)");
+    expect(result.sentence).not.toContain("Former grandparent");
+  });
+
+  test("renders independent historical parents as separate chains", () => {
+    const formerOne = item(99, { title: "Former epic one", kind: "Epic" });
+    const formerTwo = item(98, { title: "Former epic two", kind: "Epic" });
+    const current = item(100, {
+      title: "Split task",
+      historicalParentRefs: [ref(99), ref(98)],
+    });
+
+    const result = deriveGenealogy(current, [formerOne, formerTwo, current]);
+
+    expect(result.ancestors.filter(({ relation }) => relation === "historical-parent").map(({ ref: ancestorRef }) => ancestorRef))
+      .toEqual([ref(99), ref(98)]);
+    expect(result.sentence).toContain("Formerly part of Former epic one (developing-today/code#99)");
+    expect(result.sentence).toContain("Formerly part of Former epic two (developing-today/code#98)");
+    expect(result.sentence).not.toContain("Former epic one (developing-today/code#99) →");
   });
 });

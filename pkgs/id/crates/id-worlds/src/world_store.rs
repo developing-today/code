@@ -1794,13 +1794,25 @@ mod tests {
         let receiver_key = SigningKey::from_bytes(&[81; 32]);
         let pinned_source = *receiver_key.verifying_key().as_bytes();
         let nonce = [19; crate::world::SESSION_NONCE_BYTES];
+        // The snapshot must carry the writer journal's own header version:
+        // issuing the spectator records its join time, which raises the
+        // header to JOURNAL_VERSION_JOIN_TIMES (#11960).
+        let header_version = match serde_json::from_slice::<JournalEntry>(
+            journal_bytes.split(|byte| *byte == b'\n').next().unwrap(),
+        )
+        .unwrap()
+        {
+            JournalEntry::Created { version, .. } => version,
+            other => panic!("writer journal must open with its header, got {other:?}"),
+        };
+        assert!(header_version >= JOURNAL_VERSION);
         let mut receiver =
             DurableReceiver::open(replica_dir.path(), "replica-offline", pinned_source).unwrap();
         receiver.begin_session(nonce);
         let snapshot = ReplicationEnvelope::snapshot(
             "replica-offline",
             pinned_source,
-            receiver.header_version().unwrap_or(JOURNAL_VERSION),
+            header_version,
             nonce,
             [0; 32],
             journal_bytes.clone(),
@@ -1816,7 +1828,7 @@ mod tests {
         let terminal = ReplicationEnvelope::terminal(
             "replica-offline",
             pinned_source,
-            JOURNAL_VERSION,
+            header_version,
             nonce,
             snapshot_cursor,
             previous,

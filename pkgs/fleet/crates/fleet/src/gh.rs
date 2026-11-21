@@ -415,14 +415,21 @@ fn is_read_call(args: &[String]) -> bool {
         return false;
     };
     match verb {
+        // A clustered short option such as `-it VALUE` hides which
+        // token is the endpoint and which is a value, so it is never
+        // trusted as a read (#12157 review).
+        "api" if args[1..].iter().any(|a| is_short_option_cluster(a)) => false,
+        "api" if api_endpoint(&args[1..]) == Some("graphql") => is_graphql_read(&args[1..]),
         "api" => {
             // gh api: GET unless --method says otherwise or a field
             // flag (-f/-F/--field/--raw-field/--input) implies POST.
             let mut i = 1;
             while i < args.len() {
                 let a = args[i].as_str();
-                if a == "-f"
-                    || a == "-F"
+                // `-fkey=value` / `-Fkey=value` are the same field
+                // flags with the value attached.
+                if a.starts_with("-f")
+                    || a.starts_with("-F")
                     || a == "--field"
                     || a == "--raw-field"
                     || a == "--input"
@@ -457,6 +464,152 @@ fn is_read_call(args: &[String]) -> bool {
         }
         "auth" => matches!(args.get(1).map(|s| s.as_str()), Some("status" | "token")),
         _ => false,
+    }
+}
+
+/// `gh api` flags that take the next argument as their value
+/// (`gh api --help`), so that value is not mistaken for the endpoint.
+const GH_API_VALUE_FLAGS: [&str; 17] = [
+    "-f",
+    "-F",
+    "--field",
+    "--raw-field",
+    "--input",
+    "-X",
+    "--method",
+    "-H",
+    "--header",
+    "-q",
+    "--jq",
+    "-t",
+    "--template",
+    "-p",
+    "--preview",
+    "--hostname",
+    "--cache",
+];
+
+/// The endpoint argument of a `gh api` call (the first positional),
+/// given the arguments after `api`.
+/// Is `a` several short flags run together, like `-it`? gh api's
+/// short options that take a value (`-f -F -H -X -p -q -t`) may carry
+/// it attached (`-tTEMPLATE`), which is one option, not a cluster.
+/// Any other short option longer than two characters starts with a
+/// boolean flag (`-i`) followed by more flags.
+fn is_short_option_cluster(a: &str) -> bool {
+    let mut chars = a.chars();
+    chars.next() == Some('-')
+        && a.len() > 2
+        && !a.starts_with("--")
+        && !matches!(chars.next(), Some('f' | 'F' | 'H' | 'X' | 'p' | 'q' | 't'))
+}
+
+fn api_endpoint(args: &[String]) -> Option<&str> {
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if GH_API_VALUE_FLAGS.contains(&a) {
+            i += 2;
+            continue;
+        }
+        if !a.starts_with('-') {
+            return Some(a);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Is this `gh api graphql` call a query rather than a mutation?
+/// GraphQL always POSTs, so the field flags say nothing; the
+/// operation does. Read-only only when the `query` field is given
+/// inline and its operation is an anonymous `{ ... }` selection or a
+/// named `query`. A query read from a file (`query=@path`) or stdin
+/// (`--input`), or any operation that cannot be told apart, counts
+/// as a write (#12154).
+fn is_graphql_read(args: &[String]) -> bool {
+    let mut query: Option<&str> = None;
+    let mut queries = 0;
+    let mut typed = false;
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--input" || a.starts_with("--input=") {
+            return false;
+        }
+        let is_field_flag = a == "-f" || a == "-F" || a == "--field" || a == "--raw-field";
+        if !is_field_flag && GH_API_VALUE_FLAGS.contains(&a) {
+            // Another option's value (a --template, --jq, header...) is
+            // never a field, even when it looks like `-fquery=...`.
+            i += 2;
+            continue;
+        }
+        // `-F`/`--field` values are typed: gh fills `{owner}`, `{repo}`
+        // and `{branch}` in them before sending.
+        let is_typed = a == "-F"
+            || a == "--field"
+            || a.starts_with("--field=")
+            || (a.starts_with("-F") && a.len() > 2);
+        let field = if is_field_flag {
+            i += 1;
+            args.get(i).map(|s| s.as_str())
+        } else {
+            a.strip_prefix("--field=")
+                .or(a.strip_prefix("--raw-field="))
+                .or(a.strip_prefix("-f").filter(|v| !v.is_empty()))
+                .or(a.strip_prefix("-F").filter(|v| !v.is_empty()))
+        };
+        if let Some(v) = field.and_then(|f| f.strip_prefix("query=")) {
+            query = Some(v);
+            typed = is_typed;
+            queries += 1;
+        }
+        i += 1;
+    }
+    let Some(query) = query else {
+        return false;
+    };
+    // Which of several query fields gh sends is not ours to guess.
+    if queries > 1 {
+        return false;
+    }
+    if query.starts_with('@') {
+        return false;
+    }
+    // A typed field's placeholders are expanded by gh, so the text we
+    // see is not the operation gh sends; `{repo}` could become
+    // `mutation`. Treat any expandable placeholder as a write.
+    if typed
+        && ["{owner}", "{repo}", "{branch}"]
+            .iter()
+            .any(|p| query.contains(p))
+    {
+        return false;
+    }
+    // A document can hold several operations and `operationName` picks
+    // one, so a mutation or subscription anywhere in it makes the call
+    // a write. The word scan is coarse on purpose: a `mutation` inside
+    // a string or comment only errs toward treating a read as a write.
+    let has_write_operation = query
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .any(|word| word == "mutation" || word == "subscription");
+    if has_write_operation {
+        return false;
+    }
+    let mut rest = query.trim_start();
+    // Skip leading `#` comments.
+    while let Some(after) = rest.strip_prefix('#') {
+        rest = after
+            .split_once('\n')
+            .map_or("", |(_, tail)| tail)
+            .trim_start();
+    }
+    if rest.starts_with('{') {
+        return true;
+    }
+    match rest.strip_prefix("query") {
+        Some(tail) => !tail.starts_with(|c: char| c.is_alphanumeric() || c == '_'),
+        None => false,
     }
 }
 
@@ -1546,6 +1699,30 @@ fn summarize_status(resp: &serde_json::Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn clustered_short_options_are_never_reads() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // -i then -t (which takes "graphql"): the endpoint is the issues URL.
+        assert!(!is_read_call(&v(&[
+            "api",
+            "-it",
+            "graphql",
+            "repos/o/r/issues",
+            "-f",
+            "title=x",
+            "-f",
+            "query={viewer{login}}"
+        ])));
+        assert!(!is_read_call(&v(&["api", "-it", "x", "repos/o/r/issues"])));
+        // An attached value is one option, not a cluster.
+        assert!(is_read_call(&v(&["api", "repos/o/r/issues", "-q.[]"])));
+        assert!(is_read_call(&v(&["api", "repos/o/r/issues", "-tx", "-i"])));
+        assert!(is_short_option_cluster("-it"));
+        assert!(!is_short_option_cluster("-i"));
+        assert!(!is_short_option_cluster("-tfoo"));
+        assert!(!is_short_option_cluster("--paginate"));
+    }
+
     use super::*;
 
     // oracle: GitHub's refusal strings as observed in fleet logs
@@ -1756,7 +1933,100 @@ mod tests {
         ]));
         assert!(read(&["issue", "list", "--repo", "developing-today/code"]));
         assert!(read(&["api", "repos/developing-today/code"]));
-        assert!(read(&["api", "graphql", "-f", "query={viewer{login}}"]) == false);
+        // GraphQL: the operation decides, not the field flags (#12154).
+        assert!(read(&["api", "graphql", "-f", "query={viewer{login}}"]));
+        assert!(read(&[
+            "api",
+            "graphql",
+            "-f",
+            "query=query($o:String!){organization(login:$o){projectV2(number:4){id}}}",
+            "-F",
+            "o=developing-today"
+        ]));
+        assert!(read(&[
+            "api",
+            "-H",
+            "X: y",
+            "graphql",
+            "--raw-field=query= # board\n query Q { viewer { login } }"
+        ]));
+        assert!(!read(&[
+            "api",
+            "graphql",
+            "-f",
+            "query=mutation{addStar(input:{starrableId:\"x\"}){clientMutationId}}"
+        ]));
+        assert!(!read(&["api", "graphql", "-f", "query= mutation M { x }"]));
+        // operationName can select a mutation from a document that opens
+        // with a query.
+        assert!(!read(&[
+            "api",
+            "graphql",
+            "-f",
+            "query=query Q { viewer { login } } mutation M { x }",
+            "-f",
+            "operationName=M"
+        ]));
+        assert!(!read(&[
+            "api",
+            "graphql",
+            "-f",
+            "query={ a } subscription S { b }"
+        ]));
+        assert!(!read(&["api", "graphql", "-f", "query=queryish { x }"]));
+        // Another option's value that looks like a query field is not one.
+        assert!(!read(&[
+            "api",
+            "graphql",
+            "-f",
+            "query=mutation { x }",
+            "--template",
+            "-fquery={viewer{login}}"
+        ]));
+        assert!(read(&[
+            "api",
+            "graphql",
+            "--jq",
+            "-fquery=mutation{x}",
+            "-f",
+            "query={viewer{login}}"
+        ]));
+        assert!(!read(&[
+            "api",
+            "graphql",
+            "-f",
+            "query={ a }",
+            "-f",
+            "query={ b }"
+        ]));
+        assert!(!read(&["api", "graphql", "-F", "query=@board.graphql"]));
+        // gh expands placeholders in typed fields, so what it sends is
+        // unknown; raw fields keep them literally.
+        assert!(!read(&[
+            "api",
+            "graphql",
+            "-F",
+            "query={repo} {addComment(input:{}){x}}"
+        ]));
+        assert!(!read(&[
+            "api",
+            "graphql",
+            "--field=query={owner} { viewer { login } }"
+        ]));
+        assert!(!read(&["api", "graphql", "-Fquery={branch} { x }"]));
+        assert!(read(&[
+            "api",
+            "graphql",
+            "-f",
+            "query={ viewer { login } } # {repo}"
+        ]));
+        assert!(!read(&["api", "graphql", "--input", "body.json"]));
+        assert!(!read(&["api", "graphql"]));
+        // A field named query on a REST call is still a POST-class write.
+        assert!(!read(&["api", "repos/o/r/issues", "-f", "query=x"]));
+        // A field value attached to its flag still makes the call POST.
+        assert!(!read(&["api", "repos/o/r/issues", "-ftitle=x"]));
+        assert!(!read(&["api", "repos/o/r/labels", "-Fname=x"]));
         assert!(read(&["api", "user", "--method", "GET"]));
         assert!(!read(&["api", "user", "--method", "PATCH"]));
         assert!(!read(&["issue", "comment", "1", "--body", "x"]));
@@ -2017,5 +2287,145 @@ mod tests {
             format!("{ambient}\n"),
             "exactly one call, with no token injected: {calls:?}"
         );
+    }
+}
+
+/// Property tests for the read classifier behind arbitrary-error
+/// retries. Oracle: the invariant that a call able to mutate (a
+/// mutation or subscription anywhere in the document, a typed field
+/// gh may rewrite, more than one query field, or a body from
+/// `--input`) is never a read; and, in the other direction, that a
+/// plain read document sent as a raw field is one.
+#[cfg(test)]
+mod graphql_read_props {
+    use super::is_read_call;
+    use proptest::prelude::*;
+
+    fn comment() -> impl Strategy<Value = String> {
+        prop_oneof![
+            Just(String::new()),
+            Just("# note\n".to_string()),
+            Just("  # a\n# b\n".to_string())
+        ]
+    }
+
+    fn name() -> impl Strategy<Value = String> {
+        "[A-Z][a-z]{0,5}"
+    }
+
+    fn read_doc() -> impl Strategy<Value = String> {
+        (comment(), name()).prop_flat_map(|(c, n)| {
+            prop_oneof![
+                Just(format!("{c}{{ viewer {{ login }} }}")),
+                Just(format!("{c}query {{ x }}")),
+                Just(format!("{c}query {n} {{ x }}")),
+                Just(format!("{c}query($n: Int) {{ x(n: $n) }}")),
+            ]
+        })
+    }
+
+    fn write_doc() -> impl Strategy<Value = String> {
+        (comment(), name(), name()).prop_flat_map(|(c, a, b)| {
+            prop_oneof![
+                Just(format!("{c}mutation {{ addStar(input: {{}}) {{ x }} }}")),
+                Just(format!("{c}mutation {a} {{ x }}")),
+                Just(format!("{c}subscription {{ x }}")),
+                Just(format!("{c}subscription {a} {{ x }}")),
+                Just(format!("{c}query {a} {{ x }} mutation {b} {{ y }}")),
+                Just(format!("{c}{{ x }}\nmutation {b} {{ y }}")),
+                Just(format!("{c}query {a} {{ x }}\nsubscription {b} {{ y }}")),
+            ]
+        })
+    }
+
+    /// How the query field is written: (args, typed).
+    fn field(doc: String) -> impl Strategy<Value = (Vec<String>, bool)> {
+        let q = format!("query={doc}");
+        prop_oneof![
+            Just((vec!["-f".to_string(), q.clone()], false)),
+            Just((vec!["--raw-field".to_string(), q.clone()], false)),
+            Just((vec![format!("-f{q}")], false)),
+            Just((vec![format!("--raw-field={q}")], false)),
+            Just((vec!["-F".to_string(), q.clone()], true)),
+            Just((vec!["--field".to_string(), q.clone()], true)),
+            Just((vec![format!("-F{q}")], true)),
+            Just((vec![format!("--field={q}")], true)),
+        ]
+    }
+
+    /// Options that neither carry a query nor change the method.
+    fn noise() -> impl Strategy<Value = Vec<String>> {
+        let one = prop_oneof![
+            Just(vec!["--paginate".to_string()]),
+            Just(vec![
+                "-H".to_string(),
+                "Accept: application/json".to_string()
+            ]),
+            Just(vec!["--header=X-Y: z".to_string()]),
+            Just(vec!["--jq".to_string(), ".data".to_string()]),
+            Just(vec!["-f".to_string(), "owner=o".to_string()]),
+            Just(vec!["-F".to_string(), "n=1".to_string()]),
+        ];
+        prop::collection::vec(one, 0..3).prop_map(|v| v.concat())
+    }
+
+    fn call(before: Vec<String>, field: Vec<String>, after: Vec<String>) -> Vec<String> {
+        let mut v = vec!["api".to_string(), "graphql".to_string()];
+        v.extend(before);
+        v.extend(field);
+        v.extend(after);
+        v
+    }
+
+    proptest! {
+        #[test]
+        fn generated_writes_are_never_reads(
+            (f, _) in write_doc().prop_flat_map(field),
+            before in noise(),
+            after in noise(),
+        ) {
+            let args = call(before, f, after);
+            prop_assert!(!is_read_call(&args), "write classified as read: {args:?}");
+        }
+
+        #[test]
+        fn raw_read_documents_are_reads(
+            // No placeholder in these documents, so typed fields are reads too.
+            (f, _) in read_doc().prop_flat_map(field),
+            before in noise(),
+            after in noise(),
+        ) {
+            let args = call(before, f, after);
+            prop_assert!(is_read_call(&args), "read classified as write: {args:?}");
+        }
+
+        #[test]
+        fn typed_placeholders_are_never_reads(
+            doc in read_doc(),
+            p in prop_oneof![Just("{owner}"), Just("{repo}"), Just("{branch}")],
+            before in noise(),
+            after in noise(),
+        ) {
+            let doc = format!("{doc} # {p}");
+            for flag in ["-F", "--field"] {
+                let args = call(before.clone(), vec![flag.to_string(), format!("query={doc}")], after.clone());
+                prop_assert!(!is_read_call(&args), "typed placeholder classified as read: {args:?}");
+            }
+        }
+
+        #[test]
+        fn a_second_query_field_or_input_is_never_a_read(
+            (f1, _) in read_doc().prop_flat_map(field),
+            (f2, _) in read_doc().prop_flat_map(field),
+            before in noise(),
+            input in any::<bool>(),
+        ) {
+            let args = if input {
+                call(before, f1, vec!["--input".to_string(), "body.json".to_string()])
+            } else {
+                call(before, f1, f2)
+            };
+            prop_assert!(!is_read_call(&args), "ambiguous call classified as read: {args:?}");
+        }
     }
 }

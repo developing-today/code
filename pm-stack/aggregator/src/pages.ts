@@ -231,7 +231,7 @@ export const PAGES: PageDef[] = [
     route: "/alerts",
     api: "/api/alerts.json",
     blurb:
-      "The alert throat (#3676): sentinel incidents, Web Push delivery + one escalation, ack/close, the Supabase ledger.",
+      "The alert throat (#3676): sentinel incidents, Web Push delivery + one escalation, ack/close, the Turso ledger.",
     group: "ops",
     // Drew 2026-11-01: primary — the ack surface must be one tap from
     // the bar, not buried in the Pages dropdown (supersedes the

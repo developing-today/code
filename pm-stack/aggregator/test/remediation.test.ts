@@ -157,9 +157,9 @@ describe("decideRemediation — daily caps", () => {
     for (let i = 0; i < FACET_DAILY_CAP; i++) {
       state = recordAttempt(state, "feed", "restart-collector", `inc-${i}`, NOW + i * 1000, { verified: false });
     }
-    // Need to bypass cooldown: use a fresh action? cooldown blocks. Use a different facet's action? 
-    // Actually cooldown is per action. Let's check global-ish: use tunnel (different cooldown) but same daily facet? 
-    // feed daily counter aggregates all feed actions. restart-collector cooldown blocks. 
+    // Need to bypass cooldown: use a fresh action? cooldown blocks. Use a different facet's action?
+    // Actually cooldown is per action. Let's check global-ish: use tunnel (different cooldown) but same daily facet?
+    // feed daily counter aggregates all feed actions. restart-collector cooldown blocks.
     // To test daily cap in isolation, advance time past all cooldowns.
     const entry = findCatalogueEntry("feed", "restart-collector")!;
     const after = NOW + FACET_DAILY_CAP * 1000 + entry.cooldownMs + 1;
@@ -298,5 +298,40 @@ describe("serialization", () => {
   test("deserializeState handles corrupt input", () => {
     const restored = deserializeState("not json", NOW);
     expect(restored).toEqual(emptyState(NOW));
+  });
+
+  test("malformed same-day global counter fails closed instead of bypassing the cap", () => {
+    const restored = deserializeState(
+      JSON.stringify({ ...emptyState(NOW), dailyGlobal: { date: "2026-11-19", count: "14" } }),
+      NOW,
+    );
+    expect(restored.dailyGlobal).toEqual({ date: "2026-11-19", count: GLOBAL_DAILY_CAP });
+    const decision = decideRemediation("feed", "restart-collector", restored, NOW, false, "inc-1");
+    expect(decision.allowed).toBe(false);
+    expect(decision.blockedBy).toBe("daily-cap-global");
+  });
+
+  test("malformed same-day per-facet counter fails closed instead of bypassing the cap", () => {
+    const restored = deserializeState(
+      JSON.stringify({ ...emptyState(NOW), dailyPerFacet: { feed: { date: "2026-11-19", count: -1 } } }),
+      NOW,
+    );
+    expect(restored.dailyPerFacet.feed).toEqual({ date: "2026-11-19", count: FACET_DAILY_CAP });
+    const decision = decideRemediation("feed", "restart-collector", restored, NOW, false, "inc-1");
+    expect(decision.allowed).toBe(false);
+    expect(decision.blockedBy).toBe("daily-cap-facet");
+  });
+
+  test("malformed date and fractional count are normalized to a closed daily budget", () => {
+    const restored = deserializeState(
+      JSON.stringify({
+        ...emptyState(NOW),
+        dailyGlobal: { date: "not-a-date", count: 0 },
+        dailyPerFacet: { feed: { date: "2026-02-30", count: 1.5 } },
+      }),
+      NOW,
+    );
+    expect(restored.dailyGlobal).toEqual({ date: "2026-11-19", count: GLOBAL_DAILY_CAP });
+    expect(restored.dailyPerFacet.feed).toEqual({ date: "2026-11-19", count: FACET_DAILY_CAP });
   });
 });

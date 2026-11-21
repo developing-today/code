@@ -14,7 +14,7 @@ import {
   type ProjectRepoCard,
 } from "../src/project-config.ts";
 import { buildProgramData, buildProgramLive, PROGRAM, programRefs, TRACKED_REFS } from "../src/program.ts";
-import { projectsBodyHtml, renderProgram, renderProgramProject } from "../src/render.ts";
+import { projectsBodyHtml, renderProgram, renderProgramProject, renderRoadmap } from "../src/render.ts";
 import { FIXTURE_ROADMAP, fixtureSource } from "../src/sources/fixtures.ts";
 
 const PROV: Provenance = {
@@ -496,6 +496,32 @@ describe("project registry", () => {
 // --- Per-project pages (#1121) --------------------------------------------------
 
 describe("renderProgramProject", () => {
+  test("program timeline keeps escaped notes and reference text without changing the shared default (#12078)", () => {
+    const config = projectConfigById("pm-dashboard")!;
+    const base = FIXTURE_ROADMAP.find((row) => row.area === config.roadmapArea)!;
+    const notes = 'See https://github.com/example/widget/pull/42 & <legacy> "notes"';
+    const escaped = "See https://github.com/example/widget/pull/42 &amp; &lt;legacy&gt; &quot;notes&quot;";
+    const row = { ...base, notes, links: [] };
+    const blank = { ...row, id: 9001, subject: "grist:blank", title: "Blank notes row", notes: "   " };
+    const other = { ...row, id: 9002, subject: "grist:other", area: "Other", notes: "Other area notes" };
+    const items = new Map();
+    const html = renderProgramProject(buildProjectDetail(config, items, [], [row, blank, other]), items, PROV);
+
+    // Oracle: the old project card showed Notes as escaped text, not
+    // parsed markup or a substitute link badge.
+    expect(html).toContain("Roadmap timeline by theme");
+    expect(html).toContain("Blank notes row");
+    expect(html).toContain('<p class="notes">' + escaped + "</p>");
+    expect(html.split('<p class="notes">')).toHaveLength(2);
+    expect(html).not.toContain(notes);
+    expect(html).not.toContain("Other area notes");
+    expect(renderRoadmap([row], items, PROV)).not.toContain(escaped);
+    const drill = new Map([[row.subject, { children: [] }]]);
+    const sharedHtml = renderRoadmap([row], items, PROV, "quarter", undefined, undefined, undefined, drill);
+    expect(sharedHtml).toContain('<p class="notes">' + escaped + "</p>");
+    expect(sharedHtml.split('<p class="notes">')).toHaveLength(2);
+  });
+
   test("every configured project renders from fixtures, nulls stated honestly", async () => {
     const src = fixtureSource();
     const items = await src.items(allProjectRefs());

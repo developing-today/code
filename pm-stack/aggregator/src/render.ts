@@ -1859,6 +1859,7 @@ function roadmapCard(
   forecasts?: Map<RefKey, ForecastContract[]>,
   spend?: SpendCardsView | null,
   epicRollups?: Map<string, EpicRollup>,
+  showRowNotes = false,
 ): string {
   const refs = allRefs([row]);
   const refBadges = refs
@@ -1870,6 +1871,9 @@ function roadmapCard(
   const grist = row.gristUrl ? ` <a class="badge" href="${esc(row.gristUrl)}">Grist ↗</a>` : "";
   const repoFile = row.fileUrl ? ` <a class="badge" href="${esc(row.fileUrl)}">Repo file ↗</a>` : "";
   const expansion = drill ? roadmapDrilldown(drill, row, forecasts, spend) : "";
+  // The program timeline has no drill map; keep its Notes visible without
+  // duplicating the same text when a card already has a drilldown.
+  const rowNotes = showRowNotes && !drill && row.notes.trim() ? `<p class="notes">${esc(row.notes)}</p>` : "";
   const epicRollup = epicRollups?.get(row.subject);
   const rollupHtml = epicRollup ? epicRollupHtml(epicRollup) : "";
   const notes = annotations?.get(row.subject) ?? [];
@@ -1897,7 +1901,7 @@ function roadmapCard(
       }
     }
   }
-  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${statusClash}${refBadges}${grist}${repoFile}${rollupHtml}${annotationHtml}${expansion}${briefPanels}</div>`;
+  return `<div class="card"><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a>${cmt}<br><span class="badge ${esc(row.status.toLowerCase().replace(/[^a-z]/g, "-"))}">${esc(row.status)}</span> <span class="muted">${esc(row.area)} · ${esc(row.horizon)}</span>${horizonWarning}${statusClash}${refBadges}${grist}${repoFile}${rollupHtml}${annotationHtml}${rowNotes}${expansion}${briefPanels}</div>`;
 }
 
 function roadmapAnnotationHtml(annotation: RoadmapAnnotation): string {
@@ -1913,7 +1917,7 @@ function timelineTable(
   briefs?: Map<RefKey, ItemBrief>,
   forecasts?: Map<RefKey, ForecastContract[]>,
   spend?: SpendCardsView | null,
-  epicRollups?: Map<string, EpicRollup>,
+  options?: { epicRollups?: Map<string, EpicRollup>; showRowNotes?: boolean },
 ): string {
   const head = `<tr><th scope="col">Theme</th>${tl.lanes.map((l) => `<th scope="col">${esc(l.label)}</th>`).join("")}</tr>`;
   const body = tl.themes
@@ -1923,7 +1927,7 @@ function timelineTable(
       const cells = tl.lanes
         .map((lane) => {
           const rs = tl.cells.get(theme)?.get(lane.key) ?? [];
-          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs, forecasts, spend, epicRollups)).join("")}</td>`;
+          return `<td class="tl-cell">${rs.map((r) => roadmapCard(r, items, counts, drill?.get(r.subject), annotations, briefs, forecasts, spend, options?.epicRollups, options?.showRowNotes)).join("")}</td>`;
         })
         .join("");
       return `<tr><th scope="row">${esc(theme)} <span class="muted theme-rollup">(${done}/${themeRows.length} done)</span></th>${cells}</tr>`;
@@ -1976,12 +1980,22 @@ export function renderRoadmap(
       };
       return rank(a) - rank(b) || a.title.localeCompare(b.title);
     });
-    body = ordered.length ? ordered.map((row) => {
-      const priority = row.priority ? `<span class="badge src">Priority <a href="${esc(refUrl(row.priority))}">${esc(row.priority)}</a></span>` : '<span class="badge stale">No priority link</span>';
-      const after = row.afterRefs?.length ? `<span class="muted">After: ${row.afterRefs.map((ref) => `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`).join(", ")}</span>` : '<span class="muted">No predecessor recorded</span>';
-      const release = row.releaseRef ? `<span class="badge src">Release <a href="${esc(refUrl(row.releaseRef))}">${esc(row.releaseRef)}</a></span>` : '<span class="muted">No release linked</span>';
-      return `<div class="card priority-row"><strong><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a></strong><br>${priority} ${release}<br>${after}<br><span class="muted">${esc(row.area)} · ${esc(row.horizon)} · ${esc(row.status)}</span></div>`;
-    }).join("") : '<p class="muted">No priority rows in the current roadmap source.</p>';
+    body = ordered.length
+      ? ordered
+          .map((row) => {
+            const priority = row.priority
+              ? `<span class="badge src">Priority <a href="${esc(refUrl(row.priority))}">${esc(row.priority)}</a></span>`
+              : '<span class="badge stale">No priority link</span>';
+            const after = row.afterRefs?.length
+              ? `<span class="muted">After: ${row.afterRefs.map((ref) => `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`).join(", ")}</span>`
+              : '<span class="muted">No predecessor recorded</span>';
+            const release = row.releaseRef
+              ? `<span class="badge src">Release <a href="${esc(refUrl(row.releaseRef))}">${esc(row.releaseRef)}</a></span>`
+              : '<span class="muted">No release linked</span>';
+            return `<div class="card priority-row"><strong><a href="/item/${encodeURIComponent(row.subject)}">${esc(row.title)}</a></strong><br>${priority} ${release}<br>${after}<br><span class="muted">${esc(row.area)} · ${esc(row.horizon)} · ${esc(row.status)}</span></div>`;
+          })
+          .join("")
+      : '<p class="muted">No priority rows in the current roadmap source.</p>';
   } else if (grain === "quarter") {
     body = timelineTable(buildTimeline(rows), items, counts, drill, annotations, briefs, forecasts, spend);
   } else if (grain === "month") {
@@ -2022,13 +2036,16 @@ export function renderRoadmap(
           .join("")
       : '<p class="muted">No roadmap rows.</p>';
   }
-  const releaseCards = releases.filter((release) => release.kind === "release").map((release) => {
-    const counts = release.counts;
-    const carried = release.carriedOverEpics.length
-      ? `<p>Carried-over epics: ${release.carriedOverEpics.map((ref) => `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`).join(", ")}</p>`
-      : '<p class="muted">No carried-over epics.</p>';
-    return `<article class="card release-card"><h3>${esc(release.milestone.title)}</h3><p>Date: <strong>${esc(release.releaseDate ?? "date not set")}</strong></p><p>Issues: ${counts.issues.closed}/${counts.issues.total} closed · Designs: ${counts.designs.closed}/${counts.designs.total} closed · Epics: ${counts.epics.closed}/${counts.epics.total} closed</p>${carried}<p class="muted">${esc(release.descriptionLine)}</p></article>`;
-  }).join("");
+  const releaseCards = releases
+    .filter((release) => release.kind === "release")
+    .map((release) => {
+      const counts = release.counts;
+      const carried = release.carriedOverEpics.length
+        ? `<p>Carried-over epics: ${release.carriedOverEpics.map((ref) => `<a href="${esc(refUrl(ref))}">${esc(ref)}</a>`).join(", ")}</p>`
+        : '<p class="muted">No carried-over epics.</p>';
+      return `<article class="card release-card"><h3>${esc(release.milestone.title)}</h3><p>Date: <strong>${esc(release.releaseDate ?? "date not set")}</strong></p><p>Issues: ${counts.issues.closed}/${counts.issues.total} closed · Designs: ${counts.designs.closed}/${counts.designs.total} closed · Epics: ${counts.epics.closed}/${counts.epics.total} closed</p>${carried}<p class="muted">${esc(release.descriptionLine)}</p></article>`;
+    })
+    .join("");
   const releasesHtml = `<section class="release-snapshots"><h2>Releases</h2>${releaseCards || '<p class="muted">No release close-out snapshots are available.</p>'}<p><a href="/api/releases.json">Releases JSON</a></p></section>`;
   return layout(
     "Roadmap",
@@ -6090,7 +6107,7 @@ export function renderAa(section: AaFeedSection | null, provenance: Provenance, 
   if (!section) {
     return layout(
       "Cost Explorer",
-      `<h1>Cost Explorer</h1><div class="banner">The AA data has not reached the dashboard yet — the fleet-feed collector reads it from Supabase (ainventory), and no AA section is in the current feed. The data of record is the ainventory import; this page only renders it.</div>`,
+      `<h1>Cost Explorer</h1><div class="banner">The AA data has not reached the dashboard yet — the fleet-feed collector reads it from the Turso fleet-platform store (ainventory), and no AA section is in the current feed. The data of record is the ainventory import; this page only renders it.</div>`,
       provenance,
       "/aa",
       "",
@@ -7845,11 +7862,13 @@ export function renderProgramProject(
     const rollups = buildEpicRollups(epicPool);
     const rowRollups = new Map<string, EpicRollup>();
     for (const row of detail.roadmapRows) {
-      const epic = row.links.map((link) => epicPool.find((item) => item.ref === link.ref && item.kind === "Epic")).find(Boolean);
+      const epic = row.links
+        .map((link) => epicPool.find((item) => item.ref === link.ref && item.kind === "Epic"))
+        .find(Boolean);
       const rollup = epic ? rollups.get(epic.ref) : undefined;
       if (rollup) rowRollups.set(row.subject, rollup);
     }
-    roadmapHtml = `<p class="muted">${detail.roadmapRows.length} row${detail.roadmapRows.length === 1 ? "" : "s"} with area <code>${esc(config.roadmapArea)}</code> in Grist's Program roadmap. Timeline lanes and drill-downs use the shared roadmap renderer; epic rollups are per matched row.</p>${timelineTable(buildTimeline(detail.roadmapRows), items, undefined, undefined, undefined, undefined, undefined, undefined, rowRollups)}`;
+    roadmapHtml = `<p class="muted">${detail.roadmapRows.length} row${detail.roadmapRows.length === 1 ? "" : "s"} with area <code>${esc(config.roadmapArea)}</code> in Grist's Program roadmap. Timeline lanes and drill-downs use the shared roadmap renderer; epic rollups are per matched row.</p>${timelineTable(buildTimeline(detail.roadmapRows), items, undefined, undefined, undefined, undefined, undefined, undefined, { epicRollups: rowRollups, showRowNotes: true })}`;
   }
 
   const repoCardsHtml = detail.repoCards.length
@@ -7974,7 +7993,7 @@ export function renderAlerts(view: AlertsPageView, provenance: Provenance, vapid
   if (!view.available) {
     return layout(
       "Alerts",
-      `<h1>Alerts</h1><p class="muted">The alerts ledger (Supabase <code>alerts</code> schema) is unreachable from this process right now — intake, delivery, and ack are paused with it. The rest of the dashboard is unaffected.</p>`,
+      `<h1>Alerts</h1><p class="muted">The alerts ledger (Turso fleet-platform <code>alerts_*</code> tables) is unreachable from this process right now — intake, delivery, and ack are paused with it. The rest of the dashboard is unaffected.</p>`,
       provenance,
       "/alerts",
     );
@@ -8198,7 +8217,7 @@ export function renderNotificationPreferences(
   if (!view.available) {
     return layout(
       "Notification preferences",
-      `<h1>Notification preferences</h1><p class="muted">The alerts ledger (Supabase <code>alerts</code> schema) is unreachable from this process right now — subscription preferences cannot be read or saved until it is back. The rest of the dashboard is unaffected.</p>`,
+      `<h1>Notification preferences</h1><p class="muted">The alerts ledger (Turso fleet-platform <code>alerts_*</code> tables) is unreachable from this process right now — subscription preferences cannot be read or saved until it is back. The rest of the dashboard is unaffected.</p>`,
       provenance,
       "/alerts/preferences",
     );
@@ -8369,7 +8388,7 @@ export function renderNotifications(view: NotificationsPageView, provenance: Pro
   if (!view.available || !view.rollup) {
     return layout(
       "Notifications",
-      `<h1>Notifications</h1><p class="muted">The notification send ledger (Supabase <code>alerts.notification_sends</code>) is unreachable from this process right now — the roll-up is paused with it. The rest of the dashboard is unaffected.</p>`,
+      `<h1>Notifications</h1><p class="muted">The notification send ledger (Turso fleet-platform <code>alerts_notification_sends</code>) is unreachable from this process right now — the roll-up is paused with it. The rest of the dashboard is unaffected.</p>`,
       provenance,
       "/notifications",
     );

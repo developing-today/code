@@ -1,5 +1,5 @@
-// The history page: a form to send a message to Claude, and every
-// message sent and received, newest first. Works without JavaScript
+// The history page: a form to send a message or an instruction to
+// Claude, ChatGPT or both, and every message sent and received on either, newest first. Works without JavaScript
 // (the form posts and the server redirects back); with it, sending
 // doesn't reload the page and the list refreshes every 10 seconds.
 
@@ -10,19 +10,29 @@ export function escapeHtml(s) {
   );
 }
 
+const NAMES = { claude: "Claude", chatgpt: "ChatGPT" };
+const nameOf = (m) => NAMES[m.channel] ?? "Claude";
+
 function label(m) {
-  if (m.direction === "outbound") return "Claude → you";
-  return "You → Claude";
+  if (m.direction === "outbound") return `${nameOf(m)} → you`;
+  if (m.kind === "instruction") return `Instruction → ${nameOf(m)}`;
+  return `You → ${nameOf(m)}`;
 }
 
 function status(m) {
   if (m.direction === "outbound") return "";
-  return m.read_at ? "read by Claude" : "unread";
+  return m.read_at ? `read by ${nameOf(m)}` : "unread";
+}
+
+export function statsLine(s) {
+  return `${s.total} messages · ${s.inbound} from you (${s.unread_inbound} unread) · ${s.outbound} to you`;
 }
 
 export function renderRow(m) {
-  const who = m.sender ? ` · ${escapeHtml(m.sender)}` : "";
-  return `<li class="msg ${m.direction}">
+  // Agents never see an instruction's sender; this page does.
+  const who = m.sender ? ` · ${m.kind === "instruction" ? "from " : ""}${escapeHtml(m.sender)}` : "";
+  const kind = m.kind === "instruction" ? " instruction" : "";
+  return `<li class="msg ${m.direction} ${escapeHtml(m.channel ?? "claude")}${kind}">
   <div class="meta"><b>${label(m)}</b>${who} · <time datetime="${escapeHtml(m.ts)}">${escapeHtml(m.ts)}</time> · via ${escapeHtml(m.source)} · #${m.id}<span class="st">${status(m) ? ` · ${status(m)}` : ""}</span></div>
   <div class="body">${escapeHtml(m.body)}</div>
 </li>`;
@@ -33,7 +43,16 @@ export function renderRow(m) {
  * the request, so the token is never baked into anything but this
  * response (which is no-store and no-referrer).
  */
-export function renderPage({ messages, stats, basePath, apiPath, notice, pageSize = 200, olderOnly = false }) {
+export function renderPage({
+  messages,
+  stats,
+  basePath,
+  apiPath,
+  notice,
+  pageSize = 200,
+  olderOnly = false,
+  chatgptReady = true,
+}) {
   const rows = messages.map(renderRow).join("\n");
   // A full page means there may be more; the link pages back by id and
   // works without JavaScript. With it, the button appends in place.
@@ -49,8 +68,8 @@ export function renderPage({ messages, stats, basePath, apiPath, notice, pageSiz
 <meta name="robots" content="noindex, nofollow">
 <title>Message bridge</title>
 <style>
-:root { --bg:#fafaf9; --fg:#1c1917; --muted:#78716c; --card:#fff; --line:#e7e5e4; --in:#eff6ff; --out:#f0fdf4; --accent:#2563eb; }
-@media (prefers-color-scheme: dark) { :root { --bg:#1c1917; --fg:#f5f5f4; --muted:#a8a29e; --card:#292524; --line:#44403c; --in:#1e293b; --out:#14281c; --accent:#60a5fa; } }
+:root { --bg:#fafaf9; --fg:#1c1917; --muted:#78716c; --card:#fff; --line:#e7e5e4; --in:#eff6ff; --out:#f0fdf4; --accent:#2563eb; --cl:#d97706; --gpt:#10a37f; --ins:#fefce8; }
+@media (prefers-color-scheme: dark) { :root { --bg:#1c1917; --fg:#f5f5f4; --muted:#a8a29e; --card:#292524; --line:#44403c; --in:#1e293b; --out:#14281c; --accent:#60a5fa; --cl:#f59e0b; --gpt:#34d399; --ins:#2a2614; } }
 * { box-sizing: border-box; }
 body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.45 system-ui, -apple-system, sans-serif; }
 main { max-width: 760px; margin: 0 auto; padding: 16px; }
@@ -67,6 +86,11 @@ ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
 .msg { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
 .msg.inbound { background: var(--in); }
 .msg.outbound { background: var(--out); }
+.msg.chatgpt { border-left: 4px solid var(--gpt); }
+.msg.claude { border-left: 4px solid var(--cl); }
+.msg.instruction { background: var(--ins); border-style: dashed; border-left-style: solid; }
+.to { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+.to label { display: inline-flex; gap: 6px; align-items: center; }
 .meta { color: var(--muted); font-size: .8rem; margin-bottom: 4px; overflow-wrap: anywhere; }
 .meta b { color: var(--fg); font-weight: 600; }
 .body { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -78,9 +102,21 @@ ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
 <body>
 <main>
 <h1>Message bridge</h1>
-<p class="sub" id="stats">${stats.total} messages · ${stats.inbound} to Claude (${stats.unread_inbound} unread) · ${stats.outbound} from Claude</p>
+<p class="sub" id="stats">${statsLine(stats)}</p>
 <form method="post" action="${escapeHtml(basePath)}" id="send">
-  <textarea name="body" required maxlength="16000" placeholder="Message to Claude"></textarea>
+  <textarea name="body" required maxlength="16000" placeholder="Message"></textarea>
+  <div class="to" role="radiogroup" aria-label="Kind">
+    <span>Send as</span>
+    <label><input type="radio" name="kind" value="message" checked> Message</label>
+    <label><input type="radio" name="kind" value="instruction"> Instruction</label>
+    <span class="notice">Agents see an instruction without its sender.</span>
+  </div>
+  <div class="to" role="group" aria-label="Send to">
+    <span>Send to</span>
+    <label><input type="checkbox" name="to" value="claude" checked> Claude</label>
+    <label><input type="checkbox" name="to" value="chatgpt"> ChatGPT</label>
+    ${chatgptReady ? "" : '<span class="notice">ChatGPT\'s connector isn\'t set up yet, so its messages wait here.</span>'}
+  </div>
   <div class="row">
     <input type="text" name="sender" maxlength="80" placeholder="From (optional)">
     <button type="submit">Send</button>
@@ -104,11 +140,20 @@ ${olderOnly ? `<p class="nav"><a href="${escapeHtml(basePath)}">Back to newest</
   const form = document.getElementById("send");
   const notice = document.getElementById("notice");
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const NAMES = { claude: "Claude", chatgpt: "ChatGPT" };
+  const nameOf = (m) => NAMES[m.channel] || "Claude";
+  const statsLine = (s) => s.total + " messages · " + s.inbound + " from you (" + s.unread_inbound + " unread) · " + s.outbound + " to you";
+  const boxes = [...form.querySelectorAll('input[name="to"]')];
+  try {
+    const saved = JSON.parse(localStorage.getItem("message-bridge-to") || "null");
+    if (Array.isArray(saved) && saved.length) boxes.forEach((b) => { b.checked = saved.includes(b.value); });
+  } catch {}
   const row = (m) => {
-    const lab = m.direction === "outbound" ? "Claude → you" : "You → Claude";
-    const st = m.direction === "outbound" ? "" : (m.read_at ? " · read by Claude" : " · unread");
-    const who = m.sender ? " · " + esc(m.sender) : "";
-    return '<li class="msg ' + esc(m.direction) + '"><div class="meta"><b>' + lab + "</b>" + who +
+    const ins = m.kind === "instruction";
+    const lab = m.direction === "outbound" ? nameOf(m) + " → you" : (ins ? "Instruction → " : "You → ") + nameOf(m);
+    const st = m.direction === "outbound" ? "" : (m.read_at ? " · read by " + nameOf(m) : " · unread");
+    const who = m.sender ? " · " + (ins ? "from " : "") + esc(m.sender) : "";
+    return '<li class="msg ' + esc(m.direction) + " " + esc(m.channel || "claude") + (ins ? " instruction" : "") + '"><div class="meta"><b>' + lab + "</b>" + who +
       ' · <time datetime="' + esc(m.ts) + '">' + esc(m.ts) + "</time> · via " + esc(m.source) + " · #" + m.id +
       '<span class="st">' + st + '</span></div><div class="body">' + esc(m.body) + "</div></li>";
   };
@@ -130,7 +175,7 @@ ${olderOnly ? `<p class="nav"><a href="${escapeHtml(basePath)}">Back to newest</
     const data = await r.json();
     for (const m of data.messages) byId.set(m.id, m);
     const s = data.stats;
-    statsEl.textContent = s.total + " messages · " + s.inbound + " to Claude (" + s.unread_inbound + " unread) · " + s.outbound + " from Claude";
+    statsEl.textContent = statsLine(s);
     return data;
   }
   // Refresh merges the newest page into what is loaded, so older
@@ -149,6 +194,10 @@ ${olderOnly ? `<p class="nav"><a href="${escapeHtml(basePath)}">Back to newest</
   });
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
+    const to = boxes.filter((b) => b.checked).map((b) => b.value);
+    const kind = (form.querySelector('input[name="kind"]:checked') || {}).value || "message";
+    if (!to.length) { notice.textContent = "Pick Claude, ChatGPT or both."; return; }
+    try { localStorage.setItem("message-bridge-to", JSON.stringify(to)); } catch {}
     const btn = form.querySelector("button");
     btn.disabled = true;
     notice.textContent = "Sending…";
@@ -156,10 +205,14 @@ ${olderOnly ? `<p class="nav"><a href="${escapeHtml(basePath)}">Back to newest</
       const r = await fetch(api, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ body: form.body.value, sender: form.sender.value, source: "page" }),
+        body: JSON.stringify({ body: form.body.value, sender: form.sender.value, source: "page", to, kind }),
       });
       const data = await r.json().catch(() => ({}));
-      if (r.ok) { form.body.value = ""; notice.textContent = "Sent #" + data.message.id; await refresh(); }
+      if (r.ok) {
+        form.body.value = "";
+        notice.textContent = (kind === "instruction" ? "Sent instruction " : "Sent ") + (data.messages || [data.message]).map((m) => "#" + m.id + " to " + nameOf(m)).join(", ");
+        await refresh();
+      }
       else notice.textContent = "Not sent: " + (data.error || r.status);
     } catch (err) { notice.textContent = "Not sent: " + err; }
     btn.disabled = false;

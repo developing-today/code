@@ -34,6 +34,7 @@ import { dirname, join } from "node:path";
 import { resolveBwsSecret } from "../src/secrets.ts";
 import { applySentinelProbe, normalizeSentinelEntry, type SentinelServiceEntry } from "../src/sentinel-damping.ts";
 import { checkPrimaryCheckout } from "../src/primary-checkout.ts";
+import { normalizeHookDispatchState, shouldDispatchHealthHook, type HealthHookState } from "../src/health-hook-dispatch.ts";
 
 const LOOP_MS = 30_000;
 
@@ -97,6 +98,8 @@ const LOCAL_CHECKS: LocalCheck[] = [
 
 interface SentinelStateFile {
   services: Record<string, SentinelServiceEntry>;
+  /** Last C3 hook transition successfully spawned, independent of alert delivery. */
+  hookDispatchedStates: Record<string, HealthHookState>;
 }
 
 const STATE_FILE =
@@ -117,12 +120,15 @@ async function loadState(): Promise<SentinelStateFile> {
         const entry = normalizeSentinelEntry(raw);
         if (entry) services[id] = entry;
       }
-      return { services };
+      return {
+        services,
+        hookDispatchedStates: normalizeHookDispatchState((parsed as Partial<SentinelStateFile>).hookDispatchedStates),
+      };
     }
   } catch {
     // no state yet — first run
   }
-  return { services: {} };
+  return { services: {}, hookDispatchedStates: {} };
 }
 
 async function saveState(state: SentinelStateFile): Promise<void> {
@@ -180,6 +186,11 @@ async function postTransition(
   }
 }
 
+// A hook still running for a target holds that target's next dispatch:
+// a slow down diagnostic must finish before its recovery runs, or the
+// recovery finds no open incident and the late outage is never closed.
+const runningHooks = new Map<string, { exitCode: number | null }>();
+
 async function round(state: SentinelStateFile): Promise<void> {
   const base = (process.env.ALERTS_INTAKE_URL ?? "http://127.0.0.1:4870").replace(/\/+$/, "");
   let token: string | null = null;
@@ -191,6 +202,33 @@ async function round(state: SentinelStateFile): Promise<void> {
     // the failure streak recorded on the entry.
     const entry = applySentinelProbe(state.services[target.id], verdict, now);
     state.services[target.id] = entry;
+    // C3 health hooks: fire the matching failure-triggered hook on a
+    // transition for the two monitored targets. Fire-and-forget; a hook
+    // failure never blocks the sentinel round.
+    const hookTarget =
+      target.id === "aggregator" ? "pm-stack-reachable" :
+      target.id === "opencode" ? "opencode-working" : null;
+    if (hookTarget && state.hookDispatchedStates[hookTarget] === undefined && entry.state === "up") {
+      // Baseline only; see shouldDispatchHealthHook.
+      state.hookDispatchedStates[hookTarget] = "up";
+    } else if (hookTarget && shouldDispatchHealthHook(state.hookDispatchedStates, hookTarget, entry.state)
+      && runningHooks.get(hookTarget)?.exitCode === null) {
+      // Left undispatched, so a later round retries it once the
+      // running hook has exited.
+      console.log(`stack-sentinel: ${hookTarget} hook still running; ${entry.state} dispatch waits`);
+    } else if (hookTarget && shouldDispatchHealthHook(state.hookDispatchedStates, hookTarget, entry.state)) {
+      const caller = "stack-sentinel";
+      const hookPath = join(homedir(), "git", "code", "pm-stack", "health-hooks", `${hookTarget}.sh`);
+      try {
+        const proc = Bun.spawn([hookPath, "--caller", caller, "--detail", entry.detail ?? ""], {
+          stdout: "ignore", stderr: "ignore",
+        });
+        runningHooks.set(hookTarget, proc);
+        state.hookDispatchedStates[hookTarget] = entry.state;
+      } catch (err) {
+        console.error(`stack-sentinel: failed to spawn C3 hook ${hookTarget}: ${err instanceof Error ? err.message : err}`);
+      }
+    }
     if (entry.postedState !== entry.state) {
       if (!tokenResolved) {
         token = await resolveBwsSecret("pm-aggregator.alerts-intake-token");

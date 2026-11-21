@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Exercises the real keeper against temporary primary repos: tracked
-# residue must block snapshot commits, while clean trees still snapshot.
+# residue, untracked files beside the edits and the deploy-clone
+# opt-out must block snapshot commits, while clean trees still snapshot.
 # An untracked secret inside a wholly untracked directory (code#2268)
 # must never be swept into a snapshot (status collapses it to `?? dir/`).
 set -uo pipefail
@@ -175,8 +176,10 @@ grep -Fq -- 'untracked file(s)' "$TMP_ROOT/untracked-secret.log" ||
 grep -Fq -- 'secret-shaped path present' "$TMP_ROOT/untracked-secret.log" ||
   fail 'untracked-secret case: report missing secret-shaped-path refusal'
 
-# An ordinary untracked directory does not trip the guard; the regular
-# tracked snapshot still succeeds, without adding untracked files.
+# Untracked files beside tracked edits are usually one change: a
+# tracked-only snapshot would push half of it (code#12162, where
+# server.ts imported a prompts.ts that stayed untracked). The keeper
+# holds the snapshot and leaves both halves on disk.
 H8="$TMP_ROOT/untracked-ordinary-home"
 R8="$H8/code"
 new_repo "$R8"
@@ -184,14 +187,43 @@ printf 'snapshot candidate\n' >>"$R8/tracked.txt"
 mkdir -p "$R8/notes"
 printf 'ordinary fixture\n' >"$R8/notes/readme.txt"
 run_keeper "$H8" "$TMP_ROOT/untracked-ordinary.log"
-check 'untracked-ordinary case: tracked snapshot committed' \
-  '2' "$(git -C "$R8" rev-list --count HEAD)"
-check 'untracked-ordinary case: snapshot includes tracked file only' \
-  'tracked.txt' "$(git -C "$R8" show HEAD --name-only --format='')"
+check 'untracked-ordinary case: no tracked-only snapshot' \
+  '1' "$(git -C "$R8" rev-list --count HEAD)"
+check 'untracked-ordinary case: tracked edit remains dirty' \
+  'tracked.txt' "$(git -C "$R8" diff --name-only)"
 check 'untracked-ordinary case: ordinary file remains untracked' \
   '?? notes/' "$(git -C "$R8" status --porcelain -- notes)"
-grep -Fq -- 'committed 1 tracked entries on main' "$TMP_ROOT/untracked-ordinary.log" ||
-  fail 'untracked-ordinary case: report missing successful snapshot'
+grep -Fq -- 'would push half a change' "$TMP_ROOT/untracked-ordinary.log" ||
+  fail 'untracked-ordinary case: report missing half-change hold'
+
+# Ignored files are not untracked work: the snapshot still commits.
+H9="$TMP_ROOT/ignored-home"
+R9="$H9/code"
+new_repo "$R9"
+printf 'build/\n' >"$R9/.gitignore"
+git -C "$R9" add -- .gitignore
+git -C "$R9" commit -q -m ignore
+mkdir -p "$R9/build"
+printf 'artifact\n' >"$R9/build/out.txt"
+printf 'snapshot candidate\n' >>"$R9/tracked.txt"
+run_keeper "$H9" "$TMP_ROOT/ignored.log"
+check 'ignored case: tracked snapshot committed' '3' "$(git -C "$R9" rev-list --count HEAD)"
+
+# The deploy clone (~/git/code by default) is never snapshotted, even
+# with no untracked files: its changes go through a PR (code#12162).
+H10="$TMP_ROOT/deploy-home"
+R10="$H10/git/code"
+new_repo "$R10"
+printf 'local edit\n' >>"$R10/tracked.txt"
+run_keeper "$H10" "$TMP_ROOT/deploy.log"
+check 'deploy-clone case: no snapshot' '1' "$(git -C "$R10" rev-list --count HEAD)"
+check 'deploy-clone case: edit left on disk' 'tracked.txt' "$(git -C "$R10" diff --name-only)"
+grep -Fq -- 'snapshots are off for this repo' "$TMP_ROOT/deploy.log" ||
+  fail 'deploy-clone case: report missing opt-out reason'
+
+# An empty REPO_KEEPER_NO_SNAPSHOT turns the opt-out off again.
+REPO_KEEPER_NO_SNAPSHOT='' run_keeper "$H10" "$TMP_ROOT/deploy-off.log"
+check 'opt-out disabled: deploy clone snapshots' '2' "$(git -C "$R10" rev-list --count HEAD)"
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures failure(s)" >&2
