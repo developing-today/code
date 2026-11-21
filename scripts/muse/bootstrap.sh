@@ -99,7 +99,8 @@ fetch() { # fetch URL SHA256 DEST
   local url=$1 sum=$2 dest=$3 tmp
   case "$sum" in @*@|"") die "no pinned sha256 for $url (unpublished build?)" ;; esac
   tmp=$(mktemp)
-  curl -fsSL --retry 4 --retry-delay 2 -o "$tmp" "$url" || { rm -f "$tmp"; die "download failed: $url"; }
+  curl -fsSL --retry 4 --retry-delay 2 -o "$tmp" "$url" 2>/dev/null || {
+    rm -f "$tmp"; [ -n "${FETCH_SOFT:-}" ] && return 1; die "download failed: $url"; }
   echo "$sum  $tmp" | sha256sum -c --quiet - || { rm -f "$tmp"; die "sha256 mismatch: $url"; }
   mv "$tmp" "$dest"
 }
@@ -125,11 +126,16 @@ PY
     rm -f "$BIN/restic.bz2"; chmod 755 "$BIN/restic"
   fi
   if [ ! -x "$BIN/tailscale" ] || [ ! -x "$BIN/tailscaled" ]; then
-    fetch "$TS_URL" "$TS_SHA256" "$BIN/ts.tgz"
-    tar -xzf "$BIN/ts.tgz" -C "$BIN" --strip-components=1 --wildcards '*/tailscale' '*/tailscaled'
+    # Not fatal: a box that can't reach pkgs.tailscale.com still gets
+    # fleet, secrets and the restore; only the tailnet phase is skipped.
+    if FETCH_SOFT=1 fetch "$TS_URL" "$TS_SHA256" "$BIN/ts.tgz"; then
+      tar -xzf "$BIN/ts.tgz" -C "$BIN" --strip-components=1 --wildcards '*/tailscale' '*/tailscaled'
+    else
+      say "tools: tailscale download failed; the tailnet phase will be skipped"
+    fi
     rm -f "$BIN/ts.tgz"
   fi
-  say "tools: fleet $("$FLEET_DL" version 2>/dev/null | sed -n 's/^Source rev: //p'), bws, restic, tailscale in $BIN"
+  say "tools: fleet $("$FLEET_DL" version 2>/dev/null | sed -n 's/^Source rev: //p'); in $BIN: $(ls "$BIN" | tr "\n" " ")"
 fi
 
 # ---- token ----
@@ -210,7 +216,9 @@ fi
 
 # ---- tailnet ----
 TS_STATE="$HOME/.local/state/tailscale"; TS_SOCK="$TS_STATE/tailscaled.sock"
-if want tailnet; then
+if want tailnet && { [ ! -x "$BIN/tailscaled" ] || [ ! -x "$BIN/tailscale" ]; }; then
+  say "tailnet: no tailscale binaries (download failed); skipping, the laptop link will not work"
+elif want tailnet; then
   mkdir -p "$TS_STATE"
   if ! tailscale --socket="$TS_SOCK" status >/dev/null 2>&1; then
     MODE=userspace
