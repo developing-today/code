@@ -27,7 +27,13 @@ const labelTarget = (labels: string[], prefix: string): string | null =>
 
 /** Derive the item's known genealogy using only verified pool edges and labels. */
 export function deriveGenealogy(item: ProjectPoolItem, pool: readonly ProjectPoolItem[]): ItemGenealogy {
-  const byRef = new Map(pool.map((entry) => [entry.ref, entry]));
+  // Board memberships are separate pool rows, but Kind is canonical issue
+  // metadata. Preserve a populated Kind when a later satellite copy omits it.
+  const byRef = new Map<RefKey, ProjectPoolItem>();
+  for (const entry of pool) {
+    const existing = byRef.get(entry.ref);
+    byRef.set(entry.ref, existing ? { ...existing, kind: existing.kind ?? entry.kind } : entry);
+  }
   const chain: ProjectPoolItem[] = [];
   const seen = new Set<RefKey>([item.ref]);
   let cursor = item.parentRef ? byRef.get(item.parentRef) : undefined;

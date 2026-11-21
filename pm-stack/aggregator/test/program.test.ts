@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { GhItem, OrchestrationSection, ProjectPoolItem, Provenance } from "../src/model.ts";
+import type { GhItem, OrchestrationSection, ProjectPoolItem, Provenance, RefKey } from "../src/model.ts";
 import type { CoverageSnapshotFile } from "../src/coverage.ts";
 import { PAGES, pageByRoute } from "../src/pages.ts";
 import {
@@ -481,6 +481,17 @@ describe("project registry", () => {
     expect(byId.get("cloud-program")?.poolTotal).toBe(0);
     expect(byId.get("cloud-program")?.roadmapRows).toBe(1);
     expect(unsetPoolCount(pool)).toBe(1);
+  });
+
+  test("project weighted progress counts each canonical issue once across board memberships", () => {
+    const closed = poolItem({ ref: "developing-today/code#500" as RefKey, state: "closed", area: "pm-dashboard", labels: ["effort/s"] });
+    const open = poolItem({ ref: "developing-today/code#501" as RefKey, state: "open", area: "pm-dashboard", labels: ["effort/s"] });
+    const duplicateClosed = { ...closed, boardId: "satellite" };
+    const summary = buildProjectSummaries(PROJECT_CONFIGS, [closed, duplicateClosed, open], [])[0]!;
+
+    expect(summary.poolTotal).toBe(3); // raw board memberships remain visible
+    expect(summary.weights.weightedPct).toBe(50);
+    expect(summary.weights.count).toBe(2);
   });
 
   test("allProjectRefs covers every project's tracked + editorial refs, de-duplicated", () => {

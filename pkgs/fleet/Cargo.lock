@@ -598,6 +598,7 @@ dependencies = [
  "fleet-search",
  "fleet-secrets",
  "libc",
+ "proptest",
  "serde_json",
  "ureq",
 ]

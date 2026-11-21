@@ -119,6 +119,14 @@ test("#8864 query requests date fields and snapshot gate refuses malformed items
   expect(isBoardSnapshot({ number: 5, generatedAt: date, items: [{}] })).toBe(false);
 });
 
+test("satellite board snapshots are accepted by registered URL; unrelated number-1 boards are not", () => {
+  const base = { generatedAt: date, totalItems: 0, views: [], items: [] };
+  expect(
+    isBoardSnapshot({ ...base, number: 1, url: "https://github.com/orgs/developing-today-forks/projects/1" }),
+  ).toBe(true);
+  expect(isBoardSnapshot({ ...base, number: 1, url: "https://github.com/orgs/someone-else/projects/1" })).toBe(false);
+});
+
 test("#8864 exact design label, area-only panels, date-only roadmaps and unsupported filters", async () => {
   const wire = page(4, [item("1"), item("2"), item("3")]);
   wire.data.node.items.nodes[1].content.labels = { nodes: [{ name: "kind/design" }] };

@@ -46,6 +46,7 @@ import type {
   SessionRecord,
   SnapshotRecord,
 } from "./model.ts";
+import type { BoardDef } from "./board-registry.ts";
 import { isCredentialLifecycleRow, safeProviderReason } from "./credential-lifecycle.ts";
 
 export interface FleetFeed {
@@ -130,6 +131,10 @@ export interface FleetFeed {
   projects?: ProjectPoolItem[];
   /** Scheduled Project #4 audit snapshot (fields, views, totals, and distributions). */
   projectAudit?: ProjectAudit;
+  /** Per-board audits for the registry-driven Projects pool (#9062). */
+  projectAudits?: Record<string, ProjectAudit>;
+  /** Stable board identities and hierarchy used to produce the Projects pool. */
+  projectBoardRegistry?: BoardDef[];
   /** Collector-cached Projects #4/#5, including draft ideas and dates. */
   designBoards?: BoardSnapshot[];
   /** Project #4 coverage census (#1220/#1224): per-repo open-issue,
