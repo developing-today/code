@@ -395,13 +395,21 @@ fn api_endpoint(args: &[String]) -> Option<&str> {
 /// as a write (#12154).
 fn is_graphql_read(args: &[String]) -> bool {
     let mut query: Option<&str> = None;
+    let mut queries = 0;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
         if a == "--input" || a.starts_with("--input=") {
             return false;
         }
-        let field = if a == "-f" || a == "-F" || a == "--field" || a == "--raw-field" {
+        let is_field_flag = a == "-f" || a == "-F" || a == "--field" || a == "--raw-field";
+        if !is_field_flag && GH_API_VALUE_FLAGS.contains(&a) {
+            // Another option's value (a --template, --jq, header...) is
+            // never a field, even when it looks like `-fquery=...`.
+            i += 2;
+            continue;
+        }
+        let field = if is_field_flag {
             i += 1;
             args.get(i).map(|s| s.as_str())
         } else {
@@ -412,12 +420,17 @@ fn is_graphql_read(args: &[String]) -> bool {
         };
         if let Some(v) = field.and_then(|f| f.strip_prefix("query=")) {
             query = Some(v);
+            queries += 1;
         }
         i += 1;
     }
     let Some(query) = query else {
         return false;
     };
+    // Which of several query fields gh sends is not ours to guess.
+    if queries > 1 {
+        return false;
+    }
     if query.starts_with('@') {
         return false;
     }
@@ -1619,6 +1632,31 @@ mod tests {
             "query={ a } subscription S { b }"
         ]));
         assert!(!read(&["api", "graphql", "-f", "query=queryish { x }"]));
+        // Another option's value that looks like a query field is not one.
+        assert!(!read(&[
+            "api",
+            "graphql",
+            "-f",
+            "query=mutation { x }",
+            "--template",
+            "-fquery={viewer{login}}"
+        ]));
+        assert!(read(&[
+            "api",
+            "graphql",
+            "--jq",
+            "-fquery=mutation{x}",
+            "-f",
+            "query={viewer{login}}"
+        ]));
+        assert!(!read(&[
+            "api",
+            "graphql",
+            "-f",
+            "query={ a }",
+            "-f",
+            "query={ b }"
+        ]));
         assert!(!read(&["api", "graphql", "-F", "query=@board.graphql"]));
         assert!(!read(&["api", "graphql", "--input", "body.json"]));
         assert!(!read(&["api", "graphql"]));
