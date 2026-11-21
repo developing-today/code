@@ -287,13 +287,30 @@ fn classify_failure(output: &str) -> FailureClass {
     FailureClass::Other
 }
 
+/// The `gh` command word, past any inherited flags given before it
+/// (`gh -R o/r secret set ...`). `-R`/`--repo` take a value.
+fn command_word(args: &[String]) -> Option<&str> {
+    let mut i = 0;
+    while let Some(a) = args.get(i) {
+        let a = a.as_str();
+        if a == "-R" || a == "--repo" {
+            i += 2;
+        } else if a.starts_with('-') {
+            i += 1;
+        } else {
+            return Some(a);
+        }
+    }
+    None
+}
+
 /// The call's arguments as they go into the audit log, with the
 /// values that are themselves secrets replaced: `gh secret set`
 /// bodies and `Authorization` headers. Only the logged copy changes;
 /// `gh` still gets the real arguments.
 fn audit_args(args: &[String]) -> Vec<String> {
     const REDACTED: &str = "[redacted]";
-    let is_secret = args.first().map(|s| s.as_str()) == Some("secret");
+    let is_secret = command_word(args) == Some("secret");
     // A header is redacted when its name can carry a credential: the
     // standard auth and cookie headers, and any custom header whose name
     // mentions a token, key, secret, password, session or auth.
@@ -1607,6 +1624,25 @@ mod tests {
         assert_eq!(
             audit_args(&v(&["secret", "set", "TOKEN", "--body=hunter2"])),
             v(&["secret", "set", "TOKEN", "--body=[redacted]"])
+        );
+        // Inherited flags before the command word.
+        assert_eq!(
+            audit_args(&v(&[
+                "-R", "o/r", "secret", "set", "TOKEN", "--body", "hunter2"
+            ])),
+            v(&[
+                "-R",
+                "o/r",
+                "secret",
+                "set",
+                "TOKEN",
+                "--body",
+                "[redacted]"
+            ])
+        );
+        assert_eq!(
+            audit_args(&v(&["--repo=o/r", "secret", "set", "TOKEN", "-bhunter2"])),
+            v(&["--repo=o/r", "secret", "set", "TOKEN", "-b[redacted]"])
         );
         assert_eq!(
             audit_args(&v(&[
