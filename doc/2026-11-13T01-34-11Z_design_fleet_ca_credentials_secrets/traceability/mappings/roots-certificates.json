@@ -1,0 +1,365 @@
+{
+  "version": 1,
+  "rows": [
+    {
+      "source_id": "SPEC-PKI-001",
+      "canonical_requirement_id": "PKI-001",
+      "proposal_id": "ROOT-03",
+      "design_section": "designs/pki-roots.md §29-41",
+      "test_oracle": "Synthetic manifest asserts four distinct root SPKIs and four self-signed certificates; OpenSSL plus independent Rust verifier validates supported signatures.",
+      "disposition": "proposal",
+      "reason": "COVERED: ROOT-03 owns the four synthetic root identities; issuer graph is separately CERT-02/CERT-06."
+    },
+    {
+      "source_id": "SPEC-PKI-002",
+      "canonical_requirement_id": "PKI-002",
+      "proposal_id": "ROOT-04",
+      "design_section": "designs/pki-roots.md §29-43",
+      "test_oracle": "Compare root edge tuples to exact nine-edge §3.2 table; reject missing/extra edges and independently verify supported signatures.",
+      "disposition": "proposal",
+      "reason": "COVERED: ROOT-04 owns the nine root cross-certificates."
+    },
+    {
+      "source_id": "SPEC-PKI-003",
+      "canonical_requirement_id": "PKI-003",
+      "proposal_id": "ROOT-04",
+      "design_section": "designs/pki-roots.md §29-43",
+      "test_oracle": "Exact edge-set fixture asserts all six directed classical root edges and correct signer AKI; independent signature verification is required.",
+      "disposition": "proposal",
+      "reason": "COVERED: ROOT-04 owns the six classical-to-classical root edges."
+    },
+    {
+      "source_id": "SPEC-PKI-004",
+      "canonical_requirement_id": "PKI-004",
+      "proposal_id": "ROOT-04",
+      "design_section": "designs/pki-roots.md §29-43",
+      "test_oracle": "Exact edge-set fixture asserts three classical-root-to-ML-DSA edges with matching subject SPKI and signer AKI.",
+      "disposition": "proposal",
+      "reason": "COVERED: ROOT-04 owns the three classical-to-ML-DSA root edges."
+    },
+    {
+      "source_id": "SPEC-PKI-005",
+      "canonical_requirement_id": "PKI-005",
+      "proposal_id": "ROOT-04",
+      "design_section": "designs/pki-roots.md §54-65",
+      "test_oracle": "Negative synthetic graph containing an ML-DSA-root-signed classical root fails exact edge-set comparison and path verification.",
+      "disposition": "proposal",
+      "reason": "COVERED: ROOT-04 explicitly excludes reverse PQ-to-classical edges."
+    },
+    {
+      "source_id": "SPEC-PKI-006",
+      "canonical_requirement_id": "PKI-006",
+      "proposal_id": "ROOT-07",
+      "design_section": "designs/pki-roots.md §54-65",
+      "test_oracle": "Pinned verifier accepts an all-ML-DSA path under pq-only and rejects a chain containing a classical CA signature.",
+      "disposition": "proposal",
+      "reason": "COVERED: ROOT-07 owns strict PQ-only trust/path selection."
+    },
+    {
+      "source_id": "SPEC-PKI-007",
+      "canonical_requirement_id": "PKI-007",
+      "proposal_id": "ROOT-07",
+      "design_section": "designs/pki-roots.md §54-65",
+      "test_oracle": "Fingerprint-set oracle asserts roots-all contains four self-signed roots and excludes every cross-certificate and intermediate.",
+      "disposition": "proposal",
+      "reason": "COVERED: ROOT-07 owns trust bundles and anchor selection."
+    },
+    {
+      "source_id": "SPEC-PKI-008",
+      "canonical_requirement_id": "PKI-008",
+      "proposal_id": "ROOT-09",
+      "design_section": "designs/pki-roots.md §73-83",
+      "test_oracle": "Synthetic ordinary-sync fixture containing a root private-key object is rejected; cache, prefetch and equality-index enrollment remain absent.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: ROOT-09 covers dedicated escrow boundaries; general secret sync exclusion is a shared secrets-domain outcome."
+    },
+    {
+      "source_id": "SPEC-PKI-009",
+      "canonical_requirement_id": "PKI-009",
+      "proposal_id": "CERT-06",
+      "design_section": "designs/pki-issuance.md §4.1-4.2",
+      "test_oracle": "Synthetic manifest contains Base and InternalWeb sets with distinct A/B keys; assert exactly 16 issuer key IDs.",
+      "disposition": "proposal",
+      "reason": "COVERED: CERT-06 owns synthetic issuer set generation."
+    },
+    {
+      "source_id": "SPEC-PKI-010",
+      "canonical_requirement_id": "PKI-010",
+      "proposal_id": "CERT-06",
+      "design_section": "designs/pki-issuance.md §4.1-4.2",
+      "test_oracle": "Compare every issuer signer edge and algorithm to frozen §24.2 matrix; reject any unexpected root or algorithm.",
+      "disposition": "proposal",
+      "reason": "COVERED: CERT-06 builds issuer outputs under CERT-02 matrix."
+    },
+    {
+      "source_id": "SPEC-PKI-012",
+      "canonical_requirement_id": "PKI-012",
+      "proposal_id": "CERT-02",
+      "design_section": "designs/pki-issuance.md §4.2",
+      "test_oracle": "Graph oracle compares issuer edges exactly to §24.2 and asserts 13 variants per purpose/partition, not roots-only.",
+      "disposition": "superseded",
+      "reason": "SUPERSEDED: Inventory marks roots-only as historical; later §24.2 direct issuer cross-signing controls. CERT-02 records the controlling graph, not this superseded option."
+    },
+    {
+      "source_id": "SPEC-PKI-015",
+      "canonical_requirement_id": "PKI-015",
+      "proposal_id": "CERT-05",
+      "design_section": "designs/pki-issuance.md §4.4",
+      "test_oracle": "Profile fixture asserts InternalWeb permits serverAuth only; independent verifier rejects unauthorized EKU or constrained-out SAN.",
+      "disposition": "proposal",
+      "reason": "COVERED: CERT-05 owns purpose profiles, KU/EKU and name constraints."
+    },
+    {
+      "source_id": "SPEC-PKI-017",
+      "canonical_requirement_id": "PKI-017",
+      "proposal_id": "ROOT-03",
+      "design_section": "designs/pki-roots.md §31",
+      "test_oracle": "Synthetic root subject with omitted caller name yields unique generation-token CA CN and no DNS SAN.",
+      "disposition": "proposal",
+      "reason": "COVERED: ROOT-03 covers synthetic root subject identity."
+    },
+    {
+      "source_id": "SPEC-PKI-018",
+      "canonical_requirement_id": "PKI-018",
+      "proposal_id": "ROOT-03",
+      "design_section": "designs/pki-roots.md §31",
+      "test_oracle": "Decoded root subject asserts C=US and O=developing.today LLC unless explicit override supplied.",
+      "disposition": "proposal",
+      "reason": "COVERED: ROOT-03 acceptance includes root subject defaults."
+    },
+    {
+      "source_id": "SPEC-PKI-019",
+      "canonical_requirement_id": "PKI-019",
+      "proposal_id": "ROOT-03",
+      "design_section": "designs/pki-roots.md §7, §45-51",
+      "test_oracle": "Reference root fixture asserts notAfter=2050-07-07T12:00:00Z; separate date fixture verifies 20-calendar-year default.",
+      "disposition": "proposal",
+      "reason": "COVERED: ROOT-03 owns reference root validity and default."
+    },
+    {
+      "source_id": "SPEC-PKI-021",
+      "canonical_requirement_id": "PKI-021",
+      "proposal_id": "CERT-06",
+      "design_section": "designs/pki-issuance.md §4.1-4.2",
+      "test_oracle": "Issuer manifest asserts Base notAfter=2032-07-07T12:00:00Z and never exceeds parent validity.",
+      "disposition": "proposal",
+      "reason": "COVERED: CERT-06 owns Base issuer reference date."
+    },
+    {
+      "source_id": "SPEC-PKI-023",
+      "canonical_requirement_id": "PKI-023",
+      "proposal_id": "CERT-07",
+      "design_section": "designs/pki-issuance.md §4.4",
+      "test_oracle": "Synthetic leaf fixture asserts Base one-year and Web 90-day defaults, each capped by issuer expiry.",
+      "disposition": "proposal",
+      "reason": "COVERED: CERT-07 owns leaf issuance defaults and synthetic output."
+    },
+    {
+      "source_id": "SPEC-PKI-025",
+      "canonical_requirement_id": "PKI-025",
+      "proposal_id": "CERT-05",
+      "design_section": "designs/pki-issuance.md §4.4",
+      "test_oracle": "Wildcard shorthand yields exactly apex and `*.` SAN for each reference domain; pinned PSL fixture rejects public-suffix wildcard.",
+      "disposition": "proposal",
+      "reason": "COVERED: CERT-05 acceptance defines exact four-name expansion."
+    },
+    {
+      "source_id": "SPEC-PKI-027",
+      "canonical_requirement_id": "PKI-027",
+      "proposal_id": "CERT-07",
+      "design_section": "designs/pki-issuance.md §4.4",
+      "test_oracle": "Request two algorithms and assert two distinct keys/certificates, each with one SPKI and one issuer signature.",
+      "disposition": "proposal",
+      "reason": "COVERED: CERT-07 explicitly requires separate algorithm variants."
+    },
+    {
+      "source_id": "SPEC-PKI-031",
+      "canonical_requirement_id": "PKI-031",
+      "proposal_id": "CERT-12",
+      "design_section": "designs/pki-issuance.md §5.1, §7.1",
+      "test_oracle": "Independent CMS parser checks degenerate SignedData/no signers and expected certificate fingerprints; PEM/DER roundtrip matches bytes.",
+      "disposition": "proposal",
+      "reason": "COVERED: CERT-12 owns PEM/DER/CMS/chain artifact validation."
+    },
+    {
+      "source_id": "SPEC-PKI-033",
+      "canonical_requirement_id": "PKI-033",
+      "proposal_id": "CERT-10",
+      "design_section": "designs/pki-issuance.md §4.6, §5.2",
+      "test_oracle": "Local HTTP fixture fetches original CDP after revocation and parses higher-number signed CRL containing the serial for the actual signing CA.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-10 covers issuer AIA/CDP; root-signed CA CRL ownership is ROOT-06 and OCSP responder coverage is CERT-14."
+    },
+    {
+      "source_id": "SPEC-PKI-036",
+      "canonical_requirement_id": "PKI-036",
+      "proposal_id": "CERT-09",
+      "design_section": "designs/pki-issuance.md §4.6",
+      "test_oracle": "CDP-bearing certificate is not publishable until independently verified signed empty issuer CRL exists; subsequent number increases monotonically.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-09 covers issuer leaf CRLs; root-signed CA CRLs are separately ROOT-06."
+    },
+    {
+      "source_id": "SPEC-PKI-041",
+      "canonical_requirement_id": "PKI-041",
+      "proposal_id": "ROOT-02",
+      "design_section": "designs/pki-roots.md §67-71",
+      "test_oracle": "Property test changes display name/logical path while opaque key/cert IDs stay constant; path is only a mutable locator.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: ROOT-02 scopes PKI artifact identity; shared secret paths/slugs require cross-domain work."
+    },
+    {
+      "source_id": "SPEC-PKI-042",
+      "canonical_requirement_id": "PKI-042",
+      "proposal_id": "CERT-08",
+      "design_section": "designs/pki-issuance.md §4.5",
+      "test_oracle": "State model renews certificate with same key ID and increased revision/serial, then rotation changes SPKI/generation.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-08 owns lifecycle state; root lifecycle refinement is ROOT-11."
+    },
+    {
+      "source_id": "SPEC-PKI-044",
+      "canonical_requirement_id": "PKI-044",
+      "proposal_id": "ROOT-11",
+      "design_section": "designs/pki-roots.md §85-89",
+      "test_oracle": "Synthetic replacement rehearsal asserts new key/generation, trust overlap until dependents verify, and preserved CRL/receipt history.",
+      "disposition": "future",
+      "reason": "FUTURE: Long-horizon root replacement is V4 design in ROOT-11; no production migration is proposed now."
+    },
+    {
+      "source_id": "SPEC-PKI-061",
+      "canonical_requirement_id": "PKI-061",
+      "proposal_id": "CERT-17",
+      "design_section": "designs/pki-issuance.md §7.1-7.2",
+      "test_oracle": "Pinned OpenSSL and independent Rust verifier validate identical certificate/path bytes; unsupported algorithms never count as pass.",
+      "disposition": "proposal",
+      "reason": "COVERED: CERT-17 owns backend capability evidence and independent validation."
+    },
+    {
+      "source_id": "SPEC-PKI-068",
+      "canonical_requirement_id": "PKI-068",
+      "proposal_id": "CERT-02",
+      "design_section": "designs/pki-issuance.md §4.2",
+      "test_oracle": "Exact graph oracle asserts 20 CA keys, 65 CA certs, 16 issuer keys and 52 issuer variants, 13 per purpose/partition.",
+      "disposition": "proposal",
+      "reason": "COVERED: CERT-02 freezes the complete graph; CERT-06 generates issuer artifacts."
+    },
+    {
+      "source_id": "SPEC-PKI-071",
+      "canonical_requirement_id": "PKI-071",
+      "proposal_id": "ROOT-11",
+      "design_section": "designs/pki-roots.md §91-98",
+      "test_oracle": "Synthetic signer migration retains public fingerprint and verifies exact TBS signature/receipt; hardware stays marked unverified absent device proof.",
+      "disposition": "future",
+      "reason": "FUTURE: Offline/HSM ceremony is V4 evolution in ROOT-11, not current hardware capability."
+    },
+    {
+      "source_id": "SPEC-PKI-073",
+      "canonical_requirement_id": "PKI-073",
+      "proposal_id": "CERT-12",
+      "design_section": "designs/pki-issuance.md §5.4",
+      "test_oracle": "Negative format fixture rejects SSH certificate as X.509; native SSH/iroh and staged protocol adapters remain outside CERT-12.",
+      "disposition": "historical",
+      "reason": "HISTORICAL: Source is historical/context and bundles current SSH/iroh with staged formats; only protocol separation is mapped, remainder unresolved."
+    },
+    {
+      "source_id": "SPEC-PKI-074",
+      "canonical_requirement_id": "PKI-074",
+      "proposal_id": "CERT-19",
+      "design_section": "designs/pki-issuance.md §8",
+      "test_oracle": "Synthetic adapter migration preserves root fingerprint and exact TBS signature/receipt; capability matrix distinguishes tested hardware from API-only claims.",
+      "disposition": "research",
+      "reason": "RESEARCH: External KMS/PKCS#11/HSM remains nonblocking future research; CERT-19 is rehearsal, not deployed capability."
+    },
+    {
+      "source_id": "SPEC-PKI2-001",
+      "canonical_requirement_id": "PKI2-001",
+      "proposal_id": "ROOT-01",
+      "design_section": "designs/pki-roots.md §45-52",
+      "test_oracle": "Policy fixture permits RSA-2048 only with explicit compatibility gate and rejects default substitution.",
+      "disposition": "proposal",
+      "reason": "COVERED: ROOT-01 owns RSA-2048 compatibility gate and fail-closed capability contract."
+    },
+    {
+      "source_id": "SPEC-PKI2-002",
+      "canonical_requirement_id": "PKI2-002",
+      "proposal_id": "ROOT-03",
+      "design_section": "designs/pki-roots.md §7",
+      "test_oracle": "Synthetic root certificate asserts exact notAfter 2050-07-07T12:00:00Z and independent profile/signature validation.",
+      "disposition": "proposal",
+      "reason": "COVERED: ROOT-03 owns reference root identities/expiry."
+    },
+    {
+      "source_id": "SPEC-PKI2-003",
+      "canonical_requirement_id": "PKI2-003",
+      "proposal_id": "CERT-06",
+      "design_section": "designs/pki-issuance.md §2.1, §4.2",
+      "test_oracle": "All 52 issuer variants assert reference notAfter 2032-07-07T12:00:00Z unless capped earlier by parent.",
+      "disposition": "proposal",
+      "reason": "COVERED: CERT-06 requirement range PKI2-002–PKI2-009 includes issuer date."
+    },
+    {
+      "source_id": "SPEC-PKI2-004",
+      "canonical_requirement_id": "PKI2-004",
+      "proposal_id": "CERT-02",
+      "design_section": "designs/pki-issuance.md §4.2",
+      "test_oracle": "Frozen graph asserts 16 distinct issuer IDs with A/B labels; SPKI uniqueness rejects aliases.",
+      "disposition": "proposal",
+      "reason": "COVERED: CERT-02 includes PKI2-004 in its graph requirement range."
+    },
+    {
+      "source_id": "SPEC-PKI2-006",
+      "canonical_requirement_id": "PKI2-006",
+      "proposal_id": "CERT-02",
+      "design_section": "designs/pki-issuance.md §4.2",
+      "test_oracle": "Compare issuer edges to literal §24.2 table and assert 13 variants per purpose/partition.",
+      "disposition": "proposal",
+      "reason": "COVERED: CERT-02 owns explicit issuer graph; root CRL state is ROOT-06."
+    },
+    {
+      "source_id": "SPEC-PKI2-007",
+      "canonical_requirement_id": "PKI2-007",
+      "proposal_id": "CERT-02",
+      "design_section": "designs/pki-issuance.md §4.2",
+      "test_oracle": "Negative edge oracle rejects ML-DSA-root signer on classical issuer and compares exact 52-variant tuple set.",
+      "disposition": "proposal",
+      "reason": "COVERED: CERT-02 owns complete reference graph."
+    },
+    {
+      "source_id": "SPEC-PKI2-008",
+      "canonical_requirement_id": "PKI2-008",
+      "proposal_id": "CERT-03",
+      "design_section": "designs/pki-issuance.md §3.3, §4.1",
+      "test_oracle": "Synthetic adapter rejects missing/ambient signer source and verifies exact TBS authorization; competing consumers yield at most one signer call.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-03 consumes shared ARCH-06 signer; root-specific plan binding is ROOT-05."
+    },
+    {
+      "source_id": "SPEC-PKI2-010",
+      "canonical_requirement_id": "PKI2-010",
+      "proposal_id": "CERT-10",
+      "design_section": "designs/pki-issuance.md §5.2-5.3",
+      "test_oracle": "Local HTTP fixture fetches AIA/CDP URLs from certificate and verifies returned issuer/CRL bytes, signer, hash and freshness.",
+      "disposition": "proposal",
+      "reason": "COVERED: CERT-10 owns local AIA/CDP route semantics; production publish remains separately gated."
+    },
+    {
+      "source_id": "SPEC-PKI2-011",
+      "canonical_requirement_id": "PKI2-011",
+      "proposal_id": "CERT-12",
+      "design_section": "designs/pki-issuance.md §5.1, §7.1",
+      "test_oracle": "CMS parser asserts expected cert-only P7C fingerprints; DER `.crt` and PEM chain order match manifest.",
+      "disposition": "proposal",
+      "reason": "COVERED: CERT-12 owns DER/P7C/PEM output formats."
+    },
+    {
+      "source_id": "SPEC-PKI2-013",
+      "canonical_requirement_id": "PKI2-013",
+      "proposal_id": "ROOT-01",
+      "design_section": "designs/pki-roots.md §45-52",
+      "test_oracle": "Algorithm fixture verifies intrinsic Ed25519/ML-DSA scheme and rejects forced SHA-256 wrapper or unsupported parameters.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: ROOT-01 owns registry/capability behavior; algorithm-specific certificate usage profiles remain CERT-05."
+    }
+  ]
+}

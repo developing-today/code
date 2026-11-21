@@ -1,0 +1,176 @@
+[
+  {
+    "id": "PERF-01",
+    "title": "Establish synthetic Fleet/provider performance baseline",
+    "parent": "#9160",
+    "kind": "implementation + test",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §9.2 lines 651-675; §37.1 lines 2249-2254; §46 R-SEC-01 lines 2533-2539; §48.1 lines 2639-2644 and §48.2 V3-S11 line 2665",
+      "ADDENDUM_secrets_architecture_performance_infrastructure.md §§2,9 lines 12-18,93-103",
+      "COORDINATOR_summit_handoff.md §§4.2,7.3 lines 102-122,200-206",
+      "pkgs/fleet/crates/fleet-secrets/src/lib.rs lines 1-28,139-193,493-604; pkgs/fleet/crates/fleet-queue/src/secrets_broker.rs lines 1-39,49-75,133-167; pkgs/fleet/crates/fleet/src/secrets.rs lines 1-19,73-173"
+    ],
+    "requirement_ids": [
+      "PERF-BENCH-01",
+      "V3-S11"
+    ],
+    "stage": "V2-foundation",
+    "lifecycle": "Ready",
+    "urgency": 450,
+    "depends_on": [],
+    "body": "## Why / user outcome\nEstablish a repeatable synthetic benchmark before selecting cache/provider changes or claiming BWS latency is intrinsic. Produce a reproducible baseline covering Fleet's current resolver/broker and comparable provider paths, with no production secret access.\n\n## Current evidence and affected code\nBaseline commit `34faffbff26615e313488f6d04705a444342e41e` (2026-11-12): `pkgs/fleet/crates/fleet-secrets/src/lib.rs` implements broker transport then BWS CLI list/get fallback; `pkgs/fleet/crates/fleet-queue/src/secrets_broker.rs` refreshes via BWS CLI, list plus per-secret get at bounded concurrency; `pkgs/fleet/crates/fleet/src/secrets.rs` has only `get` and `list`. No benchmark command or Fleet provider SDK dependency is present. No performance timings have been measured. V1 describes this current-state census only; this proposal is V2-foundation.\n\n## Deliverable and technical boundaries\nAdd an opt-in benchmark harness and report. Start with deterministic fake/in-process sources. Provider comparisons may include broker, direct BWS CLI, official BWS Rust SDK only after SDK parity/MSRV verification, `op` CLI, fnox CLI and published `fnox-client`, local SOPS/age decrypt, and separately authorized `bw` CLI. Keep BWS, OP and BW identities/scopes distinct. Live access, if separately authorized, is restricted to disposable isolated fixture vaults/projects. No personal/production vault reads or writes, no changes to current resolver behavior, no secret-bearing stderr/value output.\n\n## Measurable acceptance and oracle\n1. Matrix records cold/warm process and auth; sequential and batch 1/10/100/1000 records (also 500 as intermediate); concurrency curves; batch where provider supports it; first/full paginated list/full census; cache hit/miss; synthetic create/update/readback only in disposable store; auth overhead; throttles/failures/recovery.\n2. Report sample count, p50/p95/p99, quantile confidence intervals, throughput, error/timeout/throttle rate, bytes, CPU, peak/RSS memory, process count/startup, token/session churn, provider/cache age, exact versions, host/OS and RTT. Separate network, auth/startup, provider, serialization and cache latency where observable. Cover laptop and actual agent host if available; include low-concurrency 24-hour soak before systemic slowness claims. Define p99 as nearest-rank `x_(ceil(0.99 n))` over successful completed-operation latencies; `x_(i)` is the one-based i-th sorted value, retaining ties (never jitter). For IID/stationary trials, compute a two-sided equal-tail, at-least-95%-coverage nonparametric order-statistic interval: let `B~Binomial(n,0.99)`; choose the largest lower rank `k` with `P(B<k)<=0.025` and smallest upper rank `l` with `P(B>=l)<=0.025`; report `[x_(k),x_(l)]`, n, k/l, endpoints and quantile convention. Equal endpoints from ties are reported as observed. A 100-sample cell is exploratory, not reliable p99; the ≥10,000-operation floor alone does not establish interval precision. If dependence, nonstationarity or censoring invalidates IID, label p99 exploratory/unavailable or preregister a block-bootstrap method and block-length rule before seeing outcomes; never choose post hoc. Report interval width; wide/unavailable intervals cannot support superiority. Retain all attempts and report failures, timeouts and throttles separately; timed-out/censored attempts are not silently dropped.\n3. Provide repeatable command and raw anonymized timings. Do not invent target values before baseline. Oracle: deterministic scripted-provider event trace validates labels/failures; independently recompute nearest-rank quantile and exact-binomial CI from sorted retained samples, including rank indices and tied endpoints. Randomized/interleaved design supports IID assumption; otherwise p99 is exploratory unless block bootstrap and block-length rule are preregistered. No benchmark was run in this design phase.\n4. Synthetic canary value is absent from stdout/stderr, JSON, logs, telemetry, panic/crash output and artifacts.\n\n## Negative tests\n403/permission denial, 429/Retry-After, timeout, malformed/truncated pagination, provider absence, unsupported SDK, empty result and read-after-write mismatch remain distinct and never imply deletion. No live credentials configured by default. Harness refuses production-designated scopes.\n\n## Dependencies / priority / lifecycle\nNo implementation dependency; optional real provider runs require capability verification plus explicit isolated-vault authorization. High priority, urgency 450, medium size, V2-foundation, Ready as synthetic work.\n\n## Rollback / recovery\nOpt-in command and adapters only; disable/remove benchmark paths without changing `get/list`. No provider mutation outside disposable approved fixture and no persisted secret values.\n\n## Open decision\nAfter baseline, implementation owner proposes p95/p99 and regression budgets with workload rationale; reviewers can refine, without waiting on user-supplied thresholds or blocking the benchmark deliverable. Until then, oracle is sound reproducible measurement, not threshold attainment.\n\n\n\n## Priority, lifecycle and sizing\nIntrinsic urgency 450 (High); queue projection 20 only if the existing queue field is populated (High→20, Standard→40, Low/Someday/Cold→70). This intrinsic score is not the queue score and is separate from importance, dependencies, lifecycle and dispatch. Size M; lifecycle Ready; stage V2-foundation; lane OpenCode implementation/test.",
+    "priority": "High",
+    "size": "M",
+    "lane": "OpenCode implementation/test",
+    "security_classification": "Synthetic benchmark fixtures; no production credential classification.",
+    "priority_band": "High",
+    "queue_priority_projection": 20
+  },
+  {
+    "id": "PERF-02",
+    "title": "Define and enforce canonical per-secret freshness policy",
+    "parent": "#9160",
+    "kind": "design + implementation + test",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §35.4 lines 2213-2219; §37.2 lines 2255-2263; §48.2 V3-S07/V3-S13 lines 2661-2667",
+      "ADDENDUM_secrets_architecture_performance_infrastructure.md §§9-10 lines 93-103,104-112",
+      "COORDINATOR_summit_handoff.md §§4.2,7.3 lines 102-122,200-206,251-265",
+      "pkgs/fleet/crates/fleet-queue/src/secrets_broker.rs lines 49-75,190-266,294-346,532-577,611-624; pkgs/fleet/crates/fleet-secrets/src/lib.rs lines 1-28,139-193; #6767 and merged PR #8491 (`c676d1c41c07`)",
+      "designs/secrets.md §§V1, cache/custody; designs/reconciliation.md §1 invariant 8"
+    ],
+    "requirement_ids": [
+      "PERF-FRESHNESS-01",
+      "V3-S07",
+      "V3-S13",
+      "BUG-6767"
+    ],
+    "stage": "V2-foundation",
+    "lifecycle": "Ready",
+    "urgency": 450,
+    "depends_on": [],
+    "body": "## Why / user outcome\nDefine one canonical, policy-owned per-secret freshness contract so cache age, provider outage, rotation and revocation cannot be confused. This proposal is the owner of freshness semantics for #9160. Related architecture, broker and reconciliation packets consume this contract; they must not invent competing max-age defaults or duplicate its policy model.\n\n## Current evidence and affected code\n`pkgs/fleet/crates/fleet-secrets/src/lib.rs` is an uncached redacted broker/BWS resolver. Broker code `pkgs/fleet/crates/fleet-queue/src/secrets_broker.rs` has per-secret installation, fetched timestamps, age/source, singleflight and partial-refresh behavior from merged PR #8491 (`c676d1c41c07`), with reported 59/59 tests. #6767 is still OPEN for deployment verification/live canary. That deployment/canary is not authorized in this run. V1 is current-state census, not a new implementation stage. Do not reimplement PR #8491 or claim deployed proof.\n\n## Deliverable and technical boundaries\nSpecify and implement only the missing policy semantics over existing source age/provenance: cache/result states, typed max-age decision, `refresh-required`/`stale` outcomes, unavailable/inaccessible/not-found distinction, revocation precedence, and class-specific stale/offline eligibility. Preserve exact provider/account/project/vault/profile scope. Ordinary resolver/hot cache/snapshot must categorically exclude root private-key bytes, including a nominal `live-only` cache; a separately authorized bounded in-memory signer operation and encrypted root escrow are separate custody interfaces. Do not add a persistent cache, new provider, reconciliation writer, or silent legacy CLI change.\n\n## API and behavior\nResult carries source/native reference, observed revision if available, fetched-at/age, authority/cache state, class and freshness decision without revealing values. Policy chooses live-only, bounded-stale or snapshot-eligible per class; provider 403, timeout, incomplete list and unknown revocation never become absence/deletion. Successful Fleet-mediated writes must invalidate exact ordinary secret identity before reporting success; where no write path currently exists, specify contract for later consumer rather than inventing one here. Stale/snapshot data never authorizes writes or updates a provider.\n\n## Measurable acceptance and oracle\n1. A model-based test generator exercises fresh/expired age, live-only and bounded-stale classes, revocation, scoped aliases, outage/403, incomplete listing, refresh failure/success and recovery using fake clock/provider.\n2. Invariants: failed refresh never advances fetched-at; age over declared maximum is denied; revocation deny wins over warm entry; 403/outage/partial inventory never means deleted; same-name secrets in distinct scopes do not alias; allowed stale responses are marked and bounded; ordinary secret write invalidation is exact and synchronous where a write API exists.\n3. Existing #8491 behavior/tests are reused; add tests only for policy decisions not already covered. Existing #6767 deployment/canary remains separate; do not run canary.\n4. Oracle is a versioned reference state model compared after every generated operation with fake-clock/provider traces; redaction scanner proves values absent from Debug/errors/logs/status.\n5. Implementation owner derives proposed per-class initial age defaults from PERF-01 measurements plus risk rationale and records them in the reviewable policy/report. This proposal can be reviewed/refined without blocking or awaiting a user-picked numeric threshold; tests use explicit policy fixtures, not magic production timing.\n\n## Negative tests\nOver-age but otherwise valid value, revoked value, unknown age, backward clock, 403-as-absence, truncated inventory, stale divergent replica, failed refresh, same-name cross-scope collision, and cache result used as write authority all fail closed as policy requires. Root private-key bytes cannot enter or be returned by ordinary resolver/cache/snapshot tests. Live canary is expressly not an acceptance criterion.\n\n## Dependencies / priority / lifecycle\nReuses #6767 and merged PR #8491 as implementation baseline. High priority, urgency 450, medium size, V2-foundation, Ready for synthetic/model work. Consumers are `designs/secrets.md` and `designs/reconciliation.md`; active implementation consumers are ARCH-01, SEC-03 and REC-07. They consume PERF-02’s canonical semantics and must not duplicate its policy or define competing age defaults.\n\n## Rollback / recovery\nVersion policy/result behavior; high-risk classes fail closed if policy absent or malformed. Rollback cannot claim freshness or restore high-risk stale serving. Recover only by authoritative reread and exact invalidation. No live rotation, deployment, provider write, or canary.\n\n\n\n## Priority, lifecycle and sizing\nIntrinsic urgency 450 (High); queue projection 20 only if the existing queue field is populated (High→20, Standard→40, Low/Someday/Cold→70). This intrinsic score is not the queue score and is separate from importance, dependencies, lifecycle and dispatch. Size M; lifecycle Ready; stage V2-foundation; lane OpenCode implementation/test.",
+    "priority": "High",
+    "size": "M",
+    "lane": "OpenCode implementation/test",
+    "security_classification": "Per-secret freshness policy; root private-key bytes excluded from ordinary resolver/cache/snapshot.",
+    "priority_band": "High",
+    "queue_priority_projection": 20
+  },
+  {
+    "id": "PERF-03",
+    "title": "Evaluate optional fnox daemon read-cache adapter",
+    "parent": "#9160",
+    "kind": "research + prototype + test",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §§35.4 lines 2213-2219, 37.1 lines 2251-2254, 38 lines 2269-2278, 42.1 lines 2380-2385; §48.2 V3-S14 line 2668",
+      "ADDENDUM_secrets_architecture_performance_infrastructure.md §§3,9-10 lines 19-41,93-103",
+      "COORDINATOR_summit_handoff.md §7.3 lines 200-206",
+      "docs.rs fnox-client 1.48.0 public Client API; fnox daemon/sync/provider official docs; pkgs/fleet/Cargo.toml workspace MSRV"
+    ],
+    "requirement_ids": [
+      "PERF-FNOX-01",
+      "V3-S14"
+    ],
+    "stage": "V2",
+    "lifecycle": "Backlog",
+    "urgency": 600,
+    "depends_on": [
+      "PERF-01",
+      "PERF-02"
+    ],
+    "body": "## Why / user outcome\nDetermine with source and measurement whether fnox's public daemon client accelerates a real Fleet consumer without moving freshness, authorization or write policy into a second resolver. Produce go/no-go; no wholesale adoption.\n\n## Current evidence and affected code\nPrimary docs.rs `fnox-client` 1.48.0 (published 2026-11-09) expose `Client::new`, `with_timeout`, `hello`, `resolve_env` and `EnvOutcome`; it is read-only, talks to an already-running daemon, and cannot start it, populate it or call providers. fnox docs state daemon is memory-only per-user IPC and explicit refresh/clear is required after rotation. Provider docs show BWS uses CLI and can write via fnox; OP and BW human-vault adapters are read-only. Fleet current resolver is `pkgs/fleet/crates/fleet-secrets`; workspace MSRV is 1.85 in `pkgs/fleet/Cargo.toml`. No compatibility build or performance measurement exists.\n\n## Deliverable and technical boundaries\nA bounded synthetic prototype and adoption decision comparing fnox CLI, `fnox exec`, published public `fnox-client` daemon hit, and corrected Fleet path. Use public API only; no private wire protocol. Optional feature only, no mandatory fnox dependency, no env dump/broad injection, provider writes, reconciliation, root-key bytes or signer cache. A daemon hit is not freshness authority; PERF-02 policy wins. On miss/disabled/unavailable use Fleet's authoritative resolver or typed failure. Confirm actual MSRV/dependency/platform compatibility before proposing adoption.\n\n## API and behavior\nOnly request allow-listed key names needed by the consumer. Map hit/miss/disabled/daemon absent/protocol mismatch/timeout distinctly. Never turn miss into empty/not-found. Never read stale daemon entry where PERF-02 demands live age/revocation. On miss do not rely on fnox-client to trigger provider read; it cannot.\n\n## Measurable acceptance and oracle\n1. Pin crate/binary versions and compile/test under Fleet declared MSRV/toolchain; record transitive dependency, feature, platform and startup/RSS effect. If impossible, verified incompatibility is a no-go result, not a blocker to other work.\n2. Synthetic tests cover hit, miss, disabled, daemon absent, old protocol, timeout, environment/profile/config mismatch, refresh/clear, malformed result, and fallback mapping. A call trace proves the client did not spawn daemon or fetch providers.\n3. Use PERF-01 equivalent-freshness benchmark: p50/p95/p99, memory, startup/process count, errors and stale age. Implementation owner proposes measured improvement target with workload rationale after baseline; reviewers refine without waiting on user or blocking. Adopt only with demonstrated relevant gain, zero stale/revoked violations, supported dependency/platform and kill switch; otherwise record CLI-only/reject.\n4. Oracle: known synthetic key-value/version plus instrumented provider/daemon call trace and independent quantile recomputation. No fabricated timings.\n\n## Negative tests\nRotated/revoked value sitting in daemon cannot override PERF-02 deny; stale hit fails for freshness-required class; miss/disabled not-found confusion fails; different environment cannot reuse wrong-profile entry; wrong protocol does not panic; secret canary never enters argv, logs or errors.\n\n## Dependencies / priority / lifecycle\nDepends on PERF-01 baseline and PERF-02 canonical freshness semantics. High research priority, intrinsic urgency 600, medium size, V2, Backlog. Synthetic local fixture only; isolated live provider requires separate authorization.\n\n## Rollback / recovery\nOptional feature kill switch; fallback retains existing broker/BWS path and PERF-02 rules. Remove integration and optional dependency if no measurable benefit or compatibility. Do not modify deployed daemon, live provider or cache.\n\n\n\n## Priority, lifecycle and sizing\nIntrinsic urgency 600 (High); queue projection 20 only if the existing queue field is populated (High→20, Standard→40, Low/Someday/Cold→70). This intrinsic score is not the queue score and is separate from importance, dependencies, lifecycle and dispatch. Size M; lifecycle Backlog; stage V2; lane OpenCode research/prototype.",
+    "priority": "High",
+    "size": "M",
+    "lane": "OpenCode research/prototype",
+    "security_classification": "Read-only synthetic/test values only; no root/private-key material.",
+    "priority_band": "High",
+    "queue_priority_projection": 20
+  },
+  {
+    "id": "PERF-04",
+    "title": "Add Fleet-side SOPS/age deployment adapter",
+    "parent": "#9160",
+    "kind": "implementation + test",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §§38 lines 2269-2278, 39.1-39.3 lines 2281-2312, 42.2 lines 2386-2389; §48.2 V3-S12 line 2666",
+      "ADDENDUM_secrets_architecture_performance_infrastructure.md §§4,9-10 lines 34-41,93-103",
+      "COORDINATOR_summit_handoff.md §7.4 lines 204-206",
+      "note.md lines 32-50; Fleet secrets API surface in pkgs/fleet/crates/fleet-secrets and pkgs/fleet/crates/fleet/src/secrets.rs"
+    ],
+    "requirement_ids": [
+      "PERF-SOPS-01",
+      "V3-S12"
+    ],
+    "stage": "V2",
+    "lifecycle": "Backlog",
+    "urgency": 600,
+    "depends_on": [
+      "PERF-02"
+    ],
+    "body": "## Why / user outcome\nProvide Fleet's scoped provider/artifact seam for existing SOPS/age ciphertext without reimplementing cryptography or conflating deployment artifacts with remote vault reads. Keep format adapter independently reviewable from NixOS provisioning/recovery (PERF-06).\n\n## Current evidence and affected code\nIntake `note.md` lines 32-50 reports SOPS/age patterns already in NixOS configuration, but no Fleet-level SOPS provider. `pkgs/fleet/crates/fleet-secrets` currently exposes name-based broker/BWS reads; `pkgs/fleet/crates/fleet/src/secrets.rs` only get/list. Primary SOPS/age docs support encrypted structured/binary data and recipients. This is not evidence that Fleet can currently provision keys or deploy NixOS secrets.\n\n## Affected code / API\nPrimary seams: `pkgs/fleet/crates/fleet-secrets/src/lib.rs` for an optional source/artifact adapter and `pkgs/fleet/crates/fleet/src/secrets.rs` for CLI integration; avoid editing NixOS activation files in this issue. Define a typed scoped SOPS/age adapter with manifest, dry-run, encrypt/decrypt-to-protected-sink and verify operations; exact Rust signatures remain implementation-owned.\n\n## Deliverable and technical boundaries\nAdd an opt-in Fleet adapter/manifest path that invokes pinned supported SOPS/age tooling or a verified stable library, preserves standard formats, enforces configured scope/recipient policy and produces dry-run/verify receipts. Synthetic values only. Do not implement crypto, NixOS activation or key lifecycle here; PERF-06 handles deployment provisioning/recovery. No automatic export of BWS/OP, root private key, live values, Git plaintext, or secret interpolation into Nix store. Any production export/deployment is Blocked pending explicit scoped approval and separate reviewed custody controls. Root material cannot flow through ordinary resolver/cache.\n\n## API and behavior\nProvider API should expose inspect/validate/encrypt/decrypt-to-protected-sink/verify operations with explicit recipient set and metadata-only dry-run. Failure is typed (missing key, invalid ciphertext, unauthorized scope, unsupported format, IO/integrity). No decrypted values in ordinary JSON/status. Exact CLI command syntax remains implementation-owned but must declare paths and parse strictly before side effects.\n\n## Measurable acceptance and oracle\n1. Round-trip synthetic structured and binary fixtures with pinned SOPS/age; independently decrypt and compare expected bytes.\n2. Dry-run emits only planned paths, scopes and recipient fingerprints/labels, never plaintext. Verify command confirms ciphertext integrity/recipient policy without exposing value.\n3. Adversarial fixtures test wrong/missing identity, unauthorized recipient, corrupt/truncated ciphertext, unsupported schema, partial output, symlink/path traversal and write failure.\n4. Oracle: independent pinned SOPS/age invocation plus byte-for-byte synthetic golden fixture, manifest validator and redaction scan.\n\n## Negative tests\nSecret marker absent from stdout/stderr/logs/JSON/store; invalid recipient or decrypt failure never falls back to plaintext; output symlink/traversal rejected before write; no default root export; unsupported API capability is not reported successful.\n\n## Dependencies / priority / lifecycle\nDepends on PERF-02 class/freshness policy; coordinate artifact and recipient manifest with PERF-06. High, intrinsic urgency 600, medium size, V2, Backlog. Synthetic only.\n\n## Rollback / recovery\nOptional adapter, no default deployment activation. Preserve prior ciphertext and report; rollback can restore ciphertext only without claiming to revoke access to historical Git copies. No production Nix change or secret migration.\n\n\n\n## Priority, lifecycle and sizing\nIntrinsic urgency 600 (High); queue projection 20 only if the existing queue field is populated (High→20, Standard→40, Low/Someday/Cold→70). This intrinsic score is not the queue score and is separate from importance, dependencies, lifecycle and dispatch. Size M; lifecycle Backlog; stage V2; lane OpenCode implementation/test.",
+    "priority": "High",
+    "size": "M",
+    "lane": "OpenCode implementation/test",
+    "security_classification": "Deployment ciphertext only, synthetic fixtures; root private keys excluded.",
+    "priority_band": "High",
+    "queue_priority_projection": 20
+  },
+  {
+    "id": "PERF-05",
+    "title": "Complete bounded SecureStore and AEAD-envelope evaluation",
+    "parent": "#9160",
+    "kind": "research + security review",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §§42.2,42.4 lines 2386-2400; §48.1 step 9 lines 2639-2649",
+      "ADDENDUM_secrets_architecture_performance_infrastructure.md §6 lines 56-67, §9 lines 93-103",
+      "COORDINATOR_summit_handoff.md §7.4 lines 204-206",
+      "docs.rs securestore 0.100.3; neosmart/securestore-rs and neosmart/SecureStore primary project docs"
+    ],
+    "requirement_ids": [
+      "PERF-FORMAT-01",
+      "PERF-CRYPTO-REVIEW-01"
+    ],
+    "stage": "V2",
+    "lifecycle": "Backlog",
+    "urgency": 1000,
+    "depends_on": [],
+    "body": "## Why / user outcome\nComplete the source-backed SecureStore technical/maintenance evaluation required by addendum §6 and spec §42.2, and determine whether an AEAD-envelope alternative adds value beyond SOPS/age. The evaluation is required; prototype, import/export adapter and adoption remain conditional outcomes, not assumed deliverables.\n\n## Current evidence and affected code\nDocs.rs `securestore` 0.100.3 documents a Rust `SecretsManager` API and portable v3 JSON format; upstream protocol docs specify AES-128-CBC, HMAC-SHA1 and PBKDF2-SHA1 (256,000 iterations), with OpenSSL/Rust backend options. This does not establish a practical break, an independent audit, long-term maintenance, safe concurrent update, or Nix integration. Fleet currently has no SecureStore dependency or format.\n\n## Deliverable and technical boundaries\nResearch exact SecureStore release/source, maintainer/release evidence, dependencies/MSRV, KDF bounds/upgrades, MAC coverage/order, metadata authentication, downgrade/rollback, key custody, format migration, atomic save/multiprocess concurrency, corruption/recovery and cross-language interoperability. Compare with SOPS/age and a plausible modern envelope built from maintained AEAD primitives with explicit versioning and key wrapping/recipient lifecycle. Explain whether SOPS/age already meets the use case and why a separate envelope prototype is unnecessary, or define a disposable synthetic prototype if comparison exposes a material question. Research is mandatory; prototypes use synthetic values only. No production values, Cargo dependency, new canonical format, migration, root archive or cache adoption. SecureStore remains at most a conditional import/export candidate.\n\n## Measurable acceptance and oracle\n1. Evidence matrix cites exact source/release for every claim and labels unknowns; independent crypto reviewer evaluates any deployment-use recommendation.\n2. If a concrete use case warrants a prototype, cross-implementation synthetic round-trip tests Rust and .NET implementations where practical; tamper each field, wrong key, truncate, downgrade, rollback, concurrent writer and interrupted save.\n3. Compare against SOPS/age multi-recipient recovery/rekey, Nix integration, maintenance and rollback, plus the modern AEAD-envelope alternative described above. Either justify no separate prototype because existing SOPS/age covers the need, or define a tightly scoped synthetic prototype and its oracle.\n4. Evaluation is complete even if recommendation is “no prototype/no adoption”; adoption/import remains conditional on evidence and independent review. Oracle: cited primary-source matrix, known synthetic bytes where a prototype runs, cross-implementation equality and expected authenticated failure under mutation; no conclusion based on algorithm names alone.\n\n## Negative tests\nWrong key, tampered ciphertext/metadata, unsupported version, rollback, truncated input, resource-exhausting KDF/input, concurrent lost update and backend mismatch fail safely; no fixture value appears in logs. Do not claim practical exploit or safety without evidence.\n\n## Dependencies / priority / lifecycle\nNo runtime dependency. Standard priority, intrinsic urgency 1000, medium size, required V2 research backlog; prototype/adoption conditional. External security review required before deployment use.\n\n## Rollback / recovery\nPrototype disposable; no production footprint. If no-go, remove prototype; any later adoption requires separate format migration, custody and recovery decision.\n\n\n\n## Priority, lifecycle and sizing\nIntrinsic urgency 1000 (Standard); queue projection 40 only if the existing queue field is populated (High→20, Standard→40, Low/Someday/Cold→70). This intrinsic score is not the queue score and is separate from importance, dependencies, lifecycle and dispatch. Size M; lifecycle Backlog; stage V2; lane OpenCode research/security review.",
+    "priority": "Standard",
+    "size": "M",
+    "lane": "OpenCode research/security review",
+    "security_classification": "Synthetic format vectors only; no production secret payloads.",
+    "priority_band": "Standard",
+    "queue_priority_projection": 40
+  },
+  {
+    "id": "PERF-06",
+    "title": "Verify NixOS provisioning, age recipient lifecycle and offline recovery",
+    "parent": "#9160",
+    "kind": "test + operations + documentation",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §§39.2-39.3 lines 2302-2312; §48.2 V3-S09/V3-S12 lines 2663,2666",
+      "ADDENDUM_secrets_architecture_performance_infrastructure.md §4 lines 34-41",
+      "COORDINATOR_summit_handoff.md §7.4 lines 204-206",
+      "note.md lines 32-50; actual NixOS configuration and sops-nix module to be identified by implementation owner"
+    ],
+    "requirement_ids": [
+      "PERF-RECOVERY-01",
+      "PERF-RECIPIENT-LIFECYCLE-01",
+      "V3-S09",
+      "V3-S12"
+    ],
+    "stage": "V2",
+    "lifecycle": "Backlog",
+    "urgency": 600,
+    "depends_on": [
+      "PERF-04"
+    ],
+    "body": "## Why / user outcome\nProve NixOS sops-nix can provision an authorized synthetic deployment secret safely, keep age identities outside Git/Nix store, and recover offline after host loss. This is separate from Fleet's SOPS/age adapter PERF-04.\n\n## Current evidence and affected files\nIntake reports sops-nix patterns in current NixOS config, but exact key paths, persistence and activation behavior have not been verified in this assignment. Official sops-nix docs describe activation-time decrypt to protected runtime files with owner/mode; age recipients enable encryption but old Git ciphertext remains decryptable by removed recipients. No production key or deployment is authorized. Inspect the actual NixOS files and owner before proposing changes.\n\n## Affected configuration / API\nInspect existing repository NixOS flake/module and sops-nix configuration first; record exact paths and owners in the test report rather than guessing. Add only an isolated test module/VM fixture and operator recovery procedure; no Fleet library API changes.\n\n## Deliverable and technical boundaries\nCreate synthetic test fixture/runbook for protected runtime identity bootstrap, activation, host rebuild/loss, independent recovery recipient, recipient add/remove/rekey, overlap and offboarding. Keep identities and plaintext out of Git, derivations/store paths, CI/logs/images. No live config deployment, production key, root private key or live canary; these operations are Blocked pending explicit scoped approval and reviewed rollback/custody controls. Preserve separate root escrow policy; this issue concerns deployment-secret provisioning/recovery, not root custody.\n\n## Measurable acceptance and oracle\n1. Disposable NixOS VM activation creates expected runtime file with declared owner/mode atomically.\n2. Recursive derivation/store/closure/log/image scan contains neither synthetic plaintext canary nor private identity.\n3. Rebuilt/disconnected test host restores explicitly permitted synthetic subset using independent recovery identity without network.\n4. Adding recipient and rekey allows new identity for current ciphertext; removed identity fails current ciphertext. Test and document that old Git history may still decrypt; if revocation is required, rotate underlying secret.\n5. Oracle: independent pinned SOPS/age decrypt bytes, filesystem metadata assertions, recursive store scan and isolated restore receipt.\n\n## Negative tests\nIdentity in repository/store path, wrong/missing identity, mode too broad, wrong owner, partial activation, key persistence loss on reboot, unavailable recovery identity and historical ciphertext still decryptable are detected and never represented as successful revocation/recovery.\n\n## Dependencies / priority / lifecycle\nDepends on PERF-04 artifact/recipient manifest contract; configuration owner and disposable VM available. High, intrinsic urgency 600, medium size, V2 backlog. Synthetic keys only.\n\n## Rollback / recovery\nRun only in disposable host/config first; preserve known-good encrypted fixture. Rollback cannot resurrect a revoked recipient or claim Git history erasure. Stop before production deployment absent separate explicit approval.\n\n\n\n## Priority, lifecycle and sizing\nIntrinsic urgency 600 (High); queue projection 20 only if the existing queue field is populated (High→20, Standard→40, Low/Someday/Cold→70). This intrinsic score is not the queue score and is separate from importance, dependencies, lifecycle and dispatch. Size M; lifecycle Backlog; stage V2; lane OpenCode test/operations/documentation.",
+    "priority": "High",
+    "size": "M",
+    "lane": "OpenCode test/operations/documentation",
+    "security_classification": "Synthetic deployment secrets; no production or root identity.",
+    "priority_band": "High",
+    "queue_priority_projection": 20
+  }
+]

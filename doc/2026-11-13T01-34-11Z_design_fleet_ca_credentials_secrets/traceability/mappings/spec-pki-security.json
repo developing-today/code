@@ -1,0 +1,941 @@
+{
+  "version": 1,
+  "rows": [
+    {
+      "source_id": "SPEC-SEC-001",
+      "canonical_requirement_id": "SEC-001",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Once-daily laptop bidirectional OP/BWS sync of all authorized machine secrets",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Once-daily laptop bidirectional OP/BWS sync of all authorized machine secrets; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-002",
+      "canonical_requirement_id": "SEC-002",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Distinguish BW Password Manager from BWS Secrets Manager",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Distinguish BW Password Manager from BWS Secrets Manager; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-003",
+      "canonical_requirement_id": "SEC-003",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Initial full-inventory and carefully reviewed reconciliation",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Initial full-inventory and carefully reviewed reconciliation; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-004",
+      "canonical_requirement_id": "SEC-004",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Incremental since-success lookback with full periodic census",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Incremental since-success lookback with full periodic census; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-005",
+      "canonical_requirement_id": "SEC-005",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Compare every field, tag, URL, attachment and access key",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Compare every field, tag, URL, attachment and access key; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-006",
+      "canonical_requirement_id": "SEC-006",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Canonical global ID independent of path/native ID",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Canonical global ID independent of path/native ID; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-007",
+      "canonical_requirement_id": "SEC-007",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Persistent provider-ID pair mapping and typed field equivalence",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Persistent provider-ID pair mapping and typed field equivalence; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-008",
+      "canonical_requirement_id": "SEC-008",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Preserve unmatched new items from either side",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Preserve unmatched new items from either side; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-009",
+      "canonical_requirement_id": "SEC-009",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Conflict `.op`/`.bws` naming without clobbering",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Conflict `.op`/`.bws` naming without clobbering; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-010",
+      "canonical_requirement_id": "SEC-010",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns No last-modified-only automatic password choice",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: No last-modified-only automatic password choice; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-011",
+      "canonical_requirement_id": "SEC-011",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns History copy of stale password to both stores",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: History copy of stale password to both stores; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-012",
+      "canonical_requirement_id": "SEC-012",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Update stale native login item **in place**",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Update stale native login item **in place**; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-013",
+      "canonical_requirement_id": "SEC-013",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns `zz.delete` dated immutable naming and linkage",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: `zz.delete` dated immutable naming and linkage; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-014",
+      "canonical_requirement_id": "SEC-014",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Never auto-delete `zz.delete` items",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Never auto-delete `zz.delete` items; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-015",
+      "canonical_requirement_id": "SEC-015",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Detect genuine deletions from prior confirmed complete scans",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Detect genuine deletions from prior confirmed complete scans; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-016",
+      "canonical_requirement_id": "SEC-016",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Mirror verified tombstones to previously missing side",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Mirror verified tombstones to previously missing side; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-017",
+      "canonical_requirement_id": "SEC-017",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Preserve metadata and old values on provider failure",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Preserve metadata and old values on provider failure; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-018",
+      "canonical_requirement_id": "SEC-018",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Store-neutral item notes plus concise recent history",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Store-neutral item notes plus concise recent history; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-019",
+      "canonical_requirement_id": "SEC-019",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Lossless field sidecars when target cannot represent native field",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Lossless field sidecars when target cannot represent native field; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-020",
+      "canonical_requirement_id": "SEC-020",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Stable map for mismatched field names/types",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Stable map for mismatched field names/types; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-021",
+      "canonical_requirement_id": "SEC-021",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns All store writes journaled, read back, and idempotent",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: All store writes journaled, read back, and idempotent; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-022",
+      "canonical_requirement_id": "SEC-022",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Each changed item writes an append-only structured event",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Each changed item writes an append-only structured event; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-023",
+      "canonical_requirement_id": "SEC-023",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Run summaries and per-event references with timestamps/reasons",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Run summaries and per-event references with timestamps/reasons; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-024",
+      "canonical_requirement_id": "SEC-024",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Durable local log + Supabase/Postgres mirror or documented durable recovery",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Durable local log + Supabase/Postgres mirror or documented durable recovery; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-025",
+      "canonical_requirement_id": "SEC-025",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Query/report metrics on adds/edits/rotations/conflicts",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Query/report metrics on adds/edits/rotations/conflicts; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-026",
+      "canonical_requirement_id": "SEC-026",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Restrict secrets from SQL logs/events/telemetry",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Restrict secrets from SQL logs/events/telemetry; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-027",
+      "canonical_requirement_id": "SEC-027",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Record user/host/IP/MAC when known and appropriate",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Record user/host/IP/MAC when known and appropriate; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-028",
+      "canonical_requirement_id": "SEC-028",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Custom attribute registry and promotion process",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Custom attribute registry and promotion process; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-029",
+      "canonical_requirement_id": "SEC-029",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Notes/sidecars handle provider character/size limits",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Notes/sidecars handle provider character/size limits; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-030",
+      "canonical_requirement_id": "SEC-030",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns `fleet secrets put` creates/updates both authorized stores",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: `fleet secrets put` creates/updates both authorized stores; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-SEC-031",
+      "canonical_requirement_id": "SEC-031",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns `fleet secrets rotate` preserves history and reports activation state",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: `fleet secrets rotate` preserves history and reports activation state; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-GEN-001",
+      "canonical_requirement_id": "GEN-001",
+      "proposal_id": "GEN-01",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Unified CSPRNG for passwords/tokens/keys/IDs. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: GEN-01 names GEN-001 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-GEN-002",
+      "canonical_requirement_id": "GEN-002",
+      "proposal_id": "GEN-02",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Password profiles short/standard/long and unrestricted. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: GEN-02 names GEN-002 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-GEN-003",
+      "canonical_requirement_id": "GEN-003",
+      "proposal_id": "GEN-02",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Arbitrary length, alphabet and exclusion flags. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: GEN-02 names GEN-003 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-GEN-004",
+      "canonical_requirement_id": "GEN-004",
+      "proposal_id": "GEN-02",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Separate required character classes from candidate sets. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: GEN-02 names GEN-004 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-GEN-005",
+      "canonical_requirement_id": "GEN-005",
+      "proposal_id": "GEN-02",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: ASCII/web/Unicode/emoji/CJK candidate groups and aliases. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: GEN-02 names GEN-005 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-GEN-006",
+      "canonical_requirement_id": "GEN-006",
+      "proposal_id": "GEN-03",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Base-N encoding registry and documented nonstandard cases. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: GEN-03 names GEN-006 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-GEN-007",
+      "canonical_requirement_id": "GEN-007",
+      "proposal_id": "GEN-03",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: UUIDv4 generation alias and expandible ID family. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: GEN-03 names GEN-007 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-GEN-008",
+      "canonical_requirement_id": "GEN-008",
+      "proposal_id": "GEN-03",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Batch counts and multiple named output targets. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: GEN-03 names GEN-008 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-GEN-009",
+      "canonical_requirement_id": "GEN-009",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Private/public stdout/file/store/archive outputs with guards",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Private/public stdout/file/store/archive outputs with guards; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-GEN-010",
+      "canonical_requirement_id": "GEN-010",
+      "proposal_id": "GEN-01",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Generate/inspect/sign/verify using typed key adapter. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: GEN-01 names GEN-010 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-SSH-001",
+      "canonical_requirement_id": "SSH-001",
+      "proposal_id": "GEN-05",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Generate strong Ed25519 default SSH keys, RSA and P-256 options. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: GEN-05 names SSH-001 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-SSH-002",
+      "canonical_requirement_id": "SSH-002",
+      "proposal_id": "GEN-08",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Write public/private to independent approved paths or no disk. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: GEN-08 names SSH-002 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-SSH-003",
+      "canonical_requirement_id": "SSH-003",
+      "proposal_id": "GEN-08",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Correct dotssh user when sudo and preflight permissions. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: GEN-08 names SSH-003 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-SSH-004",
+      "canonical_requirement_id": "SSH-004",
+      "proposal_id": "GEN-05",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: SSH key get/adopt/import/export/inspect/rotate. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: GEN-05 names SSH-004 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-SSH-005",
+      "canonical_requirement_id": "SSH-005",
+      "proposal_id": "GEN-08",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: In-place merge of known_hosts/authorized_keys/ssh_config. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: GEN-08 names SSH-005 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-SSH-006",
+      "canonical_requirement_id": "SSH-006",
+      "proposal_id": "GEN-07",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Adopt and link SSH config/key/host items and metadata. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: GEN-07 names SSH-006 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-SSH-007",
+      "canonical_requirement_id": "SSH-007",
+      "proposal_id": "GEN-09",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Rotate remote keys without lockout, rollback on failure. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: GEN-09 names SSH-007 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-SSH-008",
+      "canonical_requirement_id": "SSH-008",
+      "proposal_id": "GEN-09",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: SSH CA principals and KRL planned or implemented by stated scope. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: GEN-09 names SSH-008 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-IROH-001",
+      "canonical_requirement_id": "IROH-001",
+      "proposal_id": "GEN-06",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Native iroh SecretKey and EndpointId generation. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: GEN-06 names IROH-001 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-IROH-002",
+      "canonical_requirement_id": "IROH-002",
+      "proposal_id": "GEN-06",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Iroh key import/export/get/derive-public/rotate and relationship tracking. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: GEN-06 names IROH-002 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI2-005",
+      "canonical_requirement_id": "PKI2-005",
+      "proposal_id": "CERT-02",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Duplicate algorithm entries create additional independent keys. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-02 names PKI2-005 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI2-009",
+      "canonical_requirement_id": "PKI2-009",
+      "proposal_id": "CERT-06",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: CA subject naming end with generation token. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-06 names PKI2-009 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI2-012",
+      "canonical_requirement_id": "PKI2-012",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Web SAN wildcard convenience with apex names",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Web SAN wildcard convenience with apex names; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-PKI2-014",
+      "canonical_requirement_id": "PKI2-014",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Crt/CSR import/adopt/validate and profile inheritance",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Crt/CSR import/adopt/validate and profile inheritance; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-PKI2-015",
+      "canonical_requirement_id": "PKI2-015",
+      "proposal_id": "CERT-15",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: DNS/CAA/CT plan and public ACME future workflow. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-15 names PKI2-015 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-011",
+      "canonical_requirement_id": "PKI-011",
+      "proposal_id": "CERT-01",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Issuers inherit organization, naming, algorithm/default policy from parent. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-01 names PKI-011 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-013",
+      "canonical_requirement_id": "PKI-013",
+      "proposal_id": "CERT-01",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Add arbitrary new purpose-specific issuer sets with one command. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-01 names PKI-013 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-014",
+      "canonical_requirement_id": "PKI-014",
+      "proposal_id": "CERT-01",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Infer full CN/OU from simple labels such as `Public Web`. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-01 names PKI-014 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-016",
+      "canonical_requirement_id": "PKI-016",
+      "proposal_id": "CERT-01",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Explicit name/subject/OU/country overrides remain available. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-01 names PKI-016 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-020",
+      "canonical_requirement_id": "PKI-020",
+      "proposal_id": "ROOT-03",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Parse human durations and exact RFC3339/UTC notAfter. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: ROOT-03 names PKI-020 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-022",
+      "canonical_requirement_id": "PKI-022",
+      "proposal_id": "CERT-06",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Explicit Web issuer expiry override, no fabricated user date. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-06 names PKI-022 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-024",
+      "canonical_requirement_id": "PKI-024",
+      "proposal_id": "CERT-05",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Web SAN supports both developing.today and developing-today.com. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-05 names PKI-024 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-026",
+      "canonical_requirement_id": "PKI-026",
+      "proposal_id": "CERT-04",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Explicit SAN and wildcard override, dedupe, validation and safety. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-04 names PKI-026 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-028",
+      "canonical_requirement_id": "PKI-028",
+      "proposal_id": "OPS-07",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Generate all relevant import-ready artifacts for selected credential. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: OPS-07 names PKI-028 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-029",
+      "canonical_requirement_id": "PKI-029",
+      "proposal_id": "OPS-07",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Full handoff package and minimal package modes. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: OPS-07 names PKI-029 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-030",
+      "canonical_requirement_id": "PKI-030",
+      "proposal_id": "ROOT-08",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: `--public-only`, `--key-only`, `--no-chains`, `--no-docs` variants. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: ROOT-08 names PKI-030 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-032",
+      "canonical_requirement_id": "PKI-032",
+      "proposal_id": "CERT-12",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Do not treat SSH/OpenPGP/JWT as mere X.509 encodings. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-12 names PKI-032 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-034",
+      "canonical_requirement_id": "PKI-034",
+      "proposal_id": "CERT-10",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Publish single DER and multi-cert CMS where supported. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-10 names PKI-034 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-035",
+      "canonical_requirement_id": "PKI-035",
+      "proposal_id": "OPS-07",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Proactively generated specific chains and untrusted cross-certs. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: OPS-07 names PKI-035 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-037",
+      "canonical_requirement_id": "PKI-037",
+      "proposal_id": "CERT-10",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Publication plan with real relative file paths and served URLs. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-10 names PKI-037 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-038",
+      "canonical_requirement_id": "PKI-038",
+      "proposal_id": "CERT-10",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Standard BIND zone fragment and structured DNS change manifest. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-10 names PKI-038 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-039",
+      "canonical_requirement_id": "PKI-039",
+      "proposal_id": "OPS-07",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Generated README explains DNS, copy/serve, validation and revocation. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: OPS-07 names PKI-039 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-040",
+      "canonical_requirement_id": "PKI-040",
+      "proposal_id": "CERT-10",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Configurable stable HTTP `/certs`, `/crl`, optional `/ocsp`. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-10 names PKI-040 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-043",
+      "canonical_requirement_id": "PKI-043",
+      "proposal_id": "ROOT-02",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Reissue existing cert/key vs rotate new keys distinguished. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: ROOT-02 names PKI-043 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-045",
+      "canonical_requirement_id": "PKI-045",
+      "proposal_id": "CERT-04",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: `--root`/`--issuer` accepts cert/path/dir/archive/store ref where valid. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-04 names PKI-045 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-046",
+      "canonical_requirement_id": "PKI-046",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Can auto-locate one approved canonical parent if path omitted",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Can auto-locate one approved canonical parent if path omitted; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-PKI-047",
+      "canonical_requirement_id": "PKI-047",
+      "proposal_id": "CERT-16",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Ambiguous/missing parent fails, does not silently choose. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-16 names PKI-047 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-048",
+      "canonical_requirement_id": "PKI-048",
+      "proposal_id": "OPS-04",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Support zip, tar, tar.gz, tar.zst and in-memory bundle APIs. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: OPS-04 names PKI-048 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-049",
+      "canonical_requirement_id": "PKI-049",
+      "proposal_id": "CERT-16",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Unattended scripts, JSON/YAML stdin/stdout and structured status. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-16 names PKI-049 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-050",
+      "canonical_requirement_id": "PKI-050",
+      "proposal_id": "OPS-02",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Batch multi-step plans with dependencies and resumability. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: OPS-02 names PKI-050 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-051",
+      "canonical_requirement_id": "PKI-051",
+      "proposal_id": "CERT-07",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Fast leaf path independent of documentation/network packaging. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-07 names PKI-051 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-052",
+      "canonical_requirement_id": "PKI-052",
+      "proposal_id": "CERT-01",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Composable Rust library for high-level issuance and low-level streams. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-01 names PKI-052 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-053",
+      "canonical_requirement_id": "PKI-053",
+      "proposal_id": "CERT-18",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Selectable store sync (OP, BWS, both, none) using shared interface. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-18 names PKI-053 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-054",
+      "canonical_requirement_id": "PKI-054",
+      "proposal_id": "CERT-16",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Automatic permitted sync with redacted receipts and recovery. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-16 names PKI-054 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-055",
+      "canonical_requirement_id": "PKI-055",
+      "proposal_id": "OPS-04",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Explicit output mode and private/public material policy. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: OPS-04 names PKI-055 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-056",
+      "canonical_requirement_id": "PKI-056",
+      "proposal_id": "CERT-07",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Flag aliases through canonical normalization and collision detection. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-07 names PKI-056 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-057",
+      "canonical_requirement_id": "PKI-057",
+      "proposal_id": "OPS-04",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Explainable defaults, dry run, guardrails and separate hazard approvals. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: OPS-04 names PKI-057 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-058",
+      "canonical_requirement_id": "PKI-058",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Comprehensive help, completers, developer docs and how-tos",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Comprehensive help, completers, developer docs and how-tos; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-PKI-059",
+      "canonical_requirement_id": "PKI-059",
+      "proposal_id": "OPS-07",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Generated Linux/Java/Firefox/Chrome/web server install guides. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: OPS-07 names PKI-059 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-060",
+      "canonical_requirement_id": "PKI-060",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Integrate with current fleet registry, config, Nix and existing domains",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Integrate with current fleet registry, config, Nix and existing domains; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-PKI-062",
+      "canonical_requirement_id": "PKI-062",
+      "proposal_id": "OPS-09",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Matrix tests for all conditional positive and strict negative trust paths. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: OPS-09 names PKI-062 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-063",
+      "canonical_requirement_id": "PKI-063",
+      "proposal_id": "CERT-17",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Tests of all flags/formats/archives/store failures and script APIs. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: CERT-17 names PKI-063 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-064",
+      "canonical_requirement_id": "PKI-064",
+      "proposal_id": "OPS-08",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Generate demonstration bundles using the implemented fleet binary. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: OPS-08 names PKI-064 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-065",
+      "canonical_requirement_id": "PKI-065",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Maintain roadmap, future ideas, dependency and complexity register",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Maintain roadmap, future ideas, dependency and complexity register; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-PKI-066",
+      "canonical_requirement_id": "PKI-066",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Short-lived 90-day Web leaf default",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Short-lived 90-day Web leaf default; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-PKI-067",
+      "canonical_requirement_id": "PKI-067",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns `fleet cert` canonical, `fleet pki` alias",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: `fleet cert` canonical, `fleet pki` alias; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-PKI-069",
+      "canonical_requirement_id": "PKI-069",
+      "proposal_id": "ROOT-02",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Immutable structured `manifest.json` and JSON/YAML renderers. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: ROOT-02 names PKI-069 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-070",
+      "canonical_requirement_id": "PKI-070",
+      "proposal_id": "ROOT-01",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: All-rust thin path plus independent cryptographic provider adapters. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: ROOT-01 names PKI-070 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-072",
+      "canonical_requirement_id": "PKI-072",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Versioned agent skills and `AGENTS.md` installer/templates",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Versioned agent skills and `AGENTS.md` installer/templates; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "unresolved-cross-domain",
+      "reason": "UNRESOLVED/CROSS-DOMAIN: no proposal requirement scope explicitly resolves this source outcome; mapping it to a neighboring proposal would overstate coverage."
+    },
+    {
+      "source_id": "SPEC-PKI-075",
+      "canonical_requirement_id": "PKI-075",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns ACME/EST/SCEP/remote signing/transparent issuance systems",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: ACME/EST/SCEP/remote signing/transparent issuance systems; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "research",
+      "reason": "RESEARCH: inventory classifies this as future/nonblocking research; no implementation or support claim is established by the current proposals."
+    },
+    {
+      "source_id": "SPEC-PKI-076",
+      "canonical_requirement_id": "PKI-076",
+      "proposal_id": "GEN-10",
+      "design_section": "designs/generators.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: NATS, SQL, Redis, S3 and cloud publication adapters. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: GEN-10 names PKI-076 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    },
+    {
+      "source_id": "SPEC-PKI-077",
+      "canonical_requirement_id": "PKI-077",
+      "proposal_id": "",
+      "design_section": "unresolved: no current proposal/design section owns Web/TUI dashboard, monitoring and managed trust deployments",
+      "test_oracle": "Construct a bounded synthetic fixture for the exact outcome: Web/TUI dashboard, monitoring and managed trust deployments; record the observable state/result and reject absent or unsupported behavior.",
+      "disposition": "research",
+      "reason": "RESEARCH: inventory classifies this as future/nonblocking research; no implementation or support claim is established by the current proposals."
+    },
+    {
+      "source_id": "SPEC-PKI-078",
+      "canonical_requirement_id": "PKI-078",
+      "proposal_id": "ROOT-01",
+      "design_section": "designs/pki-issuance.md",
+      "test_oracle": "Use a synthetic fixture for the exact outcome: Research and deploy true PQ/hybrid transport and signatures where supported. Assert the resulting artifact/state or typed failure for each stated condition; unsupported capability is not a pass.",
+      "disposition": "proposal",
+      "reason": "PARTIAL: ROOT-01 names PKI-078 in its requirement scope, but the inventory outcome is not established as wholly covered by the proposal's bounded deliverable."
+    }
+  ]
+}

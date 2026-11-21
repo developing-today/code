@@ -1,0 +1,541 @@
+[
+  {
+    "id": "GEN-01",
+    "title": "Define a typed in-memory Fleet generation API",
+    "parent": "#9162",
+    "kind": "implementation",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §§22.1,22.4,26,48.1 phase 5 (lines 1292-1298,1328-1333,1702-1759,2641-2648)",
+      "architecture-review.md ADR-S01/S03; source-precedence.md §2"
+    ],
+    "requirement_ids": [
+      "GEN-001",
+      "GEN-010"
+    ],
+    "stage": "V2",
+    "lifecycle": "Backlog",
+    "urgency": 450,
+    "depends_on": [],
+    "body": "## Outcome\nSettle a versioned minimal generation contract consumed by Fleet CLI, secrets, SSH, iroh and later PKI. `generate(GenerateRequest, EntropySource, Option<SignerCapability>) -> Result<GeneratedArtifact, GenerateError>` returns in-memory material/metadata; a separate explicit `materialize(artifact, sink, OutputPolicy)` performs file/store/stdout effects. Generation itself has no Writer, disk or provider side effect. Stable opaque logical ID is independent of path/name and provider IDs.\n\n## Current evidence and boundaries\nV1 is existing system only. `fleet-secrets` is broker/BWS name resolver (`pkgs/fleet/crates/fleet-secrets/src/lib.rs`), not generation API; `fleet-registry` is std-only and Fleet feature-gates domains (`pkgs/fleet/crates/fleet-registry/src/lib.rs`, `pkgs/fleet/crates/fleet/Cargo.toml`). Preserve `fleet secrets get/list`, intentional secret stdout, redacted errors/logs and connect size/profile contract. No provider mutations, PKI ceremony or production key. Root excluded from ordinary resolver refs/cache/prefetch/benchmark/equality index; signer and escrow are separate authority planes.\n\n## Acceptance and API decision gate\nFirst deliverable is a reviewed interface note freezing typed request/result, entropy/signer seams, classification/redaction and separate sink API before downstream parallel implementation. Downstream GEN issues consume that version. API and CLI adapter produce identical synthetic typed artifact; path rename preserves opaque ID while distinct objects do not alias. Typed errors distinguish invalid policy, entropy unavailable, unsupported capability, signer denied, sink denied and integrity failure. CLI usage exit 2, capability unavailable exit 69; no default reveal. Root ref cannot reach normal resolver/cache. Oracle: type/API tests, fake RNG/signer/sink, rename MBT, feature/artifact inspection. Negative: entropy/sink failure has no success receipt; public-only signer, ambient signer lookup, root SecretRef, secret in receipt and connect dependency leak all fail.\n\n## Dependencies / priority / lifecycle / rollback\nNo hard implementation prerequisite; coordinate stable ID with ARCH-01/SEC-02, command/profile wiring with ARCH-07. Blocks GEN-02–GEN-10. Files: cohesive module/API and tests only, no parallel CLI or registry/profile implementation. High urgency 450; High importance as a security/compatibility seam; L, V2, Backlog (synthetic design/API work may be Ready after review). Disable optional feature on failure; preserve current behavior.\n\n## Priority, urgency and importance\nPriority label/projection: `priority/high` / queue 20 (the publisher derives this from the intrinsic urgency band). Intrinsic urgency: 450 (High; lower is sooner), distinct from importance, blockers, lifecycle, stage and dispatch. Importance rationale: The stable in-memory contract prevents incompatible one-off generators and unsafe implicit sinks; it is a reusable security/compatibility foundation."
+  },
+  {
+    "id": "GEN-02",
+    "title": "Implement unbiased password and passphrase policy sampling",
+    "parent": "#9162",
+    "kind": "implementation",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §§22.1–22.2,28.1–28.2,31 GEN-001–GEN-005 (lines 1292-1322,1837-1849,2019-2024)"
+    ],
+    "requirement_ids": [
+      "GEN-001",
+      "GEN-002",
+      "GEN-003",
+      "GEN-004",
+      "GEN-005"
+    ],
+    "stage": "V2",
+    "lifecycle": "Backlog",
+    "urgency": 450,
+    "depends_on": [
+      "GEN-01"
+    ],
+    "body": "## Outcome\nAdd password/token-string/passphrase generation using vetted OS CSPRNG entropy; fail closed on entropy failure. Separate candidate alphabets from required classes. Support short/standard/long/website/unrestricted policies, exclusions, configurable length and explicit byte/scalar/grapheme/normalization choices. Standard is conservative; Unicode/CJK/emoji remain explicit and versioned. Passphrases choose independently uniform indices from a versioned curated word list.\n\n## Current evidence and boundaries\nFleet currently has no generator command; `fleet-secrets` resolves strings only. Implement through GEN-01 in the existing multicall surface. Do not test against live credentials, store generated secrets automatically, or claim arbitrary websites accept generated Unicode.\n\n## Acceptance and oracles\nFor reduced finite alphabets, enumerate the valid output space and prove each output has equal sampling probability by construction; larger-domain property tests assert every result satisfies all constraints. Unsatisfiable policies fail before calling RNG. Entropy failure propagates; test lengths 16/32/64 and configured bounds, exclusion collisions, Unicode normalization and units. Entropy calculation must use actual effective sample space and constraints. Oracle: exhaustive reduced-domain enumeration plus property invariants; statistical tests are supplementary only. Negative tests reject empty/invalid alphabets, malformed charset files, impossible class requirements, below-floor entropy, invalid lengths and insecure deterministic production RNG. Logs/errors contain no result bytes.\n\n## Dependencies, rollback and stage\nDepends on GEN-01; owns sampler, policy API, CLI integration and tests only. High priority, L, V2. Synthetic test material only. Disable the feature on bias or redaction regression; existing Fleet commands remain unchanged.\n\n## Priority, urgency and importance\nPriority label/projection: `priority/high` / queue 20 (the publisher derives this from the intrinsic urgency band). Intrinsic urgency: 450 (High; lower is sooner), distinct from importance, blockers, lifecycle, stage and dispatch. Importance rationale: A biased sampler or incorrect constraint implementation directly weakens generated credentials; this is a core security control."
+  },
+  {
+    "id": "GEN-03",
+    "title": "Add versioned token encodings and UUIDv4 ID generation",
+    "parent": "#9162",
+    "kind": "implementation",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §§22.2–22.3,31 GEN-006–GEN-008 (lines 1316-1326,1982-2028)"
+    ],
+    "requirement_ids": [
+      "GEN-006",
+      "GEN-007",
+      "GEN-008"
+    ],
+    "stage": "V2",
+    "lifecycle": "Backlog",
+    "urgency": 1000,
+    "depends_on": [
+      "GEN-01",
+      "GEN-02"
+    ],
+    "body": "## Outcome\nSeparate random-byte token generation from encoding and from character-uniform base-N output. Add an explicit versioned registry for standard/nonstandard alphabets, UUIDv4 generation and parse/validation; `--uuid` is an alias for the dedicated UUIDv4 algorithm. ID types disclose collision, clock/order and information-leak properties; time-ordered IDs are not bearer tokens.\n\n## Current evidence and boundaries\nNo Fleet generator registry exists; Fleet secret-name validation is a path-safety rule, not an ID format. This issue does not implement keypairs/signatures or provider sync.\n\n## Acceptance and independent oracle\nRound-trip all registered reversible formats; UUID bits conform to RFC 9562 and report 122 random bits; character-uniform sampling is unbiased for uneven byte-to-alphabet ratios, proved by reduced-domain enumeration. Parsers reject malformed or ambiguous case/padding per registry; batch names are unique. Use an independent RFC 9562 parser/reference implementation and exact enumeration. Negative tests reject unsupported aliases, false standard claims, entropy reported from encoded character count, and time-ordered ID use as secret token.\n\n## Dependencies, rollback and stage\nDepends on GEN-01 and shared sampler in GEN-02. Standard urgency, M, V2, Backlog. Registry versions may be deprecated but never silently reinterpreted. No external database or production writes.\n\n## Priority, urgency and importance\nPriority label/projection: `priority/normal` / queue 40 (the publisher derives this from the intrinsic urgency band). Intrinsic urgency: 1000 (Standard; lower is sooner), distinct from importance, blockers, lifecycle, stage and dispatch. Importance rationale: Typed token/ID encodings prevent misuse, but the first UUID/token set is additive and does not gate V1 behavior."
+  },
+  {
+    "id": "GEN-04",
+    "title": "Add typed key adapters with sign and independent verify",
+    "parent": "#9162",
+    "kind": "implementation",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §§22.4,28.1–28.2,31 GEN-010,48.2 V3-S20–S21 (lines 1328-1333,1837-1849,2019-2028,2651-2675)",
+      "architecture-review.md A-2"
+    ],
+    "requirement_ids": [
+      "GEN-010",
+      "PKI2-001",
+      "PKI2-008"
+    ],
+    "stage": "V2",
+    "lifecycle": "Backlog",
+    "urgency": 450,
+    "depends_on": [
+      "ARCH-06",
+      "GEN-01"
+    ],
+    "body": "## Outcome\nImplement concrete generic key generate/derive-public/fingerprint/sign/verify via architecture `ARCH-06` crypto/signer seam; this is not a second signer API or PKI graph. Validate keypair consistency before sinks. Never imply a certificate is a signing key.\n\n## Current evidence and boundary\nFleet secrets currently handles named strings. `pkgs/id/src/lib.rs` has a separate sign-only-what-receipt-accepts contract (lines 54–103); do not copy/weaken it. Synthetic keys only; no root key export, production signing or provider writes.\n\n## API/errors\n`fleet generate key --kind <registered-id>`, `fleet key derive-public|fingerprint|inspect`, `fleet sign file|text --key <explicit-signer-ref>`, `fleet verify file|text --signature <ref> --public-key <ref>`. A key ref is not signer authorization. Errors distinguish unsupported algorithm/encoding, key mismatch, signer denied and verification failed. Root signing uses A-2 authorization bound to root fingerprint/handle, subject key identity, algorithm, profile/purpose, exact validity, artifact-plan digest and approved outputs; expiring/single-use by default.\n\n## Acceptance and independent oracle\nEach enabled algorithm signs and independently verifies synthetic fixed fixture; wrong key, modified message, unsupported digest/encoding and public-only signing fail; fingerprint encoding is explicit; key format round-trips. Feature inspection proves unused algorithms absent from connect. Oracle: OpenSSL 3.5+, independent Rust verifier where supported and official vectors. Negative tests reject ambient signer lookup, signer substitution, changed plan, wrong purpose, expired/replayed root grant, silent fallback or ML-DSA claimed without verifier support.\n\n## Dependencies, safety, priority and recovery\nDepends on GEN-01 and ARCH-06; ARCH-07 owns command/profile registration. High urgency 450, XL, V2, Backlog. Preserve Fleet size/profile gates. Synthetic ephemeral keys; disable adapter if independent verifier fails; no production state to roll back.\n\n## Priority, urgency and importance\nPriority label/projection: `priority/high` / queue 20 (the publisher derives this from the intrinsic urgency band). Intrinsic urgency: 450 (High; lower is sooner), distinct from importance, blockers, lifecycle, stage and dispatch. Importance rationale: Key/signature adapter errors can produce invalid or misleading cryptographic artifacts; independent verification makes this a security foundation."
+  },
+  {
+    "id": "GEN-05",
+    "title": "Implement OpenSSH-native key generation and conversion policy",
+    "parent": "#9162",
+    "kind": "implementation",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §§23.1–23.2,28.1–28.2,31 SSH-001/SSH-004 (lines 1354-1382,1839-1849,2029-2034)"
+    ],
+    "requirement_ids": [
+      "SSH-001",
+      "SSH-004"
+    ],
+    "stage": "V2",
+    "lifecycle": "Backlog",
+    "urgency": 450,
+    "depends_on": [
+      "GEN-01",
+      "GEN-04"
+    ],
+    "body": "## Outcome\nProvide Fleet SSH key generate/inspect/get/import/export using OpenSSH-native formats: Ed25519 default, supported RSA-3072/4096 and P-256, with hardware-backed variants only when implemented. Reject obsolete DSA/short RSA by default; allow only a separately audited legacy policy. Do not describe classical SSH authentication as PQ-safe due to hybrid PQ key exchange.\n\n## Current evidence and boundary\nFleet has no SSH identity domain; its existing proxy SSH transport is not an SSH-key lifecycle API. `pkgs/id` remains a separate product. This issue does not install files or perform remote changes.\n\n## Acceptance and oracle\nOpenSSH `ssh-keygen` and `ssh` parse/use every advertised format; derived public key/fingerprint matches OpenSSH; import/export preserves comments and parse semantics. Encrypted-key import cannot silently strip a passphrase; private export is explicitly approved. OpenSSH is the independent format/verification oracle. Negative tests cover tampering, incorrect passphrase, unsupported conversion, DSA/short RSA, public-only private export and unsupported algorithm claims.\n\n## Dependencies and rollback\nDepends on GEN-01/04. High priority, size L, V2, Backlog. Synthetic keys only; no home-directory install or remote host access. Disable unsupported algorithm adapters rather than substitute.\n\n## Priority, urgency and importance\nPriority label/projection: `priority/high` / queue 20 (the publisher derives this from the intrinsic urgency band). Intrinsic urgency: 450 (High; lower is sooner), distinct from importance, blockers, lifecycle, stage and dispatch. Importance rationale: Incorrect SSH key handling risks incompatibility or private-key disclosure; this is a core user-key safety feature."
+  },
+  {
+    "id": "GEN-06",
+    "title": "Add version-pinned native iroh SecretKey and EndpointId adapter",
+    "parent": "#9162",
+    "kind": "implementation",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §23.4,§31 IROH-001–IROH-002,§§27.4,28.1–28.2,43 (lines 1390-1403,2037-2038,2402-2434)",
+      "pkgs/id/src/local.rs and src/key_envelope.rs"
+    ],
+    "requirement_ids": [
+      "IROH-001",
+      "IROH-002"
+    ],
+    "stage": "V2",
+    "lifecycle": "Backlog",
+    "urgency": 1000,
+    "depends_on": [
+      "GEN-01",
+      "GEN-04"
+    ],
+    "body": "## Outcome\nPin iroh crate/API version and add native SecretKey generation, parsing/import, export, EndpointId derivation, inspection, and only documented sign/verify capabilities. Use versioned Fleet references/manifests; do not place secret bytes in metadata. Never equate EndpointId with X.509 trust, a CA identity, or authorization.\n\n## Current evidence and boundary\n`pkgs/id/Cargo.toml` uses iroh 1 / iroh-base 1; `pkgs/id/src/local.rs` uses native SecretKey and EndpointId; `pkgs/id/src/key_envelope.rs` has a version-1 passphrase-wrapped app format, and README documents `id key import/export`. Exact locked versions and serialization API must be checked when implementation begins. Do not modify `pkgs/id` or rewrite `.iroh-key`/`.iroh-key-client`.\n\n## Acceptance and oracle\nNative parser round-trips synthetic generated keys; derived EndpointId equals claimed ID; malformed/tampered/version-unknown/mismatched-ID inputs fail before writes. Oracle is the pinned native iroh parser/derivation plus versioned official docs at docs.rs. Test against `id`-format fixture read-only. Negative tests reject X.509 certificate as iroh identity and prevent automatic identity replacement.\n\n## Dependencies and rollback\nDepends on GEN-01/04. Standard, L, V2, Backlog; optional Cargo feature. Active peer identity rotation is blocked for a separately approved lifecycle plan. Remove/disable adapter on compatibility regression; no active identity or provider mutation.\n\n## Priority, urgency and importance\nPriority label/projection: `priority/normal` / queue 40 (the publisher derives this from the intrinsic urgency band). Intrinsic urgency: 1000 (Standard; lower is sooner), distinct from importance, blockers, lifecycle, stage and dispatch. Importance rationale: Native iroh reuse protects existing application identity semantics; adapter support is useful but is not a current Fleet capability."
+  },
+  {
+    "id": "GEN-07",
+    "title": "Adopt existing SSH and iroh keys through a read-only plan",
+    "parent": "#9162",
+    "kind": "implementation",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §§22.4,23.2,23.4–23.5,25.3,28.1 (lines 1328-1333,1362-1382,1390-1407,1643-1649)",
+      "pkgs/id/src/key_envelope.rs"
+    ],
+    "requirement_ids": [
+      "SSH-004",
+      "SSH-006",
+      "IROH-002"
+    ],
+    "stage": "V3",
+    "lifecycle": "Backlog",
+    "urgency": 1000,
+    "depends_on": [
+      "GEN-05",
+      "GEN-06",
+      "OPS-01"
+    ],
+    "body": "## Outcome\nAdoption parses an explicit input read-only, validates native formats, derives fingerprints/identifiers, records provenance/relationships and emits an exact plan before any write. Preserve original bytes/comments and unknown fields in protected sidecars where authorized; never silently discard unsupported data or sync to providers.\n\n## Current evidence and boundary\nFleet resolver is read-only by name. `id` already owns its encrypted import/export envelope and active identity; Fleet adoption must not replace it. No full personal-vault inventory or broad filesystem scan.\n\n## Acceptance and oracle\nMalformed/ambiguous inputs generate no writes; SSH fingerprint matches independent OpenSSH; iroh EndpointId matches native derivation; lossless source-sidecar export preserves exact original bytes; unknown fields are explicitly marked. `--dry-run` leaves filesystem/provider snapshot unchanged. Oracle: independent parsers, source hashes, and write-audit fixture. Negative tests reject private material in public sinks and reject unrecognized `id` envelope as raw iroh serialization.\n\n## Dependencies and rollback\nDepends GEN-05/06 and OPS-01. Standard, L, V3, Backlog. Initial implementation is fixture-only/read-only. Apply requires a later explicit path and scoped approval; on failure retain source, remove only plan-owned additions after checking no intervening edits.\n\n## Priority, urgency and importance\nPriority label/projection: `priority/normal` / queue 40 (the publisher derives this from the intrinsic urgency band). Intrinsic urgency: 1000 (Standard; lower is sooner), distinct from importance, blockers, lifecycle, stage and dispatch. Importance rationale: Read-only adoption avoids identity loss and ambiguous format conversion; useful after core adapters exist."
+  },
+  {
+    "id": "GEN-08",
+    "title": "Install SSH files and merge configs with atomic recovery",
+    "parent": "#9162",
+    "kind": "implementation",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §§23.2,23.5,25.3,28.1–28.2 (lines 1371-1382,1405-1407,1643-1649,1839-1849)",
+      "AGENTS.md testing/oracle doctrine"
+    ],
+    "requirement_ids": [
+      "SSH-002",
+      "SSH-003",
+      "SSH-005",
+      "SSH-006"
+    ],
+    "stage": "V3",
+    "lifecycle": "Backlog",
+    "urgency": 450,
+    "depends_on": [
+      "GEN-05",
+      "GEN-07",
+      "OPS-01",
+      "OPS-04"
+    ],
+    "body": "## Outcome\nInstall private/public SSH files separately after target-user, owner, mode, path, ACL and symlink checks. Merge `config`, `authorized_keys` and `known_hosts` structurally, preserving unrelated bytes, comments, order and user edits. Use staged same-filesystem writes, fsync, atomic rename and recoverable journal.\n\n## Current evidence and boundary\nFleet has no SSH mutation domain. Do not modify `pkgs/id` paths or run against a real home directory in CI. This issue excludes remote hosts and host-key TOFU.\n\n## Acceptance and oracle\nPlan hashes all targets and is read-only. Private files default 0600 and `.ssh` 0700 subject to policy. Injected failures at each write/fsync/rename/readback leave original state or an exact recoverable partial receipt. Golden merge tests preserve unowned lines/comments; sudo target-user resolution is verified; unsafe symlink/traversal/owner/mode/ACL fails before any mutation. Oracle: independent parse/render fixtures plus filesystem snapshots and fault injection. Negative tests prove no wholesale overwrite, no new unverified host key, and no world-readable private key.\n\n## Dependencies, rollback and urgency\nDepends GEN-05/07, OPS-01/04. High, XL, V3, Backlog. Test with temporary roots only. Rollback checks hashes to avoid overwriting newer human edits; unsupported filesystem atomicity fails closed.\n\n## Priority, urgency and importance\nPriority label/projection: `priority/high` / queue 20 (the publisher derives this from the intrinsic urgency band). Intrinsic urgency: 450 (High; lower is sooner), distinct from importance, blockers, lifecycle, stage and dispatch. Importance rationale: Atomic SSH file edits protect existing user configuration and private-key permissions; failure can break access or expose keys."
+  },
+  {
+    "id": "GEN-09",
+    "title": "Stage and verify remote SSH rotation before retiring old access",
+    "parent": "#9162",
+    "kind": "implementation",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §23.3,§31 SSH-007–SSH-008,§§25.2,28.1–28.2 (lines 1383-1388,1630-1642,2035-2036,1839-1849)",
+      "architecture-review.md A-1"
+    ],
+    "requirement_ids": [
+      "SSH-007",
+      "SSH-008"
+    ],
+    "stage": "V3",
+    "lifecycle": "Backlog",
+    "urgency": 450,
+    "depends_on": [
+      "GEN-08",
+      "OPS-01",
+      "OPS-02",
+      "OPS-04",
+      "OPS-10"
+    ],
+    "body": "## Outcome\nImplement a narrowly scoped remote SSH key rotation state machine: prove current access and host identity; preflight exact user/permissions; append the new public key alongside the old; verify a fresh independent login; remove old authorization only after success and only when approved. Report per-host status. SSH CA/principals/KRL remain separate from X.509 and are not implemented here.\n\n## Current evidence and boundaries\nFleet currently has no SSH remote operation. Use a disposable OpenSSH lab only. No production host, broad unattended policy, Fleet proxy change, secret-store reconciliation or timer work. Files/interfaces are only the SSH rotation state machine and test harness; remote key transfer uses refs/agent and never shell-interpolates private bytes.\n\n## CLI/API/errors\nProposed `fleet ssh key rotate <ref> --remote <host> --user <user> --preflight --preserve-history`; plan-only by default. Apply requires exact host/user/key fingerprints, verified known-host reference, plan hash and host-scoped approval. Errors distinguish `HostIdentityUnverified`, `NoExistingAccess`, `PreconditionChanged`, `UnsupportedGuard`, `NewKeyLoginFailed`, `ApprovalExpired`, `UncertainRemoteOutcome`, `PartialRotation`. A timeout after submission is uncertain; never blindly retry removal.\n\n## Acceptance, negative tests and oracle\nMBT covers each transition/restart. Preserve old access until new key has a fresh successful login; injected network loss, permissions drift, failed auth, timeout or partial write halts before removing old key. Rollback refuses to overwrite intervening remote edits. A-1: remote guard is per operation; when human/other writer can alter target and no atomic precondition/serialization is proven, step is `needs-review`, or a separately approved weaker policy records the lost-update window in plan/receipt. Oracle: disposable OpenSSH server/client, host-key fingerprint, remote authorized_keys hashes/modes and independent state model. Negative: changed host key, no old-access proof, wrong new key, expired/replayed approval and remove-old-first all refuse.\n\n## Dependencies, lifecycle and recovery\nDepends GEN-08, OPS-01/02/04/10. High urgency 450, XL, V3, Backlog after synthetic prerequisites. Synthetic implementation may proceed; all production remote action is separately Blocked pending explicit host-specific approval and tested out-of-band recovery. Keep old key authorized on every failure; only mark complete after readback and new-login verification.\n\n## Priority, urgency and importance\nPriority label/projection: `priority/high` / queue 20 (the publisher derives this from the intrinsic urgency band). Intrinsic urgency: 450 (High; lower is sooner), distinct from importance, blockers, lifecycle, stage and dispatch. Importance rationale: Staged verification prevents remote lockout; failure can sever operator access, so isolated proof is important before any live use."
+  },
+  {
+    "id": "GEN-10",
+    "title": "Define additive algorithm and format capability registries",
+    "parent": "#9162",
+    "kind": "design",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §§22.4,25–27,48.2 V3-S14/V3-S21 (lines 1328-1333,1577-1649,1702-1828,2668-2675)",
+      "architecture-review.md; ARCH-07 owns profiles/commands"
+    ],
+    "requirement_ids": [
+      "GEN-006",
+      "GEN-010",
+      "PKI-073",
+      "PKI-074",
+      "PKI-076"
+    ],
+    "stage": "V4",
+    "lifecycle": "Backlog",
+    "urgency": 1000,
+    "depends_on": [
+      "GEN-01",
+      "GEN-04"
+    ],
+    "body": "## Outcome\nCreate versioned typed capability registries for algorithms, key formats, signature encodings and sinks. Each adapter separately declares parse/encode/generate/sign/verify/public-derive/import/export and feature prerequisites; unknown or unsupported combinations fail closed. Additions never change existing IDs' meaning.\n\n## Current evidence and boundary\nFleet's std-only registry and feature matrix are established patterns; Atlas uses versioned protocol boundaries. Do not create a second binary or pull all providers into connect. This issue defines extensibility; it does not implement every future OpenPGP/JWK/ML-DSA/HSM adapter.\n\n## Acceptance and oracle\nSchema declares stable ID/version, standard status, supported operations, feature prerequisites, dependency/client limits and independent test oracle. Duplicate IDs/ambiguous versions fail validation; runtime capability report matches compiled features; a synthetic adapter can be registered without changing core generation semantics. Oracle: schema conformance and artifact/feature-tree inspection. Negative tests reject capability advertised for a stub, silent format substitution, and dependency leakage into connect.\n\n## Dependencies and rollback\nDepends GEN-01/04. Standard, L, V4, Backlog. Unknown registry version refuses; deprecate rather than reinterpret. No provider or production operation.\n\n## Priority, urgency and importance\nPriority label/projection: `priority/normal` / queue 40 (the publisher derives this from the intrinsic urgency band). Intrinsic urgency: 1000 (Standard; lower is sooner), distinct from importance, blockers, lifecycle, stage and dispatch. Importance rationale: Conformance descriptors make future formats additive and honest; extensibility is valuable but not a V1 blocker."
+  },
+  {
+    "id": "GEN-11",
+    "title": "Add versioned hash fingerprint and KDF primitives",
+    "parent": "#9162",
+    "kind": "implementation",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §§22.4,23.2,25.3,28.2,48.2 V3-S10/S21 (lines 1328-1333,1379-1382,1643-1649,1847-1849,2671-2678)",
+      "architecture-review.md ADR-S01/A-1"
+    ],
+    "requirement_ids": [
+      "GEN-010",
+      "V3-S10",
+      "V3-S21"
+    ],
+    "stage": "V2",
+    "lifecycle": "Backlog",
+    "urgency": 1000,
+    "depends_on": [
+      "ARCH-06",
+      "GEN-01",
+      "GEN-10"
+    ],
+    "body": "## Outcome\nAdd typed `hash`, `verify-hash`, `fingerprint`, and `derive-key` primitives using reviewed standards, not a Fleet-private scheme. General content/integrity digest, public-key fingerprint and password KDF have separate types and purpose encodings. `id` BLAKE3 content identity is not a fingerprint or KDF. Low-entropy secret hashes leak equality; roots stay out of equality indices.\n\n## Current evidence and scope\nFleet V1 has no generator crypto API. GEN-01/ARCH-06 own shared seams; GEN-10 owns capability descriptors. This issue owns concrete adapters only; no provider, root signer, password-verifier service or secret inventory.\n\n## API/errors\nProposed `fleet hash <public-input-ref> --algorithm <id> --encoding <id>`, `fleet key fingerprint <public-key-ref> --digest <id>`, and `fleet key derive --kdf <registered-id> --profile <approved-versioned-profile> --input-stdin --length N` only with protected input and secret sink. Per-purpose allowlist: SHA-256 is required for fingerprint and DER-integrity profiles unless a protocol explicitly specifies another; SHA-2/BLAKE3 are allowed only for typed public content/integrity profiles, and BLAKE3 content identity cannot substitute for a fingerprint. MD5/SHA-1 are refused for security-sensitive purposes. Argon2id is the leading password-KDF candidate; PBKDF2/scrypt only explicit interop profiles after review. The derive-key CLI remains disabled until a versioned profile records numeric min/max memory, time/passes, parallelism, salt length and output length plus target resource budget. No secret in args/env/logs. Errors distinguish unsupported digest/KDF, invalid params, unavailable input, unsafe downgrade and output length. Server password verifier is separate scope.\n\n## Acceptance/oracle/negative\nCanonical output records algorithm/params/version/purpose/domain-separation/encoding; fingerprint identifies digest; KDF parameters are validated against a reviewed versioned profile before allocation; outputs match independent official vectors. Until numeric min/max resource and output bounds are reviewed and recorded, KDF capability reports unsupported (fail closed). KDF output is non-displayable/non-serializable, redacted and zeroized best-effort. PBT checks parse/params. Oracle: NIST FIPS 180-4 SHA-2 vectors, RFC 9106 Argon2 vectors, NIST SP 800-132 guidance, plus an independent implementation. Negative: type/purpose substitution, unsafe downgrade/reparameterization, invalid salt, malformed encoding, unbounded memory/time, low-entropy hash as equality token, private KDF result to public sink all fail.\n\n## Dependencies/priority/lifecycle/rollback\nDepends GEN-01/10 and ARCH-06. Research Rust library/MSRV/side-channel/FIPS policy and Argon2id resource profile before enabling. Open decision: key derivation vs password verifier. Standard urgency 1000, `priority/normal` projection 40, Standard importance: valuable but not V1 blocker; L, V2, Backlog. Synthetic vectors only; failures emit no output and adapter may be disabled without reinterpreting IDs.\n\n## Priority, urgency and importance\nPriority label/projection: `priority/normal` / queue 40 (the publisher derives this from the intrinsic urgency band). Intrinsic urgency: 1000 (Standard; lower is sooner), distinct from importance, blockers, lifecycle, stage and dispatch. Importance rationale: Typed hash/KDF boundaries prevent unsafe algorithm reuse and equality leakage; important crypto hygiene, gated by standards review."
+  },
+  {
+    "id": "OPS-01",
+    "title": "Define versioned operation plans, approvals and receipts",
+    "parent": "#9165",
+    "kind": "design",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §§10,25.2–25.3,43,48.2 V3-S02/S13/S18/S25 (lines 677-696,1630-1649,2402-2434,2651-2683)",
+      "architecture-review.md A-1/A-2/A-3"
+    ],
+    "requirement_ids": [
+      "OPS-003",
+      "OPS-005"
+    ],
+    "stage": "V2",
+    "lifecycle": "Backlog",
+    "urgency": 450,
+    "depends_on": [],
+    "body": "## Outcome\nDefine versioned typed schemas for immutable plans, scope-bound approvals, run receipts, status and recovery references. Bind approval to plan hash, target/scope and expiry; separate private export, overwrite, remote change, provider write, retirement, root signing/custody and DNS/trust/deployment hazards.\n\n## Current evidence and boundary\nFleet has version/capability reporting and a registry; current `fleet-secrets` is read-only and has no write journal. This issue owns schemas and validators only, not provider writers or live approvals.\n\n## Acceptance and oracle\nRust types and JSON Schema share a golden corpus and preserve semantics through round-trip. Canonical plan IDs/hashes are stable; receipts redact sentinels; unknown schema/version, duplicate operation IDs, expired/misbound approval, malformed precondition and unsupported status fail closed. Oracle: independent JSON Schema and Rust validators plus property-based canonicalization. Negative: one-byte plan tamper, approval scope mismatch, and global `--force` must refuse; receipt contains no secret sentinel.\n\n## Dependencies and rollback\nNo dependency; blocks OPS-02–OPS-06 and GEN-07+. High, L, V2, Backlog. Schema is additive/versioned; no real approval issued or mutation performed.\n\n## Priority, urgency and importance\nPriority label/projection: `priority/high` / queue 20 (the publisher derives this from the intrinsic urgency band). Intrinsic urgency: 450 (High; lower is sooner), distinct from importance, blockers, lifecycle, stage and dispatch. Importance rationale: A plan-bound authorization/receipt contract is foundational to preventing confused-deputy and replayed operations."
+  },
+  {
+    "id": "OPS-02",
+    "title": "Add offline typed batch DAG validation",
+    "parent": "#9165",
+    "kind": "implementation",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §§6.2–6.5,25.1/25.4,28.1,31 PKI-050,43 (lines 277-496,1577-1700,1831-1849,1982-2028,2402-2434)"
+    ],
+    "requirement_ids": [
+      "PKI-050",
+      "GEN-008",
+      "OPS-003"
+    ],
+    "stage": "V2",
+    "lifecycle": "Backlog",
+    "urgency": 450,
+    "depends_on": [
+      "OPS-01",
+      "GEN-01"
+    ],
+    "body": "## Outcome\nImplement a versioned batch schema and offline validator for typed operations, explicit dependency DAGs, references, outputs/sinks, idempotency and compensation policy. Validation does not generate secrets or perform I/O.\n\n## Current evidence and boundary\nFleet's proposed batch commands are design-only. Integrate with existing Fleet multicall and do not add a second command tool. This issue owns schema/parser/validator only.\n\n## Acceptance and oracle\nRequire unique operation IDs, valid typed references, acyclic graph, deterministic topological order, size/depth limits, sink types and requested capabilities; output redacted plan and required scope list. JSON/YAML equivalent inputs canonicalize identically. Invalid version rejects before RNG or IO. Oracle: property-generated DAGs compared with reference topological evaluator; parser fuzzing. Negative: cycles, unresolved refs, duplicate IDs, path traversal, unsafe private output, and write disguised as validate all reject with zero side effects.\n\n## Dependencies and rollback\nDepends OPS-01, GEN-01. High, L, V2, Backlog. Side-effect-free validator can be removed independently; no live operations.\n\n## Priority, urgency and importance\nPriority label/projection: `priority/high` / queue 20 (the publisher derives this from the intrinsic urgency band). Intrinsic urgency: 450 (High; lower is sooner), distinct from importance, blockers, lifecycle, stage and dispatch. Importance rationale: Offline validation catches malformed/cyclic plans before entropy or side effects; it is a critical safety gate."
+  },
+  {
+    "id": "OPS-03",
+    "title": "Implement resumable plan apply verify and recover engine",
+    "parent": "#9165",
+    "kind": "implementation",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §§10,21.7,25.2–25.4,28.1–28.2,43,48.1 (lines 677-696,1246-1288,1630-1700,1829-1849,2402-2434,2639-2648)",
+      "architecture-review.md A-1"
+    ],
+    "requirement_ids": [
+      "OPS-002",
+      "OPS-003",
+      "OPS-005"
+    ],
+    "stage": "V2–V3",
+    "lifecycle": "Backlog",
+    "urgency": 450,
+    "depends_on": [
+      "OPS-01",
+      "OPS-02"
+    ],
+    "body": "## Outcome\nImplement plan/apply/verify/recover for generator and local-artifact batches. This is not provider credential reconciliation, provider WAL, daily timer or PKI root custody. Multi-sink results are saga/partial, not distributed atomic success.\n\n## Current evidence and boundary\nNo Fleet plan/apply/recover exists; current resolver is read-only. Start with injected fake sink and executor state machine; OPS-04 implements filesystem sink after API freeze. No production backend. Fleet remains sole command surface.\n\n## API/errors\n`fleet batch plan|apply|verify|resume|report`; apply consumes immutable plan plus matching approval. States include prepared, submitted, accepted, uncertain, verified, needs-review, partial and recovered. Errors distinguish stale digest/revision, permission/approval, unsupported guard, uncertain write and partial saga. REC-03/04 are consumed only by future provider integrations; REC-07 timer is separate.\n\n## Acceptance and oracle\nPlan has zero side effects. Apply rejects changed hash, missing approval, revision mismatch and unavailable capability. Persist nonsecret intent before local mutation. Crash-inject every transition; retry idempotent. Verify is read-only; recover checks observed state. A-1 guard levels are per action; no-CAS conflict-sensitive step stops needs-review or requires separately approved weaker policy whose lost-update window is recorded in plan/receipt. Oracle: MBT executor state model, crash recovery and before/after snapshots. Negative: unapproved apply zero writes, force cannot bypass, uncertain remote result never blindly retried.\n\n## Dependencies, boundaries and rollback\nHard dependencies OPS-01/02. OPS-04 implements this issue's sink interface, so OPS-04 depends on OPS-03. REC-03/04 are future soft provider adapter contracts, not blockers. High urgency 450, XL, V2–V3, Backlog. Preserve intent/backups on partial state; rollback only if target digest unchanged, otherwise stop and report recovery instructions.\n\n## Priority, urgency and importance\nPriority label/projection: `priority/high` / queue 20 (the publisher derives this from the intrinsic urgency band). Intrinsic urgency: 450 (High; lower is sooner), distinct from importance, blockers, lifecycle, stage and dispatch. Importance rationale: Crash-safe plan execution prevents duplicate or misleading local operations; production provider integration remains separate."
+  },
+  {
+    "id": "OPS-04",
+    "title": "Build atomic recoverable file and archive transactions",
+    "parent": "#9165",
+    "kind": "implementation",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §§23.2,25.3,28.1–28.2,48.2 V3-S21 (lines 1371-1382,1643-1649,1839-1849,2675)",
+      "pkgs/id/src/main.rs:213-244"
+    ],
+    "requirement_ids": [
+      "SSH-002",
+      "SSH-003",
+      "SSH-005",
+      "PKI-048",
+      "PKI-055",
+      "PKI-057"
+    ],
+    "stage": "V3",
+    "lifecycle": "Backlog",
+    "urgency": 450,
+    "depends_on": [
+      "OPS-01",
+      "OPS-03"
+    ],
+    "body": "## Outcome\nProvide safe Fleet filesystem sinks for separate public/private outputs and structured file merges, with validated owner/mode, staging, fsync, atomic commit where supported and a recoverable per-file journal. Reject path traversal, symlink escapes, archive bombs and duplicate names.\n\n## Current evidence and boundary\nFleet has no generator sink. `pkgs/id/src/main.rs` uses CWD-relative identity/store files; do not modify them. Test Fleet implementation in temporary roots only, never operator home.\n\n## Acceptance and oracle\nEnforce private/public separation and modes; staged same-filesystem writes validate manifest/hashes before rename; injected failures at each boundary yield old state or explicit recoverable partial receipt; rollback checks for intervening edits. Oracle: filesystem snapshots, mode/owner checks and crash/failure injection; independent archive/path parser. Negative: symlink swap, traversal, case collision, disk-full/fsync failure, changed original, world-readable key and unsupported filesystem atomicity must refuse or report partial accurately.\n\n## Dependencies and rollback\nDepends OPS-01/03; GEN-08 consumes this. High, XL, V3, Backlog. No real credential files; refuse unsupported atomicity rather than claim success.\n\n## Priority, urgency and importance\nPriority label/projection: `priority/high` / queue 20 (the publisher derives this from the intrinsic urgency band). Intrinsic urgency: 450 (High; lower is sooner), distinct from importance, blockers, lifecycle, stage and dispatch. Importance rationale: Filesystem transactions protect private files and preserve user edits; corruption or permission leakage has direct operational impact."
+  },
+  {
+    "id": "OPS-05",
+    "title": "Generate Fleet help manpages completions and schemas from registry",
+    "parent": "#9165",
+    "kind": "documentation",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §§6,12,25.1,29,31 OPS-004/OPS-005,48.2 V3-S24 (lines 277-496,747-812,1577-1628,1868-1948,2054-2059,2678)",
+      "architecture.md ARCH-07; OPS owns docs outputs only"
+    ],
+    "requirement_ids": [
+      "OPS-004",
+      "OPS-005"
+    ],
+    "stage": "V2–V4",
+    "lifecycle": "Backlog",
+    "urgency": 1000,
+    "depends_on": [
+      "ARCH-07",
+      "OPS-01"
+    ],
+    "body": "## Outcome\nGenerate Markdown/man/completion/schema outputs from frozen command descriptors. ARCH-07 owns adding commands, profiles and capability registry; this issue only turns agreed descriptors into deterministic documentation outputs.\n\n## Current evidence/boundary\nFleet registry already renders current help/stubs; v0.3 verbs are not implemented. Do not edit registry/profile, add an API or claim planned commands shipped.\n\n## API/errors\n`fleet docs generate --format markdown|man|completion|schema --output <dir>` or build target; generate Bash/Zsh/Fish/PowerShell completion and JSON/YAML schemas. Fail `DocumentationContractViolation` when descriptor lacks types/defaults, output sensitivity, errors, status, capability, tested examples or approval class.\n\n## Acceptance/oracle\nDeterministic generated outputs match actual full/serve/connect help; shell completions parse; JSON/YAML schema validates example plans; status and supported features match executable. Oracle: immutable descriptor plus golden CLI and schema corpus. Negative: unavailable command autocomplete as supported, private values in generated docs, aspirational feature marked implemented, or doc generation modifies command registry all fail.\n\n## Dependencies/rollback\nARCH-07 and OPS-01, plus GEN format descriptors. No agent installer or timer. Standard urgency 1000, L, V2–V4, Backlog. Revert outputs on mismatch; executable interface remains authoritative.\n\n## Priority, urgency and importance\nPriority label/projection: `priority/normal` / queue 40 (the publisher derives this from the intrinsic urgency band). Intrinsic urgency: 1000 (Standard; lower is sooner), distinct from importance, blockers, lifecycle, stage and dispatch. Importance rationale: Generated help/completions reduce drift after commands are settled; useful but dependent on the registry interface."
+  },
+  {
+    "id": "OPS-06",
+    "title": "Design and implement scoped Fleet agent skill installer",
+    "parent": "#9165",
+    "kind": "implementation",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §§12.3–12.4,29,31 OPS-004,48.2 V3-S24 (lines 784-812,1868-1948,2054-2059,2678)",
+      "architecture.md ARCH-07"
+    ],
+    "requirement_ids": [
+      "OPS-004"
+    ],
+    "stage": "V4",
+    "lifecycle": "Backlog",
+    "urgency": 1000,
+    "depends_on": [
+      "OPS-05",
+      "OPS-01"
+    ],
+    "body": "## Outcome\nProvide versioned agent skill bundles and a Fleet installer with explicit project/user/system scope, target-agent adapter, idempotent install/upgrade/remove and receipts. It must preserve user-authored AGENTS.md and settings.\n\n## Current evidence and boundary\nFleet registry has no skills domain. This task's design does not edit repository or user AGENTS/skills; implementation only through future approved issue.\n\n## Acceptance and oracle\nManifest declares schema/version/agent/path/ownership/checksum; dry-run, backup and atomic install; install is idempotent; upgrade/remove touches only files owned by manifest; unrelated human text survives. Fresh-context agent succeeds using installed skill and actual Fleet help without undocumented state. Oracle: manifest validation, before/after temp config trees and blind-run fixture. Negative: unknown agent, symlink/path escape, version mismatch, or existing unowned AGENTS.md overwrite must refuse.\n\n## Dependencies and rollback\nDepends OPS-05/01 and GEN-05–GEN-09 docs. Standard, L, V4, Backlog. Test in temporary config roots only; this design makes no AGENTS.md or skill changes.\n\n## Priority, urgency and importance\nPriority label/projection: `priority/normal` / queue 40 (the publisher derives this from the intrinsic urgency band). Intrinsic urgency: 1000 (Standard; lower is sooner), distinct from importance, blockers, lifecycle, stage and dispatch. Importance rationale: A safe skills installer improves future agent operability; no current Fleet skill feature depends on it."
+  },
+  {
+    "id": "OPS-07",
+    "title": "Generate client-specific public deployment kits and verify guides",
+    "parent": "#9165",
+    "kind": "documentation",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §§7,12,25.3,28.1,29,44–44.2 (lines 496-592,747-812,1643-1649,1868-1948,2486-2515)",
+      "PKI manifest owner #9163"
+    ],
+    "requirement_ids": [
+      "PKI-028",
+      "PKI-029",
+      "PKI-035",
+      "PKI-039",
+      "PKI-059"
+    ],
+    "stage": "V3–V4",
+    "lifecycle": "Backlog",
+    "urgency": 1000,
+    "depends_on": [
+      "OPS-01",
+      "OPS-05",
+      "OPS-09",
+      "GEN-10",
+      "ROOT-02",
+      "CERT-01"
+    ],
+    "body": "## Outcome\nGenerate per-client docs/kits from validated `fleet.pki.bundle/v1` manifest (proposed version; PKI owner #9163 must freeze it before implementation). Emit `fleet.delivery-kit/v1`: public refs/hashes, selected chain/profile, client/version, supported formats, install/verify/rotation-overlap/remove/rollback guide.\n\n## Current evidence and boundary\nFleet has no PKI commands/kits. PKI issuer graph and certificates belong to #9163/#9164; this issue only renders the reviewed manifest. No production certificates, DNS/HTTP publication, trust install or private-key packaging.\n\n## API/errors\nProposed `fleet cert bundle guide|package --manifest <ref> --target <client> --profile compatibility|pq-enforced`; errors identify unsupported manifest/client version, format, profile mismatch, missing chain or verifier evidence.\n\n## Acceptance and oracle\nSynthetic compatibility/PQ kits are deterministic, public-only and profile-checked; exact client version/test status; no private CA public-WebPKI claim. Oracle: manifest schema/hash checker, OpenSSL+Rust verifier and OPS-09 client receipt. Negative: unknown schema, classical path in strict PQ kit, private key included or untested client marked supported all fail.\n\n## Dependencies, priority and recovery\nHard dependency: #9163/#9164 manifest freeze; also OPS-01/05/09 and GEN-10 format conformance. Standard urgency 1000, `priority/normal` projection 40, Standard importance: useful operator packaging but not a V1 or production blocker. Size XL, V3, Backlog. No command executes; invalid kit discarded, source manifest unchanged.\n\n## Priority, urgency and importance\nPriority label/projection: `priority/normal` / queue 40 (the publisher derives this from the intrinsic urgency band). Intrinsic urgency: 1000 (Standard; lower is sooner), distinct from importance, blockers, lifecycle, stage and dispatch. Importance rationale: Client kits improve adoption and reduce misinstallation; they are downstream packaging, not CA generation authority."
+  },
+  {
+    "id": "OPS-08",
+    "title": "Build synthetic Fleet-generated reference artifact evidence suite",
+    "parent": "#9165",
+    "kind": "test",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §§28.3,31 OPS-006,48.1 phase 8,48.3 (lines 1851-1866,2059,2648,2681-2683)"
+    ],
+    "requirement_ids": [
+      "GEN-002",
+      "GEN-003",
+      "GEN-004",
+      "GEN-005",
+      "GEN-006",
+      "GEN-010",
+      "IROH-001",
+      "IROH-002",
+      "PKI-064",
+      "OPS-006"
+    ],
+    "stage": "V3 release gate",
+    "lifecycle": "Backlog",
+    "urgency": 450,
+    "depends_on": [
+      "GEN-02",
+      "GEN-03",
+      "GEN-04",
+      "GEN-05",
+      "GEN-06",
+      "OPS-03",
+      "OPS-04",
+      "ROOT-03",
+      "ROOT-04",
+      "CERT-06"
+    ],
+    "body": "## Outcome\nBuild acceptance harness that uses built Fleet as producer for synthetic generator/SSH/iroh and later PKI reference outputs; independent implementations verify.\n\n## Current evidence/boundary\nNo generator/reference pipeline exists. Synthetic keys only; no production roots, provider writes, publication or trust install.\n\n## Input/output/failure\nInput `fleet.evidence-suite/v1` lists executable variant, synthetic fixture IDs and cases. Harness invokes pinned installed Fleet, not mocks. Output `fleet.evidence-report/v1` records source rev, derived version, capabilities, redacted argv, artifact hashes, verifier versions, per-case outcome and aggregate status. Failure preserves report; rerun uses fresh temporary root, cleaning only hash/owner-verified fixture paths.\n\n## Acceptance/oracle\nEach implemented password/token/UUID/SSH/iroh output is Fleet-generated and independently checked; once PKI lands expect 20 CA pairs/65 cert variants. Deny outbound sockets/providers and destroy ephemeral private fixture material. Oracle: OpenSSL 3.5+, independent Rust verifier, OpenSSH, native iroh parser, expected manifest and negative path model. Negative hand-generated output, tampered signature, wrong EndpointId, classical path under PQ-only, leaked private output or external network fails.\n\n## Dependencies, priority and recovery\nDepends GEN-02–06, OPS-03/04 and PKI #9163/#9164. High urgency 450, `priority/high` projection 20, High importance as release evidence, XL, V3, Backlog until producers. Synthetic CI/local only; failure blocks release and never mutates production.\n\n## Priority, urgency and importance\nPriority label/projection: `priority/high` / queue 20 (the publisher derives this from the intrinsic urgency band). Intrinsic urgency: 450 (High; lower is sooner), distinct from importance, blockers, lifecycle, stage and dispatch. Importance rationale: Fleet-self-generated evidence is a release gate proving output rather than mocks; it is important after producer features land."
+  },
+  {
+    "id": "OPS-09",
+    "title": "Maintain versioned crypto client and OS compatibility evidence matrix",
+    "parent": "#9165",
+    "kind": "test",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §§11,23,28.2,44,44.2,48.2 V3-S15–S17,48.3 (lines 703-728,1354-1408,1845-1849,2486-2515,2671-2672,2681-2683)"
+    ],
+    "requirement_ids": [
+      "PKI-059",
+      "PKI-061",
+      "PKI-062",
+      "SSH-001",
+      "SSH-005",
+      "SSH-008",
+      "IROH-001",
+      "IROH-002",
+      "OPS-006"
+    ],
+    "stage": "V3",
+    "lifecycle": "Backlog",
+    "urgency": 1000,
+    "depends_on": [
+      "GEN-04",
+      "GEN-05",
+      "GEN-06",
+      "OPS-08",
+      "CERT-13"
+    ],
+    "body": "## Outcome\nCreate exact versioned crypto/client compatibility evidence; PKI graph belongs #9163/#9164 and Fleet artifact generation evidence belongs OPS-08. OPS-07 consumes this evidence to label kits; OPS-09 does not require a kit output.\n\n## Inputs/outputs/failure\nInput `fleet.compat-matrix/v1`: client ID/version, algorithm/format, trust profile, fixture ref and expected result. Output `fleet.compat-evidence/v1`: invocation/environment, positive/negative outcomes, artifact hash, verifier version, tested-at and state `pass|fail|unsupported|not-run|blocked`. Runner failure leaves incomplete row; rerun uses fresh disposable environment and never overwrites prior evidence. No global trust installation.\n\n## Acceptance/oracle\nBound initial scope to OpenSSL 3.5+, one independent Rust verifier, OpenSSH stable client, pinned native iroh parser and Linux CI host/runtime; add OS/browser/JVM/mobile/embedded only when supported artifact/profile targets them, prioritized by deployment exposure/demand. Test X.509 path separately from TLS KEX and SSH auth separately from PQ KEX. PQ-capable verifier accepts all-ML-DSA path and rejects classical path. Oracle: actual verifier + expected path model. Negative malformed/order-variant chain, wrong anchor/name, classical fallback, missing algorithm or SSH/X.509 confusion fail.\n\n## Dependencies, priority and recovery\nHard dependencies GEN-04/05/06, OPS-08, CERT-13 and PKI #9163/#9164. Standard urgency 1000, `priority/normal` projection 40, Standard importance: truthful compatibility guidance, not V1 blocker; XL, V3, Backlog. Downgrade unsupported claims rather than alter global trust; prior evidence immutable.\n\n## Priority, urgency and importance\nPriority label/projection: `priority/normal` / queue 40 (the publisher derives this from the intrinsic urgency band). Intrinsic urgency: 1000 (Standard; lower is sooner), distinct from importance, blockers, lifecycle, stage and dispatch. Importance rationale: Versioned client evidence prevents unsupported compatibility claims; useful for targeted deployment but not a V1 implementation blocker."
+  },
+  {
+    "id": "OPS-10",
+    "title": "Specify production approval, custody and recovery gates",
+    "parent": "#9165",
+    "kind": "security review",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §§10,17,25.2,28.3,48.2 V3-S08/S25 (lines 677-696,1630-1642,1851-1866,2662-2683); addendum §5 lines 42-55; architecture-review.md A-1/A-2/A-3; ROOT-05/09/10 own PKI signer/custody"
+    ],
+    "requirement_ids": [
+      "OPS-002",
+      "PKI2-008",
+      "V3-S08",
+      "V3-S25"
+    ],
+    "stage": "V2–V3",
+    "lifecycle": "Backlog",
+    "urgency": 450,
+    "depends_on": [
+      "ARCH-06",
+      "OPS-01",
+      "OPS-03",
+      "ROOT-05",
+      "ROOT-09",
+      "ROOT-10"
+    ],
+    "body": "## Outcome\nDefine and test operation-level approval contract, not a second custody policy: map private export, local overwrite, remote host change, provider write, retirement, root signing, DNS/trust and deployment to scoped approval capabilities, evidence, stop conditions and recovery. ROOT-09/ROOT-10 own closed escrow/restore mechanics; ROOT-05 owns PKI signer authorization; #9163 owns ceremony.\n\n## Current evidence and boundary\nV1 `secrets_broker::do_refresh` lists every BWS record visible to its token, fetches values and installs successes into the ordinary cache (`pkgs/fleet/crates/fleet-queue/src/secrets_broker.rs:190-260`). Legacy `fleet-secrets` fallback can resolve accessible names (`pkgs/fleet/crates/fleet-secrets/src/lib.rs:517-604`); `fleet secrets get` reveals to stdout. Therefore encryption alone does not prevent root archives from entering legacy reads/cache.\n\n## Legacy activation gate\nBefore first BWS escrow copy, trusted policy must bind exact project/native IDs and prove legacy broker/runtime principals cannot list/get/cache that scope (prefer a distinct least-privilege grant). Legacy name-only fallback/refresh must reject or exclude root refs/archives before cache ingestion. Classification comes from trusted scope+native IDs, never caller-supplied `DataClass` or a mutable sidecar; unknown/adopted items require review. Add a negative test through the original broker-compatible refresh and `fleet secrets get` path using a synthetic root-archive fixture. No project creation or grant change is authorized here; production escrow remains blocked until this boundary and identities are verified.\n\nNo Fleet v0.3 write/approval API or live authorization exists. Policy validator and synthetic state-machine tests only. Never generate/export/sync production roots, write live vaults, change trust/DNS or deploy. Ordinary SecretRef/provider read is not signer authority. Architecture-review A-1/A-2/A-3 bind this contract; no duplicate escrow implementation.\n\n## API/errors\nApproval record binds operation, principal/grant, stable opaque object ID, exact locator/revision, scope, plan digest, expected output, hazard, expiry and single-use nonce. Root signing additionally binds key fingerprint/handle, subject identity, signature algorithm, profile/purpose, exact validity, artifact-plan digest and destinations. Errors distinguish missing/mismatched/expired/replayed approval, authority denial, unsupported write guard and needs-review.\n\n## Acceptance, negative tests and oracle\nHazard matrix names authority, preconditions, backup, readback, rollback and stop criteria. Unapproved/stale plan causes zero mutations. Root grant rejects ambient lookup, signer substitution, altered plan, wrong purpose, expiry/replay; A-1 unguarded conflict-sensitive write stops needs-review or requires separately approved weak policy with residual race in plan+receipt. Oracle: independent policy evaluator and fault-injected MBT. Root custody completion delegates to ROOT-09/10 closed destinations and independent restores; missing destination/restore remains incomplete (A-3).\n\n## Dependencies/lifecycle/rollback\nDepends ARCH-06, OPS-01/03, ROOT-05/09/10 and #9163; GEN-09 remote approval fields. High urgency 450, L, V2–V3, Backlog for schema/tests. Production operations separately Blocked pending specific approval and tested recovery. Rollback is no activation; preserve verified copies; no external state touched.\n\n## Priority, urgency and importance\nPriority label/projection: `priority/high` / queue 20 (the publisher derives this from the intrinsic urgency band). Intrinsic urgency: 450 (High; lower is sooner), distinct from importance, blockers, lifecycle, stage and dispatch. Importance rationale: Scoped approvals and A-1/A-2/A-3 refusal tests prevent unauthorized or unsafe mutations; production operations remain separately blocked."
+  },
+  {
+    "id": "OPS-11",
+    "title": "Generate operator runbooks from verified Fleet interfaces",
+    "parent": "#9165",
+    "kind": "documentation",
+    "source_ranges": [
+      "fleet_architecture_spec_v0_3.md §§12,23.2–23.5,29,44,48.3 (lines 747-812,1354-1408,1868-1948,2486-2515,2681-2683)"
+    ],
+    "requirement_ids": [
+      "OPS-004",
+      "PKI-039",
+      "SSH-007",
+      "IROH-002"
+    ],
+    "stage": "V3–V4",
+    "lifecycle": "Backlog",
+    "urgency": 1000,
+    "depends_on": [
+      "OPS-05",
+      "OPS-06",
+      "GEN-05",
+      "GEN-06",
+      "GEN-07",
+      "GEN-08",
+      "GEN-09"
+    ],
+    "body": "## Outcome\nGenerate self-contained operator guidance for plan/apply/verify/recovery, private material protection, local adoption/install, SSH remote rotation and iroh identity lifecycle. Distinguish file generation from actual target-service activation and app identity from X.509 trust.\n\n## Current evidence and boundary\nCurrent Fleet and `id` READMEs exist, but v0.3 generator/SSH/iroh runbooks do not. This task edits Fleet documentation only after interfaces exist; it does not change AGENTS.md, `pkgs/id` policy or live operation.\n\n## Acceptance and oracle\nDocs carry requirement/source links, version, real command examples, scope/approval requirements, outputs, errors, failure/rollback and tested status. Every example runs against a test fixture or is prominently labeled unexecuted. Fresh-context operator completes a disposable walkthrough using only generated help/docs; no hidden state. Oracle: generated command descriptors and fixture transcript. Negative: absent command/capability is not invented, and docs never claim untested production readiness.\n\n## Dependencies and rollback\nDepends OPS-05/06 and GEN-05–GEN-09. Standard, L, V3–V4, Backlog. Documentation-only; revert generated pages if they drift from CLI.\n\n## Priority, urgency and importance\nPriority label/projection: `priority/normal` / queue 40 (the publisher derives this from the intrinsic urgency band). Intrinsic urgency: 1000 (Standard; lower is sooner), distinct from importance, blockers, lifecycle, stage and dispatch. Importance rationale: Verified runbooks lower operator error and hidden-state risk; documentation follows tested interfaces."
+  }
+]
