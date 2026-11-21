@@ -116,6 +116,28 @@ pub struct PublicationManager<F: ListenerFactory, M: MountSink> {
     mounted: Vec<String>,
 }
 
+fn durable_write_stage(error: &anyhow::Error) -> Option<id_core::durable_write::WriteStage> {
+    error
+        .downcast_ref::<id_core::durable_write::DurableWriteError>()
+        .map(id_core::durable_write::DurableWriteError::stage)
+}
+
+fn write_failed_after_rename(error: &anyhow::Error) -> bool {
+    durable_write_stage(error) == Some(id_core::durable_write::WriteStage::AfterRename)
+}
+
+fn registry_after_failed_restore(
+    installed: &Registry,
+    restored: Registry,
+    stage: Option<id_core::durable_write::WriteStage>,
+) -> Registry {
+    if stage == Some(id_core::durable_write::WriteStage::AfterRename) {
+        restored
+    } else {
+        installed.clone()
+    }
+}
+
 impl<F: ListenerFactory, M: MountSink> PublicationManager<F, M> {
     /// A manager over an already-loaded `registry` (slice 1's boot
     /// load). No live resources exist until [`Self::restore`] (or a
@@ -204,13 +226,7 @@ impl<F: ListenerFactory, M: MountSink> PublicationManager<F, M> {
 
         let durability_error = match candidate.save(&self.registry_path) {
             Ok(()) => None,
-            Err(error)
-                if error
-                    .downcast_ref::<id_core::durable_write::DurableWriteError>()
-                    .is_some_and(|write| {
-                        write.stage() == id_core::durable_write::WriteStage::AfterRename
-                    }) =>
-            {
+            Err(error) if write_failed_after_rename(&error) => {
                 // The rename installed this candidate, despite the directory
                 // sync failure. Continue applying it so memory, disk and live
                 // resources agree; report the uncertain durability afterward.
@@ -241,14 +257,21 @@ impl<F: ListenerFactory, M: MountSink> PublicationManager<F, M> {
                     // mount in it; revert the persisted set so the
                     // two never silently disagree, and say so.
                     let mut reverted = self.registry.clone();
-                    let revert_result: Result<()> = (|| {
-                        reverted.unpublish(&publication.placement)?;
-                        reverted.save(&self.registry_path)?;
-                        Ok(())
-                    })();
+                    let revert_result = reverted
+                        .unpublish(&publication.placement)
+                        .and_then(|_| reverted.save(&self.registry_path));
                     match revert_result {
                         Ok(()) => self.registry = reverted,
                         Err(revert_error) => {
+                            // AfterRename means rollback installed `reverted`;
+                            // pre-rename (or a different rollback failure) leaves
+                            // the existing candidate installed. Match memory to
+                            // whichever registry is on disk.
+                            self.registry = registry_after_failed_restore(
+                                &self.registry,
+                                reverted,
+                                durable_write_stage(&revert_error),
+                            );
                             return Err(error)
                                 .context(format!(
                                     "reverting the persisted publications registry failed: {revert_error:#}"
@@ -287,13 +310,7 @@ impl<F: ListenerFactory, M: MountSink> PublicationManager<F, M> {
         let removed = candidate.unpublish(placement)?;
         let durability_error = match candidate.save(&self.registry_path) {
             Ok(()) => None,
-            Err(error)
-                if error
-                    .downcast_ref::<id_core::durable_write::DurableWriteError>()
-                    .is_some_and(|write| {
-                        write.stage() == id_core::durable_write::WriteStage::AfterRename
-                    }) =>
-            {
+            Err(error) if write_failed_after_rename(&error) => {
                 // The candidate is already installed; finish removing its live
                 // resource before returning the durability warning.
                 Some(error)
@@ -322,17 +339,42 @@ impl<F: ListenerFactory, M: MountSink> PublicationManager<F, M> {
                         // means the route was NOT removed, so the
                         // live set is unchanged: restore the durable
                         // set to match it before propagating.
-                        let restored = previous.save(&self.registry_path).is_ok();
-                        self.registry = previous;
-                        return Err(error).context(format!(
-                            "removing the live mount at {path} failed; the publication \
-                             was restored to the registry{}",
-                            if restored {
-                                ""
-                            } else {
-                                " in memory (restoring it on disk also failed)"
+                        match previous.save(&self.registry_path) {
+                            Ok(()) => {
+                                self.registry = previous;
+                                return Err(error).context(format!(
+                                    "removing the live mount at {path} failed; the publication was restored to the registry"
+                                ));
                             }
-                        ));
+                            Err(restore_error) if write_failed_after_rename(&restore_error) => {
+                                // The restore rename installed `previous`;
+                                // its sync error makes durability uncertain,
+                                // not the in-memory state. Keep memory in sync
+                                // with the file and report both failures.
+                                self.registry = registry_after_failed_restore(
+                                    &self.registry,
+                                    previous,
+                                    durable_write_stage(&restore_error),
+                                );
+                                return Err(error).context(format!(
+                                    "removing the live mount at {path} failed; the publication was restored in memory and on disk, but syncing its directory failed: {restore_error:#}"
+                                ));
+                            }
+                            Err(restore_error) => {
+                                // The restore did not rename, so disk still
+                                // contains the unpublish candidate. Keep memory
+                                // aligned with disk; the live mount remains due
+                                // to MountSink's failure contract.
+                                self.registry = registry_after_failed_restore(
+                                    &self.registry,
+                                    previous,
+                                    durable_write_stage(&restore_error),
+                                );
+                                return Err(error).context(format!(
+                                    "removing the live mount at {path} failed; restoring the registry failed before rename, so memory and disk retain the unpublished candidate while the live mount remains: {restore_error:#}"
+                                ));
+                            }
+                        }
                     }
                     self.mounted.retain(|mounted| mounted != path);
                 }
@@ -530,6 +572,34 @@ mod tests {
             },
             acknowledge_shadow,
         }
+    }
+
+    #[test]
+    fn rollback_registry_tracks_which_state_the_failed_save_installed() {
+        let mut installed = Registry::default();
+        installed
+            .publish(mount_pub("/arena", false), KNOWN_EXPLORER_ROUTES)
+            .unwrap();
+        let restored = Registry::default();
+
+        assert_eq!(
+            registry_after_failed_restore(
+                &installed,
+                restored.clone(),
+                Some(id_core::durable_write::WriteStage::BeforeRename),
+            ),
+            installed,
+            "pre-rename failure leaves the candidate installed"
+        );
+        assert_eq!(
+            registry_after_failed_restore(
+                &installed,
+                restored.clone(),
+                Some(id_core::durable_write::WriteStage::AfterRename),
+            ),
+            restored,
+            "post-rename failure has installed the restored registry"
+        );
     }
 
     struct Fixture {
