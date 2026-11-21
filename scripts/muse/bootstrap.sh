@@ -199,7 +199,18 @@ if want restore; then
   fi
   restic_env restic-sandbox-config restic.sandbox-config-password
   say "restore: ~/.config (latest snapshot)"
-  restic restore latest --no-lock --target "$ROOT" --path "$SANDBOX_HOME/.config" >/dev/null || die "restore: ~/.config"
+  # A box that runs as root in a restricted namespace cannot set the
+  # snapshot's file ownership or some sandbox xattrs: restic reports each
+  # as an error but restores the contents. Only those are tolerated.
+  rlog=$(mktemp)
+  if ! restic restore latest --no-lock --target "$ROOT" --path "$SANDBOX_HOME/.config" >/dev/null 2>"$rlog"; then
+    other=$(grep -v -e '^[[:space:]]*$' -e 'operation not permitted' -e 'xattr' -E -e '^Fatal: There were [0-9]+ errors' "$rlog" | head -5 || true)
+    if [ -n "$other" ] || ! grep -q 'operation not permitted' "$rlog"; then
+      { [ -n "$other" ] && printf "%s\n" "$other" || tail -5 "$rlog"; } >&2; rm -f "$rlog"; die "restore: ~/.config"
+    fi
+    say "restore: ~/.config restored; $(grep -cE 'operation not permitted|xattr' "$rlog") ownership/xattr errors ignored (this box cannot set them)"
+  fi
+  rm -f "$rlog"
   # The snapshot carries the old box's Bitwarden token file; keep the one
   # supplied for this run.
   if [ "$ROOT" = / ]; then store_token "$BWS_ACCESS_TOKEN"; fi
