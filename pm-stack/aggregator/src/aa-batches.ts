@@ -34,6 +34,10 @@ export interface AaBatchCacheEntry {
    * before the overlay was validity-keyed; such entries are
    * treated as stale and rebuilt. */
   pricesFingerprint?: string | null;
+  /** Current-measurement fingerprint and query scope used to build the
+   * configs/CAI sections. Latest is current; historical batches are as-of. */
+  measurementsFingerprint?: string | null;
+  measurementsScope?: "current" | "as-of";
   /** aaPayloadSql revision the section was built with
    * (AA_PAYLOAD_SQL_REVISION in aa-batch-sql.ts). Absent on entries
    * written before the revision was stamped; the collector reads those
@@ -217,6 +221,8 @@ export function isAaBatchCacheEntry(v: unknown): v is AaBatchCacheEntry {
     typeof e.configFingerprint === "string" &&
     typeof e.fingerprint === "string" &&
     (e.pricesFingerprint === undefined || e.pricesFingerprint === null || typeof e.pricesFingerprint === "string") &&
+    (e.measurementsFingerprint === undefined || e.measurementsFingerprint === null || typeof e.measurementsFingerprint === "string") &&
+    (e.measurementsScope === undefined || e.measurementsScope === "current" || e.measurementsScope === "as-of") &&
     (e.sqlRevision === undefined || typeof e.sqlRevision === "number") &&
     typeof e.builtAt === "string" &&
     typeof e.section === "object" &&

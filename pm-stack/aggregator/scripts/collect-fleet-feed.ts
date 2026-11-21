@@ -44,10 +44,10 @@
 //     the others; items retain their stable boardId in the feed.
 //   - the AA cost explorer data — the Turso `ainventory_*` tables
 //     (the AA import: v_rankings, v_threshold_metrics,
-//     measurement_events — both the AA Intelligence Index rows and the
-//     Coding Agent Index rows, kept as separate benchmark families —
+//     measurement_events — latest configs/CAI use the current-measurements
+//     projection, historical batches retain workbook-import AS-OF scope —
 //     the Test_Runs data, and the price event log's v_current_prices),
-//     read per import batch through the Turso store client
+//     read through the Turso store client
 //     (getTursoStoreClient, src/turso-stores.ts), whose token is
 //     resolved from Bitwarden and sent only to the Turso endpoint.
 //     Any failure embeds the section in its absent
@@ -88,6 +88,7 @@ import {
 import {
   AA_BATCH_INDEX_SQL,
   AA_PAYLOAD_SQL_REVISION,
+  AA_MEASUREMENTS_SQL,
   AA_PRICES_SQL,
   aaPayloadSql,
   aaNumericInputsSql,
@@ -509,6 +510,12 @@ interface AaLastGood {
   fingerprint?: string;
   /** aaPayloadSql revision the section was built with (#8817). */
   sqlRevision?: number;
+  /** sha256 of the current-measurements projection the configs/CAI
+   * sections were built from (#10042); reuse requires a match. */
+  measurementsFingerprint?: string;
+  /** Valid on 'current' only: a last-good built from the projection
+   * becomes stale the moment the projection moves. */
+  measurementsScope?: "current" | "as-of";
   section: AaSection;
 }
 
@@ -523,6 +530,12 @@ async function readAaLastGood(): Promise<AaLastGood | null> {
       configFingerprint: parsed.configFingerprint,
       fingerprint: typeof parsed.fingerprint === "string" ? parsed.fingerprint : undefined,
       sqlRevision: typeof parsed.sqlRevision === "number" ? parsed.sqlRevision : undefined,
+      measurementsFingerprint:
+        typeof parsed.measurementsFingerprint === "string" ? parsed.measurementsFingerprint : undefined,
+      measurementsScope:
+        parsed.measurementsScope === "current" || parsed.measurementsScope === "as-of"
+          ? parsed.measurementsScope
+          : undefined,
       section: parsed.section,
     };
   } catch {
@@ -586,7 +599,7 @@ function aaRawFromRows(rows: unknown): AaRawPayload | null {
 }
 
 /** Fetch one batch payload (a uuid; null is the latest fallback). */
-async function fetchAaPayload(batch: string | null): Promise<AaRawPayload> {
+async function fetchAaPayload(batch: string | null, currentMeasurements = false): Promise<AaRawPayload> {
   // Pin one batch before independent section reads so an import during the
   // request cannot mix different workbook versions into one cache entry.
   if (batch === null) {
@@ -598,7 +611,7 @@ async function fetchAaPayload(batch: string | null): Promise<AaRawPayload> {
   }
   assertAaNumericInputs((await storeQuery(aaNumericInputsSql(batch))) as { cell: unknown }[]);
   const payload: Record<string, unknown> = {};
-  for (const [key, sql] of Object.entries(aaSectionQueries(batch))) {
+  for (const [key, sql] of Object.entries(aaSectionQueries(batch, currentMeasurements))) {
     if (key === "rankings") {
       payload[key] = rankAaValues((await storeQuery(aaRankingValuesSql(batch))) as Record<string, unknown>[]);
     } else {
@@ -644,7 +657,11 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
   }
 
   const cacheMeta = new Map<string, { fingerprint: string | null; cached: boolean }>();
-  const assemble = async (raw: AaRawPayload): Promise<AaSection | null> => {
+  const assemble = async (
+    raw: AaRawPayload,
+    measurementsScope: "current" | "as-of",
+    measurementsFingerprint?: string,
+  ): Promise<AaSection | null> => {
     const section = aaSectionFromPayload(raw, configText, generatedAt, runtimeText);
     if (!section) return null;
     const contentFingerprint = aaBatchFingerprint(raw);
@@ -653,6 +670,8 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
       configFingerprint: fingerprint,
       fingerprint: contentFingerprint,
       pricesFingerprint: aaPricesFingerprint(section.prices ?? []),
+      measurementsFingerprint: measurementsScope === "current" ? measurementsFingerprint : null,
+      measurementsScope,
       sqlRevision: AA_PAYLOAD_SQL_REVISION,
       builtAt: generatedAt,
       section,
@@ -687,9 +706,33 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     return degrade(msg.startsWith("Turso") ? msg : `Turso unreachable (${msg})`);
   }
 
-  // Read every batch cache once; a changed config, a changed
-  // current-price overlay, or a moved aaPayloadSql revision (#8817)
-  // invalidates all of them.
+  // Latest configs/CAI are current projections, not workbook-batch data.
+  // Hash the rendered arrays each tick so cache/last-good reuse cannot hide
+  // a newly gathered measurement event.
+  let currentMeasurementsFingerprint: string;
+  try {
+    const rows = (await storeQuery(AA_MEASUREMENTS_SQL)) as { configs?: unknown; cai?: unknown }[];
+    const jsonArray = (value: unknown): unknown[] => {
+      if (Array.isArray(value)) return value;
+      if (typeof value !== "string") return [];
+      try {
+        const parsed: unknown = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    };
+    currentMeasurementsFingerprint = aaBatchFingerprint({
+      configs: jsonArray(rows?.[0]?.configs),
+      cai: jsonArray(rows?.[0]?.cai),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "error";
+    return degrade(msg.startsWith("Turso") ? msg : `Turso unreachable (${msg})`);
+  }
+
+  // Read every batch cache once; a changed config, current-price overlay,
+  // latest current-measurement projection, or aaPayloadSql revision invalidates it.
   const cachedSections = new Map<string, AaSection>();
   for (const row of index) {
     const cached = await readAaBatchCache(row.importBatch);
@@ -697,6 +740,9 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
       cached &&
       cached.configFingerprint === fingerprint &&
       (cached.pricesFingerprint ?? null) === currentPricesFingerprint &&
+      (row.importBatch === index[0]?.importBatch
+        ? cached.measurementsScope === "current" && cached.measurementsFingerprint === currentMeasurementsFingerprint
+        : cached.measurementsScope === "as-of") &&
       (cached.sqlRevision ?? 0) === AA_PAYLOAD_SQL_REVISION
     ) {
       cacheMeta.set(row.importBatch, { fingerprint: cached.fingerprint, cached: true });
@@ -715,6 +761,8 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     lastGood &&
     lastGood.batch === latestBatch &&
     lastGood.configFingerprint === fingerprint &&
+    lastGood.measurementsScope === "current" &&
+    lastGood.measurementsFingerprint === currentMeasurementsFingerprint &&
     (lastGood.sqlRevision ?? 0) === AA_PAYLOAD_SQL_REVISION &&
     lastGood.fingerprint
   ) {
@@ -725,6 +773,8 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
       configFingerprint: fingerprint,
       fingerprint: lastGood.fingerprint,
       pricesFingerprint: aaPricesFingerprint(lastGood.section.prices ?? []),
+      measurementsFingerprint: currentMeasurementsFingerprint,
+      measurementsScope: "current",
       sqlRevision: AA_PAYLOAD_SQL_REVISION,
       builtAt: latestSection.generatedAt,
       section: latestSection,
@@ -732,7 +782,7 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     cacheMeta.set(latestBatch, { fingerprint: lastGood.fingerprint, cached });
   } else if (latestBatch) {
     try {
-      latestSection = await assemble(await fetchAaPayload(latestBatch));
+      latestSection = await assemble(await fetchAaPayload(latestBatch, true), "current", currentMeasurementsFingerprint);
       if (!latestSection) return degrade("Turso payload failed its structural check");
     } catch (err) {
       const msg = err instanceof Error ? err.message : "error";
@@ -746,6 +796,8 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     configFingerprint: fingerprint,
     fingerprint: cacheMeta.get(latestSection.batch)?.fingerprint ?? undefined,
     sqlRevision: AA_PAYLOAD_SQL_REVISION,
+    measurementsFingerprint: currentMeasurementsFingerprint,
+    measurementsScope: "current",
     section: latestSection,
   });
 
@@ -760,7 +812,7 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     if (cacheMeta.get(row.importBatch)?.cached) continue;
     attempts++;
     try {
-      await assemble(await fetchAaPayload(row.importBatch));
+      await assemble(await fetchAaPayload(row.importBatch), "as-of");
     } catch (err) {
       console.error(`collector: AA historical batch build failed (${err instanceof Error ? err.message : "error"})`);
     }
@@ -777,6 +829,8 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     configFingerprint: fingerprint,
     fingerprint: cacheMeta.get(withIndex.batch)?.fingerprint ?? undefined,
     sqlRevision: AA_PAYLOAD_SQL_REVISION,
+    measurementsFingerprint: currentMeasurementsFingerprint,
+    measurementsScope: "current",
     section: withIndex,
   });
   return withIndex;
