@@ -301,13 +301,17 @@ export function historicalParentsFromMetadata(body: string): RefKey[] {
  * items with no epic ancestor, and chains that leave the pool keep the
  * field absent. Cycle-safe: a parent loop ends the walk with no epic. */
 export function resolveEpicRefs(items: ProjectPoolItem[]): ProjectPoolItem[] {
-  const byRef = new Map(items.map((p) => [p.ref, p] as const));
+  // An item appearing on several boards is one epic if any board classifies it as Epic;
+  // the first occurrence supplies the parent link, so the result never depends on board order.
+  const epicRefs = new Set(items.filter((p) => p.kind === "Epic").map((p) => p.ref));
+  const byRef = new Map<string, ProjectPoolItem>();
+  for (const p of items) if (!byRef.has(p.ref)) byRef.set(p.ref, p);
   return items.map((p) => {
-    if (p.kind === "Epic" || !p.parentRef) return p;
+    if (epicRefs.has(p.ref) || !p.parentRef) return p;
     const seen = new Set<string>([p.ref]);
     let cursor: ProjectPoolItem | undefined = byRef.get(p.parentRef);
     while (cursor && !seen.has(cursor.ref)) {
-      if (cursor.kind === "Epic") return { ...p, epicRef: cursor.ref };
+      if (epicRefs.has(cursor.ref)) return { ...p, epicRef: cursor.ref };
       seen.add(cursor.ref);
       cursor = cursor.parentRef ? byRef.get(cursor.parentRef) : undefined;
     }
@@ -463,10 +467,13 @@ export interface ProjectSnapshot {
   counts: { reportedTotal: number; emittedEntries: number };
 }
 
+/** Narrow fetch shape the pool readers need; fleet gh's routed adapter satisfies it without Bun's preconnect. */
+export type ProjectFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
 /** Fetch the whole pool, board schema, views, and distributions (paginated). */
 export async function fetchProjectSnapshot(
   token: string,
-  fetchFn: typeof fetch = fetch,
+  fetchFn: ProjectFetch = fetch,
   generatedAt = new Date().toISOString(),
   projectId = PROJECT_ID,
   boardId?: string,
@@ -563,7 +570,7 @@ export interface ProjectBoardsSnapshot {
 /** Collect the configured board family independently; a broken satellite never discards a healthy board. */
 export async function fetchProjectBoardsSnapshot(
   token: string,
-  fetchFn: typeof fetch,
+  fetchFn: ProjectFetch,
   generatedAt = new Date().toISOString(),
   boards: readonly BoardDef[] = REGISTERED_PROJECT_BOARDS,
 ): Promise<ProjectBoardsSnapshot> {
@@ -598,7 +605,7 @@ export async function fetchProjectBoardsSnapshot(
  * responses (e.g. the contract corpus) do not carry, and a missing audit
  * must never cost the pool. The collector uses fetchProjectSnapshot
  * for the audited section instead. */
-export async function fetchProjectPool(token: string, fetchFn: typeof fetch = fetch): Promise<ProjectPoolItem[]> {
+export async function fetchProjectPool(token: string, fetchFn: ProjectFetch = fetch): Promise<ProjectPoolItem[]> {
   const out: ProjectPoolItem[] = [];
   let cursor: string | null = null;
   let lastPageInfo: ReturnType<typeof projectPageInfo> | null = null;

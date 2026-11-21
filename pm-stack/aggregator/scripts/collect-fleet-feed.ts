@@ -163,7 +163,7 @@ import {
 import type { ChargeRow, PaygLine, SaasService, SnapshotRecord } from "../src/model.ts";
 import { recordsFromDns, recordsFromPaygLines, recordsFromSaasServices } from "../src/snapshot-records.ts";
 import { isSnapshotRecord, snapshotKey } from "../src/snapshots.ts";
-import { fetchProjectBoardsSnapshot, fetchProjectSnapshot } from "../src/projects.ts";
+import { fetchProjectBoardsSnapshot, fetchProjectSnapshot, type ProjectFetch } from "../src/projects.ts";
 import { PROJECT_BOARDS, validateBoardRegistry } from "../src/board-registry.ts";
 import type { ProjectPoolItem } from "../src/model.ts";
 import { REPOS } from "../src/model.ts";
@@ -452,7 +452,7 @@ function runFleetGh(args: string[], owner: string): Promise<string> {
 }
 
 /** Run a read-only GraphQL request through fleet gh's personal/App token rotation. */
-const fleetGhProjectFetch: typeof fetch = async (_input, init) => {
+const fleetGhProjectFetch: ProjectFetch = async (_input, init) => {
   const request = JSON.parse(String(init?.body ?? "{}")) as {
     query?: string;
     variables?: { id?: string; cursor?: string | null };
@@ -1139,7 +1139,10 @@ async function main(): Promise<void> {
     if (snapshot.items.length) {
       projects = snapshot.items;
       projectAudits = snapshot.audits;
-      projectAudit = snapshot.audits["devtoday-main"];
+      // The rendered pool spans every board, so the banner compares against the summed board totals.
+      const auditList = Object.values(snapshot.audits);
+      const main = snapshot.audits["devtoday-main"];
+      projectAudit = main && auditList.length ? { ...main, totalItems: auditList.reduce((sum, a) => sum + a.totalItems, 0) } : main;
       const failures = snapshot.failedBoardIds;
       markSection("projects", failures.length ? "error" : "ok", failures.length ? `boards failed: ${failures.join(", ")}` : undefined, {
         reportedTotal: snapshot.counts.reportedTotal,
