@@ -171,6 +171,10 @@ fn usage_errors_exit_2_before_any_request() {
         vec!["inbox", "--agent", "a", "--take=yes"],
         vec!["post", "--agent", "a"],
         vec!["post", "--agent", "a", "--reply-to", "-3", "x"],
+        vec!["post", "--agent", "a", "--instruction", "x"],
+        vec![
+            "post", "--agent", "a", "--to", "claude", "--kind", "shout", "x",
+        ],
         vec!["ack", "--agent", "a"],
         vec!["ack", "--agent", "a", "0"],
         vec!["log", "--limit", "many"],
@@ -443,4 +447,58 @@ fn health_needs_no_token() {
     let out = run_with(&url, &secrets(&[]), &["health"], "").unwrap();
     assert_eq!(out["ok"], true);
     assert_eq!(seen.lock().unwrap()[0].url, "/healthz");
+}
+
+#[test]
+fn post_can_address_any_connector_or_agent() {
+    let (url, seen) = fake_bridge(|_, _, _| (201, r#"{"messages":[]}"#.into()));
+    let s = secrets(&[(DEFAULT_BRIDGE_FLEET_TOKEN_NAME, "f".repeat(40).as_str())]);
+    run_with(
+        &url,
+        &s,
+        &[
+            "post",
+            "--agent",
+            "muse-1",
+            "--to",
+            "claude,agent:muse-2",
+            "--to",
+            "group:laptop",
+            "--instruction",
+            "rerun the check",
+        ],
+        "",
+    )
+    .unwrap();
+    run_with(
+        &url,
+        &s,
+        &[
+            "post",
+            "--agent",
+            "muse-1",
+            "--to",
+            "chatgpt",
+            "--reply-to",
+            "9",
+            "done",
+        ],
+        "",
+    )
+    .unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0].url, format!("/fleet/{}/send", "f".repeat(40)));
+    assert_eq!(
+        seen[0].body.as_ref().unwrap(),
+        &json!({
+            "agent": "muse-1",
+            "body": "rerun the check",
+            "to": ["claude", "agent:muse-2", "group:laptop"],
+            "kind": "instruction"
+        })
+    );
+    assert_eq!(
+        seen[1].body.as_ref().unwrap(),
+        &json!({"agent": "muse-1", "body": "done", "to": ["chatgpt"], "reply_to": 9})
+    );
 }
