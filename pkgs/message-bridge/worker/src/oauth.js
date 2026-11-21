@@ -65,7 +65,11 @@ function b64u(bytes) {
 function fromB64u(s) {
   if (!/^[A-Za-z0-9_-]*$/.test(s)) throw new Error("bad base64url");
   const bin = atob(s.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (s.length % 4)) % 4));
-  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+  const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+  // Canonical only: otherwise the last character's spare bits let several
+  // strings decode to the same signature, so a token would have look-alikes.
+  if (b64u(bytes) !== s) throw new Error("non-canonical base64url");
+  return bytes;
 }
 
 let cachedKey = { token: null, key: null };
