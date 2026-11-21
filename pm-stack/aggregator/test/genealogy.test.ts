@@ -61,6 +61,22 @@ describe("genealogy read model", () => {
     expect(result.sentence).toContain("release Release 1 due 2026-12-01");
   });
 
+  test("preserves canonical Kind when a later board membership omits it", () => {
+    const child = item(20, { parentRef: ref(19) });
+    const canonicalEpic = item(19, { title: "Canonical epic", kind: "Epic" });
+    const satelliteCopy = item(19, { title: "Canonical epic", kind: null, boardId: "satellite" });
+
+    const result = deriveGenealogy(child, [child, canonicalEpic, satelliteCopy]);
+
+    expect(result.ancestors).toContainEqual({
+      ref: ref(19),
+      title: "Canonical epic",
+      kind: "Epic",
+      relation: "primary-parent",
+    });
+    expect(result.sentence).toContain("as part of epic Canonical epic");
+  });
+
   test("renders chain breaks honestly and enriches roadmap rows with known overlay refs", () => {
     const lone = item(7, { title: "Orphan" });
     const result = deriveGenealogy(lone, [lone]);

@@ -1,4 +1,5 @@
 // #8864: read-only board-family projection over collector snapshots. No I/O.
+import { PROJECT_BOARDS } from "./board-registry.ts";
 import { isIsoDate, isRecord, isTimestampNotFuture } from "./validate.ts";
 
 export interface BoardEntry {
@@ -45,7 +46,7 @@ const dateValue = (v: unknown) =>
 export function isBoardSnapshot(v: unknown): v is BoardSnapshot {
   return (
     isRecord(v) &&
-    (v.number === 4 || v.number === 5) &&
+    (v.number === 4 || v.number === 5 || PROJECT_BOARDS.some((board) => board.url === v.url)) &&
     safeUrl(v.url) &&
     isTimestampNotFuture(v.generatedAt) &&
     Number.isInteger(v.totalItems) &&
