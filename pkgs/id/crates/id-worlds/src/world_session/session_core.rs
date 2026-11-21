@@ -20,6 +20,7 @@ pub(crate) async fn run_world_session<I: SessionIo>(
             capability,
             after,
             screen_patches,
+            binary_view_patches,
             resume_token,
             agent_profile,
         } => {
@@ -34,6 +35,7 @@ pub(crate) async fn run_world_session<I: SessionIo>(
                 JoinCapability::from_wire(capability),
                 after,
                 screen_patches,
+                binary_view_patches,
                 resume_token,
                 agent_profile,
                 documents_store,
@@ -512,6 +514,7 @@ async fn query_session<I: SessionIo>(
                 capability,
                 after,
                 screen_patches,
+                binary_view_patches,
                 resume_token,
                 agent_profile,
             } => {
@@ -526,6 +529,7 @@ async fn query_session<I: SessionIo>(
                     JoinCapability::from_wire(capability),
                     after,
                     screen_patches,
+                    binary_view_patches,
                     resume_token,
                     agent_profile,
                     documents_store.clone(),

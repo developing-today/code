@@ -60,6 +60,11 @@ pub enum Capability {
     /// fleet mailboxes: central commands one agent, a group or all;
     /// agents read, answer and ack.
     Bridge,
+    /// `fleet agent …` and `fleet shell …` — the agent's front door:
+    /// enrol an agent of any kind, check what this seat reaches, take
+    /// the next piece of work down the intake ladder, and run a command
+    /// where builds belong. Composes the other domains' verbs.
+    Agent,
 }
 
 impl Capability {
@@ -81,6 +86,7 @@ impl Capability {
             Capability::Secrets => "secrets",
             Capability::Gh => "gh",
             Capability::Bridge => "bridge",
+            Capability::Agent => "agent",
         }
     }
 
@@ -101,6 +107,7 @@ impl Capability {
         Capability::Secrets,
         Capability::Gh,
         Capability::Bridge,
+        Capability::Agent,
     ];
 }
 
@@ -309,6 +316,22 @@ pub const DOMAINS: &[Domain] = &[
         subcommands: &[
             "send", "agents", "log", "hello", "inbox", "post", "ack", "health",
         ],
+    },
+    Domain {
+        name: "agent",
+        summary: "The agent's front door: enrol an agent of any kind, check what this seat reaches, and take the next piece of work down the intake ladder (pushed command, queue, local shortlist, highest priority).",
+        capabilities: &[Capability::Agent],
+        primary: Capability::Agent,
+        aliases: &[],
+        subcommands: &["kinds", "enroll", "doctor", "next", "shortlist"],
+    },
+    Domain {
+        name: "shell",
+        summary: "Run a command, or open a shell, where builds belong: the laptop, a codespace, or here.",
+        capabilities: &[Capability::Agent],
+        primary: Capability::Agent,
+        aliases: &[],
+        subcommands: &["targets"],
     },
     Domain {
         name: "search",

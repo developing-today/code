@@ -1,8 +1,8 @@
 {
   "contract": "id-shell",
   "version": 1,
-  "revision": 11,
-  "description": "The client-server frame protocol every id shell (terminal, web, native) speaks to a world host. Version 1 is the protocol behind the /id-world/1 ALPN. A shell sends only frames and fields named here; it ignores server frame types and fields it does not know. Additive changes bump `revision`; removing or changing a frame or field needs version 2 and a new ALPN. Event-producing frames must name their stable world-event contract here.",
+  "revision": 12,
+  "description": "The client-server frame protocol every id shell (terminal, web, native) speaks to a world host. Version 1 is the protocol behind the /id-world/1 ALPN. A shell sends only frames and fields named here; it ignores server frame types and fields it does not know. Additive changes bump `revision`; removing or changing a frame or field needs version 2 and a new ALPN. Event-producing frames must name their stable world-event contract here. Protocol v2 is a separate transport version for ephemeral binary screen-view patches only; it does not change the journaled frame kinds or v1 JSON behavior.",
   "max_frame_bytes": 1048576,
   "routing_fields": ["world"],
   "transports": {
@@ -21,6 +21,35 @@
       "envelope": "u32be-length-prefix",
       "session": "one SSH session channel running the exec command"
     }
+  },
+  "protocol_v2": {
+    "client_frames": "Same text-JSON client frames and authorization rules as v1; binary_view_patches on join explicitly opts into binary ScreenPatch delivery and requires screen_patches.",
+    "server_view_patch": {
+      "class": "ephemeral",
+      "encoding": "versioned-messagepack",
+      "codec_version": 1,
+      "fields": ["version", "type", "sequence", "view_revision", "base_view_revision", "resume_token?", "patch"],
+      "compatibility": "Only selected view patches are binary when the join explicitly opts in with binary_view_patches and screen_patches; full views and all other server frames remain text JSON. The v1 transports and payloads are unchanged. Browser clients fall back to the v1 WebSocket path when the v2 route is unavailable before opening.",
+      "compression": "not negotiated"
+    },
+    "transports": {
+      "iroh": {
+        "alpn": "/id-world/2",
+        "envelope": "u32be-length-prefix",
+        "session": "one bidirectional QUIC stream"
+      },
+      "websocket": {
+        "path": "/ws/world/2",
+        "envelope": "text-message-controls-and-full-views;binary-message-view-patches",
+        "session": "one WebSocket connection"
+      },
+      "ssh-exec": {
+        "command": "id-world/2",
+        "envelope": "u32be-length-prefix",
+        "session": "one SSH session channel running the exec command"
+      }
+    },
+    "gate": "F11.12 applies to journaled frame kinds; ephemeral presentation view patches may use this versioned transport."
   },
   "phases": {
     "opening": "The session's first frame. It may carry the `world` routing field; absent means the host's default world.",
@@ -45,6 +74,7 @@
         "capability": { "type": "string", "max_bytes": 256 },
         "after": "u64?",
         "screen_patches": { "type": "bool", "optional": true, "nullable": false },
+        "binary_view_patches": { "type": "bool", "optional": true, "nullable": false },
         "agent_profile": { "type": "bool", "optional": true, "nullable": false },
         "resume_token": { "type": "string", "optional": true, "nullable": true, "max_bytes": 64 }
       }

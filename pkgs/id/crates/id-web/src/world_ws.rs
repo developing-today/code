@@ -58,7 +58,9 @@ pub fn world_routes() -> axum::Router<WorldWebState> {
 /// server (or served side by side) without either seeing the
 /// other's channel.
 pub fn world_routes_at(socket: &str) -> axum::Router<WorldWebState> {
-    world_http_routes().route(socket, axum::routing::get(handler))
+    world_http_routes()
+        .route(socket, axum::routing::get(handler))
+        .route(&format!("{socket}/2"), axum::routing::get(handler_v2))
 }
 
 /// The shared world HTTP surface - invite, metrics, directory and
@@ -654,13 +656,29 @@ async fn invite_handler(
 }
 
 async fn handler(State(state): State<WorldWebState>, ws: WebSocketUpgrade) -> Response {
+    handler_with_version(state, ws, false).await
+}
+
+async fn handler_v2(State(state): State<WorldWebState>, ws: WebSocketUpgrade) -> Response {
+    handler_with_version(state, ws, true).await
+}
+
+async fn handler_with_version(
+    state: WorldWebState,
+    ws: WebSocketUpgrade,
+    binary_view_patches: bool,
+) -> Response {
     let Some(hub) = state.hub else {
         return StatusCode::NOT_FOUND.into_response();
     };
     ws.max_message_size(MAX_FRAME_BYTES)
         .on_upgrade(move |socket| async move {
             let (sender, receiver) = socket.split();
-            let mut io = WsIo { sender, receiver };
+            let mut io = WsIo {
+                sender,
+                receiver,
+                binary_view_patches,
+            };
             run_session(&hub, &mut io).await;
         })
 }
@@ -668,6 +686,7 @@ async fn handler(State(state): State<WorldWebState>, ws: WebSocketUpgrade) -> Re
 struct WsIo {
     sender: SplitSink<WebSocket, Message>,
     receiver: SplitStream<WebSocket>,
+    binary_view_patches: bool,
 }
 
 impl SessionIo for WsIo {
@@ -692,6 +711,17 @@ impl SessionIo for WsIo {
 
     async fn send(&mut self, frame: String) -> bool {
         self.sender.send(Message::Text(frame.into())).await.is_ok()
+    }
+
+    fn binary_view_patches(&self) -> bool {
+        self.binary_view_patches
+    }
+
+    async fn send_binary(&mut self, frame: Vec<u8>) -> bool {
+        self.sender
+            .send(Message::Binary(frame.into()))
+            .await
+            .is_ok()
     }
 }
 

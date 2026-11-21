@@ -62,6 +62,17 @@ crates/fleet-bridge/        the bridge domain: fleet mailboxes on the
                             (fleet token, derived from the owner token
                             when its own secret is missing). Runbook:
                             doc/agents/fleet-command-channel.md.
+crates/fleet-agent/         the agent domain and `fleet shell`: one
+                            front door over the other verbs. `agent
+                            enroll` registers any kind of agent and
+                            reports which intake rungs its seat
+                            reaches; `agent next` returns one task
+                            from the highest rung that has one (a
+                            pushed command, the queue, the host's
+                            shortlist, GitHub priority); `shell` runs
+                            a command or opens a shell on the laptop,
+                            a codespace or here. Runbook:
+                            doc/agents/onboarding-an-agent.md.
 crates/fleet-queue/         the queue domain (step 2): the repo-queue
                             client, the queue-broker and secrets-broker
                             roles, and packet validation — the broker
@@ -251,9 +262,10 @@ behind them — lives in one place,
 and every build compiles it, so no build can know a domain another
 build forgot. The registered domains are `fleet queue`, `fleet serve`,
 `fleet proxy`, `fleet dispatch`, `fleet dispatch-test`,
-`fleet secrets`, `fleet gh`, `fleet bridge`, `fleet search` and
-`fleet laptop-agent`, plus the built-ins `fleet init`,
-`fleet version`, `fleet capabilities` and `fleet help`.
+`fleet secrets`, `fleet gh`, `fleet bridge`, `fleet agent`,
+`fleet shell`, `fleet search` and `fleet laptop-agent`, plus the
+built-ins `fleet init`, `fleet version`, `fleet capabilities` and
+`fleet help`.
 
 One staleness, stated honestly: the registry's per-domain
 `subcommands` arrays are descriptive, and for the `queue` domain they

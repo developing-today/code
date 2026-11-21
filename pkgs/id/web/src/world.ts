@@ -5,6 +5,7 @@ import { advanceHostViewCursor, parseWorldHostViewPage, parseWorldInviteResponse
 import { terminalBytesForKey } from "./world-keyboard";
 import { parseWorldSeed } from "./world-seed";
 import { applyScreenPatch, renderWorldSurface, type ScreenPatch, type ScreenSurface } from "./world-surface";
+import { decodeBinaryViewPatch } from "./world-wire";
 
 type WorldFrame = {
   type:
@@ -39,6 +40,7 @@ type WorldFrame = {
   reason?: string;
   view_revision?: number;
   base_view_revision?: number;
+  resume_token?: string | null;
   patch?: ScreenPatch;
   invite?: { capability?: string; participant_id?: number; display_name?: string };
   capability?: string;
@@ -133,6 +135,7 @@ function initWorld(): void {
   capability.value = sessionStorage.getItem(storageKey) ?? "";
   let socket: WebSocket | null = null;
   let cursor = 0;
+  let resumeToken: string | null = null;
   let renderedSurface: ScreenSurface | null = null;
   let renderedViewRevision: number | null = null;
   let records: Record<string, unknown> = {};
@@ -141,6 +144,7 @@ function initWorld(): void {
   let recordsRefetch = false;
   let reconnects = 0;
   let intentionalClose = false;
+  let useBinaryWorldV2 = true;
   let hostMode = false;
   // Bumped when a host-view load starts and when the user leaves host
   // mode (Join world): a host response that lands after a mode switch is
@@ -233,13 +237,22 @@ function initWorld(): void {
     inviteOutput.hidden = false;
   };
 
-  const receive = (raw: string) => {
+  const receive = (raw: string | ArrayBuffer) => {
     let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw) as unknown;
-    } catch {
-      rejectFrame();
-      return;
+    if (typeof raw === "string") {
+      try {
+        parsed = JSON.parse(raw) as unknown;
+      } catch {
+        rejectFrame();
+        return;
+      }
+    } else {
+      parsed = decodeBinaryViewPatch(raw);
+      if (parsed === null) {
+        rejectFrame();
+        sendViewport();
+        return;
+      }
     }
     if (!isRecord(parsed) || typeof parsed.type !== "string") {
       rejectFrame();
@@ -292,11 +305,15 @@ function initWorld(): void {
           (frame.view_revision !== undefined && frame.view_revision !== null && !isFiniteNumber(frame.view_revision)) ||
           (frame.base_view_revision !== undefined &&
             frame.base_view_revision !== null &&
-            !isFiniteNumber(frame.base_view_revision))
+            !isFiniteNumber(frame.base_view_revision)) ||
+          (frame.resume_token !== undefined &&
+            frame.resume_token !== null &&
+            typeof frame.resume_token !== "string")
         ) {
           rejectFrame();
           return;
         }
+        if (isFiniteNumber(frame.sequence)) cursor = Math.max(cursor, frame.sequence);
         if (frame.patch) {
           if (
             renderedSurface &&
@@ -307,6 +324,7 @@ function initWorld(): void {
             if (patched && renderWorldSurface(view, patched)) {
               renderedSurface = patched;
               renderedViewRevision = frame.view_revision;
+              resumeToken = frame.resume_token ?? null;
               break;
             }
           }
@@ -321,6 +339,7 @@ function initWorld(): void {
           // The authoritative screen is replaced, so drop its patch base.
           renderedSurface = null;
           renderedViewRevision = frame.view_revision ?? null;
+          resumeToken = frame.resume_token ?? null;
           formPresenter.present(frame.surface);
           break;
         }
@@ -328,6 +347,7 @@ function initWorld(): void {
           formPresenter.present(null);
           renderedSurface = frame.surface;
           renderedViewRevision = frame.view_revision ?? null;
+          resumeToken = frame.resume_token ?? null;
           break;
         }
         if (frame.data !== undefined) {
@@ -335,6 +355,7 @@ function initWorld(): void {
           view.textContent = frame.data;
           renderedSurface = null;
           renderedViewRevision = frame.view_revision ?? null;
+          resumeToken = frame.resume_token ?? null;
         }
         break;
       }
@@ -598,17 +619,20 @@ function initWorld(): void {
     renderedSurface = null;
     renderedViewRevision = null;
     const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+    let opened = false;
     // #1461: every handler captures THIS connection's socket (`ws`) and
     // ignores events once it is no longer the current one. The handlers
     // used to read the shared mutable `socket`, so a retired socket's
     // async close event (dispatched after a rejoin had already replaced
     // it) scheduled a duplicate reconnect, and a stale socket's open
     // sent its join frame on the newer socket.
-    const ws = new WebSocket(`${scheme}//${location.host}${worldSocketPath}`);
+    const ws = new WebSocket(`${scheme}//${location.host}${worldSocketPath}${useBinaryWorldV2 ? "/2" : ""}`);
+    ws.binaryType = "arraybuffer";
     socket = ws;
     setStatus("Connecting…");
     ws.addEventListener("open", () => {
       if (ws !== socket) return;
+      opened = true;
       reconnects = 0;
       ws.send(
         JSON.stringify({
@@ -617,13 +641,19 @@ function initWorld(): void {
           after: cursor || null,
           world: selectedWorld(),
           screen_patches: true,
+          binary_view_patches: useBinaryWorldV2,
+          resume_token: useBinaryWorldV2 ? resumeToken : undefined,
         }),
       );
       sendViewport();
     });
     ws.addEventListener("message", (event) => {
       if (ws !== socket) return;
-      receive(String(event.data));
+      if (typeof event.data === "string" || event.data instanceof ArrayBuffer) {
+        receive(event.data);
+      } else {
+        rejectFrame();
+      }
     });
     ws.addEventListener("error", () => {
       if (ws !== socket) return;
@@ -636,6 +666,14 @@ function initWorld(): void {
       recordsPending = false;
       recordsRefetch = false;
       if (intentionalClose) return;
+      // Older hosts do not register the v2 route. Fall back only when the
+      // upgrade itself failed; once a v2 session opened, reconnects keep v2.
+      if (!opened && useBinaryWorldV2) {
+        useBinaryWorldV2 = false;
+        reconnects = 0;
+        connect();
+        return;
+      }
       setStatus("Disconnected; retrying…", "error");
       const wait = Math.min(500 * 2 ** reconnects++, 10_000);
       window.setTimeout(() => {

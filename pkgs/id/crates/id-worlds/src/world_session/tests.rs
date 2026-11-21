@@ -26,6 +26,8 @@ mod tests {
     struct ChannelIo {
         inbound: mpsc::Receiver<Inbound>,
         outbound: mpsc::Sender<String>,
+        binary_outbound: mpsc::Sender<Vec<u8>>,
+        binary_view_patches: bool,
     }
 
     impl SessionIo for ChannelIo {
@@ -35,11 +37,18 @@ mod tests {
         async fn send(&mut self, frame: String) -> bool {
             self.outbound.send(frame).await.is_ok()
         }
+        fn binary_view_patches(&self) -> bool {
+            self.binary_view_patches
+        }
+        async fn send_binary(&mut self, frame: Vec<u8>) -> bool {
+            self.binary_view_patches && self.binary_outbound.send(frame).await.is_ok()
+        }
     }
 
     struct Peer {
         to_server: mpsc::Sender<Inbound>,
         from_server: mpsc::Receiver<String>,
+        from_server_binary: mpsc::Receiver<Vec<u8>>,
         task: tokio::task::JoinHandle<()>,
     }
 
@@ -49,15 +58,34 @@ mod tests {
         }
 
         fn connect_hub(hub: WorldHub, config: SessionConfig) -> Self {
+            Self::connect_hub_with_binary(hub, config, false)
+        }
+
+        fn connect_with_binary(service: WorldService, config: SessionConfig) -> Self {
+            Self::connect_hub_with_binary(WorldHub::single(service), config, true)
+        }
+
+        fn connect_hub_with_binary(
+            hub: WorldHub,
+            config: SessionConfig,
+            binary_view_patches: bool,
+        ) -> Self {
             let (to_server, inbound) = mpsc::channel(16);
             let (outbound, from_server) = mpsc::channel(64);
+            let (binary_outbound, from_server_binary) = mpsc::channel(64);
             let task = tokio::spawn(async move {
-                let mut io = ChannelIo { inbound, outbound };
+                let mut io = ChannelIo {
+                    inbound,
+                    outbound,
+                    binary_outbound,
+                    binary_view_patches,
+                };
                 run_session_with(&hub, &mut io, config).await;
             });
             Self {
                 to_server,
                 from_server,
+                from_server_binary,
                 task,
             }
         }
@@ -85,6 +113,12 @@ mod tests {
                 .expect("timed out waiting for a server frame")
         }
 
+        async fn next_binary(&mut self) -> Option<Vec<u8>> {
+            tokio::time::timeout(Duration::from_mins(1), self.from_server_binary.recv())
+                .await
+                .expect("timed out waiting for a binary server frame")
+        }
+
         async fn next(&mut self) -> Option<serde_json::Value> {
             self.next_text()
                 .await
@@ -95,10 +129,12 @@ mod tests {
             let Self {
                 to_server,
                 from_server,
+                from_server_binary,
                 task,
             } = self;
             let _ = to_server.send(Inbound::Closed).await;
             drop(from_server);
+            drop(from_server_binary);
             task.await.unwrap();
         }
     }
@@ -4016,6 +4052,82 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn negotiated_binary_v2_sends_catch_up_patch_after_text_snapshot() {
+            let step = Arc::new(AtomicU64::new(0));
+            let world = WorldHandle::spawn_with_program(
+                WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+                Box::new(StepScreen(Arc::clone(&step))),
+            );
+            let service = WorldService::new(world.clone(), None);
+            let (_, capability) = world
+                .issue("player".to_owned(), WorldScopes::GUEST)
+                .await
+                .unwrap();
+
+            let mut initial = Peer::connect(service.clone(), SessionConfig::default());
+            initial
+                .say(serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                    "screen_patches": true,
+                }))
+                .await;
+            assert_eq!(initial.next().await.unwrap()["type"], "snapshot");
+            let opening = next_view(&mut initial).await;
+            let base = screen_of(&opening);
+            let token = opening["resume_token"].as_str().unwrap().to_owned();
+            let base_revision = opening["view_revision"].as_u64().unwrap();
+
+            step.store(1, Ordering::Relaxed);
+            let mut resumed = Peer::connect_with_binary(service, SessionConfig::default());
+            resumed
+                .say(serde_json::json!({
+                    "type": "join",
+                    "capability": capability.expose(),
+                    "screen_patches": true,
+                    "binary_view_patches": true,
+                    "resume_token": token,
+                }))
+                .await;
+            assert_eq!(resumed.next().await.unwrap()["type"], "snapshot");
+            let bytes = resumed.next_binary().await.unwrap();
+            let patch = id_core::screen_codec::decode_view_patch(&bytes).unwrap();
+            assert_eq!(patch.base_view_revision, base_revision);
+            let applied = patch.patch.apply(&base).unwrap();
+            assert_eq!(applied.cells[0].symbol, "0");
+            assert_eq!(applied.cells[1].symbol, "1");
+            resumed.close().await;
+            initial.close().await;
+        }
+
+        #[tokio::test]
+        async fn binary_transport_requires_explicit_join_opt_in() {
+            let world = WorldHandle::spawn_with_program(
+                WorldCore::new("lobby", WorldLimits::default()).unwrap(),
+                Box::new(StepScreen(Arc::new(AtomicU64::new(0)))),
+            );
+            let service = WorldService::new(world.clone(), None);
+            let (_, capability) = world
+                .issue("player".to_owned(), WorldScopes::GUEST)
+                .await
+                .unwrap();
+
+            let mut peer = Peer::connect_with_binary(service, SessionConfig::default());
+            peer.say(serde_json::json!({
+                "type": "join",
+                "capability": capability.expose(),
+                "screen_patches": true,
+            }))
+            .await;
+            assert_eq!(peer.next().await.unwrap()["type"], "snapshot");
+            let view = peer.next().await.unwrap();
+            assert_eq!(view["type"], "view");
+            assert!(view["surface"].is_object());
+            assert!(peer.from_server_binary.try_recv().is_err());
+            peer.close().await;
+        }
+
+        #[tokio::test]
         async fn unknown_resume_tokens_fall_back_to_a_full_view() {
             let world = WorldHandle::spawn_with_program(
                 WorldCore::new("lobby", WorldLimits::default()).unwrap(),
@@ -4097,6 +4209,7 @@ mod tests {
                     "type": "join",
                     "capability": capability.expose(),
                     "screen_patches": true,
+                    "binary_view_patches": true,
                     "resume_token": token,
                 }))
                 .await;
