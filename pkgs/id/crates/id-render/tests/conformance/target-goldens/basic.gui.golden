@@ -1,0 +1,80 @@
+{
+  "target": "gui",
+  "root": {
+    "path": "document",
+    "kind": "document",
+    "role": "document",
+    "presentation": {
+      "choice": "standard"
+    },
+    "children": [
+      {
+        "path": "document/page[0]",
+        "kind": "page",
+        "role": "main region",
+        "presentation": {
+          "choice": "standard"
+        },
+        "children": [
+          {
+            "path": "document/page[0]/heading[0]",
+            "kind": "heading",
+            "role": "heading",
+            "presentation": {
+              "choice": "standard"
+            },
+            "children": [
+              {"text": "Settings"}
+            ]
+          },
+          {
+            "path": "document/page[0]/button[0]",
+            "kind": "button",
+            "role": "button",
+            "presentation": {
+              "choice": "standard"
+            },
+            "children": [
+              {"text": "Save"}
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "a11y": {
+    "path": "document",
+    "kind": "document",
+    "role": "document",
+    "name": "",
+    "children": [
+      {
+        "path": "document/page[0]",
+        "kind": "page",
+        "role": "main region",
+        "name": "Settings",
+        "children": [
+          {
+            "path": "document/page[0]/heading[0]",
+            "kind": "heading",
+            "role": "heading",
+            "name": "Settings",
+            "children": []
+          },
+          {
+            "path": "document/page[0]/button[0]",
+            "kind": "button",
+            "role": "button",
+            "name": "Save",
+            "children": []
+          }
+        ]
+      }
+    ]
+  },
+  "report": {
+    "applied": [],
+    "fallbacks": [],
+    "reported_overrides": []
+  }
+}
