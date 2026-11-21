@@ -13,8 +13,10 @@ import importlib.util
 import json
 import tempfile
 import unittest
+import urllib.error
+import urllib.parse
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 
 _spec = importlib.util.spec_from_file_location(
     "poll", Path(__file__).resolve().parent / "poll.py"
@@ -758,21 +760,26 @@ class TestFetchClaimedRows(unittest.TestCase):
 
 
 class TestFetchSessions(unittest.TestCase):
-    """Fetch-layer completeness (#4757): /api/session truncates at 50
-    by default and honours limit but not offset, so fetch_sessions
-    escalates the limit until a read comes back below it — and fails
-    closed (None) whenever completeness cannot be proven.
+    """Fetch-layer completeness: session list pages use cursor.next
+    and never request more than the server's 200-row cap.
     _server_get is stubbed; no server is touched."""
 
     def stub_server(self, total, fail_on_call=None):
         calls = []
 
-        def fake_get(path):
+        def fake_get(path, **_kwargs):
             calls.append(path)
             if fail_on_call is not None and len(calls) == fail_on_call:
                 return None
-            limit = int(path.rsplit("limit=", 1)[1])
-            return [{"id": f"ses_{i}"} for i in range(min(limit, total))]
+            query = urllib.parse.parse_qs(path.partition("?")[2])
+            limit = int(query["limit"][0])
+            start = int(query.get("cursor", ["0"])[0])
+            page = [
+                {"id": f"ses_{i}"}
+                for i in range(start, min(start + limit, total))
+            ]
+            next_cursor = str(start + limit) if start + limit < total else None
+            return {"data": page, "cursor": {"next": next_cursor}}
 
         return fake_get, calls
 
@@ -785,31 +792,37 @@ class TestFetchSessions(unittest.TestCase):
         finally:
             poll._server_get = original
 
-    def test_short_single_read_is_complete(self):
+    def test_short_single_page_is_complete(self):
         sessions, calls = self.run_fetch(3)
         self.assertEqual(len(sessions), 3)
         self.assertEqual(len(calls), 1)
 
-    def test_escalating_limit_finds_the_whole_list(self):
-        sessions, calls = self.run_fetch(2500)
-        self.assertEqual(len(sessions), 2500)
-        self.assertEqual(len(calls), 2)
-
-    def test_count_exactly_at_a_limit_escalates(self):
-        sessions, calls = self.run_fetch(1000)
-        self.assertEqual(len(sessions), 1000)
-        self.assertEqual(len(calls), 2)
+    def test_more_than_200_sessions_follow_cursor_to_completion(self):
+        sessions, calls = self.run_fetch(450)
+        self.assertEqual(len(sessions), 450)
+        self.assertEqual(
+            [s["id"] for s in sessions], [f"ses_{i}" for i in range(450)]
+        )
+        self.assertEqual(len(calls), 3)
+        for path in calls:
+            query = urllib.parse.parse_qs(path.partition("?")[2])
+            self.assertLessEqual(int(query["limit"][0]), 200)
+        self.assertEqual(calls[0], "/api/session?limit=200")
+        self.assertIn("cursor=200", calls[1])
 
     def test_failed_read_fails_closed(self):
-        sessions, _ = self.run_fetch(2500, fail_on_call=1)
+        sessions, _ = self.run_fetch(450, fail_on_call=1)
         self.assertIsNone(sessions)
-        sessions, _ = self.run_fetch(2500, fail_on_call=2)
+        sessions, _ = self.run_fetch(450, fail_on_call=2)
         self.assertIsNone(sessions)
 
-    def test_count_at_every_limit_fails_closed(self):
-        sessions, calls = self.run_fetch(10**9)
-        self.assertIsNone(sessions)
-        self.assertEqual(len(calls), len(poll.SESSION_FETCH_LIMITS))
+    def test_http_error_is_not_swallowed_for_session_list(self):
+        error = urllib.error.HTTPError("url", 400, "Bad Request", {}, None)
+        with patch("builtins.open", mock_open(read_data='{"password":"pw"}')):
+            with patch.object(poll.urllib.request, "urlopen", side_effect=error):
+                with self.assertRaises(urllib.error.HTTPError) as raised:
+                    poll._server_get("/api/session?limit=1000", raise_http_errors=True)
+        self.assertEqual(raised.exception.code, 400)
 
 
 class TestStaleBinding(unittest.TestCase):
