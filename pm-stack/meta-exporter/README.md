@@ -71,6 +71,7 @@ can render as a current reading:
 | `no-console-page` | browser up, no dev.meta.ai tab open                                                                                                                                             | 5    |
 | `unparseable`     | endpoint answered an unrecognised shape                                                                                                                                         | 6    |
 | `fetch-failed`    | network/other error inside the page                                                                                                                                             | 7    |
+| `no-subscription` | the team has no active Muse Code subscription: subscription-quota answers `{}` and the billing banner is the subscription upsell (seen 2026-11-21). Nothing to measure, so the unit succeeds | 0    |
 
 ## Readiness probe + bounded recovery (issue #5487)
 

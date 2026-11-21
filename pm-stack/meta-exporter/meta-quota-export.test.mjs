@@ -12,7 +12,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   ExportError,
+  NO_SUBSCRIPTION_DETAIL,
   attemptBoundedRestart,
+  detectNoSubscription,
   failureDocument,
   parseArgs,
   PAGE_NOT_READY_EXIT,
@@ -71,6 +73,33 @@ test("parseSubscriptionQuota: shape drift fails closed", () => {
   const zeroLimit = structuredClone(QUOTA);
   zeroLimit.subscription_quota.window_weighted_limit = "0";
   assert.throws(() => parseSubscriptionQuota(zeroLimit), /zero limit/);
+});
+
+// The live payloads after the subscription ended (2026-11-21): an empty
+// subscription-quota body and the subscription upsell banner.
+const BANNER_UPSELL = {
+  kind: "subscription_upsell",
+  upsell_title: "Start building with a Muse Code subscription",
+  upsell_subtitle: "Build, code and test using high-powered AI agents and more.",
+  upsell_cta_label: "View all plans",
+};
+
+test("detectNoSubscription: empty quota plus the upsell banner is no-subscription", () => {
+  assert.equal(detectNoSubscription({}, BANNER_UPSELL), true);
+  assert.match(NO_SUBSCRIPTION_DETAIL, /no active Muse Code subscription/);
+});
+
+test("detectNoSubscription: anything else stays on the fail-closed path", () => {
+  // Empty quota without the upsell banner is drift, not a lapsed plan.
+  assert.equal(detectNoSubscription({}, { kind: "free_partial", remaining_minor_units: 100, currency: "USD" }), false);
+  assert.equal(detectNoSubscription({}, null), false);
+  // Upsell banner but a quota body with other keys is drift too.
+  assert.equal(detectNoSubscription({ quota: {} }, BANNER_UPSELL), false);
+  assert.equal(detectNoSubscription(QUOTA, BANNER_UPSELL), false);
+  assert.equal(detectNoSubscription([], BANNER_UPSELL), false);
+  assert.equal(detectNoSubscription(null, BANNER_UPSELL), false);
+  // The quota parser itself still rejects the empty body.
+  assert.throws(() => parseSubscriptionQuota({}), /subscription_quota object missing/);
 });
 
 test("parseBillingBanner: minor units to USD, currency checked", () => {
