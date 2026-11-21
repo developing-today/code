@@ -75,6 +75,14 @@ export interface Config {
    * (PM_DISPATCH_WORKTREE_ROOT, default ~/git/fleet; "off" runs in the
    * requested directory as before). code#12213. */
   worktreeRoot: string | null;
+  /** Registry file holding the worktree <-> task/session association
+   * the cleanup lifecycle retires trees from (code#12217). Only
+   * meaningful when worktreeRoot is set. */
+  worktreeRegistryFile: string;
+  /** Seconds between worktree cleanup sweeps (PM_DISPATCH_WORKTREE_
+   * SWEEP_SECONDS, default 900; "off" disables the timer — the
+   * failure-path cleanup still runs). code#12217. */
+  worktreeSweepSeconds: number | null;
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
@@ -123,5 +131,17 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       env.PM_DISPATCH_WORKTREE_ROOT?.trim().toLowerCase() === "off"
         ? null
         : s(env.PM_DISPATCH_WORKTREE_ROOT, join(homedir(), "git", "fleet")),
+    worktreeRegistryFile: s(
+      env.PM_DISPATCH_WORKTREE_REGISTRY,
+      join(homedir(), ".local", "state", "pm-dispatch", "worktree-registry.json"),
+    ),
+    worktreeSweepSeconds: (() => {
+      const v = s(env.PM_DISPATCH_WORKTREE_SWEEP_SECONDS, "900");
+      if (v.toLowerCase() === "off") return null;
+      if (!/^\d+$/.test(v) || Number(v) < 1) {
+        throw new Error(`Invalid PM_DISPATCH_WORKTREE_SWEEP_SECONDS "${v}": expected a positive integer or "off"`);
+      }
+      return Number(v);
+    })(),
   };
 }

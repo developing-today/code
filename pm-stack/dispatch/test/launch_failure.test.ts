@@ -141,7 +141,7 @@ describe("handleLaunchFailure", () => {
   async function assertCreatedSessionFailure(stage: "sendPrompt" | "claim") {
     const sessionId = "session/created-42";
     const launchError = new Error(`${stage} failed`);
-    const context = { sessionId: null as string | null };
+    const context = { sessionId: null as string | null, worktree: null as string | null };
     const calls = {
       deleted: [] as string[],
       cancels: [] as [number, string][],
