@@ -90,6 +90,7 @@ park notes in two days). The rule:
   worktree or draft PR is its own work to inspect and continue. (On
   2026-11-21 seven parked tasks were still waiting on such a gate
   after the assignments were cleared; their checkpoints were reset.)
+  See [FDR-0012](../decisions/FDR-0012-no-ownership-handoff-park-gates.md).
 - Check before parking on ownership (exit 0 = workable, 3 = held):
 
   ```bash

@@ -4,6 +4,7 @@
 - Status: accepted
 - Owner: Fleet queue maintainers
 - Decision maker: Drew, explicit request to filter Fleet claims by actual implementation repository and suitable work window, 2026-11-18.
+- Superseded in part by: [FDR-0012](FDR-0012-no-ownership-handoff-park-gates.md) (handoff semantics and the legacy ownership-hold default only).
 
 ## Context and sources
 
