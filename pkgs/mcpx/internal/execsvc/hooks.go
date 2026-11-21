@@ -137,6 +137,11 @@ type hookContext struct {
 	// Calls are the tool calls the script made before this hook ran, in
 	// the same hashed-arguments shape call frames carry.
 	Calls []CallInfo `json:"calls,omitempty"`
+	// CallsError is non-empty when the run could not collect its tool-call
+	// history. In that case @calls is an explicit unavailable object, not [];
+	// scripts can branch on this field rather than mistaking missing history
+	// for a run that made no calls.
+	CallsError string `json:"callsError,omitempty"`
 }
 
 // hookOutput is what a hook may return: one JSON object on stdout.
