@@ -6,6 +6,7 @@
 // spec allows. No session id is issued: every call stands alone, and
 // the message store is the only state.
 
+import { EventError } from "./events.js";
 import { CHANNEL_NAMES, InputError, MAX_BODY, MAX_LIMIT, forAgent } from "./messages.js";
 
 export const SERVER_NAME = "message-bridge";
@@ -89,7 +90,11 @@ export const TOOLS = [
   },
 ];
 
-const rpcError = (id, code, message) => ({ jsonrpc: "2.0", id: id ?? null, error: { code, message } });
+const rpcError = (id, code, message, data) => ({
+  jsonrpc: "2.0",
+  id: id ?? null,
+  error: { code, message, ...(data === undefined ? {} : { data }) },
+});
 const rpcResult = (id, result) => ({ jsonrpc: "2.0", id, result });
 
 function toolResult(data, isError = false) {
@@ -148,7 +153,7 @@ export async function callTool(name, args, store, channel = "claude") {
   }
 }
 
-async function handleOne(msg, store, channel) {
+async function handleOne(msg, store, channel, events) {
   if (!msg || typeof msg !== "object" || msg.jsonrpc !== "2.0" || typeof msg.method !== "string") {
     return rpcError(msg?.id, -32600, "Invalid Request");
   }
@@ -161,13 +166,16 @@ async function handleOne(msg, store, channel) {
       const protocolVersion = PROTOCOL_VERSIONS.includes(asked) ? asked : PROTOCOL_VERSIONS[0];
       return rpcResult(id, {
         protocolVersion,
-        capabilities: { tools: { listChanged: false } },
+        capabilities: { tools: { listChanged: false }, ...(events ? { events: {} } : {}) },
         serverInfo: { name: SERVER_NAME, title: "Message bridge", version: SERVER_VERSION },
         instructions: instructionsFor(channel),
       });
     }
     case "server/discover":
-      return rpcResult(id, { supportedVersions: [...DISCOVER_VERSIONS, ...PROTOCOL_VERSIONS], capabilities: { tools: {} } });
+      return rpcResult(id, {
+        supportedVersions: [...DISCOVER_VERSIONS, ...PROTOCOL_VERSIONS],
+        capabilities: { tools: {}, ...(events ? { events: {} } : {}) },
+      });
     case "ping":
       return rpcResult(id, {});
     case "tools/list":
@@ -179,6 +187,17 @@ async function handleOne(msg, store, channel) {
         return rpcResult(id, toolResult(await callTool(name, params?.arguments, store, channel)));
       } catch (err) {
         if (err instanceof InputError) return rpcResult(id, toolResult({ error: err.message }, true));
+        throw err;
+      }
+    }
+    case "events/list":
+    case "events/subscribe":
+    case "events/unsubscribe": {
+      if (!events) return rpcError(id, -32601, `Method not found: ${method}`);
+      try {
+        return rpcResult(id, await events[method.slice("events/".length)](params));
+      } catch (err) {
+        if (err instanceof EventError) return rpcError(id, err.code, err.message, err.data);
         throw err;
       }
     }
@@ -197,8 +216,11 @@ const json = (data, status = 200) =>
     headers: { "content-type": "application/json", "cache-control": "no-store" },
   });
 
-/** Handles a request already authorized for /mcp/<token>, for one channel. */
-export async function handleMcp(request, store, channel = "claude") {
+/**
+ * Handles a request already authorized for one channel. events is that
+ * channel's events/* methods (events.js), or null when it has none.
+ */
+export async function handleMcp(request, store, channel = "claude", events = null) {
   if (request.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405, headers: { allow: "POST" } });
   }
@@ -214,11 +236,11 @@ export async function handleMcp(request, store, channel = "claude") {
     if (payload.length === 0) return json(rpcError(null, -32600, "Invalid Request"), 400);
     const out = [];
     for (const m of payload) {
-      const r = await handleOne(m, store, channel);
+      const r = await handleOne(m, store, channel, events);
       if (r) out.push(r);
     }
     return out.length ? json(out) : new Response(null, { status: 202 });
   }
-  const r = await handleOne(payload, store, channel);
+  const r = await handleOne(payload, store, channel, events);
   return r ? json(r) : new Response(null, { status: 202 });
 }

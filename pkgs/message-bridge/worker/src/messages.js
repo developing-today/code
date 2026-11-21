@@ -153,6 +153,25 @@ export class MemoryStore {
     this.clients = new Map();
     this.registrations = [];
     this.events = [];
+    this.subs = new Map();
+  }
+  // ChatGPT event subscriptions (events.js), same semantics as the Durable Object.
+  async eventSubGet(id) {
+    const s = this.subs.get(id);
+    return s ? JSON.parse(JSON.stringify(s)) : null;
+  }
+  async eventSubPut(sub, max) {
+    for (const [k, s] of this.subs) if (s.expires <= Date.now()) this.subs.delete(k);
+    if (!this.subs.has(sub.id) && this.subs.size >= max) return false;
+    this.subs.set(sub.id, JSON.parse(JSON.stringify(sub)));
+    return true;
+  }
+  async eventSubDelete(id) {
+    return this.subs.delete(id);
+  }
+  async eventSubsLive(channel, now) {
+    for (const [k, s] of this.subs) if (s.expires <= now) this.subs.delete(k);
+    return [...this.subs.values()].filter((s) => s.channel === channel).map((s) => JSON.parse(JSON.stringify(s)));
   }
   async oauthClientAdd(id, meta, now = Math.floor(Date.now() / 1000)) {
     for (const [k, c] of this.clients) {

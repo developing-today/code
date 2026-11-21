@@ -5,7 +5,8 @@
 //   POST /mcp/<token>                 remote MCP server (Streamable HTTP),
 //                                     Claude's channel
 //   POST /mcp/<chatgpt token>         the same server on ChatGPT's channel,
-//                                     for the ChatGPT connector's Site
+//                                     with MCP Events (events.js) so a
+//                                     message for ChatGPT wakes its chat
 //   GET  /p/<token>                   history page with the send form
 //   POST /p/<token>                   form post: store an inbound message
 //                                     for each checked recipient (to)
@@ -20,7 +21,10 @@
 //   POST /api/<token>/ack             JSON {up_to_id | ids, channel}: mark read
 //   GET  /api/<token>/oauth-events    the last connector sign-in events
 //                                     (registrations, approvals, refusals;
-//                                     no secrets), newest first
+//                                     no secrets) and ChatGPT event
+//                                     deliveries, newest first
+//   GET  /api/<token>/event-subscriptions  live ChatGPT event subscriptions
+//                                     (host and expiry only, events.js)
 //   GET  /healthz                     {ok, configured, chatgpt_configured,
 //                                     version, token_fingerprint}, no data
 //   POST / and POST /mcp              the MCP server for a connector added
@@ -34,6 +38,7 @@
 import { chatgptConfigured, matchTokenPath, tokenConfigured, tokenFingerprint } from "./auth.js";
 import { handleFleet } from "./fleet.js";
 import { handleMcp } from "./mcp.js";
+import { EVENT_CHANNELS, deliverMessages, eventsFor } from "./events.js";
 import { MCP_CORS, bearerChannel, handleOAuth, ownerCookie, unauthorized } from "./oauth.js";
 import { InputError, normalizeKind, normalizeRecipients } from "./messages.js";
 import { renderPage } from "./page.js";
@@ -81,19 +86,29 @@ async function sendToEach(store, { body, sender, to, source, kind }) {
   return messages;
 }
 
-async function handlePage(request, store, base, api, url, chatgptReady) {
+/** Logs to the owner's sign-in/event log; logging never breaks a request. */
+const logTo = (store) => async (kind, detail) => {
+  try {
+    await store.oauthLog(kind, detail);
+  } catch {
+    // diagnostics only
+  }
+};
+
+async function handlePage(request, store, base, api, url, chatgptReady, delivered) {
   if (request.method === "POST") {
     const form = new URLSearchParams(await readBody(request));
     // Without JavaScript the checkboxes post one "to" each; none checked
     // falls back to Claude, as before.
     const to = form.getAll("to");
-    await sendToEach(store, {
+    const sent = await sendToEach(store, {
       body: form.get("body") ?? "",
       sender: form.get("sender"),
       to: to.length ? to : undefined,
       kind: form.get("kind") ?? undefined,
       source: "page",
     });
+    delivered(sent);
     return new Response(null, { status: 303, headers: { location: base } });
   }
   if (request.method !== "GET" && request.method !== "HEAD") {
@@ -122,7 +137,7 @@ async function handlePage(request, store, base, api, url, chatgptReady) {
   });
 }
 
-async function handleApi(request, store, rest, url) {
+async function handleApi(request, store, rest, url, delivered) {
   const [what, ...more] = rest;
   if (more.length) return notFound();
   if (what === "messages") {
@@ -158,6 +173,7 @@ async function handleApi(request, store, rest, url) {
         kind: data.kind,
         source,
       });
+      delivered(messages);
       // message stays for callers from before there were two channels.
       return json({ message: messages[0], messages }, 201);
     }
@@ -166,6 +182,22 @@ async function handleApi(request, store, rest, url) {
   if (what === "oauth-events") {
     if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET" } });
     return json({ events: await store.oauthEvents() });
+  }
+  if (what === "event-subscriptions") {
+    if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405, headers: { allow: "GET" } });
+    const subs = [];
+    for (const channel of EVENT_CHANNELS) {
+      for (const sub of await store.eventSubsLive(channel, Date.now())) {
+        subs.push({
+          id: sub.id,
+          channel,
+          host: new URL(sub.url).hostname,
+          created: new Date(sub.created).toISOString(),
+          expires: new Date(sub.expires).toISOString(),
+        });
+      }
+    }
+    return json({ subscriptions: subs });
   }
   if (what === "ack") {
     if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { allow: "POST" } });
@@ -181,7 +213,11 @@ async function handleApi(request, store, rest, url) {
   return notFound();
 }
 
-export async function route(request, env, getStore) {
+/**
+ * waitUntil keeps work going after the response (event deliveries); the
+ * Worker passes ctx.waitUntil, and tests can collect the promises.
+ */
+export async function route(request, env, getStore, waitUntil = (p) => p) {
   const url = new URL(request.url);
   if (url.pathname === "/healthz") {
     const configured = tokenConfigured(env);
@@ -200,7 +236,8 @@ export async function route(request, env, getStore) {
     const channel = await bearerChannel(request, env);
     if (!channel) return unauthorized(request, url);
     try {
-      return withHeaders(await handleMcp(request, getStore(), channel), MCP_CORS);
+      const store = getStore();
+      return withHeaders(await handleMcp(request, store, channel, eventsFor(env, store, channel, logTo(store))), MCP_CORS);
     } catch (err) {
       if (err instanceof InputError) return withHeaders(json({ error: err.message }, 400), MCP_CORS);
       throw err;
@@ -213,19 +250,22 @@ export async function route(request, env, getStore) {
   if (!m) return notFound();
   const token = env.ACCESS_TOKEN;
   const store = getStore();
+  const delivered = (messages) => waitUntil(deliverMessages(env, store, messages, logTo(store)).catch(() => {}));
   try {
-    if (m.area === "mcp" && m.rest.length === 0) return withHeaders(await handleMcp(request, store, m.channel));
+    if (m.area === "mcp" && m.rest.length === 0) {
+      return withHeaders(await handleMcp(request, store, m.channel, eventsFor(env, store, m.channel, logTo(store))));
+    }
     if (m.role !== "owner") return notFound();
     if (m.area === "p" && m.rest.length === 0) {
       const res = withHeaders(
-        await handlePage(request, store, `/p/${token}`, `/api/${token}`, url, chatgptConfigured(env)),
+        await handlePage(request, store, `/p/${token}`, `/api/${token}`, url, chatgptConfigured(env), delivered),
       );
       // Opening the page marks this browser as the owner's, so approving
       // a connector here (oauth.js) is one tap.
       if (request.method === "GET" && res.status === 200) res.headers.append("set-cookie", await ownerCookie(env));
       return res;
     }
-    if (m.area === "api") return withHeaders(await handleApi(request, store, m.rest, url));
+    if (m.area === "api") return withHeaders(await handleApi(request, store, m.rest, url, delivered));
   } catch (err) {
     if (err instanceof InputError) return withHeaders(json({ error: err.message }, 400));
     throw err;

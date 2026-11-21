@@ -54,6 +54,14 @@ export class MessageStore extends DurableObject {
       used INTEGER
     )`);
     this.sql.exec("CREATE TABLE IF NOT EXISTS oauth_reg (source TEXT NOT NULL, ts INTEGER NOT NULL)");
+    // ChatGPT event subscriptions (events.js): one row each, the
+    // subscription (callback URL and signing secret included) as JSON.
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS event_sub (
+      id TEXT PRIMARY KEY,
+      channel TEXT NOT NULL,
+      expires INTEGER NOT NULL,
+      data TEXT NOT NULL
+    )`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS oauth_event (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       ts TEXT NOT NULL,
@@ -117,6 +125,38 @@ export class MessageStore extends DurableObject {
       .exec("SELECT ts, kind, detail FROM oauth_event ORDER BY id DESC")
       .toArray()
       .map((r) => ({ ts: r.ts, kind: r.kind, ...JSON.parse(r.detail) }));
+  }
+
+  eventSubGet(id) {
+    const row = this.sql.exec("SELECT data FROM event_sub WHERE id = ?", id).toArray()[0];
+    return row ? JSON.parse(row.data) : null;
+  }
+
+  /** Stores or replaces a subscription; false when a new one would pass max live ones. */
+  eventSubPut(sub, max) {
+    this.sql.exec("DELETE FROM event_sub WHERE expires <= ?", Date.now());
+    const exists = this.sql.exec("SELECT 1 FROM event_sub WHERE id = ?", sub.id).toArray().length > 0;
+    if (!exists && this.sql.exec("SELECT COUNT(*) AS n FROM event_sub").one().n >= max) return false;
+    this.sql.exec(
+      "INSERT OR REPLACE INTO event_sub (id, channel, expires, data) VALUES (?, ?, ?, ?)",
+      sub.id,
+      sub.channel,
+      sub.expires,
+      JSON.stringify(sub),
+    );
+    return true;
+  }
+
+  eventSubDelete(id) {
+    return this.sql.exec("DELETE FROM event_sub WHERE id = ? RETURNING id", id).toArray().length > 0;
+  }
+
+  eventSubsLive(channel, now) {
+    this.sql.exec("DELETE FROM event_sub WHERE expires <= ?", now);
+    return this.sql
+      .exec("SELECT data FROM event_sub WHERE channel = ? ORDER BY id", channel)
+      .toArray()
+      .map((r) => JSON.parse(r.data));
   }
 
   /** Marks a code used; false when it already was. */
@@ -254,12 +294,16 @@ function storeFor(env) {
     oauthClientGet: (id, touch) => stub.oauthClientGet(id, touch),
     oauthLog: (kind, detail) => stub.oauthLog(kind, detail),
     oauthEvents: () => stub.oauthEvents(),
+    eventSubGet: (id) => stub.eventSubGet(id),
+    eventSubPut: (sub, max) => stub.eventSubPut(sub, max),
+    eventSubDelete: (id) => stub.eventSubDelete(id),
+    eventSubsLive: (channel, now) => stub.eventSubsLive(channel, now),
     fleet: (op, args) => fleetCall(stub, op, args),
   };
 }
 
 export default {
-  async fetch(request, env) {
-    return route(request, env, () => storeFor(env));
+  async fetch(request, env, ctx) {
+    return route(request, env, () => storeFor(env), (p) => ctx.waitUntil(p));
   },
 };
