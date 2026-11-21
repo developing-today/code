@@ -35,7 +35,10 @@ pub fn render_anchor_header(
         }
     } else {
         // Do not reveal whether the target is absent or merely inaccessible.
-        return Some(format!("anchored: {reference} ({relation}){}", state_marker(state)));
+        return Some(format!(
+            "anchored: {reference} ({relation}){}",
+            state_marker(state)
+        ));
     };
 
     Some(format!(
@@ -112,8 +115,15 @@ mod tests {
             Some("anchored: [Doc](id://abc) (about) [disputed]"),
         );
         assert_eq!(
-            render_anchor_header("abc", "about", LinkState::Tombstoned, Some("Doc"), None, None)
-                .as_deref(),
+            render_anchor_header(
+                "abc",
+                "about",
+                LinkState::Tombstoned,
+                Some("Doc"),
+                None,
+                None
+            )
+            .as_deref(),
             Some("anchored: [deleted](id://abc) (about) [tombstoned]"),
         );
         assert_eq!(
@@ -125,8 +135,15 @@ mod tests {
     #[test]
     fn local_labels_cannot_inject_terminal_lines() {
         assert_eq!(
-            render_anchor_header("abc", "about", LinkState::Current, Some("Doc\nforged"), None, None)
-                .as_deref(),
+            render_anchor_header(
+                "abc",
+                "about",
+                LinkState::Current,
+                Some("Doc\nforged"),
+                None,
+                None
+            )
+            .as_deref(),
             Some("anchored: [Doc forged](id://abc) (about)"),
         );
     }
