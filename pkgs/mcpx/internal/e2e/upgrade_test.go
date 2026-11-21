@@ -3,6 +3,7 @@ package e2e_test
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,19 @@ func copyExecutable(t *testing.T, from, to string) {
 	if err := os.WriteFile(to, b, 0o755); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// copyDaemonExecutable makes a distinct upgrade target from the executable
+// the daemon is actually running. Copying e.mcpx is not sufficient for
+// wrapped artifacts: a wrapper can exec an absolute store path, making the
+// copied wrapper start the same executable again.
+func copyDaemonExecutable(t *testing.T, pid int, fallback, to string) {
+	t.Helper()
+	executable := filepath.Join("/proc", strconv.Itoa(pid), "exe")
+	if _, err := os.Stat(executable); err != nil {
+		executable = fallback
+	}
+	copyExecutable(t, executable, to)
 }
 
 func awaitDaemonOtherThan(t *testing.T, e *env, pid int) daemonDoc {
@@ -45,7 +59,7 @@ func TestUpgradeKeepsTheChildAndHandsMainPIDToTheSuccessor(t *testing.T) {
 	}
 
 	next := filepath.Join(t.TempDir(), "mcpx-next")
-	copyExecutable(t, e.mcpx, next)
+	copyDaemonExecutable(t, before.PID, e.mcpx, next)
 	if out, err := e.tryWith(next, "upgrade"); err != nil {
 		t.Fatalf("upgrade failed: %v\n%s", err, out)
 	}

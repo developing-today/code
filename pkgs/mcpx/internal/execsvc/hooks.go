@@ -106,7 +106,7 @@ type HookFrame struct {
 	DurationMs int64           `json:"durationMs,omitempty"`
 	Changed    bool            `json:"changed"`
 	Original   json.RawMessage `json:"original,omitempty"`
-	// Dropped names the keys an output carried that its phase may not
+	// Dropped names the keys an output carried that its action or phase may not
 	// honour. Reported rather than silently ignored.
 	Dropped []string `json:"dropped,omitempty"`
 	Advice  string   `json:"advice,omitempty"`
@@ -137,6 +137,11 @@ type hookContext struct {
 	// Calls are the tool calls the script made before this hook ran, in
 	// the same hashed-arguments shape call frames carry.
 	Calls []CallInfo `json:"calls,omitempty"`
+	// CallsError is non-empty when the run could not collect its tool-call
+	// history. In that case @calls is an explicit unavailable object, not [];
+	// scripts can branch on this field rather than mistaking missing history
+	// for a run that made no calls.
+	CallsError string `json:"callsError,omitempty"`
 }
 
 // hookOutput is what a hook may return: one JSON object on stdout.
@@ -390,19 +395,33 @@ func (s *Service) runOneHook(ctx context.Context, phase string, h Hook, hctx hoo
 		out.Frame.Error = "the hook timed out"
 	}
 
+	out.readScriptOutput(stdout.String())
+	return out
+}
+
+// readScriptOutput decodes only a successfully completed script/module hook.
+func (out *hookRun) readScriptOutput(stdout string) {
 	if !out.Failed {
-		text := strings.TrimSpace(stdout.String())
+		text := strings.TrimSpace(stdout)
 		if text != "" {
 			if err := json.Unmarshal([]byte(text), &out.Out); err != nil {
-				// Not an object is not a failure: a hook that printed a
-				// sentence advised, and saying so is more useful than
-				// refusing the answer it did give.
+				// Preserve the existing advice fallback for non-object or invalid output.
 				out.Out = hookOutput{Advise: text}
+			} else {
+				// These effect keys have no script/module implementation. Report
+				// exact top-level presence in fixed order; never interpret values.
+				var fields map[string]json.RawMessage
+				if json.Unmarshal([]byte(text), &fields) == nil {
+					for _, key := range []string{"ask", "refuse", "propose", "run"} {
+						if _, present := fields[key]; present {
+							out.Frame.Dropped = append(out.Frame.Dropped, key)
+						}
+					}
+				}
 			}
 		}
 		out.Frame.Advice = out.Out.Advise
 	}
-	return out
 }
 
 // applyHookResult honours what a hook may change in its phase.

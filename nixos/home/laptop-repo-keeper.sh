@@ -13,6 +13,13 @@
 #     Untracked files are only counted here; the daily
 #     laptop-untracked-review classifies them (oversized ones belong
 #     to the backup scripts)
+#     A snapshot is held (reported, never committed) when untracked
+#     files sit beside the tracked edits: those are usually one
+#     change, and a tracked-only snapshot pushes half of it to the
+#     default branch (2026-11-20, code#12162: server.ts imported a
+#     prompts.ts that stayed untracked, breaking main). Repos listed
+#     in REPO_KEEPER_NO_SNAPSHOT (default: ~/git/code, the deploy
+#     clone pm-git-sync keeps on clean main) are never snapshotted.
 #     A snapshot is only ever committed on an up-to-date base: if
 #     the primary is behind origin, committing would put it ahead
 #     AND behind at once (diverged), after which this keeper can
@@ -34,6 +41,13 @@ TS="$(date '+%Y-%m-%d %H:%M %Z')"
 SECRET_RE='\.env|secret|credential|\.pem$|\.key$|id_rsa|id_ed25519'
 RESIDUE_RE='(^|/)([^/]*\.bak(-[^/]*)?|[^/]*\.backup|\.pre-warm[^/]*|resume-build|[^/]*\.mjs\.new)$'
 BIG_TRACKED=26214400 # 25 MiB
+# Space-separated repo paths the keeper never snapshot-commits in
+# (code#12162). Edits there are reported and left on disk.
+NO_SNAPSHOT="${REPO_KEEPER_NO_SNAPSHOT-$HOME/git/code}"
+declare -A NO_SNAP=()
+for p in $NO_SNAPSHOT; do
+  NO_SNAP["$(readlink -f "$p" 2>/dev/null || printf '%s' "$p")"]=1
+done
 LINES=()
 say() {
   LINES+=("$1")
@@ -127,7 +141,9 @@ for d in "${REPOS[@]}"; do
   fi
   if [ "$dirty" -gt 0 ]; then
     residue="$(g ls-files | grep -Ei "$RESIDUE_RE" || true)"
-    if [ "${behind:-0}" -gt 0 ]; then
+    if [ -n "${NO_SNAP[$(readlink -f "$d")]:-}" ]; then
+      say "- $name: DIRTY ($dirty tracked entries) NOT committed — snapshots are off for this repo (deploy clone; changes go through a PR, code#12162)"
+    elif [ "${behind:-0}" -gt 0 ]; then
       say "- $name: DIRTY ($dirty tracked entries) NOT committed — $behind commit(s) behind origin/$db; a snapshot on a stale base would diverge the primary (code#4464) — reconcile first"
     elif [ -n "$residue" ]; then
       residue_list="$(printf '%s' "$residue" | tr '\n' ' ')"
@@ -135,6 +151,8 @@ for d in "${REPOS[@]}"; do
     # Expand untracked directories so nested secret-shaped paths are checked.
     elif g status --porcelain --untracked-files=all | grep -Eiq "$SECRET_RE"; then
       say "- $name: DIRTY ($dirty tracked entries) NOT committed — secret-shaped path present"
+    elif [ "$untracked" -gt 0 ]; then
+      say "- $name: DIRTY ($dirty tracked entries) NOT committed — $untracked untracked file(s) beside the edits; a tracked-only snapshot would push half a change (code#12162)"
     elif g add -u && g commit -q -m "repo-keeper: snapshot $name $TS"; then
       say "- $name: committed $dirty tracked entries on $db"
       dirty=0

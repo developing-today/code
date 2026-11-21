@@ -60,6 +60,7 @@
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
+use anyhow::{Context, Result};
 use futures_lite::StreamExt;
 use iroh::EndpointAddr;
 use iroh::endpoint::{Connection, Endpoint};
@@ -1069,6 +1070,60 @@ fn send_file_lookup(
     }
 }
 
+fn list_storage_result<T, E>(
+    result: Result<T, E>,
+    message: &'static str,
+) -> Result<T, MetaResponse> {
+    result.map_err(|_| MetaResponse::Error {
+        message: message.to_owned(),
+    })
+}
+
+async fn collect_list_entries<S, E>(mut list: S) -> Result<Vec<ListEntry>, E>
+where
+    S: futures_lite::Stream<Item = Result<TagInfo, E>> + Unpin,
+{
+    let mut items = Vec::new();
+    while let Some(item) = list.next().await {
+        let item = item?;
+        items.push(ListEntry {
+            hash: item.hash,
+            name: String::from_utf8_lossy(item.name.as_ref()).into_owned(),
+            origin: None,
+            uploaded_at: None,
+        });
+    }
+    Ok(items)
+}
+
+fn enrich_list_entries(items: &mut [ListEntry], tags: &[id_store::tags::Tag]) {
+    // Enrich with origin + upload time from the metadata tags (#4973):
+    // `origin` is stamped at write time by FileOps, `created` is the upload
+    // time. Files written before the tags existed keep `None` and list as
+    // origin unknown.
+    let mut origins: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut created: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    for tag in tags {
+        if tag.key == "origin" {
+            if let Some(value) = tag.value.as_ref().and_then(|v| v.as_str()) {
+                origins.insert(tag.subject.display_lossy(), value.to_owned());
+            }
+        } else if tag.key == "created"
+            && let Some(ts) = tag
+                .value
+                .as_ref()
+                .and_then(|v| v.as_str())
+                .and_then(|v| v.parse::<u64>().ok())
+        {
+            created.insert(tag.subject.display_lossy(), ts);
+        }
+    }
+    for item in items {
+        item.origin = origins.get(&item.name).cloned();
+        item.uploaded_at = created.get(&item.name).copied();
+    }
+}
+
 /// Protocol handler for the meta protocol.
 ///
 /// Implements Iroh's [`ProtocolHandler`] trait. When a remote node connects
@@ -1242,47 +1297,29 @@ impl MetaProtocol {
                 get_file_lookup(self.store.tags().get(&filename).await)
             }
             MetaRequest::List => {
-                let mut items = Vec::new();
-                if let Ok(mut list) = self.store.tags().list().await {
-                    while let Some(Ok(item)) = list.next().await {
-                        let name = String::from_utf8_lossy(item.name.as_ref()).into_owned();
-                        items.push(ListEntry {
-                            hash: item.hash,
-                            name,
-                            origin: None,
-                            uploaded_at: None,
-                        });
+                let list = match list_storage_result(
+                    self.store.tags().list().await,
+                    "failed to list file tags for List",
+                ) {
+                    Ok(list) => list,
+                    Err(response) => return response,
+                };
+                let mut items = match collect_list_entries(list).await {
+                    Ok(items) => items,
+                    Err(_) => {
+                        return MetaResponse::Error {
+                            message: "failed to list file tags for List".to_owned(),
+                        };
                     }
-                }
-                // Enrich with origin + upload time from the metadata tags
-                // (#4973): `origin` is stamped at write time by FileOps,
-                // `created` is the upload time. Files written before the
-                // tags existed keep `None` and list as origin unknown.
-                if let Ok(tags) = self.tag_store.list_all(ns).await {
-                    let mut origins: std::collections::HashMap<String, String> =
-                        std::collections::HashMap::new();
-                    let mut created: std::collections::HashMap<String, u64> =
-                        std::collections::HashMap::new();
-                    for tag in &tags {
-                        if tag.key == "origin" {
-                            if let Some(value) = tag.value.as_ref().and_then(|v| v.as_str()) {
-                                origins.insert(tag.subject.display_lossy(), value.to_owned());
-                            }
-                        } else if tag.key == "created"
-                            && let Some(ts) = tag
-                                .value
-                                .as_ref()
-                                .and_then(|v| v.as_str())
-                                .and_then(|v| v.parse::<u64>().ok())
-                        {
-                            created.insert(tag.subject.display_lossy(), ts);
-                        }
-                    }
-                    for item in &mut items {
-                        item.origin = origins.get(&item.name).cloned();
-                        item.uploaded_at = created.get(&item.name).copied();
-                    }
-                }
+                };
+                let tags = match list_storage_result(
+                    self.tag_store.list_all(ns).await,
+                    "failed to read file metadata for List",
+                ) {
+                    Ok(tags) => tags,
+                    Err(response) => return response,
+                };
+                enrich_list_entries(&mut items, &tags);
                 MetaResponse::List { items }
             }
             MetaRequest::Delete { filename } => match ops.delete(&filename).await {
@@ -1307,9 +1344,14 @@ impl MetaProtocol {
                     message: e.to_string(),
                 },
             },
-            MetaRequest::Find { query, prefer_name } => MetaResponse::Find {
-                matches: self.find(&query, prefer_name).await,
-            },
+            MetaRequest::Find { query, prefer_name } => {
+                match self.find(&query, prefer_name).await {
+                    Ok(matches) => MetaResponse::Find { matches },
+                    Err(e) => MetaResponse::Error {
+                        message: format!("failed to list file tags for Find: {e:#}"),
+                    },
+                }
+            }
             MetaRequest::SetTag { key, .. } if is_reserved_archive_reference_key(&key) => {
                 // These keys are FileOps-owned references, not user metadata.
                 // Allowing protocol peers to write them lets a later delete
@@ -1501,28 +1543,49 @@ impl MetaProtocol {
     }
 
     /// Rank blob names and hashes against `query`.
-    async fn find(&self, query: &str, prefer_name: bool) -> Vec<FindMatch> {
+    async fn find(&self, query: &str, prefer_name: bool) -> Result<Vec<FindMatch>> {
+        Self::find_in_tag_list(
+            self.store
+                .tags()
+                .list()
+                .await
+                .map_err(anyhow::Error::from),
+            query,
+            prefer_name,
+        )
+        .await
+    }
+
+    async fn find_in_tag_list<S, E>(
+        list: Result<S>,
+        query: &str,
+        prefer_name: bool,
+    ) -> Result<Vec<FindMatch>>
+    where
+        S: futures_lite::Stream<Item = std::result::Result<TagInfo, E>> + Unpin,
+        E: std::fmt::Display,
+    {
+        let mut list = list.context("starting blob tag listing")?;
         let mut matches = Vec::new();
         let query_lower = query.to_lowercase();
-        if let Ok(mut list) = self.store.tags().list().await {
-            while let Some(Ok(item)) = list.next().await {
-                let name = String::from_utf8_lossy(item.name.as_ref()).into_owned();
-                let hash_str = item.hash.to_string();
-                if let Some(kind) = match_kind(&name.to_lowercase(), &query_lower) {
-                    matches.push(FindMatch {
-                        hash: item.hash,
-                        name,
-                        kind,
-                        is_hash_match: false,
-                    });
-                } else if let Some(kind) = match_kind(&hash_str, &query_lower) {
-                    matches.push(FindMatch {
-                        hash: item.hash,
-                        name,
-                        kind,
-                        is_hash_match: true,
-                    });
-                }
+        while let Some(item) = list.next().await {
+            let item = item.map_err(|e| anyhow::anyhow!("reading blob tag listing: {e}"))?;
+            let name = String::from_utf8_lossy(item.name.as_ref()).into_owned();
+            let hash_str = item.hash.to_string();
+            if let Some(kind) = match_kind(&name.to_lowercase(), &query_lower) {
+                matches.push(FindMatch {
+                    hash: item.hash,
+                    name,
+                    kind,
+                    is_hash_match: false,
+                });
+            } else if let Some(kind) = match_kind(&hash_str, &query_lower) {
+                matches.push(FindMatch {
+                    hash: item.hash,
+                    name,
+                    kind,
+                    is_hash_match: true,
+                });
             }
         }
         // Best kind first; ties prefer name matches (`prefer_name`) or hash matches.
@@ -1535,7 +1598,7 @@ impl MetaProtocol {
                 }
             })
         });
-        matches
+        Ok(matches)
     }
 
     pub async fn accept_connection(
@@ -1892,6 +1955,124 @@ mod tests {
             send_file_lookup("report.txt", Ok(Some(tag()))).unwrap(),
             expected
         );
+    }
+
+    #[test]
+    fn list_setup_and_metadata_failures_become_operation_errors() {
+        let setup = list_storage_result::<(), _>(
+            Err("injected setup failure"),
+            "failed to list file tags for List",
+        )
+        .unwrap_err();
+        assert_eq!(
+            setup.error_message(),
+            Some("failed to list file tags for List")
+        );
+
+        let metadata = list_storage_result::<(), _>(
+            Err("injected metadata failure"),
+            "failed to read file metadata for List",
+        )
+        .unwrap_err();
+        assert_eq!(
+            metadata.error_message(),
+            Some("failed to read file metadata for List")
+        );
+    }
+
+    #[tokio::test]
+    async fn list_stream_failure_does_not_return_a_partial_success() {
+        let first = TagInfo {
+            name: "first.txt".into(),
+            format: iroh_blobs::BlobFormat::Raw,
+            hash: Hash::from_bytes([1; 32]),
+        };
+        let stream = futures_lite::stream::iter(vec![Ok(first), Err("injected stream failure")]);
+        let error = collect_list_entries(stream).await.unwrap_err();
+        let response: Result<Vec<ListEntry>, MetaResponse> =
+            list_storage_result(Err(error), "failed to list file tags for List");
+        assert_eq!(
+            response.unwrap_err().error_message(),
+            Some("failed to list file tags for List")
+        );
+    }
+
+    #[tokio::test]
+    async fn list_empty_and_successful_entries_remain_valid() {
+        let empty = collect_list_entries(futures_lite::stream::iter(Vec::<
+            Result<TagInfo, &'static str>,
+        >::new()))
+        .await
+        .unwrap();
+        assert!(empty.is_empty());
+
+        let hash = Hash::from_bytes([2; 32]);
+        let info = TagInfo {
+            name: "legacy.txt".into(),
+            format: iroh_blobs::BlobFormat::Raw,
+            hash,
+        };
+        let mut items =
+            collect_list_entries(futures_lite::stream::iter(vec![Ok::<_, &'static str>(
+                info,
+            )]))
+            .await
+            .unwrap();
+        enrich_list_entries(&mut items, &[]);
+        assert_eq!(
+            items,
+            vec![ListEntry {
+                hash,
+                name: "legacy.txt".to_owned(),
+                origin: None,
+                uploaded_at: None,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_enrichment_preserves_origin_and_upload_time() {
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await
+            .unwrap();
+        let store: Store = iroh_blobs::store::mem::MemStore::new().into();
+        let gossip = iroh_gossip::net::Gossip::builder().spawn(endpoint.clone());
+        let docs = iroh_docs::protocol::Docs::memory()
+            .spawn(endpoint, store.clone(), gossip)
+            .await
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let tags = id_store::tags::TagStore::init_in(
+            &docs,
+            "list-enrichment-test",
+            dir.path().join("meta"),
+        )
+        .await
+        .unwrap();
+        store
+            .tags()
+            .set("report.txt", Hash::from_bytes([3; 32]))
+            .await
+            .unwrap();
+        tags.set_tag(&tags.global, b"report.txt", b"origin", Some(b"node-x"), b"")
+            .await
+            .unwrap();
+        tags.set_tag(&tags.global, b"report.txt", b"created", Some(b"1234"), b"")
+            .await
+            .unwrap();
+
+        let mut items = vec![ListEntry {
+            hash: Hash::from_bytes([3; 32]),
+            name: "report.txt".to_owned(),
+            origin: None,
+            uploaded_at: None,
+        }];
+        let metadata = tags.list_all(&tags.global).await.unwrap();
+        enrich_list_entries(&mut items, &metadata);
+        assert_eq!(items[0].origin.as_deref(), Some("node-x"));
+        assert_eq!(items[0].uploaded_at, Some(1234));
     }
 
     #[test]
@@ -2621,5 +2802,71 @@ mod publication_control_tests {
             MetaResponse::Publications { items } => assert!(items.is_empty()),
             other => panic!("expected Publications, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod find_storage_error_tests {
+    use super::MetaProtocol;
+
+    #[tokio::test]
+    async fn find_returns_tag_listing_setup_errors() {
+        type EmptyTagStream = futures_lite::stream::Empty<
+            std::result::Result<iroh_blobs::api::tags::TagInfo, anyhow::Error>,
+        >;
+
+        let error = MetaProtocol::find_in_tag_list::<EmptyTagStream, anyhow::Error>(
+            Err(anyhow::anyhow!("tag store unavailable")),
+            "needle",
+            false,
+        )
+        .await
+        .unwrap_err();
+
+        let error = format!("{error:#}");
+        assert!(error.contains("starting blob tag listing"));
+        assert!(error.contains("tag store unavailable"));
+    }
+
+    #[tokio::test]
+    async fn find_returns_tag_listing_stream_errors_instead_of_partial_results() {
+        let list = futures_lite::stream::iter([
+            Ok(iroh_blobs::api::tags::TagInfo {
+                name: "needle.txt".into(),
+                format: iroh_blobs::BlobFormat::Raw,
+                hash: iroh_blobs::Hash::from_bytes([123; 32]),
+            }),
+            Err(anyhow::anyhow!("tag stream failed")),
+        ]);
+
+        let error = MetaProtocol::find_in_tag_list(Ok(list), "needle", false)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("reading blob tag listing"));
+        assert!(error.to_string().contains("tag stream failed"));
+    }
+
+    #[tokio::test]
+    async fn find_accepts_empty_and_successful_tag_listings() {
+        let empty = futures_lite::stream::empty();
+        let matches = MetaProtocol::find_in_tag_list::<_, anyhow::Error>(Ok(empty), "needle", false)
+            .await
+            .unwrap();
+        assert!(matches.is_empty());
+
+        let list = futures_lite::stream::iter([Ok::<_, anyhow::Error>(
+            iroh_blobs::api::tags::TagInfo {
+                name: "needle.txt".into(),
+                format: iroh_blobs::BlobFormat::Raw,
+                hash: iroh_blobs::Hash::from_bytes([123; 32]),
+            },
+        )]);
+        let matches = MetaProtocol::find_in_tag_list(Ok(list), "needle", false)
+            .await
+            .unwrap();
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].name, "needle.txt");
     }
 }

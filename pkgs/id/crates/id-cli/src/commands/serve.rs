@@ -271,7 +271,11 @@ fn remove_stale_serve_lock_locked(path: &Path, expected_contents: &str) {
         }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => warn!(?error, ?path, "could not inspect serve lock for stale cleanup"),
+        Err(error) => warn!(
+            ?error,
+            ?path,
+            "could not inspect serve lock for stale cleanup"
+        ),
     }
 }
 
@@ -379,6 +383,8 @@ pub struct ServeOptions {
     pub no_relay: bool,
     /// Disable gossip peer discovery.
     pub no_gossip: bool,
+    /// Explicitly enable gossip, overriding a build-time disabled default.
+    pub gossip: bool,
     /// Start the web interface.
     pub web: bool,
     /// Web interface port (0 = random).
@@ -393,8 +399,6 @@ pub struct ServeOptions {
     pub no_default_bootstrap: bool,
     /// Skip default topic and secret.
     pub no_default_topic: bool,
-    /// Use only `defaults.conf` values.
-    pub replace_defaults: bool,
     /// Disable mDNS.
     pub no_mdns: bool,
     /// Enable mainline DHT address lookup and publishing.
@@ -520,8 +524,8 @@ impl WebContentTarget {
 
     /// Parse one target spec: `explorer` or `program:<world-name>`.
     /// This is the grammar a target is expressed in wherever a
-    /// binding is written as text (the `[web_bindings]` lines in
-    /// `defaults.conf`), so a target always travels inside its own
+    /// binding is written as text (the `web_bindings` entries in
+    /// `defaults.json`), so a target always travels inside its own
     /// binding's spec -- never as a separate repeated flag paired
     /// with listener flags by position (the design forbids that).
     ///
@@ -635,7 +639,7 @@ impl WebBinding {
 /// 1. `--web-listen` flags, when given at least once, win entirely.
 ///    Combining them with an explicitly-set `--bind` or `--port` is an
 ///    error naming the conflicting flag (clap defaults do not count).
-/// 2. Else the `[web_bindings]` section of `defaults.conf`, parsed here
+/// 2. Else the `web_bindings` list from `defaults.json`, parsed here
 ///    so a malformed line fails startup naming the line. A config line
 ///    is `IP:PORT` (an Explorer binding) or `IP:PORT <target>` with a
 ///    #2146 content target (`explorer` / `program:<world-name>`); the
@@ -676,14 +680,14 @@ pub fn resolve_web_bindings(
             .iter()
             .map(|line| {
                 parse_web_binding_line(line).map_err(|e| {
-                    anyhow::anyhow!("invalid [web_bindings] entry {line:?} in defaults.conf: {e}")
+                    anyhow::anyhow!("invalid web_bindings entry {line:?} in defaults.json: {e}")
                 })
             })
             .collect();
         let bindings = bindings?;
         ensure_unique_web_listener_addresses(
             bindings.iter().map(WebBinding::socket_addr),
-            "[web_bindings] in defaults.conf",
+            "web_bindings in defaults.json",
         )?;
         return Ok(bindings);
     }
@@ -1158,11 +1162,10 @@ fn serve_groups_log_path(path: Option<PathBuf>) -> PathBuf {
 /// * `web` - If `true`, start the web interface (requires `web` feature)
 /// * `port` - Port for the web interface (default 3000)
 /// * `bootstrap` - Additional node IDs for manual peer bootstrapping
-/// * `topic` - Custom gossip topic name (default: from `defaults.conf` or `DEFAULT_TOPIC`)
+/// * `topic` - Custom gossip topic name (default: from `defaults.json` or `DEFAULT_TOPIC`)
 /// * `topic_secret` - Custom shared secret for topic access control
-/// * `no_default_bootstrap` - If `true`, skip default bootstrap nodes from `defaults.conf`
-/// * `no_default_topic` - If `true`, skip default topic/secret from `defaults.conf`
-/// * `replace_defaults` - If `true`, use only `defaults.conf` values (skip hardcoded fallbacks)
+/// * `no_default_bootstrap` - If `true`, skip default bootstrap nodes from `defaults.json`
+/// * `no_default_topic` - If `true`, skip file topic/secret defaults
 ///
 /// # Behavior
 ///
@@ -1183,6 +1186,22 @@ fn serve_groups_log_path(path: Option<PathBuf>) -> PathBuf {
 /// Prints the node ID, mode, and peer discovery status to stdout.
 /// Status messages go to stderr.
 
+fn resolve_network_overrides(
+    default_relay: id_core::connectivity::RelayPolicy,
+    default_gossip: bool,
+    no_relay: bool,
+    gossip: bool,
+    no_gossip: bool,
+) -> (id_core::connectivity::RelayPolicy, bool) {
+    let relay = if no_relay {
+        id_core::connectivity::RelayPolicy::Disabled
+    } else {
+        default_relay
+    };
+    let gossip = gossip || (default_gossip && !no_gossip);
+    (relay, gossip)
+}
+
 pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let ServeOptions {
         ephemeral,
@@ -1190,6 +1209,7 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         groups_log,
         no_relay,
         no_gossip,
+        gossip,
         web,
         port,
         bootstrap,
@@ -1197,7 +1217,6 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         topic_secret,
         no_default_bootstrap,
         no_default_topic,
-        replace_defaults,
         no_mdns,
         dht,
         iroh_port,
@@ -1392,10 +1411,25 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     let store = open_store(ephemeral).await?;
     let store_handle = store.as_store();
 
-    let mut builder = id_core::connectivity::public_builder(
-        id_core::connectivity::RelayPolicy::from_no_relay(no_relay),
-    )
-    .secret_key(key.clone());
+    let resolved_defaults = resolve_config(
+        &bootstrap,
+        topic.as_deref(),
+        topic_secret.as_deref(),
+        no_default_bootstrap,
+        no_default_topic,
+    )?;
+    info!("{}", id_core::discovery::defaults_provenance().describe());
+    let (relay_policy, gossip_enabled) = resolve_network_overrides(
+        resolved_defaults.relay,
+        resolved_defaults.gossip,
+        no_relay,
+        gossip,
+        no_gossip,
+    );
+    // The build's defaults.json can disable relays without --no-relay, so
+    // everything downstream asks the resolved policy, not the flag.
+    let relays_disabled = relay_policy == id_core::connectivity::RelayPolicy::Disabled;
+    let mut builder = id_core::connectivity::public_builder(relay_policy).secret_key(key.clone());
     if !no_mdns {
         builder = builder.address_lookup(MdnsAddressLookup::builder());
     }
@@ -1421,9 +1455,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     // Do not announce readiness before the endpoint is reachable through
     // its home relay (#3028). The wait is bounded and non-fatal: a dead
     // relay entry must not hold startup, so on timeout we warn and carry on.
-    // With `--no-relay` no relay ever connects, so the wait is skipped.
-    if no_relay {
-        info!("serve startup: relays disabled (--no-relay), skipping home-relay wait");
+    // With relays disabled (`--no-relay` or the build's defaults) no relay
+    // ever connects, so the wait is skipped.
+    if relays_disabled {
+        info!("serve startup: relays disabled, skipping home-relay wait");
     } else {
         match id_core::connectivity::await_home_relay(
             &endpoint,
@@ -1853,16 +1888,8 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         })
     });
 
-    if !no_gossip {
-        // Resolve effective config from defaults + CLI flags
-        let config = resolve_config(
-            &bootstrap,
-            topic.as_deref(),
-            topic_secret.as_deref(),
-            replace_defaults,
-            no_default_bootstrap,
-            no_default_topic,
-        )?;
+    if gossip_enabled {
+        let config = resolved_defaults;
 
         let dtt_topic_id = TopicId::new(config.topic.clone());
 
@@ -2016,10 +2043,13 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     } else {
         status!("mode: persistent ({STORE_PATH})");
     }
-    if no_relay {
+    // Which defaults this binary embeds, shown at the default log level so
+    // an operator can tell a customized build apart without verbose logs.
+    status!("{}", id_core::discovery::defaults_provenance().describe());
+    if relays_disabled {
         status!("relay: disabled");
     }
-    if no_gossip {
+    if !gossip_enabled {
         status!("peers: disabled");
     }
     if no_mdns {
@@ -2415,6 +2445,32 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use proptest::test_runner::{Config as ProptestConfig, TestCaseError};
+
+    #[test]
+    fn relay_and_gossip_cli_flags_override_build_defaults() {
+        use id_core::connectivity::RelayPolicy;
+
+        assert_eq!(
+            resolve_network_overrides(RelayPolicy::N0, false, false, false, false),
+            (RelayPolicy::N0, false),
+        );
+        assert_eq!(
+            resolve_network_overrides(RelayPolicy::N0, false, false, true, false),
+            (RelayPolicy::N0, true),
+        );
+        assert_eq!(
+            resolve_network_overrides(RelayPolicy::N0, true, false, false, true),
+            (RelayPolicy::N0, false),
+        );
+        assert_eq!(
+            resolve_network_overrides(RelayPolicy::Disabled, true, false, false, false),
+            (RelayPolicy::Disabled, true),
+        );
+        assert_eq!(
+            resolve_network_overrides(RelayPolicy::N0, true, true, false, false),
+            (RelayPolicy::Disabled, true),
+        );
+    }
 
     #[tokio::test]
     async fn stale_lock_cleanup_preserves_replacement_written_after_snapshot() {
@@ -3324,8 +3380,7 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("127.0.0.1:3000"), "{err}");
-        assert!(err.contains("[web_bindings]"), "{err}");
-        assert!(err.contains("defaults.conf"), "{err}");
+        assert!(err.contains("web_bindings in defaults.json"), "{err}");
     }
 
     #[test]
@@ -3573,7 +3628,10 @@ mod tests {
             )
             .unwrap_err()
             .to_string();
-            assert!(err.contains("[web_bindings]"), "{err}");
+            assert!(
+                err.contains("web_bindings entry") && err.contains("defaults.json"),
+                "{err}"
+            );
             assert!(err.contains("127.0.0.1:3000"), "{err}");
         }
     }
@@ -3591,7 +3649,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("not-an-addr"), "{err}");
-        assert!(err.to_string().contains("[web_bindings]"), "{err}");
+        assert!(err.to_string().contains("defaults.json"), "{err}");
     }
 
     // Integration tests for lock file functions require file system access

@@ -508,8 +508,8 @@ impl ListVersionStore {
         let bytes =
             serde_json::to_vec_pretty(self).map_err(|e| ListStoreError::Codec(e.to_string()))?;
         let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, &bytes).map_err(|e| ListStoreError::Io(e.to_string()))?;
-        std::fs::rename(&tmp, path).map_err(|e| ListStoreError::Io(e.to_string()))?;
+        crate::durable_write::write_durable(path, &tmp, &bytes)
+            .map_err(|e| ListStoreError::Io(e.to_string()))?;
         Ok(())
     }
 

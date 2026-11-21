@@ -2359,9 +2359,11 @@ func runtimeOf(t *testing.T, e *env, args ...string) string {
 }
 
 // TestScriptRuntimeSelectsTheRuntime is the effect probe for
-// script.runtime: scripts use the default runtime (deno) and node once the
-// environment names it.
+// script.runtime: scripts run on deno by default (the first installed
+// entry of the documented runtimeOrder default, deno,bun,node) and on
+// node once the environment names it.
 func TestScriptRuntimeSelectsTheRuntime(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
 	testsupport.RequireBinary(t, "node")
 	e := newEnv(t, oneServer)
 	if rt := runtimeOf(t, e); rt != "deno" {
@@ -2374,9 +2376,11 @@ func TestScriptRuntimeSelectsTheRuntime(t *testing.T) {
 }
 
 // TestScriptRuntimeOrderRanksTheAutoPick is the effect probe for
-// script.runtimeOrder: the automatic pick is deno by default and node once
-// the environment ranks node first.
+// script.runtimeOrder: the automatic pick is deno by default (the
+// documented runtimeOrder default is deno,bun,node) and node once the
+// environment ranks node first.
 func TestScriptRuntimeOrderRanksTheAutoPick(t *testing.T) {
+	testsupport.RequireBinary(t, "deno")
 	testsupport.RequireBinary(t, "node")
 	e := newEnv(t, oneServer)
 	if rt := runtimeOf(t, e); rt != "deno" {

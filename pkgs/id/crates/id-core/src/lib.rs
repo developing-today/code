@@ -30,6 +30,7 @@ pub mod boundary_surfaces;
 pub mod canonical_cbor;
 pub mod connectivity;
 pub mod discovery;
+pub mod durable_write;
 pub mod frames;
 pub mod graph;
 pub mod hex;

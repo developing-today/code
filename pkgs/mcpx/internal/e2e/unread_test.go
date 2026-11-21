@@ -130,7 +130,7 @@ func TestOutputColorIsReachableFromTheEnvironment(t *testing.T) {
 		if err != nil {
 			t.Fatalf("start mcpx tui in a PTY: %v", err)
 		}
-		defer master.Close()
+		defer func() { _ = master.Close() }()
 
 		// Wait for the fixture namespace in a rendered frame before sending q.
 		// Sending input during startup can quit before the configured color mode
@@ -186,7 +186,9 @@ func TestOutputColorIsReachableFromTheEnvironment(t *testing.T) {
 			}
 		case <-time.After(10 * time.Second):
 			_ = cmd.Process.Kill()
-			<-done
+			if err := <-done; err != nil {
+				_ = err // process was killed; ignore
+			}
 			captured := <-output
 			t.Fatalf("mcpx tui (output.color=%s) did not exit after q:\n%s", mode, captured)
 		}
