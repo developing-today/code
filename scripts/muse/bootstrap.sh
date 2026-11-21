@@ -295,10 +295,9 @@ fi
 # ---- check ----
 if want check; then
   rc=0
-  # fleet's secrets chain tries the session broker first and keeps
-  # retrying it for ~2 minutes when none is running (before init.sh has
-  # brought one up), so each check below can take that long.
-  say "check: running (up to a few minutes when no session broker is up yet)"
+  # Builds before the missing-socket fix keep retrying an absent session
+  # broker for ~2 minutes per secret before falling back to bws.
+  say "check: running"
   has_bridge "$(command -v fleet)" || { say "check: fleet has no bridge capability"; rc=1; }
   if [ -f "$TS_STATE/fleet-proxy.env" ]; then . "$TS_STATE/fleet-proxy.env"; fi
   code=$(curl -sS -m 10 ${HTTPS_PROXY:+-x "$HTTPS_PROXY"} -o /dev/null -w '%{http_code}' "http://$LAPTOP_TAILNET_IP:4799/" 2>/dev/null || true)
@@ -307,7 +306,8 @@ if want check; then
   else
     say "check: laptop agent port did not answer"; rc=1
   fi
-  if fleet secrets list >/dev/null 2>&1; then say "check: fleet secrets resolve"; else say "check: fleet secrets list failed"; rc=1; fi
+  if fleet secrets get tailscale.auth-key >/dev/null 2>&1; then say "check: fleet secrets resolve"; else say "check: fleet secrets get failed"; rc=1; fi
+  if fleet secrets list >/dev/null 2>&1; then say "check: session broker answers"; else say "check: no session broker answering yet (init.sh starts it; bws fallback still works)"; fi
   if fleet bridge hello --agent "$AGENT" --groups muse >/dev/null 2>&1; then
     say "check: bridge hello as $AGENT ok; unread commands: $(fleet bridge inbox --agent "$AGENT" --commands 2>/dev/null | python3 -c 'import json,sys;d=json.load(sys.stdin);print(len(d if isinstance(d,list) else d.get("messages",d.get("items",[]))))' 2>/dev/null || echo '?')"
   else

@@ -466,6 +466,14 @@ impl SecretSource for BrokerSource {
 
     fn resolve(&self, name: &str) -> Result<SecretValue, SecretError> {
         validate_name(name)?;
+        // No socket file at all means no session broker on this box (a
+        // fresh sandbox before init, or a host that never runs one), not
+        // a broker mid-restart: a restarting broker leaves its socket
+        // path behind (ECONNREFUSED, retried). Spending the retry budget
+        // here only delays the bws fallback by two minutes per secret.
+        if !self.broker_socket.exists() {
+            return self.resolve_once(name);
+        }
         resolve_with_retry(&self.retry_policy, || self.resolve_once(name))
     }
 }
@@ -1734,6 +1742,32 @@ mod tests {
         ]);
         let v = resolver.resolve("wanted.name").unwrap();
         assert_eq!(v.expose(), "fixture-value-not-a-secret");
+    }
+
+    #[test]
+    fn missing_broker_socket_falls_through_to_bws_without_spending_the_budget() {
+        // Default policy (2-minute budget): a box with no session broker
+        // must reach bws at once, not after the budget.
+        let broker = BrokerSource::new(
+            PathBuf::from("/nonexistent/broker.sock"),
+            PathBuf::from("/nonexistent/token"),
+        );
+        let resolver = Resolver::new(vec![
+            Box::new(broker),
+            Box::new(BwsSource::with_runner(Box::new(FakeRunner {
+                list: r#"[{"id":"id-1","key":"wanted.name"}]"#.to_string(),
+                get: r#"{"id":"id-1","key":"wanted.name","value":"fixture-value-not-a-secret"}"#
+                    .to_string(),
+            }))),
+        ]);
+        let started = Instant::now();
+        let v = resolver.resolve("wanted.name").unwrap();
+        assert_eq!(v.expose(), "fixture-value-not-a-secret");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "took {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
