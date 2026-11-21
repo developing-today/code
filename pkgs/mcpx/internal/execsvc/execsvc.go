@@ -401,7 +401,10 @@ type callHistory struct {
 }
 
 const (
-	callHistoryTTL       = 10 * time.Minute
+	callHistoryTTL = 10 * time.Minute
+	// callHistoryIdleTTL bounds a history that never completes: a local CLI
+	// that exits before its snapshot leaves its entry active forever.
+	callHistoryIdleTTL   = time.Hour
 	callHistoryMaxRuns   = 1024
 	callHistoryMaxPerRun = 1000
 )
@@ -424,8 +427,12 @@ func NewCallRegistry() *CallRegistry {
 // by a TTL and global run cap; an existing entry is replaced to avoid mixing
 // two runs that accidentally reuse an id.
 func (r *CallRegistry) BeginHistory(runID string) {
+	r.beginHistory(runID)
+}
+
+func (r *CallRegistry) beginHistory(runID string) *callHistory {
 	if runID == "" {
-		return
+		return nil
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -441,7 +448,9 @@ func (r *CallRegistry) BeginHistory(runID string) {
 		delete(r.history, oldestID)
 	}
 	now := time.Now()
-	r.history[runID] = &callHistory{started: now, updated: now, active: true, calls: []CallInfo{}}
+	h := &callHistory{started: now, updated: now, active: true, calls: []CallInfo{}}
+	r.history[runID] = h
+	return h
 }
 
 // History returns a copy of a collected run's calls and whether the run was
@@ -465,7 +474,8 @@ func (r *CallRegistry) History(runID string) ([]CallInfo, bool, bool) {
 
 func (r *CallRegistry) pruneHistoryLocked(now time.Time) {
 	for id, h := range r.history {
-		if !h.active && now.Sub(h.updated) > callHistoryTTL {
+		idle := now.Sub(h.updated)
+		if (!h.active && idle > callHistoryTTL) || idle > callHistoryIdleTTL {
 			delete(r.history, id)
 		}
 	}
@@ -504,7 +514,7 @@ func (r *CallRegistry) IsDryRun(runID string) bool {
 // its terminal frames with a guarantee that no call frame lands
 // after them — or after the stream's handler has returned.
 func (r *CallRegistry) Register(runID string, sink func(Frame)) (unregister func()) {
-	r.BeginHistory(runID)
+	hist := r.beginHistory(runID)
 	entry := &callSink{sink: sink}
 	r.mu.Lock()
 	r.sinks[runID] = entry
@@ -519,6 +529,14 @@ func (r *CallRegistry) Register(runID string, sink func(Frame)) (unregister func
 			entry.closed = true
 			r.mu.Unlock()
 			entry.wg.Wait()
+			// The run is over: start its history's expiry, unless a
+			// later run reusing the id has replaced it.
+			r.mu.Lock()
+			if hist != nil && r.history[runID] == hist && hist.active {
+				hist.active = false
+				hist.updated = time.Now()
+			}
+			r.mu.Unlock()
 		})
 	}
 }
@@ -536,9 +554,9 @@ func (r *CallRegistry) ReportCall(runID, server, tool string, args any, dur time
 	} else {
 		entry = nil
 	}
-	_, collecting := r.history[runID]
+	hist := r.history[runID]
 	r.mu.Unlock()
-	if entry == nil && !collecting {
+	if entry == nil && hist == nil {
 		return false
 	}
 	if entry != nil {
@@ -553,11 +571,14 @@ func (r *CallRegistry) ReportCall(runID, server, tool string, args any, dur time
 		info.Error = callErr.Error()
 	}
 	r.mu.Lock()
-	if h := r.history[runID]; h != nil && len(h.calls) < callHistoryMaxPerRun {
-		h.calls = append(h.calls, *info)
-		h.updated = time.Now()
-	} else if h := r.history[runID]; h != nil {
-		h.truncated = true
+	// Only the history that admitted this report gets it: a run that
+	// reuses the id in the meantime starts clean.
+	if h := hist; h != nil && r.history[runID] == h {
+		if len(h.calls) < callHistoryMaxPerRun {
+			h.calls = append(h.calls, *info)
+		} else {
+			h.truncated = true
+		}
 		h.updated = time.Now()
 	}
 	r.mu.Unlock()
