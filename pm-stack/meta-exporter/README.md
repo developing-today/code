@@ -63,14 +63,14 @@ A failed tick writes a failure document to `latest.json` (and
 `measuredAt: null` — and **no** windows or values, so nothing stale
 can render as a current reading:
 
-| status            | meaning                                                                                                                                                                         | exit |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
-| `session-expired` | API answered 401/403 or bounced to auth — laptop session needs a human re-login                                                                                                 | 3    |
-| `page-not-ready`  | helium-cdp answers CDP but its renderer is wedged (readiness probe: target never navigates/evaluates, or a created tab never finishes loading) — names the browser, not the tab | 8    |
-| `cdp-unavailable` | browser debug port did not answer                                                                                                                                               | 4    |
-| `no-console-page` | browser up, no dev.meta.ai tab open                                                                                                                                             | 5    |
-| `unparseable`     | endpoint answered an unrecognised shape                                                                                                                                         | 6    |
-| `fetch-failed`    | network/other error inside the page                                                                                                                                             | 7    |
+| status            | meaning                                                                                                                                                                                      | exit |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| `session-expired` | API answered 401/403 or bounced to auth — laptop session needs a human re-login                                                                                                              | 3    |
+| `page-not-ready`  | helium-cdp answers CDP but its renderer is wedged (readiness probe: target never navigates/evaluates, or a created tab never finishes loading) — names the browser, not the tab              | 8    |
+| `cdp-unavailable` | browser debug port did not answer                                                                                                                                                            | 4    |
+| `no-console-page` | browser up, no dev.meta.ai tab open                                                                                                                                                          | 5    |
+| `unparseable`     | endpoint answered an unrecognised shape                                                                                                                                                      | 6    |
+| `fetch-failed`    | network/other error inside the page                                                                                                                                                          | 7    |
 | `no-subscription` | the team has no active Muse Code subscription: subscription-quota answers `{}` and the billing banner is the subscription upsell (seen 2026-11-21). Nothing to measure, so the unit succeeds | 0    |
 
 ## Readiness probe + bounded recovery (issue #5487)
