@@ -271,7 +271,11 @@ fn remove_stale_serve_lock_locked(path: &Path, expected_contents: &str) {
         }
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => warn!(?error, ?path, "could not inspect serve lock for stale cleanup"),
+        Err(error) => warn!(
+            ?error,
+            ?path,
+            "could not inspect serve lock for stale cleanup"
+        ),
     }
 }
 
@@ -1422,6 +1426,9 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
         gossip,
         no_gossip,
     );
+    // The build's defaults.json can disable relays without --no-relay, so
+    // everything downstream asks the resolved policy, not the flag.
+    let relays_disabled = relay_policy == id_core::connectivity::RelayPolicy::Disabled;
     let mut builder = id_core::connectivity::public_builder(relay_policy).secret_key(key.clone());
     if !no_mdns {
         builder = builder.address_lookup(MdnsAddressLookup::builder());
@@ -1448,9 +1455,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     // Do not announce readiness before the endpoint is reachable through
     // its home relay (#3028). The wait is bounded and non-fatal: a dead
     // relay entry must not hold startup, so on timeout we warn and carry on.
-    // With `--no-relay` no relay ever connects, so the wait is skipped.
-    if no_relay {
-        info!("serve startup: relays disabled (--no-relay), skipping home-relay wait");
+    // With relays disabled (`--no-relay` or the build's defaults) no relay
+    // ever connects, so the wait is skipped.
+    if relays_disabled {
+        info!("serve startup: relays disabled, skipping home-relay wait");
     } else {
         match id_core::connectivity::await_home_relay(
             &endpoint,
@@ -2035,7 +2043,10 @@ pub async fn cmd_serve(opts: ServeOptions) -> Result<()> {
     } else {
         status!("mode: persistent ({STORE_PATH})");
     }
-    if no_relay {
+    // Which defaults this binary embeds, shown at the default log level so
+    // an operator can tell a customized build apart without verbose logs.
+    status!("{}", id_core::discovery::defaults_provenance().describe());
+    if relays_disabled {
         status!("relay: disabled");
     }
     if !gossip_enabled {
@@ -3369,8 +3380,7 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("127.0.0.1:3000"), "{err}");
-        assert!(err.contains("[web_bindings]"), "{err}");
-        assert!(err.contains("defaults.json"), "{err}");
+        assert!(err.contains("web_bindings in defaults.json"), "{err}");
     }
 
     #[test]
@@ -3618,7 +3628,10 @@ mod tests {
             )
             .unwrap_err()
             .to_string();
-            assert!(err.contains("[web_bindings]"), "{err}");
+            assert!(
+                err.contains("web_bindings entry") && err.contains("defaults.json"),
+                "{err}"
+            );
             assert!(err.contains("127.0.0.1:3000"), "{err}");
         }
     }
@@ -3636,7 +3649,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("not-an-addr"), "{err}");
-        assert!(err.to_string().contains("[web_bindings]"), "{err}");
+        assert!(err.to_string().contains("defaults.json"), "{err}");
     }
 
     // Integration tests for lock file functions require file system access
