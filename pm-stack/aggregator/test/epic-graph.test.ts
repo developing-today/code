@@ -57,6 +57,16 @@ describe("epicSelector", () => {
     expect(entries.some((e) => e.ref === R(7))).toBe(false);
   });
 
+  test("deduplicates epics with memberships on multiple boards", () => {
+    const pool = [
+      item({ number: 1, title: "Epic", kind: "Epic", boardId: "devtoday-main" }),
+      item({ number: 1, title: "Epic", kind: "Epic", boardId: "forks-main" }),
+      item({ number: 2, epicRef: R(1) }),
+    ];
+
+    expect(epicSelector(pool).map((entry) => entry.ref)).toEqual([R(1)]);
+  });
+
   test("no epics in the pool yields an empty selector", () => {
     expect(epicSelector([item({ number: 1 }), item({ number: 2 })])).toEqual([]);
   });

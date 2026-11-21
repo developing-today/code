@@ -17,7 +17,7 @@
 
 import type { ProjectPoolEdgeDiagnostic, ProjectPoolItem, RefKey } from "./model.ts";
 import { isValidRef } from "./model.ts";
-import { buildEpicRollups, uniqueProjectItemsByRef } from "./epics.ts";
+import { buildEpicRollups, uniqueEpicItemsByRef, uniqueProjectItemsByRef } from "./epics.ts";
 import { effortWeight, modeOf } from "./weights.ts";
 
 export const EPIC_GRAPH_DEFAULT_CAP = 120;
@@ -65,8 +65,7 @@ export interface EpicSelectorEntry {
 export function epicSelector(pool: readonly ProjectPoolItem[]): EpicSelectorEntry[] {
   const rollups = buildEpicRollups(pool);
   const entries: EpicSelectorEntry[] = [];
-  for (const item of pool) {
-    if (item.kind !== "Epic") continue;
+  for (const item of uniqueEpicItemsByRef(pool)) {
     const rollup = rollups.get(item.ref);
     if (!rollup || rollup.total === 0) continue;
     entries.push({
