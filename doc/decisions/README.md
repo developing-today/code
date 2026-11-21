@@ -168,6 +168,7 @@ the decision; `Implementation` is where the decision lands in code, docs, or iss
 
 | [FDR-0011](FDR-0011-implementation-target-and-work-window.md) | Implementation target and usable work window | `accepted` | Fleet queue maintainers | Drew request, 2026-11-18; code#10415/task 20592 | Claim repo filter + existing #3418 budget gate |
 | [FDR-0012](FDR-0012-no-ownership-handoff-park-gates.md) | No ownership-handoff park gates (supersedes FDR-0011 in part) | `accepted` | Fleet queue maintainers | Drew rulings, 2026-11-20 and 2026-11-21 | [#12061](https://github.com/developing-today/code/pull/12061), [#12074](https://github.com/developing-today/code/pull/12074), [#12155](https://github.com/developing-today/code/pull/12155); queue checkpoints reset 2026-11-21 |
+| [FDR-0013](FDR-0013-no-owner-decision-gates.md) | No owner-decision gates: agents decide; only a hands item may wait on a person (settles FDR-0012 OQ-1) | `accepted` | Fleet queue maintainers | Drew ruling, 2026-11-21 | [#12216](https://github.com/developing-today/code/pull/12216); `fleet queue block`/`park` guard |
 
 ### Package-scoped records (not in this namespace)
 

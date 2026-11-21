@@ -1449,6 +1449,18 @@
         "dispatchable": true
       },
       "status": "mapped"
+    },
+    {
+      "id": "fleet.flow-report",
+      "paths": ["scripts/fleet/flow-report/test_flow_report.py"],
+      "invocation": "python3 -I -m unittest discover -s scripts/fleet/flow-report -p 'test_flow_report.py' -v",
+      "venue": {
+        "workflow": ".github/workflows/scripts-test.yml",
+        "job_step": "update-nixpkgs-inputs-contract / Run flow-report contract tests",
+        "state": "active",
+        "dispatchable": true
+      },
+      "status": "mapped"
     }
   ],
   "waivers": []

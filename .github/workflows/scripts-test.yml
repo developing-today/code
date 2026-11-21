@@ -54,6 +54,10 @@ jobs:
         run: |
           test -f scripts/fleet/queue-reconcile/test_check_coverage.py
           python3 -I -m unittest discover -s scripts/fleet/queue-reconcile -p 'test_check_coverage.py' -v
+      - name: Run flow-report contract tests
+        run: |
+          test -f scripts/fleet/flow-report/test_flow_report.py
+          python3 -I -m unittest discover -s scripts/fleet/flow-report -p 'test_flow_report.py' -v
       - name: Run queue transport alert contract tests (#6369)
         run: |
           test -f scripts/fleet/queue-transport-alert/test_check_transport.py
