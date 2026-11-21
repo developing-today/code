@@ -178,6 +178,16 @@ class NoteVerdict(unittest.TestCase):
         cs = [comment(YAML_PARKED, 25 * 60)]
         self.assertTrue(lg.note_verdict(cs, "20028", "parked", now=NOW)["post"])
 
+    def test_24_hour_boundary_posts_at_but_not_before_window(self):
+        exactly_at_boundary = [comment(YAML_PARKED, 24 * 60)]
+        just_inside_window = [comment(YAML_PARKED, 24 * 60 - 1)]
+        self.assertTrue(
+            lg.note_verdict(exactly_at_boundary, "20028", "parked", now=NOW)["post"]
+        )
+        self.assertFalse(
+            lg.note_verdict(just_inside_window, "20028", "parked", now=NOW)["post"]
+        )
+
     def test_human_comment_since_last_note_posts(self):
         cs = [comment(YAML_PARKED, 40), comment("Drew: go ahead and take this.", 10)]
         self.assertTrue(lg.note_verdict(cs, "20028", "parked", now=NOW)["post"])
@@ -221,10 +231,10 @@ class NoteVerdict(unittest.TestCase):
 
 
 class Cli(unittest.TestCase):
-    def run_cli(self, argv, gh):
+    def run_cli(self, argv, gh, now=NOW):
         buf = io.StringIO()
         with redirect_stdout(buf):
-            code = lg.main(argv, gh=gh)
+            code = lg.main(argv, gh=gh, now=now)
         return code, json.loads(buf.getvalue())
 
     def test_hold_cli_available(self):
