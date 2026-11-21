@@ -52,6 +52,9 @@ pub const HEADER_BYTES: usize = 13;
 /// non-DATA payloads and fit far below this.
 pub const MAX_FRAME_BODY: usize = HEADER_BYTES + 256 * 1024;
 
+/// Largest wire representation retained while an incomplete frame arrives.
+const MAX_FRAME_WIRE_BYTES: usize = 4 + MAX_FRAME_BODY;
+
 /// Initial per-stream credit window, in bytes (decision §3).
 pub const INITIAL_STREAM_CREDIT: u64 = 64 * 1024;
 
@@ -371,6 +374,7 @@ pub fn stream_id_is_initiator(stream_id: u32) -> bool {
 /// an encoded frame sequence, the decoded frames are identical.
 #[derive(Debug, Default)]
 pub struct FrameDecoder {
+    /// Bytes from a prior feed that have not yet completed one frame.
     buf: Vec<u8>,
 }
 
@@ -381,11 +385,64 @@ impl FrameDecoder {
 
     /// Append bytes and return every frame completed by them.
     pub fn feed(&mut self, bytes: &[u8]) -> Result<Vec<Frame>> {
-        self.buf.extend_from_slice(bytes);
         let mut frames = Vec::new();
-        while let Some((frame, consumed)) = Frame::decode_prefix(&self.buf)? {
-            self.buf.drain(..consumed);
+
+        // Finish a frame carried over from the prior feed. Fill only the
+        // prefix first so malformed lengths are rejected before copying an
+        // arbitrary caller-provided suffix into decoder storage.
+        let mut input = bytes;
+        if !self.buf.is_empty() {
+            if self.buf.len() < 4 {
+                let take = (4 - self.buf.len()).min(input.len());
+                self.buf.extend_from_slice(&input[..take]);
+                input = &input[take..];
+                if self.buf.len() < 4 {
+                    return Ok(frames);
+                }
+            }
+
+            // This validates the declared length as soon as all four prefix
+            // bytes are present, without requiring any body bytes.
+            let _ = Frame::decode_prefix(&self.buf)?;
+            let body_len = u32::from_be_bytes(
+                self.buf[..4]
+                    .try_into()
+                    .context("frame length prefix must be four bytes")?,
+            ) as usize;
+            let wire_len = 4 + body_len;
+            debug_assert!(wire_len <= MAX_FRAME_WIRE_BYTES);
+
+            let take = (wire_len - self.buf.len()).min(input.len());
+            self.buf.extend_from_slice(&input[..take]);
+            input = &input[take..];
+            if self.buf.len() < wire_len {
+                return Ok(frames);
+            }
+
+            let (frame, consumed) = Frame::decode_prefix(&self.buf)?
+                .context("complete buffered frame was not decoded")?;
+            debug_assert_eq!(consumed, wire_len);
             frames.push(frame);
+            self.buf.clear();
+        }
+
+        // Decode directly from the caller's slice. Only the final incomplete
+        // frame is copied into `buf`, so a batch may contain any number of
+        // valid frames without becoming an aggregate buffer limit.
+        let mut offset = 0;
+        while offset < input.len() {
+            match Frame::decode_prefix(&input[offset..])? {
+                Some((frame, consumed)) => {
+                    frames.push(frame);
+                    offset += consumed;
+                }
+                None => {
+                    let pending = &input[offset..];
+                    debug_assert!(pending.len() < MAX_FRAME_WIRE_BYTES);
+                    self.buf.extend_from_slice(pending);
+                    break;
+                }
+            }
         }
         Ok(frames)
     }
@@ -720,6 +777,48 @@ mod tests {
         assert!(decoder.feed(&wire[..6]).unwrap().is_empty());
         let completed = decoder.feed(&wire[6..]).unwrap();
         assert_eq!(completed, vec![frame]);
+    }
+
+    #[test]
+    fn large_batch_of_small_frames_decodes_without_an_aggregate_feed_cap() {
+        // Oracle: compare against the exact input frame sequence. The batch
+        // is larger than the maximum retained single-frame wire size.
+        let frame = Frame::new(FrameType::Ping, 0, 0, Vec::new()).unwrap();
+        let encoded = frame.encode().unwrap();
+        let count = MAX_FRAME_WIRE_BYTES / encoded.len() + 1;
+        let mut wire = Vec::with_capacity(count * encoded.len());
+        for _ in 0..count {
+            wire.extend_from_slice(&encoded);
+        }
+
+        let mut decoder = FrameDecoder::new();
+        let decoded = decoder.feed(&wire).unwrap();
+
+        assert_eq!(decoded, vec![frame; count]);
+        assert_eq!(decoder.pending_bytes(), 0);
+    }
+
+    #[test]
+    fn incomplete_frame_storage_is_bounded_and_oversized_prefix_is_rejected_early() {
+        // An incomplete maximum-size body retains less than the maximum
+        // legal wire size; no complete frame bytes are discarded or lost.
+        let mut partial = Vec::with_capacity(MAX_FRAME_WIRE_BYTES - 1);
+        partial.extend_from_slice(&u32::try_from(MAX_FRAME_BODY).unwrap().to_be_bytes());
+        partial.resize(MAX_FRAME_WIRE_BYTES - 1, 0);
+        let mut decoder = FrameDecoder::new();
+        assert!(decoder.feed(&partial).unwrap().is_empty());
+        assert_eq!(decoder.pending_bytes(), MAX_FRAME_WIRE_BYTES - 1);
+
+        // The decoder reads only the missing prefix byte before rejecting;
+        // the large unrelated suffix is never copied into retained storage.
+        let mut oversized = Vec::with_capacity(1 + MAX_FRAME_WIRE_BYTES);
+        oversized.push(0);
+        oversized.extend_from_slice(&u32::try_from(MAX_FRAME_BODY + 1).unwrap().to_be_bytes()[1..]);
+        oversized.resize(1 + MAX_FRAME_WIRE_BYTES, 0);
+        let mut decoder = FrameDecoder::new();
+        assert!(decoder.feed(&oversized[..3]).unwrap().is_empty());
+        assert!(decoder.feed(&oversized[3..]).is_err());
+        assert_eq!(decoder.pending_bytes(), 4);
     }
 
     #[test]
