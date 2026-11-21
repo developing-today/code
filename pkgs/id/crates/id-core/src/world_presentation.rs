@@ -1502,6 +1502,63 @@ mod tests {
         ScreenSurface::from_cells(width, height, vec![cell(fill); width * height]).unwrap()
     }
 
+    fn codec_patch() -> ScreenPatch {
+        ScreenPatch {
+            version: 1,
+            width: 2,
+            height: 1,
+            runs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn screen_codec_matches_versioned_messagepack_golden_vector() {
+        let golden = [
+            0x82, 0xa7, b'v', b'e', b'r', b's', b'i', b'o', b'n', 0x01, 0xa5, b'p', b'a',
+            b't', b'c', b'h', 0x84, 0xa7, b'v', b'e', b'r', b's', b'i', b'o', b'n', 0x01,
+            0xa5, b'w', b'i', b'd', b't', b'h', 0x02, 0xa6, b'h', b'e', b'i', b'g', b'h',
+            b't', 0x01, 0xa4, b'r', b'u', b'n', b's', 0x90,
+        ];
+
+        let encoded = crate::screen_codec::encode_patch(&codec_patch()).unwrap();
+        assert_eq!(encoded, golden);
+        assert_eq!(crate::screen_codec::decode_patch(&golden).unwrap(), codec_patch());
+    }
+
+    #[test]
+    fn screen_codec_rejects_unsupported_version_and_malformed_frames() {
+        use crate::screen_codec::{ScreenCodecError, decode_patch};
+
+        let mut unsupported = crate::screen_codec::encode_patch(&codec_patch()).unwrap();
+        unsupported[9] = 2;
+        assert!(matches!(
+            decode_patch(&unsupported),
+            Err(ScreenCodecError::UnsupportedVersion(2))
+        ));
+        assert!(matches!(
+            decode_patch(&[0xc1]),
+            Err(ScreenCodecError::Invalid(_))
+        ));
+
+        let mut trailing = crate::screen_codec::encode_patch(&codec_patch()).unwrap();
+        trailing.push(0xc0);
+        assert!(matches!(
+            decode_patch(&trailing),
+            Err(ScreenCodecError::TrailingBytes)
+        ));
+    }
+
+    #[test]
+    fn screen_codec_rejects_frames_over_one_mibibyte() {
+        use crate::screen_codec::{MAX_SCREEN_FRAME_BYTES, ScreenCodecError, decode_patch};
+
+        let oversized = vec![0; MAX_SCREEN_FRAME_BYTES + 1];
+        assert!(matches!(
+            decode_patch(&oversized),
+            Err(ScreenCodecError::TooLarge)
+        ));
+    }
+
     #[test]
     fn test_rust_screen_presenter_matches_the_shared_web_parity_corpus() {
         let corpus: ScreenCellParityCorpus = serde_json::from_str(include_str!(

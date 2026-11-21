@@ -4894,6 +4894,7 @@ dependencies = [
  "proptest",
  "qrcode",
  "rand 0.10.3",
+ "rmp-serde",
  "rqrr",
  "serde",
  "serde_json",

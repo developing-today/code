@@ -69,6 +69,8 @@ pub mod test_forgeries;
 pub mod petname;
 #[cfg(feature = "world")]
 pub mod world_presentation;
+#[cfg(feature = "world")]
+pub mod screen_codec;
 
 #[cfg(feature = "web")]
 pub mod qr;
