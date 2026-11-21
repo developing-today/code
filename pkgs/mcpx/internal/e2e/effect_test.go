@@ -2138,7 +2138,9 @@ func TestLoggingIncludeChoosesTheAmbientBlocks(t *testing.T) {
 		t.Errorf("logging.include=none should drop the host block:\n%s", start)
 	}
 	_, _, start := loggedRun(t, "MCPX_LOGGING_INCLUDE=all")
-	if hasIPv4NetworkInterface() && !strings.Contains(start, `"net.`) {
+	if start == "" {
+		t.Errorf("logging.include=all should still log daemon.start")
+	} else if hasIPv4NetworkInterface() && !strings.Contains(start, `"net.`) {
 		t.Errorf("logging.include=all should add the network block:\n%s", start)
 	}
 }
@@ -2384,10 +2386,15 @@ func runtimeOf(t *testing.T, e *env, args ...string) string {
 
 // firstDefaultRuntime returns the first installed runtime in the configured
 // default order. The suite can run with only a subset of runtimes installed.
+// The probes then switch to node, so a host where node is the default
+// cannot show the setting changing anything, and the probe is skipped.
 func firstDefaultRuntime(t *testing.T) string {
 	t.Helper()
 	for _, name := range []string{"deno", "bun", "node"} {
 		if _, err := exec.LookPath(name); err == nil {
+			if name == "node" {
+				t.Skip("only node is installed, so switching to node cannot show an effect")
+			}
 			return name
 		}
 	}
