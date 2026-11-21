@@ -16,7 +16,7 @@ import { parseRef, refUrl } from "./model.ts";
 import { PROGRAM, TRACKED_REFS, type ProgramEntry, type TrackedIssue } from "./program.ts";
 import type { ProjectDocSnapshot, ProjectDocTarget } from "./project-doc.ts";
 import { summarizeWeights, type WeightSummary } from "./weights.ts";
-import { uniqueProjectItemsByRef } from "./projects.ts";
+import { uniqueProjectItemsByRef } from "./epics.ts";
 import { isIsoDate } from "./validate.ts";
 
 export interface ProjectHomeDoc {

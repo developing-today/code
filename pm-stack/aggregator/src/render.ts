@@ -124,7 +124,7 @@ import { PAGES, groupedPages, primaryGroupedPages, manifestRouteFor, pageByRoute
 import { KEY_HINT, KEYBOARD_SCRIPT, paletteHtml } from "./keyboard.ts";
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
-import { derivedProjectState, projectDisagreement, PROJECT_URL, uniqueProjectItemsByRef } from "./projects.ts";
+import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
 import {
   PHASE12_ISSUE_URL,
   joinPhase12Steps,
