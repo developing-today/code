@@ -14,7 +14,7 @@ Builds on §11 (and the address profile in §10, invariants in §13) of `doc/202
 
 ## 1. Operations and their records
 
-All records are signed over a canonical encoding (#5674 postcard) with UTC Unix-second timestamps in the signed body.
+All records use the shared signed-record profile: a detached signature over domain prefix + deterministic CBOR of the body, as `versioned-design.md` §3.1 and `pkgs/id/crates/id-core/src/signed_envelope.rs` (`canonical_cbor`) define it. Timestamps in the signed body are UTC Unix seconds. The transport codec (#5674 postcard) never forms signed bytes.
 
 **Delegation record** (signed by the grantor):
 
@@ -33,7 +33,7 @@ All records are signed over a canonical encoding (#5674 postcard) with UTC Unix-
 - The transfer replaces the controlling key for the space. It never mutates the immutable public-key address binding of the space; a successor either proves a signed chain at the original address or publishes an explicit signed redirect from old to new (per `versioned-design.md` §10).
 - Transfer does not revoke the old controller's existing delegations automatically. Delegations the old controller made stay as recorded and are re-verified against the new controller's frontier; the new controller may revoke them.
 
-**Revocation record** (signed by the grantor or the transferring controller): references the grant or transfer ID and takes effect at the latest verified authority frontier.
+**Revocation record** (signed by the grantor or the current root controller): references the grant or transfer ID and takes effect at the latest verified authority frontier. After a transfer, the current root controller is the new controller, so it can revoke inherited grants directly.
 
 **Identity-link record** (cross-signed): `{ key_a, key_b, purpose, scope, nonce, expires, domain }`, signed by **both** keys over the same challenge bytes. The challenge binds the ordered key pair, the purpose and domain string, the exact scope, the nonce and the expiry. Unrelated unilateral statements cannot be paired because the challenge differs.
 
@@ -90,7 +90,7 @@ Every question below is decided here. None is left operative as TBD.
 | # | Question | Chosen default |
 |---|---|---|
 | Q1 | Should delegations be listed in the space's well-known location or pushed to grantees? | **Listed in the well-known location.** Verification must not depend on delivery to the grantee. |
-| Q2 | Can a delegation be revoked by someone other than its grantor or the root controller? | **No.** Only the grantor or the root controller revokes. Transfer does not give the new controller revocation of the old controller's grants until it re-signs them. |
+| Q2 | Can a delegation be revoked by someone other than its grantor or the root controller? | **No.** Only the grantor or the current root controller revokes. After a transfer the new controller is the current root controller, so it can revoke inherited grants by ID directly, without re-granting them first. |
 | Q3 | Does transfer revoke the old controller's delegations? | **No, not automatically.** They are re-verified against the new frontier; the new controller revokes what it does not want. This avoids silently changing access on transfer. |
 | Q4 | Is grantee acceptance required for a delegation to take effect? | **No for `read` and `append`; yes-as-acknowledgement for `moderate` and `edit`.** The ack is recorded but does not gate validity, so an unreachable grantee cannot block a grant. |
 | Q5 | Recovery when the old controller key is lost. | **Explicit recovery policy in the signed space profile if the owner set one; otherwise not inferred.** The space is preserved as unresolved, and a new space is created to move on. |
