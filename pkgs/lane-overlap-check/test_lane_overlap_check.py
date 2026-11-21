@@ -3,6 +3,7 @@
 Run: python3 pkgs/lane-overlap-check/test_lane_overlap_check.py
 """
 
+import contextlib
 import http.server
 import io
 import json
@@ -137,6 +138,14 @@ class OverlapTest(unittest.TestCase):
         ], {"s3": "busy"}, "--self", "s2")
         # s3 is newer than this occurrence, so it is not an earlier one.
         self.assertEqual((rc, res["verdict"]), (0, "clear"))
+
+    def test_abbreviated_options_are_usage_errors(self):
+        for flag in ("--serv", "--window"):
+            with self.assertRaises(SystemExit) as cm, \
+                    redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                loc.main(["code-f", flag, "x"])
+            self.assertEqual(cm.exception.code, 2)
 
 
 if __name__ == "__main__":

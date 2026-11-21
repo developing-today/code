@@ -96,7 +96,10 @@ def list_lane_sessions(args, prefix, since_ms):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    # Strict parsing (operator script argument contract, #3352): no
+    # abbreviated long options, so a typo is a usage error, not a guess.
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0],
+                                allow_abbrev=False)
     p.add_argument("lane", help="lane id, e.g. code-f")
     p.add_argument("--dir", default="/home/user/git/code")
     p.add_argument("--self", dest="self_id",
