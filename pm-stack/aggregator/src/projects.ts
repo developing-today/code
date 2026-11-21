@@ -727,6 +727,18 @@ export function poolItemToGhItem(p: ProjectPoolItem): GhItem {
   };
 }
 
+/** Keep the first board membership for each canonical issue ref. Use only
+ * where an issue-level calculation must not count cross-board copies; the
+ * pool itself retains every membership for board attribution and rendering. */
+export function uniqueProjectItemsByRef(items: readonly ProjectPoolItem[]): ProjectPoolItem[] {
+  const seen = new Set<RefKey>();
+  return items.filter((item) => {
+    if (seen.has(item.ref)) return false;
+    seen.add(item.ref);
+    return true;
+  });
+}
+
 /** The derived state IS a canonical status (#1198): the derived side
  * and every source side speak the one taxonomy in status-taxonomy.ts. */
 export type DerivedProjectState = CanonicalStatus;

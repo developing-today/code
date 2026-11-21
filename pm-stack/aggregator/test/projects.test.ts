@@ -3,7 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
-import type { OrchestrationSection } from "../src/model.ts";
+import type { OrchestrationSection, RefKey } from "../src/model.ts";
 import {
   derivedProjectState,
   fetchProjectSnapshot,
@@ -890,6 +890,16 @@ describe("renderProjects", () => {
     const none = renderProjects(pool, PROV, { area: "lab-cluster", status: "Done" });
     expect(none).not.toContain("EPIC: Basement cluster");
     expect(none).toContain("Filters show 0 of 2 pool items.");
+  });
+
+  test("Area weighted progress counts duplicate board memberships once", () => {
+    const base = parseProjectItems(GQL);
+    const closed = { ...base[0]!, ref: "developing-today/code#500" as RefKey, state: "closed" as const, area: "lab-cluster", labels: ["effort/s"] };
+    const open = { ...base[1]!, ref: "developing-today/code#501" as RefKey, state: "open" as const, area: "lab-cluster", labels: ["effort/s"] };
+    const html = renderProjects([closed, { ...closed, boardId: "satellite" }, open], PROV, {});
+
+    expect(html).toContain("<strong>lab-cluster</strong> — 50% weighted");
+    expect(html).toContain("3 items"); // raw membership count is unchanged
   });
 
   test("audit gap renders the draft/unlinked caveat instead of dropping it silently (#1208)", () => {

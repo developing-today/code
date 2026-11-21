@@ -124,7 +124,7 @@ import { PAGES, groupedPages, primaryGroupedPages, manifestRouteFor, pageByRoute
 import { KEY_HINT, KEYBOARD_SCRIPT, paletteHtml } from "./keyboard.ts";
 import type { ProgramData, ProgramEntry, ProgramLive, TrackedIssue } from "./program.ts";
 import type { ProjectDetail, ProjectSummary } from "./project-config.ts";
-import { derivedProjectState, projectDisagreement, PROJECT_URL } from "./projects.ts";
+import { derivedProjectState, projectDisagreement, PROJECT_URL, uniqueProjectItemsByRef } from "./projects.ts";
 import {
   PHASE12_ISSUE_URL,
   joinPhase12Steps,
@@ -6868,11 +6868,11 @@ export function projectsBodyHtml(
   const areaWeights = areas
     .map((a) => {
       const items = pool.filter((p) => p.area === a);
-      const w = summarizeWeights(items);
+      const w = summarizeWeights(uniqueProjectItemsByRef(items));
       return `<div class="card"><strong>${esc(a)}</strong> — ${esc(weightedLine(w))}<br><span class="muted">${esc(handsLine(w))}</span></div>`;
     })
     .join("");
-  const shownWeights = summarizeWeights(shown);
+  const shownWeights = summarizeWeights(uniqueProjectItemsByRef(shown));
   const epicRollups = buildEpicRollups(pool);
   const cards = shown
     .map((p) => {
