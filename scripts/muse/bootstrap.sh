@@ -295,6 +295,10 @@ fi
 # ---- check ----
 if want check; then
   rc=0
+  # fleet's secrets chain tries the session broker first and keeps
+  # retrying it for ~2 minutes when none is running (before init.sh has
+  # brought one up), so each check below can take that long.
+  say "check: running (up to a few minutes when no session broker is up yet)"
   has_bridge "$(command -v fleet)" || { say "check: fleet has no bridge capability"; rc=1; }
   if [ -f "$TS_STATE/fleet-proxy.env" ]; then . "$TS_STATE/fleet-proxy.env"; fi
   code=$(curl -sS -m 10 ${HTTPS_PROXY:+-x "$HTTPS_PROXY"} -o /dev/null -w '%{http_code}' "http://$LAPTOP_TAILNET_IP:4799/" 2>/dev/null || true)
