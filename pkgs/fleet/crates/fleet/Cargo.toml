@@ -29,6 +29,9 @@ fleet-secrets = { workspace = true, optional = true }
 # The laptop-agent client (developing-today/code#10796): the transport ladder
 # and the verbs over the laptop daemon; laptop builds only.
 fleet-laptop-agent = { workspace = true, optional = true }
+# The bridge domain: fleet mailboxes on the message bridge (send/receive
+# for central and agents); a working-seat client, so full only.
+fleet-bridge = { workspace = true, optional = true }
 serde_json = { workspace = true }
 # The gh domain (code#8887) mints App installation tokens over the
 # GitHub API; same ureq pin as fleet-queue/fleet-search (rustls, no
@@ -62,6 +65,7 @@ full = [
   "laptop-agent",
   "secrets",
   "gh",
+  "bridge",
 ]
 # The serve variant's set, as one feature for the nix build.
 serve = [
@@ -100,6 +104,9 @@ secrets = ["dep:fleet-secrets"]
 # if ever needed, it is not a daemon role.
 gh = ["dep:fleet-secrets", "dep:ureq"]
 laptop-agent = ["dep:fleet-secrets", "dep:fleet-laptop-agent"]
+# Fleet messaging through the message bridge: central sends messages or
+# commands; agents read, answer and ack. Full only (a client, not a role).
+bridge = ["dep:fleet-bridge"]
 
 [dev-dependencies]
 # Property tests for the gh read classifier (AGENTS.md testing

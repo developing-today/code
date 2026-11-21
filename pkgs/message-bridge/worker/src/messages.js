@@ -133,10 +133,99 @@ export function normalizeQuery(q = {}) {
  * In-memory store with the same interface as the Durable Object, used
  * by the tests and as the reference for the SQL in index.js.
  */
+export const OAUTH_MAX_CLIENTS = 500;
+export const OAUTH_MAX_EVENTS = 100;
+// A used client stays while its refresh tokens can (a year from last use).
+export const OAUTH_CLIENT_IDLE = 366 * 86400;
+// When the registry is full, a never-used registration older than this
+// makes room, so a flood of registrations can't lock the owner out.
+export const OAUTH_PENDING_GRACE = 600;
+// Registrations one network address may make per grace window, so a single
+// source can't keep the registry full; a real client registers once or twice.
+export const OAUTH_REG_PER_SOURCE = 10;
+
 export class MemoryStore {
   constructor(now = () => new Date().toISOString()) {
     this.rows = [];
     this.now = now;
+    this.claimed = new Map();
+    this.families = new Map();
+    this.clients = new Map();
+    this.registrations = [];
+    this.events = [];
+    this.subs = new Map();
+  }
+  // ChatGPT event subscriptions (events.js), same semantics as the Durable Object.
+  async eventSubGet(id) {
+    const s = this.subs.get(id);
+    return s ? JSON.parse(JSON.stringify(s)) : null;
+  }
+  async eventSubPut(sub, max) {
+    for (const [k, s] of this.subs) if (s.expires <= Date.now()) this.subs.delete(k);
+    if (!this.subs.has(sub.id) && this.subs.size >= max) return false;
+    this.subs.set(sub.id, JSON.parse(JSON.stringify(sub)));
+    return true;
+  }
+  async eventSubDelete(id) {
+    return this.subs.delete(id);
+  }
+  async eventSubsLive(channel, now) {
+    for (const [k, s] of this.subs) if (s.expires <= now) this.subs.delete(k);
+    return [...this.subs.values()].filter((s) => s.channel === channel).map((s) => JSON.parse(JSON.stringify(s)));
+  }
+  async oauthClientAdd(id, meta, now = Math.floor(Date.now() / 1000)) {
+    for (const [k, c] of this.clients) {
+      if (c.used === null ? c.created < now - 86400 : c.used < now - OAUTH_CLIENT_IDLE) this.clients.delete(k);
+    }
+    if (this.clients.size >= OAUTH_MAX_CLIENTS) {
+      let oldest = null;
+      for (const [k, c] of this.clients) {
+        if (c.used === null && c.created < now - OAUTH_PENDING_GRACE && (!oldest || c.created < this.clients.get(oldest).created)) oldest = k;
+      }
+      if (!oldest) return false;
+      this.clients.delete(oldest);
+    }
+    this.clients.set(id, { meta: JSON.parse(JSON.stringify(meta)), created: now, used: null });
+    return true;
+  }
+  async oauthRegisterAllowed(source, now = Math.floor(Date.now() / 1000)) {
+    this.registrations = this.registrations.filter((r) => r.ts >= now - OAUTH_PENDING_GRACE);
+    if (this.registrations.filter((r) => r.source === source).length >= OAUTH_REG_PER_SOURCE) return false;
+    this.registrations.push({ source, ts: now });
+    return true;
+  }
+  async oauthClientGet(id, touch = false) {
+    const c = this.clients.get(id);
+    if (!c) return null;
+    if (touch) c.used = Math.floor(Date.now() / 1000);
+    return JSON.parse(JSON.stringify(c.meta));
+  }
+  async oauthLog(kind, detail) {
+    this.events.unshift({ ts: this.now(), kind, ...detail });
+    this.events.length = Math.min(this.events.length, OAUTH_MAX_EVENTS);
+  }
+  async oauthEvents() {
+    return this.events.map((e) => ({ ...e }));
+  }
+  // OAuth bookkeeping (oauth.js): single-use codes and refresh-token
+  // families, same semantics as the Durable Object's SQL.
+  async oauthClaim(jti, exp) {
+    if (this.claimed.has(jti)) return false;
+    this.claimed.set(jti, exp);
+    return true;
+  }
+  async oauthFamilyStart(fam, jti, exp) {
+    this.families.set(fam, { jti, exp, revoked: false });
+  }
+  async oauthFamilyRotate(fam, jti, next, exp) {
+    const f = this.families.get(fam);
+    if (!f || f.revoked) return "unknown";
+    if (f.jti !== jti) {
+      f.revoked = true;
+      return "replay";
+    }
+    Object.assign(f, { jti: next, exp });
+    return "ok";
   }
   async add(msg) {
     const m = normalizeNew(msg);

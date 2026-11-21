@@ -8,7 +8,8 @@
 // Routes and auth: see routes.js and auth.js. The access token is the
 // Worker secret ACCESS_TOKEN; it is never in git.
 import { DurableObject } from "cloudflare:workers";
-import { ackSelector, normalizeChannel, normalizeNew, normalizeQuery } from "./messages.js";
+import { OAUTH_CLIENT_IDLE, OAUTH_MAX_CLIENTS, OAUTH_MAX_EVENTS, OAUTH_PENDING_GRACE, OAUTH_REG_PER_SOURCE, ackSelector, normalizeChannel, normalizeNew, normalizeQuery } from "./messages.js";
+import { fleetCall, fleetOp, fleetSchema } from "./fleet.js";
 import { route } from "./routes.js";
 
 export class MessageStore extends DurableObject {
@@ -35,6 +36,153 @@ export class MessageStore extends DurableObject {
     }
     this.sql.exec("CREATE INDEX IF NOT EXISTS messages_unread ON messages (direction, read_at)");
     this.sql.exec("CREATE INDEX IF NOT EXISTS messages_channel ON messages (channel, direction, read_at)");
+    // OAuth (oauth.js): used authorization codes, and one row per
+    // refresh-token family holding the only refresh token still valid.
+    this.sql.exec("CREATE TABLE IF NOT EXISTS oauth_claimed (jti TEXT PRIMARY KEY, exp INTEGER NOT NULL)");
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS oauth_family (
+      fam TEXT PRIMARY KEY,
+      jti TEXT NOT NULL,
+      exp INTEGER NOT NULL,
+      revoked INTEGER NOT NULL DEFAULT 0
+    )`);
+    // Registered OAuth clients, keyed by a short random id, and the last
+    // few sign-in events (no secrets) for diagnosing a failed connect.
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS oauth_client (
+      id TEXT PRIMARY KEY,
+      meta TEXT NOT NULL,
+      created INTEGER NOT NULL,
+      used INTEGER
+    )`);
+    this.sql.exec("CREATE TABLE IF NOT EXISTS oauth_reg (source TEXT NOT NULL, ts INTEGER NOT NULL)");
+    // ChatGPT event subscriptions (events.js): one row each, the
+    // subscription (callback URL and signing secret included) as JSON.
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS event_sub (
+      id TEXT PRIMARY KEY,
+      channel TEXT NOT NULL,
+      expires INTEGER NOT NULL,
+      data TEXT NOT NULL
+    )`);
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS oauth_event (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      detail TEXT NOT NULL
+    )`);
+    // Fleet mailboxes (fleet.js): agents and their messages, own tables.
+    fleetSchema(this.sql);
+  }
+
+  /** One fleet mailbox operation over arguments fleetCall validated. */
+  fleet(op, args) {
+    return fleetOp(this.sql, op, args);
+  }
+
+  /** Stores a new client; false when the table is full of clients worth keeping. */
+  oauthClientAdd(id, meta) {
+    const now = Math.floor(Date.now() / 1000);
+    // Never-used registrations go after a day; used ones outlive their refresh tokens.
+    this.sql.exec("DELETE FROM oauth_client WHERE (used IS NULL AND created < ?) OR used < ?", now - 86400, now - OAUTH_CLIENT_IDLE);
+    const count = this.sql.exec("SELECT COUNT(*) AS n FROM oauth_client").one().n;
+    if (count >= OAUTH_MAX_CLIENTS) {
+      // Full: the oldest never-used registration past its grace makes room.
+      const evicted = this.sql
+        .exec(
+          "DELETE FROM oauth_client WHERE id = (SELECT id FROM oauth_client WHERE used IS NULL AND created < ? ORDER BY created LIMIT 1) RETURNING id",
+          now - OAUTH_PENDING_GRACE,
+        )
+        .toArray();
+      if (evicted.length === 0) return false;
+    }
+    this.sql.exec("INSERT INTO oauth_client (id, meta, created) VALUES (?, ?, ?)", id, JSON.stringify(meta), now);
+    return true;
+  }
+
+  /** Counts a registration from source (a hashed address); false past the per-source limit. */
+  oauthRegisterAllowed(source) {
+    const now = Math.floor(Date.now() / 1000);
+    this.sql.exec("DELETE FROM oauth_reg WHERE ts < ?", now - OAUTH_PENDING_GRACE);
+    const n = this.sql.exec("SELECT COUNT(*) AS n FROM oauth_reg WHERE source = ?", source).one().n;
+    if (n >= OAUTH_REG_PER_SOURCE) return false;
+    this.sql.exec("INSERT INTO oauth_reg (source, ts) VALUES (?, ?)", source, now);
+    return true;
+  }
+
+  /** The client's metadata, or null; touch marks it used. */
+  oauthClientGet(id, touch = false) {
+    const row = this.sql.exec("SELECT meta FROM oauth_client WHERE id = ?", id).toArray()[0];
+    if (!row) return null;
+    if (touch) this.sql.exec("UPDATE oauth_client SET used = ? WHERE id = ?", Math.floor(Date.now() / 1000), id);
+    return JSON.parse(row.meta);
+  }
+
+  oauthLog(kind, detail) {
+    this.sql.exec("INSERT INTO oauth_event (ts, kind, detail) VALUES (?, ?, ?)", new Date().toISOString(), kind, JSON.stringify(detail));
+    this.sql.exec("DELETE FROM oauth_event WHERE id <= (SELECT MAX(id) FROM oauth_event) - ?", OAUTH_MAX_EVENTS);
+  }
+
+  oauthEvents() {
+    return this.sql
+      .exec("SELECT ts, kind, detail FROM oauth_event ORDER BY id DESC")
+      .toArray()
+      .map((r) => ({ ts: r.ts, kind: r.kind, ...JSON.parse(r.detail) }));
+  }
+
+  eventSubGet(id) {
+    const row = this.sql.exec("SELECT data FROM event_sub WHERE id = ?", id).toArray()[0];
+    return row ? JSON.parse(row.data) : null;
+  }
+
+  /** Stores or replaces a subscription; false when a new one would pass max live ones. */
+  eventSubPut(sub, max) {
+    this.sql.exec("DELETE FROM event_sub WHERE expires <= ?", Date.now());
+    const exists = this.sql.exec("SELECT 1 FROM event_sub WHERE id = ?", sub.id).toArray().length > 0;
+    if (!exists && this.sql.exec("SELECT COUNT(*) AS n FROM event_sub").one().n >= max) return false;
+    this.sql.exec(
+      "INSERT OR REPLACE INTO event_sub (id, channel, expires, data) VALUES (?, ?, ?, ?)",
+      sub.id,
+      sub.channel,
+      sub.expires,
+      JSON.stringify(sub),
+    );
+    return true;
+  }
+
+  eventSubDelete(id) {
+    return this.sql.exec("DELETE FROM event_sub WHERE id = ? RETURNING id", id).toArray().length > 0;
+  }
+
+  eventSubsLive(channel, now) {
+    this.sql.exec("DELETE FROM event_sub WHERE expires <= ?", now);
+    return this.sql
+      .exec("SELECT data FROM event_sub WHERE channel = ? ORDER BY id", channel)
+      .toArray()
+      .map((r) => JSON.parse(r.data));
+  }
+
+  /** Marks a code used; false when it already was. */
+  oauthClaim(jti, exp) {
+    const now = Math.floor(Date.now() / 1000);
+    this.sql.exec("DELETE FROM oauth_claimed WHERE exp < ?", now);
+    return this.sql.exec("INSERT OR IGNORE INTO oauth_claimed (jti, exp) VALUES (?, ?) RETURNING jti", jti, exp).toArray()
+      .length === 1;
+  }
+
+  oauthFamilyStart(fam, jti, exp) {
+    const now = Math.floor(Date.now() / 1000);
+    this.sql.exec("DELETE FROM oauth_family WHERE exp < ?", now);
+    this.sql.exec("INSERT OR REPLACE INTO oauth_family (fam, jti, exp, revoked) VALUES (?, ?, ?, 0)", fam, jti, exp);
+  }
+
+  /** "ok" after rotating; "replay" revokes the family; "unknown" otherwise. */
+  oauthFamilyRotate(fam, jti, next, exp) {
+    const row = this.sql.exec("SELECT jti, revoked FROM oauth_family WHERE fam = ?", fam).toArray()[0];
+    if (!row || row.revoked) return "unknown";
+    if (row.jti !== jti) {
+      this.sql.exec("UPDATE oauth_family SET revoked = 1 WHERE fam = ?", fam);
+      return "replay";
+    }
+    this.sql.exec("UPDATE oauth_family SET jti = ?, exp = ? WHERE fam = ?", next, exp, fam);
+    return "ok";
   }
 
   add(msg) {
@@ -138,11 +286,24 @@ function storeFor(env) {
     list: (query) => (normalizeQuery(query), stub.list(query)),
     ack: (sel) => (ackSelector(sel ?? {}), normalizeChannel(sel?.channel), stub.ack(sel)),
     stats: (channel) => (normalizeChannel(channel), stub.stats(channel)),
+    oauthClaim: (jti, exp) => stub.oauthClaim(jti, exp),
+    oauthFamilyStart: (fam, jti, exp) => stub.oauthFamilyStart(fam, jti, exp),
+    oauthFamilyRotate: (fam, jti, next, exp) => stub.oauthFamilyRotate(fam, jti, next, exp),
+    oauthClientAdd: (id, meta) => stub.oauthClientAdd(id, meta),
+    oauthRegisterAllowed: (source) => stub.oauthRegisterAllowed(source),
+    oauthClientGet: (id, touch) => stub.oauthClientGet(id, touch),
+    oauthLog: (kind, detail) => stub.oauthLog(kind, detail),
+    oauthEvents: () => stub.oauthEvents(),
+    eventSubGet: (id) => stub.eventSubGet(id),
+    eventSubPut: (sub, max) => stub.eventSubPut(sub, max),
+    eventSubDelete: (id) => stub.eventSubDelete(id),
+    eventSubsLive: (channel, now) => stub.eventSubsLive(channel, now),
+    fleet: (op, args) => fleetCall(stub, op, args),
   };
 }
 
 export default {
-  async fetch(request, env) {
-    return route(request, env, () => storeFor(env));
+  async fetch(request, env, ctx) {
+    return route(request, env, () => storeFor(env), (p) => ctx.waitUntil(p));
   },
 };

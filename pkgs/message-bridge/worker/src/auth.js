@@ -11,7 +11,8 @@
 // the ChatGPT channel: it can't read Claude's messages, the page or the
 // JSON API. A wrong or missing token gets the same plain 404 as an
 // unknown path, so the routes don't advertise themselves, and an MCP
-// client is never pushed into an OAuth discovery dance by a 401.
+// client given a token URL is never pushed into OAuth discovery by a
+// 401. The bare address (/ and /mcp, no token) uses OAuth: oauth.js.
 
 export const MIN_TOKEN_LENGTH = 32;
 

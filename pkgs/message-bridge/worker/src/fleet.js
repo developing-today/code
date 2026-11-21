@@ -1,0 +1,570 @@
+// Fleet mailboxes: the fleet binary (`fleet bridge ...`) and the agents
+// that run it (Muse lanes and any other fleet agent) talk to central
+// through the bridge.
+//
+// Every agent has a mailbox named after it. Central (the owner: Drew's
+// page, the JSON API, or `fleet bridge send` on the laptop, all with the
+// owner token) sends messages and commands to one agent, a group of
+// agents or every agent; agents read their own mailbox, mark what they
+// handled, and post replies and reports back. Rows live in their own
+// tables in the same Durable Object, so nothing here touches the
+// Claude/ChatGPT message rows.
+//
+// Routes (area "fleet" on the agent side, "fleet" under the owner API):
+//
+//   POST /fleet/<fleet token>/hello    {agent, groups?}: register or
+//                                      refresh the agent and its groups
+//   GET  /fleet/<fleet token>/inbox    ?agent=&groups=&kind=&since_id=
+//                                      &unread_only=&mark_read=&limit=: the
+//                                      agent's inbound rows, oldest first
+//   POST /fleet/<fleet token>/ack      {agent, up_to_id | ids}: mark read
+//   POST /fleet/<fleet token>/send     {agent, body, reply_to?}: a message
+//                                      from the agent to central; with
+//                                      reply_to, that inbound row is marked
+//                                      read in the same step
+//   GET  /api/<owner>/fleet/agents     registered agents, groups, last seen,
+//                                      unread counts
+//   GET  /api/<owner>/fleet/messages   ?agent=&direction=&kind=&since_id=
+//                                      &before_id=&limit=&order=
+//   POST /api/<owner>/fleet/send       {body, to, kind?, sender?}: one
+//                                      inbound row per recipient
+//
+// `to` names recipients as "agent:<name>" (or a bare name), "group:<name>"
+// (every registered agent in that group) or "all" (every registered
+// agent); a list or a comma-separated string mixes them. kind is
+// "message" (default) or "command". Only central sends commands: the
+// fleet token can read and answer mailboxes, never command an agent.
+//
+// The fleet token is derived from ACCESS_TOKEN (HMAC-SHA256 over a fixed
+// label, base64url), so it needs no Worker secret of its own and rotating
+// the access token rotates it too. It can't open the page, the owner API
+// or either MCP connector. FLEET_TOKEN, when set as a Worker secret of at
+// least 32 characters distinct from the other two, replaces the derived
+// one. Any holder of the fleet token can read any agent's mailbox; an
+// agent's name is what it says it is, like a queue claim's worker name.
+
+import { MIN_TOKEN_LENGTH, matchTokenPath, safeEqual, tokenConfigured } from "./auth.js";
+import { InputError, MAX_BODY, MAX_SENDER } from "./messages.js";
+
+export const FLEET_KINDS = ["message", "command"];
+export const FLEET_DIRECTIONS = ["inbound", "outbound"];
+export const MAX_RECIPIENTS = 200;
+export const MAX_GROUPS = 16;
+export const FLEET_DEFAULT_LIMIT = 50;
+export const FLEET_MAX_LIMIT = 200;
+const NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const FLEET_TOKEN_LABEL = "message-bridge/fleet-token/v1";
+
+const b64url = (bytes) => {
+  let s = "";
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+};
+
+/** The fleet token: FLEET_TOKEN when set and distinct, else derived from ACCESS_TOKEN. */
+export async function fleetToken(env) {
+  if (!tokenConfigured(env)) return null;
+  const own = env.FLEET_TOKEN;
+  if (
+    typeof own === "string" &&
+    own.length >= MIN_TOKEN_LENGTH &&
+    !safeEqual(own, env.ACCESS_TOKEN) &&
+    !safeEqual(own, env.CHATGPT_TOKEN ?? "")
+  ) {
+    return own;
+  }
+  return deriveFleetToken(env.ACCESS_TOKEN);
+}
+
+/** HMAC-SHA256(ACCESS_TOKEN, label), base64url: 43 characters. */
+export async function deriveFleetToken(accessToken) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", enc.encode(accessToken), { name: "HMAC", hash: "SHA-256" }, false, [
+    "sign",
+  ]);
+  return b64url(new Uint8Array(await crypto.subtle.sign("HMAC", key, enc.encode(FLEET_TOKEN_LABEL))));
+}
+
+// ---- validation (runs in the Worker, so InputError keeps its type) ----
+
+export function normalizeName(raw, what = "agent") {
+  if (typeof raw !== "string") throw new InputError(`${what} must be a name`);
+  const n = raw.trim().toLowerCase();
+  if (!NAME.test(n)) throw new InputError(`${what} must be 1-64 of a-z 0-9 . _ - starting with a letter or digit`);
+  return n;
+}
+
+export function normalizeGroups(raw) {
+  if (raw === undefined || raw === null || raw === "") return null;
+  const list = Array.isArray(raw) ? raw : String(raw).split(",");
+  const out = [];
+  for (const g of list) {
+    if (typeof g === "string" && g.trim() === "") continue;
+    const n = normalizeName(g, "group");
+    if (!out.includes(n)) out.push(n);
+  }
+  if (out.length > MAX_GROUPS) throw new InputError(`at most ${MAX_GROUPS} groups`);
+  return out.sort();
+}
+
+export function normalizeFleetKind(kind, { filter = false } = {}) {
+  if (kind === undefined || kind === null || kind === "") return filter ? "all" : "message";
+  if (filter && kind === "all") return "all";
+  if (!FLEET_KINDS.includes(kind)) {
+    throw new InputError(`kind must be ${filter ? "all or " : ""}one of ${FLEET_KINDS.join(", ")}`);
+  }
+  return kind;
+}
+
+function normalizeBody(body) {
+  if (typeof body !== "string" || body.trim() === "") throw new InputError("body must be a non-empty string");
+  if (body.length > MAX_BODY) throw new InputError(`body is longer than ${MAX_BODY} characters`);
+  return body;
+}
+
+function normalizeSender(sender) {
+  if (sender === undefined || sender === null || sender === "") return null;
+  if (typeof sender !== "string") throw new InputError("sender must be a string");
+  return sender.trim().slice(0, MAX_SENDER) || null;
+}
+
+function intParam(v, name, { min = 0, dflt = null } = {}) {
+  if (v === undefined || v === null || v === "") return dflt;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < min) throw new InputError(`${name} must be an integer >= ${min}`);
+  return n;
+}
+
+function boolParam(v, dflt) {
+  if (v === undefined || v === null || v === "") return dflt;
+  if (v === true || v === "true" || v === "1") return true;
+  if (v === false || v === "false" || v === "0") return false;
+  throw new InputError("expected true or false");
+}
+
+/**
+ * Parses `to` into { agents: [names], groups: [names], all: bool }.
+ * "agent:x" or "x" is an agent, "group:g" a group, "all" every agent.
+ */
+export function parseTargets(to) {
+  if (to === undefined || to === null || to === "") throw new InputError("to must name at least one recipient");
+  const list = Array.isArray(to) ? to : String(to).split(",");
+  const agents = [];
+  const groups = [];
+  let all = false;
+  for (const raw of list) {
+    if (typeof raw !== "string") throw new InputError("each recipient must be a string");
+    const t = raw.trim().toLowerCase();
+    if (t === "") continue;
+    if (t === "all" || t === "agents" || t === "group:all") {
+      all = true;
+    } else if (t.startsWith("group:")) {
+      const g = normalizeName(t.slice(6), "group");
+      if (!groups.includes(g)) groups.push(g);
+    } else {
+      const a = normalizeName(t.startsWith("agent:") ? t.slice(6) : t, "agent");
+      if (!agents.includes(a)) agents.push(a);
+    }
+  }
+  if (!all && !agents.length && !groups.length) throw new InputError("to must name at least one recipient");
+  if (agents.length + groups.length > MAX_RECIPIENTS) throw new InputError(`at most ${MAX_RECIPIENTS} recipients`);
+  return { agents, groups, all };
+}
+
+function ackArgs(data) {
+  const hasUpTo = data?.up_to_id !== undefined && data?.up_to_id !== null;
+  const ids = Array.isArray(data?.ids) ? data.ids : [];
+  if (!hasUpTo && !ids.length) throw new InputError("give up_to_id or a non-empty ids list");
+  if (hasUpTo && (!Number.isInteger(data.up_to_id) || data.up_to_id < 0)) {
+    throw new InputError("up_to_id must be a non-negative integer");
+  }
+  if (!ids.every((i) => Number.isInteger(i) && i > 0)) throw new InputError("ids must be positive integers");
+  if (ids.length > 1000) throw new InputError("at most 1000 ids at once");
+  return { up_to_id: hasUpTo ? data.up_to_id : null, ids };
+}
+
+/** Validates one store operation's arguments; returns the normalized ones. */
+export function normalizeFleetOp(op, a = {}) {
+  switch (op) {
+    case "hello":
+      return { agent: normalizeName(a.agent), groups: normalizeGroups(a.groups) };
+    case "inbox":
+      return {
+        agent: normalizeName(a.agent),
+        groups: normalizeGroups(a.groups),
+        kind: normalizeFleetKind(a.kind, { filter: true }),
+        since_id: intParam(a.since_id, "since_id", { dflt: 0 }),
+        unread_only: boolParam(a.unread_only, true),
+        mark_read: boolParam(a.mark_read, false),
+        limit: Math.min(intParam(a.limit, "limit", { min: 1, dflt: FLEET_DEFAULT_LIMIT }), FLEET_MAX_LIMIT),
+      };
+    case "ack":
+      return { agent: normalizeName(a.agent), ...ackArgs(a) };
+    case "post":
+      return {
+        agent: normalizeName(a.agent),
+        body: normalizeBody(a.body),
+        reply_to: intParam(a.reply_to, "reply_to", { min: 1 }),
+      };
+    case "send":
+      return {
+        body: normalizeBody(a.body),
+        targets: parseTargets(a.to),
+        kind: normalizeFleetKind(a.kind),
+        sender: normalizeSender(a.sender),
+        batch: typeof a.batch === "string" && /^[A-Za-z0-9_-]{8,40}$/.test(a.batch) ? a.batch : null,
+      };
+    case "agents":
+      return {};
+    case "messages": {
+      const direction = a.direction ?? "all";
+      if (direction !== "all" && !FLEET_DIRECTIONS.includes(direction)) {
+        throw new InputError("direction must be inbound, outbound or all");
+      }
+      const order = a.order ?? "asc";
+      if (order !== "asc" && order !== "desc") throw new InputError("order must be asc or desc");
+      return {
+        agent: a.agent === undefined || a.agent === null || a.agent === "" ? null : normalizeName(a.agent),
+        direction,
+        kind: normalizeFleetKind(a.kind, { filter: true }),
+        since_id: intParam(a.since_id, "since_id", { dflt: 0 }),
+        before_id: intParam(a.before_id, "before_id", { min: 1 }),
+        limit: Math.min(intParam(a.limit, "limit", { min: 1, dflt: FLEET_DEFAULT_LIMIT }), FLEET_MAX_LIMIT),
+        order,
+      };
+    }
+    default:
+      throw new InputError(`unknown fleet operation ${op}`);
+  }
+}
+
+// ---- storage (runs inside the Durable Object; also over node:sqlite in tests) ----
+
+/** Creates the fleet tables; safe to run on every start. */
+export function fleetSchema(sql) {
+  sql.exec(`CREATE TABLE IF NOT EXISTS fleet_agent (
+    name TEXT PRIMARY KEY,
+    groups TEXT NOT NULL DEFAULT '[]',
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL
+  )`);
+  sql.exec(`CREATE TABLE IF NOT EXISTS fleet_message (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    direction TEXT NOT NULL CHECK (direction IN ('inbound', 'outbound')),
+    kind TEXT NOT NULL CHECK (kind IN ('message', 'command')),
+    sender TEXT,
+    body TEXT NOT NULL,
+    batch TEXT,
+    reply_to INTEGER,
+    read_at TEXT
+  )`);
+  sql.exec("CREATE INDEX IF NOT EXISTS fleet_message_mailbox ON fleet_message (agent, direction, read_at)");
+}
+
+const rows = (cursor) => cursor.toArray().map((r) => ({ ...r }));
+
+function agentRow(r) {
+  return r ? { name: r.name, groups: JSON.parse(r.groups), first_seen: r.first_seen, last_seen: r.last_seen } : null;
+}
+
+function touch(sql, agent, groups, ts) {
+  const existing = sql.exec("SELECT * FROM fleet_agent WHERE name = ?", agent).toArray()[0];
+  if (!existing) {
+    sql.exec(
+      "INSERT INTO fleet_agent (name, groups, first_seen, last_seen) VALUES (?, ?, ?, ?)",
+      agent,
+      JSON.stringify(groups ?? []),
+      ts,
+      ts,
+    );
+  } else if (groups) {
+    sql.exec("UPDATE fleet_agent SET groups = ?, last_seen = ? WHERE name = ?", JSON.stringify(groups), ts, agent);
+  } else {
+    sql.exec("UPDATE fleet_agent SET last_seen = ? WHERE name = ?", ts, agent);
+  }
+  return agentRow(sql.exec("SELECT * FROM fleet_agent WHERE name = ?", agent).toArray()[0]);
+}
+
+function mailboxStats(sql, agent) {
+  const s = sql
+    .exec(
+      `SELECT
+        COALESCE(SUM(direction = 'inbound' AND read_at IS NULL AND kind = 'command'), 0) AS unread_commands,
+        COALESCE(SUM(direction = 'inbound' AND read_at IS NULL AND kind = 'message'), 0) AS unread_messages,
+        COALESCE(SUM(direction = 'inbound'), 0) AS inbound,
+        COALESCE(SUM(direction = 'outbound'), 0) AS outbound,
+        COALESCE(MAX(id), 0) AS last_id
+      FROM fleet_message WHERE agent = ?`,
+      agent,
+    )
+    .toArray()[0];
+  return { ...s };
+}
+
+function randomBatch() {
+  const b = new Uint8Array(12);
+  crypto.getRandomValues(b);
+  return b64url(b);
+}
+
+/**
+ * One store operation over normalized arguments. State-dependent
+ * refusals come back as { error } (an InputError doesn't survive the
+ * Durable Object's RPC hop); fleetCall turns them into InputErrors.
+ */
+export function fleetOp(sql, op, a, now = new Date().toISOString()) {
+  switch (op) {
+    case "hello": {
+      const agent = touch(sql, a.agent, a.groups, now);
+      return { agent, stats: mailboxStats(sql, a.agent) };
+    }
+    case "inbox": {
+      const agent = touch(sql, a.agent, a.groups, now);
+      const where = ["agent = ?", "direction = 'inbound'", "id > ?"];
+      const args = [a.agent, a.since_id];
+      if (a.unread_only) where.push("read_at IS NULL");
+      if (a.kind !== "all") {
+        where.push("kind = ?");
+        args.push(a.kind);
+      }
+      const messages = rows(
+        sql.exec(`SELECT * FROM fleet_message WHERE ${where.join(" AND ")} ORDER BY id ASC LIMIT ?`, ...args, a.limit),
+      );
+      const next = messages.length ? messages[messages.length - 1].id : a.since_id;
+      if (a.mark_read) {
+        for (const m of messages) {
+          if (m.read_at === null) {
+            sql.exec("UPDATE fleet_message SET read_at = ? WHERE id = ? AND read_at IS NULL", now, m.id);
+            m.read_at = now;
+          }
+        }
+      }
+      return { agent, messages, next_since_id: next, stats: mailboxStats(sql, a.agent) };
+    }
+    case "ack": {
+      let acked = 0;
+      if (a.up_to_id !== null) {
+        acked += sql
+          .exec(
+            "UPDATE fleet_message SET read_at = ? WHERE agent = ? AND direction = 'inbound' AND read_at IS NULL AND id <= ? RETURNING id",
+            now,
+            a.agent,
+            a.up_to_id,
+          )
+          .toArray().length;
+      }
+      for (const id of a.ids) {
+        acked += sql
+          .exec(
+            "UPDATE fleet_message SET read_at = ? WHERE agent = ? AND direction = 'inbound' AND read_at IS NULL AND id = ? RETURNING id",
+            now,
+            a.agent,
+            id,
+          )
+          .toArray().length;
+      }
+      touch(sql, a.agent, null, now);
+      return { acked, stats: mailboxStats(sql, a.agent) };
+    }
+    case "post": {
+      let batch = null;
+      if (a.reply_to !== null) {
+        const orig = sql
+          .exec("SELECT * FROM fleet_message WHERE id = ? AND agent = ? AND direction = 'inbound'", a.reply_to, a.agent)
+          .toArray()[0];
+        if (!orig) return { error: `reply_to ${a.reply_to} is not a message to ${a.agent}` };
+        batch = orig.batch;
+        sql.exec("UPDATE fleet_message SET read_at = ? WHERE id = ? AND read_at IS NULL", now, a.reply_to);
+      }
+      touch(sql, a.agent, null, now);
+      const message = {
+        ...sql
+          .exec(
+            `INSERT INTO fleet_message (ts, agent, direction, kind, sender, body, batch, reply_to)
+             VALUES (?, ?, 'outbound', 'message', ?, ?, ?, ?) RETURNING *`,
+            now,
+            a.agent,
+            a.agent,
+            a.body,
+            batch,
+            a.reply_to,
+          )
+          .toArray()[0],
+      };
+      return { message, stats: mailboxStats(sql, a.agent) };
+    }
+    case "send": {
+      const registered = rows(sql.exec("SELECT * FROM fleet_agent ORDER BY name")).map(agentRow);
+      const names = new Set(a.targets.agents);
+      if (a.targets.all) {
+        if (!registered.length) return { error: "no agents have registered yet" };
+        for (const r of registered) names.add(r.name);
+      }
+      for (const g of a.targets.groups) {
+        const members = registered.filter((r) => r.groups.includes(g));
+        if (!members.length) return { error: `no registered agent is in group ${g}` };
+        for (const r of members) names.add(r.name);
+      }
+      if (names.size > MAX_RECIPIENTS) return { error: `that reaches more than ${MAX_RECIPIENTS} agents` };
+      const known = new Set(registered.map((r) => r.name));
+      const batch = a.batch ?? randomBatch();
+      const messages = [];
+      for (const agent of [...names].sort()) {
+        messages.push({
+          ...sql
+            .exec(
+              `INSERT INTO fleet_message (ts, agent, direction, kind, sender, body, batch)
+               VALUES (?, ?, 'inbound', ?, ?, ?, ?) RETURNING *`,
+              now,
+              agent,
+              a.kind,
+              a.sender,
+              a.body,
+              batch,
+            )
+            .toArray()[0],
+        });
+      }
+      return { batch, messages, unregistered: [...names].filter((n) => !known.has(n)).sort() };
+    }
+    case "agents": {
+      const agents = rows(sql.exec("SELECT * FROM fleet_agent ORDER BY name"))
+        .map(agentRow)
+        .map((r) => ({ ...r, ...mailboxStats(sql, r.name) }));
+      return { agents };
+    }
+    case "messages": {
+      const where = ["id > ?"];
+      const args = [a.since_id];
+      if (a.before_id !== null) {
+        where.push("id < ?");
+        args.push(a.before_id);
+      }
+      if (a.agent) {
+        where.push("agent = ?");
+        args.push(a.agent);
+      }
+      if (a.direction !== "all") {
+        where.push("direction = ?");
+        args.push(a.direction);
+      }
+      if (a.kind !== "all") {
+        where.push("kind = ?");
+        args.push(a.kind);
+      }
+      const order = a.order === "desc" ? "DESC" : "ASC";
+      const messages = rows(
+        sql.exec(`SELECT * FROM fleet_message WHERE ${where.join(" AND ")} ORDER BY id ${order} LIMIT ?`, ...args, a.limit),
+      );
+      return { messages };
+    }
+    default:
+      return { error: `unknown fleet operation ${op}` };
+  }
+}
+
+/** Worker side: validate, call the store's fleet RPC, turn { error } into InputError. */
+export async function fleetCall(stub, op, args) {
+  const normalized = normalizeFleetOp(op, args);
+  const out = await stub.fleet(op, normalized);
+  if (out && typeof out.error === "string") throw new InputError(out.error);
+  return out;
+}
+
+// ---- HTTP ----
+
+const json = (data, status = 200) =>
+  new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      "content-type": "application/json",
+      "cache-control": "no-store",
+      "referrer-policy": "no-referrer",
+      "x-robots-tag": "noindex, nofollow",
+      "x-content-type-options": "nosniff",
+    },
+  });
+
+const notFound = () => new Response("Not found\n", { status: 404, headers: { "content-type": "text/plain" } });
+const notAllowed = (allow) => new Response("Method Not Allowed", { status: 405, headers: { allow } });
+
+async function readJson(request) {
+  const text = await request.text();
+  if (text.length > 64 * 1024) throw new InputError("request too large");
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new InputError("body must be JSON");
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) throw new InputError("body must be a JSON object");
+  return data;
+}
+
+const query = (url) => Object.fromEntries(url.searchParams.entries());
+
+async function agentRoute(request, store, what, url) {
+  if (what === "hello") {
+    if (request.method !== "POST") return notAllowed("POST");
+    return json(await store.fleet("hello", await readJson(request)));
+  }
+  if (what === "inbox") {
+    if (request.method !== "GET") return notAllowed("GET");
+    return json(await store.fleet("inbox", query(url)));
+  }
+  if (what === "ack") {
+    if (request.method !== "POST") return notAllowed("POST");
+    return json(await store.fleet("ack", await readJson(request)));
+  }
+  if (what === "send") {
+    if (request.method !== "POST") return notAllowed("POST");
+    return json(await store.fleet("post", await readJson(request)), 201);
+  }
+  return notFound();
+}
+
+async function ownerRoute(request, store, what, url) {
+  if (what === "agents") {
+    if (request.method !== "GET") return notAllowed("GET");
+    return json(await store.fleet("agents", {}));
+  }
+  if (what === "messages") {
+    if (request.method !== "GET") return notAllowed("GET");
+    return json(await store.fleet("messages", query(url)));
+  }
+  if (what === "send") {
+    if (request.method !== "POST") return notAllowed("POST");
+    const d = await readJson(request);
+    return json(await store.fleet("send", { body: d.body, to: d.to, kind: d.kind, sender: d.sender }), 201);
+  }
+  return notFound();
+}
+
+/**
+ * Handles /fleet/<fleet token>/<what> and /api/<owner>/fleet/<what>;
+ * returns null for any other path so the caller routes it as before. A
+ * wrong token is a plain 404, like everywhere else.
+ */
+export async function handleFleet(request, env, url, getStore) {
+  const parts = url.pathname.split("/").filter(Boolean);
+  try {
+    if (parts[0] === "fleet") {
+      if (parts.length !== 3) return notFound();
+      const expected = await fleetToken(env);
+      if (!expected || !safeEqual(parts[1], expected)) return notFound();
+      return await agentRoute(request, getStore(), parts[2], url);
+    }
+    if (parts[0] === "api" && parts[2] === "fleet") {
+      const m = matchTokenPath(url.pathname, env);
+      if (!m || m.role !== "owner") return null; // not ours: the caller 404s
+      if (parts.length !== 4) return notFound();
+      return await ownerRoute(request, getStore(), parts[3], url);
+    }
+  } catch (err) {
+    if (err instanceof InputError) return json({ error: err.message }, 400);
+    throw err;
+  }
+  return null;
+}

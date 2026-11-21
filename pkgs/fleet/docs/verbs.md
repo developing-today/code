@@ -60,16 +60,17 @@ Client for the repo-queue broker (`crates/fleet-queue/src/client.rs`).
 
 ## Other domains
 
-| Domain and verb                                                       | Contract                                                                              |
-| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| `serve`                                                               | Serve role (`fleet-serve`).                                                           |
-| `proxy serve`, `connect`, `init`, `ssh`, `splice`, `get`, `put`       | Proxy leaves. `connect` takes connection flags; `put` takes mode and no-resume flags. |
-| `dispatch status`, `launch`, `enqueue`                                | Dispatch status, launch a run, enqueue work (`crates/fleet-dispatch`).                |
-| `dispatch-test scan`, `submit`, `status`                              | Test-dispatch scan, submit and status (`crates/fleet-dispatch-test`).                 |
-| `secrets get`, `list`                                                 | Secret lookup and listing.                                                            |
-| `gh <args>`, `tiers`, `cache-serve`, `cache-status`, `--raw`          | Pass-through to `gh`; tier information; cache serve and status.                       |
-| `search search`, `get-chunk`                                          | Search the index and fetch a chunk. The `serve` alias is also accepted.               |
-| `laptop-agent health`, `jobs`, `kill`, `exec`, `run`, `poll`, `fetch` | Laptop-agent broker operations.                                                       |
+| Domain and verb                                                           | Contract                                                                              |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `serve`                                                                   | Serve role (`fleet-serve`).                                                           |
+| `proxy serve`, `connect`, `init`, `ssh`, `splice`, `get`, `put`           | Proxy leaves. `connect` takes connection flags; `put` takes mode and no-resume flags. |
+| `dispatch status`, `launch`, `enqueue`                                    | Dispatch status, launch a run, enqueue work (`crates/fleet-dispatch`).                |
+| `dispatch-test scan`, `submit`, `status`                                  | Test-dispatch scan, submit and status (`crates/fleet-dispatch-test`).                 |
+| `secrets get`, `list`                                                     | Secret lookup and listing.                                                            |
+| `gh <args>`, `tiers`, `cache-serve`, `cache-status`, `--raw`              | Pass-through to `gh`; tier information; cache serve and status.                       |
+| `bridge send`, `agents`, `log`, `hello`, `inbox`, `post`, `ack`, `health` | Fleet mailboxes on the message bridge: central sends; agents read, answer and ack.    |
+| `search search`, `get-chunk`                                              | Search the index and fetch a chunk. The `serve` alias is also accepted.               |
+| `laptop-agent health`, `jobs`, `kill`, `exec`, `run`, `poll`, `fetch`     | Laptop-agent broker operations.                                                       |
 
 Note: `scripts/fleet` is a directory of helper scripts, not the multicall
 binary.

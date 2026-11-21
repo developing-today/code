@@ -586,6 +586,7 @@ dependencies = [
 name = "fleet"
 version = "0.1.0"
 dependencies = [
+ "fleet-bridge",
  "fleet-config",
  "fleet-dispatch",
  "fleet-dispatch-test",
@@ -599,6 +600,18 @@ dependencies = [
  "libc",
  "proptest",
  "serde_json",
+ "ureq",
+]
+
+[[package]]
+name = "fleet-bridge"
+version = "0.1.0"
+dependencies = [
+ "fleet-config",
+ "fleet-secrets",
+ "serde_json",
+ "sha2",
+ "tiny_http",
  "ureq",
 ]
 

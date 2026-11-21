@@ -44,7 +44,8 @@ test("safeEqual and token paths", () => {
 
 test("wrong or missing token is a plain 404 everywhere", async () => {
   const { call } = harness();
-  for (const path of ["/", "/mcp", "/mcp/nope", "/p/nope", "/api/nope/messages", `/x/${TOKEN}`]) {
+  // The bare address ("/", "/mcp") asks for OAuth instead: oauth.test.mjs.
+  for (const path of ["/mcp/nope", "/p/nope", "/api/nope/messages", `/x/${TOKEN}`]) {
     assert.equal((await call(path, { method: "POST", body: "{}" })).status, 404, path);
     assert.equal((await call(path)).status, 404, path);
   }
@@ -665,4 +666,18 @@ test("the deploy reads the uploaded version id from cf's output", async () => {
   assert.match(line, /2 listed, numbers 1\.\.3/);
   assert.match(line, /^versions list.*#3 b/);
   assert.match(line, /c is not listed/);
+});
+
+test("the owner page shows a connector address that works with no sign-in", async () => {
+  const { call } = harness();
+  const html = await (await call(`/p/${TOKEN}`)).text();
+  const addr = html.match(/id="connector" readonly value="([^"]+)"/)[1].replace(/&amp;/g, "&");
+  assert.equal(addr, `${BASE}/mcp/${TOKEN}`);
+  const res = await call(new URL(addr).pathname, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+  });
+  assert.equal(res.status, 200);
+  assert.ok((await res.json()).result.tools.some((t) => t.name === "send_message"));
 });

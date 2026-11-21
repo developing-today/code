@@ -33,18 +33,27 @@ The behaviour is deliberately minimal for now; more comes later.
 
 `<token>` is the owner's access token and `<chatgpt token>` the ChatGPT
 connector's (below). A wrong or missing token gets the same plain 404 as
-an unknown path; the ChatGPT token opens only its `/mcp`.
+an unknown path; the ChatGPT token opens only its `/mcp`. The bare
+address (`/` or `/mcp`, no token) is the same MCP server behind OAuth
+instead: see "Adding it to Claude".
 
-| Route                        | What                                                                                                                                                                                    |
-| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /mcp/<token>`          | MCP server on Claude's channel, Streamable HTTP, stateless JSON answers (`GET` is 405: no server stream)                                                                                |
-| `POST /mcp/<chatgpt token>`  | The same MCP server on ChatGPT's channel                                                                                                                                                |
-| `GET /p/<token>`             | History page: send form + every message, newest first; refreshes every 10 s                                                                                                             |
-| `POST /p/<token>`            | Form post (`body`, optional `sender`, one `to` per recipient, `kind`): stores the inbound messages, redirects to the page                                                               |
-| `GET /api/<token>/messages`  | JSON history: `direction`, `channel` (`claude`/`chatgpt`/`all`), `kind`, `since_id`, `before_id`, `unread_only`, `limit`, `order`                                                       |
-| `POST /api/<token>/messages` | JSON `{"body", "sender", "to", "kind"}`; `to` is `"claude"` (default), `"chatgpt"` or both as a list: one inbound row per recipient; `kind` is `"message"` (default) or `"instruction"` |
-| `POST /api/<token>/ack`      | JSON `{"up_to_id": N}` or `{"ids": [...]}`, with `channel` (default `claude`): marks inbound messages read                                                                              |
-| `GET /healthz`               | `ok`, `configured`, `chatgpt_configured`, `version`, `token_fingerprint`; no data                                                                                                       |
+| Route                                  | What                                                                                                                                                                                    |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /mcp/<token>`                    | MCP server on Claude's channel, Streamable HTTP, stateless JSON answers (`GET` is 405: no server stream)                                                                                |
+| `POST /mcp/<chatgpt token>`            | The same MCP server on ChatGPT's channel                                                                                                                                                |
+| `GET /p/<token>`                       | History page: send form + every message, newest first; refreshes every 10 s                                                                                                             |
+| `POST /p/<token>`                      | Form post (`body`, optional `sender`, one `to` per recipient, `kind`): stores the inbound messages, redirects to the page                                                               |
+| `GET /api/<token>/messages`            | JSON history: `direction`, `channel` (`claude`/`chatgpt`/`all`), `kind`, `since_id`, `before_id`, `unread_only`, `limit`, `order`                                                       |
+| `POST /api/<token>/messages`           | JSON `{"body", "sender", "to", "kind"}`; `to` is `"claude"` (default), `"chatgpt"` or both as a list: one inbound row per recipient; `kind` is `"message"` (default) or `"instruction"` |
+| `POST /api/<token>/ack`                | JSON `{"up_to_id": N}` or `{"ids": [...]}`, with `channel` (default `claude`): marks inbound messages read                                                                              |
+| `GET /api/<token>/oauth-events`        | The last 100 connector sign-in events, newest first (registrations with the client's requested metadata, approvals, refusals with the reason); never a secret                           |
+| `GET /api/<token>/event-subscriptions` | ChatGPT's live event subscriptions: id, channel, callback host, created, expires; never the callback path or secret                                                                     |
+| `GET /healthz`                         | `ok`, `configured`, `chatgpt_configured`, `version`, `token_fingerprint`; no data                                                                                                       |
+| `POST /`, `POST /mcp`                  | The MCP server with an OAuth bearer token (channel from the approval); 401 with `resource_metadata` without one                                                                         |
+| `/.well-known/oauth-*`                 | Protected-resource and authorization-server metadata (also under `/mcp` and as `openid-configuration`)                                                                                  |
+| `POST /register`                       | Dynamic client registration: https (or localhost) redirect URIs, public or secret clients                                                                                               |
+| `GET/POST /authorize`                  | Approval page (PKCE S256 only): one tap in a browser that opened the history page, otherwise paste the page link or a token                                                             |
+| `POST /token`                          | `authorization_code` (with `code_verifier`) and `refresh_token` grants                                                                                                                  |
 
 ## MCP tools
 
@@ -53,6 +62,49 @@ an unknown path; the ChatGPT token opens only its `/mcp`.
   returns messages oldest first, `next_since_id` for polling, and counts.
   Instructions come without their `sender`.
 - `ack_messages(up_to_id? | ids?)` marks inbound messages read.
+
+## Fleet mailboxes
+
+The fleet binary (`fleet bridge ...`, `pkgs/fleet`) and the agents that
+run it (Muse lanes and any other fleet agent) use the bridge too, through
+mailboxes kept in their own tables (`src/fleet.js`). Every agent has a
+mailbox named after it and registers itself with optional groups (such as
+`muse`). Central sends a **message** or a **command** to one agent
+(`agent:<name>`), a group (`group:<name>`, every registered agent in it)
+or `all`; one row lands in each mailbox, sharing a `batch` id. Agents read
+their mailbox, mark what they handled, and post replies and reports back
+(`reply_to` links an answer to the command and marks it read).
+
+| Route                             | Token | What                                                                                      |
+| --------------------------------- | ----- | ----------------------------------------------------------------------------------------- |
+| `POST /fleet/<fleet token>/hello` | fleet | `{agent, groups?}`: register or refresh an agent                                          |
+| `GET /fleet/<fleet token>/inbox`  | fleet | `agent`, `groups`, `kind`, `since_id`, `unread_only` (default true), `mark_read`, `limit` |
+| `POST /fleet/<fleet token>/ack`   | fleet | `{agent, up_to_id \| ids}`: mark read                                                     |
+| `POST /fleet/<fleet token>/send`  | fleet | `{agent, body, reply_to?}`: a message from the agent to central                           |
+| `GET /api/<token>/fleet/agents`   | owner | registered agents, groups, last seen, unread counts                                       |
+| `GET /api/<token>/fleet/messages` | owner | `agent`, `direction`, `kind`, `since_id`, `before_id`, `limit`, `order`                   |
+| `POST /api/<token>/fleet/send`    | owner | `{body, to, kind?, sender?}`; `kind` is `message` (default) or `command`                  |
+
+The **fleet token** opens only `/fleet/...`. It is derived from the access
+token (HMAC-SHA256 of `ACCESS_TOKEN` over the label
+`message-bridge/fleet-token/v1`, base64url), so it needs no Worker secret
+and rotating the access token rotates it. A Worker secret `FLEET_TOKEN`
+(at least 32 characters, distinct from the others) replaces it if ever
+needed. It lives in Bitwarden as `message-bridge.fleet-token`; `fleet
+bridge` derives it from the owner token when that secret is missing. Only
+the owner token sends commands. Any fleet-token holder can read any
+mailbox, and an agent is the name it gives, like a queue claim's worker.
+
+Commands reach agents by mailbox rather than by webhook. The event
+wake-ups below push to a callback URL; fleet agents have none (Muse lanes
+are cron-started runs in a sandbox with no inbound address), so they wait
+with `fleet bridge inbox --wait <secs>`, which polls the mailbox until
+something arrives. Unread rows and `ack` are the replay that webhook
+delivery lacks: a command sent while an agent was asleep is still there on
+its next run. Rows carry the same fields as the `message.created` payload
+(`id`, `kind`, `sender`, `body`, `ts`), so an agent that does have an https
+endpoint can later get a `fleet.message.created` event from the same
+delivery code without a new message shape.
 
 ## What protects it
 
@@ -72,8 +124,20 @@ the URL can read and post, so treat the URL like a password. The token:
 
 To rotate it, edit or delete the Bitwarden secret and deploy again
 (deleting makes the deploy create a fresh one), then update the
-connector URL in Claude (or ChatGPT, or its Site's token). OAuth can
-replace the path tokens later.
+connector URL in Claude (or ChatGPT, or its Site's token). Rotating the
+access token also revokes every OAuth grant: OAuth's signing key is
+derived from it (codes and tokens are HMAC-signed). The message store
+keeps the registered clients under short random ids (`mbc_...`; never-used
+ones go after a day, used ones only once their refresh tokens could no
+longer work; at most 500, and when full the oldest never-used one more
+than ten minutes old makes room; one network address may register ten
+per ten minutes), each code's
+use (codes are single-use) and, per refresh-token family, the one refresh
+token still valid; redeeming an older one revokes the family. Approving needs the owner's token, its page
+link, or the owner cookie that opening the history page sets
+(`__Host-`, `Secure`, `HttpOnly`, `SameSite=Lax`, a year); approval
+posts must come from the bridge's own origin. The ChatGPT token approves
+ChatGPT's channel only.
 
 ## Deploying
 
@@ -151,7 +215,50 @@ Setting or rotating the access token is still a local full deploy.
 Tests: `node --test test/*.test.mjs` (also run by the flake package's
 checkPhase).
 
+## Event wake-ups for ChatGPT
+
+On ChatGPT's channel the server also speaks OpenAI's MCP Events: it
+advertises `events: {}` and answers `events/list`, `events/subscribe` and
+`events/unsubscribe` for one event, `message.created`. When a message for
+ChatGPT arrives (page form or `POST /api/<token>/messages` with `chatgpt`
+in `to`), every live subscription gets a signed webhook with
+`{message_id, kind, sender, body, ts}` as `data`, so the subscribed
+ChatGPT chat wakes up instead of waiting to be asked to read.
+
+- Callbacks must be https, on `openai.com` or `chatgpt.com` (or a host
+  listed in the `EVENTS_CALLBACK_HOSTS` var, comma separated, exact
+  match), with no port, userinfo or fragment. A Worker can't pin the
+  resolved IP, so this allowlist stands in for it.
+- A new callback or secret is checked first with a signed
+  `{"type":"verification","challenge"}` that must be echoed back;
+  failures answer `-32015` with `data.reason`.
+- Signatures follow Standard Webhooks (`webhook-id`,
+  `webhook-timestamp`, `webhook-signature: v1,<base64 HMAC-SHA256>`),
+  plus `X-MCP-Subscription-Id`. After a secret change both secrets sign
+  for five minutes.
+- Subscriptions last at most seven days (`refreshBefore` is at three
+  quarters of that), at most 20 at once, and end on `410`, on unsubscribe
+  or when the ChatGPT token is rotated. Delivery tries three times with
+  the same event id, never follows redirects, and doesn't replay missed
+  events (`cursor` is always `null`).
+- Each subscribe, refusal, delivery and failure goes in the
+  `oauth-events` log with the callback host only.
+
+Claude's channel doesn't advertise events: Claude has no webhook to call.
+
 ## Adding it to Claude
 
-Settings > Connectors > Add custom connector, and paste the `connector:`
-URL that `--print-urls` prints. No OAuth client id or secret is needed.
+Settings > Connectors > Add custom connector, and paste either:
+
+- `https://bridge.security.cab` (or `/mcp`): Claude registers itself and
+  opens the bridge's approval page. Tap Allow if this browser has opened
+  the history page, otherwise paste the page link first. Claude refreshes
+  its token on its own; access tokens last a day, refresh tokens a year
+  from their last use.
+- the `connector:` URL that `--print-urls` prints, with the token in the
+  path: no sign-in step.
+
+No OAuth client id or secret is needed either way.
+
+If connecting fails, `GET /api/<token>/oauth-events` shows how far the
+sign-in got and why it stopped.

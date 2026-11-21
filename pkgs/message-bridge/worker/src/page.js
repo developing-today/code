@@ -52,6 +52,7 @@ export function renderPage({
   pageSize = 200,
   olderOnly = false,
   chatgptReady = true,
+  connectorUrl = "",
 }) {
   const rows = messages.map(renderRow).join("\n");
   // A full page means there may be more; the link pages back by id and
@@ -97,12 +98,23 @@ ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
 .empty { color: var(--muted); }
 .nav { margin: 12px 0; display: flex; gap: 16px; }
 .nav a { color: var(--accent); }
+details.connect { margin: 0 0 16px; font-size: .9rem; }
+details.connect summary { cursor: pointer; color: var(--accent); }
+details.connect .row input { font-family: ui-monospace, monospace; font-size: .8rem; }
 </style>
 </head>
 <body>
 <main>
 <h1>Message bridge</h1>
 <p class="sub" id="stats">${statsLine(stats)}</p>
+${
+  connectorUrl
+    ? `<details class="connect"><summary>Claude connector address</summary>
+<p class="notice">In Claude: Settings, Connectors, Add custom connector, and paste this. It needs no Connect or sign-in step. Keep it private: it opens this bridge.</p>
+<div class="row"><input type="text" id="connector" readonly value="${escapeHtml(connectorUrl)}" aria-label="Connector address"><button type="button" id="copy">Copy</button></div>
+</details>`
+    : ""
+}
 <form method="post" action="${escapeHtml(basePath)}" id="send">
   <textarea name="body" required maxlength="16000" placeholder="Message"></textarea>
   <div class="to" role="radiogroup" aria-label="Kind">
@@ -216,6 +228,12 @@ ${olderOnly ? `<p class="nav"><a href="${escapeHtml(basePath)}">Back to newest</
       else notice.textContent = "Not sent: " + (data.error || r.status);
     } catch (err) { notice.textContent = "Not sent: " + err; }
     btn.disabled = false;
+  });
+  const copy = document.getElementById("copy");
+  if (copy) copy.addEventListener("click", async () => {
+    const field = document.getElementById("connector");
+    field.select();
+    try { await navigator.clipboard.writeText(field.value); copy.textContent = "Copied"; } catch { copy.textContent = "Selected"; }
   });
   localTimes();
   refresh();
