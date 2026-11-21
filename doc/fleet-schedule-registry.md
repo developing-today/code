@@ -374,15 +374,16 @@ registered. The primary user's repos are maintained by git's own
 per-user launchd agents, which `git maintenance start` installs outside
 Nix; they are not recorded here until a review reads them on the Mac.
 
-## Surface 6 — PM-stack process intervals (1 entry)
+## Surface 6 — PM-stack process intervals (2 entries)
 
-Recurring loops owned by the PM-stack aggregator process. These are not
+Recurring loops owned by PM-stack processes. These are not
 external scheduler surfaces; this inventory records timers that run only
 while the service is alive.
 
-| name/id                     | repo/scope            | cadence          | state                        | owner / scope | prompt/brief pointer                                           | budget       | kill criteria                                                                                                                        | created    | last review |
-| --------------------------- | --------------------- | ---------------- | ---------------------------- | ------------- | -------------------------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------ | ---------- | ----------- |
-| SLO journal sampler (#9988) | developing-today/code | every 60 seconds | live aggregator process only | issue #9988   | `pm-stack/aggregator/src/server.ts` (`SLO_SAMPLE_INTERVAL_MS`) | not recorded | Remove/disable if the health view or append-only journal becomes unavailable; sampler is unref'd and does not keep the process alive | 2026-11-18 | 2026-11-18  |
+| name/id                          | repo/scope            | cadence                                             | state                         | owner / scope | prompt/brief pointer                                                         | budget       | kill criteria                                                                                                                                                      | created    | last review |
+| -------------------------------- | --------------------- | --------------------------------------------------- | ----------------------------- | ------------- | ---------------------------------------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------- | ----------- |
+| SLO journal sampler (#9988)      | developing-today/code | every 60 seconds                                    | live aggregator process only | issue #9988   | `pm-stack/aggregator/src/server.ts` (`SLO_SAMPLE_INTERVAL_MS`)               | not recorded | Remove/disable if the health view or append-only journal becomes unavailable; sampler is unref'd and does not keep the process alive                             | 2026-11-18 | 2026-11-18  |
+| dispatch worktree sweep (#12217) | developing-today/code | `PM_DISPATCH_WORKTREE_SWEEP_SECONDS` (default 900s) | live dispatch process only    | issue #12217  | `pm-stack/dispatch/src/server.ts` (`startWorktreeSweep()`; config in `src/config.ts`) | not recorded | Set to `off` or remove/disable the sweep if registry/session safety checks become unavailable; timer is unref'd and does not keep the process alive                 | 2026-11-21 | 2026-11-21  |
 
 ## Surface 7 — Cloudflare Worker cron triggers (1 entry)
 
