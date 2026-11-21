@@ -14,13 +14,15 @@
 # The package.json carries no runtime dependencies (only type-level
 # devDependencies), so there is no node_modules to fetch: the package
 # is the source plus a bun wrapper. The server shells out to `gh`
-# (src/github.ts), so the wrapper pins gh on PATH instead of relying
-# on the ambient profile.
+# (src/github.ts) and to `git` for per-launch worktrees
+# (src/worktree.ts, code#12213), so the wrapper pins both on PATH
+# instead of relying on the ambient profile.
 {
   lib,
   stdenvNoCC,
   bun,
   gh,
+  git,
   makeWrapper,
 }:
 let
@@ -54,7 +56,12 @@ stdenvNoCC.mkDerivation {
     makeWrapper ${lib.getExe bun} $out/bin/pm-dispatch \
       --add-flags "run $out/libexec/pm-dispatch/src/server.ts" \
       --set DISPATCH_BUILD_VERSION ${lib.escapeShellArg buildVersion} \
-      --prefix PATH : ${lib.makeBinPath [ gh ]}
+      --prefix PATH : ${
+        lib.makeBinPath [
+          gh
+          git
+        ]
+      }
     runHook postInstall
   '';
 
