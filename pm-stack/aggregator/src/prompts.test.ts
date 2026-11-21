@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PromptsStore, validateNewPrompt, type NewPrompt } from "./prompts.ts";
@@ -69,6 +69,38 @@ describe("PromptsStore", () => {
   test("a missing file is an empty store", async () => {
     const dir = await mkdtemp(join(tmpdir(), "prompts-"));
     expect(await new PromptsStore(join(dir, "none.json")).list()).toEqual([]);
+  });
+
+  test("concurrent adds on a missing file all settle and persist exactly", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "prompts-"));
+    const path = join(dir, "prompts.json");
+    const store = new PromptsStore(path);
+    const parsed = validateNewPrompt(valid);
+    if (!parsed.ok) throw new Error("fixture invalid");
+    const results = await Promise.allSettled(
+      Array.from({ length: 20 }, (_, i) => store.add({ ...parsed.value, prompt: `p${i}` })),
+    );
+    const fulfilled = results.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+    expect(fulfilled.length).toBe(20);
+    const onDisk = JSON.parse(await readFile(path, "utf8"));
+    expect(onDisk.prompts.map((p: { id: string }) => p.id).sort()).toEqual(fulfilled.map((p) => p.id).sort());
+  });
+
+  test("a failed write rejects only its own caller and does not poison later writes", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "prompts-"));
+    const path = join(dir, "prompts.json");
+    const store = new PromptsStore(path);
+    const parsed = validateNewPrompt(valid);
+    if (!parsed.ok) throw new Error("fixture invalid");
+    // Load first (missing file is an empty store), then put a directory
+    // at the target path so the queued write fails at rename.
+    await store.list();
+    await mkdir(path);
+    await expect(store.add(parsed.value)).rejects.toThrow();
+    await rm(path, { recursive: true });
+    const record = await store.add(parsed.value);
+    const onDisk = JSON.parse(await readFile(path, "utf8"));
+    expect(onDisk.prompts.map((p: { id: string }) => p.id)).toEqual([record.id]);
   });
 });
 
