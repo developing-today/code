@@ -74,7 +74,14 @@ def write_exec(path, text):
     os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
 
 
-def run_case(token_env=None, token_file=None, env_script=None, env_script_dirs=(), secret_url=None, secret_bearer=None):
+def run_case(
+    token_env=None,
+    token_file=None,
+    env_script=None,
+    env_script_dirs=(),
+    secret_url=None,
+    secret_bearer=None,
+):
     """Run the wrapper in a fresh sandbox; return (rc, stderr, drain, markers)."""
     global INJECTED
     root = tempfile.mkdtemp(prefix="drain-wrapper-test-")
@@ -210,12 +217,16 @@ check("4b: drain target not invoked", drain is None)
 
 # 5. Secret data containing both quote styles and command substitution is
 # passed byte-for-byte as environment data, never evaluated by a shell.
-hostile = "both ' and \\\" quotes; $(touch \"$INJECTION_MARKER\"); `id` ; $HOME"
+hostile = 'both \' and \\" quotes; $(touch "$INJECTION_MARKER"); `id` ; $HOME'
 rc, err, drain, sourced = run_case(
-    token_env="env-token", secret_bearer=hostile,
+    token_env="env-token",
+    secret_bearer=hostile,
 )
 check("5: hostile secret -> exit 0", rc == 0)
-check("5: hostile secret round-trips exactly", drain is not None and drain["bearer"] == hostile)
+check(
+    "5: hostile secret round-trips exactly",
+    drain is not None and drain["bearer"] == hostile,
+)
 check("5: hostile secret does not execute", not INJECTED)
 
 failed = [n for n, ok in PASS if not ok]
