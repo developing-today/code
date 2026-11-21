@@ -2006,3 +2006,143 @@ mod tests {
         );
     }
 }
+
+/// Property tests for the read classifier behind arbitrary-error
+/// retries. Oracle: the invariant that a call able to mutate (a
+/// mutation or subscription anywhere in the document, a typed field
+/// gh may rewrite, more than one query field, or a body from
+/// `--input`) is never a read; and, in the other direction, that a
+/// plain read document sent as a raw field is one.
+#[cfg(test)]
+mod graphql_read_props {
+    use super::is_read_call;
+    use proptest::prelude::*;
+
+    fn comment() -> impl Strategy<Value = String> {
+        prop_oneof![
+            Just(String::new()),
+            Just("# note\n".to_string()),
+            Just("  # a\n# b\n".to_string())
+        ]
+    }
+
+    fn name() -> impl Strategy<Value = String> {
+        "[A-Z][a-z]{0,5}"
+    }
+
+    fn read_doc() -> impl Strategy<Value = String> {
+        (comment(), name()).prop_flat_map(|(c, n)| {
+            prop_oneof![
+                Just(format!("{c}{{ viewer {{ login }} }}")),
+                Just(format!("{c}query {{ x }}")),
+                Just(format!("{c}query {n} {{ x }}")),
+                Just(format!("{c}query($n: Int) {{ x(n: $n) }}")),
+            ]
+        })
+    }
+
+    fn write_doc() -> impl Strategy<Value = String> {
+        (comment(), name(), name()).prop_flat_map(|(c, a, b)| {
+            prop_oneof![
+                Just(format!("{c}mutation {{ addStar(input: {{}}) {{ x }} }}")),
+                Just(format!("{c}mutation {a} {{ x }}")),
+                Just(format!("{c}subscription {{ x }}")),
+                Just(format!("{c}subscription {a} {{ x }}")),
+                Just(format!("{c}query {a} {{ x }} mutation {b} {{ y }}")),
+                Just(format!("{c}{{ x }}\nmutation {b} {{ y }}")),
+                Just(format!("{c}query {a} {{ x }}\nsubscription {b} {{ y }}")),
+            ]
+        })
+    }
+
+    /// How the query field is written: (args, typed).
+    fn field(doc: String) -> impl Strategy<Value = (Vec<String>, bool)> {
+        let q = format!("query={doc}");
+        prop_oneof![
+            Just((vec!["-f".to_string(), q.clone()], false)),
+            Just((vec!["--raw-field".to_string(), q.clone()], false)),
+            Just((vec![format!("-f{q}")], false)),
+            Just((vec![format!("--raw-field={q}")], false)),
+            Just((vec!["-F".to_string(), q.clone()], true)),
+            Just((vec!["--field".to_string(), q.clone()], true)),
+            Just((vec![format!("-F{q}")], true)),
+            Just((vec![format!("--field={q}")], true)),
+        ]
+    }
+
+    /// Options that neither carry a query nor change the method.
+    fn noise() -> impl Strategy<Value = Vec<String>> {
+        let one = prop_oneof![
+            Just(vec!["--paginate".to_string()]),
+            Just(vec![
+                "-H".to_string(),
+                "Accept: application/json".to_string()
+            ]),
+            Just(vec!["--header=X-Y: z".to_string()]),
+            Just(vec!["--jq".to_string(), ".data".to_string()]),
+            Just(vec!["-f".to_string(), "owner=o".to_string()]),
+            Just(vec!["-F".to_string(), "n=1".to_string()]),
+        ];
+        prop::collection::vec(one, 0..3).prop_map(|v| v.concat())
+    }
+
+    fn call(before: Vec<String>, field: Vec<String>, after: Vec<String>) -> Vec<String> {
+        let mut v = vec!["api".to_string(), "graphql".to_string()];
+        v.extend(before);
+        v.extend(field);
+        v.extend(after);
+        v
+    }
+
+    proptest! {
+        #[test]
+        fn generated_writes_are_never_reads(
+            (f, _) in write_doc().prop_flat_map(field),
+            before in noise(),
+            after in noise(),
+        ) {
+            let args = call(before, f, after);
+            prop_assert!(!is_read_call(&args), "write classified as read: {args:?}");
+        }
+
+        #[test]
+        fn raw_read_documents_are_reads(
+            // No placeholder in these documents, so typed fields are reads too.
+            (f, _) in read_doc().prop_flat_map(field),
+            before in noise(),
+            after in noise(),
+        ) {
+            let args = call(before, f, after);
+            prop_assert!(is_read_call(&args), "read classified as write: {args:?}");
+        }
+
+        #[test]
+        fn typed_placeholders_are_never_reads(
+            doc in read_doc(),
+            p in prop_oneof![Just("{owner}"), Just("{repo}"), Just("{branch}")],
+            before in noise(),
+            after in noise(),
+        ) {
+            let doc = format!("{doc} # {p}");
+            for flag in ["-F", "--field"] {
+                let args = call(before.clone(), vec![flag.to_string(), format!("query={doc}")], after.clone());
+                prop_assert!(!is_read_call(&args), "typed placeholder classified as read: {args:?}");
+            }
+        }
+
+        #[test]
+        fn a_second_query_field_or_input_is_never_a_read(
+            (f1, _) in read_doc().prop_flat_map(field),
+            (f2, _) in read_doc().prop_flat_map(field),
+            before in noise(),
+            input in any::<bool>(),
+        ) {
+            let args = if input {
+                call(before, f1, vec!["--input".to_string(), "body.json".to_string()])
+            } else {
+                call(before, f1, f2)
+            };
+            prop_assert!(!is_read_call(&args), "ambiguous call classified as read: {args:?}");
+        }
+    }
+}
