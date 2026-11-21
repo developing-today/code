@@ -133,14 +133,34 @@ pub fn crawl_inventory(api: &mut impl NotionApi) -> Result<Inventory> {
             }
             let row_pages = crawl_pages(|cursor| api.query_data_source(&source_id, cursor))?;
             for mut row_page in row_pages {
+                // Notion stops paginating a query past its row cap with
+                // has_more=false and request_status "incomplete"; accepting
+                // that would record a silently truncated row inventory.
+                if row_page
+                    .get("request_status")
+                    .and_then(|status| status.get("type"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("incomplete")
+                {
+                    bail!(
+                        "Notion returned an incomplete query for data source {source_id} (row cap reached); refusing a truncated inventory"
+                    );
+                }
                 let results = row_page
                     .get_mut("results")
                     .and_then(serde_json::Value::as_array_mut)
                     .context("Notion data-source query response is missing results array")?;
                 let mut unique_results = Vec::with_capacity(results.len());
                 for row in results.drain(..) {
-                    if object_kind(&row)? != "page" {
-                        bail!("Notion data-source query returned a non-page for {source_id}");
+                    match object_kind(&row)?.as_str() {
+                        "page" => {}
+                        // A wiki's query lists its child data sources too;
+                        // enumerate them through their parent database.
+                        "data_source" => {
+                            database_ids.insert(data_source_parent_database_id(&row)?);
+                            continue;
+                        }
+                        _ => bail!("Notion data-source query returned a non-page for {source_id}"),
                     }
                     let row_id = required_string(&row, "id")?;
                     if seen_objects.insert(row_id.clone()) {
@@ -958,6 +978,92 @@ mod tests {
                 .get("url")
                 .is_none()
         );
+    }
+
+    /// A wiki whose query also lists a child data source, and an optional
+    /// capped query.
+    struct WikiApi {
+        capped: bool,
+    }
+    impl NotionApi for WikiApi {
+        fn notion_version(&self) -> &str {
+            NOTION_API_VERSION
+        }
+        fn search(&mut self, _cursor: Option<&str>) -> Result<serde_json::Value> {
+            Ok(page(vec![json!({
+                "object":"database","id":"db-wiki","parent":{"type":"workspace","workspace":true}
+            })]))
+        }
+        fn block_children(
+            &mut self,
+            _block_id: &str,
+            _cursor: Option<&str>,
+        ) -> Result<serde_json::Value> {
+            Ok(page(vec![]))
+        }
+        fn database(&mut self, database_id: &str) -> Result<serde_json::Value> {
+            let source = if database_id == "db-wiki" {
+                "ds-wiki"
+            } else {
+                "ds-child"
+            };
+            Ok(
+                json!({"object":"database","id":database_id,"parent":{"type":"workspace","workspace":true},"data_sources":[{"id":source,"name":"S"}]}),
+            )
+        }
+        fn data_source(&mut self, data_source_id: &str) -> Result<serde_json::Value> {
+            let database = if data_source_id == "ds-wiki" {
+                "db-wiki"
+            } else {
+                "db-child"
+            };
+            Ok(
+                json!({"object":"data_source","id":data_source_id,"parent":{"type":"database_id","database_id":database},"properties":{"Name":{"type":"title"}}}),
+            )
+        }
+        fn query_data_source(
+            &mut self,
+            data_source_id: &str,
+            _cursor: Option<&str>,
+        ) -> Result<serde_json::Value> {
+            Ok(if data_source_id == "ds-wiki" {
+                let mut response = page(vec![
+                    json!({"object":"page","id":"row-wiki","parent":{"type":"data_source_id","data_source_id":"ds-wiki","database_id":"db-wiki"}}),
+                    json!({"object":"data_source","id":"ds-child","parent":{"type":"database_id","database_id":"db-child"}}),
+                ]);
+                if self.capped {
+                    response["request_status"] = json!({"type":"incomplete"});
+                }
+                response
+            } else {
+                page(vec![
+                    json!({"object":"page","id":"row-child","parent":{"type":"data_source_id","data_source_id":"ds-child","database_id":"db-child"}}),
+                ])
+            })
+        }
+        fn comments_available(&mut self, _page_id: &str) -> Result<bool> {
+            Ok(true)
+        }
+        fn visible_share_ids(&self) -> Vec<String> {
+            vec!["db-wiki".into()]
+        }
+        fn workspace_edition(&self) -> Option<String> {
+            None
+        }
+    }
+
+    #[test]
+    fn wiki_query_data_sources_are_enumerated_not_rejected() {
+        let inventory = crawl_inventory(&mut WikiApi { capped: false }).unwrap();
+        assert_eq!(inventory.data_sources["db-child"][0].id, "ds-child");
+        assert!(inventory.objects.contains_key("row-wiki"));
+        assert!(inventory.objects.contains_key("row-child"));
+    }
+
+    #[test]
+    fn capped_data_source_query_fails_closed() {
+        let err = crawl_inventory(&mut WikiApi { capped: true }).unwrap_err();
+        assert!(err.to_string().contains("incomplete"), "{err:#}");
     }
 
     #[test]
