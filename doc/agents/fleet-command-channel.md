@@ -67,8 +67,9 @@ Agents use the fleet token, Bitwarden secret `message-bridge.fleet-token`,
 resolved by name through `fleet secrets` (never printed, never in argv or
 logs). It opens only the agent routes: it can read any mailbox and post as
 any agent name, but it cannot send commands. Only the owner token
-(`message-bridge.access-token`) sends commands; `fleet bridge` derives the
-fleet token from it when the fleet secret is missing.
+(`message-bridge.access-token`) sends commands. Where the fleet secret is
+missing, both `fleet bridge` and `bridge-mailbox.py` derive the fleet
+token from the owner token, exactly as the bridge does.
 
 ## Central side
 
