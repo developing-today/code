@@ -271,3 +271,31 @@ Each is made, with how to undo it.
 4. The PM stack does not yet show which rung fed each agent's task. It does
    now separate hands items from choices an agent parked on the owner.
 5. A `feature_slice` queue kind, so slices can also be scheduled centrally.
+
+---
+
+## 2026-11-21T12-45-00Z Update: nine review findings fixed
+
+An automated review of #12227 arrived after the merge with nine findings.
+Each was checked against the code, each was real, and each is fixed with a
+test that fails without the fix.
+
+| Finding                                                                                   | Fix                                                                                                                                              |
+| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `fleet shell --build` gave the lock wrapper only the first word of a compound command     | The whole command runs in one shell beneath the lock: `fleet-build-lock sh -c '<command>'`. Checked against a real shell and a recording wrapper |
+| `--build` was ignored when the target was this host                                       | A local build takes the lock where the host has one, and says so on stderr where it does not                                                     |
+| A shortlist entry was handed out without checking it again                                | The issue is read again first. A hold, a claim, a close, a tracker or a hands item drops the entry; the next one is tried                        |
+| An option given with no value fell back to its default (`--target=`, `--profile=`)        | A blank value, a missing value, or another option where the value should be is a usage error, before anything runs                               |
+| Two runs at the same moment could take the same priority issue                            | The pick and its reservation happen in one locked update. Twelve concurrent reservations over eight issues hand each out once                    |
+| Only the first 30 issues of a rank were read                                              | Each rank is read page by page until enough free issues are found, a short page ends it, or five pages are read                                  |
+| With one to three eligible issues the list stayed low, so every run was told to refill it | A fill records its time. For 30 minutes after a fill a low list is worked, not refilled again                                                    |
+| Follow-up commands dropped a chosen `--shortlist`                                         | `--shortlist`, `--repo` and `--profile` are carried into every follow-up command, quoted                                                         |
+| `doctor` and a dry-run enrolment trusted the bridge's public health page                  | The mailbox is read as the agent, taking nothing. With no agent name the push rung is reported as not working, with the reason                   |
+
+When GitHub cannot be asked, a listed issue is still handed out, marked
+`rechecked: false` with a note to read the issue for a hold first: the
+shortlist is the rung that works without the network, and withholding its
+work then would defeat it.
+
+This closes gap 3 in the list above. `fleet-agent` now has 65 tests; 16 more
+hand-made faults, one per fix or more, were each caught.

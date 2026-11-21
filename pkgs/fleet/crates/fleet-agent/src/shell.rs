@@ -101,6 +101,11 @@ pub fn sh_quote(word: &str) -> String {
     }
 }
 
+/// One word in single quotes, whatever it holds.
+pub fn sh_quote_always(word: &str) -> String {
+    format!("'{}'", word.replace('\'', "'\\''"))
+}
+
 /// The command as one shell string. A single word is taken as a shell
 /// string already; several words are quoted one by one.
 pub fn shell_string(words: &[String]) -> String {
@@ -205,6 +210,25 @@ pub struct Options {
     pub detach: bool,
 }
 
+/// The whole command, run by a shell beneath the build lock. The lock
+/// wrapper execs one program with its arguments, so a command with
+/// `cd`, `&&` or a pipe has to be one shell's argument: otherwise only
+/// its first word would hold the slot.
+fn under_build_lock(command: &str) -> String {
+    format!("{BUILD_LOCK} sh -c {}", sh_quote_always(command))
+}
+
+/// A build on this host: under the build lock where this host has one
+/// (the laptop does), and plainly, with a note, where it does not.
+fn local_build_line(command: &str) -> String {
+    let quoted = sh_quote_always(command);
+    format!(
+        "if [ -x {BUILD_LOCK} ]; then exec {BUILD_LOCK} sh -c {quoted}; fi; \
+         echo 'fleet shell: this host has no build lock; running without one' >&2; \
+         exec sh -c {quoted}"
+    )
+}
+
 /// Build the argv for a target. Pure: no probing, no running.
 pub fn plan(target: Target, because: String, words: &[String], opts: &Options) -> R<Plan> {
     let interactive = words.is_empty();
@@ -227,6 +251,11 @@ pub fn plan(target: Target, because: String, words: &[String], opts: &Options) -
                 let line = match &opts.cwd {
                     Some(dir) => format!("cd {} && {command}", sh_quote(dir)),
                     None => command,
+                };
+                let line = if opts.build {
+                    local_build_line(&line)
+                } else {
+                    line
                 };
                 ("sh".to_string(), vec!["-lc".to_string(), line])
             }
@@ -253,7 +282,7 @@ pub fn plan(target: Target, because: String, words: &[String], opts: &Options) -
                 args.push("--shell".to_string());
                 args.push("--".to_string());
                 args.push(if opts.build {
-                    format!("{BUILD_LOCK} {command}")
+                    under_build_lock(&command)
                 } else {
                     command
                 });
