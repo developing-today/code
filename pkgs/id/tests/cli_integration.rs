@@ -1084,7 +1084,7 @@ mod peers_tests {
         assert!(stdout.contains("--topic-secret"));
         assert!(stdout.contains("--no-default-bootstrap"));
         assert!(stdout.contains("--no-default-topic"));
-        assert!(stdout.contains("--replace-defaults"));
+        assert!(!stdout.contains("--replace-defaults"));
         assert!(stdout.contains("--no-relay"));
         assert!(stdout.contains("--no-mdns"));
     }
