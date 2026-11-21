@@ -77,19 +77,26 @@ export function validateNewPrompt(body: unknown): { ok: true; value: NewPrompt }
 
 export class PromptsStore {
   private prompts: PromptRecord[] = [];
-  private loaded = false;
+  private loadPromise: Promise<void> | null = null;
+  private writeChain: Promise<void> = Promise.resolve();
+  private writeSeq = 0;
 
   constructor(private readonly path: string) {}
 
+  // Memoized as one promise (#12222, same pattern as comments.ts #1509):
+  // a boolean flag let concurrent first callers each run the read.
   async load(): Promise<void> {
-    if (this.loaded) return;
+    if (!this.loadPromise) this.loadPromise = this.doLoad();
+    return this.loadPromise;
+  }
+
+  private async doLoad(): Promise<void> {
     try {
       const parsed = JSON.parse(await readFile(this.path, "utf8")) as PromptsFile;
       this.prompts = Array.isArray(parsed.prompts) ? parsed.prompts : [];
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
-    this.loaded = true;
   }
 
   async add(input: NewPrompt, now = new Date()): Promise<PromptRecord> {
@@ -100,8 +107,15 @@ export class PromptsStore {
       status: "queued",
       createdAt: now.toISOString(),
     };
-    this.prompts.unshift(record);
-    await this.persist();
+    await this.enqueue(async () => {
+      this.prompts.unshift(record);
+      try {
+        await this.write();
+      } catch (err) {
+        this.prompts = this.prompts.filter((p) => p.id !== record.id);
+        throw err;
+      }
+    });
     return record;
   }
 
@@ -119,10 +133,21 @@ export class PromptsStore {
     );
   }
 
-  private async persist(): Promise<void> {
+  // Writes are serialized and each one uses a unique temp path (#12222):
+  // concurrent adds shared one pid-only temp path, so most renames failed
+  // with ENOENT while their records stayed in memory. A failed add is
+  // rolled back inside its own serialized slot, so it rejects only its
+  // caller and never reaches a later write.
+  private enqueue(job: () => Promise<void>): Promise<void> {
+    const run = this.writeChain.then(job);
+    this.writeChain = run.catch(() => {});
+    return run;
+  }
+
+  private async write(): Promise<void> {
     const file: PromptsFile = { version: 1, prompts: this.prompts };
     await mkdir(dirname(this.path), { recursive: true });
-    const tmp = `${this.path}.${process.pid}.tmp`;
+    const tmp = `${this.path}.tmp-${process.pid}-${++this.writeSeq}`;
     await writeFile(tmp, JSON.stringify(file, null, 2));
     await rename(tmp, this.path);
   }
