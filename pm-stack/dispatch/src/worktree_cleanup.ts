@@ -25,7 +25,7 @@
 //     its record) and every cleanup failure is reported as an outcome,
 //     never thrown past the caller, so it can never mask a
 //     dispatch/session result.
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { runGit, type GitRunner } from "./worktree.ts";
 
@@ -306,7 +306,22 @@ export interface CleanupOutcome {
   reason: string;
 }
 
-function isProcessUsingPath(worktree: string): boolean {
+export interface ProcessOccupancyProbe {
+  listPids(): string[];
+  ownerUid(pid: string): number;
+  cwd(pid: string): string;
+}
+
+const systemProcessOccupancyProbe: ProcessOccupancyProbe = {
+  listPids: () => readdirSync("/proc").filter((entry) => /^\d+$/.test(entry)),
+  ownerUid: (pid) => statSync(`/proc/${pid}`).uid,
+  cwd: (pid) => readlinkSync(`/proc/${pid}/cwd`),
+};
+
+export function isProcessUsingPath(
+  worktree: string,
+  probe: ProcessOccupancyProbe = systemProcessOccupancyProbe,
+): boolean {
   let treeReal: string;
   try {
     treeReal = realpathSync(worktree);
@@ -315,19 +330,27 @@ function isProcessUsingPath(worktree: string): boolean {
   }
   let pids: string[];
   try {
-    pids = readdirSync("/proc").filter((entry) => /^\d+$/.test(entry));
+    pids = probe.listPids();
   } catch {
     // Cannot prove unoccupied on non-Linux or an inaccessible procfs.
     return true;
   }
   for (const pid of pids) {
     try {
-      const cwd = readlinkSync(`/proc/${pid}/cwd`);
+      const ownerUid = probe.ownerUid(pid);
+      // Root-owned host processes (notably PID 1) are outside the user
+      // service's worktree-access boundary, and ptrace restrictions make
+      // their cwd links unreadable to this service. Ignore those system
+      // processes; every non-root process remains subject to the
+      // fail-closed cwd check below.
+      if (ownerUid === 0) continue;
+      const cwd = probe.cwd(pid);
       if (containsPath(cwd, treeReal)) return true;
     } catch (e) {
       const code = typeof e === "object" && e !== null && "code" in e ? e.code : null;
       // Only confirmed process disappearance is harmless. EACCES and
-      // other ambiguous inspection failures retain the tree.
+      // other ambiguous inspection failures on non-root processes retain
+      // the tree.
       if (code !== "ENOENT" && code !== "ESRCH") return true;
     }
   }

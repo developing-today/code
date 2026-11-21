@@ -7,7 +7,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import { createDispatchWorktree, dispatchWorktreeName, worktreeNotice, WorktreeError } from "../src/worktree.ts";
-import { cleanupDispatchWorktree, WorktreeRegistry, type WorktreeRecord } from "../src/worktree_cleanup.ts";
+import {
+  cleanupDispatchWorktree,
+  isProcessUsingPath,
+  WorktreeRegistry,
+  type ProcessOccupancyProbe,
+  type WorktreeRecord,
+} from "../src/worktree_cleanup.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "dispatch-worktree-"));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -121,6 +127,43 @@ describe("helpers and config", () => {
   test("worktree sweep interval fits setInterval's supported millisecond range", () => {
     expect(loadConfig({ PM_DISPATCH_WORKTREE_SWEEP_SECONDS: "2147483" }).worktreeSweepSeconds).toBe(2147483);
     expect(() => loadConfig({ PM_DISPATCH_WORKTREE_SWEEP_SECONDS: "2147484" })).toThrow("2147483");
+  });
+});
+
+describe("process occupancy permissions", () => {
+  test("ignores unreadable root-owned system cwd links but detects user processes in the tree", () => {
+    const probe: ProcessOccupancyProbe = {
+      listPids: () => ["1", "42"],
+      ownerUid: (pid) => (pid === "1" ? 0 : 1000),
+      cwd: (pid) => {
+        if (pid === "1") throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+        return primary;
+      },
+    };
+    expect(isProcessUsingPath(primary, probe)).toBe(true);
+  });
+
+  test("does not let root's unreadable cwd block otherwise unoccupied worktrees", () => {
+    const probe: ProcessOccupancyProbe = {
+      listPids: () => ["1", "42"],
+      ownerUid: (pid) => (pid === "1" ? 0 : 1000),
+      cwd: (pid) => {
+        if (pid === "1") throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+        return join(tmp, "outside");
+      },
+    };
+    expect(isProcessUsingPath(primary, probe)).toBe(false);
+  });
+
+  test("retains when a non-root process cwd cannot be inspected", () => {
+    const probe: ProcessOccupancyProbe = {
+      listPids: () => ["42"],
+      ownerUid: () => 1000,
+      cwd: () => {
+        throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+      },
+    };
+    expect(isProcessUsingPath(primary, probe)).toBe(true);
   });
 });
 
