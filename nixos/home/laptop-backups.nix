@@ -352,11 +352,16 @@ in
           Service = {
             Type = "oneshot";
             ExecStart = cfg.coldStoreNightly.script;
-            # 120m, not 30m: the Turso export leg alone ran past
-            # 30m on 2026-11-08/09/10, and systemd's timeout kill
-            # leaked its scratch directory each night
+            # 360m, not 120m: on 2026-11-20 the atlas Turso dump
+            # (past 10 GB) was still downloading when the 120m
+            # timeout killed the run, and nothing after it was
+            # filed. export-turso.sh now keeps itself inside a 3h
+            # budget (TURSO_EXPORT_DEADLINE_SECONDS) and exports
+            # atlas last; this leaves room for that plus the D1
+            # backup, prune, manifest sync and status steps.
+            # Earlier: 30m -> 120m after 2026-11-08/09/10
             # (darwin-nix#373).
-            TimeoutStartSec = "120m";
+            TimeoutStartSec = "360m";
           };
         };
       })

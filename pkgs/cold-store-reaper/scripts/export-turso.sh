@@ -43,11 +43,29 @@
 #   TURSO_DUMP_MAX_TIME_SECONDS
 #                             optional; curl --max-time for one
 #                             database's /dump download (default
-#                             1800). Large databases (atlas is
-#                             ~500 MB of SQL) outgrow the old fixed
-#                             300 s cap; the download also gets one
-#                             whole-request retry on transport
-#                             failure. Small databases are unaffected.
+#                             3600). Large databases outgrow a short
+#                             cap: atlas's dump passed 10 GB by
+#                             2026-11-20 and no longer finished
+#                             inside the old 1800 s. Each attempt is
+#                             also clamped to what is left of
+#                             TURSO_EXPORT_DEADLINE_SECONDS.
+#   TURSO_EXPORT_DEADLINE_SECONDS
+#                             optional; the whole run's budget from
+#                             start (default 10800). No database is
+#                             started once less than 60 s of it is
+#                             left (it fails loudly instead), and a
+#                             dump's attempts and retries are kept
+#                             inside what is left, so one slow
+#                             database cannot use up the nightly
+#                             service's start timeout and starve the
+#                             steps after this one (2026-11-20: the
+#                             run was killed at 2 h mid-atlas).
+#   TURSO_EXPORT_LAST         optional; space-separated database
+#                             names exported after all the others
+#                             (default "atlas"; empty = list order).
+#                             atlas is by far the largest database:
+#                             listed first, a slow atlas download on
+#                             2026-11-20 left the other 49 unfiled.
 #   TURSO_DUMP_RETRY_DELAY_SECONDS
 #                             optional; curl --retry-delay between the
 #                             3 retries of one /dump download (default
@@ -82,8 +100,11 @@
 #                             dumps and rebuilds (default:
 #                             ${TMPDIR:-/tmp}/cold-store-export-turso).
 #                             One named directory, wiped at startup
-#                             and on exit - never a fresh anonymous
-#                             mktemp dir (darwin-nix#373).
+#                             and on exit (including SIGTERM, which
+#                             systemd sends at its start timeout) -
+#                             never a fresh anonymous mktemp dir
+#                             (darwin-nix#373). Created mode 0700:
+#                             it holds minted database tokens.
 #
 # A database that fails any stage prints a loud ERROR line naming it;
 # the run continues with the remaining databases and exits non-zero
@@ -96,7 +117,7 @@ if [[ -z ${TURSO_PLATFORM_API_TOKEN:-} ]]; then
 fi
 
 ORG="${TURSO_ORG:-dezren39}"
-DUMP_MAX_TIME="${TURSO_DUMP_MAX_TIME_SECONDS:-1800}"
+DUMP_MAX_TIME="${TURSO_DUMP_MAX_TIME_SECONDS:-3600}"
 case "${DUMP_MAX_TIME}" in
 '' | *[!0-9]*)
   echo "turso export: ERROR: TURSO_DUMP_MAX_TIME_SECONDS must be a positive integer (got '${DUMP_MAX_TIME}')" >&2
@@ -133,6 +154,21 @@ case "${RETRY_PASS_DELAY}" in
   ;;
 *) ;;
 esac
+DEADLINE_SECONDS="${TURSO_EXPORT_DEADLINE_SECONDS:-10800}"
+case "${DEADLINE_SECONDS}" in
+'' | *[!0-9]*)
+  echo "turso export: ERROR: TURSO_EXPORT_DEADLINE_SECONDS must be a positive integer (got '${DEADLINE_SECONDS}')" >&2
+  exit 1
+  ;;
+*[1-9]*) ;;
+*)
+  echo "turso export: ERROR: TURSO_EXPORT_DEADLINE_SECONDS must be a positive integer (got '${DEADLINE_SECONDS}')" >&2
+  exit 1
+  ;;
+esac
+# 10#: a leading zero must not read as octal.
+DEADLINE=$((SECONDS + 10#${DEADLINE_SECONDS}))
+EXPORT_LAST="${TURSO_EXPORT_LAST-atlas}"
 API_BASE="${TURSO_API_BASE:-https://api.turso.tech}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COLD_STORE="${COLD_STORE_BIN:-${SCRIPT_DIR}/../cold-store}"
@@ -158,8 +194,18 @@ if ! flock -n 9; then
   exit 1
 fi
 rm -rf "${WORK}"
+# 0700 / umask 077: WORK holds each database's minted token response
+# for the length of its export (2026-11-20: a killed run left one
+# world-readable in /tmp until the next night).
+umask 077
 mkdir -p "${WORK}"
+chmod 700 "${WORK}"
 trap 'rm -rf "${WORK}"' EXIT
+# systemd stops the unit at its start timeout with SIGTERM; without a
+# TERM trap bash dies without running the EXIT trap and the scratch
+# (10 GB of atlas dump on 2026-11-20) stays until the next run.
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 # curl with an Authorization header that never touches argv (#1027):
 # the header travels in a curl config fed on stdin (--config -), the
@@ -202,6 +248,20 @@ if [[ ${#DB_ROWS[@]} -eq 0 ]]; then
   echo "turso export: ERROR: Platform API returned no databases for org ${ORG}" >&2
   exit 1
 fi
+# TURSO_EXPORT_LAST: move the named (largest) databases to the end so
+# a slow one cannot keep the rest from being filed.
+if [[ -n ${EXPORT_LAST// /} ]]; then
+  ROWS_FIRST=()
+  ROWS_LAST=()
+  for row in "${DB_ROWS[@]}"; do
+    if [[ " ${EXPORT_LAST} " == *" ${row%%$'\t'*} "* ]]; then
+      ROWS_LAST+=("${row}")
+    else
+      ROWS_FIRST+=("${row}")
+    fi
+  done
+  DB_ROWS=("${ROWS_FIRST[@]}" "${ROWS_LAST[@]}")
+fi
 
 # ------------------------------------------------------------ one database
 export_one_run() {
@@ -209,6 +269,11 @@ export_one_run() {
   local dump_sql="${WORK}/${name}.sql" db_file="${WORK}/${name}.db"
   local filtered_sql="${WORK}/${name}.filtered.sql"
   local jwt dump_url
+  local remaining=$((DEADLINE - SECONDS)) dump_max_time="${DUMP_MAX_TIME}"
+  if [[ ${remaining} -lt 60 ]]; then
+    echo "turso export: ERROR: ${name}: not started, the run's ${DEADLINE_SECONDS}s deadline (TURSO_EXPORT_DEADLINE_SECONDS) is reached" >&2
+    return 1
+  fi
 
   # Mint a per-database auth token (the value is never printed).
   if ! curl_auth "${TURSO_PLATFORM_API_TOKEN}" -fsS --max-time 60 -X POST \
@@ -240,8 +305,13 @@ PY
   else
     dump_url="https://${hostname}/dump"
   fi
-  if ! curl_auth "${jwt}" -fsS --compressed --max-time "${DUMP_MAX_TIME}" \
+  # --retry-max-time keeps the retries inside the run's deadline.
+  remaining=$((DEADLINE - SECONDS))
+  if [[ ${remaining} -lt 1 ]]; then remaining=1; fi
+  if [[ ${remaining} -lt $((10#${dump_max_time})) ]]; then dump_max_time="${remaining}"; fi
+  if ! curl_auth "${jwt}" -fsS --compressed --max-time "${dump_max_time}" \
     --retry 3 --retry-delay "${RETRY_DELAY}" --retry-all-errors \
+    --retry-max-time "${remaining}" \
     "${dump_url}" -o "${dump_sql}"; then
     echo "turso export: ERROR: ${name}: dump download failed (${dump_url})" >&2
     return 1
