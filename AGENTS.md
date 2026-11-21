@@ -7,7 +7,7 @@ section — read the topic file before acting on that section's rules.
 ## Web retrieval fallback
 
 Full rules: [`doc/agents/web-retrieval-fallback.md`](doc/agents/web-retrieval-fallback.md).
-In short: use the normal/default request first; on a 403, 429, or
+In short: use the default request first; on a 403, 429, or
 bot-block, retry with a normal browser User-Agent, then rotate others
 (list and site matrix in
 [`ai-crawler-site-access-table.md`](./ai-crawler-site-access-table.md#user-agents)).
