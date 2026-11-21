@@ -8,10 +8,10 @@
 //! Every violation is a build error with a source location; all
 //! violations are collected before the build fails.
 //!
-//! Not checked here, by design: the content of the `assert` slot. Its
-//! grammar and role vocabulary are #5850's and unsettled; #5855
-//! assumption A2 has the pipeline carry assertions opaquely until the
-//! vocabulary lands as versioned data.
+//! Not checked here, by design: the content of the `assert` slot.
+//! Source assertions remain opaque at this stage; typed assertion
+//! inputs are resolved during composition against the settled #5850
+//! vocabulary and the per-target mapping tables.
 
 use crate::vocabulary::{self, ElementSpec, FIELD_CONSTRAINT_KINDS};
 use crate::{BuildError, Document, Element, Node};

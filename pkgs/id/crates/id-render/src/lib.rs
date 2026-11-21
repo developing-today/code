@@ -57,12 +57,11 @@
 //!   renderer registration (§2.2) are build-time errors, never
 //!   runtime gaps.
 //!
-//! The assertion half of stage 2 is deliberately not implemented yet:
-//! the `assert` attribute's grammar and role vocabulary are #5850's,
-//! and #5850 is not settled. The slot is parsed and carried opaquely,
-//! exactly as #5855 assumption A2 prescribes (the pipeline is defined
-//! over element kinds and assertion roles generically and consumes
-//! both vocabularies as versioned data).
+//! The assertion half of stage 2 remains outside this parser: source
+//! `assert` values are carried opaquely, while typed assertion inputs
+//! enter composition through [`compose::ComposeData`]. The closed role
+//! vocabulary is settled by #5850 and its per-target mappings by
+//! #5851/#5852; the conformance corpus gates coverage for both.
 
 pub mod compose;
 pub mod gui_table;
