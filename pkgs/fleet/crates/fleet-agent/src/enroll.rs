@@ -85,6 +85,9 @@ fn write_profile(path: &PathBuf, profile: &Profile) -> R<()> {
     fs::write(path, format!("{text}\n")).map_err(down)
 }
 
+const BRIDGE_NEEDS: &str =
+    "HTTPS to the message bridge, and the fleet token by name through fleet secrets";
+
 /// One leg's answer from this seat.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Leg {
@@ -108,11 +111,23 @@ impl Leg {
     }
 }
 
-/// Probe the four legs. With `register`, the bridge probe is the
-/// `hello` that registers the agent; without it, a health check.
-pub fn probe(world: &dyn World, register: Option<(&str, &[String])>) -> Vec<Leg> {
-    let bridge_call = match register {
-        Some((agent, groups)) => {
+/// How the bridge leg is checked. The service's health answers
+/// anyone, so it says nothing about whether this seat holds the fleet
+/// token; only a call made as an agent does.
+#[derive(Debug, Clone, Copy)]
+pub enum BridgeProbe<'a> {
+    /// Register the agent with its groups (`bridge hello`).
+    Register(&'a str, &'a [String]),
+    /// Read the agent's mailbox without taking anything.
+    Read(&'a str),
+    /// No agent name is known: only the service can be asked.
+    Service,
+}
+
+/// Probe the four legs, the bridge leg as `how` says.
+pub fn probe(world: &dyn World, how: BridgeProbe) -> Vec<Leg> {
+    let bridge_call = match how {
+        BridgeProbe::Register(agent, groups) => {
             let mut hello = argv(&["bridge", "hello", "--agent", agent]);
             if !groups.is_empty() {
                 hello.push("--groups".to_string());
@@ -120,7 +135,10 @@ pub fn probe(world: &dyn World, register: Option<(&str, &[String])>) -> Vec<Leg>
             }
             hello
         }
-        None => argv(&["bridge", "health"]),
+        // A read that takes nothing: it needs the fleet token, so it
+        // shows this seat can really read its mailbox.
+        BridgeProbe::Read(agent) => argv(&["bridge", "inbox", "--agent", agent, "--limit", "1"]),
+        BridgeProbe::Service => argv(&["bridge", "health"]),
     };
     // The four legs are independent, so they are asked together.
     let mut outs = world
@@ -157,16 +175,28 @@ pub fn probe(world: &dyn World, register: Option<(&str, &[String])>) -> Vec<Leg>
         (plain, route)
     };
     vec![
-        leg(
-            "bridge",
-            &bridge_out,
-            if register.is_some() {
-                "registered"
-            } else {
-                "answers"
+        match how {
+            // The service answering is not this seat reading a
+            // mailbox: without an agent name the push rung is not
+            // shown as working.
+            BridgeProbe::Service => Leg {
+                name: "bridge",
+                ok: false,
+                detail: if bridge_out.ok() {
+                    "the service answers, but no agent name is known to read a mailbox with: \
+                     enrol, or pass --agent"
+                        .to_string()
+                } else {
+                    bridge_out.why()
+                },
+                needs: BRIDGE_NEEDS,
+                route: None,
             },
-            "HTTPS to the message bridge, and the fleet token by name through fleet secrets",
-        ),
+            BridgeProbe::Register(..) => leg("bridge", &bridge_out, "registered", BRIDGE_NEEDS),
+            BridgeProbe::Read(..) => {
+                leg("bridge", &bridge_out, "the mailbox answers", BRIDGE_NEEDS)
+            }
+        },
         leg(
             "queue",
             &queue_out,
@@ -287,9 +317,9 @@ pub fn enroll(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
     }
 
     let legs = if dry_run {
-        probe(world, None)
+        probe(world, BridgeProbe::Read(&name))
     } else {
-        probe(world, Some((&name, &groups)))
+        probe(world, BridgeProbe::Register(&name, &groups))
     };
     let registered = !dry_run && leg_ok(&legs, "bridge");
 
@@ -375,7 +405,13 @@ pub fn doctor(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
         Some(n) => Some(check_name("--agent", &n)?),
         None => None,
     };
-    let legs = probe(world, None);
+    let legs = probe(
+        world,
+        match &agent {
+            Some(name) => BridgeProbe::Read(name),
+            None => BridgeProbe::Service,
+        },
+    );
     let code = if any_intake(&legs) {
         EXIT_OK
     } else {

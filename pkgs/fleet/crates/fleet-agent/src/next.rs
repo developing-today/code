@@ -157,6 +157,41 @@ fn label_names(issue: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Issues read per request, and how many pages of one rank are read
+/// before moving on. Held, busy and pull-request rows are dropped after
+/// a page is read, so one page is not enough to know a rank is empty.
+const PER_PAGE: usize = 30;
+const MAX_PAGES_PER_RANK: usize = 5;
+
+/// Why an issue, as GitHub returns it, may not be handed to an agent;
+/// None when it may. One rule for the ranking and for the recheck
+/// before a hand-out.
+fn kept_out(issue: &Value) -> Option<&'static str> {
+    if issue.get("pull_request").is_some() {
+        return Some("it is a pull request");
+    }
+    let labels = label_names(issue);
+    if labels.iter().any(|l| HOLD_LABELS.contains(&l.as_str())) {
+        return Some("it carries a hold label");
+    }
+    if labels.iter().any(|l| BUSY_LABELS.contains(&l.as_str())) {
+        return Some("someone is on it");
+    }
+    if labels.iter().any(|l| NOT_WORK_LABELS.contains(&l.as_str())) {
+        return Some("it is a tracker");
+    }
+    // A hands item waits on a person's hands (FDR-0013): no agent can
+    // do it, so no agent is handed it.
+    let hands_item = issue
+        .get("body")
+        .and_then(Value::as_str)
+        .is_some_and(|body| body.contains(HANDS_MARKER));
+    if hands_item {
+        return Some("it is a hands item");
+    }
+    None
+}
+
 /// Open issues worth doing next in `repo`, soonest first: by label
 /// rank, then oldest. Pull requests, held issues and issues someone is
 /// already on are left out. Owner parks are kept.
@@ -166,64 +201,56 @@ pub fn candidates(world: &dyn World, repo: &str, want: usize) -> Result<Vec<Entr
     let mut last_error = String::new();
     let mut route = first_route(world);
     for label in RANKED_LABELS {
-        if found.len() >= want {
-            break;
-        }
-        let path = format!(
-            "repos/{repo}/issues?state=open&labels={}&per_page=30&sort=created&direction=asc",
-            encode_label(label)
-        );
-        let page = match gh_api(world, &path, route) {
-            Ok((Value::Array(items), used)) => {
-                answered = true;
-                route = used;
-                items
+        for page_number in 1..=MAX_PAGES_PER_RANK {
+            if found.len() >= want {
+                break;
             }
-            Ok(_) => {
-                last_error = format!("GitHub's answer for label {label} was not a list");
-                continue;
-            }
-            Err(e) => {
-                last_error = e;
-                continue;
-            }
-        };
-        for issue in &page {
-            if issue.get("pull_request").is_some() {
-                continue;
-            }
-            let Some(number) = issue.get("number").and_then(Value::as_u64) else {
-                continue;
+            let path = format!(
+                "repos/{repo}/issues?state=open&labels={}&per_page={PER_PAGE}&sort=created&direction=asc&page={page_number}",
+                encode_label(label)
+            );
+            let page = match gh_api(world, &path, route) {
+                Ok((Value::Array(items), used)) => {
+                    answered = true;
+                    route = used;
+                    items
+                }
+                Ok(_) => {
+                    last_error = format!("GitHub's answer for label {label} was not a list");
+                    break;
+                }
+                Err(e) => {
+                    last_error = e;
+                    break;
+                }
             };
-            let labels = label_names(issue);
-            let kept_out = labels.iter().any(|l| {
-                HOLD_LABELS.contains(&l.as_str())
-                    || BUSY_LABELS.contains(&l.as_str())
-                    || NOT_WORK_LABELS.contains(&l.as_str())
-            });
-            // A hands item waits on a person's hands (FDR-0013): no
-            // agent can do it, so no agent is handed it.
-            let hands_item = issue
-                .get("body")
-                .and_then(Value::as_str)
-                .is_some_and(|body| body.contains(HANDS_MARKER));
-            if kept_out || hands_item || found.iter().any(|e| e.issue == number) {
-                continue;
+            for issue in &page {
+                let Some(number) = issue.get("number").and_then(Value::as_u64) else {
+                    continue;
+                };
+                if kept_out(issue).is_some() || found.iter().any(|e| e.issue == number) {
+                    continue;
+                }
+                let labels = label_names(issue);
+                found.push(Entry {
+                    repo: repo.to_string(),
+                    issue: number,
+                    title: issue
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                    rank: rank_of(&labels),
+                    why: format!("label {label}"),
+                    labels,
+                    added_by: String::new(),
+                    added_at: 0,
+                });
             }
-            found.push(Entry {
-                repo: repo.to_string(),
-                issue: number,
-                title: issue
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string(),
-                rank: rank_of(&labels),
-                why: format!("label {label}"),
-                labels,
-                added_by: String::new(),
-                added_at: 0,
-            });
+            // A short page is the last page of this rank.
+            if page.len() < PER_PAGE {
+                break;
+            }
         }
     }
     if !answered {
@@ -234,13 +261,54 @@ pub fn candidates(world: &dyn World, repo: &str, want: usize) -> Result<Vec<Entr
     Ok(found)
 }
 
+/// What a recheck of a listed issue found.
+pub enum Recheck {
+    /// Still free: the entry with today's title and labels.
+    Free(Entry),
+    /// No longer to be handed out, and why.
+    Gone(&'static str),
+    /// GitHub did not answer, so nothing is known.
+    Unknown(String),
+}
+
+/// Read one listed issue again before it is handed out. A shortlist
+/// entry was free when it was added; a hold, a claim or a close since
+/// then must win.
+pub fn recheck(world: &dyn World, entry: &Entry) -> Recheck {
+    let path = format!("repos/{}/issues/{}", entry.repo, entry.issue);
+    let issue = match gh_api(world, &path, first_route(world)) {
+        Ok((issue, _)) => issue,
+        Err(e) => return Recheck::Unknown(e),
+    };
+    if issue.get("number").and_then(Value::as_u64) != Some(entry.issue) {
+        return Recheck::Unknown("GitHub's answer was not this issue".to_string());
+    }
+    if issue.get("state").and_then(Value::as_str) != Some("open") {
+        return Recheck::Gone("it is closed");
+    }
+    if let Some(why) = kept_out(&issue) {
+        return Recheck::Gone(why);
+    }
+    let labels = label_names(&issue);
+    Recheck::Free(Entry {
+        title: issue
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or(&entry.title)
+            .to_string(),
+        rank: rank_of(&labels),
+        labels,
+        ..entry.clone()
+    })
+}
+
+/// The task an issue becomes, the same shape from rung 3 and rung 4.
 fn owner_parked(labels: &[String]) -> bool {
     labels
         .iter()
         .any(|l| OWNER_PARK_LABELS.contains(&l.as_str()))
 }
 
-/// The task an issue becomes, the same shape from rung 3 and rung 4.
 fn issue_task(entry: &Entry) -> Value {
     let parked = owner_parked(&entry.labels);
     let mut instructions = format!(
@@ -271,6 +339,10 @@ fn issue_task(entry: &Entry) -> Value {
 fn tried(list: &mut Vec<Value>, rung: &str, result: &str, why: impl Into<String>) {
     list.push(json!({"rung": rung, "result": result, "why": why.into()}));
 }
+
+/// How many listed entries in a row may turn out stale in one run
+/// before the shortlist rung gives way to the priority rung.
+const MAX_STALE_ENTRIES: usize = 5;
 
 enum FromShortlist {
     Take(Entry),
@@ -319,6 +391,15 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
         .uint("--low-water")?
         .unwrap_or(shortlist::DEFAULT_LOW_WATER);
     let now = world.now();
+    // What the caller chose is carried into every follow-up command,
+    // so the next step reads the same list, repo and profile.
+    let mut carried = String::new();
+    for flag in ["--repo", "--shortlist", "--profile"] {
+        if let Some(value) = a.last(flag) {
+            carried.push_str(&format!(" {flag} {}", crate::shell::sh_quote(&value)));
+        }
+    }
+    let again = format!("fleet agent next --agent {agent}{carried}");
     let mut log: Vec<Value> = Vec::new();
     let answer = |rung: &str, task: Value, then: Vec<String>, log: Vec<Value>| {
         (
@@ -416,28 +497,56 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
     if a.has("--no-shortlist") {
         tried(&mut log, "shortlist", "skipped", "--no-shortlist");
     } else {
-        let step = list_path.clone().and_then(|file| {
-            shortlist::update(&file, now, |list| {
-                if list.is_low(low_water) && list.refill.is_none() {
-                    list.refill = Some((agent.clone(), now));
-                    FromShortlist::Refill
-                } else {
-                    match list.take(&agent, now) {
-                        Some(entry) => FromShortlist::Take(entry),
-                        None => FromShortlist::Empty,
+        // An entry was free when it was listed. It is read again before
+        // it is handed out, so a hold or a claim made since then wins;
+        // a few stale entries in a row are dropped, not handed out.
+        let mut dropped: Vec<String> = Vec::new();
+        let step = loop {
+            let step = list_path.clone().and_then(|file| {
+                shortlist::update(&file, now, |list| {
+                    if list.needs_refill(low_water, now) {
+                        list.refill = Some((agent.clone(), now));
+                        FromShortlist::Refill
+                    } else {
+                        match list.take(&agent, now) {
+                            Some(entry) => FromShortlist::Take(entry),
+                            None => FromShortlist::Empty,
+                        }
+                    }
+                })
+            });
+            let Ok(FromShortlist::Take(entry)) = step else {
+                break step.map(|s| (s, None));
+            };
+            match recheck(world, &entry) {
+                Recheck::Free(fresh) => break Ok((FromShortlist::Take(fresh), None)),
+                Recheck::Unknown(why) => break Ok((FromShortlist::Take(entry), Some(why))),
+                Recheck::Gone(why) => {
+                    dropped.push(format!("#{} dropped: {why}", entry.issue));
+                    if dropped.len() >= MAX_STALE_ENTRIES {
+                        break Ok((FromShortlist::Empty, None));
                     }
                 }
-            })
-        });
+            }
+        };
+        let stale = dropped.join("; ");
         match step {
-            Ok(FromShortlist::Take(entry)) => {
+            Ok((FromShortlist::Take(entry), unchecked)) => {
+                let mut task = issue_task(&entry);
+                task["rechecked"] = json!(unchecked.is_none());
+                if let Some(why) = unchecked {
+                    task["recheck_note"] = json!(format!(
+                        "GitHub did not answer, so this entry's labels are as listed. Read the \
+                         issue for a hold before you start. ({why})"
+                    ));
+                }
                 let then = vec![
                     "post one progress note on the issue when a PR is open".to_string(),
-                    format!("fleet agent next --agent {agent}"),
+                    again.clone(),
                 ];
-                return Ok(answer("shortlist", issue_task(&entry), then, log));
+                return Ok(answer("shortlist", task, then, log));
             }
-            Ok(FromShortlist::Refill) => {
+            Ok((FromShortlist::Refill, _)) => {
                 // Best effort: hand the filler what GitHub ranks highest.
                 let (found, note) = match candidates(world, &repo, 16) {
                     Ok(found) => (found, String::new()),
@@ -454,21 +563,31 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
                         `fleet agent shortlist add` where you can do better than the ranking.",
                     "candidates": found.iter().map(issue_task).collect::<Vec<_>>(),
                     "candidates_note": note,
+                    "dropped": stale,
                 });
+                let list_flag = a
+                    .last("--shortlist")
+                    .map(|p| format!(" --shortlist {}", crate::shell::sh_quote(&p)))
+                    .unwrap_or_default();
                 let then = vec![
-                    format!("fleet agent shortlist fill --agent {agent} --repo {repo}"),
+                    format!("fleet agent shortlist fill --agent {agent} --repo {repo}{list_flag}"),
                     format!(
-                        "fleet agent shortlist add --agent {agent} --issue <n> --title <t> --why <reason>"
+                        "fleet agent shortlist add --agent {agent} --repo {repo}{list_flag} --issue <n> --title <t> --why <reason>"
                     ),
-                    format!("fleet agent next --agent {agent}"),
+                    again.clone(),
                 ];
                 return Ok(answer("refill", task, then, log));
             }
-            Ok(FromShortlist::Empty) => tried(
+            Ok((FromShortlist::Empty, _)) => tried(
                 &mut log,
                 "shortlist",
                 "empty",
-                "another run is refilling it",
+                if stale.is_empty() {
+                    "nothing is listed, and it was filled or claimed for filling recently"
+                        .to_string()
+                } else {
+                    stale
+                },
             ),
             Err(e) => tried(&mut log, "shortlist", "down", e.to_string()),
         }
@@ -480,36 +599,20 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
     } else {
         match candidates(world, &repo, 12) {
             Ok(found) => {
-                // Do not hand out what this host handed out in the last two hours.
-                let handed = list_path
-                    .as_ref()
-                    .ok()
-                    .and_then(|file| shortlist::load(file).ok())
-                    .map(|mut list| {
-                        list.prune(now);
-                        list
-                    })
-                    .unwrap_or_default();
-                let pick = found
-                    .into_iter()
-                    .find(|e| !handed.recently_handed(&e.repo, e.issue));
+                // Choose and reserve in one locked update, so two runs
+                // on this host at the same moment cannot both take the
+                // same issue. A host that cannot write the file still
+                // gets a task: the first candidate.
+                let pick = match &list_path {
+                    Ok(file) => shortlist::reserve(file, now, &agent, &found)
+                        .unwrap_or_else(|_| found.first().cloned()),
+                    Err(_) => found.first().cloned(),
+                };
                 match pick {
                     Some(entry) => {
-                        if let Ok(file) = &list_path {
-                            // Remembering the hand-out is best effort: a host
-                            // that cannot write the file still gets its task.
-                            let _ = shortlist::update(file, now, |list| {
-                                list.handed.push(shortlist::Handed {
-                                    repo: entry.repo.clone(),
-                                    issue: entry.issue,
-                                    to: agent.clone(),
-                                    at: now,
-                                });
-                            });
-                        }
                         let then = vec![
                             "post one progress note on the issue when a PR is open".to_string(),
-                            format!("fleet agent next --agent {agent}"),
+                            again.clone(),
                         ];
                         return Ok(answer("priority", issue_task(&entry), then, log));
                     }

@@ -67,6 +67,9 @@ fleet shell --build -- <command>    # a long build: takes a build slot
 fleet shell                         # an interactive shell
 ```
 
+A whole command line works as one quoted argument, and all of it runs under
+the build slot: `fleet shell --build -- 'cd pkgs/id && cargo test'`.
+
 ## What you need
 
 HTTPS is enough for messages and for three of the four rungs. The queue rung

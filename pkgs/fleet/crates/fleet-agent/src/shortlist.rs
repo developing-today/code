@@ -65,6 +65,10 @@ pub struct Shortlist {
     pub entries: Vec<Entry>,
     /// Who is refilling, and since when.
     pub refill: Option<(String, u64)>,
+    /// When a fill last finished. A list that is still low just after
+    /// a fill is low because little work is eligible, not because
+    /// nobody filled it.
+    pub filled_at: Option<u64>,
     pub handed: Vec<Handed>,
 }
 
@@ -137,6 +141,7 @@ impl Shortlist {
             "version": 1,
             "entries": self.entries.iter().map(Entry::to_json).collect::<Vec<_>>(),
             "refill": self.refill.as_ref().map(|(by, at)| json!({"by": by, "at": at})),
+            "filled_at": self.filled_at,
             "handed": self
                 .handed
                 .iter()
@@ -176,6 +181,7 @@ impl Shortlist {
         Some(Shortlist {
             entries,
             refill,
+            filled_at: v.get("filled_at").and_then(Value::as_u64),
             handed,
         })
     }
@@ -234,6 +240,20 @@ impl Shortlist {
 
     pub fn is_low(&self, low_water: u64) -> bool {
         (self.entries.len() as u64) <= low_water
+    }
+
+    /// Whether a fill finished within the refill window.
+    pub fn filled_recently(&self, now: u64) -> bool {
+        self.filled_at
+            .is_some_and(|at| now.saturating_sub(at) < REFILL_FRESH_SECS)
+    }
+
+    /// Whether this run should switch purpose and refill: the list is
+    /// low, nobody has claimed the refill, and no fill just finished.
+    /// The last part is what lets a host with only one or two eligible
+    /// issues work them, in place of refilling for ever.
+    pub fn needs_refill(&self, low_water: u64, now: u64) -> bool {
+        self.is_low(low_water) && self.refill.is_none() && !self.filled_recently(now)
     }
 }
 
@@ -365,6 +385,28 @@ pub fn update<T>(path: &Path, now: u64, change: impl FnOnce(&mut Shortlist) -> T
     Ok(answer)
 }
 
+/// Pick the first of `found` that this host has not handed out
+/// lately, and record the hand-out, in one locked update. Choosing
+/// outside the lock would let two runs at the same moment both pick
+/// the same issue.
+pub fn reserve(path: &Path, now: u64, to: &str, found: &[Entry]) -> R<Option<Entry>> {
+    update(path, now, |list| {
+        let pick = found
+            .iter()
+            .find(|e| !list.recently_handed(&e.repo, e.issue))
+            .cloned();
+        if let Some(entry) = &pick {
+            list.handed.push(Handed {
+                repo: entry.repo.clone(),
+                issue: entry.issue,
+                to: to.to_string(),
+                at: now,
+            });
+        }
+        pick
+    })
+}
+
 // ---- the verbs ----
 
 fn status_json(path: &Path, list: &Shortlist, low_water: u64) -> Value {
@@ -487,8 +529,11 @@ pub fn run(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
                         added += 1;
                     }
                 }
-                // The fill is done: whoever held the purpose is released.
+                // The fill is done: whoever held the purpose is released,
+                // and the time is kept so a list that stays low is
+                // worked, not refilled again at once.
                 list.refill = None;
+                list.filled_at = Some(now);
                 (added, list.entries.len())
             })?;
             Ok((
