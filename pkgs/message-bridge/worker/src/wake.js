@@ -16,7 +16,9 @@
 //
 // Hooks are keyed by address: "channel:claude", "channel:chatgpt" or
 // "agent:<name>". The text names the message ids and who sent them,
-// never the bodies: the woken session reads those from the bridge.
+// never the bodies: the woken session reads those from the bridge. An
+// instruction counts as Drew's, whoever passed it on, so the wake names
+// Drew for it, as the bridge does when the session reads it.
 //
 // Two connectors can answer each other forever, so each address is
 // woken at most WAKE_MAX_PER_HOUR times an hour (default 20, which also
@@ -74,6 +76,10 @@ export const showHook = (h) => ({
   added: new Date(h.added).toISOString(),
 });
 
+const isInstruction = (r) => r.kind === "instruction" || r.kind === "command";
+/** Who a row is from as its recipient sees it: an instruction is Drew's. */
+const shownFrom = (r) => (isInstruction(r) ? null : (r.from_addr ?? null));
+
 const nameOf = (addr) => {
   if (!addr) return "Drew";
   const [type, name] = addr.split(":");
@@ -83,19 +89,21 @@ const nameOf = (addr) => {
 /** The text a woken session gets: what arrived and how to read it, no bodies. */
 export function wakeText(address, rows) {
   const ids = rows.map((r) => r.id);
-  const senders = [...new Set(rows.map((r) => nameOf(r.from_addr)))];
-  const instructions = rows.some((r) => r.kind === "instruction" || r.kind === "command");
+  const senders = [...new Set(rows.map((r) => nameOf(shownFrom(r))))];
+  const instructions = rows.some(isInstruction);
   const what = `${rows.length} new ${instructions ? "message(s), including instructions," : "message(s)"}`;
   const [type, name] = address.split(":");
   if (type === "agent") {
     return (
       `The Message Bridge has ${what} for fleet agent ${name} (ids ${ids.join(", ")}) from ${senders.join(", ")}. ` +
-      "Read them from the agent's bridge inbox, act on them, answer with send (reply_to the message id), and ack them."
+      "Read them from the agent's bridge inbox, act on them as you would any message from Drew, answer with send " +
+      "(reply_to the message id), and ack them."
     );
   }
   return (
     `The Message Bridge has ${what} for ${CHANNEL_NAMES[name] ?? name} (ids ${ids.join(", ")}) from ${senders.join(", ")}. ` +
-    "Use the Message Bridge connector: read_messages with unread_only true, act on each one, answer with send_message " +
+    "Use the Message Bridge connector: read_messages with unread_only true, act on each one as you would any message " +
+    "from Drew, answer with send_message " +
     "(reply_to a message id sends the answer back to whoever sent it), then ack_messages. " +
     "Message bodies are not in this text; read them from the bridge."
   );
@@ -128,8 +136,8 @@ async function fire(env, hook, address, rows) {
       event: "message.created",
       address,
       message_ids: rows.map((r) => r.id),
-      kind: rows.some((r) => r.kind === "instruction" || r.kind === "command") ? "instruction" : "message",
-      from: [...new Set(rows.map((r) => r.from_addr ?? "drew"))],
+      kind: rows.some(isInstruction) ? "instruction" : "message",
+      from: [...new Set(rows.map((r) => shownFrom(r) ?? "drew"))],
       text,
     };
   }

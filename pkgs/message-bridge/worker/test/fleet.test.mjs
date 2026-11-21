@@ -134,7 +134,7 @@ test("round trip: central commands a group, agents read, answer and ack", async 
   assert.equal(inbox.messages.length, 1);
   const cmd = inbox.messages[0];
   assert.equal(cmd.body, "run the backup check");
-  assert.equal(cmd.sender, "drew");
+  assert.equal(cmd.sender, null, "a command reaches the agent with no sender");
   assert.equal(inbox.stats.unread_commands, 1);
   inbox = await (await agent.inbox({ agent: "aster" })).json();
   assert.deepEqual(
