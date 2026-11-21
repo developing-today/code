@@ -29,8 +29,16 @@ export function uniqueProjectItemsByRef(pool: readonly ProjectPoolItem[]): Proje
   return [...byRef.values()];
 }
 
+/** One representative for every ref classified as an Epic on any board. */
+export function uniqueEpicItemsByRef(pool: readonly ProjectPoolItem[]): ProjectPoolItem[] {
+  const byRef = new Map<RefKey, ProjectPoolItem>();
+  for (const item of pool) if (item.kind === "Epic" && !byRef.has(item.ref)) byRef.set(item.ref, item);
+  return [...byRef.values()];
+}
+
 /** Build rollups for epics in the pool, using only explicit epicRef edges. */
 export function buildEpicRollups(pool: readonly ProjectPoolItem[]): Map<RefKey, EpicRollup> {
+  const epicRefs = new Set(uniqueEpicItemsByRef(pool).map((epic) => epic.ref));
   const uniquePool = uniqueProjectItemsByRef(pool);
   const byRef = new Map(uniquePool.map((item) => [item.ref, item]));
   const childrenByEpic = new Map<RefKey, ProjectPoolItem[]>();
@@ -43,7 +51,7 @@ export function buildEpicRollups(pool: readonly ProjectPoolItem[]): Map<RefKey, 
 
   const rollups = new Map<RefKey, EpicRollup>();
   for (const epic of uniquePool) {
-    if (epic.kind !== "Epic") continue;
+    if (!epicRefs.has(epic.ref)) continue;
     const children = childrenByEpic.get(epic.ref) ?? [];
     const statuses = new Map<string, number>();
     let done = 0;

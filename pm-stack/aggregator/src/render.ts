@@ -6966,7 +6966,7 @@ export function projectsBodyHtml(
         ]
       : []),
   ].join("")}</div>
-${opts.audit && opts.audit.totalItems > pool.length ? `<div class="banner">Board total ${opts.audit.totalItems} items; this pool renders ${pool.length} linked issue/PR items. ${opts.audit.totalItems - pool.length} board item${opts.audit.totalItems - pool.length === 1 ? " is" : "s are"} draft or unlinked (no issue/PR to link to) and not rendered as cards \u2014 counted in the audit in <a href="/api/projects.json">/api/projects.json</a>, never silently dropped.</div>` : ""}
+${opts.audit && (opts.audit.poolTotalItems ?? opts.audit.totalItems) > pool.length ? `<div class="banner">Board total ${opts.audit.poolTotalItems ?? opts.audit.totalItems} items; this pool renders ${pool.length} linked issue/PR items. ${(opts.audit.poolTotalItems ?? opts.audit.totalItems) - pool.length} board item${(opts.audit.poolTotalItems ?? opts.audit.totalItems) - pool.length === 1 ? " is" : "s are"} draft or unlinked (no issue/PR to link to) and not rendered as cards \u2014 counted in the audit in <a href="/api/projects.json">/api/projects.json</a>, never silently dropped.</div>` : ""}
 ${shown.length !== pool.length ? `<p class="muted">Filters show ${shown.length} of ${pool.length} pool items.</p>` : ""}
 ${unsetCount > 0 ? `<div class="banner">${unsetCount} pool item${unsetCount === 1 ? "" : "s"} carry no Area — they belong to no project page until Area is set on the Project. Setting Area is the orchestrator's reconciliation job; this count keeps the gap visible. <a href="${base}?area=${encodeURIComponent(UNSET_AREA)}">View the (unset) bucket →</a></div>` : ""}
 ${coverageSectionHtml(opts.coverage)}

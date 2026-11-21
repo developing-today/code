@@ -301,21 +301,24 @@ export function historicalParentsFromMetadata(body: string): RefKey[] {
  * items with no epic ancestor, and chains that leave the pool keep the
  * field absent. Cycle-safe: a parent loop ends the walk with no epic. */
 export function resolveEpicRefs(items: ProjectPoolItem[]): ProjectPoolItem[] {
-  // An item appearing on several boards is one epic if any board classifies it as Epic;
-  // the first occurrence supplies the parent link, so the result never depends on board order.
+  // An item appearing on several boards is one epic if any board classifies it as Epic.
   const epicRefs = new Set(items.filter((p) => p.kind === "Epic").map((p) => p.ref));
   const byRef = new Map<string, ProjectPoolItem>();
-  for (const p of items) if (!byRef.has(p.ref)) byRef.set(p.ref, p);
+  // Conflicting copies can have different parents; choose deterministically.
+  for (const p of [...items].sort((a, b) => a.ref.localeCompare(b.ref) || (a.parentRef ?? "").localeCompare(b.parentRef ?? ""))) {
+    if (!byRef.has(p.ref)) byRef.set(p.ref, p);
+  }
   return items.map((p) => {
-    if (epicRefs.has(p.ref) || !p.parentRef) return p;
+    const { epicRef: _staleEpicRef, ...withoutEpicRef } = p;
+    if (epicRefs.has(p.ref) || !p.parentRef) return withoutEpicRef;
     const seen = new Set<string>([p.ref]);
     let cursor: ProjectPoolItem | undefined = byRef.get(p.parentRef);
     while (cursor && !seen.has(cursor.ref)) {
-      if (epicRefs.has(cursor.ref)) return { ...p, epicRef: cursor.ref };
+      if (epicRefs.has(cursor.ref)) return { ...withoutEpicRef, epicRef: cursor.ref };
       seen.add(cursor.ref);
       cursor = cursor.parentRef ? byRef.get(cursor.parentRef) : undefined;
     }
-    return p;
+    return withoutEpicRef;
   });
 }
 
@@ -421,6 +424,8 @@ export function isProjectAudit(value: unknown): value is ProjectAudit {
     isTimestampNotFuture(value.generatedAt) &&
     Number.isInteger(value.totalItems) &&
     (value.totalItems as number) >= 0 &&
+    (value.poolTotalItems === undefined ||
+      (Number.isInteger(value.poolTotalItems) && (value.poolTotalItems as number) >= (value.totalItems as number))) &&
     Array.isArray(value.fields) &&
     value.fields.every(
       (field) =>

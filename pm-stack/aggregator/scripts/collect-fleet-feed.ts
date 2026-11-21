@@ -1139,10 +1139,11 @@ async function main(): Promise<void> {
     if (snapshot.items.length) {
       projects = snapshot.items;
       projectAudits = snapshot.audits;
-      // The rendered pool spans every board, so the banner compares against the summed board totals.
+      // Keep the validated Project #4 audit internally consistent; expose the
+      // all-board total separately for the rendered pool banner.
       const auditList = Object.values(snapshot.audits);
       const main = snapshot.audits["devtoday-main"];
-      projectAudit = main && auditList.length ? { ...main, totalItems: auditList.reduce((sum, a) => sum + a.totalItems, 0) } : main;
+      projectAudit = main && auditList.length ? { ...main, poolTotalItems: auditList.reduce((sum, a) => sum + a.totalItems, 0) } : main;
       const failures = snapshot.failedBoardIds;
       markSection("projects", failures.length ? "error" : "ok", failures.length ? `boards failed: ${failures.join(", ")}` : undefined, {
         reportedTotal: snapshot.counts.reportedTotal,
@@ -1404,7 +1405,7 @@ async function main(): Promise<void> {
         : ", no hub sections") +
       (dedupedSnapshots.length ? `, snapshots ${dedupedSnapshots.length} records` : "") +
       (projectAudit
-        ? `, projects ${projectAudit.totalItems} total / ${projects?.length ?? 0} resolvable`
+        ? `, projects ${projectAudit.poolTotalItems ?? projectAudit.totalItems} total / ${projects?.length ?? 0} resolvable`
         : ", no projects section") +
       (coverage ? `, coverage ${coverage.length} repos` : ", no coverage section") +
       (aa.status === "ok"

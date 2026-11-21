@@ -690,6 +690,25 @@ describe("collector graph edges (#2399 contract)", () => {
     expect(byRef.get("developing-today/code#2405")?.parentRef).toBe("developing-today/opencode#1");
   });
 
+  test("resolveEpicRefs clears stale membership and resolves duplicate parents deterministically", () => {
+    const base = {
+      url: "u", projectUrl: "p", repo: "o/r", issueUrl: "i", title: "item",
+      state: "open" as const, contentKind: "issue" as const, status: null, area: null, horizon: null,
+    };
+    const refs = resolveEpicRefs([
+      { ...base, id: "child", ref: "o/r#3", number: 3, kind: "Task", parentRef: "o/r#2", epicRef: "o/r#99" },
+      { ...base, id: "parent-z", ref: "o/r#2", number: 2, kind: "Task", parentRef: "o/r#9" },
+      { ...base, id: "parent-a", ref: "o/r#2", number: 2, kind: "Task", parentRef: "o/r#1" },
+      { ...base, id: "epic", ref: "o/r#1", number: 1, kind: "Epic", epicRef: "o/r#99" },
+      { ...base, id: "orphan", ref: "o/r#4", number: 4, kind: "Task", epicRef: "o/r#99" },
+    ]);
+    expect(refs[0]?.epicRef).toBe("o/r#1");
+    expect(refs[3]?.epicRef).toBeUndefined();
+    expect(refs[4]?.epicRef).toBeUndefined();
+    const reversed = resolveEpicRefs([...refs].reverse());
+    expect(reversed.find((p) => p.ref === "o/r#3")?.epicRef).toBe("o/r#1");
+  });
+
   test("resolveEpicRefs is cycle-safe and never invents membership", () => {
     const loop = resolveEpicRefs([
       {
@@ -802,6 +821,9 @@ describe("Project #4 audit snapshot (#1218)", () => {
       },
     });
     expect(isProjectAudit(audit)).toBe(true);
+    expect(isProjectAudit({ ...audit, poolTotalItems: 4 })).toBe(true);
+    expect(isProjectAudit({ ...audit, poolTotalItems: 2 })).toBe(false);
+    expect(isProjectAudit({ ...audit, poolTotalItems: "4" })).toBe(false);
     expect(isProjectAudit({ ...audit, counts: { ...audit.counts, status: { Done: -1 } } })).toBe(false);
     expect(isProjectAudit({ ...audit, counts: { ...audit.counts, area: { lab: 2 } } })).toBe(false);
   });
