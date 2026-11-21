@@ -83,6 +83,14 @@ park notes in two days). The rule:
   agents push and open PRs under that account, so authorship is fleet
   work product, not a hold. A PR is someone else's only if a live queue
   claim holds it or it carries a hold label.
+- **There is no ownership handoff.** Never park "awaiting ownership
+  handoff", "owner release", "owner coordination" or "reassignment",
+  and never carry such a gate forward in a resume brief or queue
+  checkpoint: nobody gives one. A queue task's own earlier branch,
+  worktree or draft PR is its own work to inspect and continue. (On
+  2026-11-21 seven parked tasks were still waiting on such a gate
+  after the assignments were cleared; their checkpoints were reset.)
+  See [FDR-0012](../decisions/FDR-0012-no-ownership-handoff-park-gates.md).
 - Check before parking on ownership (exit 0 = workable, 3 = held):
 
   ```bash

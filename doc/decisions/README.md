@@ -167,6 +167,7 @@ the decision; `Implementation` is where the decision lands in code, docs, or iss
 | [FDR-0010](FDR-0010-completion-requires-evidence.md)       | Issue completion requires deliverable evidence from the bound work        | `proposed` | Fleet queue maintainers | Policy direction from the [#9155](https://github.com/developing-today/code/issues/9155) closure, 2026-11-12; prior pattern [#7610](https://github.com/developing-today/code/issues/7610)       | [#9221](https://github.com/developing-today/code/issues/9221) closure records + reason-required closes; [#9177](https://github.com/developing-today/code/issues/9177)                                                                                                                   |
 
 | [FDR-0011](FDR-0011-implementation-target-and-work-window.md) | Implementation target and usable work window | `accepted` | Fleet queue maintainers | Drew request, 2026-11-18; code#10415/task 20592 | Claim repo filter + existing #3418 budget gate |
+| [FDR-0012](FDR-0012-no-ownership-handoff-park-gates.md) | No ownership-handoff park gates (supersedes FDR-0011 in part) | `accepted` | Fleet queue maintainers | Drew rulings, 2026-11-20 and 2026-11-21 | [#12061](https://github.com/developing-today/code/pull/12061), [#12074](https://github.com/developing-today/code/pull/12074), [#12155](https://github.com/developing-today/code/pull/12155); queue checkpoints reset 2026-11-21 |
 
 ### Package-scoped records (not in this namespace)
 
