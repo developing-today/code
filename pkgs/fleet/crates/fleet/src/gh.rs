@@ -305,8 +305,10 @@ fn is_read_call(args: &[String]) -> bool {
             let mut i = 1;
             while i < args.len() {
                 let a = args[i].as_str();
-                if a == "-f"
-                    || a == "-F"
+                // `-fkey=value` / `-Fkey=value` are the same field
+                // flags with the value attached.
+                if a.starts_with("-f")
+                    || a.starts_with("-F")
                     || a == "--field"
                     || a == "--raw-field"
                     || a == "--input"
@@ -1622,6 +1624,9 @@ mod tests {
         assert!(!read(&["api", "graphql"]));
         // A field named query on a REST call is still a POST-class write.
         assert!(!read(&["api", "repos/o/r/issues", "-f", "query=x"]));
+        // A field value attached to its flag still makes the call POST.
+        assert!(!read(&["api", "repos/o/r/issues", "-ftitle=x"]));
+        assert!(!read(&["api", "repos/o/r/labels", "-Fname=x"]));
         assert!(read(&["api", "user", "--method", "GET"]));
         assert!(!read(&["api", "user", "--method", "PATCH"]));
         assert!(!read(&["issue", "comment", "1", "--body", "x"]));
