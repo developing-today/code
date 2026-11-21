@@ -544,9 +544,12 @@ def main(argv):
     else:
         state, summary, evidence = probe_opencode(args.detail, deadline=deadline)
 
-    open_incident = find_open_incident(target) if state in ("transient", "up") else None
+    # A down diagnosis during an open outage reuses that outage (its id
+    # and intake key) instead of opening a second alert that a single
+    # recovery could not close.
+    open_incident = find_open_incident(target) if state in ("transient", "up", "down") else None
     recovery_of = None
-    if open_incident:
+    if open_incident and state != "down":
         state = "up"
         recovery_of = open_incident["incidentId"]
         summary = f"{TARGETS[target]} recovered after incident {recovery_of}"
@@ -559,7 +562,10 @@ def main(argv):
     else:
         severity = "info"
 
-    incident_id = str(uuid.uuid4())
+    if state == "down" and open_incident:
+        incident_id = open_incident["incidentId"]
+    else:
+        incident_id = str(uuid.uuid4())
     # A recovery reuses its outage's intake key: the intake closes only
     # the incident whose source and key match.
     intake_key = (open_incident or {}).get("key") or f"health-hook:{target}:{incident_id}"

@@ -202,6 +202,25 @@ def test_recovery_reuses_the_outage_intake_key():
     assert post.call_args.args[0]["key"] == "health-hook:opencode-working:down-123"
 
 
+def test_repeated_down_reuses_the_open_outage():
+    with tempfile.TemporaryDirectory() as td:
+        incident_file = Path(td) / "incidents.jsonl"
+        env = mock.patch.dict(os.environ, {"PM_HEALTH_HOOKS_INCIDENT_FILE": str(incident_file)})
+        with env, mock.patch.object(R, "probe_opencode", return_value=("down", "unreachable", {})), \
+             mock.patch.object(R, "post_to_throat", return_value={"posted": True}) as post:
+            with redirect_stdout(StringIO()):
+                assert R.main(["--target", "opencode-working"]) == 0
+                assert R.main(["--target", "opencode-working"]) == 0
+        keys = [c.args[0]["key"] for c in post.call_args_list]
+        with env, mock.patch.object(R, "probe_opencode", return_value=("transient", "ok", {})), \
+             mock.patch.object(R, "post_to_throat", return_value={"posted": True}) as rec:
+            with redirect_stdout(StringIO()):
+                assert R.main(["--target", "opencode-working"]) == 0
+            assert R.find_open_incident("opencode-working") is None
+    assert keys[0] == keys[1]
+    assert rec.call_args.args[0]["key"] == keys[0]
+
+
 def test_wrapper_target_cannot_be_overridden():
     r = subprocess.run([str(HERE / "pm-stack-reachable.sh"), "--target", "opencode-working"],
                        capture_output=True, text=True)
