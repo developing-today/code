@@ -20,7 +20,7 @@ type OpSpec = {
   response: "json" | "response"
 }
 
-export const OPERATION_FINGERPRINT = "4cb2e300265729ccb26e7f9e7d3775cd10618dfb27223f89a3a3da3310d7b314"
+export const OPERATION_FINGERPRINT = "dfe97845b14e07ac3974e1beb9aa85d32219b0d99ce4493f9dad624ffd83d2a0"
 
 /** Every /v1 operation, by name. */
 export const OPS: Record<string, OpSpec> = {
@@ -189,6 +189,22 @@ export const OPS: Record<string, OpSpec> = {
       task: { in: "body" },
       session: { in: "body" },
       context: { in: "body" },
+    },
+    response: "json",
+  },
+  call_history: {
+    method: "GET",
+    path: "/v1/calls/{run}",
+    params: {
+      run: { in: "path", required: true },
+    },
+    response: "json",
+  },
+  call_history_begin: {
+    method: "POST",
+    path: "/v1/calls/{run}",
+    params: {
+      run: { in: "path", required: true },
     },
     response: "json",
   },
@@ -1102,6 +1118,20 @@ export class DaemonOps {
    */
   call(args: { server: string; tool: string; args?: Record<string, unknown>; task?: Record<string, unknown>; session?: string; context?: Record<string, unknown> }, opts: CallOptions = {}): Promise<unknown> {
     return this.invoke("call", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * The tool calls one run has made. `GET /v1/calls/{run}`.
+   */
+  callHistory(args: { run: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("call_history", args, opts) as Promise<unknown>
+  }
+
+  /**
+   * Start keeping the tool calls of one run. `POST /v1/calls/{run}`.
+   */
+  callHistoryBegin(args: { run: string }, opts: CallOptions = {}): Promise<unknown> {
+    return this.invoke("call_history_begin", args, opts) as Promise<unknown>
   }
 
   /**
