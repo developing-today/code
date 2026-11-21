@@ -20,9 +20,8 @@ if ! bws secret list >/dev/null 2>&1; then
     exit 1
   fi
 fi
-eval "$(
-  python3 - <<'PY'
-import json, subprocess
+exec python3 - "$(dirname "$0")/../bin/drain_queue.py" <<'PY'
+import json, os, subprocess, sys
 lst = json.loads(subprocess.run(["bws", "secret", "list"],
                                 capture_output=True, text=True).stdout or "[]")
 ids = {s["key"]: s["id"] for s in lst}
@@ -30,8 +29,8 @@ def get(name):
     r = subprocess.run(["bws", "secret", "get", ids[name]],
                        capture_output=True, text=True)
     return json.loads(r.stdout)["value"]
-print(f"export GHB_WORKER_URL={get('github-app.backup-worker-url')!r}")
-print(f"export GHB_WORKER_BEARER={get('github-app.backup-worker-bearer')!r}")
+env = os.environ.copy()
+env["GHB_WORKER_URL"] = get("github-app.backup-worker-url")
+env["GHB_WORKER_BEARER"] = get("github-app.backup-worker-bearer")
+os.execve(sys.executable, [sys.executable, sys.argv[1]], env)
 PY
-)"
-exec python3 "$(dirname "$0")/../bin/drain_queue.py"
