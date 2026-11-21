@@ -90,6 +90,7 @@ Only `held`, `user/owned`, and `do-not-auto-edit` hold for a human;
 are not holds; workers own tasks by atomic claim. Check holds before parking
 for ownership; check notes before posting a park/pickup note. Always post
 progress notes. Land or checkpoint a reviewable slice before parking for size.
+There is no ownership handoff: never park awaiting one.
 
 ## Research, design and delivery workflow
 
