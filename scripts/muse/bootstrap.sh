@@ -23,6 +23,10 @@
 #             (kernel TUN when root, else userspace with a local CONNECT
 #             proxy) and point fleet's laptop link at it
 #   fleet     install the new fleet at ~/tools/fleet (+ PATH links)
+#   persist   survive a sandbox recycle: copy this script to
+#             ~/tools/muse-bootstrap.sh and hook ~/tools/muse-boot.sh into
+#             ~/tools/init.sh, so each boot restarts the tailnet and keeps
+#             fleet linked (only /home/hatch survives a recycle)
 #   init      run the restored ~/tools/init.sh (units, services)
 #   check     fleet version/capabilities, laptop link, secrets broker,
 #             bridge hello as agent "muse" (group muse)
@@ -47,10 +51,11 @@ LAPTOP_TAILNET_IP=100.99.113.103
 TS_HOSTNAME="${TS_HOSTNAME:-muse}"
 AGENT="${FLEET_AGENT:-muse}"
 
-PHASES="tools token restore tailnet fleet init check"
+PHASES="tools token restore tailnet fleet persist init check"
 ALL=0
+SELF=""; [ -f "${BASH_SOURCE[0]:-}" ] && SELF=$(readlink -f "${BASH_SOURCE[0]}")
 usage() {
-  sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,/^set -euo pipefail/p' "$SELF" | sed '$d' | sed 's/^# \{0,1\}//'
   echo
   echo "Flags: --only <phase[,phase]>  --skip <phase[,phase]>  --all (restore ~/git and ~/agents too)"
   exit "${1:-0}"
@@ -86,6 +91,11 @@ die() { printf '[bootstrap] FAILED: %s\n' "$*" >&2; exit 1; }
 for c in curl tar python3 sha256sum; do command -v "$c" >/dev/null || die "needs $c on PATH"; done
 
 HOME="${HOME:?HOME must be set}"
+# Only $SANDBOX_HOME (a btrfs volume) survives a sandbox recycle; /, /etc,
+# /root and /usr/local are wiped. Everything below is written under $HOME.
+if [ "$HOME" != "$SANDBOX_HOME" ]; then
+  say "warning: HOME is $HOME, not $SANDBOX_HOME; on a Muse sandbox nothing written here survives a restart (run with HOME=$SANDBOX_HOME)"
+fi
 # Downloaded tools live outside ~/tools so the restore (which brings back
 # the old ~/tools, binaries included) never overwrites a running binary.
 BIN="$HOME/.local/share/muse-bootstrap/bin"
@@ -255,21 +265,36 @@ elif want tailnet; then
   if ! tailscale --socket="$TS_SOCK" status >/dev/null 2>&1; then
     MODE=userspace
     if [ -c /dev/net/tun ] && { [ "$(id -u)" = 0 ] || [ -n "$SUDO" ]; }; then MODE=kernel; fi
-    if [ "$MODE" = kernel ]; then
+    if pgrep -f -- "--state=$TS_STATE/tailscaled.state" >/dev/null 2>&1; then
+      MODE=$(cat "$TS_STATE/mode" 2>/dev/null || echo "$MODE")   # daemon alive, only logged out
+    elif [ "$MODE" = kernel ]; then
+      rm -f "$TS_SOCK"   # a recycle leaves the old socket file on the durable volume
       $SUDO setsid nohup "$BIN/tailscaled" --state="$TS_STATE/tailscaled.state" --socket="$TS_SOCK" \
         > "$TS_STATE/tailscaled.log" 2>&1 < /dev/null &
     else
+      rm -f "$TS_SOCK"
       setsid nohup "$BIN/tailscaled" --tun=userspace-networking --state="$TS_STATE/tailscaled.state" \
         --socket="$TS_SOCK" --outbound-http-proxy-listen=127.0.0.1:3130 \
         > "$TS_STATE/tailscaled.log" 2>&1 < /dev/null &
     fi
     echo "$MODE" > "$TS_STATE/mode"
-    for _ in $(seq 1 30); do [ -S "$TS_SOCK" ] && break; sleep 1; done
-    keyfile=$(mktemp); (umask 077; secret tailscale.auth-key > "$keyfile")
-    TSUDO=""; [ "$MODE" = kernel ] && TSUDO=$SUDO
-    $TSUDO "$BIN/tailscale" --socket="$TS_SOCK" up --auth-key="file:$keyfile" --hostname="$TS_HOSTNAME" \
-      --operator="$(id -un)" --accept-dns=false >/dev/null 2>&1 || { rm -f "$keyfile"; die "tailnet: tailscale up refused (see $TS_STATE/tailscaled.log)"; }
-    rm -f "$keyfile"
+    # The node key in $TS_STATE survives a recycle, so after a restart
+    # tailscaled logs itself back in; the auth key is only for a new node.
+    ts_backend() { "$BIN/tailscale" --socket="$TS_SOCK" status --json 2>/dev/null \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin).get("BackendState",""))' 2>/dev/null || true; }
+    state=""
+    for _ in $(seq 1 30); do
+      state=$(ts_backend)
+      case "$state" in Running|NeedsLogin|NoState|Stopped) [ "$state" = NoState ] || break ;; esac
+      sleep 1
+    done
+    if [ "$state" != Running ]; then
+      keyfile=$(mktemp); (umask 077; secret tailscale.auth-key > "$keyfile")
+      TSUDO=""; [ "$MODE" = kernel ] && TSUDO=$SUDO
+      $TSUDO "$BIN/tailscale" --socket="$TS_SOCK" up --auth-key="file:$keyfile" --hostname="$TS_HOSTNAME" \
+        --operator="$(id -un)" --accept-dns=false >/dev/null 2>&1 || { rm -f "$keyfile"; die "tailnet: tailscale up refused (see $TS_STATE/tailscaled.log)"; }
+      rm -f "$keyfile"
+    fi
   fi
   MODE=$(cat "$TS_STATE/mode" 2>/dev/null || echo kernel)
   # fleet's laptop link: kernel mode dials the laptop directly; userspace
@@ -307,10 +332,61 @@ if want fleet; then
     [ -n "$SUDO" ] || [ "$(id -u)" = 0 ] || die "fleet: $HOME/tools/fleet is not writable and there is no sudo"
     $SUDO mv -f "$HOME/tools/fleet" "$HOME/tools/fleet.old"
   fi
-  install -m 755 "$FLEET_DL" "$HOME/tools/fleet.tmp" && mv -f "$HOME/tools/fleet.tmp" "$HOME/tools/fleet"
+  if ! cmp -s "$FLEET_DL" "$HOME/tools/fleet"; then
+    install -m 755 "$FLEET_DL" "$HOME/tools/fleet.tmp" && mv -f "$HOME/tools/fleet.tmp" "$HOME/tools/fleet"
+  fi
   for l in fleet repo-queue; do ln -sfn "$HOME/tools/fleet" "$HOME/tools/bin/$l"; done
   hash -r
   say "fleet: $("$HOME/tools/fleet" version | sed -n 's/^Source rev: //p') at ~/tools/fleet"
+fi
+
+# ---- persist ----
+# A recycle keeps $SANDBOX_HOME (tools, state, token) but kills every
+# process and wipes /etc. ~/tools/init.sh already runs on every boot (cron
+# sandbox-boot-init, every 5 min), so hook a small boot script into it that
+# reruns the idempotent tailnet and fleet phases from a saved copy of this
+# script. When the tailnet is already up the hook returns in about a second.
+if want persist; then
+  if [ -n "$SELF" ]; then
+    [ "$SELF" = "$HOME/tools/muse-bootstrap.sh" ] \
+      || install -m 755 "$SELF" "$HOME/tools/muse-bootstrap.sh"
+  elif [ ! -f "$HOME/tools/muse-bootstrap.sh" ]; then
+    die "persist: run this script from a file (bash bootstrap.sh), not a pipe, so it can keep a copy"
+  fi
+  mkdir -p "$HOME/logs"
+  cat > "$HOME/tools/muse-boot.sh.tmp" <<EOF
+#!/usr/bin/env bash
+# muse-boot.sh — written by scripts/muse/bootstrap.sh (persist phase).
+# Run from ~/tools/init.sh on every boot: restarts the tailnet after a
+# sandbox recycle and keeps the bridge-capable fleet linked. Idempotent.
+export HOME=$HOME
+exec >>"\$HOME/logs/muse-boot.log" 2>&1 </dev/null
+echo "== \$(date -u +%FT%TZ)"
+# One run at a time: init.sh fires every few minutes.
+if command -v flock >/dev/null; then
+  exec flock -n "\$HOME/tools/.muse-boot.lock" timeout 300 bash "\$HOME/tools/muse-bootstrap.sh" --only tailnet,fleet
+fi
+exec timeout 300 bash "\$HOME/tools/muse-bootstrap.sh" --only tailnet,fleet
+EOF
+  chmod 755 "$HOME/tools/muse-boot.sh.tmp" && mv -f "$HOME/tools/muse-boot.sh.tmp" "$HOME/tools/muse-boot.sh"
+  INIT="$HOME/tools/init.sh"
+  if [ ! -f "$INIT" ]; then printf '#!/usr/bin/env bash\n' > "$INIT"; chmod 755 "$INIT"; fi
+  if ! grep -q 'muse-boot.sh' "$INIT"; then
+    # Right after the shebang, so an early exit in init.sh cannot skip it.
+    python3 - "$INIT" "$HOME/tools/muse-boot.sh" <<'PY'
+import sys
+p, boot = sys.argv[1], sys.argv[2]
+lines = open(p).read().splitlines(keepends=True)
+hook = ('# muse-bootstrap: bring the tailnet back after a recycle (scripts/muse/bootstrap.sh)\n'
+        f'[ -x {boot} ] && {{ {boot} || true; }}\n')
+at = 1 if lines and lines[0].startswith("#!") else 0
+lines.insert(at, hook)
+open(p + ".tmp", "w").write("".join(lines))
+PY
+    chmod --reference="$INIT" "$INIT.tmp" && mv -f "$INIT.tmp" "$INIT"
+    say "persist: hooked ~/tools/muse-boot.sh into ~/tools/init.sh"
+  fi
+  say "persist: a restart brings back the tailnet and fleet from ~/tools/muse-bootstrap.sh (log ~/logs/muse-boot.log)"
 fi
 
 # ---- init ----
