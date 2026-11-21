@@ -17,7 +17,7 @@
 
 import type { ProjectPoolEdgeDiagnostic, ProjectPoolItem, RefKey } from "./model.ts";
 import { isValidRef } from "./model.ts";
-import { buildEpicRollups } from "./epics.ts";
+import { buildEpicRollups, uniqueProjectItemsByRef } from "./epics.ts";
 import { effortWeight, modeOf } from "./weights.ts";
 
 export const EPIC_GRAPH_DEFAULT_CAP = 120;
@@ -306,12 +306,14 @@ export function epicGraph(
   epicRef: RefKey,
   cap: number = EPIC_GRAPH_DEFAULT_CAP,
 ): EpicGraph {
-  const byRef = new Map(pool.map((p) => [p.ref, p]));
+  // Preserve raw board memberships upstream, but graph each canonical issue once.
+  const uniquePool = uniqueProjectItemsByRef(pool);
+  const byRef = new Map(uniquePool.map((p) => [p.ref, p]));
   const epicItem = pool.find((p) => p.ref === epicRef && p.kind === "Epic");
   if (!epicItem) {
     return unavailable(`epic ${epicRef} is not in this pool, so its dependency graph is unavailable`);
   }
-  const members = pool.filter((p) => p.epicRef === epicRef);
+  const members = uniqueProjectItemsByRef(uniquePool.filter((p) => p.epicRef === epicRef));
   if (members.length === 0) {
     return unavailable(`no pool items belong to epic ${epicRef} yet — it is not yet graphed`);
   }
@@ -378,7 +380,7 @@ export function epicGraph(
   // but a deeper cycle that affects this epic remains named and linked.
   const poolDependencyEdges: EpicGraphEdge[] = [];
   const poolHierarchyEdges: EpicGraphEdge[] = [];
-  for (const item of pool) {
+  for (const item of uniquePool) {
     if (isValidRef(item.parentRef) && byRef.has(item.parentRef)) {
       poolHierarchyEdges.push({ from: item.parentRef, to: item.ref, type: "hierarchy" });
     }
