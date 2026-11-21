@@ -21,12 +21,13 @@ stub drain target (bin/drain_queue.py) — no real Bitwarden, no network:
 Run: python3 infra/github-backup/tests/test_drain_wrapper.py
 """
 
-import os, shutil, stat, subprocess, sys, tempfile
+import json, os, shutil, stat, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WRAPPER = os.path.abspath(os.path.join(HERE, "..", "systemd", "drain-wrapper.sh"))
 
 PASS = []
+INJECTED = False
 
 
 def check(name, ok):
@@ -47,8 +48,8 @@ case "$1 $2" in
     ;;
   "secret get")
     case "$3" in
-      id-url) echo '{"value":"https://worker.invalid"}' ;;
-      id-bearer) echo '{"value":"stub-bearer"}' ;;
+       id-url) python3 -c 'import json,os; print(json.dumps({"value":os.environ.get("SECRET_URL", "https://worker.invalid")}))' ;;
+       id-bearer) python3 -c 'import json,os; print(json.dumps({"value":os.environ.get("SECRET_BEARER", "stub-bearer")}))' ;;
     esac
     ;;
 esac
@@ -56,12 +57,13 @@ esac
 
 # The stub drain target records the credentials it received.
 DRAIN_STUB = """import os
+import json
 with open(os.environ["DRAIN_LOG"], "w") as f:
-    f.write("url=%s\\nbearer=%s\\ntoken=%s\\n" % (
-        os.environ.get("GHB_WORKER_URL", ""),
-        os.environ.get("GHB_WORKER_BEARER", ""),
-        os.environ.get("BWS_ACCESS_TOKEN", ""),
-    ))
+    json.dump({
+        "url": os.environ.get("GHB_WORKER_URL", ""),
+        "bearer": os.environ.get("GHB_WORKER_BEARER", ""),
+        "token": os.environ.get("BWS_ACCESS_TOKEN", ""),
+    }, f)
 """
 
 
@@ -72,8 +74,9 @@ def write_exec(path, text):
     os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
 
 
-def run_case(token_env=None, token_file=None, env_script=None, env_script_dirs=()):
+def run_case(token_env=None, token_file=None, env_script=None, env_script_dirs=(), secret_url=None, secret_bearer=None):
     """Run the wrapper in a fresh sandbox; return (rc, stderr, drain, markers)."""
+    global INJECTED
     root = tempfile.mkdtemp(prefix="drain-wrapper-test-")
     try:
         home = os.path.join(root, "home")
@@ -103,6 +106,9 @@ def run_case(token_env=None, token_file=None, env_script=None, env_script_dirs=(
             "PATH": stubs + os.pathsep + os.environ.get("PATH", ""),
             "HOME": home,
             "DRAIN_LOG": drain_log,
+            "INJECTION_MARKER": os.path.join(root, "injected"),
+            "SECRET_URL": secret_url or "https://worker.invalid",
+            "SECRET_BEARER": secret_bearer or "stub-bearer",
         }
         if token_env is not None:
             env["BWS_ACCESS_TOKEN"] = token_env
@@ -116,7 +122,8 @@ def run_case(token_env=None, token_file=None, env_script=None, env_script_dirs=(
         drain = None
         if os.path.exists(drain_log):
             with open(drain_log) as f:
-                drain = dict(l.split("=", 1) for l in f.read().splitlines())
+                drain = json.load(f)
+        INJECTED = os.path.exists(os.path.join(root, "injected"))
         return r.returncode, r.stderr, drain, os.path.exists(marker)
     finally:
         shutil.rmtree(root, ignore_errors=True)
@@ -200,6 +207,16 @@ rc, err, drain, sourced = run_case(
 )
 check("4b: fallback sourced but no token -> non-zero exit", sourced and rc != 0)
 check("4b: drain target not invoked", drain is None)
+
+# 5. Secret data containing both quote styles and command substitution is
+# passed byte-for-byte as environment data, never evaluated by a shell.
+hostile = "both ' and \\\" quotes; $(touch \"$INJECTION_MARKER\"); `id` ; $HOME"
+rc, err, drain, sourced = run_case(
+    token_env="env-token", secret_bearer=hostile,
+)
+check("5: hostile secret -> exit 0", rc == 0)
+check("5: hostile secret round-trips exactly", drain is not None and drain["bearer"] == hostile)
+check("5: hostile secret does not execute", not INJECTED)
 
 failed = [n for n, ok in PASS if not ok]
 print("\n%d checks, %d failed" % (len(PASS), len(failed)))
