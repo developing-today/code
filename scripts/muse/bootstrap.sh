@@ -32,8 +32,8 @@
 set -euo pipefail
 
 # ---- pinned artifacts (update together; sha256 of the downloaded file) ----
-FLEET_URL="${FLEET_URL:-https://github.com/developing-today/code/releases/download/fleet-static-cb3e966/fleet-x86_64-linux-musl}"
-FLEET_SHA256="${FLEET_SHA256:-293d71888b28779b8577d3c81fb377052f0e7d7d880b6b5222d49cac8f7423a4}"
+FLEET_URL="${FLEET_URL:-https://github.com/developing-today/code/releases/download/fleet-static-7bdd04a/fleet-x86_64-linux-musl}"
+FLEET_SHA256="${FLEET_SHA256:-da460c7f337f80a2f9c9fadf681d57f6736181e12888a5d1bb5472b4f45c29df}"
 BWS_URL="https://github.com/bitwarden/sdk-sm/releases/download/bws-v2.1.0/bws-x86_64-unknown-linux-musl-2.1.0.zip"
 BWS_SHA256="f59ee150e42b82128d437087e9bac920053c6bfddcb960d20ce9386e5ac9bba6"
 RESTIC_URL="https://github.com/restic/restic/releases/download/v0.20.0/restic_0.20.0_linux_amd64.bz2"
@@ -56,15 +56,23 @@ usage() {
   exit "${1:-0}"
 }
 ONLY="" SKIP=""
+phases_arg() { # phases_arg FLAG VALUE: a comma list of known phases, or a usage error
+  case "${2-}" in ""|-*) echo "bootstrap: $1 needs a phase list (one of: $PHASES)" >&2; exit 2 ;; esac
+  local p
+  for p in ${2//,/ }; do
+    case " $PHASES " in *" $p "*) ;; *) echo "bootstrap: $1: unknown phase '$p' (one of: $PHASES)" >&2; exit 2 ;; esac
+  done
+}
 while [ $# -gt 0 ]; do
   case "$1" in
-    --only) ONLY="${2:?}"; shift 2 ;;
-    --skip) SKIP="${2:?}"; shift 2 ;;
+    --only) phases_arg --only "${2-}"; ONLY=$2; shift 2 ;;
+    --skip) phases_arg --skip "${2-}"; SKIP=$2; shift 2 ;;
     --all) ALL=1; shift ;;
     -h|--help) usage 0 ;;
-    *) echo "bootstrap: unknown flag $1" >&2; usage 2 ;;
+    *) echo "bootstrap: unknown argument $1" >&2; usage 2 ;;
   esac
 done
+[ -z "$ONLY" ] || [ -z "$SKIP" ] || { echo "bootstrap: --only and --skip exclude each other" >&2; exit 2; }
 want() {
   case ",$SKIP," in *",$1,"*) return 1 ;; esac
   [ -z "$ONLY" ] && return 0
@@ -140,6 +148,15 @@ fi
 
 # ---- token ----
 TOKEN_FILE="$HOME/.config/bitwarden/access-token"
+store_token() { # store_token VALUE: the supplied token, mode 600
+  mkdir -p "$(dirname "$TOKEN_FILE")"; chmod 700 "$(dirname "$TOKEN_FILE")"
+  (umask 077; printf '%s' "$1" > "$TOKEN_FILE.tmp") && mv -f "$TOKEN_FILE.tmp" "$TOKEN_FILE"
+}
+# A token passed in the environment is the one the operator supplied now:
+# it replaces whatever file is on disk (a restored or stale one).
+if want token && [ -n "${BWS_ACCESS_TOKEN:-}" ]; then
+  store_token "$(printf '%s' "$BWS_ACCESS_TOKEN" | tr -d '[:space:]')"
+fi
 if want token && [ ! -s "$TOKEN_FILE" ]; then
   mkdir -p "$(dirname "$TOKEN_FILE")"; chmod 700 "$(dirname "$TOKEN_FILE")"
   if [ -n "${BWS_ACCESS_TOKEN:-}" ]; then tok=$BWS_ACCESS_TOKEN
@@ -147,7 +164,7 @@ if want token && [ ! -s "$TOKEN_FILE" ]; then
   else tok=$(cat); fi
   tok=$(printf '%s' "$tok" | tr -d '[:space:]')
   [ -n "$tok" ] || die "token: empty"
-  (umask 077; printf '%s' "$tok" > "$TOKEN_FILE"); unset tok
+  store_token "$tok"; unset tok
 fi
 if [ -s "$TOKEN_FILE" ]; then
   BWS_ACCESS_TOKEN=$(cat "$TOKEN_FILE"); export BWS_ACCESS_TOKEN
@@ -163,7 +180,8 @@ for s in json.load(sys.stdin):
 sys.exit(1)' "$1" || die "secret $1 not found in Bitwarden"
 }
 if want token; then
-  bws secret list -o json >/dev/null 2>&1 || die "token: bws cannot list secrets with the stored token"
+  bws secret list -o json >/dev/null 2>&1 \
+    || die "token: bws cannot list secrets with the token in $TOKEN_FILE (pass a fresh one: BWS_ACCESS_TOKEN=... or remove the file and rerun)"
   say "token: stored and verified"
 fi
 
@@ -182,6 +200,9 @@ if want restore; then
   restic_env restic-sandbox-config restic.sandbox-config-password
   say "restore: ~/.config (latest snapshot)"
   restic restore latest --no-lock --target "$ROOT" --path "$SANDBOX_HOME/.config" >/dev/null || die "restore: ~/.config"
+  # The snapshot carries the old box's Bitwarden token file; keep the one
+  # supplied for this run.
+  if [ "$ROOT" = / ]; then store_token "$BWS_ACCESS_TOKEN"; fi
   restic_env restic-sandbox-home restic.sandbox-home-password
   restic snapshots --no-lock --json > "$HOME/.bootstrap-snapshots.json" || die "restore: cannot list home snapshots"
   python3 - "$HOME/.bootstrap-snapshots.json" "$SANDBOX_HOME" "$ALL" > "$HOME/.bootstrap-restore-plan" <<'PY'
@@ -295,13 +316,28 @@ fi
 # ---- check ----
 if want check; then
   rc=0
-  # Builds before the missing-socket fix keep retrying an absent session
-  # broker for ~2 minutes per secret before falling back to bws.
   say "check: running"
   has_bridge "$(command -v fleet)" || { say "check: fleet has no bridge capability"; rc=1; }
-  if [ -f "$TS_STATE/fleet-proxy.env" ]; then . "$TS_STATE/fleet-proxy.env"; fi
-  code=$(curl -sS -m 10 ${HTTPS_PROXY:+-x "$HTTPS_PROXY"} -o /dev/null -w '%{http_code}' "http://$LAPTOP_TAILNET_IP:4799/" 2>/dev/null || true)
-  if [ -n "$code" ] && [ "$code" != 000 ]; then
+  # Reach the laptop agent port the way fleet does: directly in kernel
+  # mode, or by CONNECT through tailscaled's local proxy in userspace
+  # mode. Only a TCP connect to the laptop (or the proxy's 200 to the
+  # CONNECT) counts; a proxy's refusal does not.
+  TS_PROXY=""
+  if [ "$(cat "$TS_STATE/mode" 2>/dev/null)" = userspace ]; then TS_PROXY=127.0.0.1:3130; fi
+  if python3 -c '
+import socket, sys
+host, port, proxy = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+try:
+    if proxy:
+        ph, pp = proxy.rsplit(":", 1)
+        s = socket.create_connection((ph, int(pp)), timeout=10)
+        s.sendall(("CONNECT %s:%d HTTP/1.1\r\nHost: %s:%d\r\n\r\n" % (host, port, host, port)).encode())
+        line = s.recv(256).split(b"\r\n", 1)[0].split()
+        sys.exit(0 if len(line) > 1 and line[1] == b"200" else 1)
+    socket.create_connection((host, port), timeout=10).close()
+except OSError:
+    sys.exit(1)
+' "$LAPTOP_TAILNET_IP" 4799 "$TS_PROXY"; then
     say "check: laptop agent port answers on the tailnet"
   else
     say "check: laptop agent port did not answer"; rc=1

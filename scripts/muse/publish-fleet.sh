@@ -8,6 +8,13 @@
 # Needs nix, git and gh (logged in with repo scope). Re-running for the same
 # rev re-uses the existing release when its asset matches.
 set -euo pipefail
+# Command line: at most one positional REV, no flags; checked before any
+# subprocess (doc/agents/operator-script-argument-contract.md).
+case "${1-}" in
+  -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -*) echo "publish-fleet: unknown flag $1" >&2; exit 2 ;;
+esac
+[ $# -le 1 ] || { echo "publish-fleet: takes at most one REV, got $# arguments" >&2; exit 2; }
 REPO=developing-today/code
 ASSET=fleet-x86_64-linux-musl
 root=$(git rev-parse --show-toplevel)
