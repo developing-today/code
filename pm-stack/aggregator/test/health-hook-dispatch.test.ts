@@ -12,6 +12,12 @@ describe("health hook dispatch transitions", () => {
     expect(shouldDispatchHealthHook(dispatched, "pm-stack-reachable", "up")).toBe(false);
   });
 
+  test("a first up with no recorded state is a baseline, not a dispatch", () => {
+    expect(shouldDispatchHealthHook({}, "opencode-working", "up")).toBe(false);
+    expect(shouldDispatchHealthHook({}, "opencode-working", "down")).toBe(true);
+    expect(shouldDispatchHealthHook({ "opencode-working": "up" }, "opencode-working", "down")).toBe(true);
+  });
+
   test("normalizes persisted dispatch state and ignores malformed values", () => {
     expect(normalizeHookDispatchState({
       "pm-stack-reachable": "down",

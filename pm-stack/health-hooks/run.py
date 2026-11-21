@@ -73,6 +73,11 @@ def now_iso() -> str:
 
 
 def parse_args(argv):
+    # Each wrapper fixes its own --target; a second --target would let
+    # argparse take the last one and run the other target's diagnosis.
+    if sum(1 for a in argv if a == "--target" or a.startswith("--target=")) > 1:
+        print("run.py: --target may be given only once", file=sys.stderr)
+        raise SystemExit(2)
     p = argparse.ArgumentParser(prog="run.py", allow_abbrev=False,
                                 description="C3 health hook runner")
     p.add_argument("--target", required=True, choices=sorted(TARGETS))
@@ -124,12 +129,12 @@ def http_probe(url, timeout=5, alive=None, deadline=None):
                 "latencyMs": int((time.monotonic() - t0) * 1000)}
 
 
-def run_cmd(cmd, timeout=5, deadline=None):
+def run_cmd(cmd, timeout=5, deadline=None, env=None):
     try:
         budget = bounded_timeout(timeout, deadline)
         if budget <= 0:
             return {"rc": -1, "stdout": "", "stderr": "sequence deadline exceeded"}
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=budget)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=budget, env=env)
         return {"rc": proc.returncode, "stdout": proc.stdout.strip(),
                 "stderr": proc.stderr.strip()}
     except subprocess.TimeoutExpired:
@@ -174,14 +179,72 @@ def git_recent_commits(repo, n=5, deadline=None):
     return {"ok": True, "commits": commits, "error": None}
 
 
+def _first_existing(paths):
+    for p in paths:
+        if p and Path(p).exists():
+            return str(p)
+    return None
+
+
+def bws_lookup(key, deadline=None):
+    """Resolve a Bitwarden Secrets Manager secret by its key.
+
+    `bws secret get` takes a secret ID, not its key, so this lists the
+    secrets, finds the key's ID and fetches that, as the aggregator's
+    secrets.ts does. Returns (status, value): status is "resolved",
+    "missing" or "unknown"; value is only set when resolved and is never
+    logged or put in evidence.
+    """
+    bws = os.environ.get("BWS_BIN") or _first_existing(
+        ["/run/current-system/sw/bin/bws", HOME / "tools" / "bin" / "bws"]) or "bws"
+    env = os.environ.copy()
+    if not env.get("BWS_ACCESS_TOKEN"):
+        token_file = os.environ.get("BWS_ACCESS_TOKEN_FILE") or _first_existing(
+            [HOME / ".config" / "bws" / "access-token",
+             HOME / ".config" / "bitwarden" / "access-token"])
+        if not token_file:
+            return "unknown", None
+        try:
+            access = Path(token_file).read_text().strip()
+        except OSError:
+            return "unknown", None
+        if not access:
+            return "unknown", None
+        env["BWS_ACCESS_TOKEN"] = access
+    listed = run_cmd([bws, "secret", "list", "--output", "json"], timeout=10,
+                     deadline=deadline, env=env)
+    if listed["rc"] == 127:
+        return "unknown", None
+    if listed["rc"] != 0:
+        return "unknown", None
+    try:
+        entries = json.loads(listed["stdout"] or "[]")
+    except json.JSONDecodeError:
+        return "unknown", None
+    secret_id = next((e.get("id") for e in entries
+                      if isinstance(e, dict) and e.get("key") == key and e.get("id")), None)
+    if not secret_id:
+        return "missing", None
+    got = run_cmd([bws, "secret", "get", secret_id, "--output", "json"], timeout=10,
+                  deadline=deadline, env=env)
+    if got["rc"] != 0:
+        return "unknown", None
+    try:
+        value = (json.loads(got["stdout"] or "{}").get("value") or "").strip()
+    except (json.JSONDecodeError, AttributeError):
+        return "unknown", None
+    return ("resolved", value) if value else ("missing", None)
+
+
 def bws_resolve(name, deadline=None):
-    # Best-effort: try the bws CLI if present; never print the secret.
-    r = run_cmd(["bws", "secret", "get", name], timeout=10, deadline=deadline)
-    if r["rc"] == 127:
-        return {"status": "unknown", "detail": "bws CLI not available"}
-    if r["rc"] == 0 and r["stdout"]:
-        return {"status": "resolved", "detail": "secret resolved by name"}
-    return {"status": "missing", "detail": (r["stderr"] or "not resolved")[:200]}
+    # Evidence only: whether the secret resolves, never its value.
+    status, _value = bws_lookup(name, deadline=deadline)
+    detail = {
+        "resolved": "secret resolved by key",
+        "missing": "no secret with that key",
+        "unknown": "bws unavailable or unreadable",
+    }[status]
+    return {"status": status, "detail": detail}
 
 
 def read_host_health(path=None):
@@ -196,21 +259,42 @@ def read_host_health(path=None):
     # host-health-collector records user unit states; accept a few shapes.
     units = data.get("units") or data.get("services") or {}
     if isinstance(units, dict):
-        for name, info in units.items():
-            st = (info or {}).get("activeState") or (info or {}).get("state") or (info or {}).get("ActiveState")
-            if isinstance(st, str) and st.lower() not in ("active", "up", "running"):
-                units_down.append(name)
+        items = list(units.items())
     elif isinstance(units, list):
-        for info in units:
-            name = info.get("id") or info.get("name")
-            st = info.get("activeState") or info.get("state") or info.get("ActiveState")
-            if isinstance(st, str) and st.lower() not in ("active", "up", "running") and name:
-                units_down.append(name)
+        items = [((info or {}).get("id") or (info or {}).get("name"), info) for info in units]
+    else:
+        items = []
+    for name, info in items:
+        if name and unit_is_down(info or {}):
+            units_down.append(name)
     return {
         "collectedAt": data.get("generatedAt") or data.get("collectedAt") or data.get("timestamp"),
         "unitsDown": units_down,
         "present": True,
     }
+
+
+def unit_is_down(info):
+    """A unit is down when it failed, not merely when it is inactive.
+
+    Timer-driven oneshots (pm-git-sync, pm-projector-reconcile) sit at
+    activeState "inactive" with result "success" between runs; that is
+    healthy. A unit counts as down when systemd says it failed, or when
+    it is inactive after a run whose result was not success.
+    """
+    st = info.get("activeState") or info.get("state") or info.get("ActiveState")
+    if not isinstance(st, str):
+        return False
+    st = st.lower()
+    if st in ("active", "up", "running", "activating", "reloading"):
+        return False
+    if st in ("failed", "down"):
+        return True
+    result = info.get("result") or info.get("Result")
+    if isinstance(result, str) and result:
+        return result.lower() != "success"
+    # Inactive with no recorded result: no evidence of a failure.
+    return False
 
 
 def opencode_route_ref():
@@ -233,20 +317,29 @@ def opencode_route_ref():
     return {"status": "unknown", "detail": "no model key found"}
 
 
-def count_sessions_last_hour():
-    # Best-effort: look for opencode session store; return None if unavailable
-    candidates = [
-        HOME / ".local" / "state" / "opencode" / "sessions",
-        HOME / ".opencode" / "sessions",
-    ]
-    for c in candidates:
-        if c.exists() and c.is_dir():
-            try:
-                n = sum(1 for _ in c.iterdir())
-                return n
-            except Exception:
-                pass
-    return None
+def count_sessions_last_hour(db_path=None, now_ms=None):
+    """Sessions updated in the trailing hour, read from the live OpenCode
+    store (session_v2 in ~/.local/share/opencode/opencode.db, per
+    pm-stack/opencode-usage-export/README.md). Opened read-only; returns
+    None when the store or its v2 table is not there."""
+    import sqlite3
+    path = Path(db_path or os.environ.get("OPENCODE_USAGE_DB", "").strip()
+                or HOME / ".local" / "share" / "opencode" / "opencode.db")
+    if not path.exists():
+        return None
+    now_ms = int(time.time() * 1000) if now_ms is None else now_ms
+    try:
+        db = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=2)
+    except sqlite3.Error:
+        return None
+    try:
+        row = db.execute("SELECT count(*) FROM session_v2 WHERE time_updated >= ?",
+                         (now_ms - 3_600_000,)).fetchone()
+        return int(row[0]) if row else 0
+    except sqlite3.Error:
+        return None
+    finally:
+        db.close()
 
 
 def probe_pm_stack(caller_detail, deadline=None):
@@ -370,16 +463,7 @@ def probe_opencode(caller_detail, deadline=None):
 def post_to_throat(record, deadline=None):
     intake = os.environ.get("ALERTS_INTAKE_URL", DEFAULT_INTAKE).rstrip("/")
     # resolve token from bws best-effort; if unavailable, skip posting
-    token = None
-    # bws_resolve doesn't return the secret; try reading via bws secret get value
-    r = run_cmd(["bws", "secret", "get", "pm-aggregator.alerts-intake-token", "--output", "json"], timeout=10, deadline=deadline)
-    if r["rc"] == 0 and r["stdout"]:
-        try:
-            obj = json.loads(r["stdout"])
-            token = obj.get("value") or obj.get("secret")
-        except Exception:
-            # maybe raw value
-            token = r["stdout"].strip() or None
+    _status, token = bws_lookup("pm-aggregator.alerts-intake-token", deadline=deadline)
     if not token:
         return {"posted": False, "reason": "intake token unavailable"}
     body = {
@@ -471,9 +555,12 @@ def main(argv):
         severity = "info"
 
     incident_id = str(uuid.uuid4())
+    # A recovery reuses its outage's intake key: the intake closes only
+    # the incident whose source and key match.
+    intake_key = (open_incident or {}).get("key") or f"health-hook:{target}:{incident_id}"
     record = {
         "source": "health-hook",
-        "key": f"health-hook:{target}:{incident_id}",
+        "key": intake_key,
         "severity": severity,
         "title": f"Health hook: {TARGETS[target]} is {state}",
         "body": summary,

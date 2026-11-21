@@ -162,6 +162,70 @@ def test_run_cmd_caps_timeout_to_shared_deadline_and_skips_expired_work():
     assert result["stderr"] == "sequence deadline exceeded"
 
 
+def test_recovery_reuses_the_outage_intake_key():
+    with tempfile.TemporaryDirectory() as td:
+        incident_file = Path(td) / "incidents.jsonl"
+        incident_file.write_text(json.dumps({
+            "target": "opencode-working", "state": "down", "incidentId": "down-123",
+            "key": "health-hook:opencode-working:down-123",
+        }) + "\n")
+        with mock.patch.dict(os.environ, {"PM_HEALTH_HOOKS_INCIDENT_FILE": str(incident_file)}), \
+             mock.patch.object(R, "probe_opencode", return_value=("transient", "ok", {})), \
+             mock.patch.object(R, "post_to_throat", return_value={"posted": True}) as post:
+            with redirect_stdout(StringIO()):
+                assert R.main(["--target", "opencode-working"]) == 0
+    assert post.call_args.args[0]["key"] == "health-hook:opencode-working:down-123"
+
+
+def test_wrapper_target_cannot_be_overridden():
+    r = subprocess.run([str(HERE / "pm-stack-reachable.sh"), "--target", "opencode-working"],
+                       capture_output=True, text=True)
+    assert r.returncode == 2, r
+    assert "only once" in r.stderr
+
+
+def test_bws_lookup_resolves_the_key_to_its_id_before_get():
+    calls = []
+
+    def fake(cmd, timeout=5, deadline=None, env=None):
+        calls.append(cmd[1:])
+        assert env and env.get("BWS_ACCESS_TOKEN") == "access"
+        if cmd[1:3] == ["secret", "list"]:
+            return {"rc": 0, "stdout": json.dumps([{"id": "id-1", "key": "other"},
+                                                    {"id": "id-2", "key": "wanted"}]), "stderr": ""}
+        return {"rc": 0, "stdout": json.dumps({"id": "id-2", "value": " tok "}), "stderr": ""}
+
+    with mock.patch.dict(os.environ, {"BWS_ACCESS_TOKEN": "access", "BWS_BIN": "bws"}), \
+         mock.patch.object(R, "run_cmd", side_effect=fake):
+        assert R.bws_lookup("wanted") == ("resolved", "tok")
+        assert R.bws_lookup("absent")[0] == "missing"
+        evidence = R.bws_resolve("wanted")
+    assert calls[1] == ["secret", "get", "id-2", "--output", "json"]
+    assert evidence["status"] == "resolved" and "tok" not in json.dumps(evidence)
+
+
+def test_inactive_successful_oneshot_is_not_down():
+    assert not R.unit_is_down({"activeState": "inactive", "result": "success"})
+    assert not R.unit_is_down({"activeState": "active"})
+    assert R.unit_is_down({"activeState": "failed"})
+    assert R.unit_is_down({"activeState": "inactive", "result": "exit-code"})
+
+
+def test_sessions_last_hour_reads_the_live_store():
+    import sqlite3
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "opencode.db"
+        db = sqlite3.connect(db_path)
+        db.execute("CREATE TABLE session_v2 (id text, time_updated integer)")
+        now = 10_000_000_000
+        db.executemany("INSERT INTO session_v2 VALUES (?, ?)",
+                       [("a", now - 60_000), ("b", now - 3_000_000), ("c", now - 7_200_000)])
+        db.commit()
+        db.close()
+        assert R.count_sessions_last_hour(db_path, now_ms=now) == 2
+        assert R.count_sessions_last_hour(Path(td) / "missing.db", now_ms=now) is None
+
+
 def test_shell_wrappers_are_executable():
     for wrapper in (HERE / "pm-stack-reachable.sh", HERE / "opencode-working.sh"):
         assert wrapper.stat().st_mode & 0o111, wrapper

@@ -203,7 +203,10 @@ async function round(state: SentinelStateFile): Promise<void> {
     const hookTarget =
       target.id === "aggregator" ? "pm-stack-reachable" :
       target.id === "opencode" ? "opencode-working" : null;
-    if (hookTarget && shouldDispatchHealthHook(state.hookDispatchedStates, hookTarget, entry.state)) {
+    if (hookTarget && state.hookDispatchedStates[hookTarget] === undefined && entry.state === "up") {
+      // Baseline only; see shouldDispatchHealthHook.
+      state.hookDispatchedStates[hookTarget] = "up";
+    } else if (hookTarget && shouldDispatchHealthHook(state.hookDispatchedStates, hookTarget, entry.state)) {
       const caller = "stack-sentinel";
       const hookPath = join(homedir(), "git", "code", "pm-stack", "health-hooks", `${hookTarget}.sh`);
       try {
