@@ -4997,6 +4997,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "id-import-notion"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "id-native-shell"
 version = "0.1.0"
 dependencies = [
