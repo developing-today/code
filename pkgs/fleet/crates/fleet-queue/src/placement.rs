@@ -216,6 +216,14 @@ pub trait Gh {
             ))
         })
     }
+    /// The signed-in user's own token, for a surface whose registry
+    /// entry says `"dispatch_as": "user"`. Dispatching a workflow with
+    /// a token the fleet already holds is a routine operation
+    /// (FDR-0013), so a surface the App is not installed on is still
+    /// usable. None where no user token is available.
+    fn user_token(&self) -> Option<String> {
+        None
+    }
     fn api(&self, method: &str, path: &str, token: &str, body: Option<&Value>) -> R<(u16, Value)>;
     /// `gh codespace list --json name,repository,state`, parsed.
     fn codespace_list(&self) -> R<Vec<Value>>;
@@ -237,6 +245,35 @@ pub trait Gh {
 struct RealGh {
     agent: ureq::Agent,
     tokens: RefCell<HashMap<String, String>>,
+    /// The user's token, looked up at most once per run: a miss is
+    /// remembered too, so a cascade over several `dispatch_as: user`
+    /// surfaces does not repeat a slow lookup.
+    user: RefCell<Option<Option<String>>>,
+}
+
+/// The fleet-secrets name of the `gh` hosts file (the personal leg
+/// `fleet gh` uses).
+const USER_HOSTS_SECRET: &str = "github-cli.hosts-yml";
+
+/// The `oauth_token` value in gh's hosts.yml content. Line-shaped on
+/// purpose, like `fleet gh`'s own reader: the file is a small
+/// fixed-shape config.
+fn hosts_yml_token(hosts_yml: &str) -> Option<String> {
+    hosts_yml.lines().find_map(|line| {
+        let rest = line.trim().strip_prefix("oauth_token:")?;
+        let value = rest.trim().trim_matches('"').trim_matches('\'');
+        (!value.is_empty()).then(|| value.to_string())
+    })
+}
+
+/// The first usable token out of an ordered list of lookups; a
+/// lookup that yields only whitespace counts as a miss.
+fn first_token(lookups: &[&dyn Fn() -> Option<String>]) -> Option<String> {
+    lookups
+        .iter()
+        .filter_map(|lookup| lookup())
+        .map(|t| t.trim().to_string())
+        .find(|t| !t.is_empty())
 }
 
 impl RealGh {
@@ -248,6 +285,7 @@ impl RealGh {
             .into();
         RealGh {
             agent,
+            user: RefCell::new(None),
             tokens: RefCell::new(HashMap::new()),
         }
     }
@@ -267,6 +305,42 @@ fn home_dir() -> String {
 }
 
 impl Gh for RealGh {
+    /// Where the user's token comes from, cheapest first: the
+    /// environment, the seat's own `gh` login, then the fleet secrets
+    /// chain by name (the same hosts file `fleet gh` reads). The
+    /// value goes into Authorization headers only.
+    fn user_token(&self) -> Option<String> {
+        if let Some(known) = self.user.borrow().as_ref() {
+            return known.clone();
+        }
+        let from_env = || {
+            ["GH_TOKEN", "GITHUB_TOKEN"]
+                .iter()
+                .filter_map(|k| std::env::var(k).ok())
+                .find(|v| !v.trim().is_empty())
+        };
+        let from_gh = || {
+            let out = std::process::Command::new("gh")
+                .args(["auth", "token"])
+                .stderr(std::process::Stdio::null())
+                .output()
+                .ok()?;
+            out.status
+                .success()
+                .then(|| String::from_utf8_lossy(&out.stdout).to_string())
+        };
+        let from_secrets = || {
+            let config = fleet_config::Config::load().unwrap_or_default();
+            let hosts = fleet_secrets::Resolver::default_chain(&config)
+                .resolve(USER_HOSTS_SECRET)
+                .ok()?;
+            hosts_yml_token(hosts.expose())
+        };
+        let found = first_token(&[&from_env, &from_gh, &from_secrets]);
+        *self.user.borrow_mut() = Some(found.clone());
+        found
+    }
+
     fn mint_token(&self, repo: &str) -> Option<String> {
         if let Some(tok) = self.tokens.borrow().get(repo) {
             return Some(tok.clone());
@@ -368,6 +442,38 @@ impl Gh for RealGh {
 
 fn surf_str<'a>(surface: &'a Value, key: &str) -> &'a str {
     surface.get(key).and_then(|v| v.as_str()).unwrap_or("")
+}
+
+/// Whether a surface dispatches with the user's own token instead of
+/// the App's installation token (registry field `dispatch_as`).
+fn dispatches_as_user(surface: &Value) -> bool {
+    surf_str(surface, "dispatch_as") == "user"
+}
+
+/// The token a surface's API calls use, when one is available: the
+/// user's for a `dispatch_as: user` surface, else the App's.
+fn surface_token(surface: &Value, gh: &dyn Gh) -> Option<String> {
+    if dispatches_as_user(surface) {
+        gh.user_token()
+    } else {
+        gh.mint_token(surf_str(surface, "repo"))
+    }
+}
+
+/// Why a surface has no token, for an eligibility reason or an error.
+fn no_token_reason(surface: &Value) -> String {
+    let repo = surf_str(surface, "repo");
+    if dispatches_as_user(surface) {
+        format!(
+            "{repo} dispatches as the user, and no user token is available here \
+             (GH_TOKEN, GITHUB_TOKEN or `gh auth token`)"
+        )
+    } else {
+        format!(
+            "app token cannot be minted for {repo} \u{2014} surface is \
+             unreachable by the App"
+        )
+    }
 }
 
 fn surf_targets(surface: &Value) -> Vec<String> {
@@ -655,6 +761,13 @@ fn base_eligible(surface: &Value, job: &Job) -> (bool, String) {
     if status != "active" {
         return (false, format!("surface status is '{status}', not 'active'"));
     }
+    let dispatch_as = surf_str(surface, "dispatch_as");
+    if !matches!(dispatch_as, "" | "app" | "user") {
+        return (
+            false,
+            format!("surface dispatch_as is '{dispatch_as}', not 'app' or 'user'"),
+        );
+    }
     let targets = surf_targets(surface);
     if !targets.iter().any(|t| t == "*") && !targets.iter().any(|t| t == &job.repo) {
         return (
@@ -811,7 +924,7 @@ impl GithubActionsAdapter {
         let s = &self.surface;
         let repo = surf_str(s, "repo").to_string();
         let workflow = surf_str(s, "workflow").to_string();
-        let token = gh.app_token(&repo)?;
+        let token = surface_token(s, gh).ok_or_else(|| Die(no_token_reason(s)))?;
         let dispatch_id = dispatch_id_for(s);
         let inputs = self.workflow_inputs(job, dispatch_id.as_deref());
         // Correlate the created run with THIS dispatch (Codex P1
@@ -914,7 +1027,7 @@ impl GithubActionsAdapter {
             }
         };
         let repo = surf_str(&self.surface, "repo");
-        let token = match gh.mint_token(repo) {
+        let token = match surface_token(&self.surface, gh) {
             Some(t) => t,
             None => {
                 return session
@@ -963,15 +1076,8 @@ impl Adapter for GithubActionsAdapter {
         // (Codex P2 on PR #8325): live token availability is part
         // of eligibility, so an inaccessible surface cannot win
         // the cascade and then abort at dispatch time.
-        let repo = surf_str(&self.surface, "repo");
-        if gh.mint_token(repo).is_none() {
-            return (
-                false,
-                format!(
-                    "app token cannot be minted for {repo} \u{2014} surface is \
-                     unreachable by the App"
-                ),
-            );
+        if surface_token(&self.surface, gh).is_none() {
+            return (false, no_token_reason(&self.surface));
         }
         (true, "eligible".to_string())
     }
@@ -1059,15 +1165,8 @@ impl Adapter for BlacksmithAdapter {
         if job.runner == "github" {
             return (false, "job pins runner=github".to_string());
         }
-        let repo = surf_str(&self.inner.surface, "repo");
-        if gh.mint_token(repo).is_none() {
-            return (
-                false,
-                format!(
-                    "app token cannot be minted for {repo} \u{2014} surface is \
-                     unreachable by the App"
-                ),
-            );
+        if surface_token(&self.inner.surface, gh).is_none() {
+            return (false, no_token_reason(&self.inner.surface));
         }
         // The budget binds pinned surfaces too (Codex round-4 on
         // PR #8325): a --surface pin is a placement choice, not a
@@ -1338,8 +1437,13 @@ pub fn build_ctx(
 ) -> Ctx {
     let owners = registry.get("owners").cloned().unwrap_or(json!({}));
     let mut hosts: HashMap<String, Vec<String>> = HashMap::new();
+    // Host repos whose every API call uses the user's token.
+    let mut user_repos: std::collections::HashSet<String> = std::collections::HashSet::new();
     for s in registry_surfaces(registry) {
         let kind = surf_str(&s, "kind");
+        if dispatches_as_user(&s) {
+            user_repos.insert(surf_str(&s, "repo").to_string());
+        }
         if (kind == "github-actions" || kind == "blacksmith") && !surf_str(&s, "repo").is_empty() {
             let repos = hosts.entry(surf_str(&s, "owner").to_string()).or_default();
             let repo = surf_str(&s, "repo").to_string();
@@ -1362,11 +1466,16 @@ pub fn build_ctx(
         let mut running: i64 = 0;
         let mut queued: i64 = 0;
         for repo in repos {
-            let token = match gh.mint_token(repo) {
+            let minted = if user_repos.contains(repo) {
+                gh.user_token()
+            } else {
+                gh.mint_token(repo)
+            };
+            let token = match minted {
                 Some(t) => t,
                 None => {
                     read_errors.push(format!(
-                        "{repo}: app token unavailable (not covered) — load counted as 0"
+                        "{repo}: no token available (not covered) — load counted as 0"
                     ));
                     continue;
                 }
@@ -1593,7 +1702,7 @@ fn refresh_session(store: &mut Value, handle: &str, registry: &Value, gh: &dyn G
                     && ["succeeded", "failed", "cancelled"].contains(&state.as_str())
                 {
                     let repo = surf_str(surface, "repo").to_string();
-                    if let Some(token) = gh.mint_token(&repo) {
+                    if let Some(token) = surface_token(surface, gh) {
                         if let Ok((200, run)) = gh.api(
                             "GET",
                             &format!("/repos/{repo}/actions/runs/{}", run_id.unwrap()),
@@ -2230,6 +2339,8 @@ mod tests {
         codespace_items: Vec<Value>,
         codespace_exit: i32,
         posts: RefCell<Vec<(String, Value)>>,
+        user_token: Option<String>,
+        post_tokens: RefCell<Vec<String>>,
     }
 
     impl Default for FakeGh {
@@ -2244,6 +2355,8 @@ mod tests {
                 codespace_items: Vec::new(),
                 codespace_exit: 0,
                 posts: RefCell::new(Vec::new()),
+                user_token: None,
+                post_tokens: RefCell::new(Vec::new()),
             }
         }
     }
@@ -2256,14 +2369,18 @@ mod tests {
                 None
             }
         }
+        fn user_token(&self) -> Option<String> {
+            self.user_token.clone()
+        }
         fn api(
             &self,
             method: &str,
             path: &str,
-            _token: &str,
+            token: &str,
             body: Option<&Value>,
         ) -> R<(u16, Value)> {
             if method == "POST" {
+                self.post_tokens.borrow_mut().push(token.to_string());
                 self.posts
                     .borrow_mut()
                     .push((path.to_string(), body.cloned().unwrap_or(Value::Null)));
@@ -3034,5 +3151,154 @@ mod tests {
         assert_eq!(back["sessions"]["fp_test"]["state"], json!("queued"));
         unsafe { std::env::remove_var("FLEET_PLACE_STATE") };
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- dispatch_as: user (FDR-0013) ----
+    //
+    // Oracle: the registry field's contract. A surface that says
+    // `dispatch_as: user` uses the user's token for eligibility and
+    // dispatch; every other surface keeps the App-only behaviour.
+
+    /// The personal fleet surface, re-declared as a fork the App is
+    /// not installed on, dispatching as the user.
+    fn user_surface() -> Value {
+        let reg = registry();
+        let mut surface = find_surface(&reg, "fleet-personal").unwrap().clone();
+        surface["id"] = json!("fleet-forks");
+        surface["dispatch_as"] = json!("user");
+        surface["app_installation"] = Value::Null;
+        surface
+    }
+
+    #[test]
+    fn hosts_yml_token_reads_the_oauth_token_line() {
+        // Oracle: gh's hosts.yml shape (a user block carrying
+        // oauth_token), the same fixture shape `fleet gh` tests use.
+        let yml = "github.com:\n    git_protocol: https\n    users:\n        someone:\n            oauth_token: TOKEN_VALUE\n    user: someone\n";
+        assert_eq!(hosts_yml_token(yml).as_deref(), Some("TOKEN_VALUE"));
+        assert_eq!(
+            hosts_yml_token("oauth_token: \"QUOTED\"\n").as_deref(),
+            Some("QUOTED")
+        );
+        // An empty value and a file without the line are misses.
+        assert_eq!(hosts_yml_token("oauth_token:\n"), None);
+        assert_eq!(hosts_yml_token("github.com:\n    user: someone\n"), None);
+    }
+
+    #[test]
+    fn first_token_takes_the_first_non_blank_lookup_in_order() {
+        let none = || None;
+        let blank = || Some("  \n".to_string());
+        let a = || Some(" a-token\n".to_string());
+        let b = || Some("b-token".to_string());
+        assert_eq!(
+            first_token(&[&none, &blank, &a, &b]).as_deref(),
+            Some("a-token")
+        );
+        assert_eq!(first_token(&[&b, &a]).as_deref(), Some("b-token"));
+        assert_eq!(first_token(&[&none, &blank]), None);
+        assert_eq!(first_token(&[]), None);
+    }
+
+    #[test]
+    fn a_user_dispatch_surface_is_eligible_and_posts_with_the_user_token() {
+        let surface = user_surface();
+        let ad = adapter_for(&surface).unwrap();
+        let gh = FakeGh {
+            // The App cannot mint for this repo at all.
+            tokens_ok: false,
+            user_token: Some("user-token".to_string()),
+            post_runs: vec![json!({
+                "id": 4242,
+                "html_url": "https://github.com/dezren39/fleet/actions/runs/4242",
+                "created_at": "2026-01-01T00:00:10Z"
+            })],
+            ..Default::default()
+        };
+        let c = ctx(&[("dezren39", (0, 0))], 0.0, false);
+        assert_eq!(ad.eligible(&job(), &c, &gh), (true, "eligible".to_string()));
+        let result = ad.dispatch(&job(), &gh).unwrap();
+        assert_eq!(result.run_id, Some(4242));
+        assert_eq!(gh.post_tokens.borrow().as_slice(), ["user-token"]);
+    }
+
+    #[test]
+    fn a_user_dispatch_surface_without_a_user_token_is_ineligible_and_says_why() {
+        let surface = user_surface();
+        let ad = adapter_for(&surface).unwrap();
+        let gh = FakeGh {
+            // An App token being available must not rescue it: the
+            // surface said which token it uses.
+            tokens_ok: true,
+            user_token: None,
+            ..Default::default()
+        };
+        let c = ctx(&[("dezren39", (0, 0))], 0.0, false);
+        let (ok, why) = ad.eligible(&job(), &c, &gh);
+        assert!(!ok);
+        assert!(why.contains("dispatches as the user"), "{why}");
+        let err = match ad.dispatch(&job(), &gh) {
+            Ok(_) => panic!("a surface with no token must not dispatch"),
+            Err(e) => e,
+        };
+        assert!(err.0.contains("no user token"), "{}", err.0);
+        assert!(gh.posts.borrow().is_empty());
+    }
+
+    #[test]
+    fn an_app_surface_never_falls_back_to_the_user_token() {
+        // Positive control for the two tests above: without the
+        // registry field, a user token changes nothing.
+        let reg = registry();
+        let surface = find_surface(&reg, "fleet-personal").unwrap().clone();
+        let ad = adapter_for(&surface).unwrap();
+        let gh = FakeGh {
+            tokens_ok: false,
+            user_token: Some("user-token".to_string()),
+            ..Default::default()
+        };
+        let c = ctx(&[("dezren39", (0, 0))], 0.0, false);
+        let (ok, why) = ad.eligible(&job(), &c, &gh);
+        assert!(!ok);
+        assert!(why.contains("unreachable by the App"), "{why}");
+    }
+
+    #[test]
+    fn an_unknown_dispatch_as_value_is_refused() {
+        let mut surface = user_surface();
+        surface["dispatch_as"] = json!("robot");
+        let ad = adapter_for(&surface).unwrap();
+        let gh = FakeGh {
+            user_token: Some("user-token".to_string()),
+            ..Default::default()
+        };
+        let c = ctx(&[("dezren39", (0, 0))], 0.0, false);
+        let (ok, why) = ad.eligible(&job(), &c, &gh);
+        assert!(!ok);
+        assert!(why.contains("not 'app' or 'user'"), "{why}");
+    }
+
+    #[test]
+    fn load_for_a_user_dispatch_host_is_read_with_the_user_token() {
+        let mut reg = registry();
+        reg["surfaces"] = json!([user_surface()]);
+        // No user token: the host's load cannot be read, and the
+        // context says so instead of counting it as zero silently.
+        let gh = FakeGh {
+            tokens_ok: true,
+            user_token: None,
+            ..Default::default()
+        };
+        let c = build_ctx(&reg, &json!({}), false, "", None, &gh);
+        assert_eq!(c.load_read_errors.len(), 1, "{:?}", c.load_read_errors);
+        assert!(c.load_read_errors[0].contains("dezren39/fleet"));
+        // With one, the read goes through.
+        let gh = FakeGh {
+            tokens_ok: false,
+            user_token: Some("user-token".to_string()),
+            ..Default::default()
+        };
+        let c = build_ctx(&reg, &json!({}), false, "", None, &gh);
+        assert!(c.load_read_errors.is_empty(), "{:?}", c.load_read_errors);
     }
 }
