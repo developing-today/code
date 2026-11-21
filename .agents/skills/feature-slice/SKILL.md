@@ -39,7 +39,7 @@ A slice is one PR that makes one acceptance criterion pass, or moves one measure
 
 ## When something stands in the way
 
-- **A product or architecture choice.** Write a [`decision-request`](../decision-request/SKILL.md) and build on its default if the choice is reversible. Do not wait.
+- **A product or architecture choice.** Make it, record it, and build on it ([`decide-and-proceed`](../decide-and-proceed/SKILL.md)). Nothing waits on the owner.
 - **The packet's type or timebox does not fit.** Re-scope to the slice, record it in the queue checkpoint, and continue. Do not return `packet_defect` for size alone.
 - **The slice needs another issue's work first.** Check that claim against the code. If it holds, land the part that does not depend on it, and name the dependency as `Requires: #N` with the file or symbol that proves it.
 - **Out of time.** Push the branch, record the resume point in the checkpoint, and park with the slice named. Never park a large issue with no code and no measurement ([park rules](../../../doc/agents/one-queue-claiming-work.md#who-holds-an-issue-assignee-is-not-a-hold)).

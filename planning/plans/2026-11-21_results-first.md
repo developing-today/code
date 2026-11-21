@@ -1,6 +1,6 @@
 # Results first: priorities and next work for `id` and the fleet
 
-- Status: draft (proposed 2026-11-21 at Drew's request; in-progress once this file is merged)
+- Status: in-progress (written 2026-11-21 at Drew's request; he said to continue and to merge it the same day)
 - Roadmap item: [ROADMAP.md, "Now, across the repo"](../../ROADMAP.md#now-across-the-repo) and the [`id` roadmap](../roadmaps/id.md)
 - Design: none yet; the four designs this plan asks for are listed under [Designs to write](#designs-to-write)
 - Issues: #557, #1067, #805, #1062, #796 (Phase 12 close-out); #9106, #9112 (substrate); #1233, #1187 (fleet); the step issues are filed when this plan is merged (step 0)
@@ -19,7 +19,7 @@ The fleet is not short of output. In the 30 days to 2026-11-21 it merged 4,532 c
 - **Small things close and large things stall.** 98% of `effort/xs` issues are closed; 48% of `effort/l` are, and 276 are open.
 - **The queue has no way to build part of a feature.** Its packet kinds are triage, small fix, PR shepherd, CI investigation and second pass. A large `id` feature is handed out as triage, judged "not a small fix", noted, and handed out again.
 - **Nothing tests an `id` change before it merges.** CI runs nightly on main. `id` accounts for 93 of the 160 main-broken issues.
-- **108 open issues wait on one person.**
+- **108 open issues are parked on the owner.** He did not park them. Agents did, and then repeated each other.
 
 So the priorities, in order:
 
@@ -27,7 +27,7 @@ So the priorities, in order:
 2. **Give the fleet a way to build a slice of a feature, and stop it re-triaging** (fleet).
 3. **Finish Phase 12 and tag the first `id` release** (`id`). Fourteen of eighteen items are closed; four are open and one misses its target by a factor of 113.
 4. **Run one end-to-end slice of the #9106 substrate** (`id`). A week of library code is merged and not yet reachable from the CLI.
-5. **Turn escalations into defaults** (owner and fleet).
+5. **Stop parking work on the owner** (fleet). Agents decide, record the decision and continue.
 6. **Everything else waits in Later with a named trigger.** Nothing is dropped.
 
 Two `id` tracks, three fleet changes, one rule for decisions.
@@ -50,19 +50,19 @@ Two `id` tracks, three fleet changes, one rule for decisions.
 | One fleet queue, unfiltered claims           | PR #8438 merged 2026-11-11; FDR-0001 to FDR-0012 in `doc/decisions/`                                                                                                                        |
 | Self-mirroring of this repo's issues stopped | #11748 merged 2026-11-18, after 299 copies were filed in two days                                                                                                                           |
 | Roadmap drift found in this review, fixed    | This plan's PR: `ROADMAP.md`, `planning/roadmaps/id.md`, `planning/plans/README.md`                                                                                                         |
-| Scoreboard tool, three skills                | This plan's PR: `scripts/fleet/flow-report/`, `.agents/skills/next-work`, `feature-slice`, `decision-request`                                                                               |
+| Scoreboard tool, three skills                | This plan's PR: `scripts/fleet/flow-report/`, `.agents/skills/next-work`, `feature-slice`, `decide-and-proceed`                                                                             |
 
 "Closed" in this table means the issue is closed as completed. It does not mean the phase's exit test passes; see [Track A](#track-a-close-phase-12-and-tag-idv0120).
 
 ### Now
 
-| Track or step                                        | Exit test                                                                                                               | State on 2026-11-21                                                                          |
-| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| **F1** `id` gate before merge                        | `id` main-broken issues at 3 a week or fewer for two weeks                                                              | No gate. 43 `id` main-broken issues in the last 7 days. Design not written.                  |
-| **F2** Feature slices in the queue; no repeat triage | A large issue triaged once is never triaged again without a change; a `feature_slice` packet is claimed and lands a PR  | Not started. Skills `feature-slice` and `next-work` cover the worker side now.               |
-| **A** Close Phase 12, tag `id/v0.12.0`               | All nine rows of the Phase 12 exit table recorded as met, each with a command and its output; release tagged            | 4 items open: #1062, #1067, #805, #557. No exit audit. No `id` release has been tagged.      |
-| **B** One end-to-end slice of #9106                  | A two-node test: signed record written by `id://` address on A, synced to B, a conflicting write reported; CLI shows it | Library modules merged; nothing under `crates/id-cli/src` or `pkgs/id/src` mentions `IdUri`. |
-| **F4** Escalations carry a default                   | Open `user/escalated` at 20 or fewer                                                                                    | 108 open.                                                                                    |
+| Track or step                                        | Exit test                                                                                                               | State on 2026-11-21                                                                                         |
+| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| **F1** `id` gate before merge                        | `id` main-broken issues at 3 a week or fewer for two weeks                                                              | No gate. 43 `id` main-broken issues in the last 7 days. Design not written.                                 |
+| **F2** Feature slices in the queue; no repeat triage | A large issue triaged once is never triaged again without a change; a `feature_slice` packet is claimed and lands a PR  | Not started. Skills `feature-slice` and `next-work` cover the worker side now.                              |
+| **A** Close Phase 12, tag `id/v0.12.0`               | All nine rows of the Phase 12 exit table recorded as met, each with a command and its output; release tagged            | 4 items open: #1062, #1067, #805, #557. No exit audit. No `id` release has been tagged.                     |
+| **B** One end-to-end slice of #9106                  | A two-node test: signed record written by `id://` address on A, synced to B, a conflicting write reported; CLI shows it | Library modules merged; nothing under `crates/id-cli/src` or `pkgs/id/src` mentions `IdUri`.                |
+| **F4** No work waits on the owner                    | Open `user/escalated` issues that are not a hands item: 0                                                               | 108 open. Rule and skill landed (FDR-0013, `decide-and-proceed`); the queue guard is in the fleet-agent PR. |
 
 ### Next (starts when a Now track passes its exit test)
 
@@ -167,7 +167,7 @@ Five causes, each visible in the repository.
 2. **Coverage re-queues what triage cannot close.** The reconciliation in [`scripts/fleet/queue-reconcile`](../../scripts/fleet/queue-reconcile/README.md) holds that every open issue needs a live task and that "a done task is not coverage"; an uncovered issue gets a new triage packet. A large issue triaged to "done" is uncovered again. This is consistent with the four triage passes on #1062, though the reconciler's live mode on the laptop is not visible from the repository.
 3. **Merges are unverified, so fixes chase merges.** With no check before merge, a broken `id` change is found by the nightly run, filed as main-broken, and fixed by another task. The 36 unregistered suites mean some new tests are not on record as running anywhere.
 4. **Breadth outruns depth.** `id` has open work in at least twelve product lines at once, and Phase 14 alone has seven topics with four version outlines each. Each line has a design; few have a slice that runs.
-5. **Escalation stops instead of defaulting.** #805 waits on four choices, #9112 on a confirmation requested on 2026-11-19, #3195 on "owner decides". The program rule on #9106 is "defaults recorded, never stalled on". The practice is the label.
+5. **Agents park work on the owner.** #805 waited on four choices, #9112 on a confirmation requested on 2026-11-19, #3195 on "owner decides". Drew on 2026-11-21: these are "a wrong agents decisions getting regurgitated as my proclamations"; the problem is "agents not actually working on real issues". The choices were the agents' to make. [FDR-0013](../../doc/decisions/FDR-0013-no-owner-decision-gates.md) removes the gate.
 
 Cause 4 is a choice, and it is Drew's: the directives of 2026-10-28, 2026-11-05 and 2026-11-12 each asked for breadth with nothing dropped. This plan keeps that. It orders the breadth and holds most of it behind a trigger.
 
@@ -188,20 +188,20 @@ Each step is one PR unless it says otherwise.
 
 ### Step 0: ratify and wire
 
-0. **Merge this plan, then make the queue agree with it.** File one epic for the plan with the steps below as children, re-band the Now rows' issues to band 20 and the Later rows' queued tasks to band 70, and enqueue each new issue in the same pass. Done when: `planning/plans/2026-11-21_results-first.md` is on main with Status `in-progress`, and every Now row links an open issue with a live task.
+0. **Make GitHub and the queue agree with this plan.** File one epic with the steps below as children; set `now`, `next` and `priority/*` labels in the order of the [Status board](#status-board); remove `user/escalated` and `status/blocked` from the Now rows' issues with the decision recorded on each. Queue bands follow from the labels at the next reconcile. Done when: every Now row links an open issue that carries `now` and no owner-wait label.
 
 ### Fleet
 
 1. **F1a. Register the 36 unregistered `id` suites.** One registry row per crate, each naming the workflow step that runs it; add the step where none does. Done when: `bash .github/scripts/check-suite-registry.sh` exits 0.
 2. **F1b. Affected-crate selector.** A script that takes a diff and prints the `pkgs/id` workspace members to check and test, from the workspace dependency graph. Done when: a test feeds it a diff touching `id-core` and it names every dependent crate, and a diff touching only `id-render` names only `id-render` and its dependents.
-3. **F1c. `id` gate design.** Write the design named under [Designs to write](#designs-to-write). Done when: the record is merged and decision D2 is answered or final.
+3. **F1c. `id` gate design.** Write the design named under [Designs to write](#designs-to-write). Done when: the record is merged.
 4. **F1d. Gate, first slice.** One landing lane takes ready `pkgs/id` PRs in batches, applies each batch to a candidate branch, runs `cargo check --workspace` and the affected crates' tests through `fleet-build-lock`, merges a green batch, and bisects a red one. Done when: ten consecutive batches land through it and the gate's log names the offender for a seeded bad PR.
 5. **F2a. No repeated verdicts.** Extend `pm-stack/lane-guard/lane_guard.py note` so a triage verdict is skipped when the newest agent note already gives the same verdict and no commit, label, body or human comment has changed since, across task ids. Done when: a test with two tasks and one unchanged issue shows the second note skipped, and a third with a new commit shows it posted.
-6. **F2b. Coverage accepts a verdict.** An open `effort/l` or `effort/m` issue with a recorded verdict holds a parked task with a resume condition (a slice landed, a decision answered, a dependency closed) and is not re-enqueued for triage. Needs a decision record (it changes park and claim semantics) and decision D7. Done when: the reconciler's fixture test shows such an issue covered, and an issue with no verdict still uncovered.
+6. **F2b. Coverage accepts a verdict.** An open `effort/l` or `effort/m` issue with a recorded verdict holds a parked task with a resume condition (a slice landed, a dependency closed) and is not re-enqueued for triage. Needs a decision record, because it changes park and claim semantics. Done when: the reconciler's fixture test shows such an issue covered, and an issue with no verdict still uncovered.
 7. **F2c. `feature_slice` packet kind.** Add the kind with required fields: parent issue, the criterion it moves, the done-check command, owned paths. Needs a decision record. Done when: `fleet queue enqueue` accepts a slice packet, rejects one with no done check, and a lane claims and completes one.
 8. **F3a. One issue per scheduled run.** Find why a scheduled run opens four identical issues and make it open one. Done when: a day of scheduled runs shows one issue per run.
-9. **F3b. Creator scope.** Until `id` main-broken is at 3 a week or fewer, creator-class runs file hardening bugs only in crates an active track touches (decision D6). Done when: the creator's instructions carry the rule and a week of `source/creator` issues is inside it.
-10. **F4. Repair the escalations.** Work the 108 open `user/escalated` issues with [`decision-request`](../../.agents/skills/decision-request/SKILL.md): each ends with a default and a final date, or a one-line statement of what access or physical step it waits on. Done when: every open `user/escalated` issue has a `decision-request:v1` comment or that one-line statement.
+9. **F3b. Creator scope.** Until `id` main-broken is at 3 a week or fewer, creator-class runs file hardening bugs only in crates an active track touches. Done when: the creator's instructions carry the rule and a week of `source/creator` issues is inside it.
+10. **F4. Clear the owner parks.** Work the 108 open `user/escalated` issues with [`decide-and-proceed`](../../.agents/skills/decide-and-proceed/SKILL.md): each is decided and returned to eligible, or re-blocked as a hands item with one concrete action. The queue refuses a person-wait block that is not a hands item. Done when: no open issue carries `user/escalated` without a hands action, and `fleet queue block --reason-class escalated-to-user` without `--hands` exits 2.
 11. **F5. Weekly scoreboard.** Run the flow report each Monday and update the [Scoreboard](#scoreboard) by PR. If it becomes a scheduled job, register it in `doc/fleet-schedule-registry.md` in the same PR. Done when: four consecutive Mondays have a dated row.
 12. **F6. Fleet-tooling budget.** A new fleet or PM-stack feature states in its issue which scoreboard row it moves and by how much; without that it goes to Later. Done when: the epic template asks for it and the fleet-tooling share is measured weekly.
 
@@ -209,18 +209,18 @@ Each step is one PR unless it says otherwise.
 
 13. **A1. Exit audit.** One dated record with a row per exit criterion: the command, its output, and met, not met or unmeasured. No fixes in this step. Done when: the record is merged and every "not met" or "unmeasured" row links an open issue.
 14. **A2. F12.12 profile (#557).** Before any fix: where the 5.65 seconds go at 100 worlds and 20 events a second, as a committed profile and the command that produced it. Done when: the profile names the top three costs with their share of p99.
-15. **A3. F12.12 fixes (#557).** One PR per cost from A2, each with a before and after number. Done when: the benchmark reports p99 under 50 ms, or decision D4 re-baselines the target with the profile as its reason.
+15. **A3. F12.12 fixes (#557).** One PR per cost from A2, each with a before and after number. Done when: the benchmark reports p99 under 50 ms, or the profile shows the target is wrong and the worker records a new one with that profile as its reason.
 16. **A4. F12.10 fair scheduling (#1067).** The scheduler and per-account quotas, in slices; the `fuel_spin_isolation` workload already exists (PR #8322). Done when: a spinning world raises another world's p99 by no more than 10% in that benchmark.
 17. **A5. F12.11 decisions, then delta frames (#805).** A decision request for each of the four choices (binary encoding, compression, resume tokens, bandwidth target) with defaults drawn from the F11.9 baseline; then the patch encoding and the parity test. Done when: a typical redraw is under 10% of the full frame and a patched client equals a full-frame client.
 18. **A6. F12.5 providers (#1062), inward-facing first.** `kv`, then `blob`; `http.fetch` and `notify` after, each off by default with a refusal test. Done when: each provider has bound, refusal and replay tests, and an unlisted host is refused.
-19. **A7. Third guest language (decision D3).** Done when: the chosen SDK passes the conformance suite and ships a playable example, or D3 lowers the criterion to two.
+19. **A7. Third guest language: Zig.** A Zig toolchain is already in the tree for the Roc host. Done when: the Zig SDK passes the conformance suite and ships a playable example.
 20. **A8. Verification debt (#796).** Each inventory item gets a proving test or its own issue. Done when: #796's checklist is complete.
 21. **A9. Five-minute path.** A script that runs the documented steps from an empty directory to a world a second node joins, and prints the elapsed time. Done when: it runs in the nightly and reports under 5 minutes.
 22. **A10. Tag `id/v0.12.0`.** Release notes list each exit criterion with its command and result from a re-run of A1. Done when: the tag exists and the A1 record shows nine rows met.
 
 ### Track B: one end-to-end slice of #9106
 
-23. **B0. Sequence accepted (decision D5).** Done when: #9112 records the answer or the default's final date has passed.
+23. **B0. Sequence accepted.** The delivered 39-component sequence and its #9078 and #9091 dependencies stand as recorded. Done when: #9112 carries the decision record and no owner-wait label.
 24. **B1. Walking-skeleton design.** The design named under [Designs to write](#designs-to-write): which of the 126 rows are on the one path below, in order, and which interfaces they share. Done when: merged, with the path's rows listed and every other row left in its recorded slot.
 25. **B2. The path, in slices.** Write a signed record at an `id://` address on node A; store it; sync it to node B over the existing transport; write a conflicting record on B; get a conflict report on both. Each slice lands with its test registered. Done when: one integration test does all five and fails if any module on the path is stubbed.
 26. **B3. Reach it from the CLI.** The smallest command surface that drives B2 by hand. Done when: a README section shows the five steps as commands and the nightly runs them.
@@ -229,45 +229,45 @@ Each step is one PR unless it says otherwise.
 
 Four, each needed by a Now step. No other design is asked for.
 
-| Design                      | Decides                                                                                                                                                                | Needed by | Kind                       |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | -------------------------- |
-| `id` gate before merge      | Batch size and cadence; which host builds; how a red batch is bisected and the offender returned; what happens when the gate is down; how it coexists with the nightly | F1c, F1d  | `design`, with decision D2 |
-| Feature slices in the queue | The `feature_slice` packet's fields; how coverage treats an issue with a verdict; which lanes claim slices; the decision records F2b and F2c need                      | F2b, F2c  | `design`, with decision D7 |
-| Phase 12 exit audit         | Not a design: the A1 record. Its format is one row per criterion with command, output and state                                                                        | A1, A10   | `audit`                    |
-| #9106 walking skeleton      | The one path through the 126 rows; the shared interfaces and their single owners; the integration test's oracle                                                        | B1, B2    | `design`                   |
+| Design                      | Decides                                                                                                                                                                | Needed by | Kind     |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | -------- |
+| `id` gate before merge      | Batch size and cadence; which host builds; how a red batch is bisected and the offender returned; what happens when the gate is down; how it coexists with the nightly | F1c, F1d  | `design` |
+| Feature slices in the queue | The `feature_slice` packet's fields; how coverage treats an issue with a verdict; which lanes claim slices; the decision records F2b and F2c need                      | F2b, F2c  | `design` |
+| Phase 12 exit audit         | Not a design: the A1 record. Its format is one row per criterion with command, output and state                                                                        | A1, A10   | `audit`  |
+| #9106 walking skeleton      | The one path through the 126 rows; the shared interfaces and their single owners; the integration test's oracle                                                        | B1, B2    | `design` |
 
-## Decisions for Drew
+## Decisions made
 
-Each has a default. Two-way decisions proceed on the default when this plan merges and become final on 2026-11-28 unless changed. D2 and D7 amend earlier rulings, so they wait for an answer.
+Made on 2026-11-21 by the session that wrote this plan. None waits on anyone. Each is revisable by a later PR with evidence; none needs a confirmation.
 
-| #   | Decision                                                               | Default                                                                                                           | Other options                                                         | Door    |
-| --- | ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ------- |
-| D1  | Which `id` lines are active                                            | Tracks A and B; the rest wait in Later with the triggers above                                                    | Add hosted worlds as a third track; or put Track B first              | Two-way |
-| D2  | Does a `pkgs/id` change get tested before it merges?                   | Yes, through a batched gate on the fleet's build host, `pkgs/id` only. Amends the 2026-11-13 ruling for that path | Keep nightly only and auto-revert the offending merge; or leave as is | Waits   |
-| D3  | Third guest language for F12.8                                         | Zig: a Zig toolchain is already in the tree for the Roc host (`pkgs/id/examples/roc-world/host/build.zig`)        | AssemblyScript; or lower the criterion to two languages               | Two-way |
-| D4  | F12.12 target                                                          | Keep p99 under 50 ms until the A2 profile shows where the time goes                                               | Re-baseline now                                                       | Two-way |
-| D5  | #9112: accept the delivered 39-component sequence and its dependencies | Accept as recorded                                                                                                | Name corrections on #9112                                             | Two-way |
-| D6  | Creator scope while `id` main-broken is above 3 a week                 | Hardening bugs only in crates an active track touches                                                             | No change                                                             | Two-way |
-| D7  | May a large issue with a recorded verdict be covered by a parked task? | Yes. Amends the 2026-11-07 coverage doctrine for `effort/l` and `effort/m` issues                                 | Keep re-triage and rely on F2a to silence the notes                   | Waits   |
-| D8  | Release name                                                           | `id/v0.12.0`, matching `mcpx/v0.1.0`                                                                              | Another scheme                                                        | Two-way |
+| #   | Decided                                                                                                  | Why                                                                                                   | Undo                                          |
+| --- | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| D1  | Tracks A and B are the active `id` lines; the rest wait in Later with the triggers above                 | 14 of 18 Phase 12 items are closed, and the #9106 library code has nothing reaching it                | Move a row                                    |
+| D2  | A `pkgs/id` change is tested before it merges, through a batched gate on the fleet's build host          | `id` broke main 43 times in 7 days; batching answers the cost that made hosted PR checks unaffordable | Turn the gate off; nightly CI is unchanged    |
+| D3  | The third guest language for F12.8 is Zig                                                                | A Zig toolchain is already in the tree for the Roc host (`pkgs/id/examples/roc-world/host/build.zig`) | Add another SDK                               |
+| D4  | F12.12 keeps its p99 target of 50 ms until the A2 profile shows where the time goes                      | A target changed before the measurement is a guess                                                    | Record a new target with the profile          |
+| D5  | #9112's delivered 39-component sequence and its dependencies stand as recorded                           | The sequence was delivered on 2026-11-19 and nothing in it was disputed                               | Re-order rows on #9112                        |
+| D6  | While `id` main-broken is above 3 a week, creator runs file hardening bugs only in active tracks' crates | 505 of 639 `id` bug issues came from the creator; they compete with the tracks for the same lanes     | Drop the rule from the creator's instructions |
+| D7  | An open large issue with a recorded verdict is covered by a parked task with a resume condition          | Re-triaging it hourly produced four verdicts and no code on #1062                                     | Revert the reconciler change                  |
+| D8  | The first release is `id/v0.12.0`                                                                        | Matches `mcpx/v0.1.0`                                                                                 | Tag again                                     |
 
 ## Scoreboard
 
 Baseline from the flow report on 2026-11-21. Targets are this plan's proposal for 2026-12-19. A row is updated only from a fresh run.
 
-| Measure                                     |     2026-11-21 | Target 2026-12-19 |
-| ------------------------------------------- | -------------: | ----------------: |
-| `id` share of mainline commits (30 days)    |          27.0% |       45% or more |
-| `feat` share of commits touching `pkgs/id`  |          14.9% |       30% or more |
-| Fleet-tooling share of mainline commits     |          36.3% |       25% or less |
-| `id` main-broken issues (previous 7 days)   |             43 |        3 or fewer |
-| Unregistered test suites                    |             36 |                 0 |
-| Open `id` issues blocked, parked or waiting |             91 |       40 or fewer |
-| Open `user/escalated`                       |            108 |       20 or fewer |
-| Open `effort/l` issues                      |            276 | falling each week |
-| Phase 12 exit criteria recorded as met      | 0 of 9 audited |            9 of 9 |
-| `id` releases tagged                        |              0 |                 1 |
-| Track B integration test                    | does not exist |           passing |
+| Measure                                        |     2026-11-21 | Target 2026-12-19 |
+| ---------------------------------------------- | -------------: | ----------------: |
+| `id` share of mainline commits (30 days)       |          27.0% |       45% or more |
+| `feat` share of commits touching `pkgs/id`     |          14.9% |       30% or more |
+| Fleet-tooling share of mainline commits        |          36.3% |       25% or less |
+| `id` main-broken issues (previous 7 days)      |             43 |        3 or fewer |
+| Unregistered test suites                       |             36 |                 0 |
+| Open `id` issues blocked, parked or waiting    |             91 |       40 or fewer |
+| Open `user/escalated` that are not hands items |            108 |                 0 |
+| Open `effort/l` issues                         |            276 | falling each week |
+| Phase 12 exit criteria recorded as met         | 0 of 9 audited |            9 of 9 |
+| `id` releases tagged                           |              0 |                 1 |
+| Track B integration test                       | does not exist |           passing |
 
 ## Tests and evidence
 
@@ -278,7 +278,7 @@ Baseline from the flow report on 2026-11-21. Targets are this plan's proposal fo
 
 ## Rollout and rollback
 
-Merging this file changes no queue state, label or schedule. Step 0 does that, and each later step is its own PR.
+Merging this file changes no queue state or schedule. Step 0 sets labels, and each later step is its own PR.
 
 To undo: revert the plan's PR. The skills are additive and are loaded by description; reverting removes them. The `ROADMAP.md` and roadmap edits in the same PR restore with it. Re-banding done in step 0 is undone by the queue lane from the before-image it records.
 
@@ -294,7 +294,7 @@ To undo: revert the plan's PR. The skills are additive and are loaded by descrip
 
 - Mainline commits fell from 242 to 317 a day on 2026-11-16 to 2026-11-18 to 33 and 47 on the next two days. The Turso migration and a queue-transport alert landed in that window, but the cause was not established from the repository.
 - Token cost per merged `id` feature is unknown: the C5 report (#9573) says most consumption is not yet attributable to tasks.
-- How many of the 108 escalations are two-way doors is not counted. F4 will show it.
+- How many of the 108 owner parks are real hands items is not counted. F4 will show it; the expectation is few.
 
 ## How to update this document
 
@@ -305,4 +305,4 @@ To undo: revert the plan's PR. The skills are additive and are loaded by descrip
 
 ## Progress
 
-- 2026-11-21: Plan written from a review of the roadmaps, plans, designs, 6,442 issues, 5,759 PRs and 30 days of mainline history at `48c34e12`. Same PR: flow report tool and tests; skills `next-work`, `feature-slice`, `decision-request`; drift fixed in `ROADMAP.md`, `planning/roadmaps/id.md` and `planning/plans/README.md`. Found on the way and fixed separately: `AGENTS.md` was 3 bytes over its rulebook budget (PR #12209).
+- 2026-11-21: Plan written from a review of the roadmaps, plans, designs, 6,442 issues, 5,759 PRs and 30 days of mainline history at `48c34e12`. Same PR: flow report tool and tests; skills `next-work`, `feature-slice`, `decide-and-proceed`; drift fixed in `ROADMAP.md`, `planning/roadmaps/id.md` and `planning/plans/README.md`. Found on the way and fixed separately: `AGENTS.md` was 3 bytes over its rulebook budget (PR #12209).
