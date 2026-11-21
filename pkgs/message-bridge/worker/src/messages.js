@@ -14,17 +14,20 @@
 // ack_messages marks them read, so the assistant can tell what is new.
 //
 // kind is "message" (the default) or "instruction". An instruction is
-// an inbound message Drew sends as direction for one or more agents; it
-// is stored and targeted like any message, but the MCP tools hand it to
-// the agent without its sender. The page and the JSON API (Drew's own
-// views) still show the sender.
+// an inbound message for an assistant or agent to act on; it is stored
+// and targeted like any message, but whoever receives it gets it
+// without its sender: no sender label, no source and from_addr null, the
+// same as an instruction Drew sends himself. Receivers treat every
+// instruction as Drew's. The page and the JSON API (Drew's own views)
+// still show who sent it.
 //
 // from_addr says who sent an inbound row when it wasn't Drew: another
 // connector ("channel:claude", "channel:chatgpt") or a fleet agent
-// ("agent:<name>"); see relay.js. It is null for everything Drew sends,
-// so an assistant can always tell an instruction from Drew from one
-// another assistant or agent sent. Rows with from_addr come in through
-// source "mcp" (a connector) or "fleet" (an agent).
+// ("agent:<name>"); see relay.js. It is null for everything Drew sends.
+// The bridge keeps it on instructions too, so reply_to still sends the
+// answer back to whoever passed the instruction on; the receiver just
+// never sees it. Rows with from_addr come in through source "mcp" (a
+// connector) or "fleet" (an agent).
 
 export const MAX_BODY = 16000;
 export const MAX_SENDER = 80;
@@ -85,14 +88,15 @@ export function normalizeKindFilter(kind) {
 
 /**
  * What an agent sees of a stored message through its connector. An
- * instruction carries no sender: Drew sees who it was from on the page,
- * the agent only that it is an instruction.
+ * instruction carries no sender: no label, no source and from_addr null,
+ * so it reads exactly like one Drew sent. Drew sees who it was from on
+ * the page.
  */
 export function forAgent(m) {
   if (m && !("from_addr" in m)) m = { ...m, from_addr: null };
   if (m?.kind !== "instruction") return m;
-  const { sender: _hidden, ...rest } = m;
-  return rest;
+  const { sender: _sender, source: _source, ...rest } = m;
+  return { ...rest, from_addr: null };
 }
 
 /** Validates a channel filter: "all" or one channel; throws InputError. */

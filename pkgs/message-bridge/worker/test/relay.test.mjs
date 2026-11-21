@@ -104,7 +104,7 @@ test("addresses: names, groups, everyone but the sender, and refusals", () => {
   }
 });
 
-test("Claude instructs ChatGPT: stored with its sender, ChatGPT is woken, and reply_to answers Claude", async () => {
+test("Claude instructs ChatGPT: ChatGPT gets it as Drew's, is woken, and reply_to still answers Claude", async () => {
   const h = await harness();
   await h.rpc(GPT, "events/subscribe", {
     name: EVENT_NAME,
@@ -115,16 +115,20 @@ test("Claude instructs ChatGPT: stored with its sender, ChatGPT is woken, and re
   const sent = await claude(h, { body: "summarize the queue", to: "chatgpt", kind: "instruction" });
   assert.equal(sent.message, undefined, "nothing went to Drew");
   assert.equal(sent.messages.length, 1);
-  assert.equal(sent.messages[0].from_addr, "channel:claude");
   const event = h.out.calls.at(-1);
   assert.equal(event.url, HOOK);
-  assert.equal(event.body.data.from_addr, "channel:claude");
+  assert.equal(event.body.data.from_addr, null, "the event names no sender");
+  assert.equal(event.body.data.sender, null);
   assert.equal(event.body.data.kind, "instruction");
 
   const [got] = await unread(h, GPT);
   assert.equal(got.body, "summarize the queue");
-  assert.equal(got.from_addr, "channel:claude");
+  assert.equal(got.from_addr, null, "an instruction reads as Drew's");
+  assert.equal(got.sender, undefined);
+  assert.equal(got.source, undefined);
   assert.equal(got.kind, "instruction");
+  const stored = (await h.store.list({ channel: "chatgpt" })).messages.find((m) => m.id === got.id);
+  assert.equal(stored.from_addr, "channel:claude", "the bridge (and Drew's page) still know who sent it");
   assert.equal((await unread(h, TOKEN)).length, 0, "Claude's own inbox is untouched");
 
   const answer = await chatgpt(h, { body: "3 open items", reply_to: got.id });
@@ -163,7 +167,8 @@ test("a wake hook on Claude fires its routine with the routine headers and no me
   assert.equal(fire.init.redirect, "manual");
   assert.deepEqual(Object.keys(fire.body), ["text"]);
   assert.match(fire.body.text, /for Claude/);
-  assert.match(fire.body.text, /from ChatGPT/);
+  assert.match(fire.body.text, /from Drew\b/, "an instruction wakes as Drew's");
+  assert.ok(!fire.body.text.includes("ChatGPT"));
   assert.ok(!fire.body.text.includes("secret plan"));
   const log = await h.store.oauthEvents();
   assert.ok(log.some((e) => e.kind === "wake_fired" && e.address === "channel:claude" && e.status === 200));
@@ -206,12 +211,14 @@ test("agents and connectors reach each other, and an agent answers whoever sent 
   assert.equal(hook.init.headers.authorization, "Bearer hooktoken123");
   assert.equal(hook.body.address, "agent:a2");
   assert.equal(hook.body.kind, "instruction");
-  assert.deepEqual(hook.body.from, ["channel:claude"]);
+  assert.deepEqual(hook.body.from, ["drew"], "the hook names no sender for an instruction");
 
   // a1 answers the row: it goes back to Claude, not to central.
   const inbox = await h.agent.inbox("a1");
   const row = inbox.messages[0];
-  assert.equal(row.from_addr, "channel:claude");
+  assert.equal(row.kind, "command");
+  assert.equal(row.from_addr, null, "a command reads as Drew's");
+  assert.equal(row.sender, null);
   const ans = await (await h.agent.send({ agent: "a1", body: "all green", reply_to: row.id })).json();
   assert.equal(ans.messages[0].channel, "claude");
   assert.equal(ans.messages[0].from_addr, "agent:a1");
@@ -269,13 +276,14 @@ test("the page sets and removes a hook with the form, and shows peer rows", asyn
   assert.equal((await form({ action: "wake_hook", address: "channel:claude", url: "http://insecure.example" })).status, 400);
 });
 
-test("the wake text names ids and senders, never bodies", () => {
+test("the wake text names ids and message senders, an instruction as Drew's, never bodies", () => {
   const t = wakeText("channel:claude", [
     { id: 4, kind: "instruction", from_addr: "agent:muse-3", body: "hidden" },
-    { id: 5, kind: "message", from_addr: null, body: "hidden" },
+    { id: 5, kind: "message", from_addr: "channel:chatgpt", body: "hidden" },
   ]);
   assert.match(t, /ids 4, 5/);
-  assert.match(t, /agent muse-3, Drew/);
+  assert.match(t, /from Drew, ChatGPT/);
+  assert.ok(!t.includes("muse-3"), "an instruction's sender stays hidden");
   assert.match(t, /including instructions/);
   assert.ok(!t.includes("hidden"));
 });

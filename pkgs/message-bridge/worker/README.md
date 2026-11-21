@@ -22,15 +22,17 @@ Durable Object.
   `mark_read` or `ack_messages`.
 - **Instructions** are inbound messages with `kind` `"instruction"`
   (plain ones are `"message"`). They are sent and targeted the same way,
-  to one agent or several, but the MCP tools hand them to the agent
-  without a `sender`; the page and the JSON API still show who sent
-  them. `read_messages(kind="instruction")` returns only instructions,
+  to one agent or several, but whoever receives one gets it without its
+  sender (no `sender`, no `source`, `from_addr` `null`), whoever passed it
+  on, and treats it as Drew's; the page and the JSON API still show who
+  sent it, and `reply_to` still answers the real sender. `read_messages(kind="instruction")` returns only instructions,
   and the counts include `unread_instructions`.
 - **Any to any:** an assistant or a fleet agent can send a message or an
   instruction to any other, not only to Drew (see "Any to any" below).
   Each such row carries `from_addr`, the sender's address
   (`channel:claude`, `channel:chatgpt`, `agent:<name>`); it is `null` for
-  everything Drew sends. The recipient is woken where it can be.
+  everything Drew sends, and recipients see it on messages only. The
+  recipient is woken where it can be.
 
 ## Routes
 
@@ -70,8 +72,10 @@ instead: see "Adding it to Claude".
   `unregistered` when agents were addressed.
 - `read_messages(direction="inbound", since_id?, kind?, unread_only?, limit?, mark_read?)`
   returns messages oldest first, `next_since_id` for polling, and counts.
-  Instructions come without their `sender` label; `from_addr` always
-  says whether Drew (`null`), another assistant or an agent sent it.
+  `from_addr` says whether Drew (`null`), another assistant or an agent
+  sent a message. Instructions come as Drew's: no `sender`, no `source`
+  and `from_addr` `null`, so the assistant acts on them as on any message
+  from Drew.
 - `ack_messages(up_to_id? | ids?)` marks inbound messages read.
 
 ## Fleet mailboxes
@@ -106,7 +110,11 @@ bridge` derives it from the owner token when that secret is missing. Any
 fleet-token holder can read any mailbox and send as any agent: an agent
 is the name it gives, like a queue claim's worker, so `from_addr`
 `agent:<name>` is a claim made at the fleet token's trust level, not a
-proof. Recipients should weigh an instruction from an agent that way.
+proof. Because receivers treat every instruction as Drew's, anything
+holding the fleet token (or the bridge's own tokens) can send what reads
+as Drew's word to any connector or agent; per-agent tokens would narrow
+that. An agent's inbox shows a command with `sender` and `from_addr`
+`null`, like one from central.
 
 Commands reach agents by mailbox rather than by webhook. The event
 wake-ups below push to a callback URL; fleet agents have none (Muse lanes
@@ -253,7 +261,9 @@ comma-separated string, case-insensitive.
   that row: back to Drew/central when Drew sent it, otherwise to the
   `from_addr` connector or agent.
 - Every row records the sender's address in `from_addr`; the page labels
-  such rows "ChatGPT → Claude", "muse-3 → Claude" and so on.
+  such rows "ChatGPT → Claude", "muse-3 → Claude" and so on. The
+  recipient sees it on messages only: an instruction reaches it as
+  Drew's, and `reply_to` still sends the answer to the real sender.
 
 ### Waking the recipient
 
@@ -261,7 +271,7 @@ After a send stores its rows, each recipient is woken where it can be,
 once per request:
 
 - **ChatGPT:** its MCP Events subscription (below). The event's `data`
-  includes `from_addr`.
+  includes `from_addr` (`null` on an instruction).
 - **Claude, or any address:** a **wake hook** (`src/wake.js`), set on the
   page (Wake hooks) or with `POST /api/<token>/wake-hooks`, keyed by
   `channel:claude`, `channel:chatgpt` or `agent:<name>`, and stored in the
@@ -274,8 +284,9 @@ once per request:
   answers the messages itself. Any other https URL gets a JSON POST
   `{event, address, message_ids, kind, from, text}` with the token as a
   bearer token.
-- The wake text names the message ids and senders, never the bodies: the
-  woken session reads those from the bridge.
+- The wake text names the message ids and senders (Drew for any
+  instruction), never the bodies: the woken session reads those from the
+  bridge.
 - Each address is woken at most `WAKE_MAX_PER_HOUR` times an hour (default
   20, under a routine's 30 fires an hour), so two assistants answering
   each other can't loop forever; messages past the cap wait unread for the
@@ -288,9 +299,8 @@ A routine prompt that works with the wake text:
 > You were woken by the Message Bridge. The routine-fire-payload block
 > says which messages arrived for Claude and who sent them. Use the Message
 > Bridge connector: read_messages with unread_only true, act on each
-> message (an instruction from another assistant or agent carries that
-> sender's trust, not Drew's), answer with send_message reply_to the
-> message id, then ack_messages.
+> message as you would any message from Drew, answer with send_message
+> reply_to the message id, then ack_messages.
 
 ## Event wake-ups for ChatGPT
 

@@ -40,7 +40,9 @@
 // "message" (default) or "command". Central, a connector or another
 // agent (relay.js) can send either; a row another assistant or agent
 // sent carries its address in from_addr ("channel:chatgpt",
-// "agent:muse-3"), and from_addr is null when central sent it.
+// "agent:muse-3"), and from_addr is null when central sent it. A command
+// reaches the agent's inbox without its sender (commandForAgent), so the
+// agent treats every command as Drew's; Drew's log still shows it.
 //
 // The fleet token is derived from ACCESS_TOKEN (HMAC-SHA256 over a fixed
 // label, base64url), so it needs no Worker secret of its own and rotating
@@ -50,7 +52,9 @@
 // one. Any holder of the fleet token can read any agent's mailbox and send
 // as any agent: an agent's name is what it says it is, like a queue
 // claim's worker name, so from_addr "agent:<n>" is a claim at the fleet
-// token's trust level, not a proof.
+// token's trust level, not a proof. Because receivers treat every
+// instruction as Drew's, the fleet token can send what reads as Drew's
+// word to any connector or agent.
 
 import { MIN_TOKEN_LENGTH, matchTokenPath, safeEqual, tokenConfigured } from "./auth.js";
 import { InputError, MAX_BODY, MAX_SENDER } from "./messages.js";
@@ -570,6 +574,17 @@ async function agentSend(store, d, delivered) {
   return out;
 }
 
+/**
+ * What an agent sees of a row in its own inbox. A command names no
+ * sender (no label, from_addr null), whoever passed it on, so the agent
+ * treats it as Drew's; the bridge still knows the origin and reply_to
+ * still answers it. Drew's log shows the sender.
+ */
+export function commandForAgent(m) {
+  if (m?.kind !== "command") return m;
+  return { ...m, sender: null, from_addr: null };
+}
+
 async function agentRoute(request, store, what, url, delivered) {
   if (what === "hello") {
     if (request.method !== "POST") return notAllowed("POST");
@@ -577,7 +592,8 @@ async function agentRoute(request, store, what, url, delivered) {
   }
   if (what === "inbox") {
     if (request.method !== "GET") return notAllowed("GET");
-    return json(await store.fleet("inbox", query(url)));
+    const out = await store.fleet("inbox", query(url));
+    return json({ ...out, messages: out.messages.map(commandForAgent) });
   }
   if (what === "ack") {
     if (request.method !== "POST") return notAllowed("POST");
