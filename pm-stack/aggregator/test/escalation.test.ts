@@ -159,6 +159,89 @@ describe("SLO watchdog escalation routing (#9991, design §4)", () => {
     }
   });
 
+  // Model-based: expected routes and caps come from an independent model
+  // of design §4, written as the note states it (any page condition ⇒
+  // page; otherwise NEEDS ORCHESTRATOR), not from the router's rule order.
+  test("routes and remediation caps match the §4 model for every generated case", () => {
+    const USER_FACING = new Set(["aggregator", "dispatch", "tunnel"]); // Aggregator, Intake, Tunnel
+    const STATEFUL = new Set(["pad", "grist", "database"]); // Pad, Grist, any database
+    const facets = [
+      "feed",
+      "quota",
+      "orchestration",
+      "aggregator",
+      "dispatch",
+      "projector",
+      "tunnel",
+      "pad",
+      "grist",
+      "database",
+    ] as const;
+    const phases = [
+      "detected",
+      "remediating",
+      "verification-failed",
+      "exhausted",
+    ] as const;
+    const model = (i: EscalationIncident, badCount: number) => {
+      const b = i.budgetRemainingPercent;
+      const remediationExhausted =
+        i.phase === "exhausted" || i.circuitBreakerOpen === true;
+      const budgetExhausted = b !== null && b <= 0;
+      const pages =
+        remediationExhausted ||
+        (USER_FACING.has(i.facet) && i.phase === "verification-failed") ||
+        badCount >= 2 ||
+        STATEFUL.has(i.facet) ||
+        (b !== null && b < 25 && i.phase === "verification-failed") ||
+        budgetExhausted;
+      const caps = [
+        ...(STATEFUL.has(i.facet) ? [0] : []),
+        ...(remediationExhausted ? [0] : []),
+        ...(budgetExhausted ? [1] : []),
+      ];
+      return {
+        route: pages ? "page" : "needs-orchestrator",
+        cap: caps.length === 0 ? null : Math.min(...caps),
+      };
+    };
+    let cases = 0;
+    for (const facet of facets) {
+      for (const phase of phases) {
+        for (const budgetRemainingPercent of [null, 80, 25, 24.9, 1, 0, -10]) {
+          for (const circuitBreakerOpen of [false, true]) {
+            for (const burnRate1h of [null, 1, 2, 3]) {
+              for (const others of [0, 1, 2]) {
+                const subject = incident({
+                  facet,
+                  phase,
+                  budgetRemainingPercent,
+                  circuitBreakerOpen,
+                  burnRate1h,
+                });
+                const incidents = [
+                  subject,
+                  ...Array.from({ length: others }, () =>
+                    incident({ facet: "feed", phase: "remediating" }),
+                  ),
+                ];
+                const decision = routeEscalations({ incidents })[0]!;
+                const want = model(subject, incidents.length);
+                // The case's inputs ride along so a mismatch names it.
+                const label = JSON.stringify({ facet, phase, budgetRemainingPercent, circuitBreakerOpen, others });
+                expect(`${label} ${decision.route}`).toBe(`${label} ${want.route}`);
+                expect(decision.maxRemediationAttempts).toBe(want.cap);
+                expect(decision.push).toBe(want.route === "page");
+                cases++;
+              }
+            }
+          }
+        }
+      }
+    }
+    expect(cases).toBe(10 * 4 * 7 * 2 * 4 * 3);
+  });
+
   test("page notifications use the existing concise health-push payload shape", () => {
     const result = route({ facet: "aggregator", phase: "verification-failed" });
     expect(pagePayload(result)).toEqual({
@@ -223,5 +306,34 @@ describe("SLO watchdog escalation routing (#9991, design §4)", () => {
     expect(delivered[0]!.error).toContain("push: push unavailable");
     expect(delivered[1]!.pushed).toBe(true);
     expect(pushes).toBe(2);
+  });
+
+  test("a push that resolves with ok: false is reported as not delivered", async () => {
+    const decisions = routeEscalations({
+      incidents: [incident({ facet: "aggregator", phase: "verification-failed" })],
+    });
+    const delivered = await deliverEscalations(
+      decisions,
+      {
+        journal: async () => {},
+        // push.ts's sendPush shape for a missing VAPID key.
+        push: async () => ({ ok: false, gone: false, error: "VAPID private key unavailable (bws)" }),
+        feedEvent: async () => {},
+      },
+      1_800_000_000_000,
+    );
+    expect(delivered[0]!.pushed).toBe(false);
+    expect(delivered[0]!.error).toBe("push: VAPID private key unavailable (bws)");
+  });
+
+  test("a push that resolves with ok: true is delivered", async () => {
+    const decisions = routeEscalations({ incidents: [incident({ facet: "pad" })] });
+    const delivered = await deliverEscalations(
+      decisions,
+      { journal: async () => {}, push: async () => ({ ok: true, status: 201 }), feedEvent: async () => {} },
+      1_800_000_000_000,
+    );
+    expect(delivered[0]!.pushed).toBe(true);
+    expect(delivered[0]!.error).toBeNull();
   });
 });

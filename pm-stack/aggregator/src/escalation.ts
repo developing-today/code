@@ -98,7 +98,41 @@ export const NON_USER_FACING_BURN_MAX = 2;
 /** §4 budget-exhausted rule: page on detection after at most one attempt. */
 export const EXHAUSTED_BUDGET_MAX_ATTEMPTS = 1;
 
+/**
+ * The remediation-attempt override §4 implies, independent of which page
+ * rule supplies the reason: a stateful service gets no auto-action, an
+ * exhausted incident (cap or breaker) gets no further attempt, and an
+ * exhausted budget allows at most one. The tightest applicable cap wins.
+ */
+function remediationCap(
+  incident: EscalationIncident,
+  facetClass: FacetClass,
+): number | null {
+  const caps: number[] = [];
+  if (facetClass === "stateful") caps.push(0);
+  if (incident.phase === "exhausted" || incident.circuitBreakerOpen === true) {
+    caps.push(0);
+  }
+  const budget = incident.budgetRemainingPercent;
+  if (budget !== null && budget <= BUDGET_EXHAUSTED_PERCENT) {
+    caps.push(EXHAUSTED_BUDGET_MAX_ATTEMPTS);
+  }
+  return caps.length === 0 ? null : Math.min(...caps);
+}
+
 function decide(
+  incident: EscalationIncident,
+  badCount: number,
+): EscalationDecision {
+  const decision = decideRoute(incident, badCount);
+  decision.maxRemediationAttempts = remediationCap(
+    incident,
+    decision.facetClass,
+  );
+  return decision;
+}
+
+function decideRoute(
   incident: EscalationIncident,
   badCount: number,
 ): EscalationDecision {
@@ -299,6 +333,24 @@ export interface DeliveredEscalation {
   error: string | null;
 }
 
+/** A push result that reports failure, as push.ts's PushOutcome does,
+ *  turned into its error text; null when the push was delivered (or the
+ *  sink returned nothing, which a throwing sink uses to mean success). */
+function pushRefusal(outcome: unknown): string | null {
+  if (
+    outcome !== null &&
+    typeof outcome === "object" &&
+    "ok" in outcome &&
+    (outcome as { ok: unknown }).ok === false
+  ) {
+    const err = (outcome as { error?: unknown }).error;
+    return typeof err === "string" && err.length > 0
+      ? err
+      : "push was not delivered";
+  }
+  return null;
+}
+
 /** One page for a facet, worded for a phone notification. */
 export function pagePayload(decision: EscalationDecision): PagePayload {
   return {
@@ -337,8 +389,16 @@ export async function deliverEscalations(
     }
     if (decision.push) {
       try {
-        await sink.push(pagePayload(decision));
-        pushed = true;
+        const outcome = await sink.push(pagePayload(decision));
+        // push.ts's sendPush resolves { ok: false, error } instead of
+        // throwing (missing VAPID key, expired subscription, endpoint
+        // error), so a resolved push is only delivered when it says so.
+        const refused = pushRefusal(outcome);
+        if (refused === null) {
+          pushed = true;
+        } else {
+          error = `push: ${refused}`;
+        }
       } catch (err) {
         error = `push: ${err instanceof Error ? err.message : String(err)}`;
       }
