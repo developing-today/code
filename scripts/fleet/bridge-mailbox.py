@@ -63,7 +63,11 @@ def call(base, token, method, path, body=None):
         f"{base}/fleet/{token}/{path}",
         data=data,
         method=method,
-        headers={"accept": "application/json", "content-type": "application/json", "user-agent": "fleet-bridge-mailbox"},
+        headers={
+            "accept": "application/json",
+            "content-type": "application/json",
+            "user-agent": "fleet-bridge-mailbox",
+        },
     )
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
@@ -73,7 +77,11 @@ def call(base, token, method, path, body=None):
         try:
             msg = json.loads(text).get("error") or text
         except ValueError:
-            msg = "not found (wrong token, URL, or a bridge without fleet mailboxes)" if e.code == 404 else text
+            msg = (
+                "not found (wrong token, URL, or a bridge without fleet mailboxes)"
+                if e.code == 404
+                else text
+            )
         fail(4, f"the bridge answered {e.code}: {str(msg)[:300]}", token)
     except (urllib.error.URLError, OSError, ValueError) as e:
         fail(3, f"{method} to the bridge failed: {e}", token)
@@ -87,7 +95,9 @@ def text_arg(words):
 
 
 def main():
-    p = argparse.ArgumentParser(prog="bridge-mailbox.py", description="Fleet mailbox client (agent verbs).")
+    p = argparse.ArgumentParser(
+        prog="bridge-mailbox.py", description="Fleet mailbox client (agent verbs)."
+    )
     p.add_argument("--agent", default=os.environ.get("FLEET_AGENT"))
     sub = p.add_subparsers(dest="verb", required=True)
     h = sub.add_parser("hello")
