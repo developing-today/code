@@ -2129,7 +2129,7 @@ func TestLoggingDirHoldsTheDurableLog(t *testing.T) {
 
 // TestLoggingIncludeChoosesTheAmbientBlocks is the effect probe for
 // logging.include: daemon.start carries host but not network facts at the
-// default, none at "none", and network ones too at "all".
+// default, none at "none", and available network facts too at "all".
 func TestLoggingIncludeChoosesTheAmbientBlocks(t *testing.T) {
 	if _, _, start := loggedRun(t); !strings.Contains(start, `"host.name"`) || strings.Contains(start, `"net.`) {
 		t.Errorf("the default logging.include should carry host and not network facts:\n%s", start)
@@ -2137,9 +2137,35 @@ func TestLoggingIncludeChoosesTheAmbientBlocks(t *testing.T) {
 	if _, _, start := loggedRun(t, "MCPX_LOGGING_INCLUDE=none"); start == "" || strings.Contains(start, `"host.name"`) {
 		t.Errorf("logging.include=none should drop the host block:\n%s", start)
 	}
-	if _, _, start := loggedRun(t, "MCPX_LOGGING_INCLUDE=all"); !strings.Contains(start, `"net.`) {
+	_, _, start := loggedRun(t, "MCPX_LOGGING_INCLUDE=all")
+	if start == "" {
+		t.Errorf("logging.include=all should still log daemon.start")
+	} else if hasIPv4NetworkInterface() && !strings.Contains(start, `"net.`) {
 		t.Errorf("logging.include=all should add the network block:\n%s", start)
 	}
+}
+
+func hasIPv4NetworkInterface() bool {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return false
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ipnet, ok := addr.(*net.IPNet)
+			if ok && ipnet.IP.To4() != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // TestLoggingMaxLinesRotatesTheFile is the effect probe for
@@ -2181,7 +2207,7 @@ func TestLoggingKeepPrunesRotatedFiles(t *testing.T) {
 // touchHook declares one call.finished hook that waits a second and then
 // creates mark, so whether mark appears says whether the hook ran to the end.
 func touchHook(mark string) string {
-	return `MCPX_HOOKS=[{"on":"call.finished","run":["/usr/bin/env","bash","-c","sleep 1; touch ` + mark + `"]}]`
+	return `MCPX_HOOKS=[{"on":"call.finished","run":["sh","-c","sleep 1; touch ` + mark + `"]}]`
 }
 
 // appears polls for path for up to wait.
@@ -2358,16 +2384,33 @@ func runtimeOf(t *testing.T, e *env, args ...string) string {
 	return doc.Runtime
 }
 
+// firstDefaultRuntime returns the first installed runtime in the configured
+// default order. The suite can run with only a subset of runtimes installed.
+// The probes then switch to node, so a host where node is the default
+// cannot show the setting changing anything, and the probe is skipped.
+func firstDefaultRuntime(t *testing.T) string {
+	t.Helper()
+	for _, name := range []string{"deno", "bun", "node"} {
+		if _, err := exec.LookPath(name); err == nil {
+			if name == "node" {
+				t.Skip("only node is installed, so switching to node cannot show an effect")
+			}
+			return name
+		}
+	}
+	t.Skip("no supported script runtime is installed")
+	return ""
+}
+
 // TestScriptRuntimeSelectsTheRuntime is the effect probe for
-// script.runtime: scripts run on deno by default (the first installed
-// entry of the documented runtimeOrder default, deno,bun,node) and on
-// node once the environment names it.
+// script.runtime: scripts use the first available runtime in the configured
+// default order (deno, bun, node), and node once the environment names it.
 func TestScriptRuntimeSelectsTheRuntime(t *testing.T) {
-	testsupport.RequireBinary(t, "deno")
 	testsupport.RequireBinary(t, "node")
 	e := newEnv(t, oneServer)
-	if rt := runtimeOf(t, e); rt != "deno" {
-		t.Errorf("the default script.runtime should pick deno, got %q", rt)
+	want := firstDefaultRuntime(t)
+	if rt := runtimeOf(t, e); rt != want {
+		t.Errorf("the default script.runtime should pick %s, got %q", want, rt)
 	}
 	e.setenv("MCPX_SCRIPT_RUNTIME=node")
 	if rt := runtimeOf(t, e); rt != "node" {
@@ -2376,15 +2419,14 @@ func TestScriptRuntimeSelectsTheRuntime(t *testing.T) {
 }
 
 // TestScriptRuntimeOrderRanksTheAutoPick is the effect probe for
-// script.runtimeOrder: the automatic pick is deno by default (the
-// documented runtimeOrder default is deno,bun,node) and node once the
-// environment ranks node first.
+// script.runtimeOrder: the automatic pick is deno by default and node once
+// the environment ranks node first.
 func TestScriptRuntimeOrderRanksTheAutoPick(t *testing.T) {
-	testsupport.RequireBinary(t, "deno")
 	testsupport.RequireBinary(t, "node")
 	e := newEnv(t, oneServer)
-	if rt := runtimeOf(t, e); rt != "deno" {
-		t.Errorf("the default script.runtimeOrder should pick deno, got %q", rt)
+	want := firstDefaultRuntime(t)
+	if rt := runtimeOf(t, e); rt != want {
+		t.Errorf("the default script.runtimeOrder should pick %s, got %q", want, rt)
 	}
 	e.setenv("MCPX_SCRIPT_RUNTIME_ORDER=node,bun")
 	if rt := runtimeOf(t, e); rt != "node" {

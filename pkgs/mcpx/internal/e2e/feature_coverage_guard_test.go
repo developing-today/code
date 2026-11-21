@@ -18,7 +18,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -67,11 +66,11 @@ func requiredFeatures() []coverageFeature {
 // pluginOpNames reads the plugin op surface — plugin/core/ops.gen.ts,
 // generated from api.Ops() — and returns the op names it declares.
 func pluginOpNames() ([]string, error) {
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		return nil, fmt.Errorf("cannot locate the e2e package source")
+	root, err := moduleRoot()
+	if err != nil {
+		return nil, err
 	}
-	path := filepath.Join(filepath.Dir(file), "..", "..", "plugin", "core", "ops.gen.ts")
+	path := filepath.Join(root, "plugin", "core", "ops.gen.ts")
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read plugin op surface: %w", err)
@@ -133,11 +132,11 @@ const featureExemptionsFile = "feature_coverage_exemptions.txt"
 // coverageViolations treats an empty one as a violation, as it does
 // an exemption for a feature that is covered or unknown.
 func loadFeatureExemptions() (map[coverageFeature]string, error) {
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		return nil, fmt.Errorf("cannot locate the e2e package source")
+	root, err := moduleRoot()
+	if err != nil {
+		return nil, err
 	}
-	path := filepath.Join(filepath.Dir(file), featureExemptionsFile)
+	path := filepath.Join(root, "internal", "e2e", featureExemptionsFile)
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read feature coverage exemptions: %w", err)
@@ -163,6 +162,26 @@ func loadFeatureExemptions() (map[coverageFeature]string, error) {
 		exemptions[feature] = reason
 	}
 	return exemptions, nil
+}
+
+// moduleRoot finds the source module from the package test's working
+// directory. runtime.Caller is not suitable here: Nix Go builds use
+// -trimpath, which turns source paths into import paths rather than files.
+func moduleRoot() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("get e2e test working directory: %w", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("go.mod not found from e2e test working directory %s", dir)
+		}
+		dir = parent
+	}
 }
 
 // evaluateFeatureCoverage is the guard's whole evaluation: the
