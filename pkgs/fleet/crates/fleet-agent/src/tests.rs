@@ -1640,7 +1640,7 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
     assert_eq!(
         std::fs::read_to_string(home.join("broker.log")).unwrap(),
         format!(
-            "exec --repo id --profile dev --workspace-cwd {} --wait 900 -- cargo install --path {}\\n",
+            "exec --repo id --profile release --workspace-cwd {} --wait 900 -- cargo install --path {}\\n",
             workspace.display(),
             workspace.display()
         )
