@@ -9,6 +9,16 @@
 # The timeout is deliberately larger than the PR gate's 60 minutes: a full
 # check including VM image builds legitimately takes longer. It runs off
 # the PR path, so the cost lands on a schedule, not on a review.
+#
+# 2026-11-22: 90 minutes proved too small — every nightly run from
+# 2026-11-16 through 2026-11-21 concluded "cancelled" with a job runtime
+# of almost exactly 90 minutes (e.g. run 44919101712: 15:25:27Z to
+# 16:55:51Z, 90m24s), i.e. this timeout killed the job mid-check, not a
+# test failure and not a successor run. The suite budgets alone exceed
+# 90 minutes serially (nixos-integration 3600s, nixos-playwright-e2e
+# 1200s) before any build time, and a cold store cache pushes the total
+# well past it. Raised to 300 minutes so the nightly can finish and
+# report a real result; the schedule still bounds it to once a day.
 
 name: id e2e nightly
 
@@ -29,7 +39,7 @@ jobs:
   check:
     name: nix flake check (full)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v7
 
