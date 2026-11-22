@@ -98,6 +98,11 @@ def make_key(repo: str, profile: str) -> str:
     return f"{repo_name}-{sanitize(profile)}-r{digest}"
 
 
+def workspace_cleanup_cwd(override: str | None) -> Path:
+    """Resolve the workspace used for pool cleanup without changing command cwd."""
+    return Path(override).expanduser().resolve() if override else Path.cwd()
+
+
 def clean_workspace_artifacts(target_dir: Path, cwd: Path) -> None:
     """Remove checkout-sensitive workspace outputs before reusing a pool dir.
 
@@ -558,6 +563,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_co.add_argument("--holder", default=None)
     p_co.add_argument(
+        "--workspace-cwd",
+        default=None,
+        help="workspace directory to clean; Cargo still runs from the caller's cwd",
+    )
+    p_co.add_argument(
         "--wait",
         type=int,
         default=0,
@@ -573,6 +583,11 @@ def main(argv: list[str] | None = None) -> int:
     p_ex.add_argument("--repo", required=True)
     p_ex.add_argument("--profile", default="dev")
     p_ex.add_argument("--holder", default=None)
+    p_ex.add_argument(
+        "--workspace-cwd",
+        default=None,
+        help="workspace directory to clean; Cargo still runs from the caller's cwd",
+    )
     p_ex.add_argument("--wait", type=int, default=0)
     p_ex.add_argument("cmd", nargs=argparse.REMAINDER)
 
@@ -632,7 +647,7 @@ def main(argv: list[str] | None = None) -> int:
             return 3
         row, lease_id, warm = got
         try:
-            clean_workspace_artifacts(row.path, Path.cwd())
+            clean_workspace_artifacts(row.path, workspace_cleanup_cwd(args.workspace_cwd))
         except RuntimeError as exc:
             with broker:
                 broker.checkin(lease_id, None)
