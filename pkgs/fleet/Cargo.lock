@@ -612,6 +612,7 @@ dependencies = [
  "fleet-config",
  "proptest",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

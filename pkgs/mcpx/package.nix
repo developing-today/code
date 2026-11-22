@@ -195,12 +195,6 @@ buildMcpxGoModule {
         # OS deploy is not the gate for that desync; it runs in CI on
         # main, which is where the fix lands.
         "internal/conformance"
-        # internal/defaults fails on main itself right now:
-        # TestNoPackageRedeclaresADefault flags a const added in
-        # internal/execsvc without a defaults.json entry (#2686). Same
-        # reasoning as internal/conformance above: interim exclusion,
-        # tracked in CI on main.
-        "internal/defaults"
       ];
       # The Linux-only takeover/handoff tests (#418): they exercise
       # /proc and systemd-mainpid mechanics that do not exist on

@@ -264,7 +264,7 @@ fn run_cmd(prog: &str, args: &[&str], envs: &[(&str, &str)], timeout: Duration) 
 /// value by name (the bws CLI, access token from the environment or
 /// the fleet's bws-env script). Errors are opaque — the caller
 /// treats any failure as "not that source".
-fn bws_secret(name: &str) -> Option<String> {
+pub(crate) fn bws_secret(name: &str) -> Option<String> {
     let access = match std::env::var("BWS_ACCESS_TOKEN") {
         Ok(t) if !t.is_empty() => t,
         _ => {
@@ -763,6 +763,23 @@ impl<T: PipelineTransport> SearchBackend for TursoBackend<T> {
                 Value::Integer(chunk_idx - n),
                 Value::Integer(chunk_idx + n),
             ],
+        ))?;
+        Ok(rows
+            .iter()
+            .filter_map(|r| {
+                Some(NeighborRow {
+                    chunk_id: r.get_i64("id")?,
+                    chunk_idx: r.get_i64("chunk_idx")?,
+                    text: r.get_text("text")?.to_string(),
+                })
+            })
+            .collect())
+    }
+
+    fn message_chunks(&self, message_id: &str) -> Result<Vec<NeighborRow>> {
+        let rows = self.execute(&Stmt::new(
+            crate::filters::MESSAGE_CHUNKS_SQL,
+            vec![Value::text(message_id)],
         ))?;
         Ok(rows
             .iter()

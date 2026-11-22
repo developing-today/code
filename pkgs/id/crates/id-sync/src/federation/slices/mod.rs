@@ -34,6 +34,12 @@ pub mod b28_takeover_response;
 pub mod b31_peer_classes;
 pub mod b32_ingest_gate;
 
+/// The record-join admission check (#12279) lives one level up, in
+/// `federation::record_join`; re-exported here so slice modules can
+/// reach it as `super::record_join` — the same relative path the
+/// path-loaded federation tests use from their crate root.
+pub use super::record_join;
+
 /// The exact B-slice module names, in registry order. Paths are
 /// `federation/slices/<name>` relative to the `id-sync` crate's
 /// federation root.

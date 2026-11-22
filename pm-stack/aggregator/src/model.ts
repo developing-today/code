@@ -63,6 +63,19 @@ export interface MilestoneRef {
   closedAt: string | null;
 }
 
+export interface SubIssuesSummary {
+  total: number;
+  completed: number;
+}
+
+export interface SpawnRollup {
+  total: number;
+  done: number;
+  inProgress: number;
+  /** Direct spawned designs that block this design's tracking issue. */
+  blocking: RefKey[];
+}
+
 /**
  * One item of the org GitHub Project pool (#910 stage 5): a Project
  * item plus its linked issue/PR, as read by the fleet-feed collector
@@ -104,6 +117,10 @@ export interface ProjectPoolItem {
   mergedAt?: string;
   /** The linked issue's GitHub milestone, when it has one (#9067). */
   milestone?: MilestoneRef;
+  /** GitHub's authoritative direct-child counts for this issue. */
+  subIssuesSummary?: SubIssuesSummary;
+  /** Derived design-spawn counts, added to the projects API projection. */
+  spawnRollup?: SpawnRollup;
   /** Project single-select fields; null when unset on the item. */
   status: string | null;
   area: string | null;

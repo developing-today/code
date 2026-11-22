@@ -255,6 +255,12 @@ pub trait WorldLimitArgs {
     fn world_native_deadline_ms(&self) -> u64;
     /// Total per-world logical memory budget, in MiB.
     fn world_total_memory_mib(&self) -> u64;
+    /// Concurrent synchronous guest burns admitted hub-wide
+    /// (#1067); `0` = auto (the budget sizes itself from the
+    /// machine). Defaulted so existing implementors keep compiling.
+    fn world_guest_burn_concurrency(&self) -> usize {
+        0
+    }
 }
 
 const KIB: u64 = 1024;
@@ -272,6 +278,13 @@ pub struct RuntimeLimits {
     /// bytes (#557 Phase 1). A per-world request can only lower it, via
     /// [`WorldExecutionProfile::total_memory_bytes`].
     pub total_memory_bytes: u64,
+    /// Concurrent synchronous guest burns admitted hub-wide
+    /// (#1067, F12.10 admission). `0` = auto: the shared burn budget
+    /// sizes itself from the machine (parallelism − 2). A server
+    /// bound, not a per-world one — a world's execution profile
+    /// cannot raise or lower it, so `resolve` carries it through
+    /// unchanged.
+    pub guest_burn_concurrency: usize,
 }
 
 /// Per-world resource limits requested beneath the server's hard ceilings.
@@ -426,6 +439,9 @@ impl WorldExecutionProfile {
             sandbox,
             native,
             total_memory_bytes,
+            // A server bound, not a per-world request: carried
+            // through unchanged (see the field's documentation).
+            guest_burn_concurrency: hard.guest_burn_concurrency,
         })
     }
 }
@@ -440,6 +456,7 @@ impl Default for RuntimeLimits {
             },
             native: NativeLimits::default(),
             total_memory_bytes: DEFAULT_WORLD_TOTAL_MEMORY_BYTES,
+            guest_burn_concurrency: 0,
         }
     }
 }
@@ -486,6 +503,7 @@ impl RuntimeLimits {
                 call_deadline: Duration::from_millis(args.world_native_deadline_ms()),
             },
             total_memory_bytes: args.world_total_memory_mib() * MIB,
+            guest_burn_concurrency: args.world_guest_burn_concurrency(),
         })
     }
 }

@@ -41,6 +41,7 @@ from pathlib import Path
 ROW_JQ = (
     ".[] | {n:.number, t:.title, s:.state, sr:.state_reason, "
     "pr:(.pull_request!=null), merged:(.pull_request.merged_at // null), "
+    "d:(.draft // false), "
     "c:.created_at, x:.closed_at, u:.updated_at, l:[.labels[].name], "
     "a:.user.login, cm:.comments} | @json"
 )
@@ -278,6 +279,19 @@ def issue_section(rows: list[dict], repo: str, now: dt.datetime) -> dict:
         ) >= week_ago:
             id_last_week += 1
 
+    # #12280's soak metric: ready (non-draft) PRs still open a day
+    # after they were opened. Rows fetched before `d` was recorded
+    # read as ready (the fetch defaults draft to false), matching how
+    # the warden's scan treats an unmarked PR.
+    day_ago = now - dt.timedelta(hours=24)
+    prs_open_ready_over_24h = sum(
+        1
+        for row in pulls
+        if row["s"] == "open"
+        and not row.get("d", False)
+        and parse_time(row["c"]) <= day_ago
+    )
+
     comments = sorted(row["cm"] for row in issues)
     merge_minutes = sorted(
         (parse_time(row["merged"]) - parse_time(row["c"])).total_seconds() / 60
@@ -303,6 +317,7 @@ def issue_section(rows: list[dict], repo: str, now: dt.datetime) -> dict:
         "prs_closed_unmerged": sum(
             row["s"] == "closed" and not row["merged"] for row in pulls
         ),
+        "prs_open_ready_over_24h": prs_open_ready_over_24h,
         "weekly": dict(sorted(weekly.items())),
         "effort": effort,
         "open_stalled": stalled,
@@ -350,6 +365,7 @@ def render_markdown(report: dict) -> str:
         "| --- | ---: |",
         f"| Issues (open) | {issues['issues']} ({issues['issues_open']}) |",
         f"| PRs merged / closed unmerged | {issues['prs_merged']} / {issues['prs_closed_unmerged']} |",
+        f"| Open ready PRs older than 24 hours | {issues['prs_open_ready_over_24h']} |",
         f"| Open issues blocked, parked or waiting | {issues['open_stalled']} ({issues['open_stalled_pct']}%) |",
         f"| Open issues labelled `user/escalated` | {issues['open_user_escalated']} |",
         f"| Open `kind/design` issues | {issues['open_design']} |",

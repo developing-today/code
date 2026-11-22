@@ -31,12 +31,30 @@
 //! - `many_worlds` — 1,000 durable idle worlds plus 100 leased worlds at
 //!   20 counter inputs/s each; report command latency percentiles and verify
 //!   recent checkpoints plus records/sequence across idle eviction and reopen.
+//!   The full-size configuration is parameterizable for profiling runs via
+//!   `ID_BENCH_MW_IDLE_WORLDS`, `ID_BENCH_MW_ACTIVE_WORLDS`,
+//!   `ID_BENCH_MW_EVENTS_PER_SECOND`, and `ID_BENCH_MW_DURATION_SECS`
+//!   (defaults are the committed full size). After the timed load it also
+//!   prints one `profile many_worlds ...` line aggregating the world
+//!   actors' own metrics (journal-append and command latency histograms,
+//!   deepest actor queue depth) across the active worlds, so a run
+//!   attributes its latency without external tooling.
 //! - `fuel_spin_isolation` — F12.10's exit-criterion measurement (#1067): one
 //!   victim world accepts inputs in a calm phase and again while hostile Wasm
 //!   worlds spin until their fuel budget is exhausted. Prints each phase's
 //!   victim command p99, their ratio, and `target_ratio=1.10`; it measures
 //!   the scheduling gap only and implements no scheduler, quota, or
-//!   back-pressure.
+//!   back-pressure. It also prints one `profile fuel_spin_isolation ...`
+//!   line attributing each phase's victim latency: the driver's wake
+//!   lateness versus the input acknowledgement wait, plus the victim
+//!   actor's own journal-append and command latency histograms, so a run
+//!   shows where the spinning phase's added latency sits. Since the
+//!   admission slice (#1067 slice 2) the profile line also carries the
+//!   guest burn budget's counters (bound, in-flight high-water mark,
+//!   and the victim key's admissions and waits); setting
+//!   `ID_BENCH_GUEST_BURN_CONCURRENCY` runs the workload's guests on a
+//!   dedicated budget of that size instead of the shared default, for
+//!   sizing experiments.
 //! - `bot_battle` (design only, not runnable yet) — a deterministic, mixed-
 //!   strategy territory workload for N=2/4/8 users is specified in
 //!   `../../../doc/2026-11-06T00-50-21Z_design_dynamic_world_tick_cost/`; its current-
@@ -67,6 +85,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, ensure};
+use id::guest_burn::GuestBurnBudget;
 use id::sandbox::{Sandbox, SandboxLimits};
 use id::world::{
     CapabilityBounds, JoinCapability, JournalEntry, WorldCore, WorldEvent, WorldEventKind,
@@ -173,16 +192,31 @@ struct ManyWorldsConfig {
     checkpoint_every: u64,
 }
 
+/// One `ID_BENCH_MW_*` profiling override, falling back to the committed
+/// full-size value when the variable is unset or unparseable.
+fn mw_env(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
 impl ManyWorldsConfig {
     fn full() -> Self {
+        let idle_worlds = mw_env("ID_BENCH_MW_IDLE_WORLDS", 1_000);
+        let active_worlds = mw_env("ID_BENCH_MW_ACTIVE_WORLDS", 100);
+        let events_per_second = mw_env("ID_BENCH_MW_EVENTS_PER_SECOND", 20);
+        let duration_secs = mw_env("ID_BENCH_MW_DURATION_SECS", 10) as u64;
         Self {
-            idle_worlds: 1_000,
-            active_worlds: 100,
-            events_per_second: 20,
-            duration_secs: 10,
+            idle_worlds,
+            active_worlds,
+            events_per_second,
+            duration_secs,
             // Keep checkpoint compaction out of the timed 20 ev/s window;
             // one extra input per world below triggers it before eviction.
-            checkpoint_every: 202,
+            // The install event plus the timed inputs leave every world
+            // exactly one event short of this cadence.
+            checkpoint_every: events_per_second as u64 * duration_secs + 2,
         }
     }
 
@@ -220,6 +254,83 @@ fn percentile(samples: &[Duration], fraction: f64) -> f64 {
         .saturating_sub(1)
         .min(sorted.len().saturating_sub(1));
     sorted[index]
+}
+
+/// Merge per-world latency histograms into one. All snapshots share the
+/// actor metrics' bucket bounds, so bucket counts, totals, and sums add
+/// directly; percentiles read back off the merged buckets are bucket
+/// upper bounds (the same approximation `HistogramSnapshot::p95_us`
+/// documents), while means from `sum_us / count` are exact.
+fn merge_histograms(snapshots: &[id::world::HistogramSnapshot]) -> id::world::HistogramSnapshot {
+    let mut merged = id::world::HistogramSnapshot {
+        bucket_bounds_us: snapshots
+            .first()
+            .map(|snapshot| snapshot.bucket_bounds_us.clone())
+            .unwrap_or_default(),
+        ..Default::default()
+    };
+    for snapshot in snapshots {
+        merged.count += snapshot.count;
+        merged.sum_us += snapshot.sum_us;
+        if merged.buckets.len() < snapshot.buckets.len() {
+            merged.buckets.resize(snapshot.buckets.len(), 0);
+        }
+        for (index, bucket) in snapshot.buckets.iter().enumerate() {
+            merged.buckets[index] += bucket;
+        }
+    }
+    merged
+}
+
+/// Per-phase difference of two cumulative latency histograms taken from
+/// the same world's metrics: the observations recorded between the two
+/// snapshots. Bucket counts, totals, and sums subtract directly because
+/// both snapshots share the actor metrics' bucket bounds.
+fn delta_histogram(
+    after: &id::world::HistogramSnapshot,
+    before: &id::world::HistogramSnapshot,
+) -> id::world::HistogramSnapshot {
+    let mut delta = id::world::HistogramSnapshot {
+        bucket_bounds_us: after.bucket_bounds_us.clone(),
+        ..Default::default()
+    };
+    delta.count = after.count.saturating_sub(before.count);
+    delta.sum_us = after.sum_us.saturating_sub(before.sum_us);
+    delta.buckets = after
+        .buckets
+        .iter()
+        .enumerate()
+        .map(|(index, bucket)| {
+            bucket.saturating_sub(before.buckets.get(index).copied().unwrap_or(0))
+        })
+        .collect();
+    delta
+}
+
+/// Approximate percentile in microseconds from a bucketed histogram:
+/// the upper bound of the first bucket holding the percentile
+/// observation; the overflow bucket reports `u64::MAX`.
+fn histogram_percentile_us(histogram: &id::world::HistogramSnapshot, fraction: f64) -> u64 {
+    if histogram.count == 0 {
+        return 0;
+    }
+    let target = (histogram.count as f64 * fraction).ceil() as u64;
+    let mut cumulative = 0_u64;
+    for (index, bucket) in histogram.buckets.iter().enumerate() {
+        cumulative += bucket;
+        if cumulative >= target {
+            return histogram
+                .bucket_bounds_us
+                .get(index)
+                .copied()
+                .unwrap_or(u64::MAX);
+        }
+    }
+    u64::MAX
+}
+
+fn histogram_mean_us(histogram: &id::world::HistogramSnapshot) -> u64 {
+    histogram.sum_us.checked_div(histogram.count).unwrap_or(0)
 }
 
 fn checkpoint_sequences(dir: &Path) -> Result<Vec<u64>> {
@@ -305,9 +416,11 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
 
     // Give each world one input every 50 ms, with a phase offset within that
     // interval. A task per world avoids creating a task for every command and
-    // avoids an artificial 100-world burst on each tick. If an actor or journal
-    // falls behind, the missed deadline remains part of the command-latency
-    // sample.
+    // avoids an artificial 100-world burst on each tick. Each sample separates
+    // time from deadline to task wake-up from time awaiting input acknowledgement;
+    // the end-to-end sample remains deadline through acknowledgement. The two
+    // component percentiles are diagnostic and must not be added to estimate a
+    // combined percentile.
     let ticks = config.events_per_second as u64 * config.duration_secs;
     let mut pending = tokio::task::JoinSet::new();
     let load_started = Instant::now();
@@ -322,23 +435,66 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
                 let deadline =
                     load_started + Duration::from_nanos(tick * interval_nanos + phase_nanos);
                 tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                let input_started = Instant::now();
+                let wake_lateness = input_started.saturating_duration_since(deadline);
                 handle.input(token.clone(), b"inc".to_vec()).await?;
-                samples.push(deadline.elapsed());
+                samples.push((deadline.elapsed(), wake_lateness, input_started.elapsed()));
             }
-            Ok::<Vec<Duration>, anyhow::Error>(samples)
+            Ok::<Vec<(Duration, Duration, Duration)>, anyhow::Error>(samples)
         });
     }
 
     let expected_commands = ticks as usize * config.active_worlds;
     let mut latencies = Vec::with_capacity(expected_commands);
+    let mut wake_lateness = Vec::with_capacity(expected_commands);
+    let mut input_ack = Vec::with_capacity(expected_commands);
     while let Some(result) = pending.join_next().await {
-        latencies.extend(result.context("join many-worlds load task")??);
+        for (latency, wake, acknowledgement) in result.context("join many-worlds load task")?? {
+            latencies.push(latency);
+            wake_lateness.push(wake);
+            input_ack.push(acknowledgement);
+        }
     }
     let load_elapsed_secs = load_started.elapsed().as_secs_f64();
     ensure!(
         latencies.len() == expected_commands,
         "only {} of {expected_commands} inputs were acknowledged",
         latencies.len()
+    );
+
+    // Profile attribution (#557): aggregate the active worlds' actor
+    // metrics over the timed load — journal-append latency (the durable
+    // cost of one command), total command-handling latency, and the
+    // deepest actor queue depth (whether the #8239 group-commit drain
+    // ever had a batch to coalesce). Snapshot before the checkpoint
+    // triggers below add their own appends and checkpoints.
+    let mut journal_histograms = Vec::with_capacity(active.len());
+    let mut command_histograms = Vec::with_capacity(active.len());
+    let mut queue_depth_max = 0_u64;
+    let mut checkpoints_during_load = 0_u64;
+    for world in &active {
+        let metrics = world.lease.service().world().metrics().await?;
+        journal_histograms.push(metrics.journal_append_latency);
+        command_histograms.push(metrics.command_latency);
+        queue_depth_max = queue_depth_max.max(metrics.actor_queue_depth_max);
+        checkpoints_during_load += metrics.checkpoints_total;
+    }
+    let journal_histogram = merge_histograms(&journal_histograms);
+    let command_histogram = merge_histograms(&command_histograms);
+    println!(
+        "profile many_worlds journal_appends={} journal_append_mean_us={} journal_append_p50_us={} journal_append_p95_us={} journal_append_p99_us={} commands={} command_mean_us={} command_p50_us={} command_p95_us={} command_p99_us={} queue_depth_max={} checkpoints_during_load={}",
+        journal_histogram.count,
+        histogram_mean_us(&journal_histogram),
+        histogram_percentile_us(&journal_histogram, 0.50),
+        histogram_percentile_us(&journal_histogram, 0.95),
+        histogram_percentile_us(&journal_histogram, 0.99),
+        command_histogram.count,
+        histogram_mean_us(&command_histogram),
+        histogram_percentile_us(&command_histogram, 0.50),
+        histogram_percentile_us(&command_histogram, 0.95),
+        histogram_percentile_us(&command_histogram, 0.99),
+        queue_depth_max,
+        checkpoints_during_load,
     );
 
     // Force one verified checkpoint per active world after the timed load.
@@ -457,6 +613,12 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
     let p50 = percentile(&latencies, 0.50);
     let p95 = percentile(&latencies, 0.95);
     let p99 = percentile(&latencies, 0.99);
+    let wake_p50 = percentile(&wake_lateness, 0.50);
+    let wake_p95 = percentile(&wake_lateness, 0.95);
+    let wake_p99 = percentile(&wake_lateness, 0.99);
+    let input_ack_p50 = percentile(&input_ack, 0.50);
+    let input_ack_p95 = percentile(&input_ack, 0.95);
+    let input_ack_p99 = percentile(&input_ack, 0.99);
     let target_met = p99 < 50.0;
     let completed_events_per_second = latencies.len() as f64 / load_elapsed_secs;
     let min = latencies
@@ -464,7 +626,7 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
         .map(|latency| latency.as_secs_f64() * 1_000.0)
         .fold(f64::INFINITY, f64::min);
     println!(
-        "bench many_worlds unit=ms_per_command median={p50:.3} min={min:.3} reps=1 p50_ms={p50:.3} p95_ms={p95:.3} p99_ms={p99:.3} target_p99_ms=50 target_met={target_met} idle_worlds={} active_worlds={} events_per_second={} duration_secs={} commands={} load_elapsed_secs={load_elapsed_secs:.3} completed_events_per_second={completed_events_per_second:.1} checkpoint_triggers={} checkpoints={} evicted={} reopened={}",
+        "bench many_worlds unit=ms_per_command median={p50:.3} min={min:.3} reps=1 p50_ms={p50:.3} p95_ms={p95:.3} p99_ms={p99:.3} wake_p50_ms={wake_p50:.3} wake_p95_ms={wake_p95:.3} wake_p99_ms={wake_p99:.3} input_ack_p50_ms={input_ack_p50:.3} input_ack_p95_ms={input_ack_p95:.3} input_ack_p99_ms={input_ack_p99:.3} target_p99_ms=50 target_met={target_met} idle_worlds={} active_worlds={} events_per_second={} duration_secs={} commands={} load_elapsed_secs={load_elapsed_secs:.3} completed_events_per_second={completed_events_per_second:.1} checkpoint_triggers={} checkpoints={} evicted={} reopened={}",
         config.idle_worlds,
         config.active_worlds,
         config.events_per_second,
@@ -570,8 +732,40 @@ fn spawn_guest_world(
     })
 }
 
+/// The burn budget the fuel-spin worlds draw from when the
+/// operator sets `ID_BENCH_GUEST_BURN_CONCURRENCY` (a dedicated
+/// budget of that size, for sizing experiments); `None` leaves the
+/// guests on the process-wide shared default, the production
+/// shape. Read once per process.
+fn bench_burn_budget() -> Option<Arc<GuestBurnBudget>> {
+    static BUDGET: std::sync::OnceLock<Option<Arc<GuestBurnBudget>>> = std::sync::OnceLock::new();
+    BUDGET
+        .get_or_init(|| {
+            std::env::var("ID_BENCH_GUEST_BURN_CONCURRENCY")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|size| *size > 0)
+                .map(|size| Arc::new(GuestBurnBudget::new(size)))
+        })
+        .clone()
+}
+
+/// The budget the fuel-spin profile line reports: the dedicated
+/// bench budget when one is set, else the shared default the
+/// guests actually used.
+fn report_burn_budget() -> Arc<GuestBurnBudget> {
+    bench_burn_budget().unwrap_or_else(GuestBurnBudget::shared)
+}
+
 fn counter_program() -> Result<Box<dyn WorldProgram>> {
-    let guest = Sandbox::compile(COUNTER_WASM, SandboxLimits::default())?.instantiate(1)?;
+    let mut guest = Sandbox::compile(COUNTER_WASM, SandboxLimits::default())?.instantiate(1)?;
+    // The victim's burn charge accumulates under one key across the
+    // whole run (#1067 admission): it is the light key the fairness
+    // rule protects, so it must not re-key per call.
+    guest.set_charge_key("fuel-spin-victim".to_owned());
+    if let Some(budget) = bench_burn_budget() {
+        guest.set_burn_budget(budget);
+    }
     Ok(Box::new(guest))
 }
 
@@ -601,7 +795,15 @@ async fn spin_worlds(
 ) -> Result<u64> {
     let mut spins = 0u64;
     while !stop.load(Ordering::Relaxed) && Instant::now() < hard_deadline {
-        let guest = sandbox.instantiate(spins)?;
+        let mut guest = sandbox.instantiate(spins)?;
+        // Charge every spin of this worker to the worker's key, not
+        // to a fresh per-instance key: the spinner's attained burn
+        // must persist across its re-instantiations, or the fairness
+        // rule cannot see that this key just burned (#1067).
+        guest.set_charge_key(format!("fuel-spin-{worker}"));
+        if let Some(budget) = bench_burn_budget() {
+            guest.set_burn_budget(budget);
+        }
         let world = spawn_guest_world(
             &format!("fuel-spin-{worker}-{spins}"),
             "bench-spinner",
@@ -630,29 +832,38 @@ async fn spin_worlds(
     Ok(spins)
 }
 
-/// Submit `ticks` victim inputs on absolute deadlines; each sample is the
-/// deadline-to-acknowledgement latency, so a late acknowledgement stays in
-/// the sample rather than shrinking the phase.
+/// Submit `ticks` victim inputs on absolute deadlines. Each sample is the
+/// triple the `many_worlds` driver records — (deadline-to-acknowledgement,
+/// wake lateness, input acknowledgement wait) — so a late acknowledgement
+/// stays in the end-to-end sample rather than shrinking the phase, and the
+/// profile can separate the driver's own scheduling delay from the wait
+/// for the world to acknowledge. The two component percentiles are
+/// diagnostic and must not be added to estimate a combined percentile.
 async fn drive_victim(
     victim: &BenchWorld,
     start: Instant,
     ticks: u64,
     interval_nanos: u64,
-) -> Result<Vec<Duration>> {
+) -> Result<Vec<(Duration, Duration, Duration)>> {
     let mut samples = Vec::with_capacity(usize::try_from(ticks)?);
     for tick in 0..ticks {
         let deadline = start + Duration::from_nanos(tick * interval_nanos);
         tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+        let input_started = Instant::now();
+        let wake_lateness = input_started.saturating_duration_since(deadline);
         victim
             .handle
             .input(victim.token.clone(), b"inc".to_vec())
             .await?;
-        samples.push(deadline.elapsed());
+        samples.push((deadline.elapsed(), wake_lateness, input_started.elapsed()));
     }
     Ok(samples)
 }
 
-async fn run_calm_phase(victim: &BenchWorld, config: FuelSpinConfig) -> Result<Vec<Duration>> {
+async fn run_calm_phase(
+    victim: &BenchWorld,
+    config: FuelSpinConfig,
+) -> Result<Vec<(Duration, Duration, Duration)>> {
     let start = Instant::now() + Duration::from_millis(50);
     tokio::time::sleep_until(tokio::time::Instant::from_std(start)).await;
     drive_victim(victim, start, config.ticks(), config.interval_nanos()).await
@@ -663,7 +874,7 @@ async fn run_calm_phase(victim: &BenchWorld, config: FuelSpinConfig) -> Result<V
 async fn run_spinning_phase(
     victim: &BenchWorld,
     config: FuelSpinConfig,
-) -> Result<(Vec<Duration>, u64)> {
+) -> Result<(Vec<(Duration, Duration, Duration)>, u64)> {
     let sandbox = fuel_spin_sandbox(config.spin_fuel)?;
     let stop = Arc::new(AtomicBool::new(false));
     let phase = Duration::from_millis(config.phase_millis);
@@ -694,7 +905,12 @@ async fn run_spinning_phase(
 ///
 /// This slice measures the gap only. It implements no fair scheduler,
 /// per-account quota, or slow-client back-pressure, so an unmet target is
-/// the expected recorded result rather than a regression.
+/// the expected recorded result rather than a regression. Alongside the
+/// gap it prints a `profile fuel_spin_isolation` line attributing each
+/// phase: the driver's wake lateness versus the input acknowledgement
+/// wait (the sample split the `many_worlds` driver records), and the
+/// victim actor's own journal-append and command latency histograms
+/// differenced from its metrics snapshots across the phase.
 async fn bench_fuel_spin_isolation(worker_threads: usize, quick: bool) -> Result<()> {
     let config = if quick {
         FuelSpinConfig::quick(worker_threads)
@@ -702,14 +918,17 @@ async fn bench_fuel_spin_isolation(worker_threads: usize, quick: bool) -> Result
         FuelSpinConfig::full(worker_threads)
     };
     let victim = spawn_guest_world("fuel-spin-victim", "bench-victim", counter_program()?)?;
+    let metrics_start = victim.handle.metrics().await?;
 
     let calm_started = Instant::now();
     let calm = run_calm_phase(&victim, config).await?;
     let calm_elapsed = calm_started.elapsed().as_secs_f64();
+    let metrics_after_calm = victim.handle.metrics().await?;
 
     let spinning_started = Instant::now();
     let (spinning, spins) = run_spinning_phase(&victim, config).await?;
     let spinning_elapsed = spinning_started.elapsed().as_secs_f64();
+    let metrics_after_spinning = victim.handle.metrics().await?;
 
     // An empty phase is a harness failure, never a result: CI must not pass
     // on a measurement that collected nothing.
@@ -737,10 +956,27 @@ async fn bench_fuel_spin_isolation(worker_threads: usize, quick: bool) -> Result
         "fuel_spin_isolation observed no fuel-exhausted spinning world"
     );
 
-    let calm_p99 = percentile(&calm, 0.99);
-    let spinning_p50 = percentile(&spinning, 0.50);
-    let spinning_p99 = percentile(&spinning, 0.99);
-    let spinning_min = spinning
+    let split = |samples: &[(Duration, Duration, Duration)], index: usize| -> Vec<Duration> {
+        samples
+            .iter()
+            .map(|sample| match index {
+                0 => sample.0,
+                1 => sample.1,
+                _ => sample.2,
+            })
+            .collect()
+    };
+    let calm_latencies = split(&calm, 0);
+    let calm_wake = split(&calm, 1);
+    let calm_ack = split(&calm, 2);
+    let spinning_latencies = split(&spinning, 0);
+    let spinning_wake = split(&spinning, 1);
+    let spinning_ack = split(&spinning, 2);
+
+    let calm_p99 = percentile(&calm_latencies, 0.99);
+    let spinning_p50 = percentile(&spinning_latencies, 0.50);
+    let spinning_p99 = percentile(&spinning_latencies, 0.99);
+    let spinning_min = spinning_latencies
         .iter()
         .map(|sample| sample.as_secs_f64() * 1_000.0)
         .fold(f64::INFINITY, f64::min);
@@ -758,6 +994,58 @@ async fn bench_fuel_spin_isolation(worker_threads: usize, quick: bool) -> Result
         config.phase_millis,
         config.commands_per_second,
         config.spin_fuel,
+    );
+
+    let calm_journal = delta_histogram(
+        &metrics_after_calm.journal_append_latency,
+        &metrics_start.journal_append_latency,
+    );
+    let spinning_journal = delta_histogram(
+        &metrics_after_spinning.journal_append_latency,
+        &metrics_after_calm.journal_append_latency,
+    );
+    let calm_command = delta_histogram(
+        &metrics_after_calm.command_latency,
+        &metrics_start.command_latency,
+    );
+    let spinning_command = delta_histogram(
+        &metrics_after_spinning.command_latency,
+        &metrics_after_calm.command_latency,
+    );
+    // The burn budget's counters over the whole run (#1067 slice 2):
+    // whether admission engaged at all, and whether the victim's
+    // calls ever had to wait for a burn permit.
+    let burn_snapshot = report_burn_budget().snapshot();
+    println!(
+        "profile fuel_spin_isolation calm_wake_p99_ms={:.3} calm_input_ack_p99_ms={:.3} spinning_wake_p99_ms={:.3} spinning_input_ack_p99_ms={:.3} calm_journal_appends={} calm_journal_append_mean_us={} calm_journal_append_p99_us={} spinning_journal_appends={} spinning_journal_append_mean_us={} spinning_journal_append_p99_us={} calm_command_mean_us={} calm_command_p99_us={} spinning_command_mean_us={} spinning_command_p99_us={} victim_queue_depth_max={} victim_checkpoints={} guest_burn_max_concurrent={} guest_burn_in_flight_max={} victim_burn_admitted={} victim_burn_waits={}",
+        percentile(&calm_wake, 0.99),
+        percentile(&calm_ack, 0.99),
+        percentile(&spinning_wake, 0.99),
+        percentile(&spinning_ack, 0.99),
+        calm_journal.count,
+        histogram_mean_us(&calm_journal),
+        histogram_percentile_us(&calm_journal, 0.99),
+        spinning_journal.count,
+        histogram_mean_us(&spinning_journal),
+        histogram_percentile_us(&spinning_journal, 0.99),
+        histogram_mean_us(&calm_command),
+        histogram_percentile_us(&calm_command, 0.99),
+        histogram_mean_us(&spinning_command),
+        histogram_percentile_us(&spinning_command, 0.99),
+        metrics_after_spinning.actor_queue_depth_max,
+        metrics_after_spinning
+            .checkpoints_total
+            .saturating_sub(metrics_start.checkpoints_total),
+        burn_snapshot.max_concurrent,
+        burn_snapshot.in_flight_max,
+        burn_snapshot
+            .keys
+            .get("fuel-spin-victim")
+            .map_or(0, |charge| charge.admitted),
+        burn_snapshot
+            .keys
+            .get("fuel-spin-victim")
+            .map_or(0, |charge| charge.waits),
     );
     let _ = victim.handle.shutdown().await;
     Ok(())

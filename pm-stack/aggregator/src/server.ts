@@ -50,6 +50,7 @@ import { GithubHotListConsumer, unconfiguredGithubStatus } from "./github-hot-li
 import { RoadmapAnnotationsStore, validateNewRoadmapAnnotation } from "./roadmap-annotations.ts";
 import { createAccessAuthorEnforcer, enforceAccessAuthor } from "./access-identity.ts";
 import { IdentityRegistryStore, identityMappingAuditEvent, validateIdentityMapping } from "./identity-registry.ts";
+import { healthHookAuditEvent } from "./health-hook-audit-event.ts";
 import {
   computeCoverage,
   CoverageSnapshotStore,
@@ -108,6 +109,7 @@ import {
   type DecisionEventInput,
 } from "./decision-events.ts";
 import { listStackHealthDown, readStackHealthStates, setStackHealth, validateStackHealth } from "./stack-health.ts";
+import { validateHealthHook, type HealthHookRecord } from "./health-hook.ts";
 import {
   buildHealth,
   pageRenderHealth,
@@ -223,6 +225,7 @@ import {
 } from "./notifications.ts";
 import { readJsonBody } from "./request-body.ts";
 import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
+import { addConsoleShortcut } from "./console-gate.ts";
 import { searchWork } from "./search-view.ts";
 import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
@@ -237,6 +240,7 @@ import { SloJournal, groupSamplesByFacet } from "./slo-journal.ts";
 import { sampleSloFacets } from "./slo-sampler.ts";
 import { SLO_DEFINITIONS, summarizeSloFacet, type SloFacetSummary } from "./slo.ts";
 import { computeFlowAnalytics } from "./flow-analytics.ts";
+import { fireOpenCodeWorkingHook } from "./health-hook-fire.ts";
 import {
   FORECAST_CONTRACT_VERSION,
   quotaForecastContract,
@@ -483,6 +487,9 @@ function pickSource(): Source {
         onSourceGap: recordSourceGap,
         seenActivityIds: (source) => activityStore.seenIds(source),
         snapshotRemote: storeRemotes?.usage,
+        onLaptopUnreachable: (detail) => {
+          fireOpenCodeWorkingHook("aggregator-tick", detail);
+        },
       })
     : fixtureSource();
 }
@@ -3696,20 +3703,41 @@ async function handler(req: Request): Promise<Response> {
       const rawBody: unknown = await readJsonBody(req);
       const parsed = validateNewIncident(rawBody);
       if (!parsed.ok) return json({ error: parsed.error }, 400);
-      const { incident, created } = await store.postIncident(parsed.value);
-      const status = created ? 201 : 200;
-      // #8568/#8766 producer extensions: exactly one of needsDrew /
-      // stackHealth / decisionSet may ride an incident post. The incident insert
-      // above is unchanged; a VALIDATION failure of an extension is a
-      // 400 (the poster's bug should be loud at the poster), while a
-      // store failure is logged and never fails the incident post.
       const ext =
         rawBody && typeof rawBody === "object" && !Array.isArray(rawBody) ? (rawBody as Record<string, unknown>) : {};
       const hasNeedsDrew = ext.needsDrew !== undefined;
       const hasStackHealth = ext.stackHealth !== undefined;
       const hasDecisionSet = ext.decisionSet !== undefined;
+      const hasHealthHook = ext.healthHook !== undefined;
+      // #12602 (#12599 decision b): the healthHook extension carries the
+      // full C3 incident record to the alerts ledger. It is gated and
+      // validated BEFORE the incident insert, unlike the extensions
+      // below, because a valid record rides the insert onto the opened
+      // event's detail; a malformed one is a 400 naming the field,
+      // before anything is stored.
+      let healthHook: HealthHookRecord | undefined;
+      if (hasHealthHook) {
+        if (parsed.value.source !== "health-hook") {
+          return json({ error: 'healthHook extension is only accepted for source "health-hook"' }, 400);
+        }
+        const hv = validateHealthHook(ext.healthHook);
+        if (!hv.ok) return json({ error: hv.error }, 400);
+        healthHook = hv.value;
+      }
+      const { incident, created } = await store.postIncident(parsed.value, healthHook ? { healthHook } : undefined);
+      const status = created ? 201 : 200;
+      // #8568/#8766 producer extensions: exactly one of needsDrew /
+      // stackHealth / decisionSet may ride an incident post; #12602 adds
+      // healthHook, which may co-ride with stackHealth (health-hook
+      // source only, gated above) and with nothing else. A VALIDATION
+      // failure of an extension is a 400 (the poster's bug should be
+      // loud at the poster), while a store failure is logged and never
+      // fails the incident post.
       if ([hasNeedsDrew, hasStackHealth, hasDecisionSet].filter(Boolean).length > 1) {
         return json({ error: "needsDrew, stackHealth and decisionSet extensions are mutually exclusive" }, 400);
+      }
+      if (hasHealthHook && (hasNeedsDrew || hasDecisionSet)) {
+        return json({ error: "healthHook extension may only co-ride with stackHealth" }, 400);
       }
       if (hasNeedsDrew) {
         const v = validateNeedsDrew(ext.needsDrew);
@@ -3731,8 +3759,26 @@ async function handler(req: Request): Promise<Response> {
         if (!v.ok) return json({ error: v.error }, 400);
         try {
           await setStackHealth(cfg.stackHealthFile, v.value);
+          const auditEvent = healthHookAuditEvent({
+            title: parsed.value.title,
+            source: parsed.value.source,
+            stackHealth: v.value,
+          });
+          if (auditEvent) {
+            try {
+              await eventsStore.record(auditEvent);
+            } catch (err) {
+              console.error(`alerts intake: health-hook audit append failed (${err instanceof Error ? err.message : "error"})`);
+            }
+          }
           if (v.value.state === "up") {
-            await store.closeOpenIncidentByKey(parsed.value.source, parsed.value.key);
+            // #12602: a healthHook recovery record rides the closed
+            // event's detail of the incident it closes.
+            await store.closeOpenIncidentByKey(
+              parsed.value.source,
+              parsed.value.key,
+              healthHook?.state === "up" ? { healthHook } : undefined,
+            );
           }
           requestAlertTick();
         } catch (err) {
@@ -4224,6 +4270,20 @@ async function handler(req: Request): Promise<Response> {
     if (!result.incident) return json({ error: "no such incident", id }, 404);
     return json({ incident: result.incident, transitioned: result.transitioned });
   }
+  // Per-incident read (#12602): the incident plus its full ledger
+  // event history — C6's detail path for the healthHook incident
+  // records stored on the opened/closed event details.
+  const alertReadMatch = /^\/api\/alerts\/([\w-]+)$/.exec(path);
+  if (req.method === "GET" && alertReadMatch) {
+    const id = alertReadMatch[1];
+    if (!UUID_RE.test(id)) return json({ error: "incident id must be a uuid" }, 400);
+    const store = await getAlertsStore();
+    if (!store) return json({ error: "alerts store unavailable" }, 503);
+    const incident = await store.getIncident(id);
+    if (!incident) return json({ error: "no such incident", id }, 404);
+    const events = await store.listIncidentEvents(id);
+    return json({ incident, events });
+  }
   if (path === "/alerts" || path === "/api/alerts.json") {
     const store = await getAlertsStore();
     if (!store) {
@@ -4480,7 +4540,8 @@ async function fetchHandler(req: Request): Promise<Response> {
       recordRender(route, res.status < 400);
     }
   }
-  return res;
+  const publicHost = process.env.PM_AGG_CONSOLE_HOST?.trim() || "pm.security.cab";
+  return addConsoleShortcut(res, req, publicHost);
 }
 
 // One server per bind address (PM_AGG_HOSTS). Deployment on the

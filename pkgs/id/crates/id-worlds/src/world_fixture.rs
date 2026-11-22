@@ -32,6 +32,9 @@ pub const MAX_FIXTURE_BYTES: u64 = 128 * 1024 * 1024;
 /// The `name` of the install boundary in an `other` line.
 pub const INSTALL_NAME: &str = "program_installed";
 
+/// The `name` of a `notify` provider event in an `other` line (#1062).
+pub const NOTIFICATION_NAME: &str = "notification";
+
 /// The first line of a fixture: which world, which module, the head, and the
 /// records the head must reproduce. Never the seed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -122,6 +125,10 @@ impl From<&WorldEvent> for FixtureEvent {
             WorldEventKind::ProgramInstalled { .. } => Self::Other {
                 sequence,
                 name: INSTALL_NAME.to_owned(),
+            },
+            WorldEventKind::Notification { .. } => Self::Other {
+                sequence,
+                name: NOTIFICATION_NAME.to_owned(),
             },
         }
     }

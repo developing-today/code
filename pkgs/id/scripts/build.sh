@@ -9,8 +9,8 @@
 #   web    - Build web assets + Rust binary with web features
 #   assets - Build web assets only (no Rust compilation)
 #
-# Tracks build variant in target/.build-variant[-release] to detect when
-# a rebuild is needed due to variant change.
+# Tracks build variant beside Cargo artifacts in CARGO_TARGET_DIR (or target/)
+# to detect when a rebuild is needed due to variant change.
 
 set -euo pipefail
 
@@ -31,6 +31,7 @@ export RUST_LOG="${RUST_LOG:-info}"
 
 VARIANT="${1:-web}"
 PROFILE="${2:-debug}"
+TARGET_DIR="${CARGO_TARGET_DIR:-target}"
 
 # Validate inputs
 if [[ $VARIANT != "lib" && $VARIANT != "web" && $VARIANT != "assets" ]]; then
@@ -45,12 +46,12 @@ fi
 
 # Set paths based on profile
 if [[ $PROFILE == "release" ]]; then
-  BINARY="target/release/id"
-  VARIANT_FILE="target/.build-variant-release"
+  BINARY="$TARGET_DIR/release/id"
+  VARIANT_FILE="$TARGET_DIR/.build-variant-release"
   CARGO_FLAGS="--release"
 else
-  BINARY="target/debug/id"
-  VARIANT_FILE="target/.build-variant"
+  BINARY="$TARGET_DIR/debug/id"
+  VARIANT_FILE="$TARGET_DIR/.build-variant"
   CARGO_FLAGS=""
 fi
 
@@ -170,11 +171,11 @@ if [[ $needs_backend == "true" ]]; then
   # (cargo doesn't re-link when only embedded assets changed but no .rs files did)
   touch "$BINARY"
 
-  mkdir -p target
+  mkdir -p "$TARGET_DIR"
   # Write the marker atomically (temp file in the same directory +
   # rename), so an interrupted build cannot leave an empty or truncated
   # marker behind (#6883).
-  marker_tmp="$(mktemp "target/.build-variant.tmp.XXXXXX")"
+  marker_tmp="$(mktemp "$TARGET_DIR/.build-variant.tmp.XXXXXX")"
   echo "$VARIANT" >"$marker_tmp"
   mv "$marker_tmp" "$VARIANT_FILE"
 else

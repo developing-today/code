@@ -1339,7 +1339,16 @@ export default function main() { return "done"; }
 `), 0o644)
 	// A static import would be hoisted and run the module first whatever the
 	// prefix said; the launcher imports dynamically so ordering is real.
-	out := e.run("run", "--format", "bare", "--prefix", `log.info("PREFIX");`, script)
+	//
+	// The marker rides console.log, the module's own channel. A log record
+	// would cross channels: records leave the script on stderr and reach
+	// the terminal through a relay goroutine in the parent, so their merged
+	// order against stdout is a scheduling race -- on a loaded builder the
+	// record landed after the module and its result even though the prefix
+	// had executed first (the amd system build, 2026-11-21). Execution
+	// order is what this test is about, so it is observed on the one
+	// channel where execution order is the only thing that can produce it.
+	out := e.run("run", "--format", "bare", "--prefix", `console.log("PREFIX");`, script)
 	pi, ti := strings.Index(out, "PREFIX"), strings.Index(out, "TOP-LEVEL")
 	if pi < 0 || ti < 0 {
 		t.Fatalf("both should appear:\n%s", out)
