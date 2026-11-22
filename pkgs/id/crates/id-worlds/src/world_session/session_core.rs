@@ -20,6 +20,7 @@ pub(crate) async fn run_world_session<I: SessionIo>(
             capability,
             after,
             screen_patches,
+            screen_msgpack,
             resume_token,
             agent_profile,
             device_input,
@@ -35,6 +36,7 @@ pub(crate) async fn run_world_session<I: SessionIo>(
                 JoinCapability::from_wire(capability),
                 after,
                 screen_patches,
+                screen_msgpack,
                 resume_token,
                 agent_profile,
                 device_input,
@@ -501,7 +503,7 @@ async fn query_session<I: SessionIo>(
                     let _ = send_error(service.frame_meter(), io, "world frame is too large").await;
                     return;
                 }
-                Inbound::Unsupported => {
+                Inbound::Unsupported | Inbound::Bytes(_) => {
                     let _ =
                         send_error(service.frame_meter(), io, "frames must be UTF-8 text").await;
                     return;
@@ -514,6 +516,7 @@ async fn query_session<I: SessionIo>(
                 capability,
                 after,
                 screen_patches,
+                screen_msgpack,
                 resume_token,
                 agent_profile,
                 device_input,
@@ -529,6 +532,7 @@ async fn query_session<I: SessionIo>(
                     JoinCapability::from_wire(capability),
                     after,
                     screen_patches,
+                    screen_msgpack,
                     resume_token,
                     agent_profile,
                     device_input,
