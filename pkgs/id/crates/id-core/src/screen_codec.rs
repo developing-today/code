@@ -73,3 +73,85 @@ pub fn decode_patch(bytes: &[u8]) -> Result<ScreenPatch, ScreenCodecError> {
     }
     Ok(frame.patch)
 }
+
+#[cfg(test)]
+mod tests {
+    use proptest::prelude::*;
+
+    use super::{decode_patch, encode_patch};
+    use crate::world_presentation::{CellRun, ScreenCell, ScreenPatch, StyleToken};
+
+    fn screen_cell() -> impl Strategy<Value = ScreenCell> {
+        (
+            prop_oneof![
+                Just(String::new()),
+                Just("a".to_owned()),
+                Just("Ω".to_owned()),
+                Just("水".to_owned()),
+                Just("🧭".to_owned()),
+                Just("e\u{301}".to_owned()),
+            ],
+            any::<u8>(),
+            any::<u8>(),
+            any::<bool>(),
+            0_u8..=2,
+            prop_oneof![
+                Just(None),
+                Just(Some(StyleToken::Emphasis)),
+                Just(Some(StyleToken::Muted)),
+                Just(Some(StyleToken::Heading)),
+                Just(Some(StyleToken::Code)),
+                Just(Some(StyleToken::Warning)),
+                Just(Some(StyleToken::Success)),
+                Just(Some(StyleToken::Link)),
+            ],
+        )
+            .prop_map(|(symbol, fg, bg, bold, columns, token)| ScreenCell {
+                symbol,
+                fg,
+                bg,
+                bold,
+                columns,
+                token,
+            })
+    }
+
+    fn populated_patch() -> impl Strategy<Value = ScreenPatch> {
+        (
+            any::<u8>(),
+            36_u16..=120,
+            1_u16..=50,
+            prop::collection::vec(prop::collection::vec(screen_cell(), 1..=8), 1..=4),
+        )
+            .prop_map(|(version, width, height, cell_runs)| {
+                let mut next_start = 0_u32;
+                let runs = cell_runs
+                    .into_iter()
+                    .map(|cells| {
+                        let run = CellRun {
+                            start: next_start,
+                            cells,
+                        };
+                        // Leave one unchanged cell between runs. The strategy's
+                        // bounds keep every run inside the minimum width of 36.
+                        next_start += u32::try_from(run.cells.len()).unwrap() + 1;
+                        run
+                    })
+                    .collect();
+                ScreenPatch {
+                    version,
+                    width,
+                    height,
+                    runs,
+                }
+            })
+    }
+
+    proptest! {
+        #[test]
+        fn populated_screen_patches_round_trip_through_messagepack(patch in populated_patch()) {
+            let encoded = encode_patch(&patch).unwrap();
+            prop_assert_eq!(decode_patch(&encoded).unwrap(), patch);
+        }
+    }
+}
