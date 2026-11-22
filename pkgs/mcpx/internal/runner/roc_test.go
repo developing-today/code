@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"testing"
 
 	"github.com/developing-today/code/pkgs/mcpx/internal/codegen"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport/gen"
+	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport/seed"
 )
 
 func TestRocLanguageDetectionAndSelection(t *testing.T) {
@@ -144,4 +147,185 @@ func TestRocFileRunCallsMockDaemon(t *testing.T) {
 	default:
 		t.Fatalf("Roc tool call did not reach mock daemon (result: %+v)\nstdout:\n%s\nstderr:\n%s", res, stdout.String(), stderr.String())
 	}
+}
+
+// TestRocWireSerializationProperties compiles and runs one generated client
+// against a mock daemon for a seeded set of argument values. The daemon's
+// decoded JSON request is the oracle: original wire keys and values must be
+// preserved, sanitized Roc identifiers must not collide, and absent optional
+// fields must stay absent. A single Roc process keeps this property test
+// bounded while exercising many generated requests.
+func TestRocWireSerializationProperties(t *testing.T) {
+	if _, err := exec.LookPath("roc"); err != nil {
+		t.Skip("roc compiler is not installed")
+	}
+
+	const (
+		calls      = 16
+		serverName = "server\"\\\n雪"
+	)
+	type propertyCall struct {
+		args   map[string]any
+		fields string
+	}
+	properties := map[string]any{
+		"required-key": map[string]any{"type": "string"},
+		"a-b":          map[string]any{"type": "string"},
+		"a_b":          map[string]any{"type": "string"},
+		"if":           map[string]any{"type": "string"},
+		"quoted\"key":  map[string]any{"type": "string"},
+	}
+	src := seed.Source(t, "roc-wire-serialization", 1)
+	const alphabet = "abcXYZ012_-\"\\\n\r\t雪🙂"
+	characters := []rune(alphabet)
+	makeValue := func() string {
+		n := 1 + gen.Intn(src, 18)
+		var b strings.Builder
+		for j := 0; j < n; j++ {
+			b.WriteRune(characters[gen.Intn(src, len(characters))])
+		}
+		return b.String()
+	}
+	// The wire keys intentionally include two names that sanitize to a_b,
+	// a reserved Roc word, and a key containing a quote. Values include Roc
+	// escapes and arbitrary Unicode; the mock daemon observes decoded JSON.
+	const optionalKeys = "a-b\x00a_b\x00if\x00quoted\"key"
+	keys := strings.Split(optionalKeys, "\x00")
+	identifiers := []string{"a_b", "a_b_2", "if_", "quoted_key"}
+	propertyCalls := make([]propertyCall, calls)
+	tools := make([]codegen.Tool, calls)
+	var main strings.Builder
+	main.WriteString("app [main!] { pf: platform \"https://github.com/roc-lang/basic-cli/releases/download/0.28.1/7brgwR8YUqfeGrkdfF1V4GPPN7DnP7ftqub9KcrTEZtr.tar.zst\", http: \"https://github.com/roc-lang/http/releases/download/1.0.0/6ZUwqYhCS8PU9Mo6MF7oV82ET2o7KYb57CLKDq4cq4sS.tar.zst\" }\n\nimport Mcpx\n\nmain! = |_args| {\n")
+	for i := range propertyCalls {
+		toolName := fmt.Sprintf("case-%02d", i)
+		required := []string{"required-key"}
+		call := propertyCall{args: map[string]any{}}
+		requiredValue := makeValue()
+		call.fields = "required_key: " + rocSourceString(requiredValue)
+		call.args["required-key"] = requiredValue
+		presentFields := make([]bool, len(keys))
+		for j, key := range keys {
+			switch {
+			case i == 0:
+				// First schema/call proves all optional fields may be absent.
+			case i == 1:
+				required = append(required, key)
+				presentFields[j] = true
+			default:
+				// Vary schema requiredness and argument presence independently.
+				if gen.Intn(src, 2) == 1 {
+					required = append(required, key)
+					presentFields[j] = true
+				} else {
+					presentFields[j] = gen.Intn(src, 2) == 1
+				}
+			}
+		}
+		for j, key := range keys {
+			if !presentFields[j] {
+				continue
+			}
+			value := makeValue()
+			call.fields += ", " + identifiers[j] + ": " + rocSourceString(value)
+			call.args[key] = value
+		}
+		schema, err := json.Marshal(map[string]any{
+			"type": "object", "required": required, "properties": properties,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tools[i] = codegen.Tool{Name: toolName, InputSchema: schema}
+		propertyCalls[i] = call
+		fmt.Fprintf(&main, "    _ = Mcpx.demo_case_%02d!({ %s })\n", i, call.fields)
+	}
+	main.WriteString("    Ok({})\n}\n")
+	nss := []codegen.Namespace{{Name: "demo", Server: serverName, Tools: tools}}
+
+	seen := make(chan map[string]any, calls)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/call" {
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("mock daemon: decode request: %v", err)
+			http.Error(w, `{"error":"bad JSON"}`, http.StatusBadRequest)
+			return
+		}
+		if r.Header.Get("X-Mcpx-Run") != "run-roc-property" {
+			t.Errorf("run identity = %q, want run-roc-property", r.Header.Get("X-Mcpx-Run"))
+		}
+		seen <- body
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"result":{"structuredContent":{"ok":true}}}`))
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "property.roc")
+	if err := os.WriteFile(script, []byte(main.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	_, err := Run(context.Background(), Options{
+		File:    script,
+		Clients: map[string]Client{codegen.Roc.Name: {Module: codegen.RocModule(nss, srv.URL, "sess-roc-property")}},
+		Env:     map[string]string{"MCPX_ENDPOINT": srv.URL, "MCPX_SESSION": "sess-roc-property", "MCPX_RUN": "run-roc-property"},
+		Stdout:  &stdout, Stderr: &stderr,
+	})
+	if err != nil {
+		t.Fatalf("property Roc run failed: %v\nstderr:\n%s", err, stderr.String())
+	}
+	for i, want := range propertyCalls {
+		select {
+		case got := <-seen:
+			wantTool := fmt.Sprintf("case-%02d", i)
+			if got["server"] != serverName || got["tool"] != wantTool {
+				t.Errorf("call %d server/tool = %q/%q, want %q/%q", i, got["server"], got["tool"], serverName, wantTool)
+			}
+			args, ok := got["args"].(map[string]any)
+			if !ok {
+				t.Errorf("call %d args = %#v, want object", i, got["args"])
+				continue
+			}
+			if !jsonEqual(args, want.args) {
+				t.Errorf("call %d args = %#v, want %#v", i, args, want.args)
+			}
+		default:
+			t.Fatalf("only %d of %d generated requests reached mock daemon\nstdout:\n%s\nstderr:\n%s", i, calls, stdout.String(), stderr.String())
+		}
+	}
+}
+
+func rocSourceString(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		switch r {
+		case '\\', '"':
+			b.WriteByte('\\')
+			b.WriteRune(r)
+		case '\n':
+			b.WriteString("\\n")
+		case '\r':
+			b.WriteString("\\r")
+		case '\t':
+			b.WriteString("\\t")
+		default:
+			b.WriteRune(r)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+func jsonEqual(a, b any) bool {
+	left, err := json.Marshal(a)
+	if err != nil {
+		return false
+	}
+	right, err := json.Marshal(b)
+	return err == nil && string(left) == string(right)
 }
