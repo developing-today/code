@@ -2665,4 +2665,72 @@ mod tests {
             .is_empty()
         );
     }
+
+    proptest! {
+        /// Invariant (#12233 F2c): a slice's identity is exactly its
+        /// (parent, ordinal) pair. Oracle: the canonical dedupe key
+        /// built from a pair is the identity — `match_dedupe` is the
+        /// reference parse, and `dedupe_errs` is the acceptance
+        /// check. Canonical matching keys validate; changing either
+        /// the parent or the ordinal is rejected, at the dedupe
+        /// level and (for the parent) at the schema level too.
+        #[test]
+        fn slice_identity_is_parent_and_ordinal(
+            parent in 1i64..100_000,
+            ordinal in 1i64..100,
+        ) {
+            let repo = "developing-today/code";
+            let key = format!(
+                "repo-health:v1:slice:{repo}:issue:{parent}:slice-{ordinal}"
+            );
+            let identity = json!({
+                "issue": {"number": parent},
+                "slice": {"number": ordinal},
+            });
+            prop_assert!(
+                dedupe_errs(&key, "feature_slice", identity).is_empty(),
+                "canonical key for ({parent}, {ordinal}) must validate"
+            );
+            let m = match_dedupe(&key).expect("canonical slice key parses");
+            prop_assert_eq!(m.family, "slice");
+            prop_assert_eq!(m.num, Some(parent));
+            prop_assert_eq!(m.pass, Some(ordinal));
+            // Changing the parent is rejected.
+            let wrong_parent = json!({
+                "issue": {"number": parent + 1},
+                "slice": {"number": ordinal},
+            });
+            prop_assert!(
+                !dedupe_errs(&key, "feature_slice", wrong_parent).is_empty(),
+                "parent {} must not match key parent {parent}",
+                parent + 1
+            );
+            // Changing the ordinal is rejected.
+            let wrong_ordinal = json!({
+                "issue": {"number": parent},
+                "slice": {"number": ordinal + 1},
+            });
+            prop_assert!(
+                !dedupe_errs(&key, "feature_slice", wrong_ordinal).is_empty(),
+                "ordinal {} must not match key ordinal {ordinal}",
+                ordinal + 1
+            );
+            // The slice block's parent must be the packet's issue: a
+            // generated mismatch is rejected at the schema level too.
+            let mut payload = payload_with(json!({"issue": {"number": parent}}));
+            let obj = payload.as_object_mut().expect("payload object");
+            obj.insert("kind".to_string(), json!("feature_slice"));
+            let mut slice = valid_slice();
+            slice["parent_issue"] = json!(parent + 1);
+            slice["number"] = json!(ordinal);
+            obj.insert("slice".to_string(), slice);
+            prop_assert!(
+                manual_schema_errors(&payload)
+                    .iter()
+                    .any(|e| e.contains("slice.parent_issue")),
+                "parent_issue {} disagreeing with issue.number {parent} must be rejected",
+                parent + 1
+            );
+        }
+    }
 }

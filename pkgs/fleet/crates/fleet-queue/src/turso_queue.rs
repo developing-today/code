@@ -2405,6 +2405,34 @@ mod tests {
     }
 
     #[test]
+    fn completion_gate_slice_class_requires_evidence() {
+        // #12233 F2c: a feature_slice completion with no artifact is
+        // rejected, exactly like a fix — the gate is the actual
+        // completion path (verb_complete runs gate_completion before
+        // any mutation), not just the class mapping.
+        let slice = CompletionClass::Slice;
+        assert!(gate(&slice, &json!({})).is_err());
+        assert!(gate(&slice, &json!({"note": "did stuff"})).is_err());
+        assert!(gate(&slice, &json!({"evidence": ""})).is_err());
+        assert!(gate(&slice, &json!({"evidence": []})).is_err());
+        // Evidence of the delivered slice completes — and, unlike a
+        // fix, needs no verified disposition: the parent issue stays
+        // open while slices land, so an open parent with no
+        // disposition is not a rejection.
+        let evidence =
+            json!({"pr_url": "https://github.com/developing-today/code/pull/12570"});
+        assert!(gate(&slice, &evidence).is_ok());
+        assert!(
+            gate_with(&slice, Some(1062), false, &[], &evidence).is_ok(),
+            "an open parent issue must not block a slice completion"
+        );
+        assert!(
+            gate(&slice, &json!({"commit": "abc123"})).is_ok(),
+            "a commit is slice evidence too"
+        );
+    }
+
+    #[test]
     fn completion_gate_rejects_disposition_for_another_issue() {
         // #10611: the readback must describe the packet's issue — a
         // stale readback for a sibling issue is not closure evidence.
@@ -2998,6 +3026,10 @@ mod tests {
         assert_eq!(
             completion_class(&json!({"kind": "triage"})),
             CompletionClass::Triage
+        );
+        assert_eq!(
+            completion_class(&json!({"kind": "feature_slice"})),
+            CompletionClass::Slice
         );
         assert_eq!(completion_class(&json!({})), CompletionClass::Ungated);
         // Ungated completions never gate, whatever the result.

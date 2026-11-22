@@ -865,6 +865,12 @@ pub(crate) enum CompletionClass {
     /// Work that produces an artifact: completion requires an
     /// evidence reference recorded on the task.
     Fix,
+    /// A feature slice delivers one criterion of a larger issue
+    /// (#12233 F2c): completion requires evidence of the delivered
+    /// slice, but the parent issue stays open by design, so no
+    /// verified-disposition readback — that would demand closure
+    /// or a follow-up for work that is meant to continue.
+    Slice,
     /// Triage annotates and validates; it never completes the
     /// issue. Completion re-enqueues the follow-on by default.
     Triage,
@@ -876,6 +882,7 @@ pub(crate) enum CompletionClass {
 pub(crate) fn completion_class(payload: &Value) -> CompletionClass {
     match payload.get("kind").and_then(|k| k.as_str()) {
         Some("small_fix") | Some("ci_investigation") | Some("pr_shepherd") => CompletionClass::Fix,
+        Some("feature_slice") => CompletionClass::Slice,
         Some("triage") => CompletionClass::Triage,
         _ => CompletionClass::Ungated,
     }
@@ -965,6 +972,18 @@ pub(crate) fn gate_completion(
                     .to_string());
             }
             verified(result, ctx)?;
+            Ok(None)
+        }
+        CompletionClass::Slice => {
+            // #12233 F2c: a slice completes on evidence of the
+            // delivered slice alone — no verified disposition, so
+            // the parent issue may stay open while slices land.
+            if evidence_ref(result).is_none() {
+                return Err("complete_task: feature_slice completion requires an evidence \
+                     reference on the result (merged PR, commit, or \
+                     verified-closure note); the task remains claimed"
+                    .to_string());
+            }
             Ok(None)
         }
         CompletionClass::Triage => {
