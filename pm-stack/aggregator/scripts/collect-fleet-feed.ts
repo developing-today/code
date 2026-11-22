@@ -782,7 +782,16 @@ async function collectAaSection(generatedAt: string): Promise<AaFeedSection> {
     cacheMeta.set(latestBatch, { fingerprint: lastGood.fingerprint, cached });
   } else if (latestBatch) {
     try {
-      latestSection = await assemble(await fetchAaPayload(latestBatch, true), "current", currentMeasurementsFingerprint);
+      const raw = await fetchAaPayload(latestBatch, true);
+      // Fingerprint the arrays this payload was actually built from: an
+      // ingest between the projection read above and this fetch would
+      // otherwise stamp the cache and last-good with a fingerprint that
+      // does not describe them, forcing a needless rebuild next tick.
+      currentMeasurementsFingerprint = aaBatchFingerprint({
+        configs: Array.isArray(raw.configs) ? raw.configs : [],
+        cai: Array.isArray(raw.cai) ? raw.cai : [],
+      });
+      latestSection = await assemble(raw, "current", currentMeasurementsFingerprint);
       if (!latestSection) return degrade("Turso payload failed its structural check");
     } catch (err) {
       const msg = err instanceof Error ? err.message : "error";
