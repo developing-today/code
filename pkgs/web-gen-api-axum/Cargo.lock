@@ -2793,6 +2793,7 @@ dependencies = [
  "once_cell",
  "serde",
  "start-axum-error",
+ "tracing",
  "wasm-bindgen",
  "web-sys",
 ]
