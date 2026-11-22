@@ -7,13 +7,14 @@
 //!    rules. Anything that fails is refused as [`Refusal::Malformed`].
 //! 2. **Duplicate.** An event whose ID is stored, or is one of its author's fork proof
 //!    headers, changes nothing.
-//! 3. **Frozen.** An event above its author's fork point is refused as
-//!    [`Refusal::Frozen`].
-//! 4. **Fork.** If the author has another event at the same sequence number, stored or
-//!    held, the two are a fork, whatever their backlinks and dependencies. The proof for that
-//!    sequence number holds the two lowest IDs there, and the proofs at higher points stay. The
-//!    applied events from the lowest point on are voided, and no others. The proof headers
-//!    become present, which releases the events that waited for them.
+//! 3. **Frozen.** An extra event at an already-proven fork point, or a rival for an occupied
+//!    post-fork position, is refused as [`Refusal::Frozen`]. A verified event at a new
+//!    post-fork position is retained as voided evidence.
+//! 4. **Fork.** At a position not frozen by an earlier proof, if the author has another event at
+//!    the same sequence number, stored or held, the two are a fork, whatever their backlinks and
+//!    dependencies. The proof for that sequence number holds the two lowest IDs there, and the
+//!    proofs at higher points stay. The applied events from the lowest point on are voided, and no
+//!    others. The proof headers become present, which releases the events that waited for them.
 //! 5. **Accept.** The next sequence number, whose backlink is the applied head, is applied
 //!    once every `after` hash is present.
 //! 6. **Wait or park.** An event ahead of its chain, or with an `after` hash that is not
@@ -79,12 +80,14 @@
 //! the refused rival is sent again, while the other event is still held. The behaviour is
 //! pinned by `test_a_rival_refused_by_the_cap_is_seen_only_when_sent_again`.
 //!
-//! # Known limit: a rival refused as frozen
+//! # Frozen events
 //!
-//! An event above its author's fork point is refused as frozen when it arrives after the fork.
-//! When it arrives before, it is kept as voided. So an `after` hash that names such an event is
-//! present in some arrival orders and not in others. The batch property names rivals, but it
-//! compares the batch path with per-event ingest in one arrival order, so it holds either way.
+//! A verified event above its author's fork point is retained as voided evidence when its
+//! author/sequence position is unoccupied. Its ID therefore satisfies other authors' `after`
+//! dependencies independent of whether it arrives before or after the fork. The store has one row
+//! per author/sequence position, so a rival for an already-occupied post-fork position is refused
+//! as frozen. An extra event at the fork point that cannot change the two-header proof is refused
+//! the same way.
 //!
 //! The property tests in `tests/event_store_properties.rs` check the applied state against
 //! this definition, for every arrival order.
@@ -963,9 +966,6 @@ fn decide_in(
         conflicts.push(stored);
     }
     if let Some(proof) = read_proof(txn, &author)? {
-        if seq > proof.seq {
-            return Ok(Decision::Refuse(Refusal::Frozen));
-        }
         if seq == proof.seq {
             // Another event at the fork point. The proof keeps the two lowest IDs there.
             conflicts.extend([proof.first.clone(), proof.second.clone(), event.clone()]);
@@ -978,6 +978,17 @@ fn decide_in(
                 seq,
                 proof: [first.id, second.id],
             });
+        }
+        if seq > proof.seq {
+            // The author is already frozen, so this verified event can never apply. Retain it
+            // anyway: its ID is evidence for other authors' `after` dependencies, independent of
+            // whether its own backlink can still be resolved against the fork proof.
+            // There is only one stored event per author/sequence. If a different post-fork event
+            // already occupies this position, keep the existing evidence and refuse this rival.
+            if stored_at(txn, &author, seq)?.is_some() {
+                return Ok(Decision::Refuse(Refusal::Frozen));
+            }
+            return accept(txn, event);
         }
     }
     if !conflicts.is_empty() {
@@ -1915,7 +1926,7 @@ mod tests {
     }
 
     #[test]
-    fn test_a_frozen_chain_refuses_its_later_events_and_changes_nothing() {
+    fn test_a_frozen_chain_retains_later_events_as_voided_evidence() {
         let (_dir, mut store) = open();
         let signer = key(4);
         let who = author(&signer);
@@ -1927,11 +1938,11 @@ mod tests {
             Ingest::Fork { seq: 1, .. }
         ));
         let before = store.chain(&who).unwrap();
-        assert_eq!(
+        assert!(matches!(
             ingest(&mut store, &events[2]),
-            Ingest::Refused(Refusal::Frozen)
-        );
-        assert!(store.event(&who, 2).unwrap().is_none());
+            Ingest::Voided { id, .. } if id == events[2].id
+        ));
+        assert_eq!(store.event(&who, 2).unwrap(), Some(events[2].clone()));
         assert_eq!(store.chain(&who).unwrap(), before);
         store.check_invariants().unwrap();
     }
@@ -2278,6 +2289,51 @@ mod tests {
     }
 
     #[test]
+    fn test_after_dependency_on_a_post_fork_event_is_order_independent() {
+        let x = key(110);
+        let y = key(111);
+        let x_events = chain_of(&x, 3);
+        let rival = event(&x, 1, Some(x_events[0].id), Vec::new(), "rival");
+        let y0 = event(&y, 0, None, vec![x_events[2].id], "dependent");
+
+        for fork_first in [false, true] {
+            let (_dir, mut store) = open();
+            ingest_all(&mut store, &x_events[..2]);
+            if fork_first {
+                assert!(matches!(
+                    ingest(&mut store, &rival),
+                    Ingest::Fork { seq: 1, .. }
+                ));
+                assert!(matches!(
+                    ingest(&mut store, &x_events[2]),
+                    Ingest::Voided { id, .. } if id == x_events[2].id
+                ));
+            } else {
+                assert!(matches!(
+                    ingest(&mut store, &x_events[2]),
+                    Ingest::Accepted { .. }
+                ));
+                assert!(matches!(
+                    ingest(&mut store, &rival),
+                    Ingest::Fork { seq: 1, .. }
+                ));
+            }
+
+            assert!(matches!(
+                ingest(&mut store, &y0),
+                Ingest::Accepted { id, .. } if id == y0.id
+            ));
+            assert!(!store.is_waiting(&y0.id));
+            assert_eq!(store.chain(&author(&y)).unwrap().unwrap().next_seq, 1);
+            assert_eq!(
+                store.event(&author(&x), 2).unwrap(),
+                Some(x_events[2].clone())
+            );
+            store.check_invariants().unwrap();
+        }
+    }
+
+    #[test]
     fn test_an_after_hash_naming_a_voided_event_is_applied() {
         let (_dir, mut store) = open();
         let x = key(11);
@@ -2327,8 +2383,8 @@ mod tests {
         // applied H1 by the first author, so its arrival forks that chain, and H2 becomes a proof
         // header: present, but never stored. R is released by that. It cannot link to H2, so it
         // must park. Holding it to wait for H2 would wait on a dependency that is already present.
-        // R is not the forking author's event: an event above the fork point is refused as frozen
-        // before the backlink is read, so only another author's backlink reaches this path.
+        // R is not the forking author's event: the proof header is present but not stored, so only
+        // another author's backlink to it can reach this path.
         let (_dir, mut store) = open();
         let forker = key(15);
         let other = key(16);
@@ -2373,7 +2429,7 @@ mod tests {
     }
 
     #[test]
-    fn test_a_frozen_refusal_gives_the_frozen_reason() {
+    fn test_an_extra_fork_point_event_gives_the_frozen_reason() {
         let (_dir, mut store) = open();
         let signer = key(4);
         let events = chain_of(&signer, 3);
@@ -2383,7 +2439,24 @@ mod tests {
             ingest(&mut store, &rival),
             Ingest::Fork { seq: 1, .. }
         ));
-        let result = ingest(&mut store, &events[2]);
+        let proof_max = events[1..=2]
+            .iter()
+            .map(|event| event.id)
+            .max_by(|a, b| a.as_bytes().cmp(b.as_bytes()))
+            .unwrap();
+        let extra = (0..)
+            .map(|attempt| {
+                event(
+                    &signer,
+                    1,
+                    Some(events[0].id),
+                    Vec::new(),
+                    &format!("extra {attempt}"),
+                )
+            })
+            .find(|extra| extra.id.as_bytes().cmp(proof_max.as_bytes()).is_gt())
+            .unwrap();
+        let result = ingest(&mut store, &extra);
         assert_eq!(result, Ingest::Refused(Refusal::Frozen));
         assert_eq!(result.reason(), Some(Reason::Frozen));
     }
@@ -3763,7 +3836,7 @@ mod tests {
     }
 
     #[test]
-    fn test_an_event_released_into_a_frozen_chain_leaves_no_row() {
+    fn test_an_event_released_into_a_frozen_chain_is_retained_voided() {
         let dir = tempfile::tempdir().unwrap();
         let (x, y) = (key(40), key(41));
         let x_events = chain_of(&x, 2);
@@ -3784,7 +3857,8 @@ mod tests {
             store.is_waiting(&waits.id),
             "the event waits across the restart"
         );
-        // Its dependency arrives, so it is released. Its chain is frozen at 1, so it is refused.
+        // Its dependency arrives, so it is released. Its chain is frozen at 1, so it is retained
+        // as voided evidence rather than applied.
         assert_eq!(
             ingest(&mut store, &y0),
             Ingest::Accepted {
@@ -3794,6 +3868,7 @@ mod tests {
         );
         assert!(!store.is_waiting(&waits.id));
         assert!(store.waiting_ids().unwrap().is_empty());
+        assert_eq!(store.event(&author(&x), 2).unwrap(), Some(waits.clone()));
         store.check_invariants().unwrap();
     }
 

@@ -164,8 +164,8 @@ type ForkPlan = BTreeMap<AuthorKey, (SeqNum, usize)>;
 
 /// The events a later event may name: those that are present in every delivery order. An
 /// author with a fork is referable up to its fork point. At the fork point it is referable only
-/// when there are two events there, which the fork proof holds. Above the fork point, an event
-/// is refused as frozen in some orders and kept in others, so no event names it.
+/// when there are two events there, which the fork proof holds. Above the fork point, a unique
+/// event at its position is retained as voided evidence in every order, so it remains referable.
 fn referable(events: &[Event], plan: &ForkPlan) -> Vec<Event> {
     events
         .iter()
@@ -173,7 +173,19 @@ fn referable(events: &[Event], plan: &ForkPlan) -> Vec<Event> {
             let seq = event.header.seq_num;
             match plan.get(&author_of(event)) {
                 None => true,
-                Some(&(fork, rivals)) => seq < fork || (seq == fork && rivals == 1),
+                Some(&(fork, rivals)) => {
+                    seq < fork
+                        || (seq > fork
+                            && events
+                                .iter()
+                                .filter(|other| {
+                                    author_of(other) == author_of(event)
+                                        && other.header.seq_num == seq
+                                })
+                                .count()
+                                == 1)
+                        || (seq == fork && rivals == 1)
+                }
             }
         })
         .cloned()
@@ -245,8 +257,8 @@ fn scenario(seed: u64) -> Scenario {
 }
 
 /// A scenario in which some authors fork once and the rest never fork. Every `after` hash names an
-/// honest event, or a forked author's event at or below its fork point, so each one is present in
-/// every delivery order and nothing stalls except what a fork voids. Returns the honest authors too.
+/// honest event, or a verified event by a forked author, so each one is present in every delivery
+/// order and nothing stalls except what a fork voids. Returns the honest authors too.
 fn honest_scenario(seed: u64) -> (Scenario, Vec<AuthorKey>) {
     let mut rng = Rng(seed);
     let count = 2 + rng.below(3) as usize;
@@ -283,9 +295,7 @@ fn honest_scenario(seed: u64) -> (Scenario, Vec<AuthorKey>) {
         let backlink = originals[author].last().map(|event| event.id);
         let original = present_event(&mut rng, &keys[author], seq, backlink, &good, "message");
         originals[author].push(original.clone());
-        if forks[author].is_none_or(|fork| seq <= fork) {
-            good.push(original.clone());
-        }
+        good.push(original.clone());
         events.push(original);
         if forks[author] == Some(seq) {
             let rival = present_event(&mut rng, &keys[author], seq, backlink, &good, "rival");
@@ -378,6 +388,21 @@ fn model(events: &[Event], authors: &[AuthorKey]) -> Canonical {
         proof_ids.extend(ids.into_iter().take(2));
     }
 
+    // A unique stored post-fork event is voided, but still provides dependency evidence.
+    let voided: BTreeSet<Hash> = events
+        .iter()
+        .filter(|event| {
+            let author = author_of(event);
+            let seq = event.header.seq_num;
+            fork_point.get(&author).is_some_and(|point| seq > *point)
+                && events
+                    .iter()
+                    .filter(|other| author_of(other) == author && other.header.seq_num == seq)
+                    .count()
+                    == 1
+        })
+        .map(|event| event.id)
+        .collect();
     let mut applied_at: BTreeMap<(AuthorKey, SeqNum), Hash> = BTreeMap::new();
     let mut applied: BTreeSet<Hash> = BTreeSet::new();
     for event in events {
@@ -388,13 +413,12 @@ fn model(events: &[Event], authors: &[AuthorKey]) -> Canonical {
             None => true,
             Some(before) => applied_at.get(&(author, before)) == event.header.backlink.as_ref(),
         };
-        // An `after` hash is present when it is applied, or when it is a proof header.
-        let deps_present = event
-            .header
-            .extensions
-            .after
-            .iter()
-            .all(|dep| applied.contains(dep) || proof_ids.contains(dep));
+        // An `after` hash is present when it is applied, a proof header, or a retained post-fork
+        // event.
+        let deps_present =
+            event.header.extensions.after.iter().all(|dep| {
+                applied.contains(dep) || proof_ids.contains(dep) || voided.contains(dep)
+            });
         if below_fork && linked && deps_present {
             applied_at.insert((author, seq), event.id);
             applied.insert(event.id);
@@ -475,10 +499,16 @@ proptest! {
     fn test_random_orders_reach_the_state_the_chains_determine(seed in any::<u64>()) {
         let scenario = scenario(seed);
         let mut rng = Rng(seed ^ 0xD1B5_4A32_D192_ED03);
-        for order in orders(&scenario.events, &mut rng) {
+        for (order_index, order) in orders(&scenario.events, &mut rng).into_iter().enumerate() {
             let state = deliver_within(order, scenario.authors.clone(), DELIVERY_LIMIT)
                 .map_err(TestCaseError::fail)?;
-            prop_assert_eq!(&state, &scenario.expected);
+            prop_assert_eq!(
+                &state,
+                &scenario.expected,
+                "seed={}, order={}",
+                seed,
+                order_index
+            );
         }
     }
 
@@ -511,6 +541,7 @@ proptest! {
         restarts_change_no_outcome(seed)?;
     }
 }
+
 
 /// The body of [`test_restarts_at_random_points_change_no_outcome`], for one seed. The pinned
 /// seeds in [`PINNED_RESTART_SEEDS`] run it on every test run.
