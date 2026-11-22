@@ -31,6 +31,7 @@ pub mod aggregate;
 pub mod backend;
 pub mod boundary;
 pub mod classification;
+pub mod classify;
 pub mod detect;
 pub mod disclosure;
 pub mod embed;
