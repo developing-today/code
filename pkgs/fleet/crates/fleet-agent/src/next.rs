@@ -60,6 +60,17 @@ pub const RANKED_LABELS: [&str; 5] = [
     "next",
 ];
 
+/// The lease, in seconds, that a queue claim taken by `next`
+/// carries. Agent work runs one to three hours between the claim
+/// and its completion, and nothing in this flow heartbeats, so the
+/// queue's 45-minute default lease (2700s) lapses mid-task: the
+/// claim evaporates, the task returns to the queue to be handed to
+/// the next caller, and the worker's `complete` is refused
+/// (#12618). Four hours covers the observed range with headroom
+/// and stays inside the queue's one-day maximum; the hand-out
+/// names the lease, so the deadline is visible instead of silent.
+pub const AGENT_CLAIM_LEASE_SECONDS: u64 = 14_400;
+
 fn encode_label(label: &str) -> String {
     label.replace('/', "%2F").replace(':', "%3A")
 }
@@ -495,7 +506,17 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
     if a.has("--no-queue") {
         tried(&mut log, "queue", "skipped", "--no-queue");
     } else {
-        let mut claim = argv(&["queue", "claim", "--worker", &agent, "--lane", &lane]);
+        let lease = AGENT_CLAIM_LEASE_SECONDS.to_string();
+        let mut claim = argv(&[
+            "queue",
+            "claim",
+            "--worker",
+            &agent,
+            "--lane",
+            &lane,
+            "--lease-seconds",
+            &lease,
+        ]);
         for flag in [
             "--platform",
             "--pool",
@@ -520,8 +541,15 @@ pub fn next(world: &dyn World, args: &[String]) -> R<(Value, i32)> {
                     "queue_task_id": id,
                     "title": row.get("title").cloned().unwrap_or(Value::Null),
                     "row": row,
-                    "instructions": "Work the packet as it says. Checkpoint as you go; finish with \
-                                     complete, or park with a resume condition that is not a person.",
+                    "lease_seconds": AGENT_CLAIM_LEASE_SECONDS,
+                    "instructions": format!(
+                        "Work the packet as it says. Checkpoint as you go; finish with \
+                         complete, or park with a resume condition that is not a person. \
+                         Your claim lease is {} seconds (4 hours) from the claim: \
+                         complete or park before it lapses, or the task returns to the \
+                         queue and your completion will be refused.",
+                        AGENT_CLAIM_LEASE_SECONDS
+                    ),
                 });
                 let then = vec![
                     format!("fleet queue checkpoint {id} --worker {agent} --lane {lane} ..."),
