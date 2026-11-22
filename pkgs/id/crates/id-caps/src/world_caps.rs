@@ -766,6 +766,9 @@ define_provider_registry! {
         kind: ProviderKind::Request,
         argument_schema: ArgumentSchema::JsonObject(NOTIFY_SEND_ARGUMENTS),
         bounds: NOTIFY_SEND_BOUNDS,
+        required_scope: RequiredScope::Join,
+        default_ceiling: DefaultCeiling::Excluded,
+    },
     // The F12.5 `http.fetch` provider (#1062): an outbound GET
     // against an admin allowlist. Outward-facing, unlike `kv.*`
     // and `blob.*`, so it is off by default — excluded from every
