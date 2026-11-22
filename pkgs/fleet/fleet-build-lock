@@ -86,6 +86,15 @@ if [ "$1" = "cargo" ] && [ -z "$target_dir" ]; then
     profile=dev
     case "$cargo_action" in
       test|bench|nextest) profile=test ;;
+      install)
+        profile=release
+        for arg in "$@"; do
+          if [ "$arg" = "--debug" ]; then
+            profile=dev
+            break
+          fi
+        done
+        ;;
       *)
         for arg in "$@"; do
           if [ "$arg" = "--release" ]; then
