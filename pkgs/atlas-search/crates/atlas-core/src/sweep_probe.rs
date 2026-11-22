@@ -19,39 +19,47 @@ struct CpuTicks {
 
 /// Captured at the beginning of a run; call [`HostProbe::finish`] at its
 /// end so I/O wait measures the run window rather than lifetime average.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct HostProbe {
     cpu: CpuTicks,
+    source_path: std::path::PathBuf,
+    staging_path: std::path::PathBuf,
+    source_start: (u64, u64),
+    staging_start: (u64, u64),
 }
 
 impl HostProbe {
     /// Begin a read-only measurement window.
-    pub fn begin() -> Result<Self> {
+    pub fn begin(source_path: &Path, staging_path: &Path) -> Result<Self> {
         Ok(Self {
             cpu: read_cpu_ticks()?,
+            source_path: source_path.to_path_buf(),
+            staging_path: staging_path.to_path_buf(),
+            source_start: volume(source_path)?,
+            staging_start: volume(staging_path)?,
         })
     }
 
-    /// Finish the window and sample source/staging volume capacity.
+    /// Finish the window and sample source/staging volume capacity again.
+    /// The lower free-space sample across the window is reported, so a
+    /// transient low-space point cannot be hidden by later cleanup.
     /// Database usage deltas and projected batch size are supplied by
     /// the caller and preserved in the returned measurement record.
     pub fn finish(
         self,
-        source_path: &Path,
-        staging_path: &Path,
         projected_batch_bytes: u64,
         tgt_read_rows: u64,
         tgt_write_rows: u64,
     ) -> Result<Measurements> {
-        let source = volume(source_path)?;
-        let staging = volume(staging_path)?;
+        let source_end = volume(&self.source_path)?;
+        let staging_end = volume(&self.staging_path)?;
         let end = read_cpu_ticks()?;
         let src_io_wait_pct = iowait_pct(self.cpu, end);
         Ok(Measurements {
-            src_free_bytes: source.1,
-            src_volume_bytes: source.0,
+            src_free_bytes: self.source_start.1.min(source_end.1),
+            src_volume_bytes: self.source_start.0,
             src_io_wait_pct,
-            stg_free_bytes: staging.1,
+            stg_free_bytes: self.staging_start.1.min(staging_end.1),
             projected_batch_bytes,
             tgt_read_rows,
             tgt_write_rows,
@@ -130,10 +138,8 @@ mod tests {
     #[test]
     fn probe_samples_volumes_and_run_window_io_wait() {
         let root = std::env::temp_dir();
-        let probe = HostProbe::begin().expect("begin host probe");
-        let measurements = probe
-            .finish(&root, &root, 4096, 17, 23)
-            .expect("finish host probe");
+        let probe = HostProbe::begin(&root, &root).expect("begin host probe");
+        let measurements = probe.finish(4096, 17, 23).expect("finish host probe");
         assert!(measurements.src_volume_bytes > 0);
         assert!(measurements.src_free_bytes > 0);
         assert!(measurements.stg_free_bytes > 0);
