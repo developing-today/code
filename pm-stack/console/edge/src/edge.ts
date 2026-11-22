@@ -425,10 +425,17 @@ export class Edge {
     this.hostSeq = msg.at;
     await this.kv.put("host", { seen: now, seq: msg.at, confirmed: this.confirmed });
     if (wasSilent) {
-      await this.kv.delete("silent");
-      await this.push
-        .send("trouble", { title: "The laptop is back", body: "It is reporting again.", url: "/console/", tag: "host" })
-        .catch(() => {});
+      try {
+        const delivery = await this.push.send("trouble", {
+          title: "The laptop is back",
+          body: "It is reporting again.",
+          url: "/console/",
+          tag: "host",
+        });
+        if (delivery.failed === 0) await this.kv.delete("silent");
+      } catch {
+        // Keep the transition pending so the next host report can retry it.
+      }
     }
     await this.setAlarm(now + SILENT_MS + 1000);
     if (changed.some((n) => WATCHED.includes(n))) {
@@ -457,15 +464,17 @@ export class Edge {
     const now = this.now();
     if (!this.hostSeen || now - this.hostSeen < SILENT_MS) return;
     if ((await this.kv.get("silent")) === true) return;
-    await this.kv.put("silent", true);
-    await this.push
-      .send("trouble", {
+    try {
+      const delivery = await this.push.send("trouble", {
         title: "The laptop has gone quiet",
         body: "It has not reported for ten minutes. The app still opens; what you do is held until it is back.",
         url: "/console/",
         tag: "host",
-      })
-      .catch(() => {});
+      });
+      if (delivery.failed === 0) await this.kv.put("silent", true);
+    } catch {
+      // Leave the transition pending so a later alarm can retry it.
+    }
   }
 
   // ---- requests ----------------------------------------------------------
