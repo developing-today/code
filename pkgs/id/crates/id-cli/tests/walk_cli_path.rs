@@ -32,7 +32,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::Path;
 
 use id_cli::commands::walk::{
     init_node, node_reports, read_record, start_server, sync_node, write_record,
@@ -42,8 +42,13 @@ use id_sync::federation::slices::b32_ingest_gate::EventId;
 
 const START: u64 = 10_000;
 
-fn heads(dir: &PathBuf) -> BTreeSet<EventId> {
-    node_reports(dir).unwrap().heads.into_iter().collect()
+async fn heads(dir: &Path) -> BTreeSet<EventId> {
+    node_reports(dir)
+        .await
+        .unwrap()
+        .heads
+        .into_iter()
+        .collect()
 }
 
 #[tokio::test]
@@ -51,17 +56,19 @@ async fn the_walk_commands_drive_the_path_between_two_nodes() {
     let tmp = tempfile::tempdir().unwrap();
     let a_dir = tmp.path().join("node-a");
     let b_dir = tmp.path().join("node-b");
-    init_node(&a_dir, "node-a").unwrap();
-    init_node(&b_dir, "node-b").unwrap();
+    init_node(&a_dir, "node-a").await.unwrap();
+    init_node(&b_dir, "node-b").await.unwrap();
 
     // Step 1–2: a signed record written at an id:// address on A,
     // held in A's on-disk store.
-    let base = write_record(&a_dir, "alice", "first draft", &[], START).unwrap();
+    let base = write_record(&a_dir, "alice", "first draft", &[], START)
+        .await
+        .unwrap();
     assert_eq!(base.outcome, IngestOutcome::Applied);
 
     // Before any sync, B does not hold it: reading the address on B
     // is an error, not a fetch from anywhere else.
-    assert!(read_record(&b_dir, &base.address).is_err());
+    assert!(read_record(&b_dir, &base.address).await.is_err());
 
     // Step 3: synced to B over the transport, B serving from its
     // own directory. The exchange names the one send.
@@ -74,10 +81,10 @@ async fn the_walk_commands_drive_the_path_between_two_nodes() {
 
     // After a restart of B, the record B admitted while serving is
     // still read from its address, and B's heads survived.
-    let on_b = read_record(&b_dir, &base.address).unwrap();
+    let on_b = read_record(&b_dir, &base.address).await.unwrap();
     assert_eq!(on_b.signer, "alice");
     assert_eq!(on_b.text.as_deref(), Some("first draft"));
-    assert_eq!(heads(&b_dir), BTreeSet::from([base.event]));
+    assert_eq!(heads(&b_dir).await, BTreeSet::from([base.event]));
 
     // A repeated sync changes nothing.
     let server_b = start_server(&b_dir).await.unwrap();
@@ -89,8 +96,12 @@ async fn the_walk_commands_drive_the_path_between_two_nodes() {
 
     // Step 4: conflicting writes — each writer follows the base
     // record on their own node. Locally each is a plain successor.
-    let from_a = write_record(&a_dir, "alice", "alice's edit", &[base.event], START + 3).unwrap();
-    let from_b = write_record(&b_dir, "bob", "bob's edit", &[base.event], START + 3).unwrap();
+    let from_a = write_record(&a_dir, "alice", "alice's edit", &[base.event], START + 3)
+        .await
+        .unwrap();
+    let from_b = write_record(&b_dir, "bob", "bob's edit", &[base.event], START + 3)
+        .await
+        .unwrap();
     assert_eq!(from_a.outcome, IngestOutcome::Applied);
     assert_eq!(from_b.outcome, IngestOutcome::Applied);
     assert_ne!(from_a.event, from_b.event);
@@ -103,8 +114,13 @@ async fn the_walk_commands_drive_the_path_between_two_nodes() {
     let expected_heads = BTreeSet::from([from_a.event, from_b.event]);
     let mut report_ids = Vec::new();
     for dir in [&a_dir, &b_dir] {
-        assert_eq!(heads(dir), expected_heads, "heads on {}", dir.display());
-        let view = node_reports(dir).unwrap();
+        assert_eq!(
+            heads(dir).await,
+            expected_heads,
+            "heads on {}",
+            dir.display()
+        );
+        let view = node_reports(dir).await.unwrap();
         let open: Vec<_> = view
             .reports
             .iter()
@@ -126,11 +142,19 @@ async fn the_walk_commands_drive_the_path_between_two_nodes() {
     // Nothing was merged or dropped: both edits still read from
     // their addresses on B.
     assert_eq!(
-        read_record(&b_dir, &from_a.address).unwrap().text.as_deref(),
+        read_record(&b_dir, &from_a.address)
+            .await
+            .unwrap()
+            .text
+            .as_deref(),
         Some("alice's edit")
     );
     assert_eq!(
-        read_record(&b_dir, &from_b.address).unwrap().text.as_deref(),
+        read_record(&b_dir, &from_b.address)
+            .await
+            .unwrap()
+            .text
+            .as_deref(),
         Some("bob's edit")
     );
 
@@ -143,6 +167,7 @@ async fn the_walk_commands_drive_the_path_between_two_nodes() {
         &[from_a.event, from_b.event],
         START + 6,
     )
+    .await
     .unwrap();
     assert_eq!(merged.outcome, IngestOutcome::Resolved(report_ids[1].0));
 
@@ -160,7 +185,7 @@ async fn the_walk_commands_drive_the_path_between_two_nodes() {
     // After a restart of both nodes: no open report anywhere, one
     // head, and the merged record reads from its address on both.
     for dir in [&a_dir, &b_dir] {
-        let view = node_reports(dir).unwrap();
+        let view = node_reports(dir).await.unwrap();
         assert!(
             view.reports
                 .iter()
@@ -169,7 +194,7 @@ async fn the_walk_commands_drive_the_path_between_two_nodes() {
             dir.display()
         );
         assert_eq!(view.heads, vec![merged.event], "heads on {}", dir.display());
-        let read = read_record(dir, &merged.address).unwrap();
+        let read = read_record(dir, &merged.address).await.unwrap();
         assert_eq!(read.signer, "bob");
         assert_eq!(read.text.as_deref(), Some("both edits, merged by bob"));
     }
