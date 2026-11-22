@@ -136,16 +136,17 @@ smoke.sh                    per-variant smoke suite (post-build)
 
 ## Session identity in worktrees (#9075)
 
-Fleet mirrors the active `OPENCODE_SESSION_ID` into `FLEET_SESSION_ID` for
-Fleet's child processes. At the root of each Git worktree it records that
-identity in the plain-text `.fleet-session-id` pwd-file. This is worktree-local
-(not in the common Git directory), so linked worktrees can track different
-sessions. When resolving a session identity, Fleet uses an explicit
-`--session-id` argument first, then `FLEET_SESSION_ID` (or
-`OPENCODE_SESSION_ID`), then `.fleet-session-id`. A pwd-file value is accepted
-only when the local OpenCode server confirms the session still exists; an
-ended or unverifiable session is reported as stale and is never silently used.
-Remove a stale marker or invoke Fleet from a new active session to refresh it.
+`fleet session bind [--session-id ID]` is the explicit, validated boundary for
+binding an identity. It resolves the explicit value, then `FLEET_SESSION_ID`,
+then `OPENCODE_SESSION_ID`, then the worktree's plain-text `.fleet-session-id`.
+Supplied identities are persisted at the Git worktree root (not the common Git
+directory), so linked worktrees can track different sessions. A recovered
+marker is accepted only when the local OpenCode server returns a matching,
+non-archived session record; an ended or unverifiable marker fails closed.
+Help, malformed commands and other Fleet domains do not inspect or modify the
+marker. Automatic launcher integration and create-path provenance are not
+provided by this command; those require a separately validated launcher or
+create-command boundary.
 
 ## Versioning — derived per-app versions (#8566; policy #5790)
 

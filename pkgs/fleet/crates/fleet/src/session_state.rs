@@ -7,6 +7,55 @@
 use std::path::{Path, PathBuf};
 
 pub const PWD_FILE: &str = ".fleet-session-id";
+const USAGE: &str = "Usage: fleet session bind [--session-id ID]\n\nResolve and persist this worktree's session identity. No automatic launcher integration.";
+
+/// This command owns its whole argument list. Validate before Git, marker I/O,
+/// environment mutation or HTTP. In particular, never scan another domain's tail.
+pub fn run(args: &[String]) -> i32 {
+    run_with(args, initialize)
+}
+
+fn run_with(args: &[String], initialize: impl FnOnce(Option<&str>) -> Result<(), String>) -> i32 {
+    if args.len() == 1 && matches!(args[0].as_str(), "--help" | "-h") {
+        println!("{USAGE}");
+        return 0;
+    }
+    let explicit = match parse_bind(args) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("fleet session: {error}\n{USAGE}");
+            return 2;
+        }
+    };
+    match initialize(explicit) {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("fleet session: {error}");
+            2
+        }
+    }
+}
+
+fn parse_bind(args: &[String]) -> Result<Option<&str>, String> {
+    let value = match args {
+        [verb] if verb == "bind" => return Ok(None),
+        [verb, flag, value] if verb == "bind" && flag == "--session-id" => value.as_str(),
+        [verb, flag] if verb == "bind" && flag.starts_with("--session-id=") => {
+            &flag["--session-id=".len()..]
+        }
+        _ => return Err("expected bind with at most one --session-id value".into()),
+    };
+    if !valid_session_id(value) {
+        return Err("session ID must be ses_ followed by ASCII letters or digits".into());
+    }
+    Ok(Some(value))
+}
+
+fn valid_session_id(value: &str) -> bool {
+    value.starts_with("ses_")
+        && value.len() > 4
+        && value[4..].bytes().all(|c| c.is_ascii_alphanumeric())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resolution {
@@ -72,10 +121,17 @@ fn resolve_marker(
     opencode_env: Option<&str>,
     marker_is_live: impl FnOnce(&str) -> bool,
 ) -> Result<Resolution, String> {
-    let marker = match std::fs::read_to_string(path) {
-        Ok(value) => Some(value),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
+    let supplied_identity = nonempty(explicit).is_some()
+        || nonempty(fleet_env).is_some()
+        || nonempty(opencode_env).is_some();
+    let marker = if supplied_identity {
+        None
+    } else {
+        match std::fs::read_to_string(path) {
+            Ok(value) => Some(value),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
+        }
     };
     let resolved = resolve(
         explicit,
@@ -84,9 +140,6 @@ fn resolve_marker(
         marker.as_deref(),
         marker_is_live,
     )?;
-    let supplied_identity = nonempty(explicit).is_some()
-        || nonempty(fleet_env).is_some()
-        || nonempty(opencode_env).is_some();
     if supplied_identity && let Resolution::Session(id) = &resolved {
         std::fs::write(path, format!("{id}\n"))
             .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
@@ -107,24 +160,40 @@ fn session_is_live(session_id: &str) -> bool {
         .unwrap_or_else(|| "http://127.0.0.1:4096".to_owned());
     let url = format!("{}/api/session/{}", base.trim_end_matches('/'), session_id);
     let agent: ureq::Agent = ureq::Agent::config_builder()
+        .http_status_as_error(true)
         .timeout_global(Some(std::time::Duration::from_secs(2)))
         .build()
         .into();
-    agent.get(&url).call().is_ok()
+    let Ok(mut response) = agent.get(&url).call() else {
+        return false;
+    };
+    let Ok(body) = response.body_mut().read_to_string() else {
+        return false;
+    };
+    session_record_is_live(&body, session_id)
+}
+
+fn session_record_is_live(body: &str, session_id: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return false;
+    };
+    let record = value.get("data").unwrap_or(&value);
+    record.get("id").and_then(|id| id.as_str()) == Some(session_id)
+        && record
+            .get("time")
+            .and_then(|time| time.get("archived"))
+            .is_none_or(|v| v.is_null())
 }
 
 /// Set `FLEET_SESSION_ID` for Fleet's child processes and persist explicitly
 /// supplied identities. With no supplied identity, a marker is used only when
 /// the OpenCode session endpoint confirms it exists.
 pub fn initialize(explicit: Option<&str>) -> Result<(), String> {
-    let Some(root) = worktree_root()? else {
-        return Ok(());
-    };
-    let path = marker_path(&root);
     let fleet_env = std::env::var("FLEET_SESSION_ID").ok();
     let opencode_env = std::env::var("OPENCODE_SESSION_ID").ok();
-    let resolved = resolve_marker(
-        &path,
+    let root = worktree_root()?;
+    let resolved = initialize_at(
+        root.as_deref(),
         explicit,
         fleet_env.as_deref(),
         opencode_env.as_deref(),
@@ -136,6 +205,25 @@ pub fn initialize(explicit: Option<&str>) -> Result<(), String> {
         unsafe { std::env::set_var("FLEET_SESSION_ID", &id) };
     }
     Ok(())
+}
+
+fn initialize_at(
+    root: Option<&Path>,
+    explicit: Option<&str>,
+    fleet_env: Option<&str>,
+    opencode_env: Option<&str>,
+    marker_is_live: impl FnOnce(&str) -> bool,
+) -> Result<Resolution, String> {
+    match root {
+        Some(root) => resolve_marker(
+            &marker_path(root),
+            explicit,
+            fleet_env,
+            opencode_env,
+            marker_is_live,
+        ),
+        None => resolve(explicit, fleet_env, opencode_env, None, marker_is_live),
+    }
 }
 
 #[cfg(test)]
@@ -197,7 +285,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root = PathBuf::from("/home/user/.local/share/opencode/tmp/opencode").join(format!(
+        let root = std::env::temp_dir().join(format!(
             "fleet-session-state-{}-{unique}",
             std::process::id()
         ));
@@ -221,5 +309,86 @@ mod tests {
 
         std::fs::remove_file(path).unwrap();
         std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn explicit_and_environment_values_do_not_read_an_invalid_marker() {
+        let root = std::env::temp_dir().join(format!(
+            "fleet-session-invalid-marker-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let path = marker_path(&root);
+        std::fs::write(&path, [0xff, 0xfe]).unwrap();
+        assert_eq!(
+            resolve_marker(&path, Some("ses_explicit"), None, None, |_| false),
+            Ok(Resolution::Session("ses_explicit".into()))
+        );
+        assert_eq!(
+            resolve_marker(&path, None, Some("ses_env"), None, |_| false),
+            Ok(Resolution::Session("ses_env".into()))
+        );
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn no_worktree_still_resolves_environment_identity() {
+        assert_eq!(
+            initialize_at(None, None, Some("ses_env"), None, |_| false),
+            Ok(Resolution::Session("ses_env".into()))
+        );
+        assert_eq!(
+            initialize_at(None, Some("ses_explicit"), None, None, |_| false),
+            Ok(Resolution::Session("ses_explicit".into()))
+        );
+    }
+
+    #[test]
+    fn bind_parser_owns_and_validates_its_arguments() {
+        assert_eq!(parse_bind(&["bind".into()]), Ok(None));
+        assert_eq!(
+            parse_bind(&["bind".into(), "--session-id=ses_123".into()]),
+            Ok(Some("ses_123"))
+        );
+        assert!(parse_bind(&["bind".into(), "--session-id".into()]).is_err());
+        assert!(parse_bind(&["bind".into(), "--session-id".into(), "--help".into()]).is_err());
+        assert!(parse_bind(&["bind".into(), "--session-id=ses_x".into(), "extra".into()]).is_err());
+    }
+
+    #[test]
+    fn invalid_bind_does_not_invoke_session_initialization() {
+        let mut invoked = false;
+        let code = run_with(
+            &["bind".into(), "--session-id".into(), "--help".into()],
+            |_| {
+                invoked = true;
+                Ok(())
+            },
+        );
+        assert_eq!(code, 2);
+        assert!(!invoked);
+    }
+
+    #[test]
+    fn session_record_requires_matching_non_archived_json() {
+        assert!(session_record_is_live(
+            r#"{"id":"ses_a","time":{}}"#,
+            "ses_a"
+        ));
+        assert!(session_record_is_live(
+            r#"{"data":{"id":"ses_a"}}"#,
+            "ses_a"
+        ));
+        assert!(!session_record_is_live("<html>app</html>", "ses_a"));
+        assert!(!session_record_is_live(r#"{"id":"ses_b"}"#, "ses_a"));
+        assert!(!session_record_is_live(
+            r#"{"id":"ses_a","time":{"archived":123}}"#,
+            "ses_a"
+        ));
     }
 }

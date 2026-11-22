@@ -372,6 +372,9 @@ fn help_text(surface: &Surface) -> String {
     out.push_str(
         "  init           Autostart this host's roles per the [host] manifest (no-op when running)\n",
     );
+    out.push_str(
+        "  session bind   Validate and persist an explicit or inherited session identity\n",
+    );
     out.push_str("  version        Print version, enabled capabilities, and source rev\n");
     out.push_str("  capabilities   Print the registry and this build's capabilities as JSON\n");
     out.push_str("  help [domain]  Show this help, or one domain's help\n\n");
@@ -1392,6 +1395,7 @@ fn run_root(surface: &Surface, args: &[String], invoked_as: &str) -> i32 {
             EXIT_OK
         }
         Some("init") => cmd_init(surface, &args[1..], invoked_as),
+        Some("session") => session_state::run(&args[1..]),
         Some(name) => match domain(name) {
             Some(d) => run_domain(surface, d, &args[1..], invoked_as),
             None => usage_error(&format!("unrecognized subcommand '{name}'")),
@@ -1433,21 +1437,6 @@ fn main() {
         })
         .unwrap_or_else(|| "fleet".to_string());
     let args: Vec<String> = argv.iter().skip(1).cloned().collect();
-
-    // OpenCode supplies OPENCODE_SESSION_ID to tools. Mirror it into
-    // Fleet's stable child-process variable and persist the association
-    // at the current worktree root so later bare invocations can recover it.
-    let explicit_session_id = args
-        .windows(2)
-        .find_map(|pair| (pair[0] == "--session-id").then_some(pair[1].as_str()))
-        .or_else(|| {
-            args.iter()
-                .find_map(|arg| arg.strip_prefix("--session-id="))
-        });
-    if let Err(message) = session_state::initialize(explicit_session_id) {
-        eprintln!("fleet: {message}");
-        std::process::exit(EXIT_USAGE);
-    }
 
     // Config decides the disable table; a malformed config is a loud
     // error on every path (a silently ignored disable would defeat
