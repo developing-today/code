@@ -35,11 +35,56 @@ func TestRocLanguageDetectionAndSelection(t *testing.T) {
 	}
 }
 
+func TestRocCompilerCanComeFromFlakeDevshell(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "nix"), []byte("#!/bin/sh\nprintf '%s\\n' \"$@\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	want := []string{"develop", "./tools", "-c", "roc", "run"}
+	for _, tc := range []struct {
+		name, filename, source, interpreter string
+	}{
+		{name: "language", filename: "report.roc", source: "app [main!] {}\n\nmain! = |_args| Ok({})\n"},
+		{name: "shebang", filename: "report.sh", source: "#!/usr/bin/env roc\napp [main!] {}\n\nmain! = |_args| Ok({})\n"},
+		{name: "configured interpreter", filename: "report.sh", source: "app [main!] {}\n\nmain! = |_args| Ok({})\n", interpreter: "roc"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script := filepath.Join(t.TempDir(), tc.filename)
+			if err := os.WriteFile(script, []byte(tc.source), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var stdout, stderr bytes.Buffer
+			_, err := Run(context.Background(), Options{
+				File: script, Interpreter: tc.interpreter, Devshell: "flake:./tools",
+				Stdout: &stdout, Stderr: &stderr,
+			})
+			if err != nil {
+				t.Fatalf("Roc run through flake devshell: %v\nstderr:\n%s", err, stderr.String())
+			}
+			got := strings.Fields(stdout.String())
+			if len(got) < len(want) {
+				t.Fatalf("nix argv = %q, want prefix %q", got, want)
+			}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Fatalf("nix argv = %q, want prefix %q", got, want)
+				}
+			}
+		})
+	}
+}
+
 func TestRocFileRunCallsMockDaemon(t *testing.T) {
 	if _, err := exec.LookPath("roc"); err != nil {
 		t.Skip("roc compiler is not installed")
 	}
-	seen := make(chan map[string]any, 1)
+	type observedCall struct {
+		body map[string]any
+		run  string
+	}
+	seen := make(chan observedCall, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/call" {
 			http.NotFound(w, r)
@@ -49,9 +94,15 @@ func TestRocFileRunCallsMockDaemon(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Errorf("mock daemon: decode call: %v", err)
 		}
-		seen <- body
+		seen <- observedCall{body: body, run: r.Header.Get("X-Mcpx-Run")}
+		// The mock daemon only returns its dry-run synthetic when the run
+		// identity arrives. Without it, fail closed instead of reaching a live tool.
+		if r.Header.Get("X-Mcpx-Run") != "run-roc-dry" {
+			http.Error(w, `{"error":"missing dry-run run identity"}`, http.StatusForbidden)
+			return
+		}
 		w.Header().Set("content-type", "application/json")
-		_, _ = w.Write([]byte(`{"result":{"structuredContent":{"ok":true}}}`))
+		_, _ = w.Write([]byte(`{"result":{"structuredContent":{"dryRun":true,"ok":true}}}`))
 	}))
 	defer srv.Close()
 
@@ -68,7 +119,7 @@ func TestRocFileRunCallsMockDaemon(t *testing.T) {
 	res, err := Run(context.Background(), Options{
 		File:    script,
 		Clients: map[string]Client{codegen.Roc.Name: {Module: codegen.RocModule(nss, srv.URL, "sess-roc")}},
-		Env:     map[string]string{"MCPX_ENDPOINT": srv.URL, "MCPX_SESSION": "sess-roc"},
+		Env:     map[string]string{"MCPX_ENDPOINT": srv.URL, "MCPX_SESSION": "sess-roc", "MCPX_RUN": "run-roc-dry"},
 		Stdout:  &stdout,
 		Stderr:  &stderr,
 	})
@@ -80,14 +131,17 @@ func TestRocFileRunCallsMockDaemon(t *testing.T) {
 	}
 	select {
 	case got := <-seen:
-		if got["server"] != "demo-server" || got["tool"] != "fancy-name" {
-			t.Errorf("daemon call = %#v, want demo-server/fancy-name", got)
+		if got.run != "run-roc-dry" {
+			t.Errorf("daemon run identity = %q, want run-roc-dry", got.run)
 		}
-		args, _ := got["args"].(map[string]any)
+		if got.body["server"] != "demo-server" || got.body["tool"] != "fancy-name" {
+			t.Errorf("daemon call = %#v, want demo-server/fancy-name", got.body)
+		}
+		args, _ := got.body["args"].(map[string]any)
 		if args["x"] != "world" {
 			t.Errorf("daemon args = %#v, want x=world", args)
 		}
 	default:
-		t.Fatal("Roc tool call did not reach mock daemon")
+		t.Fatalf("Roc tool call did not reach mock daemon (result: %+v)\nstdout:\n%s\nstderr:\n%s", res, stdout.String(), stderr.String())
 	}
 }

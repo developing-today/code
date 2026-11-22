@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -28,20 +29,58 @@ func RocModule(nss []Namespace, endpoint, session string) string {
 	// written as Mcpx.roc, so define the matching top-level type.
 	b.WriteString("Mcpx := {}\n\n")
 	b.WriteString("import pf.Http\nimport pf.Env\nimport http.Method\nimport http.Request\nimport http.Response\n\n")
-	b.WriteString("ToolError := [TransportError(Str), StatusError(U16)]\n\n")
+	b.WriteString("ToolError := [TransportError(Str), StatusError(U16), DaemonError(Str), ToolResultError(Str), EncodingError(Str)]\n\n")
 	fmt.Fprintf(&b, "default_endpoint = %s\ndefault_session = %s\n\n", rocString(endpoint), rocString(session))
 	b.WriteString("call! : Str => Try(Response.Response, ToolError)\n")
 	b.WriteString("call! = |body| {\n")
 	b.WriteString("    endpoint = match Env.var_str!(\"MCPX_ENDPOINT\") {\n        Ok(value) => value\n        Err(_) => default_endpoint\n    }\n")
 	b.WriteString("    session = match Env.var_str!(\"MCPX_SESSION\") {\n        Ok(value) => value\n        Err(_) => default_session\n    }\n")
-	b.WriteString("    request = Request.from_method(Method.POST)\n        .with_uri(Str.concat(endpoint, \"/v1/call\"))\n        .with_body(Str.to_utf8(body))\n        .add_header(\"Content-Type\", \"application/json\")\n        .add_header(\"x-mcpx-session\", session)\n        .add_header(\"x-mcpx-call\", session)\n")
-	b.WriteString("    response = Http.send!(request, {}) ? |_err| TransportError(\"mcpx daemon request failed\")\n")
-	b.WriteString("    if Response.status(response) < 200 or Response.status(response) >= 300 {\n        return Err(StatusError(Response.status(response)))\n    }\n    Ok(response)\n}\n\n")
+	b.WriteString("    token = match Env.var_str!(\"MCPX_TRANSPORT_BEARER_TOKEN\") {\n        Ok(value) => value\n        Err(_) => \"\"\n    }\n")
+	b.WriteString("    run = match Env.var_str!(\"MCPX_RUN\") {\n        Ok(value) => value\n        Err(_) => \"\"\n    }\n")
+	b.WriteString("    request = Request.from_method(Method.POST)\n        .with_uri(Str.concat(endpoint, \"/v1/call\"))\n        .with_body(Str.to_utf8(body))\n        .add_header(\"Content-Type\", \"application/json\")\n        .add_header(\"x-mcpx-session\", session)\n        .add_header(\"x-mcpx-call\", session)\n        .add_header(\"x-mcpx-run\", run)\n")
+	b.WriteString("    authenticated_request = if token == \"\" { request } else { request.add_header(\"Authorization\", Str.concat(\"Bearer \", token)) }\n")
+	b.WriteString("    response = Http.send!(authenticated_request, {}) ? |_err| TransportError(\"mcpx daemon request failed\")\n")
+	b.WriteString("    if Response.status(response) < 200 or Response.status(response) >= 300 {\n        return Err(StatusError(Response.status(response)))\n    }\n")
+	b.WriteString("    response_text = Str.from_utf8(Response.body(response)) ? |_err| TransportError(\"mcpx daemon returned invalid UTF-8\")\n")
+	b.WriteString("    envelope : Try({ error ?: Str, result ?: { isError ?: Bool, content ?: List({ type : Str, text ?: Str }) } }, _)\n")
+	b.WriteString("    envelope = Json.parse(response_text)\n")
+	b.WriteString("    match envelope {\n        Err(_) => Err(DaemonError(\"mcpx daemon returned invalid JSON\"))\n        Ok(value) => match value.?error {\n            Ok(message) => Err(DaemonError(message))\n            Err(_) => match value.?result {\n                Ok(result) => match result.?isError {\n                    Ok(is_error) => if is_error {\n                        blocks = match result.?content {\n                            Ok(content) => List.keep_oks(content, |block| block.?text)\n                            Err(_) => []\n                        }\n                        message = if List.is_empty(blocks) { \"tool returned isError\" } else { Str.join_with(blocks, \"\\n\") }\n                        Err(ToolResultError(message))\n                    } else { Ok(response) }\n                    Err(_) => Ok(response)\n                }\n                Err(_) => Ok(response)\n            }\n        }\n    }\n}\n\n")
 	for _, fn := range functions {
-		fmt.Fprintf(&b, "%s! : { %s } => Try(Response.Response, ToolError)\n", fn.name, strings.Join(fn.fields, ", "))
-		fmt.Fprintf(&b, "%s! = |args| {\n", fn.name)
-		fmt.Fprintf(&b, "    payload = { server: %s, tool: %s, args }\n", rocString(fn.server), rocString(fn.tool))
-		b.WriteString("    body = Json.to_str_try(payload) ? |_err| TransportError(\"mcpx request encoding failed\")\n    call!(body)\n}\n\n")
+		argType := "{ " + strings.Join(fn.fields, ", ") + " }"
+		argName := "args"
+		if len(fn.args) == 0 {
+			argType = "{}"
+			argName = "_args"
+		}
+		where := ""
+		if len(fn.genericTypes) > 0 {
+			constraints := make([]string, len(fn.genericTypes))
+			for i, generic := range fn.genericTypes {
+				constraints[i] = generic + ".Json.Encodable(_)"
+			}
+			where = " where [" + strings.Join(constraints, ", ") + "]"
+		}
+		fmt.Fprintf(&b, "%s! : %s => Try(Response.Response, ToolError)%s\n", fn.name, argType, where)
+		fmt.Fprintf(&b, "%s! = |%s| {\n", fn.name, argName)
+		if len(fn.args) == 0 {
+			b.WriteString("    args_json = \"{}\"\n")
+		} else {
+			b.WriteString("    arg_fields = [\n")
+		}
+		for _, field := range fn.args {
+			key, _ := json.Marshal(field.wireName)
+			if field.optional {
+				fmt.Fprintf(&b, "        match args.?%s {\n            Ok(value) => {\n                encoded = Json.to_str_try(value) ? |_err| EncodingError(\"mcpx argument encoding failed\")\n                Ok(Str.concat(%s, Str.concat(\":\", encoded)))\n            }\n            Err(_) => Ok(\"\")\n        },\n", field.name, strconv.Quote(string(key)))
+			} else {
+				fmt.Fprintf(&b, "        {\n            encoded = Json.to_str_try(args.%s) ? |_err| EncodingError(\"mcpx argument encoding failed\")\n            Ok(Str.concat(%s, Str.concat(\":\", encoded)))\n        },\n", field.name, strconv.Quote(string(key)))
+			}
+		}
+		if len(fn.args) > 0 {
+			b.WriteString("    ]\n    encoded_fields = List.map_try(arg_fields, |entry| entry) ? |_err| EncodingError(\"mcpx argument encoding failed\")\n    present_fields = List.keep_if(encoded_fields, |entry| entry != \"\")\n    args_json = Str.concat(\"{\", Str.concat(Str.join_with(present_fields, \",\"), \"}\"))\n")
+		}
+		fmt.Fprintf(&b, "    server_json = Json.to_str_try(%s) ? |_err| EncodingError(\"mcpx request encoding failed\")\n", rocString(fn.server))
+		fmt.Fprintf(&b, "    tool_json = Json.to_str_try(%s) ? |_err| EncodingError(\"mcpx request encoding failed\")\n", rocString(fn.tool))
+		b.WriteString("    body = Str.concat(\"{\\\"server\\\":\", Str.concat(server_json, Str.concat(\",\\\"tool\\\":\", Str.concat(tool_json, Str.concat(\",\\\"args\\\":\", Str.concat(args_json, \"}\"))))))\n    call!(body)\n}\n\n")
 	}
 	return b.String()
 }
@@ -49,6 +88,13 @@ func RocModule(nss []Namespace, endpoint, session string) string {
 type rocFunction struct {
 	name, server, tool string
 	fields             []string
+	args               []rocArgument
+	genericTypes       []string
+}
+
+type rocArgument struct {
+	name, wireName, rocType string
+	optional                bool
 }
 
 func rocFunctions(nss []Namespace) []rocFunction {
@@ -59,18 +105,29 @@ func rocFunctions(nss []Namespace) []rocFunction {
 	for _, ns := range sorted {
 		for _, tool := range sortedTools(ns) {
 			name := uniqueRocIdent(rocIdent(ns.Name+"_"+tool.Name, false), usedNames)
-			fields := rocInputFields(tool.InputSchema)
+			fields, args := rocInputFields(tool.InputSchema)
+			var generics []string
+			for i := range args {
+				if args[i].rocType == "" {
+					args[i].rocType = string(rune('a' + len(generics)))
+					generics = append(generics, args[i].rocType)
+					for j := range fields {
+						fields[j] = strings.Replace(fields[j], "__GENERIC_"+args[i].name+"__", args[i].rocType, 1)
+					}
+				}
+			}
 			out = append(out, rocFunction{
 				name: name, server: ns.Server,
-				tool: tool.Name, fields: fields,
+				tool: tool.Name, fields: fields, args: args, genericTypes: generics,
 			})
 		}
 	}
 	return out
 }
 
-func rocInputFields(raw json.RawMessage) []string {
+func rocInputFields(raw json.RawMessage) ([]string, []rocArgument) {
 	var schema struct {
+		Required   []string `json:"required"`
 		Properties map[string]struct {
 			Type string `json:"type"`
 		} `json:"properties"`
@@ -82,9 +139,14 @@ func rocInputFields(raw json.RawMessage) []string {
 	}
 	sort.Strings(keys)
 	fields := make([]string, 0, len(keys))
+	args := make([]rocArgument, 0, len(keys))
 	usedNames := make(map[string]struct{}, len(keys))
+	required := make(map[string]struct{}, len(schema.Required))
+	for _, k := range schema.Required {
+		required[k] = struct{}{}
+	}
 	for _, k := range keys {
-		typ := "Json.Value"
+		typ := ""
 		switch schema.Properties[k].Type {
 		case "string":
 			typ = "Str"
@@ -95,12 +157,26 @@ func rocInputFields(raw json.RawMessage) []string {
 		case "boolean":
 			typ = "Bool"
 		}
-		fields = append(fields, uniqueRocIdent(rocIdent(k, false), usedNames)+" : "+typ)
+		name := uniqueRocIdent(rocIdent(k, false), usedNames)
+		if typ == "" {
+			typ = "__GENERIC_" + name + "__"
+		}
+		_, isRequired := required[k]
+		if !isRequired {
+			fields = append(fields, name+" ?: "+typ)
+		} else {
+			fields = append(fields, name+" : "+typ)
+		}
+		rocType := typ
+		if strings.HasPrefix(typ, "__GENERIC_") {
+			rocType = ""
+		}
+		args = append(args, rocArgument{name: name, wireName: k, rocType: rocType, optional: !isRequired})
 	}
 	if len(fields) == 0 {
-		return []string{"_unit : {}"}
+		return nil, nil
 	}
-	return fields
+	return fields, args
 }
 
 func uniqueRocIdent(name string, used map[string]struct{}) string {
