@@ -239,7 +239,7 @@ fn may_invoke_cargo(command: &str) -> bool {
     ];
     let words: Vec<_> = command
         .split(|ch: char| {
-            !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '+' | '.' | '='))
+            !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '+' | '.' | '=' | '/'))
         })
         .filter(|word| !word.is_empty())
         .collect();
@@ -248,7 +248,7 @@ fn may_invoke_cargo(command: &str) -> bool {
         if matches!(*word, "just" | "make") {
             return true;
         }
-        if *word != "cargo" {
+        if *word != "cargo" && !word.ends_with("/cargo") {
             continue;
         }
 
@@ -309,7 +309,7 @@ except ValueError:
     raise SystemExit(0)
 separators = {";", "&&", "||", "|", "&"}
 for index, word in enumerate(words):
-    if word != "cargo":
+    if word != "cargo" and not word.endswith("/cargo"):
         continue
     index += 1
     while index < len(words) and words[index] not in separators:
