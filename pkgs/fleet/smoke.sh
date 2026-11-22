@@ -75,7 +75,7 @@ run() {
   ok "$name"
 }
 
-FULL_CAPS="Enabled capabilities: proxy-connect, proxy-serve, proxy-raw-splice, queue, queue-broker, secrets-broker, search, search-serve, dispatch, dispatch-test, laptop-agent, secrets, gh, bridge"
+FULL_CAPS="Enabled capabilities: proxy-connect, proxy-serve, proxy-raw-splice, queue, queue-broker, secrets-broker, search, search-serve, dispatch, dispatch-test, laptop-agent, secrets, gh, bridge, agent"
 SERVE_CAPS="Enabled capabilities: proxy-connect, proxy-serve, proxy-raw-splice, queue-broker, secrets-broker, search-serve, secrets"
 CONNECT_CAPS="Enabled capabilities: proxy-connect"
 
@@ -111,6 +111,10 @@ run "serve: fleet dispatch stubs" 69 "this build does not include 'dispatch'" \
   "$SERVE_OUT/bin/fleet" dispatch
 run "serve: fleet laptop-agent stubs" 69 "this build does not include 'laptop-agent'" \
   "$SERVE_OUT/bin/fleet" laptop-agent
+run "serve: fleet agent stubs" 69 "this build does not include 'agent'" \
+  "$SERVE_OUT/bin/fleet" agent
+run "serve: fleet shell stubs" 69 "this build does not include 'shell'" \
+  "$SERVE_OUT/bin/fleet" shell
 run "serve: fleet search (client) stubs — serve carries search-serve only" 69 \
   "this build does not include 'search'" \
   "$SERVE_OUT/bin/fleet" search
@@ -867,6 +871,14 @@ run "full with queue=false: fleet queue stubs as disabled" 69 "disabled by confi
   env FLEET_CONFIG="$TMP/fleet.toml" "$FULL_OUT/bin/fleet" queue
 run "full with queue=false: version drops queue capabilities" 0 "proxy-raw-splice, queue-broker" \
   env FLEET_CONFIG="$TMP/fleet.toml" "$FULL_OUT/bin/fleet" version
+
+echo "== agent domain and fleet shell: plans and refusals that need no network =="
+run "full: fleet agent kinds lists the kinds" 0 '"kind": "muse"' "$FULL_OUT/bin/fleet" agent kinds
+run "full: fleet shell --print plans and runs nothing" 0 '"target": "local"' \
+  env FLEET_SHELL_TARGET=local "$FULL_OUT/bin/fleet" shell --print -- true
+run "full: fleet agent refuses an unknown verb" 2 "-" "$FULL_OUT/bin/fleet" agent frobnicate
+run "full: a wait on a person is refused before the broker is asked" 2 "refusing to wait on a person" \
+  "$FULL_OUT/bin/fleet" queue block 1 --worker w --lane l --reason-class escalated-to-user --blocker "which one?"
 
 echo "== runs anywhere: env -i =="
 run "connect dynamic under env -i" 0 "$CONNECT_CAPS" env -i "$CONNECT_OUT/bin/fleet" version

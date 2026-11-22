@@ -196,9 +196,9 @@ Run `repo-queue <verb> --help` for flags:\n\
   bind <task-id> [--worker <id>] --session-id <id> [--launched-by <who>] [--model-provider <p>] [--model-id <id>] [--model-variant <v>]\n\
   heartbeat <task-id> [--worker <id>] [--extend-seconds <n>] [--progress <p>] [--progress-file <f>]\n\
   checkpoint <task-id> [--worker <id>] [--stage <s>] [--progress <p>] [--progress-file <f>]\n\
-  park <task-id> [--worker <id>] --reason <text> [--delay-seconds <n>] [--not-before <ts>] [--progress <p>] [--progress-file <f>] [--ready-condition <c>] [--execution <id>] [--required-budget-minutes <n>]\n\
+  park <task-id> [--worker <id>] --reason <text> [--delay-seconds <n>] [--not-before <ts>] [--progress <p>] [--progress-file <f>] [--ready-condition <c>] [--execution <id>] [--required-budget-minutes <n>] [--hands <kind> --action <text>]\n\
   wake <task-id> [--worker <id>] [--reason <text>]\n\
-  block <task-id> [--worker <id>] --reason-class <c> --blocker <b> [--progress <p>] [--progress-file <f>] [--ledger-id <id>] [--question <text>] [--context <text>] [--options-json <json>] [--links-json <json>] [--blocked-by-pr <n>] [--blocked-by-issue <n>] [--blocked-by-task <id>] [--blocked-by-ci <ref>] [--dep-recheck-seconds <n>] [--dep-max-ttl-seconds <n>]\n\
+  block <task-id> [--worker <id>] --reason-class <c> --blocker <b> [--progress <p>] [--progress-file <f>] [--ledger-id <id>] [--question <text>] [--context <text>] [--options-json <json>] [--links-json <json>] [--blocked-by-pr <n>] [--blocked-by-issue <n>] [--blocked-by-task <id>] [--blocked-by-ci <ref>] [--dep-recheck-seconds <n>] [--dep-max-ttl-seconds <n>] [--hands <kind> --action <text>]\n\
   unblock <task-id> [--worker <id>] [--reason <text>]\n\
   dep-recheck [--task <id>] [--limit <n>]\n\
   quarantine-recheck [--task <id>] [--limit <n>]\n\
@@ -209,6 +209,7 @@ Run `repo-queue <verb> --help` for flags:\n\
   verify-disposition <issue> --repo <owner/name> [--pr <n,n>] [--follow-up-task <id> | --follow-up-issue <n|url> | --follow-up-pr <n>] [--reason <text>] [--staleness-seconds <n>] [--json]\n\
   timeline <task-id> [--worker <id>] [--json]\n\
   history <task-id> [--worker <id>] [--json]  (alias of timeline)\n\
+  show <task-id> [--limit <n>] [--json]\n\
   models [--days <n>] [--json]\n\
   health [--queue <name>] [--worker <id>]\n\
   signal [--queue <name>] [--reason <text>]\n\
@@ -250,13 +251,13 @@ pub(crate) fn usage(verb: &str) -> &'static str {
             "usage: repo-queue checkpoint <task-id> [--worker <id>] [--lane <id>] [--stage <s>] [--progress <p>] [--progress-file <f>]\n\nRecords a progress checkpoint."
         }
         "park" => {
-            "usage: repo-queue park <task-id> [--worker <id>] [--lane <id>] --reason <text> [--delay-seconds <n>] [--not-before <ts>] [--progress <p>] [--progress-file <f>] [--ready-condition <c>] [--execution <id>] [--required-budget-minutes <n>]\n\nParks a task."
+            "usage: repo-queue park <task-id> [--worker <id>] [--lane <id>] --reason <text> [--delay-seconds <n>] [--not-before <ts>] [--progress <p>] [--progress-file <f>] [--ready-condition <c>] [--execution <id>] [--required-budget-minutes <n>] [--hands <kind> --action <text>]\n\nParks a task. A park that waits on a person is refused unless it is a hands item (FDR-0013): --hands physical|interactive-login|payment|signature with --action, one sentence a person can do in five minutes."
         }
         "wake" => {
             "usage: repo-queue wake <task-id> [--worker <id>] [--reason <text>]\n\nWakes a parked task."
         }
         "block" => {
-            "usage: repo-queue block <task-id> [--worker <id>] [--lane <id>] --reason-class <c> --blocker <b> [--progress <p>] [--progress-file <f>] [--ledger-id <id>] [--question <text>] [--context <text>] [--options-json <json>] [--links-json <json>] [--blocked-by-pr <n>] [--blocked-by-issue <n>] [--blocked-by-task <id>] [--blocked-by-ci <ref>] [--dep-recheck-seconds <n>] [--dep-max-ttl-seconds <n>]\n\nMarks a task blocked."
+            "usage: repo-queue block <task-id> [--worker <id>] [--lane <id>] --reason-class <c> --blocker <b> [--progress <p>] [--progress-file <f>] [--ledger-id <id>] [--question <text>] [--context <text>] [--options-json <json>] [--links-json <json>] [--blocked-by-pr <n>] [--blocked-by-issue <n>] [--blocked-by-task <id>] [--blocked-by-ci <ref>] [--dep-recheck-seconds <n>] [--dep-max-ttl-seconds <n>] [--hands <kind> --action <text>]\n\nMarks a task blocked. A block that waits on a person is refused unless it is a hands item (FDR-0013): --hands physical|interactive-login|payment|signature with --action, one sentence a person can do in five minutes."
         }
         "unblock" => {
             "usage: repo-queue unblock <task-id> [--worker <id>] [--reason <text>]\n\nClears a task's blocked state."
@@ -287,6 +288,9 @@ pub(crate) fn usage(verb: &str) -> &'static str {
         }
         "history" => {
             "usage: repo-queue history <task-id> [--worker <id>] [--json]\n\nAlias of timeline: shows a task's event timeline."
+        }
+        "show" => {
+            "usage: repo-queue show <task-id> [--limit <n>] [--json]\n\nShows one task's current details and recent history."
         }
         "models" => {
             "usage: repo-queue models [--days <n>] [--json]\n\nRolls up serving-model stamps."

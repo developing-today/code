@@ -25,6 +25,10 @@
 #[path = "../src/federation/slices/b32_ingest_gate.rs"]
 mod b32_ingest_gate;
 
+#[path = "../src/federation/record_join.rs"]
+#[allow(dead_code)]
+mod record_join;
+
 #[path = "../src/federation/slices/b31_peer_classes.rs"]
 #[allow(dead_code)]
 mod b31_peer_classes;

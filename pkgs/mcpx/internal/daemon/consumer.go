@@ -1026,6 +1026,9 @@ func (s *Server) execScript(ctx context.Context, source, session string) (*ExecR
 		// source chose it (#1917 Phase 2); the same options the runner
 		// itself would derive reach one from daemon callers.
 		Clients: map[string]runner.Client{
+			codegen.Roc.Name: {
+				Module: codegen.RocModule(nss, s.endpoint, session),
+			},
 			codegen.Python.Name: {
 				Module:  codegen.PythonModule(nss, s.endpoint, session),
 				Globals: codegen.PythonGlobals(nss),

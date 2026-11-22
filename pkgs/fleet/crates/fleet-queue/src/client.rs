@@ -81,6 +81,7 @@ pub fn run(args: &[String]) -> i32 {
         "verify-disposition" => cmd_verify_disposition(rest),
         "timeline" => cmd_timeline("timeline", rest),
         "history" => cmd_timeline("history", rest),
+        "show" => cmd_show(rest),
         "models" => cmd_models(rest),
         "health" => cmd_health(rest),
         "signal" => cmd_signal(rest),
@@ -192,6 +193,28 @@ mod tests {
         ]);
         let ids: Vec<i64> = out.iter().map(|e| e.id).collect();
         assert_eq!(ids, vec![1, 3, 4]);
+    }
+
+    #[test]
+    fn show_history_uses_history_event_fields_and_is_a_tail() {
+        let event = |id, trigger: &str| TimelineEvent {
+            id,
+            kind: "claimed".to_string(),
+            session_id: Some("ses_example".to_string()),
+            provider: Some("opencode-route".to_string()),
+            model: Some("workhorse".to_string()),
+            variant: Some("medium".to_string()),
+            trigger: Some(trigger.to_string()),
+            created_at: format!("2026-11-21T00:00:{id:02}Z"),
+            created_us: id * 1_000_000,
+        };
+        let events = vec![event(1, "claim"), event(2, "resume")];
+        let tail = &events[events.len().saturating_sub(1)..];
+        assert_eq!(tail[0].id, 2);
+        assert_eq!(
+            format_timeline_event(&tail[0]),
+            "2026-11-21T00:00:02Z  claimed  session=ses_example  opencode-route/workhorse#medium  (resume)"
+        );
     }
 
     #[test]

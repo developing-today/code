@@ -188,6 +188,12 @@ pub const TEMP_NAME: &str = "events.redb.tmp";
 /// The format row in `meta`. A store with another format is refused.
 const FORMAT: &[u8] = b"id.events.store.v9";
 const FORMAT_KEY: &[u8] = b"format";
+/// The format before the `bodies` table (#4837). A v8 store is a v9 store
+/// with no `bodies` table and nothing else different, and v9 allows an event
+/// with no body row. So a v8 store is upgraded in place when it is opened:
+/// the empty table is added and the format row rewritten, in one
+/// transaction. Every other format is still refused.
+const FORMAT_V8: &[u8] = b"id.events.store.v8";
 /// A one-time pass over retained event and waiting bodies rebuilds legacy device-op rows.
 const DEVICE_OPS_RECOVERED_KEY: &[u8] = b"device_ops_recovered";
 
@@ -447,6 +453,7 @@ impl EventStore {
         } else {
             create_fresh(storage)?
         };
+        upgrade_from_v8(&db)?;
         verify_schema(&db)?;
         // The additive tables are opened without a format change. Recover device operations
         // from bodies retained by older sync/import paths where possible.
@@ -1268,9 +1275,35 @@ fn initialize(db: &Database) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Checks that every table exists and that the format row is this store's.
-fn verify_schema(db: &Database) -> Result<(), StoreError> {
-    let txn = db.begin_read()?;
+/// Upgrades a format-v8 store to this format in place (see [`FORMAT_V8`]).
+/// A store whose format row names anything else is left untouched, for
+/// [`verify_schema`] to accept or refuse.
+fn upgrade_from_v8(db: &Database) -> Result<(), StoreError> {
+    let is_v8 = {
+        let txn = db.begin_read()?;
+        let Ok(meta) = txn.open_table(META) else {
+            return Ok(());
+        };
+        matches!(meta.get(FORMAT_KEY)?, Some(found) if found.value() == FORMAT_V8)
+    };
+    if !is_v8 {
+        return Ok(());
+    }
+    // A v8-labelled file missing a v8 table is not a store: refuse it before writing, so
+    // NotAStore still leaves the file unchanged.
+    verify_v8_tables(&db.begin_read()?)?;
+    let txn = db.begin_write()?;
+    txn.open_table(BODIES)?;
+    let mut meta = txn.open_table(META)?;
+    meta.insert(FORMAT_KEY, FORMAT)?;
+    drop(meta);
+    txn.commit()?;
+    tracing::info!("upgraded the event store from format v8 to v9 (added the bodies table)");
+    Ok(())
+}
+
+/// Checks that every table of format v8 exists. Format v9 adds only [`BODIES`].
+fn verify_v8_tables(txn: &redb::ReadTransaction) -> Result<(), StoreError> {
     let missing = |err: redb::TableError| StoreError::NotAStore(err.to_string());
     txn.open_table(EVENTS).map_err(missing)?;
     txn.open_table(HASHES).map_err(missing)?;
@@ -1283,6 +1316,14 @@ fn verify_schema(db: &Database) -> Result<(), StoreError> {
     txn.open_multimap_table(WAITING_BY_DEP).map_err(missing)?;
     txn.open_table(ACTIONS).map_err(missing)?;
     txn.open_table(APPLIED).map_err(missing)?;
+    Ok(())
+}
+
+/// Checks that every table exists and that the format row is this store's.
+fn verify_schema(db: &Database) -> Result<(), StoreError> {
+    let txn = db.begin_read()?;
+    let missing = |err: redb::TableError| StoreError::NotAStore(err.to_string());
+    verify_v8_tables(&txn)?;
     txn.open_table(BODIES).map_err(missing)?;
     let meta = txn.open_table(META).map_err(missing)?;
     match meta.get(FORMAT_KEY)? {
@@ -1816,6 +1857,71 @@ mod tests {
         let meta = txn.open_table(META).unwrap();
         let found = meta.get(FORMAT_KEY).unwrap().unwrap();
         assert_eq!(found.value(), b"id.events.store.v2".as_slice());
+    }
+
+    #[test]
+    fn test_a_v8_store_is_upgraded_in_place_and_keeps_its_data() {
+        let dir = tempfile::tempdir().unwrap();
+        // A v9 store, turned back into v8: no bodies table, the v8 format row.
+        let store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
+        drop(store);
+        let db = Database::builder()
+            .open(dir.path().join(FILE_NAME))
+            .unwrap();
+        let txn = db.begin_write().unwrap();
+        assert!(txn.delete_table(BODIES).unwrap());
+        {
+            let mut meta = txn.open_table(META).unwrap();
+            meta.insert(FORMAT_KEY, FORMAT_V8).unwrap();
+            meta.insert(b"marker".as_slice(), b"kept".as_slice())
+                .unwrap();
+        }
+        txn.commit().unwrap();
+        drop(db);
+
+        let store = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap();
+        store.check_invariants().unwrap();
+        drop(store);
+
+        let db = Database::builder()
+            .open(dir.path().join(FILE_NAME))
+            .unwrap();
+        let txn = db.begin_read().unwrap();
+        txn.open_table(BODIES).unwrap();
+        let meta = txn.open_table(META).unwrap();
+        assert_eq!(meta.get(FORMAT_KEY).unwrap().unwrap().value(), FORMAT);
+        assert_eq!(
+            meta.get(b"marker".as_slice()).unwrap().unwrap().value(),
+            b"kept".as_slice()
+        );
+    }
+
+    #[test]
+    fn test_a_v8_label_without_the_v8_tables_is_refused_and_left_at_v8() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::builder()
+            .create(dir.path().join(FILE_NAME))
+            .unwrap();
+        let txn = db.begin_write().unwrap();
+        txn.open_table(EVENTS).unwrap();
+        {
+            let mut meta = txn.open_table(META).unwrap();
+            meta.insert(FORMAT_KEY, FORMAT_V8).unwrap();
+        }
+        txn.commit().unwrap();
+        drop(db);
+        let err = EventStore::open(dir.path(), WaitingLimits::default(), 0).unwrap_err();
+        assert!(
+            matches!(err, StoreError::NotAStore(_)),
+            "unexpected error: {err}"
+        );
+        let db = Database::builder()
+            .open(dir.path().join(FILE_NAME))
+            .unwrap();
+        let txn = db.begin_read().unwrap();
+        assert!(txn.open_table(BODIES).is_err(), "no bodies table was added");
+        let meta = txn.open_table(META).unwrap();
+        assert_eq!(meta.get(FORMAT_KEY).unwrap().unwrap().value(), FORMAT_V8);
     }
 
     fn block(kind: BlockKind, value: &[u8], expires_at_ms: Option<u64>) -> Block {

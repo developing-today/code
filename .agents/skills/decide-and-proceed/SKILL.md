@@ -32,6 +32,14 @@ fleet queue block <task> --reason-class escalated-to-user \
 - If you cannot write the action as one sentence a person could do in five minutes, it is not a hands item. It is a decision, and rule 1 applies.
 - The queue refuses a person-wait block or park that has no `--hands` and `--action`.
 
+On the GitHub issue, a hands item carries `user/escalated` and one marker line in its body, so every tool can tell it from a parked choice:
+
+```markdown
+<!-- hands:v1 kind=interactive-login action="<the same one sentence>" -->
+```
+
+`fleet agent next` never hands such an issue to an agent, and the dashboard lists it under "Needs a person's hands". An issue with `user/escalated` and no marker is shown as fleet work and is handed out to be decided.
+
 ## Recording a decision
 
 One comment on the issue the decision belongs to:

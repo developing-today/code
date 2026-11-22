@@ -136,6 +136,43 @@ describe("atlas-search worker", () => {
     expect(meta.hit_count).toBe(1);
   });
 
+  it("gated per-key purge makes the next search re-run embedding and fan-out", async () => {
+    const query = "purge target alpha";
+    const e0 = counts.embed;
+    const s0 = counts.search;
+    const first = await search({ query });
+    expect(first.status).toBe(200);
+    expect(counts.embed).toBe(e0 + 1);
+    expect(counts.search).toBe(s0 + 1);
+
+    const denied = await SELF.fetch("https://worker.test/v1/cache/purge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query }),
+    });
+    expect(denied.status).toBe(401);
+    expect(counts.embed).toBe(e0 + 1);
+    expect(counts.search).toBe(s0 + 1);
+
+    const purged = await SELF.fetch("https://worker.test/v1/cache/purge", {
+      method: "POST",
+      headers: { ...GATE, "Content-Type": "application/json" },
+      body: JSON.stringify({ query }),
+    });
+    expect(purged.status).toBe(200);
+    expect(await purged.json()).toMatchObject({ purged: true, query });
+    const inspect = await SELF.fetch(`https://worker.test/v1/cache/inspect?query=${encodeURIComponent(query)}`, {
+      headers: GATE,
+    });
+    expect(await inspect.json()).toMatchObject({ exists: false });
+
+    const second = await search({ query });
+    expect(second.status).toBe(200);
+    expect(((await second.json()) as { cache: string }).cache).toBe("miss");
+    expect(counts.embed).toBe(e0 + 2);
+    expect(counts.search).toBe(s0 + 2);
+  });
+
   it("rejects a whitespace-only query on both routes (#6937)", async () => {
     const e0 = counts.embed;
     const s0 = counts.search;

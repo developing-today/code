@@ -15,6 +15,7 @@ import {
   pageByRoute,
 } from "../src/pages.ts";
 import { navLinks } from "../src/render.ts";
+import { addConsoleShortcut } from "../src/console-gate.ts";
 
 const SRC = join(import.meta.dir, "..", "src");
 const serverSource = readFileSync(join(SRC, "server.ts"), "utf8");
@@ -84,6 +85,21 @@ describe("the nav bar renders the groups (#1135)", () => {
     expect(sub.match(/aria-current="page"/g)?.length).toBe(1);
     expect(sub.match(/data-current="true"/g)?.length).toBe(1);
     expect(pageByRoute(manifestRouteFor("/program/abc") ?? "")?.group).toBe("work");
+  });
+});
+
+describe("console-gated navigation (#12416)", () => {
+  test("adds the Console link only for the configured public Host", async () => {
+    const response = (host: string) =>
+      addConsoleShortcut(
+        new Response('<nav class="navbar">Dashboard</nav>', { headers: { "content-type": "text/html" } }),
+        new Request("http://aggregator/", { headers: { host } }),
+        "pm.security.cab",
+      );
+    expect(await (await response("pm.security.cab")).text()).toContain('<a href="/console/">Console</a>');
+    for (const host of ["100.64.0.1", "127.0.0.1:4870", "localhost"]) {
+      expect(await (await response(host)).text()).not.toContain("/console/");
+    }
   });
 });
 

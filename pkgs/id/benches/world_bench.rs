@@ -31,6 +31,14 @@
 //! - `many_worlds` — 1,000 durable idle worlds plus 100 leased worlds at
 //!   20 counter inputs/s each; report command latency percentiles and verify
 //!   recent checkpoints plus records/sequence across idle eviction and reopen.
+//!   The full-size configuration is parameterizable for profiling runs via
+//!   `ID_BENCH_MW_IDLE_WORLDS`, `ID_BENCH_MW_ACTIVE_WORLDS`,
+//!   `ID_BENCH_MW_EVENTS_PER_SECOND`, and `ID_BENCH_MW_DURATION_SECS`
+//!   (defaults are the committed full size). After the timed load it also
+//!   prints one `profile many_worlds ...` line aggregating the world
+//!   actors' own metrics (journal-append and command latency histograms,
+//!   deepest actor queue depth) across the active worlds, so a run
+//!   attributes its latency without external tooling.
 //! - `fuel_spin_isolation` — F12.10's exit-criterion measurement (#1067): one
 //!   victim world accepts inputs in a calm phase and again while hostile Wasm
 //!   worlds spin until their fuel budget is exhausted. Prints each phase's
@@ -173,16 +181,31 @@ struct ManyWorldsConfig {
     checkpoint_every: u64,
 }
 
+/// One `ID_BENCH_MW_*` profiling override, falling back to the committed
+/// full-size value when the variable is unset or unparseable.
+fn mw_env(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
 impl ManyWorldsConfig {
     fn full() -> Self {
+        let idle_worlds = mw_env("ID_BENCH_MW_IDLE_WORLDS", 1_000);
+        let active_worlds = mw_env("ID_BENCH_MW_ACTIVE_WORLDS", 100);
+        let events_per_second = mw_env("ID_BENCH_MW_EVENTS_PER_SECOND", 20);
+        let duration_secs = mw_env("ID_BENCH_MW_DURATION_SECS", 10) as u64;
         Self {
-            idle_worlds: 1_000,
-            active_worlds: 100,
-            events_per_second: 20,
-            duration_secs: 10,
+            idle_worlds,
+            active_worlds,
+            events_per_second,
+            duration_secs,
             // Keep checkpoint compaction out of the timed 20 ev/s window;
             // one extra input per world below triggers it before eviction.
-            checkpoint_every: 202,
+            // The install event plus the timed inputs leave every world
+            // exactly one event short of this cadence.
+            checkpoint_every: events_per_second as u64 * duration_secs + 2,
         }
     }
 
@@ -220,6 +243,60 @@ fn percentile(samples: &[Duration], fraction: f64) -> f64 {
         .saturating_sub(1)
         .min(sorted.len().saturating_sub(1));
     sorted[index]
+}
+
+/// Merge per-world latency histograms into one. All snapshots share the
+/// actor metrics' bucket bounds, so bucket counts, totals, and sums add
+/// directly; percentiles read back off the merged buckets are bucket
+/// upper bounds (the same approximation `HistogramSnapshot::p95_us`
+/// documents), while means from `sum_us / count` are exact.
+fn merge_histograms(
+    snapshots: &[id::world::HistogramSnapshot],
+) -> id::world::HistogramSnapshot {
+    let mut merged = id::world::HistogramSnapshot {
+        bucket_bounds_us: snapshots
+            .first()
+            .map(|snapshot| snapshot.bucket_bounds_us.clone())
+            .unwrap_or_default(),
+        ..Default::default()
+    };
+    for snapshot in snapshots {
+        merged.count += snapshot.count;
+        merged.sum_us += snapshot.sum_us;
+        if merged.buckets.len() < snapshot.buckets.len() {
+            merged.buckets.resize(snapshot.buckets.len(), 0);
+        }
+        for (index, bucket) in snapshot.buckets.iter().enumerate() {
+            merged.buckets[index] += bucket;
+        }
+    }
+    merged
+}
+
+/// Approximate percentile in microseconds from a bucketed histogram:
+/// the upper bound of the first bucket holding the percentile
+/// observation; the overflow bucket reports `u64::MAX`.
+fn histogram_percentile_us(histogram: &id::world::HistogramSnapshot, fraction: f64) -> u64 {
+    if histogram.count == 0 {
+        return 0;
+    }
+    let target = (histogram.count as f64 * fraction).ceil() as u64;
+    let mut cumulative = 0_u64;
+    for (index, bucket) in histogram.buckets.iter().enumerate() {
+        cumulative += bucket;
+        if cumulative >= target {
+            return histogram
+                .bucket_bounds_us
+                .get(index)
+                .copied()
+                .unwrap_or(u64::MAX);
+        }
+    }
+    u64::MAX
+}
+
+fn histogram_mean_us(histogram: &id::world::HistogramSnapshot) -> u64 {
+    histogram.sum_us.checked_div(histogram.count).unwrap_or(0)
 }
 
 fn checkpoint_sequences(dir: &Path) -> Result<Vec<u64>> {
@@ -305,9 +382,11 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
 
     // Give each world one input every 50 ms, with a phase offset within that
     // interval. A task per world avoids creating a task for every command and
-    // avoids an artificial 100-world burst on each tick. If an actor or journal
-    // falls behind, the missed deadline remains part of the command-latency
-    // sample.
+    // avoids an artificial 100-world burst on each tick. Each sample separates
+    // time from deadline to task wake-up from time awaiting input acknowledgement;
+    // the end-to-end sample remains deadline through acknowledgement. The two
+    // component percentiles are diagnostic and must not be added to estimate a
+    // combined percentile.
     let ticks = config.events_per_second as u64 * config.duration_secs;
     let mut pending = tokio::task::JoinSet::new();
     let load_started = Instant::now();
@@ -322,23 +401,66 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
                 let deadline =
                     load_started + Duration::from_nanos(tick * interval_nanos + phase_nanos);
                 tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                let input_started = Instant::now();
+                let wake_lateness = input_started.saturating_duration_since(deadline);
                 handle.input(token.clone(), b"inc".to_vec()).await?;
-                samples.push(deadline.elapsed());
+                samples.push((deadline.elapsed(), wake_lateness, input_started.elapsed()));
             }
-            Ok::<Vec<Duration>, anyhow::Error>(samples)
+            Ok::<Vec<(Duration, Duration, Duration)>, anyhow::Error>(samples)
         });
     }
 
     let expected_commands = ticks as usize * config.active_worlds;
     let mut latencies = Vec::with_capacity(expected_commands);
+    let mut wake_lateness = Vec::with_capacity(expected_commands);
+    let mut input_ack = Vec::with_capacity(expected_commands);
     while let Some(result) = pending.join_next().await {
-        latencies.extend(result.context("join many-worlds load task")??);
+        for (latency, wake, acknowledgement) in result.context("join many-worlds load task")?? {
+            latencies.push(latency);
+            wake_lateness.push(wake);
+            input_ack.push(acknowledgement);
+        }
     }
     let load_elapsed_secs = load_started.elapsed().as_secs_f64();
     ensure!(
         latencies.len() == expected_commands,
         "only {} of {expected_commands} inputs were acknowledged",
         latencies.len()
+    );
+
+    // Profile attribution (#557): aggregate the active worlds' actor
+    // metrics over the timed load — journal-append latency (the durable
+    // cost of one command), total command-handling latency, and the
+    // deepest actor queue depth (whether the #8239 group-commit drain
+    // ever had a batch to coalesce). Snapshot before the checkpoint
+    // triggers below add their own appends and checkpoints.
+    let mut journal_histograms = Vec::with_capacity(active.len());
+    let mut command_histograms = Vec::with_capacity(active.len());
+    let mut queue_depth_max = 0_u64;
+    let mut checkpoints_during_load = 0_u64;
+    for world in &active {
+        let metrics = world.lease.service().world().metrics().await?;
+        journal_histograms.push(metrics.journal_append_latency);
+        command_histograms.push(metrics.command_latency);
+        queue_depth_max = queue_depth_max.max(metrics.actor_queue_depth_max);
+        checkpoints_during_load += metrics.checkpoints_total;
+    }
+    let journal_histogram = merge_histograms(&journal_histograms);
+    let command_histogram = merge_histograms(&command_histograms);
+    println!(
+        "profile many_worlds journal_appends={} journal_append_mean_us={} journal_append_p50_us={} journal_append_p95_us={} journal_append_p99_us={} commands={} command_mean_us={} command_p50_us={} command_p95_us={} command_p99_us={} queue_depth_max={} checkpoints_during_load={}",
+        journal_histogram.count,
+        histogram_mean_us(&journal_histogram),
+        histogram_percentile_us(&journal_histogram, 0.50),
+        histogram_percentile_us(&journal_histogram, 0.95),
+        histogram_percentile_us(&journal_histogram, 0.99),
+        command_histogram.count,
+        histogram_mean_us(&command_histogram),
+        histogram_percentile_us(&command_histogram, 0.50),
+        histogram_percentile_us(&command_histogram, 0.95),
+        histogram_percentile_us(&command_histogram, 0.99),
+        queue_depth_max,
+        checkpoints_during_load,
     );
 
     // Force one verified checkpoint per active world after the timed load.
@@ -457,6 +579,12 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
     let p50 = percentile(&latencies, 0.50);
     let p95 = percentile(&latencies, 0.95);
     let p99 = percentile(&latencies, 0.99);
+    let wake_p50 = percentile(&wake_lateness, 0.50);
+    let wake_p95 = percentile(&wake_lateness, 0.95);
+    let wake_p99 = percentile(&wake_lateness, 0.99);
+    let input_ack_p50 = percentile(&input_ack, 0.50);
+    let input_ack_p95 = percentile(&input_ack, 0.95);
+    let input_ack_p99 = percentile(&input_ack, 0.99);
     let target_met = p99 < 50.0;
     let completed_events_per_second = latencies.len() as f64 / load_elapsed_secs;
     let min = latencies
@@ -464,7 +592,7 @@ async fn bench_many_worlds(root: &Path, quick: bool) -> Result<()> {
         .map(|latency| latency.as_secs_f64() * 1_000.0)
         .fold(f64::INFINITY, f64::min);
     println!(
-        "bench many_worlds unit=ms_per_command median={p50:.3} min={min:.3} reps=1 p50_ms={p50:.3} p95_ms={p95:.3} p99_ms={p99:.3} target_p99_ms=50 target_met={target_met} idle_worlds={} active_worlds={} events_per_second={} duration_secs={} commands={} load_elapsed_secs={load_elapsed_secs:.3} completed_events_per_second={completed_events_per_second:.1} checkpoint_triggers={} checkpoints={} evicted={} reopened={}",
+        "bench many_worlds unit=ms_per_command median={p50:.3} min={min:.3} reps=1 p50_ms={p50:.3} p95_ms={p95:.3} p99_ms={p99:.3} wake_p50_ms={wake_p50:.3} wake_p95_ms={wake_p95:.3} wake_p99_ms={wake_p99:.3} input_ack_p50_ms={input_ack_p50:.3} input_ack_p95_ms={input_ack_p95:.3} input_ack_p99_ms={input_ack_p99:.3} target_p99_ms=50 target_met={target_met} idle_worlds={} active_worlds={} events_per_second={} duration_secs={} commands={} load_elapsed_secs={load_elapsed_secs:.3} completed_events_per_second={completed_events_per_second:.1} checkpoint_triggers={} checkpoints={} evicted={} reopened={}",
         config.idle_worlds,
         config.active_worlds,
         config.events_per_second,

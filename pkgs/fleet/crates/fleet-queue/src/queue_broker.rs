@@ -32,7 +32,12 @@ struct State {
     secrets_url: String,
     secrets_token: String,
     agent: ureq::Agent,
-    turso: crate::turso_queue::TursoBackend,
+    /// Filled by the startup thread once the Turso token resolves and
+    /// the schema is ensured (#12247); until then queue verbs answer
+    /// exit 3 with `turso_pending`.
+    turso: std::sync::OnceLock<crate::turso_queue::TursoBackend>,
+    /// Why the backend is not ready yet: the latest startup failure.
+    turso_pending: Mutex<String>,
 }
 
 /// The queue broker's secrets-by-name source: a direct HTTP call to
@@ -554,7 +559,15 @@ fn dispatch(st: &State, path: &str, req: &Value) -> Value {
         }
         "/healthz" => ok(json!({"service": "queue-broker"})),
         _ => {
-            let resp = crate::turso_queue::dispatch(&st.turso, path, req);
+            let Some(turso) = st.turso.get() else {
+                let why = st
+                    .turso_pending
+                    .lock()
+                    .map(|g| g.clone())
+                    .unwrap_or_default();
+                return fail(3, format!("queue backend not ready: {why}"));
+            };
+            let resp = crate::turso_queue::dispatch(turso, path, req);
             // #8568: the broker-side needs-drew raise for an
             // escalated block (fire-and-forget).
             if path == "/block" {
@@ -694,70 +707,27 @@ pub fn run() -> i32 {
             return 3;
         }
     }
-    let turso = {
-        let url = std::env::var("QUEUE_BROKER_TURSO_URL")
-            .unwrap_or_else(|_| crate::turso_queue::DEFAULT_TURSO_URL.to_string());
-        let token = match std::env::var("QUEUE_BROKER_TURSO_TOKEN_FILE") {
-            Ok(f) => match crate::token_file::load_token_file(&f) {
-                Ok(v) => v,
-                Err(e) => {
-                    crate::log::info("queue-broker", &e);
-                    return 3;
-                }
-            },
-            Err(_) => {
-                let resolver = Resolver::new(vec![Box::new(DirectSecrets {
-                    url: secrets_url.clone(),
-                    token: secrets_token.clone(),
-                    agent: agent.clone(),
-                })]);
-                match resolve_with_startup_retry(
-                    &resolver,
-                    crate::turso_queue::TURSO_TOKEN_SECRET_NAME,
-                    Duration::from_secs(30),
-                ) {
-                    Ok(v) => v.expose().to_string(),
-                    Err(e) => {
-                        crate::log::info(
-                            "queue-broker",
-                            &format!(
-                                "turso backend token resolve failed after 30s of retries: {e}"
-                            ),
-                        );
-                        return 3;
-                    }
-                }
+    // A Turso token file, when named, is a local config read: a
+    // missing or unreadable file stays a startup config error.
+    let turso_url = std::env::var("QUEUE_BROKER_TURSO_URL")
+        .unwrap_or_else(|_| crate::turso_queue::DEFAULT_TURSO_URL.to_string());
+    let turso_token_from_file = match std::env::var("QUEUE_BROKER_TURSO_TOKEN_FILE") {
+        Ok(f) => match crate::token_file::load_token_file(&f) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                crate::log::info("queue-broker", &e);
+                return 3;
             }
-        };
-        let mut backend = crate::turso_queue::TursoBackend::new(url, token, agent.clone());
-        // #8276: the dep rechecker's GitHub window, authenticated
-        // by name through the same secrets Resolver as the Turso
-        // token above.
-        backend.set_gh_probe(Arc::new(GhDepProbe {
-            secrets_url: secrets_url.clone(),
-            secrets_token: secrets_token.clone(),
-            agent: agent.clone(),
-            token: Mutex::new(None),
-        }));
-        if let Err(e) = backend.ensure_schema() {
-            crate::log::info(
-                "queue-broker",
-                &format!("turso backend schema ensure failed: {e}"),
-            );
-            return 3;
-        }
-        crate::log::info(
-            "queue-broker",
-            &format!("queue backend: turso ({})", backend.url()),
-        );
-        backend
+        },
+        Err(_) => None,
     };
 
     let state = Arc::new(State {
         secrets_url,
         secrets_token,
         agent,
-        turso,
+        turso: std::sync::OnceLock::new(),
+        turso_pending: Mutex::new("starting".to_string()),
     });
 
     let server = match Server::http(&bind) {
@@ -768,6 +738,31 @@ pub fn run() -> i32 {
         }
     };
     crate::log::info("queue-broker", &format!("listening on {bind}"));
+
+    // #12247: bind first, then bring the Turso backend up on a
+    // startup thread, so /healthz and /validate answer at once and
+    // queue verbs answer exit 3 with the latest startup error until
+    // the backend is ready. A backend that cannot come up within the
+    // retry budget still exits the broker with 3, so a supervisor
+    // restarts it exactly as when the backend came up before bind.
+    {
+        let st = Arc::clone(&state);
+        std::thread::spawn(move || {
+            match start_turso_backend(&st, turso_url, turso_token_from_file) {
+                Ok(backend) => {
+                    crate::log::info(
+                        "queue-broker",
+                        &format!("queue backend: turso ({})", backend.url()),
+                    );
+                    let _ = st.turso.set(backend);
+                }
+                Err(e) => {
+                    crate::log::info("queue-broker", &e);
+                    std::process::exit(3);
+                }
+            }
+        });
+    }
 
     // Dual-bind (#6216): the same handler over a Unix socket. A bind
     // failure or a live owner degrades to TCP only, never to exit:
@@ -1171,6 +1166,71 @@ mod tests {
     }
 }
 
+/// The Turso backend's startup (#12247), run after bind: the token
+/// (from the named file, or by name from the secrets broker within
+/// the startup retry budget), the dep probe (#8276) and the schema.
+/// Each failure is recorded in `turso_pending`, so a queue verb that
+/// arrives first reports why the backend is not ready.
+fn start_turso_backend(
+    st: &State,
+    url: String,
+    token_from_file: Option<String>,
+) -> Result<crate::turso_queue::TursoBackend, String> {
+    let note = |why: String| {
+        if let Ok(mut pending) = st.turso_pending.lock() {
+            *pending = why;
+        }
+    };
+    let token = match token_from_file {
+        Some(token) => token,
+        None => {
+            let resolver = Resolver::new(vec![Box::new(DirectSecrets {
+                url: st.secrets_url.clone(),
+                token: st.secrets_token.clone(),
+                agent: st.agent.clone(),
+            })]);
+            match resolve_with_startup_retry_observed(
+                &resolver,
+                crate::turso_queue::TURSO_TOKEN_SECRET_NAME,
+                Duration::from_secs(30),
+                |e| note(format!("turso backend token resolve: {e}")),
+            ) {
+                Ok(v) => v.expose().to_string(),
+                Err(e) => {
+                    let msg =
+                        format!("turso backend token resolve failed after 30s of retries: {e}");
+                    note(msg.clone());
+                    return Err(msg);
+                }
+            }
+        }
+    };
+    let mut backend = crate::turso_queue::TursoBackend::new(url, token, st.agent.clone());
+    // #8276: the dep rechecker's GitHub window, authenticated by name
+    // through the same secrets broker as the Turso token above.
+    backend.set_gh_probe(Arc::new(GhDepProbe {
+        secrets_url: st.secrets_url.clone(),
+        secrets_token: st.secrets_token.clone(),
+        agent: st.agent.clone(),
+        token: Mutex::new(None),
+    }));
+    if let Err(e) = backend.ensure_schema() {
+        let msg = format!("turso backend schema ensure failed: {e}");
+        note(msg.clone());
+        return Err(msg);
+    }
+    Ok(backend)
+}
+
+#[cfg(test)]
+fn resolve_with_startup_retry(
+    resolver: &Resolver,
+    name: &str,
+    budget: Duration,
+) -> Result<SecretValue, SecretError> {
+    resolve_with_startup_retry_observed(resolver, name, budget, |_| {})
+}
+
 /// Resolve `name` through `resolver`, retrying until `budget`
 /// elapses. Startup only: a co-hosted or freshly started
 /// secrets-broker binds before its first vault refresh completes
@@ -1178,16 +1238,20 @@ mod tests {
 /// races its readiness and the whole serve list exits (#8394
 /// Codex P2). Bounded: once the budget is spent the last error is
 /// returned and the caller fails exactly as the one-shot did.
-fn resolve_with_startup_retry(
+/// Each failed attempt is passed to `observe` (#12247), so the
+/// broker can say why its backend is not ready yet.
+fn resolve_with_startup_retry_observed(
     resolver: &Resolver,
     name: &str,
     budget: Duration,
+    observe: impl Fn(&SecretError),
 ) -> Result<SecretValue, SecretError> {
     let deadline = std::time::Instant::now() + budget;
     loop {
         match resolver.resolve(name) {
             Ok(v) => return Ok(v),
             Err(e) => {
+                observe(&e);
                 if std::time::Instant::now() >= deadline {
                     return Err(e);
                 }

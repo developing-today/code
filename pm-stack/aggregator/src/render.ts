@@ -63,7 +63,7 @@ import {
   scoreEdges,
 } from "./assets/aa-explorer-computations.js";
 import { summarizeDns } from "./dns.ts";
-import type { NeedsDrewCensus } from "./needs-drew.ts";
+import { needsDrewWait, type NeedsDrewCensus, type NeedsDrewItem } from "./needs-drew.ts";
 import type { Incident, IncidentEvent, PushSubscriptionRow } from "./alerts.ts";
 import type { NotificationRollup } from "./notifications.ts";
 import { NOTIFICATION_CLASS_DEFAULTS, NOTIFICATION_CLASSES } from "./notifications.ts";
@@ -695,17 +695,22 @@ export function commentBadge(objectRef: string, counts?: Map<string, number | Co
   return ` <a class="badge" href="/discuss/${encodeURIComponent(objectRef)}" title="${esc(title)}">💬${n ? ` ${n}` : ""}${queued}</a>`;
 }
 
-export function authorBadge(a: DashAuthor): string {
+export function authorBadge(a: DashAuthor, linkedIdentity?: { source: string; id: string }): string {
   const cls = a.kind === "drew" ? "drew" : a.kind === "muse" ? "Muse" : "agent";
   const link = a.sessionId
     ? ` <a href="/sessions?id=${encodeURIComponent(a.sessionId)}#${encodeURIComponent(a.sessionId)}" class="muted">session</a>`
     : "";
-  return `<span class="badge ${cls}">${esc(a.label)}</span>${link}`;
+  const linked = linkedIdentity
+    ? ` <a href="/sessions?id=${encodeURIComponent(linkedIdentity.id)}#${encodeURIComponent(linkedIdentity.id)}" class="muted" title="Owner-confirmed display link">linked identity</a>`
+    : "";
+  return `<span class="badge ${cls}">${esc(a.label)}</span>${link}${linked}`;
 }
 
 export function dashCommentHtml(c: DashComment, showObject = false): string {
   const verificationChip =
-    c.authorVerified === true ? `<span class="badge">verified</span>` : `<span class="badge">unverified</span>`;
+    c.provenance === "verified"
+      ? `<span class="badge">verified identity</span>`
+      : `<span class="badge">asserted-legacy — author is a claim</span>`;
   const kindChip =
     c.kind === "message"
       ? `<span class="badge msg">✉ message to Muse</span> <span class="muted">${c.triageState === "triaged" ? "triaged by the orchestrator" : "awaiting triage"}</span>`
@@ -719,7 +724,7 @@ export function dashCommentHtml(c: DashComment, showObject = false): string {
           }</span>`
         : `<span class="badge">note</span>`;
   const obj = showObject ? ` <span class="muted">on <code>${esc(c.objectRef)}</code></span>` : "";
-  return `<div class="cmt ${esc(c.kind)}">${authorBadge(c.author)} ${verificationChip} ${kindChip}${obj}<br>${esc(c.body)}<br><span class="muted">${fmtDate(c.createdAt)}</span></div>`;
+  return `<div class="cmt ${esc(c.kind)}">${authorBadge(c.author, c.linkedIdentity)} ${verificationChip} ${kindChip}${obj}<br>${esc(c.body)}<br><span class="muted">${fmtDate(c.createdAt)}</span></div>`;
 }
 
 export interface CommentFormOpts {
@@ -2262,7 +2267,11 @@ export function sessionRecordLine(
   const badges = actionBadgesHtml(act?.actions);
   const controls =
     act?.identities && sessionRecordIsLive(r) ? sessionActionsHtml(r.id, r.source, { identities: act.identities }) : "";
-  return `<div class="card session-record-line" id="${esc(r.id)}"><strong>${esc(r.label)}</strong> <span class="badge src">${esc(r.source)}</span> <span class="badge agent">${esc(r.agentLabel)}</span>${badges}<br><span class="muted session-record-meta">${esc(r.id)} · ${esc(r.status)}${r.model ? ` · ${esc(r.model)}` : ""} · started ${fmtDate(r.startedAt)} · last seen ${fmtDate(r.lastSeenAt)}${tokens}${parent}${refs}</span>${controls}</div>`;
+  const provenance =
+    r.provenance === "verified"
+      ? `<span class="badge">verified identity</span>`
+      : `<span class="badge">asserted-legacy — identity is a claim</span>`;
+  return `<div class="card session-record-line" id="${esc(r.id)}"><strong>${esc(r.label)}</strong> <span class="badge src">${esc(r.source)}</span> <span class="badge agent">${esc(r.agentLabel)}</span> ${provenance}${badges}<br><span class="muted session-record-meta">${esc(r.id)} · ${esc(r.status)}${r.model ? ` · ${esc(r.model)}` : ""} · started ${fmtDate(r.startedAt)} · last seen ${fmtDate(r.lastSeenAt)}${tokens}${parent}${refs}</span>${controls}</div>`;
 }
 
 // --- Quota view (#851) + Usage & billing hub (design 2026-10-25) -----------
@@ -3431,19 +3440,41 @@ export function needsDrewCensusHtml(census: NeedsDrewCensus | null | undefined):
         })
         .join("; ")}. The list below may be missing items from those sources.</div>`
     : "";
-  const rows = census.items.length
-    ? `<ul>${census.items
-        .map(
-          (i) =>
-            `<li><a href="${esc(i.url)}">${esc(i.ref)}</a> ${i.kind === "pr" ? "(PR) " : ""}${esc(i.title)} — ${i.needsLabels
-              .map((l) => `<code>${esc(l)}</code>`)
-              .join(
-                " ",
-              )} — ${i.reason ? esc(i.reason) : "no reason recorded on the item — open it for context"} <span class="muted">(updated ${esc(i.updatedAt)})</span></li>`,
+  // FDR-0013: only hands items and review requests are the owner's.
+  // A choice an agent parked on the owner is fleet work, listed apart
+  // so the page never presents it as waiting on him.
+  const hands = census.items.filter((i) => needsDrewWait(i) === "hands");
+  const review = census.items.filter((i) => needsDrewWait(i) === "review");
+  const parked = census.items.filter((i) => needsDrewWait(i) === "agent-decides");
+  const line = (i: NeedsDrewItem, note: string): string =>
+    `<li><a href="${esc(i.url)}">${esc(i.ref)}</a> ${i.kind === "pr" ? "(PR) " : ""}${esc(i.title)} — ${i.needsLabels
+      .map((l) => `<code>${esc(l)}</code>`)
+      .join(" ")} — ${note} <span class="muted">(updated ${esc(i.updatedAt)})</span></li>`;
+  const reasonOf = (i: NeedsDrewItem): string =>
+    i.reason ? esc(i.reason) : "no reason recorded on the item — open it for context";
+  const answered = census.complete ? "" : " in the sources that answered";
+  const handsRows = hands.length
+    ? `<ul>${hands
+        .map((i) =>
+          line(
+            i,
+            `<strong>${esc(i.hands?.kind ?? "hands")}</strong>: ${
+              i.hands?.action ? esc(i.hands.action) : "the item states the one action"
+            }`,
+          ),
         )
         .join("")}</ul>`
-    : `<p class="muted">No open items carry user/review or user/escalated right now${census.complete ? "" : " in the sources that answered"}.</p>`;
-  return `<h2 id="needs-drew-census">Needs Drew — GitHub label census (${census.items.length})</h2><p class="muted">Every open issue and PR carrying <code>user/review</code> or <code>user/escalated</code> across the four repos (#1226). The labels are the system of record; this view reads them and never writes them. Census taken ${esc(census.fetchedAt)}${census.complete ? "" : " — incomplete, see below"}. Machine form: <a href="/api/needs-drew.json">/api/needs-drew.json</a>.</p>${failureNote}${rows}`;
+    : `<p class="muted">No open item needs a person's hands right now${answered}.</p>`;
+  const reviewRows = review.length
+    ? `<ul>${review.map((i) => line(i, reasonOf(i))).join("")}</ul>`
+    : `<p class="muted">No open item carries user/review right now${answered}.</p>`;
+  const parkedRows = parked.length
+    ? `<p class="muted">An agent parked each of these on the owner without a hands action. They do not wait on him: an agent decides, records the decision on the item and continues (FDR-0013). This count should fall to zero.</p><ul>${parked
+        .map((i) => line(i, reasonOf(i)))
+        .join("")}</ul>`
+    : `<p class="muted">Nothing is parked on the owner by an agent${answered}.</p>`;
+  const rows = `<h3 id="needs-drew-hands">Needs a person's hands (${hands.length})</h3>${handsRows}<h3 id="needs-drew-review">Review requested (${review.length})</h3>${reviewRows}<h3 id="needs-drew-parked">Parked on the owner by an agent — fleet work (${parked.length})</h3>${parkedRows}`;
+  return `<h2 id="needs-drew-census">Needs Drew — GitHub label census (${hands.length + review.length})</h2><p class="muted">Every open issue and PR carrying <code>user/review</code> or <code>user/escalated</code> across the four repos (#1226), split by how it waits. The count in the heading is hands items and review requests only. The labels are the system of record; this view reads them and never writes them. Census taken ${esc(census.fetchedAt)}${census.complete ? "" : " — incomplete, see below"}. Machine form: <a href="/api/needs-drew.json">/api/needs-drew.json</a>.</p>${failureNote}${rows}`;
 }
 
 /**

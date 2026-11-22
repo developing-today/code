@@ -113,5 +113,63 @@ class EvictionTest(unittest.TestCase):
         self.assertTrue(old.exists())
 
 
+class WorkspaceArtifactCleanupTest(unittest.TestCase):
+    def test_lease_cleanup_removes_workspace_packages_but_keeps_deps(self) -> None:
+        target = Path("/pool/code-test")
+        metadata = {
+            "workspace_root": "/worktree",
+            "workspace_members": [
+                "path+file:///worktree#app@0.1.0",
+                "path+file:///worktree/crates/core#core@0.1.0",
+            ],
+            "packages": [
+                {"id": "path+file:///worktree#app@0.1.0", "name": "app"},
+                {"id": "path+file:///worktree/crates/core#core@0.1.0", "name": "core"},
+                {"id": "registry+https://example.invalid#dep@1.0.0", "name": "dep"},
+            ],
+        }
+        with (
+            mock.patch.object(
+                broker_mod.subprocess,
+                "run",
+                side_effect=[
+                    mock.Mock(stdout=broker_mod.json.dumps(metadata)),
+                    mock.Mock(),
+                ],
+            ) as run,
+            mock.patch.object(Path, "is_file", return_value=True),
+        ):
+            broker_mod.clean_workspace_artifacts(target, cwd=Path("/worktree"))
+
+        metadata_call, clean_call = run.call_args_list
+        self.assertEqual(metadata_call.args[0][:2], ["cargo", "metadata"])
+        self.assertEqual(
+            clean_call.args[0],
+            [
+                "cargo",
+                "clean",
+                "--manifest-path",
+                "/worktree/Cargo.toml",
+                "--package",
+                "app",
+                "--package",
+                "core",
+            ],
+        )
+        self.assertEqual(clean_call.kwargs["env"]["CARGO_TARGET_DIR"], str(target))
+        self.assertNotIn("dep", clean_call.args[0])
+
+    def test_metadata_failure_fails_closed(self) -> None:
+        with mock.patch.object(
+            broker_mod.subprocess,
+            "run",
+            side_effect=broker_mod.subprocess.CalledProcessError(1, "cargo"),
+        ):
+            with self.assertRaises(RuntimeError):
+                broker_mod.clean_workspace_artifacts(
+                    Path("/pool/code-test"), cwd=Path("/outside")
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
