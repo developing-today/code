@@ -82,7 +82,7 @@ CURRENT_PRICES = """SELECT * FROM (
 
 def read_current(db):
     return (
-        db.query("SELECT name,provider FROM ainventory_models"),
+        db.query("SELECT id,name,provider FROM ainventory_models"),
         db.query(
             "SELECT model_name,model_variant_key,effort,benchmark,benchmark_version,value_num,ingested_at FROM ainventory_measurement_events ORDER BY ingested_at DESC,id DESC"
         ),
@@ -143,6 +143,71 @@ def num_or_none(v):
 def norm(s):
     """Identity normalization: lowercase alphanumerics only."""
     return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+# Known cross-source spellings from the AA coverage catalogue. These are
+# deliberately narrow: a miss is safer than merging two different models.
+IDENTITY_ALIASES = {
+    "deepseekv4pro0813": "deepseekv4pro",
+    "deepseekv4flash": "deepseekv41flash",
+    "musewonder10": "musewonder",
+    "qwen38max0902": "qwen38max",
+    "claudehaiku45": "claude45haiku",
+}
+
+
+def identity_keys(value):
+    """Return conservative equivalent keys for a source model identifier."""
+    value = value or ""
+    parts = [value]
+    if "|" in value:
+        parts.append(value.split("|", 1)[1])
+    if "/" in value:
+        parts.append(value.rsplit("/", 1)[1])
+    keys = set()
+    for part in parts:
+        key = norm(part)
+        if key:
+            keys.add(IDENTITY_ALIASES.get(key, key))
+    return keys
+
+
+def build_identity_index(models, events):
+    """Map unambiguous known spellings to the canonical inventory name."""
+    candidates = {}
+    for row in models:
+        canonical = row["name"]
+        for key in identity_keys(canonical):
+            candidates.setdefault(key, set()).add(canonical)
+    for row in events:
+        canonical = row.get("model_name")
+        if canonical:
+            for key in identity_keys(canonical):
+                candidates.setdefault(key, set()).add(canonical)
+    return {key: next(iter(names)) for key, names in candidates.items() if len(names) == 1}
+
+
+def resolve_identity(values, index):
+    """Resolve source spellings only when they point to one known identity."""
+    matches = {index[key] for value in values for key in identity_keys(value) if key in index}
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
+def model_id_for(canonical, models):
+    """Return the dimension row id for a resolved canonical display name."""
+    return next((m.get("id") for m in models if m["name"] == canonical), None)
+
+
+def canonical_key(value):
+    """Use the display-name segment as the stable comparison key."""
+    parts = identity_keys(value)
+    if "|" in (value or ""):
+        key = norm(value.split("|", 1)[1])
+        return IDENTITY_ALIASES.get(key, key)
+    if "/" in (value or ""):
+        key = norm(value.rsplit("/", 1)[1])
+        return IDENTITY_ALIASES.get(key, key)
+    return next(iter(parts), "")
 
 
 # ------------------------------------------------------------ AA parsing
@@ -227,24 +292,15 @@ def main():
     db = Turso()
     models, events, current, prices = read_current(db)
 
-    # ---- known identities (normalized model segment / display name)
-    known = set()
-    for m in models:
-        name = m["name"]
-        known.add(norm(name))
-        if "|" in name:
-            known.add(norm(name.split("|", 1)[1]))
-    for e in events:
-        known.add(norm(e.get("model_name")))
-        vk = e.get("model_variant_key")
-        if vk and vk.count("|") >= 2:
-            known.add(norm(vk.split("|")[1]))
+    # ---- known identities. Source spellings resolve to the existing
+    # inventory display name; ambiguous aliases intentionally stay unmatched.
+    identity_index = build_identity_index(models, events)
 
     # current II (current version) keyed by (identity, effort)
     cur_ii = {}
     for c in current:
         if c["benchmark"] == II_BENCHMARK and c["benchmark_version"] == II_VERSION:
-            ident = norm(
+            ident = canonical_key(
                 (c.get("model_variant_key") or "").split("|")[1]
                 if c.get("model_variant_key")
                 else c["model_name"]
@@ -259,7 +315,7 @@ def main():
             e.get("benchmark") == II_BENCHMARK
             and e.get("benchmark_version") == II_VERSION
         ):
-            ident = norm(
+            ident = canonical_key(
                 (e.get("model_variant_key") or "").split("|")[1]
                 if e.get("model_variant_key")
                 else e.get("model_name")
@@ -272,8 +328,9 @@ def main():
     cur_bands = {}
     for p in prices:
         if p.get("window_kind") == "flat" and not p.get("provider"):
-            cur_price[norm(p["model_name"])] = p
-            cur_bands[(norm(p["model_name"]), p.get("context_min_tokens") or 0)] = p
+            key = canonical_key(p["model_name"])
+            cur_price[key] = p
+            cur_bands[(key, p.get("context_min_tokens") or 0)] = p
 
     # ---- AA pull + diff
     aa = parse_aa_models(fetch(AA_MODELS_URL))
@@ -281,8 +338,8 @@ def main():
     seen_releases = {}
     unchanged = 0
     for v in aa:
-        ident = norm(v["release_name"])
-        if ident not in known and norm(v["release_slug"]) not in known:
+        canonical = resolve_identity([v["release_name"], v["release_slug"]], identity_index)
+        if canonical is None:
             seen_releases.setdefault(
                 v["release_slug"],
                 {
@@ -298,13 +355,15 @@ def main():
             if (v["intelligence_index"] or 0) > (prev["best_intelligence_index"] or 0):
                 prev["best_intelligence_index"] = v["intelligence_index"]
             continue
+        ident = canonical_key(canonical)
         if v["effort"] is None:
             continue  # release-level entry duplicates the featured variant
         cur = cur_ii.get((ident, norm(v["effort"])))
         if cur is None or abs((cur["value_num"] or 0) - v["intelligence_index"]) > 0.05:
             aa_meas.append(
                 {
-                    "model": v["release_name"],
+                    "model": canonical,
+                    "model_id": model_id_for(canonical, models),
                     "effort": v["effort"],
                     "benchmark": II_BENCHMARK,
                     "benchmark_version": II_VERSION,
@@ -329,7 +388,8 @@ def main():
         ):
             aa_price.append(
                 {
-                    "model": v["release_name"],
+                    "model": canonical,
+                    "model_id": model_id_for(canonical, models),
                     "input_usd_per_1m": v["price_input_per_1m"],
                     "output_usd_per_1m": v["price_output_per_1m"],
                     "cached_input_usd_per_1m": v["price_cached_input_per_1m"],
@@ -349,15 +409,16 @@ def main():
         if not prov:
             continue
         for mid, m in (prov.get("models") or {}).items():
-            ident = norm(mid) or norm(m.get("name"))
+            source_names = [f"{md_provider}/{mid}", mid, m.get("name")]
+            canonical = resolve_identity(source_names, identity_index)
             cost = m.get("cost") or {}
-            if ident in known or norm(m.get("name")) in known:
+            if canonical is not None:
                 # models.dev api.json costs are already USD per 1M tokens.
                 # Each context band is compared against the current
                 # price for ITS band: the view returns one row per
                 # band, and comparing the base price against the top
                 # band re-inserted every tiered price on every run.
-                keys = [norm(f"{md_provider}/{mid}"), ident, norm(m.get("name"))]
+                keys = [canonical_key(canonical)]
 
                 def band(ctx_min, _keys=keys):
                     for k in _keys:
@@ -386,7 +447,8 @@ def main():
                 if pin is not None and differs(band(0), pin, pout):
                     md_price.append(
                         {
-                            "model": f"{md_provider}/{mid}",
+                            "model": canonical,
+                            "model_id": model_id_for(canonical, models),
                             "input_usd_per_1m": pin,
                             "output_usd_per_1m": pout,
                             "cached_input_usd_per_1m": cost.get("cache_read"),
@@ -403,7 +465,8 @@ def main():
                     if differs(band(tmin), t.get("input"), t.get("output")):
                         md_price.append(
                             {
-                                "model": f"{md_provider}/{mid}",
+                                "model": canonical,
+                                "model_id": model_id_for(canonical, models),
                                 "input_usd_per_1m": t.get("input"),
                                 "output_usd_per_1m": t.get("output"),
                                 "cached_input_usd_per_1m": t.get("cache_read"),
@@ -458,6 +521,7 @@ def main():
         meas_rows = [
             {
                 "model_name": r["model"],
+                "model_id": r.get("model_id"),
                 "effort": r["effort"],
                 "benchmark": r["benchmark"],
                 "benchmark_version": r["benchmark_version"],
@@ -479,6 +543,7 @@ def main():
         price_rows = [
             {
                 "model_name": r["model"],
+                "model_id": r.get("model_id"),
                 "provider": None,
                 "input_usd_per_1m": r["input_usd_per_1m"],
                 "output_usd_per_1m": r["output_usd_per_1m"],
