@@ -7,6 +7,7 @@ import {
   appendReportRecord,
   appendReportSnapshot,
   appendReportSnapshotCorrection,
+  appendReportBlockConflictResolution,
   assertReportUpdateAllowed,
   defaultReportRecordsFile,
   makeReportRecord,
@@ -269,6 +270,101 @@ describe("C7 canonical report records", () => {
       { before: "old two", after: "new two" },
     ]);
     expect(compareReportBlock("same  prose", "same\nprose").conflict).toBe(false);
+  });
+
+  test("resolves either side by appending a version and leaves the frozen snapshot unchanged", async () => {
+    const file = await storePath();
+    const record = makeReportRecord({
+      period: {
+        id: "daily:2026-11-21:America/Chicago",
+        kind: "daily",
+        timezone: "America/Chicago",
+        periodStart: "2026-11-21T06:00:00.000Z",
+        periodEnd: "2026-11-22T06:00:00.000Z",
+        softCloseAt: "2026-11-22T14:00:00.000Z",
+      },
+      asOf: "2026-11-22T05:45:00.000Z",
+      templateVersion: "daily-v1",
+      sourceCursor: "cursor-before-resolution",
+      sources: [{ id: "event-1", uri: "gh:issue/12350", observedAt: "2026-11-22T05:40:00.000Z" }],
+      blocks: [{ id: "change-1", text: "Human-edited wording.", relatedAt: "2026-11-22T05:40:00.000Z" }],
+    }, "2026-11-22T05:45:01.000Z");
+    await appendReportRecord(file, record);
+    await appendReportSnapshot(file, record, "2026-11-22T14:00:00.000Z");
+
+    const comparison = compareReportBlock("Human-edited wording.", "New generated wording.");
+    const resolved = await appendReportBlockConflictResolution(
+      file,
+      record,
+      "change-1",
+      comparison,
+      "rendered",
+      "2026-11-22T13:59:59.000Z",
+    );
+
+    expect(resolved.inserted).toBe(true);
+    expect(resolved.record.blocks[0]).toMatchObject({
+      id: "change-1",
+      text: "New generated wording.",
+      resolution: {
+        sourceRecordId: record.id,
+        strategy: "rendered",
+        resolvedAt: "2026-11-22T13:59:59.000Z",
+      },
+    });
+    expect(await readReportRecords(file)).toEqual([record, resolved.record]);
+    expect(await readCurrentReportRecords(file)).toEqual([resolved.record]);
+    expect((await readReportSnapshots(file))[0]?.record).toEqual(record);
+
+    const repeated = await appendReportBlockConflictResolution(
+      file,
+      record,
+      "change-1",
+      comparison,
+      "rendered",
+      "2026-11-22T13:59:59.000Z",
+    );
+    expect(repeated.inserted).toBe(false);
+    expect(await readReportRecords(file)).toEqual([record, resolved.record]);
+  });
+
+  test("rejects stale or post-soft-close conflict resolutions", async () => {
+    const file = await storePath();
+    const record = makeReportRecord({
+      period: {
+        id: "daily:2026-11-21:America/Chicago",
+        kind: "daily",
+        timezone: "America/Chicago",
+        periodStart: "2026-11-21T06:00:00.000Z",
+        periodEnd: "2026-11-22T06:00:00.000Z",
+        softCloseAt: "2026-11-22T14:00:00.000Z",
+      },
+      asOf: "2026-11-22T05:45:00.000Z",
+      templateVersion: "daily-v1",
+      sourceCursor: "cursor-stale-resolution",
+      sources: [{ id: "event-1", uri: "gh:issue/12350", observedAt: "2026-11-22T05:40:00.000Z" }],
+      blocks: [{ id: "change-1", text: "Current stored wording.", relatedAt: "2026-11-22T05:40:00.000Z" }],
+    }, "2026-11-22T05:45:01.000Z");
+    const staleComparison = compareReportBlock("Older stored wording.", "Generated wording.");
+
+    await expect(appendReportBlockConflictResolution(
+      file,
+      record,
+      "change-1",
+      staleComparison,
+      "rendered",
+      "2026-11-22T13:00:00.000Z",
+    )).rejects.toThrow(/stale report block comparison/);
+    const currentComparison = compareReportBlock("Current stored wording.", "Generated wording.");
+    await expect(appendReportBlockConflictResolution(
+      file,
+      record,
+      "change-1",
+      currentComparison,
+      "rendered",
+      "2026-11-22T14:00:00.000Z",
+    )).rejects.toThrow(/not allowed after soft close/);
+    expect(await readReportRecords(file)).toEqual([]);
   });
 
   test("uses append-only permanent document keys for report history and snapshots", async () => {

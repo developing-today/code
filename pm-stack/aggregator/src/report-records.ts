@@ -21,6 +21,11 @@ export interface ReportRecordBlock {
   links?: string[];
   importance?: ReportPeriodKind[];
   classification?: "implemented" | "cancelled" | "duplicate" | "in-progress" | "blocked" | "queued";
+  resolution?: {
+    sourceRecordId: string;
+    strategy: "stored" | "rendered";
+    resolvedAt: string;
+  };
 }
 
 export interface ReportRecordInput {
@@ -128,6 +133,12 @@ export function makeReportRecord(input: ReportRecordInput, generatedAt = new Dat
     }
     if (block.classification && (!block.links || block.links.length === 0)) {
       throw new Error(`classified activity block ${block.id} must link its members`);
+    }
+    if (block.resolution) {
+      if (!block.resolution.sourceRecordId.trim() || !["stored", "rendered"].includes(block.resolution.strategy)) {
+        throw new Error(`report block ${block.id} has invalid conflict resolution metadata`);
+      }
+      requireIsoDate(block.resolution.resolvedAt, "block resolution resolvedAt");
     }
     if (block.links && (!Array.isArray(block.links) || block.links.some((link) => typeof link !== "string" || !link.trim()))) {
       throw new Error(`report block ${block.id} has invalid links`);
@@ -454,6 +465,56 @@ export async function readReportSnapshotCorrections(location: ReportRecordLocati
       } => event.type === "report.snapshot-correction" && !!event.correction,
     )
     .map((event) => event.correction);
+}
+
+/** Resolve a current block conflict by appending a new report version. */
+export async function appendReportBlockConflictResolution(
+  location: ReportRecordLocation,
+  record: ReportRecord,
+  blockId: string,
+  comparison: ReportBlockComparison,
+  strategy: "stored" | "rendered",
+  resolvedAt: string,
+): Promise<AppendReportRecordResult> {
+  assertCanonicalRecord(record);
+  requireIsoDate(resolvedAt, "resolvedAt");
+  assertReportUpdateAllowed(record.period, "edit", resolvedAt);
+  if (!comparison.conflict || !reportBlockConflict(comparison.storedText, comparison.renderedText)) {
+    throw new Error("report block comparison does not contain a conflict");
+  }
+
+  const canonicalComparison = compareReportBlock(comparison.storedText, comparison.renderedText);
+  if (canonicalJson(canonicalComparison) !== canonicalJson(comparison)) {
+    throw new Error("invalid report block comparison");
+  }
+  const blockIndex = record.blocks.findIndex((block) => block.id === blockId);
+  if (blockIndex < 0 || record.blocks[blockIndex].text !== comparison.storedText) {
+    throw new Error("stale report block comparison: stored block has changed");
+  }
+
+  const cursor = `resolution:${record.id}:${blockId}:${strategy}:${createHash("sha256").update(comparison.renderedText).digest("hex")}`;
+  const blocks = structuredClone(record.blocks);
+  blocks[blockIndex] = {
+    ...blocks[blockIndex],
+    text: strategy === "stored" ? comparison.storedText : comparison.renderedText,
+    resolution: { sourceRecordId: record.id, strategy, resolvedAt },
+  };
+  const resolvedRecord = makeReportRecord({
+    period: record.period,
+    asOf: record.asOf,
+    templateVersion: record.templateVersion,
+    sourceCursor: cursor,
+    sources: record.sources,
+    blocks,
+  }, resolvedAt);
+  const previousResolution = (await readReportRecords(location)).find((candidate) => candidate.id === resolvedRecord.id);
+  if (previousResolution) return appendReportRecord(location, resolvedRecord);
+
+  const latest = (await readCurrentReportRecords(location)).find(
+    (candidate) => candidate.period.id === record.period.id && candidate.templateVersion === record.templateVersion,
+  );
+  if (!latest || latest.id !== record.id) throw new Error("stale report block comparison: report record is no longer current");
+  return appendReportRecord(location, resolvedRecord);
 }
 
 function assertRecordIdContent(events: ReportRecordEvent[], candidate: ReportRecord): void {
