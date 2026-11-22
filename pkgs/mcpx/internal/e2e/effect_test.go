@@ -3583,17 +3583,33 @@ func lsDemoRow(t *testing.T, out string) []string {
 
 // TestDaemonWarmReadsTheServersAtStartupFromTheEnvironment is the effect
 // probe for daemon.warm. The first ls auto-starts a daemon. Warming (the
-// default), it has read demo's schemas by the time ls answers: nine tools
-// and a running instance. With daemon.warm=false nothing has read the
-// server yet, so the row is unread, with no tools and nothing live.
+// default), it reads demo's schemas on its own: tools and a running
+// instance appear without any call. With daemon.warm=false nothing reads
+// the server, so the row stays unread, with no tools and nothing live, for
+// at least as long as the warm daemon took.
+//
+// Warming is asynchronous by design (Server.WarmAsync: "without delaying
+// the listener"), so the first ls can answer before it finishes. The test
+// used to assert on that first answer and failed whenever ls won the race,
+// which on macOS was about two runs in three.
 func TestDaemonWarmReadsTheServersAtStartupFromTheEnvironment(t *testing.T) {
-	if row := lsDemoRow(t, newEnv(t, oneServer).run("ls")); row[1] == "0" || row[5] != "running" {
-		t.Fatalf("oracle: a warmed daemon should list demo's tools and a running instance: %v", row)
+	warm := newEnv(t, oneServer)
+	start := time.Now()
+	deadline := start.Add(30 * time.Second)
+	for row := lsDemoRow(t, warm.run("ls")); row[1] == "0" || row[5] != "running"; row = lsDemoRow(t, warm.run("ls")) {
+		if time.Now().After(deadline) {
+			t.Fatalf("oracle: a warmed daemon should come to list demo's tools and a running instance: %v", row)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
+	took := time.Since(start)
+
 	cold := newEnv(t, oneServer)
 	cold.setenv("MCPX_DAEMON_WARM=false")
+	cold.run("ls")
+	time.Sleep(took + 500*time.Millisecond)
 	if row := lsDemoRow(t, cold.run("ls")); row[1] != "0" || row[4] != "0" || row[5] != "unread" {
-		t.Fatalf("with daemon.warm=false demo should be unread, with no tools and nothing live: %v", row)
+		t.Fatalf("with daemon.warm=false demo should stay unread, with no tools and nothing live: %v", row)
 	}
 }
 
