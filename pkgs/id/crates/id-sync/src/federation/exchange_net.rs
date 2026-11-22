@@ -734,6 +734,17 @@ impl ExchangeProtocol {
     }
 }
 
+impl std::fmt::Debug for ExchangeProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The observer is a callback and has no debug form; the
+        // protocol is its replica and whether it reports.
+        f.debug_struct("ExchangeProtocol")
+            .field("replica", &self.replica)
+            .field("observer", &self.observer.is_some())
+            .finish()
+    }
+}
+
 impl ExchangeProtocol {
     /// Serve one exchange session on an accepted stream pair: the
     /// mirror image of [`reconcile_remote`]'s first half, then the
