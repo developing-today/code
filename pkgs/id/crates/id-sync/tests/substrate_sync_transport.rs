@@ -22,7 +22,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::BTreeSet;
-use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -65,6 +64,7 @@ const BOB: usize = 1;
 
 const CONTROL_ALPN: &[u8] = b"/id-skeleton-control/1";
 const CHILD_ENV: &str = "ID_SKELETON_NODE_B";
+const BANNER_ENV: &str = "ID_SKELETON_BANNER";
 
 fn accept_error<E: Into<Box<dyn std::error::Error + Send + Sync>>>(error: E) -> AcceptError {
     AcceptError::from_boxed(error.into())
@@ -412,9 +412,11 @@ fn node_b_entry() {
             .unwrap_or(&sockets[0])
             .port();
         eprintln!("node-b: router up, announcing on port {port}");
-        println!("READY {} {port}", endpoint.id());
-        use std::io::Write as _;
-        std::io::stdout().flush().unwrap();
+        // The banner goes to a file, not stdout: the harness owns
+        // the child's stdout, and a banner line through it proved
+        // unreliable in the runner. The parent polls for the file.
+        let banner = std::env::var(BANNER_ENV).unwrap();
+        std::fs::write(&banner, format!("READY {} {port}\n", endpoint.id())).unwrap();
         shutdown.notified().await;
         router.shutdown().await.unwrap();
         endpoint.close().await;
@@ -433,35 +435,36 @@ struct NodeB {
 impl NodeB {
     async fn spawn(endpoint: &Endpoint) -> NodeB {
         let exe = std::env::current_exe().unwrap();
+        let banner = std::env::temp_dir().join(format!(
+            "id-skeleton-banner-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&banner);
         let mut child = Command::new(exe)
             .args(["--exact", "node_b_entry", "--nocapture", "--test-threads=1"])
             .env(CHILD_ENV, "1")
-            .stdout(Stdio::piped())
+            .env(BANNER_ENV, &banner)
+            .stdout(Stdio::null())
             .stderr(Stdio::inherit())
             .spawn()
             .unwrap();
-        let stdout = child.stdout.take().unwrap();
-        let (tx, rx) = std::sync::mpsc::channel();
-        // The harness prints around the child's banner (a leading
-        // blank line, the result line at the end), so scan for the
-        // banner — and keep draining for the child's whole life, or
-        // its next print meets a broken pipe.
-        std::thread::spawn(move || {
-            let mut sent = false;
-            for line in BufReader::new(stdout).lines() {
-                let Ok(line) = line else { break };
-                if !sent && line.starts_with("READY ") {
-                    let _ = tx.send(line);
-                    sent = true;
+        // The child writes its banner to the file once its router is
+        // up; poll for it (bounded), rather than parsing the harness's
+        // stdout stream.
+        let mut ready = String::new();
+        for _ in 0..480 {
+            if let Ok(text) = std::fs::read_to_string(&banner) {
+                if text.ends_with('\n') {
+                    ready = text.trim_end().to_string();
+                    break;
                 }
             }
-        });
-        let ready = tokio::task::spawn_blocking(move || {
-            rx.recv_timeout(Duration::from_secs(120))
-                .expect("node B announced no READY line in 120s; its step markers are on stderr")
-        })
-        .await
-        .unwrap();
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        assert!(
+            !ready.is_empty(),
+            "node B wrote no banner in 120s; its step markers are on stderr"
+        );
         let mut parts = ready.split_whitespace();
         assert_eq!(parts.next(), Some("READY"), "child banner: {ready}");
         let id = EndpointId::from_str(parts.next().unwrap()).unwrap();
