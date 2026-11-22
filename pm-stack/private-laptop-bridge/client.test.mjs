@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, symlink, rm, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createClient, parseArgs, requireNonRoot, validateConfig, BridgeDenied } from './client.mjs';
@@ -43,7 +43,7 @@ test('oracle: exact signed outbound poll, allowlisted adapter, and completion', 
   const client=createClient({...base, execute:async(op,args)=>{assert.equal(op,'laptop.health');assert.deepEqual(args,{});return {ok:true,data:{queueBroker:'up'}};}, fetch:async(request,options)=>{
     assert.equal(options.redirect,'error');assert.ok(options.signal);assert.ok(request.headers.get('x-bridge-signature'));
     requests.push({path:new URL(request.url).pathname,body:await request.json()});
-    return requests.length===1?json({job:job()}):json({ok:true});
+    return requests.length===1?json({job:job()}):json({accepted:true});
   }});
   assert.equal(await client.step(),true);
   assert.deepEqual(requests,[{path:'/v1/poll',body:{}},{path:'/v1/result',body:{id:'job-1',lease:'lease-1',result:{ok:true,data:{queueBroker:'up'}}}}]);
@@ -100,8 +100,8 @@ test('oracle: expiry during execution suppresses result and secret-shaped output
 
 test('oracle: real snapshot schema projects only IDs/status with explicit partial semantics', () => {
   const result=projectQueueSnapshot(snapshot(),'fleet.queue.list',{limit:1},now);
-  assert.deepEqual(result,{ok:true,data:{tasks:[{id:1,status:'queued'}],complete:false,total:null}});
-  assert.deepEqual(projectQueueSnapshot(snapshot(),'fleet.queue.health',{},now),{ok:true,data:snapshot().counts});
+  assert.deepEqual(result,{ok:true,data:{tasks:[{id:1,status:'queued'}],complete:false,total:null,fetchedAt:now}});
+  assert.deepEqual(projectQueueSnapshot(snapshot(),'fleet.queue.health',{},now),{ok:true,data:{...snapshot().counts,fetchedAt:now}});
   assert.deepEqual(projectQueueSnapshot(snapshot(),'fleet.queue.list',{limit:20,status:'cancelled'},now).data.tasks,[{id:2,status:'cancelled'}]);
 });
 
@@ -119,13 +119,21 @@ test('oracle: production reader uses fixed file, rejects symlink and size overfl
   try {
     await mkdir(directory,{recursive:true});await writeFile(path,JSON.stringify(snapshot()));
     assert.deepEqual(await readQueueSnapshot(home),snapshot());
+    await chmod(path,0o666);await assert.rejects(readQueueSnapshot(home));await chmod(path,0o600);
+    await chmod(directory,0o777);await assert.rejects(readQueueSnapshot(home));await chmod(directory,0o700);
     await rm(path);await symlink('/etc/passwd',path);await assert.rejects(readQueueSnapshot(home));
     await rm(path);await writeFile(path,'x'.repeat(1024*1024+1));await assert.rejects(readQueueSnapshot(home));
   } finally {await rm(home,{recursive:true,force:true});}
 });
 
+test('oracle: completion acknowledgement must confirm acceptance', async () => {
+  let calls=0;
+  const client=createClient({...base,fetch:async()=>++calls===1?json({job:job()}):json({ok:true}),execute:async()=>({ok:true,data:{queueBroker:'up'}})});
+  await assert.rejects(client.step(),/invalid-ack/);
+});
+
 test('oracle: adapters return only bounded categorical/scalar data and swallow raw errors', async () => {
-  const execute=createAdapters({readSnapshot:async()=>snapshot(),clock:()=>now,probe:async()=>true,diagnostics:()=>({uptimeSeconds:10,load1:0.5,memoryAvailableBytes:1000})});
+  const execute=createAdapters({readSnapshot:async()=>snapshot(),clock:()=>now,probe:async()=>true,diagnostics:()=>({uptimeSeconds:10,load1:0.5,memoryFreeBytes:1000})});
   assert.deepEqual(await execute('laptop.health',{}),{ok:true,data:{queueBroker:'up'}});
   assert.equal((await execute('fleet.queue.list',{limit:20})).data.tasks.length,2);
   assert.equal((await execute('laptop.diagnostics',{})).data.uptimeSeconds,10);

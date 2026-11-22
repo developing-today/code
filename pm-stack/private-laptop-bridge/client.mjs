@@ -84,7 +84,8 @@ export function createClient({ origin, audience, principal, privateKey, fetch: f
     signal?.throwIfAborted();
     if (job.expiresAt <= now() || job.leaseExpiresAt <= now()) throw new Error('expired-job');
     if (!validateResult(job.operation, result)) throw new Error('invalid-result');
-    await send('/v1/result', { id: job.id, lease: job.lease, result }, signal);
+    const accepted = await send('/v1/result', { id: job.id, lease: job.lease, result }, signal);
+    if (!exact(accepted, ['accepted']) || accepted.accepted !== true) throw new Error('invalid-ack');
     return true;
   }
   async function run(signal) {

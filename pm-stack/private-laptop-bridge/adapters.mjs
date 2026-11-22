@@ -1,4 +1,4 @@
-import { open, constants } from 'node:fs/promises';
+import { open, lstat, constants } from 'node:fs/promises';
 import { request } from 'node:http';
 import { homedir, uptime, loadavg, freemem } from 'node:os';
 import { join } from 'node:path';
@@ -13,10 +13,14 @@ const failure = (error = 'unavailable') => ({ ok: false, error });
 // Only this producer-owned snapshot is read. No caller path, token, or broker
 // command is accepted. O_NOFOLLOW and regular-file/size checks precede reading.
 export async function readQueueSnapshot(home = homedir()) {
+  for (const directory of [home, join(home, '.local'), join(home, '.local/state'), join(home, '.local/state/pm-aggregator')]) {
+    const st = await lstat(directory);
+    if (!st.isDirectory() || st.uid !== process.getuid() || (st.mode & 0o022)) throw new Error('invalid-source');
+  }
   const file = await open(join(home, '.local/state/pm-aggregator/bridge-queue.json'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const st = await file.stat();
-    if (!st.isFile() || st.size > MAX_SOURCE_BYTES) throw new Error('invalid-source');
+    if (!st.isFile() || st.size > MAX_SOURCE_BYTES || st.uid !== process.getuid() || (st.mode & 0o022)) throw new Error('invalid-source');
     const buffer = Buffer.alloc(MAX_SOURCE_BYTES + 1);
     let offset = 0;
     while (offset < buffer.length) {
@@ -35,8 +39,8 @@ export function projectQueueSnapshot(snapshot, operation, args, now = Date.now()
   if (!Array.isArray(snapshot.tasks) || snapshot.tasks.length > 1000 || !keys(snapshot.counts, STATES) || !STATES.every(s => integer(snapshot.counts[s]))) return failure('invalid-source');
   if (!snapshot.tasks.every(t => keys(t, ['id','status','priority']) && integer(t.id) && t.id > 0 && STATES.includes(t.status) && (t.priority === null || Number.isFinite(t.priority)))) return failure('invalid-source');
   if (new Set(snapshot.tasks.map(t => t.id)).size !== snapshot.tasks.length) return failure('invalid-source');
-  if (operation === 'fleet.queue.health') return { ok: true, data: Object.fromEntries(STATES.map(s => [s, snapshot.counts[s]])) };
-  return { ok: true, data: { tasks: snapshot.tasks.filter(t => !args.status || t.status === args.status).slice(0, args.limit).map(({id,status}) => ({id,status})), complete: false, total: null } };
+  if (operation === 'fleet.queue.health') return { ok: true, data: { ...Object.fromEntries(STATES.map(s => [s, snapshot.counts[s]])), fetchedAt: snapshot.fetchedAt } };
+  return { ok: true, data: { tasks: snapshot.tasks.filter(t => !args.status || t.status === args.status).slice(0, args.limit).map(({id,status}) => ({id,status})), complete: false, total: null, fetchedAt: snapshot.fetchedAt } };
 }
 
 // A single unauthenticated GET liveness route over the existing broker's UDS.
@@ -55,7 +59,7 @@ export function queueBrokerAlive(home = homedir()) {
   });
 }
 
-export function createAdapters({ readSnapshot = readQueueSnapshot, probe = queueBrokerAlive, clock = Date.now, diagnostics = () => ({ uptimeSeconds: Math.floor(uptime()), load1: loadavg()[0], memoryAvailableBytes: freemem() }) } = {}) {
+export function createAdapters({ readSnapshot = readQueueSnapshot, probe = queueBrokerAlive, clock = Date.now, diagnostics = () => ({ uptimeSeconds: Math.floor(uptime()), load1: loadavg()[0], memoryFreeBytes: freemem() }) } = {}) {
   return async function execute(operation, args) {
     if (!validateOperation(operation, args)) return failure('invalid-source');
     let result;
