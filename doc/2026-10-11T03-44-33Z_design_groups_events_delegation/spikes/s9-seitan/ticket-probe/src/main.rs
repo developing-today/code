@@ -24,8 +24,14 @@ fn main() {
     let text = ticket.to_string();
     println!("1. ticket string ({} chars): {text}", text.len());
     let payload = ticket.encode_bytes();
-    println!("   postcard payload ({} bytes): {}", payload.len(), hex(&payload));
-    println!("   layout (iroh-tickets endpoint.rs): variant 00 | EndpointId 32 bytes | addr count | addrs");
+    println!(
+        "   postcard payload ({} bytes): {}",
+        payload.len(),
+        hex(&payload)
+    );
+    println!(
+        "   layout (iroh-tickets endpoint.rs): variant 00 | EndpointId 32 bytes | addr count | addrs"
+    );
     println!("   fields: no signature, no expiry, no extension field");
 
     let parsed = EndpointTicket::from_str(&text).unwrap();
@@ -38,9 +44,15 @@ fn main() {
     // Try to carry the token: append its bytes after the postcard payload, then encode as a ticket string.
     let mut smuggled = payload.clone();
     smuggled.extend_from_slice(TOKEN.as_bytes());
-    let smuggled_text = format!("endpoint{}", BASE32_NOPAD.encode(&smuggled).to_ascii_lowercase());
+    let smuggled_text = format!(
+        "endpoint{}",
+        BASE32_NOPAD.encode(&smuggled).to_ascii_lowercase()
+    );
     let smuggled_parsed = EndpointTicket::from_str(&smuggled_text);
-    println!("3. token appended after the payload ({} bytes):", smuggled.len());
+    println!(
+        "3. token appended after the payload ({} bytes):",
+        smuggled.len()
+    );
     match &smuggled_parsed {
         Ok(t) => println!(
             "   parses: true  addr unchanged: {}  token recovered by any API: no (no accessor exists)",
@@ -53,9 +65,15 @@ fn main() {
     let other_id = SecretKey::from_bytes(&[8u8; 32]).public();
     let mut edited = payload.clone();
     edited[1..33].copy_from_slice(other_id.as_bytes());
-    let edited_text = format!("endpoint{}", BASE32_NOPAD.encode(&edited).to_ascii_lowercase());
+    let edited_text = format!(
+        "endpoint{}",
+        BASE32_NOPAD.encode(&edited).to_ascii_lowercase()
+    );
     let edited_parsed = EndpointTicket::from_str(&edited_text).unwrap();
-    println!("4. EndpointId swapped inside the string: parses = true, id now {}", edited_parsed.endpoint_addr().id);
+    println!(
+        "4. EndpointId swapped inside the string: parses = true, id now {}",
+        edited_parsed.endpoint_addr().id
+    );
 
     // Two parses of the same string give the same address: nothing is consumed.
     let again = EndpointTicket::from_str(&text).unwrap();

@@ -213,15 +213,17 @@ async fn serve(conn: Connection, ep: &Endpoint, mode: Mode, allowed: &HashSet<En
         Ok(Err(err)) => {
             info!(target: "harness", role = "server", event = "accept_bi_error", error = %err, "no stream")
         }
-        Err(_) => info!(target: "harness", role = "server", event = "accept_bi_timeout", "no stream within 10 s"),
+        Err(_) => {
+            info!(target: "harness", role = "server", event = "accept_bi_timeout", "no stream within 10 s")
+        }
     }
     let why = conn.closed().await;
     info!(target: "harness", role = "server", event = "connection_closed", why = %why, "closed");
 }
 
 fn read_ready(path: &Path) -> Result<(EndpointId, u16)> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let field = |key: &str| -> Result<String> {
         text.lines()
             .find_map(|l| l.strip_prefix(&format!("{key}=")))

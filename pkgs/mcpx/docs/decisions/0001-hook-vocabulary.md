@@ -36,13 +36,13 @@ config chain with the null-splice rule (`internal/config/config.go:208`,
 Their meanings are precise, and the order is tested
 (`TestLauncherPhasesRunInOrder`, `internal/e2e/e2e_test.go:1437`):
 
-| phase | runs | where it is written |
-| --- | --- | --- |
-| `before` | first, before mcpx's globals are installed | `internal/runner/runner.go:548` |
-| `prefix` | after the globals, before the script's module is imported | `runner.go:554` |
-| `onSuccess` | when the entry point returns, with `result.value` set | `runner.go:581` |
-| `onError` | when it throws, with `result.error` set; the error is rethrown — "a hook, not a handler" | `runner.go:587`, `registry.go:233-236` |
-| `suffix` | in a `finally`, on both paths | `runner.go:593` |
+| phase       | runs                                                                                     | where it is written                    |
+| ----------- | ---------------------------------------------------------------------------------------- | -------------------------------------- |
+| `before`    | first, before mcpx's globals are installed                                               | `internal/runner/runner.go:548`        |
+| `prefix`    | after the globals, before the script's module is imported                                | `runner.go:554`                        |
+| `onSuccess` | when the entry point returns, with `result.value` set                                    | `runner.go:581`                        |
+| `onError`   | when it throws, with `result.error` set; the error is rethrown — "a hook, not a handler" | `runner.go:587`, `registry.go:233-236` |
+| `suffix`    | in a `finally`, on both paths                                                            | `runner.go:593`                        |
 
 That is a good vocabulary. `onSuccess` and `onError` are separate because they
 see different things; `suffix` is the one that runs either way. It already
@@ -102,12 +102,12 @@ and only while that `seq` is still inside the 1024 retained.
 
 ### What the issues propose
 
-| source | points | phases | what runs | what it may do | declared as |
-| --- | --- | --- | --- | --- | --- |
-| #81, approach C | `call`, `exec`, `server.start`, or any event kind | `observe` (default), `before`, `after` | a command, a JS/TS module, a Python module, a plugin tool | observe: nothing; before: deny or replace; after: rewrite the result | `hooks: [{on, phase, run \| module \| plugin, when, async}]` |
-| #82, approach C | as #81 | as #81 | the plugin's own MCP tool | as #81 | registered at runtime over `/v1`, owned by a plugin session |
-| #112, approach C | exec only | `pre`, `main`, `post`, `onError`, `onSuccess` | a script or a prompt | `advise`, `transform`, `script`, `retry` | `options.hooks` per call, `script.hooks` in config |
-| the notes, quoted in #112 | exec | `prompt`, `prePrompt`, `postPrompt`, `onErrorPrompt`, `onSuccessPrompt` | a prompt | — | five options |
+| source                    | points                                            | phases                                                                  | what runs                                                 | what it may do                                                       | declared as                                                  |
+| ------------------------- | ------------------------------------------------- | ----------------------------------------------------------------------- | --------------------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------ |
+| #81, approach C           | `call`, `exec`, `server.start`, or any event kind | `observe` (default), `before`, `after`                                  | a command, a JS/TS module, a Python module, a plugin tool | observe: nothing; before: deny or replace; after: rewrite the result | `hooks: [{on, phase, run \| module \| plugin, when, async}]` |
+| #82, approach C           | as #81                                            | as #81                                                                  | the plugin's own MCP tool                                 | as #81                                                               | registered at runtime over `/v1`, owned by a plugin session  |
+| #112, approach C          | exec only                                         | `pre`, `main`, `post`, `onError`, `onSuccess`                           | a script or a prompt                                      | `advise`, `transform`, `script`, `retry`                             | `options.hooks` per call, `script.hooks` in config           |
+| the notes, quoted in #112 | exec                                              | `prompt`, `prePrompt`, `postPrompt`, `onErrorPrompt`, `onSuccessPrompt` | a prompt                                                  | —                                                                    | five options                                                 |
 
 ---
 
@@ -154,14 +154,14 @@ setting kind it does not have.
 Six, and no others. The five shipped ones keep their names and their meaning,
 extended from the launcher to any point. One is new.
 
-| phase | when | may hold the operation up |
-| --- | --- | --- |
-| `before` | before the operation starts | yes, bounded by a timeout |
-| `prefix` | the `script` point only, inline source only: after mcpx's surface is installed, before the body | — (it runs inside the script) |
-| `onSuccess` | the operation succeeded, before its result is returned | yes, bounded |
-| `onError` | the operation failed, before its error is returned; the error still propagates unless an effect replaces it | yes, bounded |
-| `suffix` | after either, like a `finally`; it cannot change the outcome | yes, bounded |
-| `observe` | after the fact, asynchronously, from the event bus | never |
+| phase       | when                                                                                                        | may hold the operation up     |
+| ----------- | ----------------------------------------------------------------------------------------------------------- | ----------------------------- |
+| `before`    | before the operation starts                                                                                 | yes, bounded by a timeout     |
+| `prefix`    | the `script` point only, inline source only: after mcpx's surface is installed, before the body             | — (it runs inside the script) |
+| `onSuccess` | the operation succeeded, before its result is returned                                                      | yes, bounded                  |
+| `onError`   | the operation failed, before its error is returned; the error still propagates unless an effect replaces it | yes, bounded                  |
+| `suffix`    | after either, like a `finally`; it cannot change the outcome                                                | yes, bounded                  |
+| `observe`   | after the fact, asynchronously, from the event bus                                                          | never                         |
 
 `observe` is the default, because it is the only phase that cannot slow or
 change anything.
@@ -175,11 +175,11 @@ documentation and the validation are generated from the table, and a guard test
 fires every point and asserts a hook on it ran (#129's enumerate → completeness
 → probe), so a point cannot be declared and dead the way `call.started` is.
 
-| point | fires on | phases it has |
-| --- | --- | --- |
-| `script` | one script run: `mcpx run`/`exec`, local or remote, `/v1/exec`, a recipe or intent run | all five |
-| `call` | one `tools/call` going upstream, from any caller | `before`, `onSuccess`, `onError`, `suffix` |
-| `server.start` | a pooled instance starting | `before`, `onSuccess`, `onError` |
+| point          | fires on                                                                               | phases it has                              |
+| -------------- | -------------------------------------------------------------------------------------- | ------------------------------------------ |
+| `script`       | one script run: `mcpx run`/`exec`, local or remote, `/v1/exec`, a recipe or intent run | all five                                   |
+| `call`         | one `tools/call` going upstream, from any caller                                       | `before`, `onSuccess`, `onError`, `suffix` |
+| `server.start` | a pooled instance starting                                                             | `before`, `onSuccess`, `onError`           |
 
 #81 called the first point `exec`. It is `script` here so that `script.onError`
 and `{"on": "script", "phase": "onError"}` are visibly the same place.
@@ -193,13 +193,13 @@ event and `"*"` matches all. `when` carries the filter's other fields
 
 Exactly one per hook.
 
-| action | what runs | where |
-| --- | --- | --- |
-| `source` | inline TypeScript or a file, spliced into the launcher | inside the script; `script` point only; declared only as `script.<phase>` |
-| `run` | an argv array — never a shell string; write `["sh", "-c", "…"]` to ask for a shell | a child process of whichever process owns the point |
-| `module` | a script run by mcpx's own runner, with the generated client | as `run` |
-| `prompt` | text with `@placeholders`, sent to the provider from #110 | the daemon; skipped with a warning on the run when no model is configured |
-| `plugin` | `"namespace.tool"` — an MCP tool call | whichever server or plugin serves that namespace |
+| action   | what runs                                                                          | where                                                                     |
+| -------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `source` | inline TypeScript or a file, spliced into the launcher                             | inside the script; `script` point only; declared only as `script.<phase>` |
+| `run`    | an argv array — never a shell string; write `["sh", "-c", "…"]` to ask for a shell | a child process of whichever process owns the point                       |
+| `module` | a script run by mcpx's own runner, with the generated client                       | as `run`                                                                  |
+| `prompt` | text with `@placeholders`, sent to the provider from #110                          | the daemon; skipped with a warning on the run when no model is configured |
+| `plugin` | `"namespace.tool"` — an MCP tool call                                              | whichever server or plugin serves that namespace                          |
 
 Python is a `run` (`["uv", "run", "hook.py"]`) until #105 makes it a runtime
 `module` knows. A shell string is refused rather than guessed at, because
@@ -217,7 +217,7 @@ never honoured. A non-zero exit is a result, not an error, following the
 adapter's precedent (`internal/adapter`): the hook failed, `hook.failed` is
 published, and the operation carries on — unless the hook says
 `"failure": "closed"`, which is legal only when its effect may refuse (`ask` or
-above), because failing closed *is* a refusal.
+above), because failing closed _is_ a refusal.
 
 ### Effect
 
@@ -308,7 +308,7 @@ runtime-mutable hook table stays in #82 and waits for a concrete need.
 
 **#112** keeps its structure and loses its words: `pre` → `before`, `post` →
 `onSuccess`, `onSuccess` → `onSuccess`, `onError` → `onError`; `main` is not a
-hook at all — a prompt that *is* the run is `/v1/intent` (#113). Its effect
+hook at all — a prompt that _is_ the run is `/v1/intent` (#113). Its effect
 names are replaced by 0002's, its stream placement by the order above, and
 `script.hooks` by `hooks` entries with `"on": "script"`. The deterministic half
 it wants to ship first is `module` and `run` hooks at the `script` point.
@@ -346,39 +346,39 @@ streams its second attempt → #111 rung 5, bound by rule 1. `script.started` an
 
 ## Mapping
 
-| term | from | becomes |
-| --- | --- | --- |
-| `script.before` | shipped | `on: script`, `phase: before`, action `source` — unchanged |
-| `script.prefix` | shipped | `on: script`, `phase: prefix`, action `source` — unchanged |
-| `script.onSuccess` | shipped | `on: script`, `phase: onSuccess`, action `source` — unchanged |
-| `script.onError` | shipped | `on: script`, `phase: onError`, action `source` — unchanged |
-| `script.suffix` | shipped | `on: script`, `phase: suffix`, action `source` — unchanged |
-| `@before` … `@suffix` | launcher placeholders | unchanged; the launcher's fill for the phases |
-| `pool.Hooks` | `internal/daemon/hooks.go:24` | not a user vocabulary; the source of bus events |
-| `on: <event kind>` | #81 | `on: <event kind>`, `phase: observe` |
-| `phase: observe` | #81 | `observe` |
-| `phase: before` | #81 | `before` |
-| `phase: after` | #81 | `onSuccess` and `onError`, split by outcome; `suffix` if it must run on both |
-| point `exec` | #81 | `on: script` |
-| points `call`, `server.start` | #81 | unchanged |
-| `run: "cmd …"` (a string) | #81 | `run: ["cmd", …]`; a string is refused |
-| `module: x.ts` | #81 | `module` |
-| `module: x.py` | #81 | `run: ["uv", "run", "x.py"]` until #105 |
-| `plugin` + `tool` | #81 | `plugin: "namespace.tool"` |
-| `async: true` | #81 | `phase: observe` |
-| runtime hook registration | #82 | manifest `hooks`, owned by the plugin session |
-| `phase: pre` | #112 | `before` |
-| `phase: main` | #112 | not a hook: `/v1/intent` (#113) |
-| `phase: post` | #112 | `onSuccess` |
-| `phase: onSuccess`, `phase: onError` | #112 | unchanged |
-| `script: x.ts` | #112 | `module` (a file), or `source` through `script.<phase>` |
-| `prompt` | #112 | `prompt` |
-| `effect` values | #112 | [0002](0002-autonomy-dial.md)'s levels |
-| `options.hooks` | #112 | `ExecOptions.hooks`, `script` point only |
-| `script.hooks` | #112 | `hooks` entries with `on: script` |
-| `prePrompt` | notes | `prompt` action, `phase: before` |
-| `postPrompt`, `onSuccessPrompt` | notes | `prompt` action, `phase: onSuccess` |
-| `onErrorPrompt` | notes | `prompt` action, `phase: onError` |
-| `prompt` | notes | `/v1/intent`, not a hook |
-| `hook` frame placed after `result` | #112 | before `result` for `onSuccess`/`onError`; after it only for `suffix` |
-| `call` frame | #111 | interleaved with `log`/`emit`/`stdout` |
+| term                                 | from                          | becomes                                                                      |
+| ------------------------------------ | ----------------------------- | ---------------------------------------------------------------------------- |
+| `script.before`                      | shipped                       | `on: script`, `phase: before`, action `source` — unchanged                   |
+| `script.prefix`                      | shipped                       | `on: script`, `phase: prefix`, action `source` — unchanged                   |
+| `script.onSuccess`                   | shipped                       | `on: script`, `phase: onSuccess`, action `source` — unchanged                |
+| `script.onError`                     | shipped                       | `on: script`, `phase: onError`, action `source` — unchanged                  |
+| `script.suffix`                      | shipped                       | `on: script`, `phase: suffix`, action `source` — unchanged                   |
+| `@before` … `@suffix`                | launcher placeholders         | unchanged; the launcher's fill for the phases                                |
+| `pool.Hooks`                         | `internal/daemon/hooks.go:24` | not a user vocabulary; the source of bus events                              |
+| `on: <event kind>`                   | #81                           | `on: <event kind>`, `phase: observe`                                         |
+| `phase: observe`                     | #81                           | `observe`                                                                    |
+| `phase: before`                      | #81                           | `before`                                                                     |
+| `phase: after`                       | #81                           | `onSuccess` and `onError`, split by outcome; `suffix` if it must run on both |
+| point `exec`                         | #81                           | `on: script`                                                                 |
+| points `call`, `server.start`        | #81                           | unchanged                                                                    |
+| `run: "cmd …"` (a string)            | #81                           | `run: ["cmd", …]`; a string is refused                                       |
+| `module: x.ts`                       | #81                           | `module`                                                                     |
+| `module: x.py`                       | #81                           | `run: ["uv", "run", "x.py"]` until #105                                      |
+| `plugin` + `tool`                    | #81                           | `plugin: "namespace.tool"`                                                   |
+| `async: true`                        | #81                           | `phase: observe`                                                             |
+| runtime hook registration            | #82                           | manifest `hooks`, owned by the plugin session                                |
+| `phase: pre`                         | #112                          | `before`                                                                     |
+| `phase: main`                        | #112                          | not a hook: `/v1/intent` (#113)                                              |
+| `phase: post`                        | #112                          | `onSuccess`                                                                  |
+| `phase: onSuccess`, `phase: onError` | #112                          | unchanged                                                                    |
+| `script: x.ts`                       | #112                          | `module` (a file), or `source` through `script.<phase>`                      |
+| `prompt`                             | #112                          | `prompt`                                                                     |
+| `effect` values                      | #112                          | [0002](0002-autonomy-dial.md)'s levels                                       |
+| `options.hooks`                      | #112                          | `ExecOptions.hooks`, `script` point only                                     |
+| `script.hooks`                       | #112                          | `hooks` entries with `on: script`                                            |
+| `prePrompt`                          | notes                         | `prompt` action, `phase: before`                                             |
+| `postPrompt`, `onSuccessPrompt`      | notes                         | `prompt` action, `phase: onSuccess`                                          |
+| `onErrorPrompt`                      | notes                         | `prompt` action, `phase: onError`                                            |
+| `prompt`                             | notes                         | `/v1/intent`, not a hook                                                     |
+| `hook` frame placed after `result`   | #112                          | before `result` for `onSuccess`/`onError`; after it only for `suffix`        |
+| `call` frame                         | #111                          | interleaved with `log`/`emit`/`stdout`                                       |

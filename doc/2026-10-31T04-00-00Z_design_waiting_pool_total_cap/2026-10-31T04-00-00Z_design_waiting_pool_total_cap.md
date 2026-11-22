@@ -13,6 +13,7 @@ memory and mirrors it to durable on-disk storage (`redb` `waiting_rows` table)
 until its dependencies arrive or it expires.
 
 Prior to this change, `WaitingLimits` enforced only two caps:
+
 1. `per_author`: maximum waiting events for a single author (default: 256)
 2. `max_age_ms`: maximum age before an unreleased event is dropped (default: 7 days)
 

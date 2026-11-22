@@ -33,5 +33,5 @@ END {
     printf "\t%d\t%d/%d", welcome_ok[key], pre_ok[key] + 0, c
     printf "\t%.1f\t%.1f\t%.1f\n", sum[key, 18] / c, sd(sum[key, 18], sq[key, 18], c), sum[key, 19] / c
   }
-}' > summary.txt
+}' >summary.txt
 cat summary.txt

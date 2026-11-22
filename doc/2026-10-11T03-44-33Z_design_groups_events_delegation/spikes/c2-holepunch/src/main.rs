@@ -121,7 +121,10 @@ async fn bind(args: &Args, alpns: Vec<Vec<u8>>) -> Result<Endpoint> {
         configs.extend(n0_relays().into_iter().map(RelayConfig::from));
     }
     if let Some(url) = &args.standin {
-        configs.push(RelayConfig::new(url.clone(), Some(RelayQuicConfig::new(STANDIN_QAD_PORT))));
+        configs.push(RelayConfig::new(
+            url.clone(),
+            Some(RelayQuicConfig::new(STANDIN_QAD_PORT)),
+        ));
     }
     let relays: RelayMap = configs.into_iter().collect();
     // The lab's relay certificate is issued by a lab CA. Trust that CA only.
@@ -143,7 +146,11 @@ async fn wait_online(endpoint: &Endpoint, origin: Instant) -> Result<()> {
     tokio::time::timeout(ONLINE_LIMIT, endpoint.online())
         .await
         .context("not online within 30 s")?;
-    let home: Vec<String> = endpoint.addr().relay_urls().map(|u| u.to_string()).collect();
+    let home: Vec<String> = endpoint
+        .addr()
+        .relay_urls()
+        .map(|u| u.to_string())
+        .collect();
     println!("{:>7} ms online home_relays={home:?}", ms(origin));
     Ok(())
 }
@@ -184,14 +191,20 @@ type Selection = (u128, String);
 
 async fn dial(args: &Args) -> Result<()> {
     let started = Instant::now();
-    println!("profile home_qad={} n0={} standin={:?}", args.home_qad, args.n0, args.standin);
+    println!(
+        "profile home_qad={} n0={} standin={:?}",
+        args.home_qad, args.n0, args.standin
+    );
     let endpoint = bind(args, vec![]).await?;
     wait_online(&endpoint, started).await?;
 
     let text = fs::read_to_string(&args.ticket).context("reading --ticket")?;
     let ticket: EndpointTicket = text.trim().parse()?;
     let addr = ticket.endpoint_addr().clone();
-    ensure!(addr.ip_addrs().count() == 0, "ticket carries a direct address");
+    ensure!(
+        addr.ip_addrs().count() == 0,
+        "ticket carries a direct address"
+    );
     let server_relays: Vec<String> = addr.relay_urls().map(|u| u.to_string()).collect();
     println!("ticket relays={server_relays:?} direct=0");
 
@@ -207,7 +220,10 @@ async fn dial(args: &Args) -> Result<()> {
     let (reply, _) = echo(&conn).await?;
     let first_data_ms = ms(t0);
     let first_data_path = selected(&conn);
-    println!("{first_data_ms:>7} ms first reply ({} bytes), selected={first_data_path}", reply.len());
+    println!(
+        "{first_data_ms:>7} ms first reply ({} bytes), selected={first_data_path}",
+        reply.len()
+    );
 
     // Hold the connection for the window and echo, to see whether a direct path holds.
     let mut rtts: Vec<(f64, bool)> = Vec::new(); // (rtt ms, selected path was direct)
@@ -216,7 +232,10 @@ async fn dial(args: &Args) -> Result<()> {
     while Instant::now() < window_end && conn.close_reason().is_none() {
         let sent = Instant::now();
         match echo(&conn).await {
-            Ok(_) => rtts.push((sent.elapsed().as_secs_f64() * 1e3, selected(&conn).starts_with("direct"))),
+            Ok(_) => rtts.push((
+                sent.elapsed().as_secs_f64() * 1e3,
+                selected(&conn).starts_with("direct"),
+            )),
             Err(err) => {
                 failures += 1;
                 println!("{:>7} ms echo failed: {err:#}", ms(t0));
@@ -229,7 +248,9 @@ async fn dial(args: &Args) -> Result<()> {
     let own: Vec<String> = endpoint.addr().ip_addrs().map(|a| a.to_string()).collect();
     let attempts = endpoint.metrics().socket.holepunch_attempts.get();
     let selections = selections.lock().unwrap().clone();
-    let first_direct = selections.iter().find(|(_, kind)| kind.starts_with("direct"));
+    let first_direct = selections
+        .iter()
+        .find(|(_, kind)| kind.starts_with("direct"));
 
     println!("--- summary (dial)");
     println!("connected_ms={connected_ms} handshake_path={handshake_path}");
@@ -246,8 +267,14 @@ async fn dial(args: &Args) -> Result<()> {
         rtts.len(),
         rtts.len() - on_direct
     );
-    println!("rtt_ms_median_relay={:?}", median(rtts.iter().filter(|(_, d)| !*d).map(|(r, _)| *r)));
-    println!("rtt_ms_median_direct={:?}", median(rtts.iter().filter(|(_, d)| *d).map(|(r, _)| *r)));
+    println!(
+        "rtt_ms_median_relay={:?}",
+        median(rtts.iter().filter(|(_, d)| !*d).map(|(r, _)| *r))
+    );
+    println!(
+        "rtt_ms_median_direct={:?}",
+        median(rtts.iter().filter(|(_, d)| *d).map(|(r, _)| *r))
+    );
     println!("selected_at_end={selected_at_end}");
     println!("holepunch_attempts={attempts}");
     println!("own_ip_candidates={own:?}");
@@ -258,7 +285,12 @@ async fn dial(args: &Args) -> Result<()> {
 }
 
 /// Prints each path change on `conn`, in ms from `origin`, and records the selections.
-fn log_paths(conn: &Connection, who: &'static str, origin: Instant, log: Arc<Mutex<Vec<Selection>>>) {
+fn log_paths(
+    conn: &Connection,
+    who: &'static str,
+    origin: Instant,
+    log: Arc<Mutex<Vec<Selection>>>,
+) {
     let mut events = conn.path_events();
     tokio::spawn(async move {
         while let Some(event) = events.next().await {
@@ -275,7 +307,9 @@ fn log_paths(conn: &Connection, who: &'static str, origin: Instant, log: Arc<Mut
                 PathEvent::Closed { remote_addr, .. } => {
                     println!("{at:>7} ms {who} path closed: {}", kind(&remote_addr));
                 }
-                PathEvent::Lagged { missed, .. } => println!("{at:>7} ms {who} events lagged: {missed}"),
+                PathEvent::Lagged { missed, .. } => {
+                    println!("{at:>7} ms {who} events lagged: {missed}")
+                }
                 _ => {}
             }
         }
@@ -310,7 +344,8 @@ async fn echo(conn: &Connection) -> Result<(Vec<u8>, Duration)> {
 }
 
 async fn write_frame(send: &mut SendStream, payload: &[u8]) -> Result<()> {
-    send.write_all(&(payload.len() as u32).to_be_bytes()).await?;
+    send.write_all(&(payload.len() as u32).to_be_bytes())
+        .await?;
     send.write_all(payload).await?;
     Ok(())
 }

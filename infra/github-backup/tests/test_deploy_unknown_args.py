@@ -162,7 +162,11 @@ for typo in ("--dry-rnu", "--bogus-flag", "--dryrun", "--deploy-versoin"):
     check(f"{typo}: no stub call at all", calls == "")
 
 # 2. stray positionals and trailing args are rejected the same way.
-for args in (["some-positional"], ["--dry-run", "extra"], ["--deploy-version", "v1", "extra"]):
+for args in (
+    ["some-positional"],
+    ["--dry-run", "extra"],
+    ["--deploy-version", "v1", "extra"],
+):
     proc, calls = run_simple(args)
     label = "/".join(args)
     check(f"{label}: exit 2", proc.returncode == 2)
@@ -187,7 +191,10 @@ for flaglike in ("--dry-run", "--bogus-flag"):
     check(f"flag-like {flaglike}: no stub call at all", calls == "")
 
 # 4. duplicates and the dry-run/deploy-version combination are rejected.
-for args in (["--dry-run", "--dry-run"], ["--deploy-version", "v1", "--deploy-version", "v2"]):
+for args in (
+    ["--dry-run", "--dry-run"],
+    ["--deploy-version", "v1", "--deploy-version", "v2"],
+):
     proc, calls = run_simple(args)
     check(f"{'/'.join(args)}: non-zero exit", proc.returncode != 0)
     check(f"{'/'.join(args)}: no stub call at all", calls == "")
@@ -204,7 +211,9 @@ check("combo: no bws invocation", "bws" not in calls)
 # 5. valid invocations are unchanged.
 proc, calls = run_simple(["--dry-run"])
 check("dry-run: exit 0", proc.returncode == 0)
-check("dry-run: wrangler deploy --dry-run invoked", "wrangler deploy --dry-run" in calls)
+check(
+    "dry-run: wrangler deploy --dry-run invoked", "wrangler deploy --dry-run" in calls
+)
 check("dry-run: no versions deploy", "versions deploy" not in calls)
 
 proc, calls = run_simple(["--deploy-version", "version-stub"])

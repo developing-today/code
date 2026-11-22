@@ -13,7 +13,9 @@
 use anyhow::{Context, Result, bail};
 use p2panda_core::logs::{LogHeights, compare_logs};
 use p2panda_core::{Hash, VerifyingKey};
-use s7_range_real::chain::{self, BODY_LEN, EVENTS_PER_CHAIN, chain_events, chain_key, event_with_body};
+use s7_range_real::chain::{
+    self, BODY_LEN, EVENTS_PER_CHAIN, chain_events, chain_key, event_with_body,
+};
 use s7_range_real::range::{self, Entry, Mode, Party, simulate_mixed};
 use s7_range_real::session::{Cut, Params, Side, sync_pair_mixed};
 use s7_range_real::store::{Id, Item, KEY_LEN, Key, Store, key_of};
@@ -82,7 +84,11 @@ fn base(dir: &Path, chains: usize) -> Result<PathBuf> {
     for i in 0..chains {
         for ev in chain_events(&chain_key(i), EVENTS_PER_CHAIN) {
             let v = chain::verify(&ev.header, &ev.body)?;
-            pending.push(Item { key: key_of(&v.author, v.seq), id: v.id, record: chain::record(&ev.header, &ev.body) });
+            pending.push(Item {
+                key: key_of(&v.author, v.seq),
+                id: v.id,
+                record: chain::record(&ev.header, &ev.body),
+            });
             if pending.len() == 10_000 {
                 store.insert(&pending)?;
                 pending.clear();
@@ -96,9 +102,15 @@ fn base(dir: &Path, chains: usize) -> Result<PathBuf> {
 
 /// The next event (seq 50) of chain `c`, as a store item.
 fn next_item(c: usize) -> Result<Item> {
-    let ev = chain_events(&chain_key(c), EVENTS_PER_CHAIN + 1).pop().context("no next event")?;
+    let ev = chain_events(&chain_key(c), EVENTS_PER_CHAIN + 1)
+        .pop()
+        .context("no next event")?;
     let v = chain::verify(&ev.header, &ev.body)?;
-    Ok(Item { key: key_of(&v.author, v.seq), id: v.id, record: chain::record(&ev.header, &ev.body) })
+    Ok(Item {
+        key: key_of(&v.author, v.seq),
+        id: v.id,
+        record: chain::record(&ev.header, &ev.body),
+    })
 }
 
 /// Adds `n` next events to the store at `path`, on chains `j * step`, or `j * step + step / 2`
@@ -121,7 +133,13 @@ fn add_new(path: &Path, chains: usize, n: usize, offset: bool) -> Result<()> {
 
 /// Copies the base into two stores, leaving out an empty side, and adds the new events. The
 /// copies are flushed first, as in S7's bench, so that fsync does not wait on the copies.
-fn prepare(dir: &Path, base: &Path, tag: &str, chains: usize, c: &Case) -> Result<(PathBuf, PathBuf)> {
+fn prepare(
+    dir: &Path,
+    base: &Path,
+    tag: &str,
+    chains: usize,
+    c: &Case,
+) -> Result<(PathBuf, PathBuf)> {
     let a = dir.join(format!("a-{tag}.redb"));
     let b = dir.join(format!("b-{tag}.redb"));
     let _ = std::fs::remove_file(&a);
@@ -144,7 +162,12 @@ fn prepare(dir: &Path, base: &Path, tag: &str, chains: usize, c: &Case) -> Resul
 
 /// Syncs the stores at `a_path` (dialer, K/T `dial`) and `b_path` (acceptor, `acc`), and checks
 /// the run against the in-memory run and the ground truth.
-async fn sync_check(a_path: &Path, b_path: &Path, dial: (usize, usize), acc: (usize, usize)) -> Result<Rec> {
+async fn sync_check(
+    a_path: &Path,
+    b_path: &Path,
+    dial: (usize, usize),
+    acc: (usize, usize),
+) -> Result<Rec> {
     let mut rec = Rec::default();
     let store_a = Arc::new(Store::open(a_path)?);
     let store_b = Arc::new(Store::open(b_path)?);
@@ -167,10 +190,24 @@ async fn sync_check(a_path: &Path, b_path: &Path, dial: (usize, usize), acc: (us
     rec.sim_flights = sim.flights;
 
     let run = sync_pair_mixed(
-        Side { store: store_a.clone(), party: party_a.clone() },
-        Side { store: store_b.clone(), party: party_b.clone() },
-        Params { k: dial.0, t: dial.1, batch: 256 },
-        Params { k: acc.0, t: acc.1, batch: 256 },
+        Side {
+            store: store_a.clone(),
+            party: party_a.clone(),
+        },
+        Side {
+            store: store_b.clone(),
+            party: party_b.clone(),
+        },
+        Params {
+            k: dial.0,
+            t: dial.1,
+            batch: 256,
+        },
+        Params {
+            k: acc.0,
+            t: acc.1,
+            batch: 256,
+        },
         Cut::Never,
     )
     .await?;
@@ -199,16 +236,20 @@ async fn sync_check(a_path: &Path, b_path: &Path, dial: (usize, usize), acc: (us
         rec.inserted = (a.inserted, b.inserted);
         rec.dups = a.duplicates + b.duplicates;
         if a.learned != truth {
-            rec.failures.push("dialer did not learn the true difference".into());
+            rec.failures
+                .push("dialer did not learn the true difference".into());
         }
         if b.learned != truth {
-            rec.failures.push("acceptor did not learn the true difference".into());
+            rec.failures
+                .push("acceptor did not learn the true difference".into());
         }
         if a.inserted != a_needs {
-            rec.failures.push(format!("dialer inserted {} of {a_needs}", a.inserted));
+            rec.failures
+                .push(format!("dialer inserted {} of {a_needs}", a.inserted));
         }
         if b.inserted != b_needs {
-            rec.failures.push(format!("acceptor inserted {} of {b_needs}", b.inserted));
+            rec.failures
+                .push(format!("acceptor inserted {} of {b_needs}", b.inserted));
         }
         if rec.dups != 0 {
             rec.failures.push(format!("{} duplicate inserts", rec.dups));
@@ -231,10 +272,18 @@ async fn sync_check(a_path: &Path, b_path: &Path, dial: (usize, usize), acc: (us
     rec.rows = post_a.len();
     rec.rows_b = post_b.len();
     if post_a != post_b {
-        rec.failures.push(format!("stores differ after sync: {} rows vs {} rows", post_a.len(), post_b.len()));
+        rec.failures.push(format!(
+            "stores differ after sync: {} rows vs {} rows",
+            post_a.len(),
+            post_b.len()
+        ));
     }
     if post_a.len() != rec.union {
-        rec.failures.push(format!("{} rows after sync, union is {}", post_a.len(), rec.union));
+        rec.failures.push(format!(
+            "{} rows after sync, union is {}",
+            post_a.len(),
+            rec.union
+        ));
     }
     Ok(rec)
 }
@@ -267,18 +316,59 @@ async fn pairs(dir: &Path, chains: usize, repeats: usize) -> Result<()> {
         empty: Empty::Neither,
     };
     let cases = vec![
-        c("calibration: 40 new on the dialer only (S7's N=40 row)", (16, 16), (16, 16), 40, 0),
+        c(
+            "calibration: 40 new on the dialer only (S7's N=40 row)",
+            (16, 16),
+            (16, 16),
+            40,
+            0,
+        ),
         c("S7 default on both sides", (16, 16), (16, 16), 20, 20),
-        c("mixed: dialer K16 T16, acceptor K4 T8", (16, 16), (4, 8), 20, 20),
-        c("mixed: dialer K4 T8, acceptor K16 T16", (4, 8), (16, 16), 20, 20),
+        c(
+            "mixed: dialer K16 T16, acceptor K4 T8",
+            (16, 16),
+            (4, 8),
+            20,
+            20,
+        ),
+        c(
+            "mixed: dialer K4 T8, acceptor K16 T16",
+            (4, 8),
+            (16, 16),
+            20,
+            20,
+        ),
         c("K2 T4 on both sides", (2, 4), (2, 4), 20, 20),
-        c("K4 T8 on both sides (S7's bulk setting)", (4, 8), (4, 8), 20, 20),
+        c(
+            "K4 T8 on both sides (S7's bulk setting)",
+            (4, 8),
+            (4, 8),
+            20,
+            20,
+        ),
         c("K32 T32 on both sides", (32, 32), (32, 32), 20, 20),
-        c("mixed: dialer K2 T4, acceptor K32 T32", (2, 4), (32, 32), 20, 20),
-        c("mixed: dialer K32 T32, acceptor K2 T4", (32, 32), (2, 4), 20, 20),
+        c(
+            "mixed: dialer K2 T4, acceptor K32 T32",
+            (2, 4),
+            (32, 32),
+            20,
+            20,
+        ),
+        c(
+            "mixed: dialer K32 T32, acceptor K2 T4",
+            (32, 32),
+            (2, 4),
+            20,
+            20,
+        ),
     ];
-    println!("## pairs: chains={chains}, base {} events, repeats={repeats}", chains * EVENTS_PER_CHAIN as usize);
-    println!("| case | dialer K,T | acceptor K,T | new events, dialer / acceptor | flights A+B | control B | data B | wall ms, median | commit ms, median | index ms, median | checks |");
+    println!(
+        "## pairs: chains={chains}, base {} events, repeats={repeats}",
+        chains * EVENTS_PER_CHAIN as usize
+    );
+    println!(
+        "| case | dialer K,T | acceptor K,T | new events, dialer / acceptor | flights A+B | control B | data B | wall ms, median | commit ms, median | index ms, median | checks |"
+    );
     println!("|---|---|---|---|---|---|---|---|---|---|---|");
     for (i, case) in cases.iter().enumerate() {
         let mut runs = Vec::new();
@@ -290,7 +380,9 @@ async fn pairs(dir: &Path, chains: usize, repeats: usize) -> Result<()> {
             runs.push(rec);
         }
         let first = runs[0].clone();
-        let same = runs.iter().all(|r| r.flights == first.flights && r.control == first.control && r.data == first.data);
+        let same = runs.iter().all(|r| {
+            r.flights == first.flights && r.control == first.control && r.data == first.data
+        });
         let all_ok = runs.iter().all(|r| r.ok() && r.sim_ok);
         let checks = if all_ok && same {
             format!("exact; {} runs identical; wire = in-memory", runs.len())
@@ -317,19 +409,53 @@ async fn pairs(dir: &Path, chains: usize, repeats: usize) -> Result<()> {
             checks
         );
     }
-    println!("base store: {} events per side before the new events", chains * EVENTS_PER_CHAIN as usize);
+    println!(
+        "base store: {} events per side before the new events",
+        chains * EVENTS_PER_CHAIN as usize
+    );
     Ok(())
 }
 
 async fn bootstrap(dir: &Path, chains: usize) -> Result<()> {
     let base = base(dir, chains)?;
     let cases = [
-        Case { label: "full dials empty, both K16 T16".into(), dial: (16, 16), acc: (16, 16), dial_new: 0, acc_new: 0, empty: Empty::Acceptor },
-        Case { label: "empty dials full, both K16 T16".into(), dial: (16, 16), acc: (16, 16), dial_new: 0, acc_new: 0, empty: Empty::Dialer },
-        Case { label: "full (K4 T8) dials empty (K16 T16)".into(), dial: (4, 8), acc: (16, 16), dial_new: 0, acc_new: 0, empty: Empty::Acceptor },
-        Case { label: "empty (K16 T16) dials full (K4 T8)".into(), dial: (16, 16), acc: (4, 8), dial_new: 0, acc_new: 0, empty: Empty::Dialer },
+        Case {
+            label: "full dials empty, both K16 T16".into(),
+            dial: (16, 16),
+            acc: (16, 16),
+            dial_new: 0,
+            acc_new: 0,
+            empty: Empty::Acceptor,
+        },
+        Case {
+            label: "empty dials full, both K16 T16".into(),
+            dial: (16, 16),
+            acc: (16, 16),
+            dial_new: 0,
+            acc_new: 0,
+            empty: Empty::Dialer,
+        },
+        Case {
+            label: "full (K4 T8) dials empty (K16 T16)".into(),
+            dial: (4, 8),
+            acc: (16, 16),
+            dial_new: 0,
+            acc_new: 0,
+            empty: Empty::Acceptor,
+        },
+        Case {
+            label: "empty (K16 T16) dials full (K4 T8)".into(),
+            dial: (16, 16),
+            acc: (4, 8),
+            dial_new: 0,
+            acc_new: 0,
+            empty: Empty::Dialer,
+        },
     ];
-    println!("## bootstrap: chains={chains}, {} events on the full side, one run each", chains * EVENTS_PER_CHAIN as usize);
+    println!(
+        "## bootstrap: chains={chains}, {} events on the full side, one run each",
+        chains * EVENTS_PER_CHAIN as usize
+    );
     println!("| case | flights A+B | control B | data B | control / data | wall ms | checks |");
     println!("|---|---|---|---|---|---|---|");
     for (i, c) in cases.iter().enumerate() {
@@ -347,7 +473,11 @@ async fn bootstrap(dir: &Path, chains: usize) -> Result<()> {
             rec.data,
             rec.control as f64 / rec.data.max(1) as f64,
             ms(rec.wall),
-            if rec.ok() && rec.sim_ok { "exact; wire = in-memory".to_string() } else { format!("FAILED: {}", rec.failures.join("; ")) }
+            if rec.ok() && rec.sim_ok {
+                "exact; wire = in-memory".to_string()
+            } else {
+                format!("FAILED: {}", rec.failures.join("; "))
+            }
         );
     }
     Ok(())
@@ -359,11 +489,20 @@ async fn fork(dir: &Path, chains: usize) -> Result<()> {
     let key = chain_key(3);
     let author = *key.verifying_key().as_bytes();
     let events = chain_events(&key, EVENTS_PER_CHAIN);
-    let fork_ev = event_with_body(&key, 25, Some(Hash::digest(&events[24].header)), &vec![0xAB; BODY_LEN]);
+    let fork_ev = event_with_body(
+        &key,
+        25,
+        Some(Hash::digest(&events[24].header)),
+        &vec![0xAB; BODY_LEN],
+    );
     let a = dir.join("fork-a.redb");
     let b = dir.join("fork-b.redb");
-    println!("## fork: chains={chains}; chain 3 at seq 25 is the original on the dialer and a different event on the acceptor");
-    println!("| unrelated new events on the dialer | parameters, both sides | failures, verbatim | rows after, dialer / acceptor |");
+    println!(
+        "## fork: chains={chains}; chain 3 at seq 25 is the original on the dialer and a different event on the acceptor"
+    );
+    println!(
+        "| unrelated new events on the dialer | parameters, both sides | failures, verbatim | rows after, dialer / acceptor |"
+    );
     println!("|---|---|---|---|");
     for extra in [0usize, 20] {
         for (label, kt) in [("K16 T16", (16, 16)), ("K4 T8", (4, 8))] {
@@ -373,12 +512,21 @@ async fn fork(dir: &Path, chains: usize) -> Result<()> {
             std::fs::copy(&base, &b)?;
             let sb = Store::open(&b)?;
             sb.remove(&key_of(&author, 25))?;
-            sb.insert(&[Item { key: key_of(&author, 25), id: fork_ev.id(), record: chain::record(&fork_ev.header, &fork_ev.body) }])?;
+            sb.insert(&[Item {
+                key: key_of(&author, 25),
+                id: fork_ev.id(),
+                record: chain::record(&fork_ev.header, &fork_ev.body),
+            }])?;
             drop(sb);
             // Unrelated events on other chains, in the dialer's store only.
             add_new(&a, chains, extra, false)?;
             let rec = sync_check(&a, &b, kt, kt).await?;
-            println!("| {extra} | {label} | {} | {} / {} |", rec.failures.join(" / "), rec.rows, rec.rows_b);
+            println!(
+                "| {extra} | {label} | {} | {} / {} |",
+                rec.failures.join(" / "),
+                rec.rows,
+                rec.rows_b
+            );
         }
     }
     let _ = std::fs::remove_file(&a);
@@ -433,10 +581,18 @@ fn tzero() {
     let one_x = Party::new(vec![kx], vec![*blake3::hash(&kx).as_bytes()]);
     let one_y = Party::new(vec![ky], vec![*blake3::hash(&ky).as_bytes()]);
     for (t, k) in [(0usize, 16usize), (1, 2)] {
-        let r = catch_unwind(AssertUnwindSafe(|| simulate_mixed(&one_x, &one_y, (t, k), (t, k))));
+        let r = catch_unwind(AssertUnwindSafe(|| {
+            simulate_mixed(&one_x, &one_y, (t, k), (t, k))
+        }));
         match r {
-            Ok(sim) => println!("| one key each, differing: T={t}, K={k} | ok: {} flights |", sim.flights),
-            Err(e) => println!("| one key each, differing: T={t}, K={k} | panic: {} |", panic_text(&e)),
+            Ok(sim) => println!(
+                "| one key each, differing: T={t}, K={k} | ok: {} flights |",
+                sim.flights
+            ),
+            Err(e) => println!(
+                "| one key each, differing: T={t}, K={k} | panic: {} |",
+                panic_text(&e)
+            ),
         }
     }
 }
@@ -462,16 +618,31 @@ fn frame(n: usize) {
             k
         })
         .collect();
-    let ids: Vec<Id> = (0..n).map(|i| *blake3::hash(&(i as u64).to_be_bytes()).as_bytes()).collect();
+    let ids: Vec<Id> = (0..n)
+        .map(|i| *blake3::hash(&(i as u64).to_be_bytes()).as_bytes())
+        .collect();
     let party = Party::new(keys, ids);
     let after = rss_kib();
     // The responder is empty, so it answers with an empty ID list for the whole range. The
     // initiator then replies with every ID it holds in that range: one leaf message, unbounded.
     let mut learned = HashSet::new();
-    let reply = party.respond(&[Entry { upper: None, mode: Mode::Ids { ids: vec![], reply: true } }], 16, 16, &mut learned);
+    let reply = party.respond(
+        &[Entry {
+            upper: None,
+            mode: Mode::Ids {
+                ids: vec![],
+                reply: true,
+            },
+        }],
+        16,
+        16,
+        &mut learned,
+    );
     let bytes = range::encode(&reply).len();
     let rss_kib_delta = after.saturating_sub(before);
-    println!("| events | leaf reply, bytes | payload limit, bytes | over the limit | index RSS, MiB | RSS bytes per event |");
+    println!(
+        "| events | leaf reply, bytes | payload limit, bytes | over the limit | index RSS, MiB | RSS bytes per event |"
+    );
     println!("|---|---|---|---|---|---|");
     println!(
         "| {n} | {bytes} | {MAX_FRAME} | {} | {:.1} | {:.0} |",
@@ -490,7 +661,9 @@ fn synthetic(n: usize) -> Party {
             k
         })
         .collect();
-    let ids: Vec<Id> = (0..n).map(|i| *blake3::hash(&(i as u64).to_be_bytes()).as_bytes()).collect();
+    let ids: Vec<Id> = (0..n)
+        .map(|i| *blake3::hash(&(i as u64).to_be_bytes()).as_bytes())
+        .collect();
     Party::new(keys, ids)
 }
 
@@ -505,9 +678,15 @@ fn frame_empty_dialer(n: usize, k: usize, t: usize) {
     let ask = empty.respond(&split, t, k, &mut learned);
     let reply = full.respond(&ask, t, k, &mut learned);
     let bytes = range::encode(&reply).len();
-    println!("| events | K, T | entries in flight 2 | flight 4 bytes (one frame) | over the limit |");
+    println!(
+        "| events | K, T | entries in flight 2 | flight 4 bytes (one frame) | over the limit |"
+    );
     println!("|---|---|---|---|---|");
-    println!("| {n} | K{k} T{t} | {} | {bytes} | {} |", split.len(), bytes > MAX_FRAME);
+    println!(
+        "| {n} | K{k} T{t} | {} | {bytes} | {} |",
+        split.len(),
+        bytes > MAX_FRAME
+    );
 }
 
 fn gap() {
@@ -519,10 +698,26 @@ fn gap() {
         }
     };
     let cases = [
-        ("gap at seq 20 on the remote (has 0..19 and 21..49): heights 49 and 49", heights(Some(49)), heights(Some(49))),
-        ("same heights, different event at seq 25 (fork): heights 49 and 49", heights(Some(49)), heights(Some(49))),
-        ("remote lags: heights 49 and 30", heights(Some(49)), heights(Some(30))),
-        ("remote has no entries for this chain: heights 49 and none", heights(Some(49)), heights(None)),
+        (
+            "gap at seq 20 on the remote (has 0..19 and 21..49): heights 49 and 49",
+            heights(Some(49)),
+            heights(Some(49)),
+        ),
+        (
+            "same heights, different event at seq 25 (fork): heights 49 and 49",
+            heights(Some(49)),
+            heights(Some(49)),
+        ),
+        (
+            "remote lags: heights 49 and 30",
+            heights(Some(49)),
+            heights(Some(30)),
+        ),
+        (
+            "remote has no entries for this chain: heights 49 and none",
+            heights(Some(49)),
+            heights(None),
+        ),
     ];
     println!("| case | compare_logs(local, remote) for the chain | entries sent |");
     println!("|---|---|---|");
@@ -537,7 +732,8 @@ fn gap() {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let arg = |i: usize| -> Result<&str> { args.get(i).map(String::as_str).context("missing argument") };
+    let arg =
+        |i: usize| -> Result<&str> { args.get(i).map(String::as_str).context("missing argument") };
     match arg(0)? {
         "pairs" => pairs(&PathBuf::from(arg(1)?), arg(2)?.parse()?, arg(3)?.parse()?).await,
         "bootstrap" => bootstrap(&PathBuf::from(arg(1)?), arg(2)?.parse()?).await,

@@ -3,11 +3,19 @@ let
   flake = builtins.getFlake (builtins.getEnv "PKGID_FLAKE");
   sys = "x86_64-linux";
   pk = flake.packages.${sys} or { };
-  names = drv: map (d: if d ? name then d.name else "?") (drv.nativeBuildInputs or [ ]);
+  names = drv: map (d: d.name or "?") (drv.nativeBuildInputs or [ ]);
 in
 builtins.concatStringsSep "\n" (
   [ "packages=${builtins.concatStringsSep "," (builtins.attrNames pk)}" ]
-  ++ map (k: "${k}.nativeBuildInputs=[${builtins.concatStringsSep ", " (names pk.${k})}]")
-       (builtins.filter (k: builtins.elem k [ "id-lib" "id-web" "default" ]) (builtins.attrNames pk))
+  ++ map (k: "${k}.nativeBuildInputs=[${builtins.concatStringsSep ", " (names pk.${k})}]") (
+    builtins.filter (
+      k:
+      builtins.elem k [
+        "id-lib"
+        "id-web"
+        "default"
+      ]
+    ) (builtins.attrNames pk)
+  )
   ++ [ "" ]
 )

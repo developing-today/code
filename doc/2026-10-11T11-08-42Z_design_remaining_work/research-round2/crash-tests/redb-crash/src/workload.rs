@@ -62,8 +62,16 @@ pub fn txn_ops(b: u64) -> Vec<Op> {
         ops.push(Op::Del(EVENTS_TAG, old.to_be_bytes().to_vec()));
         ops.push(Op::Del(BY_AUTHOR_TAG, author_key(b - 5, (b - 5) * 1000)));
     }
-    ops.push(Op::Put(META_TAG, b"txns".to_vec(), (b + 1).to_be_bytes().to_vec()));
-    ops.push(Op::Put(META_TAG, b"last".to_vec(), b.to_be_bytes().to_vec()));
+    ops.push(Op::Put(
+        META_TAG,
+        b"txns".to_vec(),
+        (b + 1).to_be_bytes().to_vec(),
+    ));
+    ops.push(Op::Put(
+        META_TAG,
+        b"last".to_vec(),
+        b.to_be_bytes().to_vec(),
+    ));
     ops
 }
 
@@ -133,7 +141,11 @@ pub fn commit(db: &Database, ops: &[Op]) -> Result<(), Box<dyn Error>> {
 pub fn dump(db: &Database) -> Result<Model, Box<dyn Error>> {
     let txn = db.begin_read()?;
     let mut model = Model::new();
-    for (tag, def) in [(EVENTS_TAG, EVENTS), (BY_AUTHOR_TAG, BY_AUTHOR), (META_TAG, META)] {
+    for (tag, def) in [
+        (EVENTS_TAG, EVENTS),
+        (BY_AUTHOR_TAG, BY_AUTHOR),
+        (META_TAG, META),
+    ] {
         let table = match txn.open_table(def) {
             Ok(t) => t,
             Err(TableError::TableDoesNotExist(_)) => continue,

@@ -30,7 +30,7 @@ remembers its client.
 
 **2025-03-26: the same session, made deployable on the web.** Streamable HTTP
 puts everything on one endpoint, adds optional `Mcp-Session-Id` sessions and
-resumable SSE, and treats a dropped connection as *not* a cancellation
+resumable SSE, and treats a dropped connection as _not_ a cancellation
 (`2025-03-26/basic/transports.mdx:120-122`). OAuth 2.1 arrives with the server
 as its own authorization server, along with batching (for one revision), audio,
 tool annotations, and a `completions` capability (`2025-03-26/changelog.mdx:9-27`).
@@ -43,7 +43,7 @@ discovers its authorization server through RFC 9728 and validates token
 audiences (RFC 8707). Respecting negotiated capabilities becomes a MUST
 (`2025-06-18/changelog.mdx:12-26`). Structured tool output, resource links,
 `title`, formal `_meta` rules and elicitation all arrive. The server can now
-ask the *user* something, and it describes its output with a schema.
+ask the _user_ something, and it describes its output with a schema.
 
 **2025-11-25: the most elaborate stateful server.** Sessions, resumable and
 now pollable SSE (the server may drop a stream and let the client reconnect),
@@ -65,13 +65,13 @@ that spans requests is a handle the client carries. A server may still serve
 legacy clients alongside, as a dual-era server
 (`2026-07-28/basic/versioning.mdx:128-130`).
 
-The arc across the five: from *a companion process that remembers its client*
-to *a service that remembers nothing it was not handed*. mcpx has to sit at
+The arc across the five: from _a companion process that remembers its client_
+to _a service that remembers nothing it was not handed_. mcpx has to sit at
 both ends of that arc at once.
 
 ## The products
 
-**opencode v1 (1.18.31)** consumes a *tools-first, text-first* server over one
+**opencode v1 (1.18.31)** consumes a _tools-first, text-first_ server over one
 long-lived connection per server, per directory, per opencode process. It
 connects every configured server when MCP is first touched and waits for all
 of them (`v1:packages/opencode/src/mcp/index.ts:505`). It never restarts one
@@ -88,7 +88,7 @@ declared `resources` capability cost context on every request
 set, as it is on this machine, the tools move behind code mode's `execute`
 (`v1:packages/opencode/src/session/tools.ts:388`).
 
-**opencode v2 (2.0.3)** consumes servers *as libraries for its own code mode*.
+**opencode v2 (2.0.3)** consumes servers _as libraries for its own code mode_.
 It holds one connection per server per Location, lives as long as the
 background daemon, and shares that connection with every session in every
 attached window (`v2:packages/core/src/mcp/index.ts:152`,
@@ -98,7 +98,7 @@ prefers results as `structuredContent` or JSON text, which it turns into program
 values (`v2:packages/core/src/tool/mcp.ts:96`). It answers form and URL
 elicitations, attributed to the Location rather than the session
 (`v2:packages/core/src/mcp/index.ts:80`). It does not ask the server for
-isolation; it *tells* the server which session is calling, in
+isolation; it _tells_ the server which session is calling, in
 `_meta["ai.opencode/sessionID"]`, and leaves partitioning to the server
 (`v2:packages/core/src/mcp/client.ts:278`). It speaks 2025-11-25 by default and
 2026-07-28 when configured (`v2:packages/schema/src/mcp.ts:23`), allows 12-hour
@@ -147,7 +147,7 @@ across the era boundary.
 Reading the accounts side by side gives mcpx's job:
 
 - **To 2026-07-28 and to opencode v2, a function of the request.** Version,
-  capabilities, and now *identity*: v2 hands over the session in `_meta`, and
+  capabilities, and now _identity_: v2 hands over the session in `_meta`, and
   2026 forbids inferring it from the connection. Anything spanning requests is
   a handle.
 - **To the legacy revisions and to opencode v1, a patient session.** It holds

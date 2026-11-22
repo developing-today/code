@@ -29,7 +29,9 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let seed: u8 = flag(&args, "--seed").map_or(1, |v| v.parse().expect("seed is a byte"));
     let ks: Vec<usize> = flag(&args, "--k").map_or(vec![100, 1000], |v| {
-        v.split(',').map(|k| k.parse().expect("K is a count")).collect()
+        v.split(',')
+            .map(|k| k.parse().expect("K is a count"))
+            .collect()
     });
 
     // Op counts do not depend on the seed. Print them once per build.

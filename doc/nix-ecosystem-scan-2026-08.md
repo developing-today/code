@@ -9,12 +9,12 @@
 
 ## 1. Release cadence
 
-| Branch | Released | Codename | Status |
-|---|---|---|---|
-| 25.05 | 2025-05-23 | Warbler | EOL 2025-12-31 |
-| **25.11** | 2025-11-30 | Xantusia | **EOL 2026-06-30 — expired** |
-| **26.05** | 2026-05-30 | Yarara | **current stable** until 2026-12-31 |
-| unstable → 26.11 | branch-off ~late Oct 2026 | Zokor | current unstable |
+| Branch           | Released                  | Codename | Status                              |
+| ---------------- | ------------------------- | -------- | ----------------------------------- |
+| 25.05            | 2025-05-23                | Warbler  | EOL 2025-12-31                      |
+| **25.11**        | 2025-11-30                | Xantusia | **EOL 2026-06-30 — expired**        |
+| **26.05**        | 2026-05-30                | Yarara   | **current stable** until 2026-12-31 |
+| unstable → 26.11 | branch-off ~late Oct 2026 | Zokor    | current unstable                    |
 
 Headlines: 25.11 = GNOME 49 (no X11), LLVM 21/GCC 14/CMake 4, kernel 6.17, PostgreSQL
 17, `nixfmt` stable as `pkgs.nixfmt`, `nodePackages` deprecation announced.
@@ -33,7 +33,7 @@ to `nixexprs.tar.zst`.
   [`overrideVariant` PR #537454](https://github.com/NixOS/nixpkgs/pull/537454)
   address loss of `.override` during migrations — **renames can hard-error your
   `.override` calls**.
-- **Modular services framework**: service definitions live *with packages* as
+- **Modular services framework**: service definitions live _with packages_ as
   `<pkg>.passthru.services.default` (`_class = "service"`), configured via
   `system.services.<name>`. Portable base moved to `lib/services/lib.nix`
   ([PR #506519](https://github.com/NixOS/nixpkgs/pull/506519), Apr 2026) + exposed as
@@ -60,6 +60,7 @@ Already handled today: `networking.wireless.userControlled` rename (+ group fixe
 `wpa_supplicant`), `programs.solaar` upstreamed (flake dropped), xorg renames.
 
 Also worth knowing:
+
 - `nixos-rebuild-ng` default since 25.11; bash version + opt-out option **removed in
   26.05**. Needs `git` installed for flake use.
 - systemd stage-1 initrd default in 26.05 — check LUKS device naming before first
@@ -78,6 +79,7 @@ Also worth knowing:
 Latest stable line ~2.34.x (Feb 2026); your system runs 2.35pre.
 
 Per-release highlights:
+
 - **2.30** (Jul 2025): stack-sampling eval profiler (`--eval-profiler flamegraph`),
   `json-log-path`, IFD tracing warnings, `nix flake archive --no-check-sigs`.
 - **2.31** (Aug 2025): **WAL mode for SQLite caches**, **parallel GC marking**
@@ -97,12 +99,12 @@ Per-release highlights:
 
 ## 5. Alternative implementations & caches
 
-| Project | State Aug 2026 |
-|---|---|
-| **Lix** | 2.95 "Kakigōri" (Mar 2026), 6th major release; fork point CppNix 2.18; focus = code cleanup/stability, Cap'n Proto RPC replacing bespoke protocol, daemon cache dir moved to `/var/cache/nix`; deliberately **no lazy trees** (own replacement planned), **CA derivations rewrite planned** (none usable meanwhile), no libgit2; REPL improvements; 8–20 % faster than 2.18 |
-| **Determinate Nix** | Determinate Systems' validated downstream of CNix (commercial support angle) |
-| **snix/Tvix lineage** | Rust ground-up reimplementation, modular; nar-bridge included in cache-shootout benchmarks |
-| **Caches** | Lix docs now steer people away from perl `nix-serve` → attic / harmonia / S3+garage. [Mic92/cache-shootout](https://github.com/Mic92/cache-shootout) (Apr 2026) benchmarked harmonia, nix-serve(-ng), ncps (proxy cache), attic (sqlite/S3, zstd chunks), snix nar-bridge, plain nginx/S3 — performance bands split on "serving bare files vs reassembling NARs". Note: **Determinate Systems maintains an attic fork** (last push Feb 2026); zhaofengli's original is slow-moving |
+| Project               | State Aug 2026                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Lix**               | 2.95 "Kakigōri" (Mar 2026), 6th major release; fork point CppNix 2.18; focus = code cleanup/stability, Cap'n Proto RPC replacing bespoke protocol, daemon cache dir moved to `/var/cache/nix`; deliberately **no lazy trees** (own replacement planned), **CA derivations rewrite planned** (none usable meanwhile), no libgit2; REPL improvements; 8–20 % faster than 2.18                                                                                                        |
+| **Determinate Nix**   | Determinate Systems' validated downstream of CNix (commercial support angle)                                                                                                                                                                                                                                                                                                                                                                                                       |
+| **snix/Tvix lineage** | Rust ground-up reimplementation, modular; nar-bridge included in cache-shootout benchmarks                                                                                                                                                                                                                                                                                                                                                                                         |
+| **Caches**            | Lix docs now steer people away from perl `nix-serve` → attic / harmonia / S3+garage. [Mic92/cache-shootout](https://github.com/Mic92/cache-shootout) (Apr 2026) benchmarked harmonia, nix-serve(-ng), ncps (proxy cache), attic (sqlite/S3, zstd chunks), snix nar-bridge, plain nginx/S3 — performance bands split on "serving bare files vs reassembling NARs". Note: **Determinate Systems maintains an attic fork** (last push Feb 2026); zhaofengli's original is slow-moving |
 
 ## 6. Clan (clan.lol)
 
@@ -126,7 +128,7 @@ Per-release highlights:
 - **1.0 landed June 15 2026** ("dial keys, not IPs") after 65 prereleases; patching
   through 1.0.3 by Jul 20. Wire-compat guaranteed across v1 minors/languages.
 - Identity renamed to **EndpointId**; addressing via DNS/pkarr `(endpoint_id,
-  relay_url)`; own QUIC multipath + NAT-traversal implementations; WASM/browser
+relay_url)`; own QUIC multipath + NAT-traversal implementations; WASM/browser
   support; LAN discovery without internet.
 - `iroh-blobs` rewritten at v0.90 (BLAKE3 content addressing), separate crate at
   v0.103, not yet 1.0; Willow experiments live separately.
@@ -167,7 +169,7 @@ Per-release highlights:
 
 ---
 
-*Compiled 2026-08-24. Sources: NixOS blog & release notes (rl-2511/rl-2605),
+_Compiled 2026-08-24. Sources: NixOS blog & release notes (rl-2511/rl-2605),
 ryantm.github.io/nixpkgs rl-2611, NixOS/nix release notes 2.30–2.34, lix.systems
 blog/about, Mic92/cache-shootout, clan.lol docs & Discourse changelogs,
-iroh.computer blog/releases, roc-lang gist/GOTO interview/repos.*
+iroh.computer blog/releases, roc-lang gist/GOTO interview/repos._

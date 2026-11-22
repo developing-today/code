@@ -44,7 +44,7 @@ real server first, as above.
 ## Make it an agent tool
 
 The quick start above is a person at a shell. The step that makes mcpx
-an *agent* tool is one of:
+an _agent_ tool is one of:
 
 - give your agent [`AGENTS.md`](../AGENTS.md) — the loop, the script
   contract and the secrets rules, in the file agents already read; or
@@ -55,7 +55,7 @@ an *agent* tool is one of:
   the plugin in config with options
   (`["./.opencode/plugin/mcpx-session.ts", { "tools": true }]`, or set
   `MCPX_PLUGIN_TOOLS=1`); for the usage paragraphs, `instructions:
-  true` or `MCPX_PLUGIN_INSTRUCTIONS=1`. See
+true` or `MCPX_PLUGIN_INSTRUCTIONS=1`. See
   [plugins](./plugins.md#opencode-v1-plugin) for the full option list.
 
 ## Next

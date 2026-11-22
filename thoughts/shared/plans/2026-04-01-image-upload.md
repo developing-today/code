@@ -21,6 +21,7 @@
 **Action**: Append new section 17 after the existing section 16 (Go to Line Dialog)
 
 Add:
+
 - `.image-upload-placeholder` — inline-block, animated pulsing border, min dimensions, centered text "Uploading..."
 - `.ProseMirror img` — `max-width: 100%`, `display: block`, `border-radius: 0.25rem`, `margin: 0.5rem 0`
 - `.ProseMirror img:hover` — subtle `outline: 2px solid oklch(var(--p) / 0.3)`
@@ -30,6 +31,7 @@ Add:
 
 **File**: `web/src/image-upload.ts` (NEW)
 **Action**: Create file with:
+
 - `ALLOWED_IMAGE_TYPES` — array of MIME strings
 - `MAX_IMAGE_SIZE` — 10 * 1024 * 1024 (10MB)
 - `isImageFile(file: File): boolean` — checks type against allowlist
@@ -45,10 +47,12 @@ Add:
 **Actions**:
 
 1. Add route to `create_router()` after existing `/api/new`:
+
    ```
    .route("/api/upload", post(upload_handler))
    .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
    ```
+
    Note: `DefaultBodyLimit` applies per-route via tower layer
 
 2. Add `UploadResponse` struct (near other response structs):
@@ -112,12 +116,14 @@ Add:
 1. Import `createImageUploadPlugin` from `./image-upload`
 
 2. In `initEditor()`, after the existing `createIndentPlugin()` push, add:
+
    ```
    const imageUploadPlugin = createImageUploadPlugin(editorSchema);
    if (imageUploadPlugin) {
      plugins.push(imageUploadPlugin);
    }
    ```
+
    This naturally guards on schema having image node (raw mode → null → not added)
 
 3. In the toolbar section (where customMenu is built), add `menuItems.insertImage` to Row 1 after `menuItems.toggleLink`:
@@ -171,6 +177,7 @@ Note: Testing actual paste/drop in Playwright is complex (requires `page.dispatc
 ### Task 5b: Build & Nix Verification
 
 **Commands** (sequential):
+
 1. `just build` — full web build
 2. `just test-web-unit` — all TS unit tests pass
 3. `just test-web-typecheck` — no TS errors
@@ -183,6 +190,7 @@ Note: Testing actual paste/drop in Playwright is complex (requires `page.dispatc
 Single commit with message: `feat(web): image drag-drop/paste upload with blob storage`
 
 Files changed:
+
 - `src/web/routes.rs` (modified — upload endpoint + tests)
 - `web/src/image-upload.ts` (new — plugin + helpers)
 - `web/src/image-upload.test.ts` (new — unit tests)

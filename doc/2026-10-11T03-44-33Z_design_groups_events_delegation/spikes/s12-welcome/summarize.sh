@@ -58,5 +58,5 @@ END {
     print sd
   }
 }
-' run-seed*.txt > summary.txt
+' run-seed*.txt >summary.txt
 cat summary.txt

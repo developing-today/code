@@ -66,7 +66,8 @@ fn corpus_replays_with_recorded_verdicts() {
                 outcome.detail
             ),
             name => {
-                let expect = Verdict::from_name(name).unwrap_or_else(|| panic!("unknown verdict {name}"));
+                let expect =
+                    Verdict::from_name(name).unwrap_or_else(|| panic!("unknown verdict {name}"));
                 assert_eq!(
                     outcome.verdict,
                     expect,

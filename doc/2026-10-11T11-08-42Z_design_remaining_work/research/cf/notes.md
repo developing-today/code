@@ -3,6 +3,7 @@
 Read-only research. No accounts, no deploys, nothing under /home/user/code or the docs repo.
 
 Downloaded and extracted (untrusted; read only, never executed):
+
 - crate-dl/iroh-relay-1.3.0.crate (HTTP 200, 147,215 bytes, sha256 ee116a8233f84980574bb8d11e4517503080cd2c3605bafca04ee9c35d708bd9) -> crate-src/iroh-relay-1.3.0/
 - dl-iroh-base/ -> src-iroh-base/iroh-base-1.3.0/ (PublicKey serde, sign/verify)
 - dl-iroh/ -> src-iroh/iroh-1.3.0/ (QAD use, relay actor pings)
@@ -12,6 +13,7 @@ Markers: [read] = primary source read; [snippet] = search summary only; [inferre
 ## (a) Relay protocol, iroh-relay 1.3.0
 
 Transport
+
 - Path `/relay` (RELAY_PATH), HTTP GET with `Upgrade: websocket`, `Sec-WebSocket-Version: 13`, `Sec-WebSocket-Key`, and `Sec-WebSocket-Protocol`. Client offers `iroh-relay-v2, iroh-relay-v1`. Server must answer 101 with `Sec-WebSocket-Protocol` set to the chosen version, or the client fails with BadVersionHeader. [read: src/http.rs 7-68; src/server/http_server.rs 586-670; src/client.rs 255-355]
 - Client maps https->wss and sets path /relay. [read: src/client.rs 267-281]
 - Binary WS messages. Max WS payload 1 MiB (MAX_FRAME_SIZE). [read: src/protos/relay.rs 29; src/client.rs 314]
@@ -20,6 +22,7 @@ Transport
 - No STUN code anywhere in the crate. [read: grep stun/STUN in src: zero matches]
 
 Handshake (challenge path)
+
 - S->C ServerChallenge: tag 0 + 16 random bytes. [read: handshake.rs 77-82, 452-453; common.rs 20]
 - C->S ClientAuth: tag 1 + PublicKey (32 raw bytes; non-human-readable serde = bytes) + signature (64 bytes via serde_bytes, so postcard length-prefixed 0x40). [read: handshake.rs 88-97; key.rs 78-88] [inferred on postcard length-prefix details]
 - Signed message = blake3::derive_key("iroh-relay handshake v1 challenge signature", challenge), 32 bytes. Signed with Ed25519 using the endpoint secret key (EndpointId = public key). [read: handshake.rs 51-52, 209-228; key.rs 323-326]
@@ -27,6 +30,7 @@ Handshake (challenge path)
 - S->C ServerConfirmsAuth (tag 2, empty body) or ServerDeniesAuth (tag 3 + string). [read: handshake.rs 99-107, 458-474, 528-552]
 
 Frames: tag = QUIC varint (1 byte below 64). [read: protos/common.rs 18-65; protos/relay.rs 330-559]
+
 - 0 ServerChallenge, 1 ClientAuth, 2 ServerConfirmsAuth, 3 ServerDeniesAuth
 - 4 ClientToRelayDatagram = dst(32) + ecn(1) + payload; 5 = same + seg_size u16 BE (batch)
 - 6 RelayToClientDatagram = src(32) + ecn(1) + payload; 7 = batch variant
@@ -35,21 +39,25 @@ Frames: tag = QUIC varint (1 byte below 64). [read: protos/common.rs 18-65; prot
 - Frame content <= MAX_PACKET_SIZE 64 KiB. [read: relay.rs 23; client/conn.rs 150; server/streams.rs 133]
 
 Routing [read: src/server/clients.rs 109-234; relay.rs 40]
+
 - Map EndpointId -> active connection. Packet to unconnected dst: silently dropped, no error frame.
 - Otherwise queued (per-client depth 512; full = drop) and sent_to[src] gains dst.
 - On src disconnect, EndpointGone(src) goes to each peer in sent_to[src].
 
 Keepalive [read: src/server/client.rs 369-376, 424-436; src/ping_tracker.rs 4-5, 87-91; iroh-1.3.0 src/socket/transports/relay/actor.rs 74, 587, 614-619]
+
 - Relay pings each client every 15 s + random 1-5 s. Closes the connection if no Pong within the ping timeout (<= 5 s, or 3x RTT clamped).
 - iroh clients ping the relay every 15 s and expect a Pong (actor.rs:614-619).
 - Stale doc: http_server.rs:329 mentions a "/derp" alias; there is no such route in code. [read]
 
 UDP
+
 - QAD (quic address discovery) on UDP 7842, opt-in. Default `enable_quic_addr_discovery` = false. If enabled, TLS is required. [read: main.rs 128-134, 585-599; defaults.rs 7]
 - Clients only do QAD if the RelayConfig has `quic: Some`. `RelayConfig::new(url, None)` disables it. [read: relay_map.rs 232-240; iroh net_report/reportgen.rs 648-658]
 - The relay still carries traffic over WS without UDP. [inferred from the above]
 
 Worker/DO feasibility
+
 - WebSocket hibernation with acceptWebSocket / webSocketMessage: supported. [read: DO websockets best-practices page]
 - Subprotocol echo on a Worker 101 response: UNVERIFIED. Workers WebSocket docs say nothing about Sec-WebSocket-Protocol. [read: absence in workers/runtime-apis/websockets page] [snippet: MDN only]
 - Ed25519 sign/verify and importKey: supported. [read: workers/runtime-apis/web-crypto table, footnote 1]
@@ -90,6 +98,7 @@ Worker/DO feasibility
 ## (d) Cost summary
 
 Workers / DO
+
 - Free: Workers 100,000 requests/day (plan-wide). DO has its own Free meter: 100,000 requests/day and 13,000 GB-s/day; SQLite-backed DOs only; over the limit, operations fail. CPU 10 ms per invocation. [read: workers/platform/pricing; durable-objects/platform/pricing; workers/platform/limits]
 - Paid: $5/mo minimum; 10M Worker requests and 1M DO requests included, then $0.15/M DO; 400,000 GB-s/mo included, then $12.50/M GB-s; no egress/bandwidth charges; CPU 30M ms included. [read]
 - WebSocket messages: incoming billed at 20:1 (1 request per 20 messages); outgoing free; WS protocol pings free. [read: DO pricing footnote 2]
@@ -105,6 +114,7 @@ Tunnel: $0 on Cloudflare; your box's cost.
 Free-tier stoppers for the Worker option: 100k DO requests/day (fail-closed: relay stops for the day); 13,000 GB-s/day; 10 ms CPU per invocation on Free. [read]
 
 ## (e) Open items to verify (not done; no account)
+
 1. Worker 101 response with `Sec-WebSocket-Protocol: iroh-relay-v2` accepted by the runtime and by the iroh 1.3 client.
 2. BLAKE3 derive_key + WebCrypto Ed25519 verify round trip against a real iroh 1.3 client (also check verify vs verify_strict).
 3. Containers: WS survival time and cold start on the `lite` type with iroh-relay 1.3.0 in --dev mode.

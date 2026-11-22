@@ -48,6 +48,7 @@ Implemented as specified in the request, with the choices above.
 - **Clippy.** `-D warnings` already fails on the base tree (crate-wide pedantic lints). On added lines the only remaining lints are four `map_err(|_| ...)` sites that copy the existing pattern (origin/main has 17).
 
 Gaps:
+
 - **File scope has no consumer.** `WorldPolicy::file_allowed` is a checked function that no caller invokes yet. The native Landlock sandbox (`world_native.rs`) is unchanged; it already grants no file access beyond the worker binary.
 - **Transport coverage.** Only the admin-token refusal is tested over the session frames; there is no signed-moderator transport test for the new frames.
 - **CLI integration.** No additions to `tests/cli_integration.rs`.

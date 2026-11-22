@@ -3,16 +3,16 @@ session: ses_2b2e
 updated: 2026-04-03T01:46:24.648Z
 ---
 
-
-
 ## Summary of Conversation
 
 ### Current Task
+
 **Phase 1 Part 4: Auto-save on idle** for the `pkgs/id` collaborative web platform.
 
 ### What Was Done
 
 #### Phase 1 Parts 1-3 (Previously Completed)
+
 - Part 1: NEW_VERSION handler (`dae1f33b`)
 - Part 2: Re-key collab by filename (`eceac4d4`)
 - Part 3: Name-first URLs (`62570d15`+)
@@ -27,13 +27,13 @@ updated: 2026-04-03T01:46:24.648Z
 
 **5 implementation tasks all completed and committed:**
 
-| Task | Commit   | Description                                                                                                                                                                                 |
-| ---- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1    | `0a3ce640` | `saveFile()` refactored to return `SaveResult`, fix disabled-forever bug (re-enable button in `finally` block)                                                                                    |
-| 2    | `4232b9e9` | `AutoSaveManager` class (~160 lines) — state machine: idle→unsaved→saving→saved/rate-limited/error, 2s debounce                                                                               |
+| Task | Commit     | Description                                                                                                                                                                                             |
+| ---- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | `0a3ce640` | `saveFile()` refactored to return `SaveResult`, fix disabled-forever bug (re-enable button in `finally` block)                                                                                          |
+| 2    | `4232b9e9` | `AutoSaveManager` class (~160 lines) — state machine: idle→unsaved→saving→saved/rate-limited/error, 2s debounce                                                                                         |
 | 3    | `71950437` | Wiring: AutoSaveManager created in `openEditor()`, cleaned up in `closeEditor()`, `editor:change` listener, `onNewVersion` cancels pending save, Ctrl+S calls `saveNow()`, `triggerSave()` method added |
-| 4    | `89585365` | Template update: save button onclick changed from `saveFile()` to `triggerSave()`                                                                                                               |
-| 5    | `706f4e76` | 7 Playwright E2E tests in new `autosave.spec.ts`                                                                                                                                              |
+| 4    | `89585365` | Template update: save button onclick changed from `saveFile()` to `triggerSave()`                                                                                                                       |
+| 5    | `706f4e76` | 7 Playwright E2E tests in new `autosave.spec.ts`                                                                                                                                                        |
 
 All `just id check` passed after each task.
 
@@ -61,11 +61,13 @@ Started dev server (`just id serve`, port 3000), navigated to editor page. Found
 4. **If everything works**: Commit any remaining changes, update progress
 
 ### Key Files Modified
+
 - `pkgs/id/web/src/main.ts` — AutoSaveManager class (lines 22-190), SaveResult type, saveFile refactor, wiring in openEditor/closeEditor/Ctrl+S
 - `pkgs/id/src/web/templates.rs` — save button onclick → `triggerSave()`
 - `pkgs/id/e2e/tests/autosave.spec.ts` — 7 new E2E tests
 
 ### Key Architecture Decisions
+
 - [Decision: AutoSaveManager as class in main.ts rather than separate file — keeps all save logic co-located, ~160 lines is manageable]
 - [Decision: Reuse save button text as state indicator rather than adding new DOM element — less template/CSS changes needed]
 - [Decision: On NewVersion, cancel pending auto-save and mark as "saved" — prevents saving stale content, hash already updated by existing handler]
@@ -73,9 +75,11 @@ Started dev server (`just id serve`, port 3000), navigated to editor page. Found
 - [Decision: On network error, do NOT auto-retry — prevents infinite retry loops on network outage]
 
 ### Running Processes
+
 - Dev server was running on `pty_c6dd3cec` (port 3000) — may need to be restarted after compaction
 
 ### Constraints
+
 - `just` + nix flake build system, commit every step, never revert/force/rebase
 - Run `just id check` to verify changes
 - Document everything in `thoughts/shared/` directories

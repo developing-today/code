@@ -73,7 +73,12 @@ pub fn chain_events(key: &SigningKey, count: u32) -> Vec<Event> {
             .build(key, ext())
             .encode();
         prev = Some(Hash::digest(&header));
-        out.push(Event { author, seq, header, body });
+        out.push(Event {
+            author,
+            seq,
+            header,
+            body,
+        });
     }
     out
 }
@@ -88,7 +93,12 @@ pub fn event_with_body(key: &SigningKey, seq: u32, prev: Option<Hash>, body: &[u
         .body(body)
         .build(key, ext())
         .encode();
-    Event { author, seq, header, body: body.to_vec() }
+    Event {
+        author,
+        seq,
+        header,
+        body: body.to_vec(),
+    }
 }
 
 /// What a received event checked out to be.
@@ -136,7 +146,10 @@ pub fn record(header: &[u8], body: &[u8]) -> Vec<u8> {
 pub fn split_record(record: &[u8]) -> Result<(&[u8], &[u8])> {
     ensure!(record.len() >= 2, "record shorter than its length field");
     let n = u16::from_be_bytes([record[0], record[1]]) as usize;
-    ensure!(record.len() >= 2 + n, "record shorter than its header length");
+    ensure!(
+        record.len() >= 2 + n,
+        "record shorter than its header length"
+    );
     Ok((&record[2..2 + n], &record[2 + n..]))
 }
 
@@ -167,7 +180,11 @@ mod tests {
         // One bit flipped inside the 64 signature bytes. Nothing else changes, so only the
         // signature check can reject it.
         let sig = AnyHeader::decode(&ev.header).unwrap().signature.to_bytes();
-        let at = ev.header.windows(64).position(|w| w == sig).expect("signature is in the header");
+        let at = ev
+            .header
+            .windows(64)
+            .position(|w| w == sig)
+            .expect("signature is in the header");
         let mut bad_sig = ev.header.clone();
         bad_sig[at] ^= 1;
         let err = AnyHeader::decode(&bad_sig).expect_err("AnyHeader::decode checks the signature");

@@ -15,6 +15,7 @@ Batch 1 (parallel): 1.1, 1.2, 1.3, 1.4 [all independent file changes]
 ```
 
 Only one batch is needed — all four files are independent at the implementation level:
+
 - collab.rs changes are server-side only
 - collab.ts changes are client-side only
 - websocket.spec.ts changes are test timing only
@@ -27,6 +28,7 @@ Only one batch is needed — all four files are independent at the implementatio
 All tasks are independent and can run simultaneously.
 
 ### Task 1.1: Server-Side Init + Catch-Up
+
 **File:** `pkgs/id/src/web/collab.rs`
 **Test:** Existing tests in same file (no new test file needed — existing roundtrip tests cover encoding; E2E tests validate behavior)
 **Depends:** none
@@ -205,6 +207,7 @@ Replace with:
 ---
 
 ### Task 1.2: Client-Side Recovery Extensions
+
 **File:** `pkgs/id/web/src/collab.ts`
 **Test:** No separate test file — validated by E2E tests in websocket.spec.ts
 **Depends:** none
@@ -269,46 +272,46 @@ Replace with:
 Find the current UPDATE handler's try/catch block:
 
 ```typescript
-          try {
-            // Pass ALL steps to receiveTransaction - it will:
-            // 1. Recognize and confirm our own steps (matching our clientID)
-            // 2. Apply remote steps from other clients
-            // 3. Rebase any unconfirmed local steps over remote steps
-            // Use the schema from the editor instance (mode-aware)
-            const editorSchema = editorInstance.view.state.schema;
-            const parsedSteps = steps.map((s) => Step.fromJSON(editorSchema, s));
-            const tr = receiveTransaction(editorInstance.view.state, parsedSteps, clientIDs);
-            editorInstance.view.dispatch(tr);
-            console.log("[collab] Applied transaction, new version:", getVersion(editorInstance.view.state));
-          } catch (err) {
-            console.error("[collab] Failed to apply steps:", err);
-          }
+try {
+  // Pass ALL steps to receiveTransaction - it will:
+  // 1. Recognize and confirm our own steps (matching our clientID)
+  // 2. Apply remote steps from other clients
+  // 3. Rebase any unconfirmed local steps over remote steps
+  // Use the schema from the editor instance (mode-aware)
+  const editorSchema = editorInstance.view.state.schema;
+  const parsedSteps = steps.map((s) => Step.fromJSON(editorSchema, s));
+  const tr = receiveTransaction(editorInstance.view.state, parsedSteps, clientIDs);
+  editorInstance.view.dispatch(tr);
+  console.log("[collab] Applied transaction, new version:", getVersion(editorInstance.view.state));
+} catch (err) {
+  console.error("[collab] Failed to apply steps:", err);
+}
 ```
 
 Replace with:
 
 ```typescript
-          try {
-            // Pass ALL steps to receiveTransaction - it will:
-            // 1. Recognize and confirm our own steps (matching our clientID)
-            // 2. Apply remote steps from other clients
-            // 3. Rebase any unconfirmed local steps over remote steps
-            // Use the schema from the editor instance (mode-aware)
-            const editorSchema = editorInstance.view.state.schema;
-            const parsedSteps = steps.map((s) => Step.fromJSON(editorSchema, s));
-            const tr = receiveTransaction(editorInstance.view.state, parsedSteps, clientIDs);
-            editorInstance.view.dispatch(tr);
-            console.log("[collab] Applied transaction, new version:", getVersion(editorInstance.view.state));
-          } catch (err) {
-            // Step application failed — editor state is desynchronized.
-            // Trigger reconnect to get fresh Init + catch-up from server.
-            console.error("[collab] Failed to apply steps, reconnecting:", err);
-            connected = false;
-            if (currentWs) {
-              currentWs.close(4001, "Step apply failure");
-            }
-            scheduleReconnect();
-          }
+try {
+  // Pass ALL steps to receiveTransaction - it will:
+  // 1. Recognize and confirm our own steps (matching our clientID)
+  // 2. Apply remote steps from other clients
+  // 3. Rebase any unconfirmed local steps over remote steps
+  // Use the schema from the editor instance (mode-aware)
+  const editorSchema = editorInstance.view.state.schema;
+  const parsedSteps = steps.map((s) => Step.fromJSON(editorSchema, s));
+  const tr = receiveTransaction(editorInstance.view.state, parsedSteps, clientIDs);
+  editorInstance.view.dispatch(tr);
+  console.log("[collab] Applied transaction, new version:", getVersion(editorInstance.view.state));
+} catch (err) {
+  // Step application failed — editor state is desynchronized.
+  // Trigger reconnect to get fresh Init + catch-up from server.
+  console.error("[collab] Failed to apply steps, reconnecting:", err);
+  connected = false;
+  if (currentWs) {
+    currentWs.close(4001, "Step apply failure");
+  }
+  scheduleReconnect();
+}
 ```
 
 **Verify:** `cd pkgs/id/web && bun run build` (ensures TypeScript compiles)
@@ -317,6 +320,7 @@ Replace with:
 ---
 
 ### Task 1.3: Test 474 — Save + Reload Timing
+
 **File:** `pkgs/id/e2e/tests/websocket.spec.ts`
 **Test:** This IS the test file
 **Depends:** none
@@ -326,74 +330,74 @@ Replace with:
 Find the "can save file and content persists" test (line 474-501):
 
 ```typescript
-  test("can save file and content persists", async ({ page }) => {
-    const fileName = `ws-save-${Date.now()}.txt`;
-    await createFile(page, fileName);
-    await waitForEditorReady(page);
+test("can save file and content persists", async ({ page }) => {
+  const fileName = `ws-save-${Date.now()}.txt`;
+  await createFile(page, fileName);
+  await waitForEditorReady(page);
 
-    // Type content
-    const editor = page.locator("#editor .ProseMirror");
-    await editor.click();
-    await page.keyboard.type("Saved content test");
-    await expect(editor).toContainText("Saved content test");
+  // Type content
+  const editor = page.locator("#editor .ProseMirror");
+  await editor.click();
+  await page.keyboard.type("Saved content test");
+  await expect(editor).toContainText("Saved content test");
 
-    // Wait for save button to be enabled (collab must be connected)
-    await expect(page.locator("#save-btn")).toBeEnabled({ timeout: 10_000 });
+  // Wait for save button to be enabled (collab must be connected)
+  await expect(page.locator("#save-btn")).toBeEnabled({ timeout: 10_000 });
 
-    // Click save button and wait for the save round-trip to complete
-    await page.click("#save-btn");
-    await expect(page.locator("#save-btn")).toContainText("saved", { timeout: 10_000 });
+  // Click save button and wait for the save round-trip to complete
+  await page.click("#save-btn");
+  await expect(page.locator("#save-btn")).toContainText("saved", { timeout: 10_000 });
 
-    // Reload page to verify persistence (URL was updated to new hash by save)
-    await page.reload();
-    await expect(page.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
-    await waitForEditorReady(page);
+  // Reload page to verify persistence (URL was updated to new hash by save)
+  await page.reload();
+  await expect(page.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
+  await waitForEditorReady(page);
 
-    // Content should persist (server loads blob from new hash)
-    await expect(page.locator("#editor .ProseMirror")).toContainText("Saved content test", {
-      timeout: 10_000,
-    });
+  // Content should persist (server loads blob from new hash)
+  await expect(page.locator("#editor .ProseMirror")).toContainText("Saved content test", {
+    timeout: 10_000,
   });
+});
 ```
 
 Replace with:
 
 ```typescript
-  test("can save file and content persists", async ({ page }) => {
-    const fileName = `ws-save-${Date.now()}.txt`;
-    await createFile(page, fileName);
-    await waitForEditorReady(page);
+test("can save file and content persists", async ({ page }) => {
+  const fileName = `ws-save-${Date.now()}.txt`;
+  await createFile(page, fileName);
+  await waitForEditorReady(page);
 
-    // Type content
-    const editor = page.locator("#editor .ProseMirror");
-    await editor.click();
-    await page.keyboard.type("Saved content test");
-    await expect(editor).toContainText("Saved content test");
+  // Type content
+  const editor = page.locator("#editor .ProseMirror");
+  await editor.click();
+  await page.keyboard.type("Saved content test");
+  await expect(editor).toContainText("Saved content test");
 
-    // Wait for save button to be enabled (collab must be connected)
-    await expect(page.locator("#save-btn")).toBeEnabled({ timeout: 10_000 });
+  // Wait for save button to be enabled (collab must be connected)
+  await expect(page.locator("#save-btn")).toBeEnabled({ timeout: 10_000 });
 
-    // Click save button and wait for the save round-trip to complete
-    await page.click("#save-btn");
-    await expect(page.locator("#save-btn")).toContainText("saved", { timeout: 10_000 });
+  // Click save button and wait for the save round-trip to complete
+  await page.click("#save-btn");
+  await expect(page.locator("#save-btn")).toContainText("saved", { timeout: 10_000 });
 
-    // Brief wait for the save response to fully propagate (URL update, new hash
-    // written to blob store). In NixOS VMs the blob write can lag behind the
-    // HTTP response by a few hundred ms.
-    await page.waitForTimeout(500);
+  // Brief wait for the save response to fully propagate (URL update, new hash
+  // written to blob store). In NixOS VMs the blob write can lag behind the
+  // HTTP response by a few hundred ms.
+  await page.waitForTimeout(500);
 
-    // Reload page to verify persistence (URL was updated to new hash by save)
-    await page.reload();
-    await expect(page.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
-    await waitForEditorReady(page);
+  // Reload page to verify persistence (URL was updated to new hash by save)
+  await page.reload();
+  await expect(page.locator("#editor-container")).toBeVisible({ timeout: 10_000 });
+  await waitForEditorReady(page);
 
-    // Content should persist (server loads blob from new hash).
-    // Extended timeout for NixOS VM environments where Init + catch-up
-    // replay can take longer over cross-VM networking.
-    await expect(page.locator("#editor .ProseMirror")).toContainText("Saved content test", {
-      timeout: 15_000,
-    });
+  // Content should persist (server loads blob from new hash).
+  // Extended timeout for NixOS VM environments where Init + catch-up
+  // replay can take longer over cross-VM networking.
+  await expect(page.locator("#editor .ProseMirror")).toContainText("Saved content test", {
+    timeout: 15_000,
   });
+});
 ```
 
 **Change 2 — Test 638: increase typing delay (line 638-653)**
@@ -401,13 +405,13 @@ Replace with:
 Find the "edits from one user appear in other user's editor" test body. The key line is:
 
 ```typescript
-      await page1.keyboard.type("Hello from user 1!", { delay: 50 });
+await page1.keyboard.type("Hello from user 1!", { delay: 50 });
 ```
 
 Replace with:
 
 ```typescript
-      await page1.keyboard.type("Hello from user 1!", { delay: 100 });
+await page1.keyboard.type("Hello from user 1!", { delay: 100 });
 ```
 
 This matches the `delay: 100` already used by the passing bidirectional test at line 663 and line 680. The 50ms delay was too aggressive for cross-VM collab sync.
@@ -418,6 +422,7 @@ This matches the `delay: 100` already used by the passing bidirectional test at 
 ---
 
 ### Task 1.4: Add Rust Unit Test for Init + Catch-Up Logic
+
 **File:** `pkgs/id/src/web/collab.rs` (append to existing `mod tests`)
 **Test:** Inline in the same file
 **Depends:** none

@@ -9,7 +9,10 @@ use s8_tags::{Body, Device, Dot, Entry, Op, Replica, Rng, State, join, reference
 
 /// Cases per property. Set S8_CASES for a longer run.
 fn cases() -> u32 {
-    std::env::var("S8_CASES").ok().and_then(|s| s.parse().ok()).unwrap_or(300)
+    std::env::var("S8_CASES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(300)
 }
 
 fn device(i: usize) -> Device {
@@ -102,11 +105,20 @@ impl Sim {
     /// Apply one action, then check each replica against the reference over its applied ops.
     fn step(&mut self, act: &Act) -> Result<(), String> {
         match *act {
-            Act::Set { r, subject, name, value } => {
+            Act::Set {
+                r,
+                subject,
+                name,
+                value,
+            } => {
                 let op = self.reps[r].set(entry(subject, name, value));
                 self.issued.push(op);
             }
-            Act::Clear { r, ref observed, ref unseen } => {
+            Act::Clear {
+                r,
+                ref observed,
+                ref unseen,
+            } => {
                 let live: Vec<Dot> = self.reps[r].state.live.keys().copied().collect();
                 let every_set: Vec<Dot> = self
                     .issued
@@ -119,12 +131,21 @@ impl Sim {
                     names.extend(observed.iter().map(|b| live[usize::from(*b) % live.len()]));
                 }
                 if !every_set.is_empty() {
-                    names.extend(unseen.iter().map(|b| every_set[usize::from(*b) % every_set.len()]));
+                    names.extend(
+                        unseen
+                            .iter()
+                            .map(|b| every_set[usize::from(*b) % every_set.len()]),
+                    );
                 }
                 let op = self.reps[r].clear(names);
                 self.issued.push(op);
             }
-            Act::Sync { from, to, by_state, seed } => {
+            Act::Sync {
+                from,
+                to,
+                by_state,
+                seed,
+            } => {
                 if from != to && self.part[from] == self.part[to] {
                     if by_state {
                         let src = self.reps[from].clone();
@@ -138,7 +159,8 @@ impl Sim {
             Act::Toggle { r } => self.part[r] = !self.part[r],
             Act::Heal => self.part.iter_mut().for_each(|p| *p = false),
         }
-        self.snapshots.extend(self.reps.iter().map(|rep| rep.state.clone()));
+        self.snapshots
+            .extend(self.reps.iter().map(|rep| rep.state.clone()));
         self.check()
     }
 
@@ -165,7 +187,9 @@ impl Sim {
             observer.merge(&self.reps[i]);
         }
         if observer.state != reference(observer.applied.values()) {
-            return Err("state-based join differs from the reference over the union of applied ops".into());
+            return Err(
+                "state-based join differs from the reference over the union of applied ops".into(),
+            );
         }
 
         self.part.iter_mut().for_each(|p| *p = false);
@@ -175,7 +199,10 @@ impl Sim {
         }
         for (i, rep) in self.reps.iter().enumerate() {
             if rep.state != want || rep.pending_len() != 0 {
-                return Err(format!("replica {i} did not converge\n state: {:?}\n want:  {:?}", rep.state, want));
+                return Err(format!(
+                    "replica {i} did not converge\n state: {:?}\n want:  {:?}",
+                    rep.state, want
+                ));
             }
         }
         Ok(())

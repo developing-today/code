@@ -17,7 +17,7 @@ UNIT_DIR="$HOME/.config/systemd/user"
 STATE_DIR="$HOME/.local/state/worktree-reaper"
 mkdir -p "$UNIT_DIR" "$STATE_DIR"
 for u in worktree-reaper.service worktree-reaper.timer; do
-  sed "s#__WR_DIR__#$WR_DIR#g" "$WR_DIR/systemd/$u" > "$UNIT_DIR/$u"
+  sed "s#__WR_DIR__#$WR_DIR#g" "$WR_DIR/systemd/$u" >"$UNIT_DIR/$u"
 done
 # Denylist the install tree in the local overlay (deny lists union with
 # the shipped config.json; the overlay lives in the state dir, never in

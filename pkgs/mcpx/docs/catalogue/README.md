@@ -5,9 +5,9 @@ resources, URLs and projects — and why each one is here.
 
 - **Source** this directory, one page per section: `servers.md`,
   `registries.md`, `resources.md`, `urls.md`, `projects.md`.
-- **Generated or written: C.** The list is hand-written — it says *which*
+- **Generated or written: C.** The list is hand-written — it says _which_
   servers, registries, resources, URLs and projects are in the catalogue and
-  *why*; the facts per server are captured into a committed snapshot by a
+  _why_; the facts per server are captured into a committed snapshot by a
   refresh script. Nothing at docs build time starts a server or calls the
   network.
 - **First entries** are the seven servers configured on this machine —

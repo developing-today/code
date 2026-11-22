@@ -4,9 +4,11 @@ updated: 2026-04-03T04:57:38.306Z
 ---
 
 ## Task
+
 Enrich each device entry in `doc/inventory/routing-and-switching.md` using the standard attribute template from `doc/inventory/standard-attributes.md`, updating `doc/inventory/enrichment-checklist.md` after each device, with separate commits for inventory changes and checklist changes.
 
 ## Accomplishments
+
 Completed devices through **#16**:
 
 - Earlier completed:
@@ -48,10 +50,12 @@ Completed devices through **#16**:
     - Checklist commit: `7352b011`
 
 Also earlier in session:
+
 - Fixed Mono Gateway markdown separator issue before commit.
 - User complained about wasting context on repeated compress/research loops; workflow shifted to more aggressive compression and smaller targeted work chunks.
 
 ## Remaining Work
+
 Still to finish:
 
 - `#17 Cisco 3560`
@@ -61,10 +65,12 @@ Still to finish:
 - `#21 Calix GP1101X`
 
 After that:
+
 - Phase 2: gap analysis
 - Phase 3: final summary
 
 ## Current In-Progress State
+
 Used **subagents** to pre-generate enrichment row files for the last 5 devices. These files are ready to splice into `doc/inventory/routing-and-switching.md`:
 
 - `/tmp/enrich_3560.md`
@@ -76,6 +82,7 @@ Used **subagents** to pre-generate enrichment row files for the last 5 devices. 
 These were verified to have the correct pipe-table format and section structure.
 
 ## Files Modified
+
 - `doc/inventory/routing-and-switching.md`
   - now expanded with enriched sections through device `#16`
   - current file length was around **2385 lines** before the final 5 splices
@@ -83,9 +90,11 @@ These were verified to have the correct pipe-table format and section structure.
   - updated through `#16`
 
 ## Exact Next Steps
+
 Splice the remaining 5 enrichment files into `routing-and-switching.md`, preferably **bottom-up** so line numbers shift less:
 
 Recommended order:
+
 1. `#21 Calix GP1101X`
 2. `#20 Cisco 4402 WLC`
 3. `#19 Cisco ASA 5505`
@@ -93,6 +102,7 @@ Recommended order:
 5. `#17 Cisco 3560`
 
 For each:
+
 1. splice rows into the existing section after the current `Notes` row
 2. verify blank line before `---`
 3. commit inventory file
@@ -100,6 +110,7 @@ For each:
 5. commit checklist
 
 ## Critical Context
+
 - User wants:
   - **less context waste**
   - **more aggressive compression**

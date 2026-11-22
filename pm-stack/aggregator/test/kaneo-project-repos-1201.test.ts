@@ -47,7 +47,11 @@ async function driveBoard(registry: unknown, projects: { id: string; slug: strin
                   title: `Work in ${pid}`,
                   status: "in-progress",
                   externalLinks: [
-                    { resourceType: "issue", externalId: "42", url: "https://github.com/example-org/example-repo/issues/42" },
+                    {
+                      resourceType: "issue",
+                      externalId: "42",
+                      url: "https://github.com/example-org/example-repo/issues/42",
+                    },
                     { resourceType: "issue", externalId: "9", url: "https://linear.app/team/issue/XYZ-9" },
                   ],
                 },
@@ -118,13 +122,24 @@ describe("live board: Kaneo project-repo registry is authoritative (#1201)", () 
     globalThis.fetch = (async (input: unknown) => {
       const url = String(input);
       const json = (body: unknown, headers: Record<string, string> = {}) =>
-        new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json", ...headers } });
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json", ...headers },
+        });
       if (url.includes("/api/auth/sign-in/email")) return json({}, { "set-cookie": "session=test; Path=/" });
       if (url.includes("/api/workspace")) return json([{ id: "ws1" }]);
       if (url.includes("/api/project?")) return json([{ id: "p1", slug: "code", name: "Code" }]);
       if (url.includes("/api/task/tasks/"))
         return json({
-          data: { columns: [{ id: "in-progress", name: "In Progress", tasks: [{ id: "t1", number: 1, title: "T", status: "in-progress" }] }] },
+          data: {
+            columns: [
+              {
+                id: "in-progress",
+                name: "In Progress",
+                tasks: [{ id: "t1", number: 1, title: "T", status: "in-progress" }],
+              },
+            ],
+          },
           pagination: { totalPages: 1 },
         });
       return new Response("not found", { status: 404 });

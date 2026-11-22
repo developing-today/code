@@ -76,15 +76,9 @@ export async function fetchNativeSubissueTree(
         }),
         signal: AbortSignal.timeout(20_000),
       });
-      if (!response.ok)
-        throw new Error(
-          `github GraphQL HTTP ${response.status} reading ${repo}#${number}`,
-        );
+      if (!response.ok) throw new Error(`github GraphQL HTTP ${response.status} reading ${repo}#${number}`);
       const json = (await response.json()) as SubissuePage;
-      if (json.errors)
-        throw new Error(
-          `github GraphQL returned errors reading ${repo}#${number}`,
-        );
+      if (json.errors) throw new Error(`github GraphQL returned errors reading ${repo}#${number}`);
       const connection = json.data?.repository?.issue?.subIssues;
       if (
         !connection?.pageInfo ||
@@ -93,16 +87,9 @@ export async function fetchNativeSubissueTree(
         connection.totalCount! < 0 ||
         !Array.isArray(connection.nodes)
       )
-        throw new Error(
-          `github GraphQL omitted sub-issue connection for ${repo}#${number}`,
-        );
-      if (
-        expectedTotal !== undefined &&
-        expectedTotal !== connection.totalCount
-      )
-        throw new Error(
-          `github GraphQL subtree changed during pagination for ${repo}#${number}`,
-        );
+        throw new Error(`github GraphQL omitted sub-issue connection for ${repo}#${number}`);
+      if (expectedTotal !== undefined && expectedTotal !== connection.totalCount)
+        throw new Error(`github GraphQL subtree changed during pagination for ${repo}#${number}`);
       expectedTotal = connection.totalCount;
 
       for (const child of connection.nodes) {
@@ -113,26 +100,20 @@ export async function fetchNativeSubissueTree(
           !child.url ||
           !/^[^/#]+\/[^/#]+$/.test(child.repository?.nameWithOwner ?? "")
         )
-          throw new Error(
-            `github GraphQL returned a malformed sub-issue for ${repo}#${number}`,
-          );
+          throw new Error(`github GraphQL returned a malformed sub-issue for ${repo}#${number}`);
         const childRepo = child.repository!.nameWithOwner!;
         const ref = `${childRepo}#${child.number}` as RefKey;
         directRefs.add(ref);
         if (seen.has(ref)) continue;
         if (child.state !== "OPEN" && child.state !== "CLOSED")
-          throw new Error(
-            `github GraphQL returned an unknown state for ${ref}`,
-          );
+          throw new Error(`github GraphQL returned an unknown state for ${ref}`);
         const labelNodes = child.labels?.nodes;
         if (
           !Array.isArray(labelNodes) ||
           child.labels?.totalCount !== labelNodes.length ||
           labelNodes.some((label) => typeof label?.name !== "string")
         )
-          throw new Error(
-            `github GraphQL returned incomplete labels for ${ref}`,
-          );
+          throw new Error(`github GraphQL returned incomplete labels for ${ref}`);
         seen.add(ref);
         descendants.push({
           ref,
@@ -147,16 +128,12 @@ export async function fetchNativeSubissueTree(
 
       if (!connection.pageInfo.hasNextPage) {
         if (directRefs.size !== expectedTotal)
-          throw new Error(
-            `github GraphQL incomplete sub-issue count for ${repo}#${number}`,
-          );
+          throw new Error(`github GraphQL incomplete sub-issue count for ${repo}#${number}`);
         return;
       }
       const cursor = connection.pageInfo.endCursor;
       if (!cursor || cursors.has(cursor))
-        throw new Error(
-          `github GraphQL sub-issue pagination did not advance for ${repo}#${number}`,
-        );
+        throw new Error(`github GraphQL sub-issue pagination did not advance for ${repo}#${number}`);
       cursors.add(cursor);
       after = cursor;
     }

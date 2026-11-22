@@ -5,7 +5,7 @@ seed that produced something interesting — above all a failure — can be
 found and replayed long after the run's logs and artifacts expire
 (Actions keeps those for 90 days; this store is in git, forever).
 
-Seed *minting* (how a run gets its UUIDv7 seed and uploads it as the
+Seed _minting_ (how a run gets its UUIDv7 seed and uploads it as the
 `test-seed` artifact) is #1949. This directory is only the store and
 its schema; `.github/workflows/mcpx-seed-collector.yml` is the only
 writer.
@@ -32,21 +32,21 @@ record, not in the path.
 Each file is one line of compact JSON:
 
 ```json
-{"seed":"<uuidv7>","commit":"<full sha the run tested>","ref":"refs/heads/main","event":"push","run":"<actions run url>","attempt":1,"result":"success","derivation":"v1","generators":"sha256:<manifest hash>","date":"2026-10-30"}
+{ "seed": "<uuidv7>", "commit": "<full sha the run tested>", "ref": "refs/heads/main", "event": "push", "run": "<actions run url>", "attempt": 1, "result": "success", "derivation": "v1", "generators": "sha256:<manifest hash>", "date": "2026-10-30" }
 ```
 
-| field | meaning |
-| --- | --- |
-| `seed` | the run's UUIDv7 seed; equals the filename without `.json` |
-| `commit` | full commit SHA the run tested |
-| `ref` | git ref the run ran for (`refs/heads/main`, a PR head branch, …) |
-| `event` | the Actions event that started the run (`push`, `pull_request`, …) |
-| `run` | URL of the Actions run |
-| `attempt` | run attempt number (a re-run mints a new seed; #1949) |
-| `result` | the run's conclusion (`success`, `failure`, …) |
-| `derivation` | seed derivation scheme version (#1949) |
-| `generators` | `sha256:` hash of the generator `name@version` manifest at that commit (#1958); empty until generator manifests land |
-| `date` | UTC date (`yyyy-mm-dd`) of the timestamp embedded in the seed id; equals the `<yyyy>/<mm>` directories the file lives in |
+| field        | meaning                                                                                                                  |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| `seed`       | the run's UUIDv7 seed; equals the filename without `.json`                                                               |
+| `commit`     | full commit SHA the run tested                                                                                           |
+| `ref`        | git ref the run ran for (`refs/heads/main`, a PR head branch, …)                                                         |
+| `event`      | the Actions event that started the run (`push`, `pull_request`, …)                                                       |
+| `run`        | URL of the Actions run                                                                                                   |
+| `attempt`    | run attempt number (a re-run mints a new seed; #1949)                                                                    |
+| `result`     | the run's conclusion (`success`, `failure`, …)                                                                           |
+| `derivation` | seed derivation scheme version (#1949)                                                                                   |
+| `generators` | `sha256:` hash of the generator `name@version` manifest at that commit (#1958); empty until generator manifests land     |
+| `date`       | UTC date (`yyyy-mm-dd`) of the timestamp embedded in the seed id; equals the `<yyyy>/<mm>` directories the file lives in |
 
 ## Which seeds are kept
 

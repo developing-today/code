@@ -57,6 +57,7 @@ New ProseMirror plugin registered in `initEditor()` for rich/markdown/plain mode
 ### Toolbar: Image insert button
 
 Add image button to Row 1 of the rich mode toolbar menu (after toggleLink):
+
 - Opens a hidden `<input type="file" accept="image/*">` dialog
 - On file selection, runs the same upload+insert flow
 - This covers the non-paste/non-drop use case
@@ -68,12 +69,12 @@ Add image button to Row 1 of the rich mode toolbar menu (after toggleLink):
 
 ## Components
 
-| Component       | File                      | Responsibility                                           |
-| --------------- | ------------------------- | -------------------------------------------------------- |
-| Upload endpoint | `src/web/routes.rs`       | Accept multipart, validate, store blob, return URL       |
-| Upload plugin   | `web/src/image-upload.ts` | Handle paste/drop, upload file, insert image node        |
-| CSS             | `web/src/editor-compat.css` §17 | Upload placeholder, image display styling          |
-| Editor wiring   | `web/src/editor.ts`       | Register plugin + toolbar button for rich/markdown modes |
+| Component       | File                            | Responsibility                                           |
+| --------------- | ------------------------------- | -------------------------------------------------------- |
+| Upload endpoint | `src/web/routes.rs`             | Accept multipart, validate, store blob, return URL       |
+| Upload plugin   | `web/src/image-upload.ts`       | Handle paste/drop, upload file, insert image node        |
+| CSS             | `web/src/editor-compat.css` §17 | Upload placeholder, image display styling                |
+| Editor wiring   | `web/src/editor.ts`             | Register plugin + toolbar button for rich/markdown modes |
 
 ## Data Flow
 

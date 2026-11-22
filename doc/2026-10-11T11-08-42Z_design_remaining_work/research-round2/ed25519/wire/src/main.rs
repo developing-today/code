@@ -23,8 +23,11 @@ impl Report {
         } else {
             self.fail += 1
         }
-        self.lines
-            .push(format!("{} {name}: {}", if ok { "PASS" } else { "FAIL" }, detail.into()));
+        self.lines.push(format!(
+            "{} {name}: {}",
+            if ok { "PASS" } else { "FAIL" },
+            detail.into()
+        ));
     }
 
     /// Observations that are not pass/fail (printed, not counted).
@@ -141,7 +144,10 @@ fn check2(pk: &[u8; 32], msg: &[u8], sig: &[u8; 64]) -> (bool, bool) {
         Err(_) => (false, false),
         Ok(vk) => {
             let s = v2::Signature::from_bytes(sig);
-            (vk.verify(msg, &s).is_ok(), vk.verify_strict(msg, &s).is_ok())
+            (
+                vk.verify(msg, &s).is_ok(),
+                vk.verify_strict(msg, &s).is_ok(),
+            )
         }
     }
 }
@@ -153,7 +159,10 @@ fn check3(pk: &[u8; 32], msg: &[u8], sig: &[u8; 64]) -> (bool, bool) {
         Err(_) => (false, false),
         Ok(vk) => {
             let s = v3::Signature::from_bytes(sig);
-            (vk.verify(msg, &s).is_ok(), vk.verify_strict(msg, &s).is_ok())
+            (
+                vk.verify(msg, &s).is_ok(),
+                vk.verify_strict(msg, &s).is_ok(),
+            )
         }
     }
 }
@@ -198,14 +207,8 @@ fn keys_and_rfc(r: &mut Report) {
         let (s2, s3) = (sign2(&sk, &msg), sign3(&sk, &msg));
         let (v2v, v2s) = check2(&pk, &msg, &sig);
         let (v3v, v3s) = check3(&pk, &msg, &sig);
-        let ok = pk2(&sk) == pk
-            && pk3(&sk) == pk
-            && s2 == sig
-            && s3 == sig
-            && v2v
-            && v2s
-            && v3v
-            && v3s;
+        let ok =
+            pk2(&sk) == pk && pk3(&sk) == pk && s2 == sig && s3 == sig && v2v && v2s && v3v && v3s;
         r.check(
             &format!("RFC 8032 {name} ({} byte msg)", msg.len()),
             ok,
@@ -223,7 +226,9 @@ fn keys_and_rfc(r: &mut Report) {
 /// Signatures are deterministic: same seed and message must give the same 64 bytes in both versions.
 /// Then cross-verify in both directions, verify and verify_strict.
 fn deterministic_and_cross(r: &mut Report) {
-    let lens = [0usize, 1, 2, 31, 32, 55, 56, 63, 64, 111, 112, 127, 128, 129, 1000];
+    let lens = [
+        0usize, 1, 2, 31, 32, 55, 56, 63, 64, 111, 112, 127, 128, 129, 1000,
+    ];
     let mut mix = Mix(2);
     let (mut n, mut sig_diff) = (0usize, 0usize);
     let (mut v3_rejects_v2_sig, mut v3_strict_rejects_v2_sig) = (0usize, 0usize);
@@ -345,8 +350,14 @@ fn small_order(r: &mut Report) {
     for (i, e) in torsion_encodings().into_iter().enumerate() {
         keys.push((format!("EIGHT_TORSION[{i}]"), e));
     }
-    keys.push(("identity, non-canonical (y=p+1)".into(), unhex(IDENTITY_NONCANON)));
-    keys.push(("order-4 point, non-canonical (y=p)".into(), unhex(ORDER4_NONCANON)));
+    keys.push((
+        "identity, non-canonical (y=p+1)".into(),
+        unhex(IDENTITY_NONCANON),
+    ));
+    keys.push((
+        "order-4 point, non-canonical (y=p)".into(),
+        unhex(ORDER4_NONCANON),
+    ));
     let torsion_r = torsion_encodings();
     let msg = b"small-order forgery probe".to_vec();
 
@@ -356,8 +367,12 @@ fn small_order(r: &mut Report) {
     for (name, a) in &keys {
         let dec2 = v2::VerifyingKey::from_bytes(a).is_ok();
         let dec3 = v3::VerifyingKey::from_bytes(a).is_ok();
-        let weak2 = v2::VerifyingKey::from_bytes(a).map(|k| k.is_weak()).unwrap_or(false);
-        let weak3 = v3::VerifyingKey::from_bytes(a).map(|k| k.is_weak()).unwrap_or(false);
+        let weak2 = v2::VerifyingKey::from_bytes(a)
+            .map(|k| k.is_weak())
+            .unwrap_or(false);
+        let weak3 = v3::VerifyingKey::from_bytes(a)
+            .map(|k| k.is_weak())
+            .unwrap_or(false);
         let mut acc = [0usize; 4];
         for t in &torsion_r {
             let mut sig = [0u8; 64];
@@ -405,9 +420,16 @@ fn small_order(r: &mut Report) {
     for n in [1u64, 2, 12345, 0xdead_beef] {
         let s = Scalar::from(n);
         let mut sig = [0u8; 64];
-        sig[..32].copy_from_slice(&(s * constants::ED25519_BASEPOINT_POINT).compress().to_bytes());
+        sig[..32].copy_from_slice(
+            &(s * constants::ED25519_BASEPOINT_POINT)
+                .compress()
+                .to_bytes(),
+        );
         sig[32..].copy_from_slice(&s.to_bytes());
-        for m in [b"any message".as_slice(), b"another message, another length".as_slice()] {
+        for m in [
+            b"any message".as_slice(),
+            b"another message, another length".as_slice(),
+        ] {
             trials += 1;
             let (a, b) = check2(&ident, m, &sig);
             let (c, d) = check3(&ident, m, &sig);
@@ -460,7 +482,8 @@ fn expanded_and_formats(r: &mut Report) {
         hz_bad += (!same) as usize;
 
         let kp2 = v2::SigningKey::from_bytes(&seed).to_keypair_bytes();
-        let kp_ok = matches!(v3::SigningKey::from_keypair_bytes(&kp2), Ok(k) if k.to_bytes() == seed);
+        let kp_ok =
+            matches!(v3::SigningKey::from_keypair_bytes(&kp2), Ok(k) if k.to_bytes() == seed);
         let mut tampered = kp2;
         tampered[63] ^= 1;
         let kp_tamper_rejected = v2::SigningKey::from_keypair_bytes(&tampered).is_err()
@@ -468,15 +491,22 @@ fn expanded_and_formats(r: &mut Report) {
         kp_bad += (!(kp_ok && kp_tamper_rejected)) as usize;
 
         use v2::pkcs8::EncodePrivateKey as _;
-        let der2 = v2::SigningKey::from_bytes(&seed).to_pkcs8_der().expect("der2");
+        let der2 = v2::SigningKey::from_bytes(&seed)
+            .to_pkcs8_der()
+            .expect("der2");
         use v3::pkcs8::EncodePrivateKey as _;
-        let der3 = v3::SigningKey::from_bytes(&seed).to_pkcs8_der().expect("der3");
+        let der3 = v3::SigningKey::from_bytes(&seed)
+            .to_pkcs8_der()
+            .expect("der3");
         use v3::pkcs8::DecodePrivateKey as _;
         let back = v3::SigningKey::from_pkcs8_der(der2.as_bytes()).map(|k| k.to_bytes() == seed);
         der_bad += (!(der2.as_bytes() == der3.as_bytes() && back == Ok(true))) as usize;
         if trials == 1 {
             let same = der2.as_bytes() == der3.as_bytes();
-            r.info("pkcs8 DER of seed 0", format!("2.2.0 == 3.0.0: {same}; hex={}", hex(der2.as_bytes())));
+            r.info(
+                "pkcs8 DER of seed 0",
+                format!("2.2.0 == 3.0.0: {same}; hex={}", hex(der2.as_bytes())),
+            );
         }
     }
     r.check(
@@ -518,7 +548,8 @@ fn decoding_table(r: &mut Report) {
         flipped[31] ^= 0x80;
         both_sign.push(flipped);
     }
-    let (mut total, mut ok2, mut ok3, mut decode_diff, mut weak_diff, mut weak_true) = (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+    let (mut total, mut ok2, mut ok3, mut decode_diff, mut weak_diff, mut weak_true) =
+        (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
     for e in &both_sign {
         total += 1;
         let k2 = v2::VerifyingKey::from_bytes(e);
@@ -575,7 +606,11 @@ fn errors_and_generate(r: &mut Report) {
     let s3 = v3::Signature::from_slice(&[0u8; 63]).expect_err("63 bytes");
     r.info(
         "error: 63-byte signature slice (both versions return Err)",
-        format!("v2 Display={:?} | v3 Display={:?}", s2.to_string(), s3.to_string()),
+        format!(
+            "v2 Display={:?} | v3 Display={:?}",
+            s2.to_string(),
+            s3.to_string()
+        ),
     );
 
     let mut rng2 = rand_core_v06::OsRng;

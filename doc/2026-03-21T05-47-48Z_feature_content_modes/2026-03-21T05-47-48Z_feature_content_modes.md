@@ -27,14 +27,14 @@ This feature implements intelligent content handling for the ProseMirror editor 
 
 ## Content Modes
 
-| Mode         | Extensions                                                                                        | Description                                      |
-| ------------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| **Media**    | `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, `.mp4`, `.webm`, `.ogg`, `.mp3`, `.wav`, `.pdf` | Native browser rendering, no editing             |
-| **Rich**     | `.pm.json`                                                                                        | Full editor with native ProseMirror JSON         |
+| Mode         | Extensions                                                                                        | Description                                     |
+| ------------ | ------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| **Media**    | `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, `.mp4`, `.webm`, `.ogg`, `.mp3`, `.wav`, `.pdf` | Native browser rendering, no editing            |
+| **Rich**     | `.pm.json`                                                                                        | Full editor with native ProseMirror JSON        |
 | **Markdown** | `.md`, `.markdown`                                                                                | Full editor, server converts markdown ↔ PM JSON |
-| **Plain**    | `.txt`                                                                                            | Full editor, lines become paragraphs             |
-| **Raw**      | `.js`, `.ts`, `.rs`, `.py`, `.json`, `.toml`, `.yaml`, etc.                                       | Editor with no toolbar, no formatting shortcuts  |
-| **Binary**   | Non-UTF8 files                                                                                    | "Cannot display" message + download link         |
+| **Plain**    | `.txt`                                                                                            | Full editor, lines become paragraphs            |
+| **Raw**      | `.js`, `.ts`, `.rs`, `.py`, `.json`, `.toml`, `.yaml`, etc.                                       | Editor with no toolbar, no formatting shortcuts |
+| **Binary**   | Non-UTF8 files                                                                                    | "Cannot display" message + download link        |
 
 ## Architecture
 
@@ -153,7 +153,7 @@ Using `prosemirror-markdown` schema for rich/markdown/plain modes (already inclu
 | File                      | Purpose                                   | Status                 |
 | ------------------------- | ----------------------------------------- | ---------------------- |
 | `src/web/content_mode.rs` | ContentMode enum, extension detection     | ✅ Complete (14 tests) |
-| `src/web/markdown.rs`     | markdown ↔ ProseMirror JSON conversion   | ✅ Complete (20 tests) |
+| `src/web/markdown.rs`     | markdown ↔ ProseMirror JSON conversion    | ✅ Complete (20 tests) |
 | `web/src/editor.test.ts`  | TypeScript tests for editor mode features | ✅ Complete (39 tests) |
 | `web/styles/viewer.css`   | Media viewer styles                       | ⏳ Pending             |
 

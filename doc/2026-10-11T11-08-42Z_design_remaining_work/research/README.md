@@ -2,11 +2,11 @@
 
 Notes gathered while answering the design questions. Copied from the working folders `/tmp/research-cf`, `/tmp/research-relay` and `/tmp/research-disc`. Crate tarballs are not copied; fetch them from crates.io if needed.
 
-| Folder | What it holds | Source |
-| --- | --- | --- |
-| `cf/` | Notes on iroh 1.3.0 crates (iroh, iroh-base, iroh-relay) and Cloudflare relay options | `notes.md` |
+| Folder   | What it holds                                                                                             | Source                       |
+| -------- | --------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| `cf/`    | Notes on iroh 1.3.0 crates (iroh, iroh-base, iroh-relay) and Cloudflare relay options                     | `notes.md`                   |
 | `relay/` | Relay hosting research: REPORT, container tags and releases, and the iroh-tickets and hetzner-app records | `REPORT.md` and JSON records |
-| `disc/` | Discovery research: DHT, pkarr and mDNS findings | `findings.md`, `report.md` |
+| `disc/`  | Discovery research: DHT, pkarr and mDNS findings                                                          | `findings.md`, `report.md`   |
 
 Crate tarballs used for reading source (not copied here):
 

@@ -103,7 +103,10 @@ fn b_rejects_a_changed_ticket_and_a_wrong_signer() {
 
     let other = SignedTicket::sign(EndpointTicket::new(addr()), &attacker_key());
     let err = other.verify_from(&inviter).expect_err("wrong signer");
-    assert!(err.to_string().contains("not signed by the expected inviter"));
+    assert!(
+        err.to_string()
+            .contains("not signed by the expected inviter")
+    );
     println!("B wrong signer: {err}");
 }
 
@@ -285,8 +288,7 @@ fn a_signature_made_for_option_d_is_refused_as_option_b() {
 
 #[test]
 fn e_a_plain_ticket_is_accepted_and_unverified_not_refused() {
-    let (ticket, status) =
-        check_route(&option_a(&addr()), None, &inviter_key().public()).unwrap();
+    let (ticket, status) = check_route(&option_a(&addr()), None, &inviter_key().public()).unwrap();
     assert_eq!(status, RouteStatus::Unverified);
     assert_eq!(ticket.endpoint_addr(), &addr());
 }
@@ -320,7 +322,10 @@ fn paste_rules_the_parser_applies_to_the_pasted_string() {
         ("trailing newline", format!("{text}\n")),
         ("trailing space", format!("{text} ")),
         ("leading space", format!(" {text}")),
-        ("upper-case prefix", text.replacen("endpoint", "ENDPOINT", 1)),
+        (
+            "upper-case prefix",
+            text.replacen("endpoint", "ENDPOINT", 1),
+        ),
         ("upper-case body", upper_body.clone()),
     ];
     for (label, candidate) in &cases {
@@ -338,7 +343,10 @@ fn paste_rules_the_parser_applies_to_the_pasted_string() {
     // The same rules apply to our own prefix, because both use Ticket::decode_string.
     let b = SignedTicket::sign(EndpointTicket::new(addr()), &inviter_key()).encode_string();
     let b_upper = format!("idsig{}", b["idsig".len()..].to_ascii_uppercase());
-    println!("paste B upper-case body: {:?}", SignedTicket::decode_string(&b_upper).is_ok());
+    println!(
+        "paste B upper-case body: {:?}",
+        SignedTicket::decode_string(&b_upper).is_ok()
+    );
     println!(
         "paste B trailing newline: {:?}",
         SignedTicket::decode_string(&format!("{b}\n")).is_ok()

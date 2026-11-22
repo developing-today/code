@@ -3,11 +3,10 @@ session: ses_2af5
 updated: 2026-04-03T00:10:47.600Z
 ---
 
-
-
 ## Summary
 
 ### Current Task
+
 **Phase 1 Part 3: Name-first URL scheme for pkgs/id web platform** — Change URL scheme so users see `/edit/{filename}` instead of `/edit/{hash}`.
 
 ### What Was Done (ALL COMPLETED & VERIFIED)
@@ -39,6 +38,7 @@ updated: 2026-04-03T00:10:47.600Z
    - serve-test.nix: `/file/` → `/edit/`, `/edit/{hash}` → `/hash/{hash}` with `-L` curl flag for redirect
 
 ### Verification Status
+
 - ✅ `cargo test --features web --lib` — **549 passed, 0 failed**
 - ✅ `cargo check --features web` — compiles cleanly
 - ⏠**NOT YET DONE: `just id::check`** — was about to run this when conversation was compacted
@@ -52,11 +52,13 @@ updated: 2026-04-03T00:10:47.600Z
   ```
 
 ### What Needs To Be Done Next
+
 1. Run `just id::check` (or equivalent full check) — ensure clippy/fmt/all tests pass
 2. Commit with the message above
 3. Parts 1-2 are already committed (collab sessions keyed by filename, editor template emits `data-doc-id={filename}`)
 
 ### Key Constraints
+
 - Never revert, force push, or rebase
 - Fix any clippy/fmt issues before committing
 - Run `just id::check` before committing — all tests must pass

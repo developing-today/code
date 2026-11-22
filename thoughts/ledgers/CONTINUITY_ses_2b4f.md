@@ -3,14 +3,14 @@ session: ses_2b4f
 updated: 2026-04-01T22:03:03.460Z
 ---
 
-
-
 ## Summary
 
 ### Task
+
 Execute the image upload implementation plan at `/home/user/code/pkgs/id/.opencode/worktrees/image-upload/pkgs/id/thoughts/shared/plans/2026-04-01-image-upload.md` — Batches 1-4 (CSS, helpers, server endpoint, plugin, wiring, unit tests). Skip Batch 5 (E2E + nix builds). Do NOT commit.
 
 ### Working Directory
+
 All paths relative to: `/home/user/code/pkgs/id/.opencode/worktrees/image-upload/pkgs/id` (a git worktree)
 
 ### Completed Work
@@ -29,16 +29,19 @@ All paths relative to: `/home/user/code/pkgs/id/.opencode/worktrees/image-upload
 ### Remaining Work
 
 **Batch 2 — NOT STARTED**
+
 - **Task 2a**: Add `POST /api/upload` endpoint to `src/web/routes.rs` — multipart handler, MIME validation, blob storage, metadata tags, JSON response `{hash, name, url}`. Add `DefaultBodyLimit` layer (10MB). Add Rust unit tests.
 - **Task 2b**: Already done as part of 1b (plugin was combined into single file)
 
 **Batch 3 — NOT STARTED**
+
 - **Task 3a**: Wire plugin into `web/src/editor.ts`:
   - Import `createImageUploadPlugin` from `./image-upload`
   - After `createIndentPlugin()` push (line 256), add image upload plugin with schema guard
   - Add `menuItems.insertImage` to Row 1 of customMenu (line 201) after `menuItems.toggleLink`
 
 **Batch 4 — NOT STARTED**
+
 - **Task 4a**: Create `web/src/image-upload.test.ts` with vitest tests for all helpers, constants, plugin creation, and upload function (mock fetch)
 - **Task 4b**: Run `cd web && bun run test` and `npx tsc --noEmit` to verify all tests pass
 
@@ -52,4 +55,5 @@ All paths relative to: `/home/user/code/pkgs/id/.opencode/worktrees/image-upload
 - **Build commands**: `cd web && bun install && bun run build`, `cargo build --no-default-features`, `cd web && bun run test`
 
 ### Next Step
+
 Proceed with **Batch 2, Task 2a**: Implement the Rust upload endpoint in `src/web/routes.rs`.

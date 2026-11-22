@@ -14,24 +14,24 @@ for the gated synthesis issue to own.
 
 ## TL;DR verdict
 
-**SSO can recover the hosted *account*. It cannot recover the *identity*, and it must
+**SSO can recover the hosted _account_. It cannot recover the _identity_, and it must
 never be allowed to mint one.** Today the ID key is a raw 32-byte Ed25519 secret in a
 local file with no export path and no backup: lose the device and the identity is gone,
 which is the correct default and the whole problem. The recovery model that fits the
 existing code is layered: device key (L0), passphrase-wrapped encrypted backup (L1),
 k-of-n Shamir shares with key-proven guardians (L2), and Google SSO as an account
-*pointer* that can never on its own rebind a key (L3).
+_pointer_ that can never on its own rebind a key (L3).
 
-| Case | What exists in the code today | Recoverable today? | Path that preserves LIST 7 |
-| --- | --- | --- | --- |
-| (a) Google account lost | **No SSO code at all** — no `google`, `oauth`, `sso`, `passkey` or `webauthn` in `pkgs/id/src` | n/a (design-only) | Key-native sign-in (`AccountKeyed`), or signed rebind from a surviving key; SSO alone may not rebind |
-| (b) Device / ID key lost | `.iroh-key` is a raw key file, mode `0600`, created lazily, **no export or backup command** | **No** — identity is unrecoverable | L1 wrapped backup (ciphertext blob server-side) + optional L2 shares |
-| (c) Multi-device | `Account.keys: BTreeSet` plus `AccountKeyAdded` / `AccountKeyRemoved` entries | **Partly** — the directory models it, the node does not | Per-device signer keys on one account; device certs signed by the identity key |
-| (d) Social recovery | Seitan exists, but as **Keybase V2 invite tokens**, not safety numbers | **No** | k-of-n Shamir of the L1 unwrap key, guardians bound to their *account* keys |
-| Server holds keys? | Account secret digest only (`SHA-256`), never a signing key | **Yes, preserved** | Reject custodial-key option §4.3.2 explicitly |
+| Case                     | What exists in the code today                                                                  | Recoverable today?                                      | Path that preserves LIST 7                                                                           |
+| ------------------------ | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| (a) Google account lost  | **No SSO code at all** — no `google`, `oauth`, `sso`, `passkey` or `webauthn` in `pkgs/id/src` | n/a (design-only)                                       | Key-native sign-in (`AccountKeyed`), or signed rebind from a surviving key; SSO alone may not rebind |
+| (b) Device / ID key lost | `.iroh-key` is a raw key file, mode `0600`, created lazily, **no export or backup command**    | **No** — identity is unrecoverable                      | L1 wrapped backup (ciphertext blob server-side) + optional L2 shares                                 |
+| (c) Multi-device         | `Account.keys: BTreeSet` plus `AccountKeyAdded` / `AccountKeyRemoved` entries                  | **Partly** — the directory models it, the node does not | Per-device signer keys on one account; device certs signed by the identity key                       |
+| (d) Social recovery      | Seitan exists, but as **Keybase V2 invite tokens**, not safety numbers                         | **No**                                                  | k-of-n Shamir of the L1 unwrap key, guardians bound to their _account_ keys                          |
+| Server holds keys?       | Account secret digest only (`SHA-256`), never a signing key                                    | **Yes, preserved**                                      | Reject custodial-key option §4.3.2 explicitly                                                        |
 
 **Bottom line:** three of the four cases are unsolved today, and two of them (lost key,
-no backup) are unsolved *by design* rather than by omission. The buildable core is small
+no backup) are unsolved _by design_ rather than by omission. The buildable core is small
 and composable — an exportable encrypted backup, shares over an existing signed channel,
 and a rule that SSO login never changes a key binding — and it should be built in that
 order, because L1 alone converts "identity gone" into "identity recoverable".
@@ -47,7 +47,7 @@ would carry it are only half present.
 
 - `lib.rs:292` — `pub const KEY_FILE: &str = ".iroh-key"`.
 - `lib.rs:298` — `pub const CLIENT_KEY_FILE: &str = ".iroh-key-client"`; the client key is
-  a *separate* key from the node key, loaded by `meta_client.rs:114`, `commands/client.rs:68`,
+  a _separate_ key from the node key, loaded by `meta_client.rs:114`, `commands/client.rs:68`,
   `commands/world.rs:48` and `commands/id.rs:43`.
 - `store.rs:91` — `load_or_create_keypair(path)` creates the file if absent; `store.rs:155`
   writes it with `.mode(0o600)`; `store.rs:179` tightens permissions on an existing file
@@ -73,10 +73,10 @@ which also means there is no way to restore one.
   `directory.rs:1769`), and `authenticate` (`directory.rs:1432-1457`) reconstructs
   and returns that key every time the credential is presented —
   `prepare_request_friend` (`directory.rs:1130`) and `publish` (`directory.rs:1372`)
-  then sign account objects with it. So the server-side code path *does* sign as the
+  then sign account objects with it. So the server-side code path _does_ sign as the
   account whenever the bearer credential is presented, and anyone who saw the secret
   once — at creation, in a log, in transit — can re-derive the key and sign
-  indefinitely. Digest-only persistent storage proves the secret is not *stored*; it
+  indefinitely. Digest-only persistent storage proves the secret is not _stored_; it
   does not establish an inability to sign. This exposure belongs to
   `AccountSignedUp` only; `AccountKeyed` (below) has no bearer credential to derive
   from.
@@ -108,7 +108,7 @@ Two consequences for recovery: (i) any recovery proof built on `verify_signed` i
 5-minute window and an in-memory replay cache — acceptable for a login, **not** acceptable
 for a "replace my identity key" operation, which must be persisted and single-use; (ii)
 there is no Google, OIDC, OAuth or WebAuthn code anywhere in `pkgs/id/src`. The SSO in
-§4.3 of the Cloudflare investigation is a *design*, not an implementation, so everything
+§4.3 of the Cloudflare investigation is a _design_, not an implementation, so everything
 below about SSO is a specification for a thing that does not exist yet.
 
 ### 1.4 Seitan in this repo is invites, not safety numbers
@@ -123,7 +123,7 @@ key and the admin admits it after checking revocation, expiry, single use, fresh
 
 That is still highly relevant, for a different reason: **a Seitan invite is a proof that
 the person on the other end holds a key derived from a out-of-band secret**. It is a good
-channel for delivering a share, but it is a *bad* guardian identity — the derived key is
+channel for delivering a share, but it is a _bad_ guardian identity — the derived key is
 single-use and per-invite, so it cannot serve as a stable "this is Alice" anchor. Guardians
 must be identified by their account key, bound at acceptance time.
 
@@ -139,7 +139,7 @@ p2panda-encryption's DCGKA: adds carry a secret bundle, membership changes rotat
 secret, and `encryption/welcome.rs` chunks a welcome envelope so a joiner can reconstruct
 it. Practically: **adding a device as a group member is how a new device obtains the
 decryption material for past epochs** — the mechanism exists, but it costs an epoch
-rotation for every group the user is in, and it treats the device as a *person-shaped*
+rotation for every group the user is in, and it treats the device as a _person-shaped_
 member rather than as one of several keys for a person.
 
 ### 1.6 The one place the server does hold keys (and why it is not a precedent)
@@ -182,7 +182,7 @@ This gives the one-line rule the rest of the document hangs on:
 With claim binding (§4.3.1: the ID key signs "this key claims hosted account
 `google:<sub-hash>`"), losing the Google account loses **one door**, not the identity:
 the key file still signs, directory entries still verify, group membership is unchanged.
-What breaks is the ability to *sign in to the hosted account* — i.e. to reach the DO that
+What breaks is the ability to _sign in to the hosted account_ — i.e. to reach the DO that
 stores the user's ciphertext, session metadata and share mailbox.
 
 That asymmetry is the point of claim binding, and it is also why §4.3.2 must stay rejected:
@@ -199,7 +199,7 @@ one incident with one recovery authority.
 3. **Rebind via a surviving key.** A signed `AccountKeyAdded`-style statement from any
    currently bound key naming the new `sub` hash. This works with no Google at all.
 4. **Rebind via recovery quorum.** If no key survives, fall through to §6 (L2 shares): the
-   quorum authorises a *new* identity plus a continuity statement (§5.4). Google plays no
+   quorum authorises a _new_ identity plus a continuity statement (§5.4). Google plays no
    part.
 5. **Email one-time code as a weak fallback** (`directory_auth.rs:26-29`, 15-minute codes).
    Acceptable for reaching an account whose keys are intact; **not** acceptable as authority
@@ -208,10 +208,10 @@ one incident with one recovery authority.
 ### 3.3 Threat: SSO takeover
 
 An attacker who takes over the Google account reaches the door. Under these rules they get
-the account's *server-side reachable* state — which, because content is encrypted to user
+the account's _server-side reachable_ state — which, because content is encrypted to user
 keys, is mostly metadata — and they cannot sign anything as the identity. They must not be
 able to add a key. Two implementation notes: the rebind endpoint must require a signature
-over a server-issued challenge including the new binding and a nonce, and the *old* keys
+over a server-issued challenge including the new binding and a nonce, and the _old_ keys
 must be notified (all bound devices) with a delay window before a rebind takes effect.
 
 ---
@@ -226,7 +226,7 @@ objects remain valid and verifiable, but nobody can sign as them again, and no m
 exists to prove "the new key is the same person" except out-of-band human judgement
 (admin-verified accounts, `directory.rs:189` `verify_account`).
 
-This is *correct behaviour* in the sense the issue means: with the key destroyed and no
+This is _correct behaviour_ in the sense the issue means: with the key destroyed and no
 shares, the identity is gone. The design question is not whether to prevent that, but how
 many independent ways out to offer before it happens.
 
@@ -282,11 +282,11 @@ of key A for identity X".
 Two designs, in increasing order of work:
 
 1. **Delegation certificate (buildable now).** `succession = Sign_A("successor:B,for:X,
-   epoch:n,not_after:t")`, stored in the directory and in each group's log. A verifier that
+epoch:n,not_after:t")`, stored in the directory and in each group's log. A verifier that
    trusts A accepts B for X, with a chain back to A. Costs almost nothing; gives continuity
-   of *authority*, not of decryption.
+   of _authority_, not of decryption.
 2. **Threshold identity (later).** The identity key is a threshold key; recovery with k-of-n
-   shares produces a signature under the *same* public key, so no succession statement is
+   shares produces a signature under the _same_ public key, so no succession statement is
    needed and group membership is untouched. This is the clean answer, but nothing in
    `pkgs/id` does threshold signing today and the crypto dependency would be new work.
 
@@ -301,7 +301,7 @@ Recommendation: ship (1) as the continuity mechanism, keep the key format able t
 
 `Account.keys` (`directory.rs:85`) is literally "further public keys that sign in as this
 account", and `AccountKeyAdded` / `AccountKeyRemoved` (`:166-178`) are durable entries. So
-the *account* layer already models N keys per identity. The *node* layer does not: each
+the _account_ layer already models N keys per identity. The _node_ layer does not: each
 device gets its own `.iroh-key` (or `.iroh-key-client`) in its own working directory, and
 nothing binds those device keys to one identity.
 
@@ -314,7 +314,7 @@ in every group, and a device removal looks like a person leaving.
 - One **identity key** per person (ideally threshold, §4.4).
 - One **device key** per device, with a device certificate
   `Sign_identity("device:D,not_after:t,scopes:…")`.
-- The directory records device certs as account keys; group membership is *authorized*
+- The directory records device certs as account keys; group membership is _authorized_
   by identity key, while the encryption roster's recipients are the per-device keys
   (see the removal bullet below for why the roster cannot be identity-only).
 - Adding a device: existing device (or identity key) signs the cert; the new device gets a
@@ -323,13 +323,13 @@ in every group, and a device removal looks like a person leaving.
 - Removing a device: revoke the cert **and remove that device's own encryption
   recipient**, then rotate group keys once. Cert revocation alone does not exclude
   anyone from group content (corrected per Codex review, PR #2278):
-  `AccountKeyRemoved` only deletes an account *sign-in* key, while
+  `AccountKeyRemoved` only deletes an account _sign-in_ key, while
   `encryption/scheme.rs::Session::update` distributes the new epoch secret to every
   current roster member — with an identity-only roster there is no device-specific
   recipient to exclude, and a revoked device that retained the identity's encryption
   state keeps receiving new epochs. Exclusion therefore requires device-level
   recipients in the encryption roster: the roster entry removed on revocation is the
-  *device* key, and the identity key's role is authorizing roster changes (via the
+  _device_ key, and the identity key's role is authorizing roster changes (via the
   device certs), not being the sole recipient. Per-device membership is retained at
   the encryption layer even though the account layer groups keys by identity. A
   device that was given a wrapped copy of the identity key itself (§5.3) cannot be
@@ -400,18 +400,18 @@ k guardians who collude can reconstruct the secret and impersonate the user. Two
 limitations of the obvious mitigations must be stated plainly (Codex review, PR #2278):
 
 - **The veto window does not gate direct signing.** Step 2 of §6.2 hands colluding
-  guardians the *existing* identity signing key immediately, before any delay begins.
+  guardians the _existing_ identity signing key immediately, before any delay begins.
   They can sign ordinary requests as that identity without publishing a recovery
   statement or registering a new device: `directory_auth.rs::verify_signed` verifies
   signatures without distinguishing a recovered copy of the key. The §6.2 veto therefore
-  governs only the *registered* recovery path (a new device cert taking effect), not
+  governs only the _registered_ recovery path (a new device cert taking effect), not
   impersonation with the reconstructed key. Closing this hole requires a recovery
   authority that cannot exercise the existing identity's signing power before the veto
-  completes — e.g. threshold signing (§4.4 option 2), where shares authorise a *new*
+  completes — e.g. threshold signing (§4.4 option 2), where shares authorise a _new_
   key and the existing signing key is never reconstructed.
 - **Epoch binding is not revocation.** Shares bound to `identity_pub || epoch` do not
   make a reconstruction useless after an epoch bump: former guardians who retain k old
-  shares *and* the corresponding wrapped identity backup can still reconstruct the old
+  shares _and_ the corresponding wrapped identity backup can still reconstruct the old
   unwrap key and decrypt that backup, and even a new unwrap key leaves the old backup
   able to reveal the same identity signing secret. Epoch binding is a freshness scope
   for shares, nothing more. A recovery (or rotation) that must defeat retained shares
@@ -419,7 +419,7 @@ limitations of the obvious mitigations must be stated plainly (Codex review, PR 
   verifiers**; until verifiers reject the old key, retained-share collusion works.
 
 Mitigations that do hold, in order of value: (i) the veto window lets the user's
-surviving devices cancel a hostile *registered* recovery; (ii) guardians hold
+surviving devices cancel a hostile _registered_ recovery; (ii) guardians hold
 ciphertext they cannot read alone, so k-1 guardians learn nothing; (iii) choose k
 relative to n so that collusion requires socially implausible coordination (3-of-5
 rather than 2-of-3 for high-value identities).
@@ -431,14 +431,14 @@ compromises is the attack, and no protocol removes it.
 
 ## 7. Threat analysis, per path
 
-| Path | Server collusion | Guardian collusion | SSO takeover | Replay of recovery proof | Other |
-| --- | --- | --- | --- | --- | --- |
-| L0 device key only | Server never sees it; nothing to collude over | n/a | Cannot sign; can only reach server-side metadata | n/a | Loss = identity loss (by design) |
-| L1 wrapped backup, server-stored | Server holds ciphertext; must break Argon2id + AEAD | n/a | Blob is useless without passphrase | Blob is static; replay is not meaningful, theft is | Offline guessing; passphrase reuse |
-| L1 file/QR backup | No server exposure at all | n/a | No | Same as above | User loses the file too; QR shoulder-surfing |
-| L2 Shamir among guardians | Server relays escrow blobs only | **Yes — k colluding guardians = takeover**; bound by identity-key revocation + veto window (epoch binding alone is not a mitigation, §6.3) | Cannot mint shares | Recovery statement must be single-use and persisted, not the in-memory 5-min cache (`directory_auth.rs:39`) | Guardian churn requires resharing; dead guardians reduce n |
-| L3 SSO as account pointer | Operator can read metadata and could *try* to rebind | n/a | **Gets the door, not the key** — provided rebind requires a key signature | Challenge must bind nonce + new binding + expiry | Phishing the Google login; `sub` recycling is excluded by Google's spec but hash the `sub` anyway |
-| Delegation certificate | Server stores a signed statement; cannot forge it | n/a | Cannot produce a successor statement | Certificate has `not_after` and epoch | Old key must still exist to sign — useless after total loss |
+| Path                             | Server collusion                                     | Guardian collusion                                                                                                                         | SSO takeover                                                              | Replay of recovery proof                                                                                    | Other                                                                                             |
+| -------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| L0 device key only               | Server never sees it; nothing to collude over        | n/a                                                                                                                                        | Cannot sign; can only reach server-side metadata                          | n/a                                                                                                         | Loss = identity loss (by design)                                                                  |
+| L1 wrapped backup, server-stored | Server holds ciphertext; must break Argon2id + AEAD  | n/a                                                                                                                                        | Blob is useless without passphrase                                        | Blob is static; replay is not meaningful, theft is                                                          | Offline guessing; passphrase reuse                                                                |
+| L1 file/QR backup                | No server exposure at all                            | n/a                                                                                                                                        | No                                                                        | Same as above                                                                                               | User loses the file too; QR shoulder-surfing                                                      |
+| L2 Shamir among guardians        | Server relays escrow blobs only                      | **Yes — k colluding guardians = takeover**; bound by identity-key revocation + veto window (epoch binding alone is not a mitigation, §6.3) | Cannot mint shares                                                        | Recovery statement must be single-use and persisted, not the in-memory 5-min cache (`directory_auth.rs:39`) | Guardian churn requires resharing; dead guardians reduce n                                        |
+| L3 SSO as account pointer        | Operator can read metadata and could _try_ to rebind | n/a                                                                                                                                        | **Gets the door, not the key** — provided rebind requires a key signature | Challenge must bind nonce + new binding + expiry                                                            | Phishing the Google login; `sub` recycling is excluded by Google's spec but hash the `sub` anyway |
+| Delegation certificate           | Server stores a signed statement; cannot forge it    | n/a                                                                                                                                        | Cannot produce a successor statement                                      | Certificate has `not_after` and epoch                                                                       | Old key must still exist to sign — useless after total loss                                       |
 
 Two rules fall out and belong in the implementation, not just the doc:
 
@@ -455,12 +455,12 @@ Two rules fall out and belong in the implementation, not just the doc:
 
 ### 8.1 The layers
 
-| Layer | Holds | Server sees | Recovers | Fails when |
-| --- | --- | --- | --- | --- |
-| **L0** device key | Identity key (or device key + cert) in `.iroh-key`, `0600` | Nothing | Nothing — this is the thing to protect | Device lost/stolen |
-| **L1** wrapped backup | AEAD(Argon2id(passphrase), identity key) | Ciphertext blob only | Lost device, with passphrase | Passphrase forgotten *and* no L2 |
-| **L2** social shares | k-of-n shares of the unwrap key, encrypted to guardian account keys | Ciphertext escrow only | Lost device and lost passphrase when k guardians respond — and a lost backup **only if the wrapped blob was durably replicated** (§6.1 prerequisite); shares alone cannot restore a lost blob | Fewer than k guardians reachable; k collude |
-| **L3** SSO | `google:<sub>` hash bound to the account by a key-signed claim | The `sub` hash and the binding record | Account *access* only — never a key | Google account lost (falls back to L0/L1/L2) |
+| Layer                 | Holds                                                               | Server sees                           | Recovers                                                                                                                                                                                      | Fails when                                   |
+| --------------------- | ------------------------------------------------------------------- | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| **L0** device key     | Identity key (or device key + cert) in `.iroh-key`, `0600`          | Nothing                               | Nothing — this is the thing to protect                                                                                                                                                        | Device lost/stolen                           |
+| **L1** wrapped backup | AEAD(Argon2id(passphrase), identity key)                            | Ciphertext blob only                  | Lost device, with passphrase                                                                                                                                                                  | Passphrase forgotten _and_ no L2             |
+| **L2** social shares  | k-of-n shares of the unwrap key, encrypted to guardian account keys | Ciphertext escrow only                | Lost device and lost passphrase when k guardians respond — and a lost backup **only if the wrapped blob was durably replicated** (§6.1 prerequisite); shares alone cannot restore a lost blob | Fewer than k guardians reachable; k collude  |
+| **L3** SSO            | `google:<sub>` hash bound to the account by a key-signed claim      | The `sub` hash and the binding record | Account _access_ only — never a key                                                                                                                                                           | Google account lost (falls back to L0/L1/L2) |
 
 ### 8.2 The flows
 
@@ -533,7 +533,7 @@ why it is written down here.
    veto window only helps if some device survives; with none, the notify step protects
    nobody. Social risk, not solvable in protocol.
 4. **Threshold signing / no-successor-needed rotation** — not implemented; requires a new
-   crypto dependency. Until then, recovery after total key loss produces a *new* key with a
+   crypto dependency. Until then, recovery after total key loss produces a _new_ key with a
    delegation chain that can only be signed if something of the old authority survived.
 5. **Guardian liveness over years** — shares die with devices, people stop answering, and
    resharing needs a live identity. No proactive-reshare design is proposed here.
@@ -542,7 +542,7 @@ why it is written down here.
    derived from that secret (`signing_key`, `directory.rs:1769`), so `authenticate`
    (`directory.rs:1432-1457`) reconstructs it on every presentation and the publish /
    friend-request paths sign with it. Digest-only storage therefore does not make the
-   server unable to sign — only unable to sign *without the secret*, which it
+   server unable to sign — only unable to sign _without the secret_, which it
    generated and saw. Anyone retaining the secret retains signing power.
    `AccountKeyed` avoids this entirely and should be the hosted default.
 7. **Replay-hardening of recovery proofs** — needs persisted single-use records; today's
@@ -570,7 +570,7 @@ why it is written down here.
 
 ## 10. Open questions for the design phase
 
-1. Is the identity key ever *exported* in the hosted edition, or only ever unwrapped in
+1. Is the identity key ever _exported_ in the hosted edition, or only ever unwrapped in
    memory on a device? Export changes the threat model for malware on the device.
 2. Do device certs live in the directory (visible, revocable) or in a user-private document
    (invisible to the operator)? Both are consistent with LIST 7; the first is auditable, the

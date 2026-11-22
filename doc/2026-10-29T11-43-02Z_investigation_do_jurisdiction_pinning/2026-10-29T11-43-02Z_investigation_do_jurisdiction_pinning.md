@@ -84,10 +84,10 @@ const stub = env.MY_DURABLE_OBJECT.get(euId);
 > jurisdiction by creating an individual `DurableObjectId`… **However, Cloudflare
 > does not recommend this approach.**"
 
-| Parameter | Location |
-| --------- | -------- |
-| `eu`      | The European Union |
-| `us`      | The United States |
+| Parameter | Location                      |
+| --------- | ----------------------------- |
+| `eu`      | The European Union            |
+| `us`      | The United States             |
 | `fedramp` | FedRAMP-Moderate data centers |
 
 Four properties of this mechanism matter for ID's design:
@@ -95,7 +95,7 @@ Four properties of this mechanism matter for ID's design:
 - **IDs are jurisdiction-scoped.** "It is possible to have the same name represent
   different IDs in different jurisdictions" — Cloudflare's own example asserts
   `idFromName("my-name") !== jurisdiction("eu").idFromName("my-name")`. So the same
-  Google `sub` yields a *different* Durable Object in `eu` than in `us`. That is
+  Google `sub` yields a _different_ Durable Object in `eu` than in `us`. That is
   good isolation and a live correctness hazard (§4.1).
 - **Mismatches fail loudly, missing pins fail open.** "You will run into an error if
   the jurisdiction on your `DurableObjectNamespace` and the jurisdiction on your
@@ -111,8 +111,8 @@ Four properties of this mechanism matter for ID's design:
   This is the cheapest runtime assertion available (§4.2) — but note the second
   case, which would make an assertion on a legacy alarm fail open.
 - **Metadata still leaves.** "A `DurableObjectId` will be logged outside of the
-  specified jurisdiction for billing and debugging purposes." Residency of *data*
-  is not residency of *metadata*; the Enterprise Data Localization Suite is the
+  specified jurisdiction for billing and debugging purposes." Residency of _data_
+  is not residency of _metadata_; the Enterprise Data Localization Suite is the
   product for the latter (§1.4).
 
 Cloudflare's 2020 launch post for the feature states the guarantee in mechanical
@@ -157,18 +157,18 @@ kept in the EU because we pass `locationHint: 'weur'`" is wrong.
 
 The #2044 design puts one user's data in four places — DO-SQLite (graph, journal),
 R2 (blobs), the shared D1 directory, KV (public caches). Each has its own
-data-location page; the guarantees are consistent but the *shapes* differ:
+data-location page; the guarantees are consistent but the _shapes_ differ:
 
-| Product | Jurisdiction values | Set when | Changeable | What the pin covers | Source |
-| ------- | ------------------- | -------- | ---------- | ------------------- | ------ |
-| **Durable Objects** | `eu`, `us`, `fedramp` | per namespace / ID, in Worker code | Not stated as "immutable"; jurisdiction is encoded in the ID, so a change is a different object | "only run and store data within a region" | [DO data location](https://developers.cloudflare.com/durable-objects/reference/data-location/) (2026-06-26) |
-| **R2** | `eu`, `fedramp`, `us` | bucket creation | No — "Once an R2 bucket is created, the jurisdiction cannot be changed" | objects "stored within a specific jurisdiction"; Workers must bind the jurisdiction too | [R2 data location](https://developers.cloudflare.com/r2/reference/data-location/) (2026-08-19) |
-| **KV** | `eu`, `fedramp`, `us` | namespace creation | No — "cannot be added or changed afterwards" | **durable storage only**: "KV data can be cached outside the jurisdiction location on Cloudflare's network" | [KV data location](https://developers.cloudflare.com/kv/reference/data-location/) (2026-10-02) |
-| **D1** | `eu`, `fedramp`, `us` | database creation | No — "cannot be added or updated after the database exists"; jurisdiction beats a location hint | "only run and store data within a region", **and "If a jurisdiction is configured, read replicas are only created within the jurisdiction"** | [D1 data location](https://developers.cloudflare.com/d1/configuration/data-location/) (2026-10-02) |
-| **Queues** | `eu`, `us`, `fedramp` | queue creation | No — "cannot add, change, or remove the jurisdiction later"; a DLQ must match its source queue | "only restricts where Queues stores and processes messages" | [Queues data location](https://developers.cloudflare.com/queues/configuration/data-location/) (2026-10-12) |
-| **Workflows** | `eu`, `us`, `fedramp` | workflow creation | — | pin covers the workflow's execution, but "**A Workflow's settings are stored outside of the specified jurisdiction**" | [Workflows data location](https://developers.cloudflare.com/workflows/reference/data-location/) |
-| **Containers** | `eu`, `fedramp` (**no `us`**) | `constraints.jurisdiction` in `wrangler` | — | container placement | [Wrangler configuration](https://developers.cloudflare.com/workers/wrangler/configuration/) |
-| **Workers AI, Vectorize, Hyperdrive** | — | — | — | no jurisdiction control exists: no data-location page in their docs, and the DLS compatibility matrix marks Workers AI and Vectorize ✘ for Regional Services | product `llms-full.txt` greps + [DLS compatibility](https://developers.cloudflare.com/data-localization/compatibility/) (2026-10-25) |
+| Product                               | Jurisdiction values           | Set when                                 | Changeable                                                                                      | What the pin covers                                                                                                                                          | Source                                                                                                                               |
+| ------------------------------------- | ----------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| **Durable Objects**                   | `eu`, `us`, `fedramp`         | per namespace / ID, in Worker code       | Not stated as "immutable"; jurisdiction is encoded in the ID, so a change is a different object | "only run and store data within a region"                                                                                                                    | [DO data location](https://developers.cloudflare.com/durable-objects/reference/data-location/) (2026-06-26)                          |
+| **R2**                                | `eu`, `fedramp`, `us`         | bucket creation                          | No — "Once an R2 bucket is created, the jurisdiction cannot be changed"                         | objects "stored within a specific jurisdiction"; Workers must bind the jurisdiction too                                                                      | [R2 data location](https://developers.cloudflare.com/r2/reference/data-location/) (2026-08-19)                                       |
+| **KV**                                | `eu`, `fedramp`, `us`         | namespace creation                       | No — "cannot be added or changed afterwards"                                                    | **durable storage only**: "KV data can be cached outside the jurisdiction location on Cloudflare's network"                                                  | [KV data location](https://developers.cloudflare.com/kv/reference/data-location/) (2026-10-02)                                       |
+| **D1**                                | `eu`, `fedramp`, `us`         | database creation                        | No — "cannot be added or updated after the database exists"; jurisdiction beats a location hint | "only run and store data within a region", **and "If a jurisdiction is configured, read replicas are only created within the jurisdiction"**                 | [D1 data location](https://developers.cloudflare.com/d1/configuration/data-location/) (2026-10-02)                                   |
+| **Queues**                            | `eu`, `us`, `fedramp`         | queue creation                           | No — "cannot add, change, or remove the jurisdiction later"; a DLQ must match its source queue  | "only restricts where Queues stores and processes messages"                                                                                                  | [Queues data location](https://developers.cloudflare.com/queues/configuration/data-location/) (2026-10-12)                           |
+| **Workflows**                         | `eu`, `us`, `fedramp`         | workflow creation                        | —                                                                                               | pin covers the workflow's execution, but "**A Workflow's settings are stored outside of the specified jurisdiction**"                                        | [Workflows data location](https://developers.cloudflare.com/workflows/reference/data-location/)                                      |
+| **Containers**                        | `eu`, `fedramp` (**no `us`**) | `constraints.jurisdiction` in `wrangler` | —                                                                                               | container placement                                                                                                                                          | [Wrangler configuration](https://developers.cloudflare.com/workers/wrangler/configuration/)                                          |
+| **Workers AI, Vectorize, Hyperdrive** | —                             | —                                        | —                                                                                               | no jurisdiction control exists: no data-location page in their docs, and the DLS compatibility matrix marks Workers AI and Vectorize ✘ for Regional Services | product `llms-full.txt` greps + [DLS compatibility](https://developers.cloudflare.com/data-localization/compatibility/) (2026-10-25) |
 
 Two details worth carrying into implementation:
 
@@ -200,7 +200,7 @@ centres may decrypt and process HTTPS traffic).
 
 It is **not** the mechanism for pinning Durable Object storage — jurisdictions are,
 and they are available without DLS. Cloudflare's own DLS "how to" for Durable
-Objects describes the jurisdiction subnamespace as *the* mechanism
+Objects describes the jurisdiction subnamespace as _the_ mechanism
 ([DLS → Durable Objects](https://developers.cloudflare.com/data-localization/how-to/durable-objects/)),
 and the DLS compatibility matrix marks DO ✅ for Regional Services, ⚫️ (not
 applicable) for Geo Key Manager, and 🚧 for Customer Metadata Boundary
@@ -210,24 +210,24 @@ updated 2026-10-25).
 That last cell is the practical warning: with Customer Metadata Boundary set to the
 EU, "Logs / Analytics [are] not available outside US region", and the DO metrics tab
 in the dashboard does not populate. **Conclusion:** a hosted ID offer that promises
-data residency needs jurisdictions (day one, free) and, if it promises *metadata*
+data residency needs jurisdictions (day one, free) and, if it promises _metadata_
 residency too, DLS (Enterprise, contract) — and the observability story degrades when
 DLS is on. These are two different line items.
 
 ### 1.5 What is not guaranteed (state these in any customer-facing text)
 
 - **Region, not country.** Only `eu` / `us` / `fedramp`. Country-level control exists
-  only at the *traffic* layer, where DLS Regional Services lists individual countries
+  only at the _traffic_ layer, where DLS Regional Services lists individual countries
   (Germany, France, UK, Japan, India, US states, …)
   ([region support](https://developers.cloudflare.com/data-localization/region-support/)) —
   and that is where requests are decrypted and answered, not where a Durable Object
-  and its storage rest. "Germany only" for DO compute *and* storage is not a
+  and its storage rest. "Germany only" for DO compute _and_ storage is not a
   documented off-the-shelf capability; it needs DLS plus a contractual commitment.
   Cloudflare also carves single-country Regional Services out of its SLA: "there is
   no automatic failover if in-country capacity is unavailable".
 - **The storage replication path is the weakest documented link.** The docs' promise
   is that the object "only run[s] and store[s] data within a region", and the 2020
-  post guarantees the *object* is created in and never migrates out of a
+  post guarantees the _object_ is created in and never migrates out of a
   jurisdiction's data-centre list. But DO SQLite storage is not single-copy: on every
   commit, "SRS will immediately forward the change log to five 'follower' machines
   across our network… Each of a database's five followers is located in a different
@@ -241,13 +241,13 @@ DLS is on. These are two different line items.
 - **Point-in-time recovery and backups.** The DO SQLite bookmark/PITR window is a
   platform feature; whether its retained copies are jurisdiction-confined is not
   documented either way. **UNCONFIRMED.**
-- **D1 read replication is fine** — this one *is* documented: "If a jurisdiction is
+- **D1 read replication is fine** — this one _is_ documented: "If a jurisdiction is
   configured, read replicas are only created within the jurisdiction set on database
   creation" ([D1 data location](https://developers.cloudflare.com/d1/configuration/data-location/)).
   Good, because the shared directory is the component most likely to want replicas.
 - **Workflows leak settings.** A jurisdiction-pinned Workflow still has its
-  "settings stored outside of the specified jurisdiction" — so a workflow's *inputs
-  and outputs* can be resident while its definition is not. Relevant only if async
+  "settings stored outside of the specified jurisdiction" — so a workflow's _inputs
+  and outputs_ can be resident while its definition is not. Relevant only if async
   work on user data is moved onto Workflows.
 - **Workers AI / Vectorize / Hyperdrive.** No jurisdiction control exists. Treat any
   user content passed to them as leaving the jurisdiction.
@@ -308,7 +308,7 @@ data (or a pointer to it) crosses the boundary the per-user pin promised.
    never graph content), and say so in the privacy policy.
 2. **A shared world DO has one jurisdiction, but its writers do not.** If user A
    (`eu`) and user B (`us`) write into the same world object, one of them is writing
-   outside their jurisdiction. This is a *product* decision, not a platform one:
+   outside their jurisdiction. This is a _product_ decision, not a platform one:
    either worlds are jurisdiction-partitioned (an `eu` world and a `us` world, no
    cross-participation), or cross-jurisdiction participation is explicit, consented
    and disclosed. It cannot be silently allowed and still be called residency.
@@ -388,7 +388,7 @@ jurisdiction.
   never as a footnote only a lawyer sees.
 
 This is the answer to the issue's second acceptance criterion: the offer does not
-*need* a region choice to exist, but the *system* needs the jurisdiction dimension
+_need_ a region choice to exist, but the _system_ needs the jurisdiction dimension
 before the first DO is created, or the choice can never be offered cheaply.
 
 ---
@@ -437,7 +437,7 @@ references (see the shared-blob rule below). That is a freeze-window operation o
 account. Consequences:
 
 - **Blobs are copied first, and verified, or the import references bytes that
-  are not there.** The graph and journal hold content-addressed *references*
+  are not there.** The graph and journal hold content-addressed _references_
   to R2 objects (§3.3 of #2044), and the bucket is per-jurisdiction and
   immutable, so importing the DO into another jurisdiction restores the
   references without their content. Copy every object reachable from the
@@ -469,7 +469,7 @@ account. Consequences:
 - signed objects are transport- and location-independent, so signatures survive the
   move unchanged — the migration is a copy, not a re-signing.
 
-### 4.5 What this does *not* change
+### 4.5 What this does _not_ change
 
 The rest of the #2044 design stands: DO-SQLite as the per-user store, hibernating
 WebSockets, blobs in R2, one shared D1 directory, signature-verified bridging. The
@@ -504,11 +504,11 @@ Filed as follow-up C.
 
 ## 6. Follow-up work (filed from this investigation)
 
-| # | Issue | Why |
-| - | ----- | --- |
-| A | `id: design: jurisdiction-aware per-user store routing` | The buildable core: `jurisdiction` on the user record, `userObjectId(sub, jurisdiction)`, restricted-namespace binding, `ctx.id.jurisdiction` assertion, R2 bucket-per-jurisdiction, directory residency note. |
-| B | `id: investigate: cross-jurisdiction shared worlds and federation` | §2.2: a world DO has one jurisdiction; participants elsewhere write across the boundary. Needs a product decision (partition vs consented cross-participation) before worlds ship hosted. |
-| C | `id: PoC: verify DO jurisdiction mechanics and vendor guarantees` | §5 mechanics, plus a written ask to Cloudflare for the two UNCONFIRMED residency items that a DPA would depend on: whether the SRS five-follower replication path and the object storage holding WAL/snapshots are jurisdiction-confined, and whether PITR-retained copies are (§1.5). D1 read replication is **not** in this list — it is documented as jurisdiction-respecting. |
+| #   | Issue                                                              | Why                                                                                                                                                                                                                                                                                                                                                                               |
+| --- | ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A   | `id: design: jurisdiction-aware per-user store routing`            | The buildable core: `jurisdiction` on the user record, `userObjectId(sub, jurisdiction)`, restricted-namespace binding, `ctx.id.jurisdiction` assertion, R2 bucket-per-jurisdiction, directory residency note.                                                                                                                                                                    |
+| B   | `id: investigate: cross-jurisdiction shared worlds and federation` | §2.2: a world DO has one jurisdiction; participants elsewhere write across the boundary. Needs a product decision (partition vs consented cross-participation) before worlds ship hosted.                                                                                                                                                                                         |
+| C   | `id: PoC: verify DO jurisdiction mechanics and vendor guarantees`  | §5 mechanics, plus a written ask to Cloudflare for the two UNCONFIRMED residency items that a DPA would depend on: whether the SRS five-follower replication path and the object storage holding WAL/snapshots are jurisdiction-confined, and whether PITR-retained copies are (§1.5). D1 read replication is **not** in this list — it is documented as jurisdiction-respecting. |
 
 Gated syntheses and PoCs from the parent epic stay gated on their named inputs; none
 of these three depends on an unfinished synthesis — A is a design on top of this

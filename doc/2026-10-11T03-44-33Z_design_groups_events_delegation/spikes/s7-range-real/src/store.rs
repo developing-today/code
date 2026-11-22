@@ -46,7 +46,8 @@ pub struct Store {
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
-        let db = Database::create(path).with_context(|| format!("redb: opening {}", path.display()))?;
+        let db =
+            Database::create(path).with_context(|| format!("redb: opening {}", path.display()))?;
         Ok(Self { db })
     }
 
@@ -59,7 +60,9 @@ impl Store {
             let mut author_seq = txn.open_table(AUTHOR_SEQ)?;
             let mut events = txn.open_table(EVENTS)?;
             for item in items {
-                let held = author_seq.get(item.key.as_slice())?.map(|g| g.value().to_vec());
+                let held = author_seq
+                    .get(item.key.as_slice())?
+                    .map(|g| g.value().to_vec());
                 match held {
                     Some(prev) if prev.as_slice() == item.id.as_slice() => {
                         batch.duplicates += 1;
@@ -94,7 +97,9 @@ impl Store {
     pub fn record(&self, id: &Id) -> Result<Vec<u8>> {
         let txn = self.db.begin_read()?;
         let events = txn.open_table(EVENTS)?;
-        let row = events.get(id.as_slice())?.with_context(|| format!("no event {}", hex::encode(id)))?;
+        let row = events
+            .get(id.as_slice())?
+            .with_context(|| format!("no event {}", hex::encode(id)))?;
         Ok(row.value().to_vec())
     }
 
@@ -118,7 +123,10 @@ impl Store {
     /// Row counts: (events, author_seq).
     pub fn counts(&self) -> Result<(u64, u64)> {
         let txn = self.db.begin_read()?;
-        Ok((txn.open_table(EVENTS)?.len()?, txn.open_table(AUTHOR_SEQ)?.len()?))
+        Ok((
+            txn.open_table(EVENTS)?.len()?,
+            txn.open_table(AUTHOR_SEQ)?.len()?,
+        ))
     }
 
     /// Removes one event from both tables. Used only to build a gap in a test store.
@@ -127,7 +135,9 @@ impl Store {
         {
             let mut author_seq = txn.open_table(AUTHOR_SEQ)?;
             let mut events = txn.open_table(EVENTS)?;
-            let id = author_seq.remove(key.as_slice())?.map(|g| g.value().to_vec());
+            let id = author_seq
+                .remove(key.as_slice())?
+                .map(|g| g.value().to_vec());
             if let Some(id) = id {
                 events.remove(id.as_slice())?;
             }

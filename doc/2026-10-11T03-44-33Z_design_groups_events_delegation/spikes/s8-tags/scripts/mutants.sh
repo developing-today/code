@@ -7,22 +7,24 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root" || exit 1
 export CARGO_TARGET_DIR="$root/mutants/target"
 mkdir -p logs
-: > logs/mutants.txt
+: >logs/mutants.txt
 
 mut() {
   local name=$1 expr=$2 dir="mutants/$1"
-  rm -rf "$dir"; mkdir -p "$dir"
+  rm -rf "$dir"
+  mkdir -p "$dir"
   cp -r Cargo.toml Cargo.lock src tests "$dir"/
   perl -0pi -e "$expr" "$dir/src/lib.rs"
   if cmp -s src/lib.rs "$dir/src/lib.rs"; then
-    echo "== $name: mutation did not apply" >> logs/mutants.txt; return
+    echo "== $name: mutation did not apply" >>logs/mutants.txt
+    return
   fi
-  (cd "$dir" && "$CARGO" test --test props --no-fail-fast 2>&1) > "logs/mutant_$name.txt"
+  (cd "$dir" && "$CARGO" test --test props --no-fail-fast 2>&1) >"logs/mutant_$name.txt"
   {
     echo "== $name"
     grep -E "^test |test result" "logs/mutant_$name.txt"
     grep -E "minimal failing input|Test failed|assertion" "logs/mutant_$name.txt" | head -4
-  } >> logs/mutants.txt
+  } >>logs/mutants.txt
 }
 
 # m1: a clear removes every named dot, ignoring its clock (breaks unobserved-remove).

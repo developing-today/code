@@ -260,9 +260,7 @@ export async function readDecisionEvents(
 }
 
 /** Validate one client-reported event (POST /api/decisions/<id>/events). */
-export function validateDecisionEventInput(
-  value: unknown,
-):
+export function validateDecisionEventInput(value: unknown):
   | {
       ok: true;
       value: { type: DecisionEventType; questionRef?: DecisionEventQuestionRef; payload: Record<string, unknown> };

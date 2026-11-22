@@ -17,7 +17,7 @@ mcpx as a client speaks 2024-11-05, 2025-03-26, 2025-06-18 and 2025-11-25
 ## Headers
 
 - **Legacy Streamable HTTP.** `MCP-Protocol-Version` is the version
-  `initialize` *returned*, on every request after it. It used to be the
+  `initialize` _returned_, on every request after it. It used to be the
   constant `2025-11-25`, so a server that negotiated down to 2025-06-18 was told
   on every request that the client was speaking a revision it had just declined.
   `initialize` itself carries no header (nothing is agreed yet), and a server
@@ -45,7 +45,7 @@ the client MUST mirror them into `Mcp-Param-{Name}` headers.
 - **Validation, at `tools/list`.** An annotation must be a non-empty RFC 9110
   token, case-insensitively unique, on an `integer`, `string` or `boolean`
   (never `number`), reachable from the root through `properties` alone. The walk
-  visits the *whole* schema, so an annotation under `items`, `anyOf`, `not`,
+  visits the _whole_ schema, so an annotation under `items`, `anyOf`, `not`,
   `$defs` or at the root is found and makes the tool invalid rather than being
   silently ignored. An invalid tool is **excluded** from the list mcpx returns
   and a `server.warning` lifecycle event names it and the reason. Only on a
@@ -93,7 +93,7 @@ the client MUST mirror them into `Mcp-Param-{Name}` headers.
   agreed to.
 - **`initialize` is never cancelled.** Every legacy cancellation page forbids
   it; a timed-out `initialize` used to send `notifications/cancelled`.
-- **Modern HTTP:** closing the response stream *is* the cancellation; no
+- **Modern HTTP:** closing the response stream _is_ the cancellation; no
   `notifications/cancelled` is POSTed. **Modern stdio:** the notification MUST
   be sent, and is. **Legacy:** sent -- including for an HTTP request timed out
   while its POST still waited for response headers, which was never cancelled:
@@ -110,7 +110,7 @@ the client MUST mirror them into `Mcp-Param-{Name}` headers.
   in-flight request".
 - **Capabilities.** `roots` is `{}` on a modern request (2026-07-28 dropped
   `listChanged` with `notifications/roots/list_changed`), `{"listChanged":
-  false}` in `initialize`.
+false}` in `initialize`.
 
 ## Notifications from a modern server: subscriptions/listen
 
@@ -153,7 +153,7 @@ override and `mcpx serve` cannot see.
   installed — the broker stores the URL, shows it (`mcpx elicit list`), takes
   the answer and honours `notifications/elicitation/complete`, so it is carried
   end to end; `sampling` only with a handler. A request in a mode that was not
-  declared *for the revision in use* is `-32602`, as the elicitation page
+  declared _for the revision in use_ is `-32602`, as the elicitation page
   requires: url mode to a server that negotiated 2025-06-18 is refused even
   though `initialize` offered it, because that revision has no url mode.
 - **Defaults.** An accepted form answer's missing fields are filled from the
@@ -188,9 +188,9 @@ next start goes straight there without the two refused POSTs.
 
 ## Official suite, client leg (before → after)
 
-| set | before | after |
-| --- | --- | --- |
-| `--requirements 2025-11-25` | 5 passed, 64 failed | 20 passed, 56 failed |
+| set                         | before                           | after                            |
+| --------------------------- | -------------------------------- | -------------------------------- |
+| `--requirements 2025-11-25` | 5 passed, 64 failed              | 20 passed, 56 failed             |
 | `--requirements 2026-07-28` | 23 passed, 101 failed, 1 warning | 63 passed, 68 failed, 0 warnings |
 
 Every remaining failure is `auth/*`: mcpx has no OAuth client. One non-auth

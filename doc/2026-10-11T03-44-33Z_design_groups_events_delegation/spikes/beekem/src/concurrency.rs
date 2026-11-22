@@ -3,20 +3,23 @@
 
 use crate::{
     common::Member,
-    party::{build, Op, Party},
+    party::{Op, Party, build},
 };
+use beekem::id::TreeId;
 use beekem::{error::CgkaError, id::MemberId, pcs_key::PcsKey};
 use keyhive_crypto::{share_key::ShareKey, signer::memory::MemorySigner, verifiable::Verifiable};
-use rand::{rngs::StdRng, seq::SliceRandom, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng, seq::SliceRandom};
 use std::{
     collections::BTreeMap,
     panic::{self, AssertUnwindSafe},
     sync::Mutex,
 };
-use beekem::id::TreeId;
 
 fn hex8(k: &PcsKey) -> String {
-    k.0.as_slice()[..4].iter().map(|b| format!("{b:02x}")).collect()
+    k.0.as_slice()[..4]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// Deliver `op` to `p` and print what happened.
@@ -39,11 +42,18 @@ fn status(names: &[&str], ps: &mut [Party]) {
             }
             Err(e) => format!("no root ({e:?})"),
         };
-        println!("  {name}: members={size}, {root}, has_pcs_key={}", p.c.has_pcs_key());
+        println!(
+            "  {name}: members={size}, {root}, has_pcs_key={}",
+            p.c.has_pcs_key()
+        );
     }
     let all_derive = keys.len() == ps.len();
     let agree = all_derive && keys.windows(2).all(|w| w[0] == w[1]);
-    println!("  all replicas derive one key: {agree} (derived by {} of {})", keys.len(), ps.len());
+    println!(
+        "  all replicas derive one key: {agree} (derived by {} of {})",
+        keys.len(),
+        ps.len()
+    );
 }
 
 fn s0_plain_remove(rng: &mut StdRng) {
@@ -149,7 +159,10 @@ fn s5_out_of_order(rng: &mut StdRng) {
     let op2 = ps[1].update(rng).expect("b updates");
     let before = ps[3].c.ops_count();
     give(&mut ps[3], "d (op2 first)", &op2);
-    println!("  d's op count unchanged after the rejected op: {}", ps[3].c.ops_count() == before);
+    println!(
+        "  d's op count unchanged after the rejected op: {}",
+        ps[3].c.ops_count() == before
+    );
     give(&mut ps[3], "d (op1)", &op1);
     give(&mut ps[3], "d (op2, retry)", &op2);
     give(&mut ps[3], "d (op2, duplicate)", &op2);
@@ -207,7 +220,10 @@ fn deliver_to(p: &mut Party, op: &Op, buffer: bool, stats: &mut Stats) {
             return;
         }
         Err(e) => {
-            *stats.errors.entry(format!("{e:?}").chars().take(40).collect()).or_default() += 1;
+            *stats
+                .errors
+                .entry(format!("{e:?}").chars().take(40).collect())
+                .or_default() += 1;
             return;
         }
     }
@@ -219,7 +235,10 @@ fn deliver_to(p: &mut Party, op: &Op, buffer: bool, stats: &mut Stats) {
                 Err(CgkaError::OutOfOrderOperation) => p.buffer.push(pending),
                 Ok(_) => progress = true,
                 Err(e) => {
-                    *stats.errors.entry(format!("{e:?}").chars().take(40).collect()).or_default() += 1;
+                    *stats
+                        .errors
+                        .entry(format!("{e:?}").chars().take(40).collect())
+                        .or_default() += 1;
                     progress = true;
                 }
             }
@@ -268,7 +287,9 @@ fn sorted_ids(p: &Party) -> Vec<MemberId> {
 fn trial(seed: u64, buffer: bool, stats: &mut Stats) -> Result<bool, String> {
     let mut rng = StdRng::seed_from_u64(seed);
     let doc_id = TreeId(MemorySigner::generate(&mut rng).verifying_key());
-    let mut ps: Vec<Party> = (0..GROUP).map(|_| Party::new(doc_id, Member::new(&mut rng))).collect();
+    let mut ps: Vec<Party> = (0..GROUP)
+        .map(|_| Party::new(doc_id, Member::new(&mut rng)))
+        .collect();
     // Setup, in order, as in `build`.
     for i in 0..GROUP {
         let (id, pk) = (ps[i].id(), ps[i].m.pk);
@@ -300,7 +321,10 @@ fn trial(seed: u64, buffer: bool, stats: &mut Stats) -> Result<bool, String> {
                 ps[a].update(&mut rng).map(Some)
             } else if roll < 8 {
                 let own = ps[a].id();
-                let mut view: Vec<MemberId> = sorted_ids(&ps[a]).into_iter().filter(|id| *id != own).collect();
+                let mut view: Vec<MemberId> = sorted_ids(&ps[a])
+                    .into_iter()
+                    .filter(|id| *id != own)
+                    .collect();
                 if view.is_empty() {
                     Ok(None)
                 } else {
@@ -315,12 +339,18 @@ fn trial(seed: u64, buffer: bool, stats: &mut Stats) -> Result<bool, String> {
             };
             match made {
                 Ok(Some(op)) => {
-                    stats.max_predecessors = stats.max_predecessors.max(op.payload.predecessors().len());
+                    stats.max_predecessors =
+                        stats.max_predecessors.max(op.payload.predecessors().len());
                     let others = (0..GROUP).filter(|&i| i != a).collect();
                     flight.push((op, others));
                 }
                 Ok(None) => {}
-                Err(e) => *stats.errors.entry(format!("{e:?}").chars().take(40).collect()).or_default() += 1,
+                Err(e) => {
+                    *stats
+                        .errors
+                        .entry(format!("{e:?}").chars().take(40).collect())
+                        .or_default() += 1
+                }
             }
         }
         deliver_some(&mut ps, &mut flight, 0.5, buffer, &mut rng, stats);
@@ -390,17 +420,30 @@ pub fn fuzz(trials: usize, buffer: bool) {
             Ok(Ok(true)) => stats.converged += 1,
             Ok(Ok(false)) => stats.emptied += 1,
             Ok(Err(reason)) => *stats.failures.entry(reason).or_default() += 1,
-            Err(_) => *stats.failures.entry("panic (see below)".into()).or_default() += 1,
+            Err(_) => {
+                *stats
+                    .failures
+                    .entry("panic (see below)".into())
+                    .or_default() += 1
+            }
         }
     }
     let _ = panic::take_hook();
 
-    println!("## Randomized run: {trials} trials, {ROUNDS} rounds, group of {GROUP}, buffering={buffer}");
+    println!(
+        "## Randomized run: {trials} trials, {ROUNDS} rounds, group of {GROUP}, buffering={buffer}"
+    );
     println!("converged: {} of {trials}", stats.converged);
     println!("nobody left to settle (not compared): {}", stats.emptied);
-    println!("out-of-order deliveries buffered: {}", stats.buffered_events);
+    println!(
+        "out-of-order deliveries buffered: {}",
+        stats.buffered_events
+    );
     println!("out-of-order deliveries dropped: {}", stats.dropped);
-    println!("max predecessors named by one op: {}", stats.max_predecessors);
+    println!(
+        "max predecessors named by one op: {}",
+        stats.max_predecessors
+    );
     println!("failures by reason:");
     for (reason, count) in &stats.failures {
         println!("  {count:>4}  {reason}");

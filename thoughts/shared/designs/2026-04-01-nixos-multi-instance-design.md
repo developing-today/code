@@ -26,6 +26,7 @@ Convert `id-module.nix` from single-instance to **`services.id.instances.<name>`
 ### Why not backward compat?
 
 The plan originally called for `services.id.enable = true` shorthand that maps to an implicit `instances.default`. This was dropped because:
+
 - Adds ~30% more module code for a mapping layer
 - Creates two code paths to test and maintain
 - Zero external consumers benefit from it
@@ -36,21 +37,23 @@ The plan originally called for `services.id.enable = true` shorthand that maps t
 ### Module Structure (`nix/id-module.nix`)
 
 **Top-level shared option:**
+
 - `services.id.package` — the id binary package (shared by all instances)
 
 **Per-instance options** (`services.id.instances.<name>`):
-| Option        | Type          | Default | Description                     |
-|---------------|---------------|---------|----------------------------------|
-| `enable`      | bool          | false   | Enable this instance             |
-| `web`         | bool          | true    | Enable web interface             |
-| `port`        | port          | 3000    | Web UI port                      |
-| `irohPort`    | port          | 0       | QUIC endpoint port (0 = random)  |
-| `ephemeral`   | bool          | false   | In-memory storage                |
-| `noRelay`     | bool          | false   | Disable relay servers            |
-| `noGossip`    | bool          | false   | Disable gossip discovery         |
-| `noMdns`      | bool          | false   | Disable mDNS discovery           |
-| `extraArgs`   | list of str   | []      | Extra CLI args                   |
-| `openFirewall`| bool          | false   | Open TCP port in firewall        |
+
+| Option         | Type        | Default | Description                     |
+| -------------- | ----------- | ------- | ------------------------------- |
+| `enable`       | bool        | false   | Enable this instance            |
+| `web`          | bool        | true    | Enable web interface            |
+| `port`         | port        | 3000    | Web UI port                     |
+| `irohPort`     | port        | 0       | QUIC endpoint port (0 = random) |
+| `ephemeral`    | bool        | false   | In-memory storage               |
+| `noRelay`      | bool        | false   | Disable relay servers           |
+| `noGossip`     | bool        | false   | Disable gossip discovery        |
+| `noMdns`       | bool        | false   | Disable mDNS discovery          |
+| `extraArgs`    | list of str | []      | Extra CLI args                  |
+| `openFirewall` | bool        | false   | Open TCP port in firewall       |
 
 ### systemd Service Generation
 

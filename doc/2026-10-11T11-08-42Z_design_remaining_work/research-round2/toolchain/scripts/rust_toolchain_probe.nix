@@ -4,11 +4,19 @@ let
   npRev = builtins.getEnv "NP_REV";
   rustOverlay = builtins.getFlake "github:oxalica/rust-overlay/${ovRev}";
   nixpkgsFlake = builtins.getFlake "github:NixOS/nixpkgs/${npRev}";
-  pkgs = import nixpkgsFlake.outPath { system = "x86_64-linux"; overlays = [ (import rustOverlay.outPath) ]; };
+  pkgs = import nixpkgsFlake.outPath {
+    system = "x86_64-linux";
+    overlays = [ (import rustOverlay.outPath) ];
+  };
   tc = pkgs.rust-bin.fromRustupToolchain {
     channel = "1.99.0";
     profile = "default";
-    components = [ "rustfmt" "clippy" "rust-analyzer" "llvm-tools" ];
+    components = [
+      "rustfmt"
+      "clippy"
+      "rust-analyzer"
+      "llvm-tools"
+    ];
   };
 in
 builtins.concatStringsSep "\n" [

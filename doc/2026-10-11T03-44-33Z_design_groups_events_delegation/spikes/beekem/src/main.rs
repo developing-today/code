@@ -37,7 +37,9 @@ fn main() {
         ["secrecy"] => secrecy::run(),
         ["join"] => join::run(),
         _ => {
-            eprintln!("usage: beekem-spike costs <n> | scenarios | fuzz <trials> <buffer|drop> | secrecy | join");
+            eprintln!(
+                "usage: beekem-spike costs <n> | scenarios | fuzz <trials> <buffer|drop> | secrecy | join"
+            );
             std::process::exit(2);
         }
     }

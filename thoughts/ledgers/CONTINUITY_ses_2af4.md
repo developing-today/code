@@ -6,9 +6,11 @@ updated: 2026-04-03T00:27:05.550Z
 ## Summary
 
 ### Task
+
 The previous session performed a comprehensive analysis of unit test patterns in `pkgs/id/src/web/` to understand how HTTP handlers, AppState, WebSockets, and integration tests are structured.
 
 ### What Was Done
+
 All 9 source files in `pkgs/id/src/web/` and the integration test file `tests/cli_integration.rs` were read and analyzed. The key findings were:
 
 1. **No HTTP handler-level tests exist** — all `#[cfg(test)]` modules test only pure functions and data structures, never actual Axum handlers
@@ -20,18 +22,23 @@ All 9 source files in `pkgs/id/src/web/` and the integration test file `tests/cl
 7. **No shared test helper module** exists
 
 ### Key Technical Insight
+
 To add HTTP handler unit tests would require either:
+
 1. Creating a test helper that bootstraps a real in-memory iroh node (like `--ephemeral` mode)
 2. Using `tower::ServiceExt::oneshot()` with a real `AppState` backed by an ephemeral store
 3. Adding trait abstractions to mock the store layer (doesn't currently exist)
 
 ### Current State
+
 Analysis is complete. No code was modified — this was a read-only investigation.
 
 ### What Needs to Be Done Next
+
 No explicit next steps were defined. The analysis was informational. If the goal is to add new tests, a decision is needed on which approach to take for handler-level testing.
 
 **Should I proceed with something specific?** For example:
+
 - Adding unit tests to `tags_ws.rs` (which has zero tests)?
 - Creating a test helper module for constructing ephemeral `AppState`?
 - Adding handler-level tests using a real ephemeral iroh node?

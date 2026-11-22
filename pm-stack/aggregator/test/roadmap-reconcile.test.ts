@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { ProjectPoolItem, RoadmapRow } from "../src/model.ts";
 import { renderRoadmap } from "../src/render.ts";
-import { normalizeTitle, reconcileRoadmap, roadmapDriftReport, unavailableRoadmapReconciliation } from "../src/roadmap-reconcile.ts";
+import {
+  normalizeTitle,
+  reconcileRoadmap,
+  roadmapDriftReport,
+  unavailableRoadmapReconciliation,
+} from "../src/roadmap-reconcile.ts";
 
 // #1144: Grist roadmap rows ↔ Project Kind=Epic reconciliation.
 
@@ -37,7 +42,10 @@ const epic = (ref: string, title: string, kind: string | null = "Epic"): Project
 describe("reconcileRoadmap (#1144)", () => {
   test("matches by linked ref first, then by normalized title", () => {
     const rows = [row(1, "Renamed beyond recognition", ["dezren39/nix#508"]), row(2, "Basement Cluster!!")];
-    const pool = [epic("dezren39/nix#508", "EPIC: Basement cluster"), epic("developing-today/code#900", "basement cluster")];
+    const pool = [
+      epic("dezren39/nix#508", "EPIC: Basement cluster"),
+      epic("developing-today/code#900", "basement cluster"),
+    ];
     const rec = reconcileRoadmap(rows, pool);
     expect(rec.matched.length).toBe(2);
     expect(rec.matched[0].via).toBe("ref");
@@ -81,8 +89,17 @@ describe("reconcileRoadmap (#1144)", () => {
 
 describe("renderRoadmap drift indicator (#1144)", () => {
   const PROV = {
-    board: "x", roadmap: "x", items: "x", comments: "x", quota: "x", usage: "x",
-    attention: "x", orchestration: "x", dns: "x", registry: "x", aa: "x",
+    board: "x",
+    roadmap: "x",
+    items: "x",
+    comments: "x",
+    quota: "x",
+    usage: "x",
+    attention: "x",
+    orchestration: "x",
+    dns: "x",
+    registry: "x",
+    aa: "x",
   } as Parameters<typeof renderRoadmap>[2];
 
   test("drift > 0 flags the page; zero drift stays quiet", () => {

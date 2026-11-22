@@ -6,12 +6,12 @@ Read-only research. Nothing deployed, no accounts, no DNS. Sources: crate tarbal
 
 ## Deployment options (effort is my estimate)
 
-| Option | Effort | Monthly cost | Owner provides | What works |
-|---|---|---|---|---|
+| Option                             | Effort    | Monthly cost                                                | Owner provides                                        | What works                |
+| ---------------------------------- | --------- | ----------------------------------------------------------- | ----------------------------------------------------- | ------------------------- |
 | A. VPS, public IPv4 (Hetzner CX23) | 30–45 min | €5.49 excl. VAT, IPv4 extra [read]; 20 TB EU traffic [read] | payment method, domain, ports 80/443 TCP and 7842 UDP | Relay, QAD, hole punching |
-| B. Home server, port forwarding | 1–2 h | ~$0 + power; upload caps relay traffic [inferred] | domain, static IP or DDNS, no CGNAT | Full, if forwarding works |
-| C. Home server, Cloudflare Tunnel | 30–60 min | $0 on Free [snippet] | domain on Cloudflare DNS; no card on Free [snippet] | Relay only; no QAD [read] |
-| D. Fly.io container | 45–90 min | $2.19–3.69 machine, +$2 IPv4 for UDP, +$0.02/GB out [read] | card, no free tier [read]; domain | Relay; QAD unverified |
+| B. Home server, port forwarding    | 1–2 h     | ~$0 + power; upload caps relay traffic [inferred]           | domain, static IP or DDNS, no CGNAT                   | Full, if forwarding works |
+| C. Home server, Cloudflare Tunnel  | 30–60 min | $0 on Free [snippet]                                        | domain on Cloudflare DNS; no card on Free [snippet]   | Relay only; no QAD [read] |
+| D. Fly.io container                | 45–90 min | $2.19–3.69 machine, +$2 IPv4 for UDP, +$0.02/GB out [read]  | card, no free tier [read]; domain                     | Relay; QAD unverified     |
 
 ## (a) Server
 
@@ -84,6 +84,7 @@ let ticket = EndpointTicket::from(ep.addr()).to_string();
 ## (f) Recommendation
 
 Deploy **A** first, with (a)'s config and (c)'s client code. Owner decisions:
+
 1. Domain, subdomain, provider, payment method.
 2. Certs: ACME (recommended) or `Reloading`.
 3. Access: open, `shared_token`, or allowlist (tokens via `RelayConfig::with_auth_token`).

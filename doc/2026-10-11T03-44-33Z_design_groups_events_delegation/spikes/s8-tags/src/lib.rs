@@ -94,7 +94,10 @@ pub fn reference<'a>(ops: impl IntoIterator<Item = &'a Op>) -> State {
             }
         }
     }
-    let live = sets.into_iter().filter(|(dot, _)| !removed.contains(dot)).collect();
+    let live = sets
+        .into_iter()
+        .filter(|(dot, _)| !removed.contains(dot))
+        .collect();
     State { live, vv }
 }
 
@@ -263,7 +266,10 @@ fn entry_value(entry: &Entry) -> Value<'static> {
     Value::array(vec![
         Value::byte_string(entry.subject.to_vec()),
         Value::text_string(entry.name.clone()),
-        entry.value.clone().map_or_else(Value::null, Value::text_string),
+        entry
+            .value
+            .clone()
+            .map_or_else(Value::null, Value::text_string),
     ])
 }
 

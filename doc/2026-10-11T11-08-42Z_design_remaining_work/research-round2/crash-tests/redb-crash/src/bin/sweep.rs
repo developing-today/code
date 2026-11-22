@@ -12,7 +12,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-const SURVIVE: [Survive; 4] = [Survive::Drop, Survive::Keep, Survive::Random, Survive::Reorder];
+const SURVIVE: [Survive; 4] = [
+    Survive::Drop,
+    Survive::Keep,
+    Survive::Random,
+    Survive::Reorder,
+];
 const TEAR: [Tear; 3] = [Tear::Off, Tear::Byte, Tear::Sector];
 
 fn survive_name(s: Survive) -> &'static str {
@@ -49,7 +54,13 @@ fn plans_for(event: u64, kind: Kind) -> Vec<Plan> {
     let mut push = |survive, tear, sync_completed| {
         variant += 1;
         let seed = splitmix(event * 64 + variant);
-        out.push(Plan { event, survive, tear, sync_completed, seed });
+        out.push(Plan {
+            event,
+            survive,
+            tear,
+            sync_completed,
+            seed,
+        });
     };
     match kind {
         Kind::Write => {
@@ -75,7 +86,9 @@ fn plans_for(event: u64, kind: Kind) -> Vec<Plan> {
 }
 
 fn value(args: &[String], flag: &str) -> Option<String> {
-    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1).cloned())
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1).cloned())
 }
 
 fn main() {
@@ -85,7 +98,11 @@ fn main() {
     let lying = args.iter().any(|a| a == "--lying-sync");
     let threads: usize = value(&args, "--threads").map_or(4, |v| v.parse().expect("--threads N"));
     let out_dir = PathBuf::from(value(&args, "--out").unwrap_or_else(|| "results".into()));
-    let label = if lying { "lying-sync-control" } else { "faithful" };
+    let label = if lying {
+        "lying-sync-control"
+    } else {
+        "faithful"
+    };
     std::fs::create_dir_all(&out_dir).expect("create output dir");
 
     let models = workload::models();
@@ -100,7 +117,11 @@ fn main() {
     for (k, _, _) in &trace {
         *per_kind.entry(kind_name(*k)).or_default() += 1;
     }
-    println!("crash points (one per storage call): {} {:?}", trace.len(), per_kind);
+    println!(
+        "crash points (one per storage call): {} {:?}",
+        trace.len(),
+        per_kind
+    );
 
     let jobs: Vec<Plan> = trace
         .iter()
@@ -182,9 +203,8 @@ fn main() {
         failing_points.len()
     );
 
-    let mut corpus = String::from(
-        "# name\tlying_sync\tevent\tsurvive\ttear\tsync_completed\tseed\texpect\n",
-    );
+    let mut corpus =
+        String::from("# name\tlying_sync\tevent\tsurvive\ttear\tsync_completed\tseed\texpect\n");
     for (i, (p, o)) in failures.iter().map(|r| (&r.0, &r.1)).enumerate() {
         writeln!(
             corpus,

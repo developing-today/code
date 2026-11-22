@@ -8,7 +8,7 @@ how it is put together, and what building it found.
 ## Pieces
 
 - **Catalogue.** `docs/spec/requirements.md` is the prose catalogue (788 rows, from the five area sweeps). `go run
-  ./internal/conformance/cmd/genreq` turns it into `internal/conformance/requirements.json`: revision ranges expanded,
+./internal/conformance/cmd/genreq` turns it into `internal/conformance/requirements.json`: revision ranges expanded,
   the side column read as server/client applicability. Anything the catalogue does not plainly mark n/a is taken to
   apply -- a row wrongly marked as applying shows up as a missing test and gets looked at; one wrongly marked n/a is
   never looked at again. Re-judgements live in `overrides/*.json`, each with its reason. Authorization rows are

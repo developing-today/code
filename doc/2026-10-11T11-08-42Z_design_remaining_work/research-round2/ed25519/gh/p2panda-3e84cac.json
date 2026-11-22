@@ -1,1 +1,83 @@
-{"sha":"3e84cac48bba05c6857cce2ec433862b97f8d53c","node_id":"C_kwDOEhZKftoAKDNlODRjYWM0OGJiYTA1YzY4NTdjY2UyZWM0MzM4NjJiOTdmOGQ1M2M","commit":{"author":{"name":"adz","email":"x12@adz.garden","date":"2026-10-09T13:10:22Z"},"committer":{"name":"adz","email":"x12@adz.garden","date":"2026-10-09T13:10:25Z"},"message":"spaces: Fix test regression using invalid duration\n\nRegression caused by copy & paste hiccup in:\n<https://github.com/p2panda/p2panda/pull/1503>.","tree":{"sha":"4aab5f56596067cf3519d26690d901c4c09746e5","url":"https://api.github.com/repos/p2panda/p2panda/git/trees/4aab5f56596067cf3519d26690d901c4c09746e5"},"url":"https://api.github.com/repos/p2panda/p2panda/git/commits/3e84cac48bba05c6857cce2ec433862b97f8d53c","comment_count":0,"verification":{"verified":false,"reason":"unsigned","signature":null,"payload":null,"verified_at":null}},"url":"https://api.github.com/repos/p2panda/p2panda/commits/3e84cac48bba05c6857cce2ec433862b97f8d53c","html_url":"https://github.com/p2panda/p2panda/commit/3e84cac48bba05c6857cce2ec433862b97f8d53c","comments_url":"https://api.github.com/repos/p2panda/p2panda/commits/3e84cac48bba05c6857cce2ec433862b97f8d53c/comments","author":{"login":"adzialocha","id":1822473,"node_id":"MDQ6VXNlcjE4MjI0NzM=","avatar_url":"https://avatars.githubusercontent.com/u/1822473?v=4","gravatar_id":"","url":"https://api.github.com/users/adzialocha","html_url":"https://github.com/adzialocha","followers_url":"https://api.github.com/users/adzialocha/followers","following_url":"https://api.github.com/users/adzialocha/following{/other_user}","gists_url":"https://api.github.com/users/adzialocha/gists{/gist_id}","starred_url":"https://api.github.com/users/adzialocha/starred{/owner}{/repo}","subscriptions_url":"https://api.github.com/users/adzialocha/subscriptions","organizations_url":"https://api.github.com/users/adzialocha/orgs","repos_url":"https://api.github.com/users/adzialocha/repos","events_url":"https://api.github.com/users/adzialocha/events{/privacy}","received_events_url":"https://api.github.com/users/adzialocha/received_events","type":"User","user_view_type":"public","site_admin":false},"committer":{"login":"adzialocha","id":1822473,"node_id":"MDQ6VXNlcjE4MjI0NzM=","avatar_url":"https://avatars.githubusercontent.com/u/1822473?v=4","gravatar_id":"","url":"https://api.github.com/users/adzialocha","html_url":"https://github.com/adzialocha","followers_url":"https://api.github.com/users/adzialocha/followers","following_url":"https://api.github.com/users/adzialocha/following{/other_user}","gists_url":"https://api.github.com/users/adzialocha/gists{/gist_id}","starred_url":"https://api.github.com/users/adzialocha/starred{/owner}{/repo}","subscriptions_url":"https://api.github.com/users/adzialocha/subscriptions","organizations_url":"https://api.github.com/users/adzialocha/orgs","repos_url":"https://api.github.com/users/adzialocha/repos","events_url":"https://api.github.com/users/adzialocha/events{/privacy}","received_events_url":"https://api.github.com/users/adzialocha/received_events","type":"User","user_view_type":"public","site_admin":false},"parents":[{"sha":"e63042f2d8250cbc4e192d3365d43e80ec3dc657","url":"https://api.github.com/repos/p2panda/p2panda/commits/e63042f2d8250cbc4e192d3365d43e80ec3dc657","html_url":"https://github.com/p2panda/p2panda/commit/e63042f2d8250cbc4e192d3365d43e80ec3dc657"}],"stats":{"total":2,"additions":1,"deletions":1},"files":[{"sha":"44c54bca36a8b0c469e1aa22040d900320655296","filename":"p2panda-spaces/src/identity.rs","status":"modified","additions":1,"deletions":1,"changes":2,"blob_url":"https://github.com/p2panda/p2panda/blob/3e84cac48bba05c6857cce2ec433862b97f8d53c/p2panda-spaces%2Fsrc%2Fidentity.rs","raw_url":"https://github.com/p2panda/p2panda/raw/3e84cac48bba05c6857cce2ec433862b97f8d53c/p2panda-spaces%2Fsrc%2Fidentity.rs","contents_url":"https://api.github.com/repos/p2panda/p2panda/contents/p2panda-spaces%2Fsrc%2Fidentity.rs?ref=3e84cac48bba05c6857cce2ec433862b97f8d53c","patch":"@@ -408,7 +408,7 @@ mod tests {\n         //\n         // TODO: Use Duration::from_days() once stabilized:\n         // https://github.com/rust-lang/rust/issues/120301\n-        alice_identity_manager.config.pre_key_rotate_after = Duration::from_hours(24 * 1024);\n+        alice_identity_manager.config.pre_key_lifetime = Duration::from_secs(60 * 60 * 24 * 2048);\n \n         let alice_2 = alice_identity_manager.me().await.unwrap();\n         let bundle_2 = alice_2.key_bundle().clone();"}]}
+{
+  "sha": "3e84cac48bba05c6857cce2ec433862b97f8d53c",
+  "node_id": "C_kwDOEhZKftoAKDNlODRjYWM0OGJiYTA1YzY4NTdjY2UyZWM0MzM4NjJiOTdmOGQ1M2M",
+  "commit": {
+    "author": { "name": "adz", "email": "x12@adz.garden", "date": "2026-10-09T13:10:22Z" },
+    "committer": { "name": "adz", "email": "x12@adz.garden", "date": "2026-10-09T13:10:25Z" },
+    "message": "spaces: Fix test regression using invalid duration\n\nRegression caused by copy & paste hiccup in:\n<https://github.com/p2panda/p2panda/pull/1503>.",
+    "tree": {
+      "sha": "4aab5f56596067cf3519d26690d901c4c09746e5",
+      "url": "https://api.github.com/repos/p2panda/p2panda/git/trees/4aab5f56596067cf3519d26690d901c4c09746e5"
+    },
+    "url": "https://api.github.com/repos/p2panda/p2panda/git/commits/3e84cac48bba05c6857cce2ec433862b97f8d53c",
+    "comment_count": 0,
+    "verification": { "verified": false, "reason": "unsigned", "signature": null, "payload": null, "verified_at": null }
+  },
+  "url": "https://api.github.com/repos/p2panda/p2panda/commits/3e84cac48bba05c6857cce2ec433862b97f8d53c",
+  "html_url": "https://github.com/p2panda/p2panda/commit/3e84cac48bba05c6857cce2ec433862b97f8d53c",
+  "comments_url": "https://api.github.com/repos/p2panda/p2panda/commits/3e84cac48bba05c6857cce2ec433862b97f8d53c/comments",
+  "author": {
+    "login": "adzialocha",
+    "id": 1822473,
+    "node_id": "MDQ6VXNlcjE4MjI0NzM=",
+    "avatar_url": "https://avatars.githubusercontent.com/u/1822473?v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/adzialocha",
+    "html_url": "https://github.com/adzialocha",
+    "followers_url": "https://api.github.com/users/adzialocha/followers",
+    "following_url": "https://api.github.com/users/adzialocha/following{/other_user}",
+    "gists_url": "https://api.github.com/users/adzialocha/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/adzialocha/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/adzialocha/subscriptions",
+    "organizations_url": "https://api.github.com/users/adzialocha/orgs",
+    "repos_url": "https://api.github.com/users/adzialocha/repos",
+    "events_url": "https://api.github.com/users/adzialocha/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/adzialocha/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+  },
+  "committer": {
+    "login": "adzialocha",
+    "id": 1822473,
+    "node_id": "MDQ6VXNlcjE4MjI0NzM=",
+    "avatar_url": "https://avatars.githubusercontent.com/u/1822473?v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/adzialocha",
+    "html_url": "https://github.com/adzialocha",
+    "followers_url": "https://api.github.com/users/adzialocha/followers",
+    "following_url": "https://api.github.com/users/adzialocha/following{/other_user}",
+    "gists_url": "https://api.github.com/users/adzialocha/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/adzialocha/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/adzialocha/subscriptions",
+    "organizations_url": "https://api.github.com/users/adzialocha/orgs",
+    "repos_url": "https://api.github.com/users/adzialocha/repos",
+    "events_url": "https://api.github.com/users/adzialocha/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/adzialocha/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+  },
+  "parents": [
+    {
+      "sha": "e63042f2d8250cbc4e192d3365d43e80ec3dc657",
+      "url": "https://api.github.com/repos/p2panda/p2panda/commits/e63042f2d8250cbc4e192d3365d43e80ec3dc657",
+      "html_url": "https://github.com/p2panda/p2panda/commit/e63042f2d8250cbc4e192d3365d43e80ec3dc657"
+    }
+  ],
+  "stats": { "total": 2, "additions": 1, "deletions": 1 },
+  "files": [
+    {
+      "sha": "44c54bca36a8b0c469e1aa22040d900320655296",
+      "filename": "p2panda-spaces/src/identity.rs",
+      "status": "modified",
+      "additions": 1,
+      "deletions": 1,
+      "changes": 2,
+      "blob_url": "https://github.com/p2panda/p2panda/blob/3e84cac48bba05c6857cce2ec433862b97f8d53c/p2panda-spaces%2Fsrc%2Fidentity.rs",
+      "raw_url": "https://github.com/p2panda/p2panda/raw/3e84cac48bba05c6857cce2ec433862b97f8d53c/p2panda-spaces%2Fsrc%2Fidentity.rs",
+      "contents_url": "https://api.github.com/repos/p2panda/p2panda/contents/p2panda-spaces%2Fsrc%2Fidentity.rs?ref=3e84cac48bba05c6857cce2ec433862b97f8d53c",
+      "patch": "@@ -408,7 +408,7 @@ mod tests {\n         //\n         // TODO: Use Duration::from_days() once stabilized:\n         // https://github.com/rust-lang/rust/issues/120301\n-        alice_identity_manager.config.pre_key_rotate_after = Duration::from_hours(24 * 1024);\n+        alice_identity_manager.config.pre_key_lifetime = Duration::from_secs(60 * 60 * 24 * 2048);\n \n         let alice_2 = alice_identity_manager.me().await.unwrap();\n         let bundle_2 = alice_2.key_bundle().clone();"
+    }
+  ]
+}

@@ -14,9 +14,10 @@ mark() { echo "--- $1 | $(date -u +%H:%M:%S) | $(uptime)"; }
   echo "binary: $(sha256sum $B | cut -c1-16)  cargo=$(rustup which --toolchain 1.97.0 cargo)"
   for s in redb sqlite turso; do
     mark "bench $s"
-    ( time $B bench $s run/bench-$s 200000 ) 2>&1
+    (time $B bench $s run/bench-$s 200000) 2>&1
     echo "exit=$?"
-    echo "files after close:"; ls -l run/bench-$s/ | tail -n +2
+    echo "files after close:"
+    ls -l run/bench-$s/ | tail -n +2
   done
   mark "compact redb (same file as the bench)"
   $B compact-redb run/bench-redb/index-redb.db 2>&1
@@ -31,5 +32,5 @@ mark() { echo "--- $1 | $(date -u +%H:%M:%S) | $(uptime)"; }
   mark "turso multiprocess WAL, two writers"
   $B turso-mp-test run/mp-turso 2>&1
   mark "done"
-} > $R/session2-all.txt 2>&1
-echo "finished $(date -u +%FT%TZ)" >> $R/session2-all.txt
+} >$R/session2-all.txt 2>&1
+echo "finished $(date -u +%FT%TZ)" >>$R/session2-all.txt

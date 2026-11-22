@@ -9,9 +9,10 @@ B=./target/release/s6-index
 R=run/results
 mark() { echo "--- $1 | $(date -u +%H:%M:%S)Z | $(uptime)"; }
 step() { # step <label> <timeout-seconds> <command...>
-  local label=$1 to=$2; shift 2
+  local label=$1 to=$2
+  shift 2
   mark "$label"
-  ( time timeout "$to" "$@" ) 2>&1
+  (time timeout "$to" "$@") 2>&1
   echo "exit=$?"
 }
 {
@@ -30,5 +31,5 @@ step() { # step <label> <timeout-seconds> <command...>
   step "turso concurrency (open-time lock)" 300 $B turso-concurrency run/conc-turso
   step "turso multiprocess WAL, two writers" 300 $B turso-mp-test run/mp-turso
   mark "done"
-} > $R/session2b-all.txt 2>&1
-echo "finished $(date -u +%FT%TZ)" >> $R/session2b-all.txt
+} >$R/session2b-all.txt 2>&1
+echo "finished $(date -u +%FT%TZ)" >>$R/session2b-all.txt

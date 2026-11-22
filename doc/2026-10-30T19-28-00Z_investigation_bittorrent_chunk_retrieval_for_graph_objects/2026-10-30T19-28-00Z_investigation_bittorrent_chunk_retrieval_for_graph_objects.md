@@ -31,11 +31,11 @@ BitTorrent's transfer protocol, in a strictly stronger form:
    the same blob in parallel (`GetRequest`/`GetManyRequest`,
    iroh-blobs protocol.rs).
 2. **Verified streaming (bao)** — every chunk group (16 KiB) is verified
-   against the blob's single BLAKE3 root hash *as it arrives*, via the
+   against the blob's single BLAKE3 root hash _as it arrives_, via the
    bao-tree outboard. BitTorrent can only validate a piece after downloading
    it whole (SHA-1 per piece, piece length up to 256 KiB+); iroh-blobs
    detects bad data after at most 16 KiB and needs no piece-hash list —
-   the 32-byte root hash in the ID-graph link *is* the whole integrity
+   the 32-byte root hash in the ID-graph link _is_ the whole integrity
    contract (Iroh, "Iroh global content discovery", 2026; iroh-blobs docs).
 3. **Partial-blob state is a first-class store concept** — the FsStore keeps
    data + outboard per hash, tracks held ranges, and can resume an
@@ -65,7 +65,7 @@ discovery, not a new protocol (iroh.computer blog, above).
   (`cmd_get_one_remote`). There is no provider set, no range splitting
   across sources, and no fallback if that one source is slow, partial, or
   leaves mid-transfer beyond what a single fetch retry would do.
-- The graph→blob link already exists: a document's content hash *is* an
+- The graph→blob link already exists: a document's content hash _is_ an
   iroh-blobs hash (`documents.rs`: `blob_hash()` returns
   `iroh_blobs::Hash` from the content bytes), and world artifacts/documents
   reference blobs by hash. So "dereference an ID-graph link" concretely
@@ -74,7 +74,7 @@ discovery, not a new protocol (iroh.computer blog, above).
 - Peer discovery (`src/discovery.rs`) is **peer** discovery, not **content**
   discovery: servers gossip `PeerAnnouncement`s on the
   `id-peer-discovery-v1` topic (30 s announce, 120 s stale threshold) and
-  build an in-memory `PeerDiscovery` table of *servers that exist*. Nothing
+  build an in-memory `PeerDiscovery` table of _servers that exist_. Nothing
   in an announcement says which hashes a peer holds.
 - Access control for serving blobs exists as a designed-but-unwired gate
   (`src/blob_gate.rs`, P3.4): fetch (`get`/`get_many`) is allowed only to a
@@ -89,13 +89,13 @@ discovery, not a new protocol (iroh.computer blog, above).
 - Iroh address lookup is already multi-path in this codebase: mDNS
   (`iroh-mdns-address-lookup`), optional Mainline DHT address lookup
   (`iroh-mainline-address-lookup`, feature `dht` in Cargo.toml), relays.
-  That solves *endpoint* reachability once you know an EndpointId; it does
-  not solve *content* → EndpointId mapping.
+  That solves _endpoint_ reachability once you know an EndpointId; it does
+  not solve _content_ → EndpointId mapping.
 
 ## 2. Holder discovery for an object ID
 
 Four channels, in the order a resolver should try them. They compose:
-each returns *candidate* EndpointIds; candidacy is cheap to verify (a
+each returns _candidate_ EndpointIds; candidacy is cheap to verify (a
 size/observe query) and content itself is verified by hash, so a lying
 discovery channel can waste time but can never make a reader accept wrong
 bytes (the same argument n0 makes for Mainline provider records).
@@ -116,7 +116,7 @@ bytes (the same argument n0 makes for Mainline provider records).
    the existing discovery plane: peers announce, per world they serve,
    either full held-hash sets (small worlds) or a compact summary (count +
    Bloom/Cuckoo filter of hashes, or just "ask me" + observe). Because
-   `observe` already returns held *ranges*, discovery and partial-holder
+   `observe` already returns held _ranges_, discovery and partial-holder
    negotiation are the same conversation: candidate → observe → held
    ranges → schedule. Announcements must pass the blob gate's rule —
    membership in a referencing world — or holder lists become a content
@@ -138,7 +138,7 @@ bytes (the same argument n0 makes for Mainline provider records).
    `get_peers`, translate the returned host:port pairs to EndpointIds via a
    small signed-record UDP address-index service, verify candidates with a
    size query, hand off to the iroh-blobs downloader. It works today as an
-   experiment. For id it is the *last* resort channel, not the first: it
+   experiment. For id it is the _last_ resort channel, not the first: it
    publishes "someone at this IP claims this hash" to a public DHT, which
    is right for public content (public boards, public files) and wrong for
    membership-gated worlds. Gate it per-world, default off.
@@ -157,7 +157,7 @@ the BitTorrent baseline the issue names:
 - The link carries the blob's BLAKE3 root hash (32 bytes). That single
   value is the complete integrity contract: bao-tree verified streaming
   checks each 16 KiB chunk group against the tree rooted at that hash as
-  bytes arrive, from *any* source, in *any* order, including ranges fetched
+  bytes arrive, from _any_ source, in _any_ order, including ranges fetched
   in parallel from different holders. There is no piece-hash manifest to
   fetch, trust, or keep in sync (contrast BitTorrent's `.torrent` info
   dict), and no chunk can be accepted from a malicious or confused holder
@@ -172,7 +172,7 @@ the BitTorrent baseline the issue names:
   hashes) cover the multi-object case: a graph object that links several
   blobs is fetched as one request with per-member hashes, each member
   independently verified. Graph objects in id are signed at the object
-  layer (envelope/chain machinery) *in addition* to blob hashing: the
+  layer (envelope/chain machinery) _in addition_ to blob hashing: the
   signature says who asserted the link; the blob hash says the fetched
   bytes are the linked bytes. Both checks are needed; neither replaces the
   other.
@@ -217,7 +217,7 @@ Definitions that the scheduler and the store already half-speak:
   per-world/per-peer MB caps apply to swarm serving exactly as to any
   serving). Defaults: keep what you fetched (you fetched it because your
   worlds reference it), evict under store pressure LRU — but never evict
-  the *only* known copy silently in a world where you are the public
+  the _only_ known copy silently in a world where you are the public
   server; that is a config-level duty, flagged not solved here.
 
 ## 5. Retrieval flow (the deliverable)
@@ -257,20 +257,20 @@ reader opens link (world W, entry E, blob hash H)
 
 ## 6. Composition with Iroh vs a new swarm layer — explicit answer
 
-| BitTorrent piece | Iroh / pkgs/id equivalent | New code needed? |
-|---|---|---|
-| `.torrent` info dict (piece hashes) | The BLAKE3 root hash in the link itself + bao outboard | No |
-| Piece/block transfer protocol | iroh-blobs Get/GetMany with ChunkRanges, verified streaming | No |
-| Tracker | §2 channels 1–3 (sync provider table, gossip announcements, public-server rendezvous) | **Yes — small, id-side** |
-| DHT (BEP 5/44) | Optional: n0 `iroh-content-discovery` experiment over Mainline | Later, opt-in, public content only |
-| Swarm scheduler (rarest-first, endgame, choking) | iroh-blobs Downloader takes a provider set; id's `get` path is single-source today | **Yes — policy in id's retrieval path** |
-| Seed/leech lifecycle | FsStore partial state + serve path, under blob gate + LIST 8 budgets | Mostly wiring |
-| Access control (BitTorrent has none) | `blob_gate.rs` fetch/observe membership gate | Written; **needs the reference-index producer + serve wiring** |
+| BitTorrent piece                                 | Iroh / pkgs/id equivalent                                                             | New code needed?                                               |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `.torrent` info dict (piece hashes)              | The BLAKE3 root hash in the link itself + bao outboard                                | No                                                             |
+| Piece/block transfer protocol                    | iroh-blobs Get/GetMany with ChunkRanges, verified streaming                           | No                                                             |
+| Tracker                                          | §2 channels 1–3 (sync provider table, gossip announcements, public-server rendezvous) | **Yes — small, id-side**                                       |
+| DHT (BEP 5/44)                                   | Optional: n0 `iroh-content-discovery` experiment over Mainline                        | Later, opt-in, public content only                             |
+| Swarm scheduler (rarest-first, endgame, choking) | iroh-blobs Downloader takes a provider set; id's `get` path is single-source today    | **Yes — policy in id's retrieval path**                        |
+| Seed/leech lifecycle                             | FsStore partial state + serve path, under blob gate + LIST 8 budgets                  | Mostly wiring                                                  |
+| Access control (BitTorrent has none)             | `blob_gate.rs` fetch/observe membership gate                                          | Written; **needs the reference-index producer + serve wiring** |
 
-**Conclusion:** build a *thin* id-side layer — provider table + scheduler
+**Conclusion:** build a _thin_ id-side layer — provider table + scheduler
 policy + gate wiring — on top of iroh-blobs. Do not build a swarm protocol.
 The one upstream caveat to track: n0 notes multiprovider downloads of
-single blobs are not yet *efficient* upstream (connection/range scheduling
+single blobs are not yet _efficient_ upstream (connection/range scheduling
 internals are still maturing), so the PoC below should measure, not assume,
 the speedup curve as provider count grows.
 

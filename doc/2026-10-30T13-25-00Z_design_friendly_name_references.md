@@ -81,12 +81,12 @@ for different viewers, and that is the correct semantics.
 ## 4. Rendering states (PoC must demonstrate all)
 
 - **Resolved:** render `surface` as a live link; hover/preview shows
-  the target's *current* alias + provenance.
+  the target's _current_ alias + provenance.
 - **Renamed target:** link still works (by ID); rendering keeps the
   stored surface (historical fidelity); hover shows the current alias.
   Silent surface-rewriting is rejected.
 - **Cleared target:** ID resolves to a clear/tombstone; render surface
-  + "cleared" state — a citation degrades to its label, not an error.
+  - "cleared" state — a citation degrades to its label, not an error.
 - **Unresolved for this viewer:** surface as inert text with an
   unresolved marker. The viewer learns only the words the author
   typed — not the content, not metadata, not existence.

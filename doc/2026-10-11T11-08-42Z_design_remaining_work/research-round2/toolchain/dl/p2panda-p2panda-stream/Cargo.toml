@@ -22,34 +22,17 @@ rustdoc-args = ["--cfg", "docsrs"]
 workspace = true
 
 [features]
-default = [
-  "groups",
-  "ingest",
-  "log_prune",
-  "orderer",
-  "spaces",
-  "hooks",
-]
+default = ["groups", "ingest", "log_prune", "orderer", "spaces", "hooks"]
 groups = [
   "p2panda-auth/serde",
   "p2panda-store/groups",
   "p2panda-spaces",
   "dep:serde",
 ]
-ingest = [
-    "dep:indexmap",
-]
+ingest = ["dep:indexmap"]
 log_prune = []
-orderer = [
-  "p2panda-store/processor",
-  "dep:serde",
-]
-spaces = [
-  "p2panda-auth",
-  "p2panda-spaces",
-  "p2panda-store/spaces",
-  "dep:serde",
-]
+orderer = ["p2panda-store/processor", "dep:serde"]
+spaces = ["p2panda-auth", "p2panda-spaces", "p2panda-store/spaces", "dep:serde"]
 hooks = []
 
 [dependencies]
@@ -62,15 +45,30 @@ p2panda-store = { workspace = true, default-features = true }
 pin-project = { workspace = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, default-features = false, features = ["rt", "sync", "macros"] }
+tokio = { workspace = true, default-features = false, features = [
+  "rt",
+  "sync",
+  "macros",
+] }
 tracing = { workspace = true }
 
 [dev-dependencies]
 futures-test = { workspace = true, features = ["std"] }
 futures-util = { workspace = true, features = ["alloc"] }
-p2panda-auth = { workspace = true, default-features = true, features = ["test_utils"] }
-p2panda-core = { workspace = true, default-features = true, features = ["test_utils"] }
-p2panda-store = { workspace = true, default-features = true, features = ["test_utils"] }
+p2panda-auth = { workspace = true, default-features = true, features = [
+  "test_utils",
+] }
+p2panda-core = { workspace = true, default-features = true, features = [
+  "test_utils",
+] }
+p2panda-store = { workspace = true, default-features = true, features = [
+  "test_utils",
+] }
 serde = { workspace = true }
-tokio = { workspace = true, default-features = true, features = ["macros", "rt", "sync", "time"] }
+tokio = { workspace = true, default-features = true, features = [
+  "macros",
+  "rt",
+  "sync",
+  "time",
+] }
 tokio-stream = { workspace = true }

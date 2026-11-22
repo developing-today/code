@@ -1,1 +1,18 @@
-[{"name":"RUSTSEC-2021-0100.md","path":"crates/sha2/RUSTSEC-2021-0100.md","sha":"d9d53aa6ad040ae3f68c5b99ba7a377c1bc63265","size":859,"url":"https://api.github.com/repos/rustsec/advisory-db/contents/crates/sha2/RUSTSEC-2021-0100.md?ref=main","html_url":"https://github.com/rustsec/advisory-db/blob/main/crates/sha2/RUSTSEC-2021-0100.md","git_url":"https://api.github.com/repos/rustsec/advisory-db/git/blobs/d9d53aa6ad040ae3f68c5b99ba7a377c1bc63265","download_url":"https://raw.githubusercontent.com/rustsec/advisory-db/main/crates/sha2/RUSTSEC-2021-0100.md","type":"file","_links":{"self":"https://api.github.com/repos/rustsec/advisory-db/contents/crates/sha2/RUSTSEC-2021-0100.md?ref=main","git":"https://api.github.com/repos/rustsec/advisory-db/git/blobs/d9d53aa6ad040ae3f68c5b99ba7a377c1bc63265","html":"https://github.com/rustsec/advisory-db/blob/main/crates/sha2/RUSTSEC-2021-0100.md"}}]
+[
+  {
+    "name": "RUSTSEC-2021-0100.md",
+    "path": "crates/sha2/RUSTSEC-2021-0100.md",
+    "sha": "d9d53aa6ad040ae3f68c5b99ba7a377c1bc63265",
+    "size": 859,
+    "url": "https://api.github.com/repos/rustsec/advisory-db/contents/crates/sha2/RUSTSEC-2021-0100.md?ref=main",
+    "html_url": "https://github.com/rustsec/advisory-db/blob/main/crates/sha2/RUSTSEC-2021-0100.md",
+    "git_url": "https://api.github.com/repos/rustsec/advisory-db/git/blobs/d9d53aa6ad040ae3f68c5b99ba7a377c1bc63265",
+    "download_url": "https://raw.githubusercontent.com/rustsec/advisory-db/main/crates/sha2/RUSTSEC-2021-0100.md",
+    "type": "file",
+    "_links": {
+      "self": "https://api.github.com/repos/rustsec/advisory-db/contents/crates/sha2/RUSTSEC-2021-0100.md?ref=main",
+      "git": "https://api.github.com/repos/rustsec/advisory-db/git/blobs/d9d53aa6ad040ae3f68c5b99ba7a377c1bc63265",
+      "html": "https://github.com/rustsec/advisory-db/blob/main/crates/sha2/RUSTSEC-2021-0100.md"
+    }
+  }
+]

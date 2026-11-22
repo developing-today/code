@@ -22,32 +22,12 @@ rustdoc-args = ["--cfg", "docsrs"]
 workspace = true
 
 [features]
-default = [
-  "sqlite",
-  "macros",
-]
-sqlite = [
-  "dep:serde",
-  "dep:sqlx",
-  "dep:thiserror",
-  "dep:tokio",
-]
-encryption = [
-  "dep:p2panda-encryption",
-  "sqlite",
-]
-groups = [
-  "dep:p2panda-auth",
-  "sqlite",
-]
-spaces = [
-  "sqlite",
-  "groups",
-  "encryption",
-]
-processor = [
-  "sqlite"
-]
+default = ["sqlite", "macros"]
+sqlite = ["dep:serde", "dep:sqlx", "dep:thiserror", "dep:tokio"]
+encryption = ["dep:p2panda-encryption", "sqlite"]
+groups = ["dep:p2panda-auth", "sqlite"]
+spaces = ["sqlite", "groups", "encryption"]
+processor = ["sqlite"]
 macros = []
 test_utils = [
   "dep:rand",
@@ -58,20 +38,30 @@ test_utils = [
 
 [dependencies]
 async-stream = "0.3.6"
-futures-util = { workspace = true, features = ["alloc"]}
-p2panda-auth = { workspace = true, default-features = false, features = ["serde"], optional = true }
+futures-util = { workspace = true, features = ["alloc"] }
+p2panda-auth = { workspace = true, default-features = false, features = [
+  "serde",
+], optional = true }
 p2panda-core = { workspace = true }
 p2panda-encryption = { workspace = true, default-features = true, optional = true }
 rand = { workspace = true, optional = true }
 rand_chacha = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
-sqlx = { version = "0.9.0", features = ["runtime-tokio", "sqlite"], optional = true }
+sqlx = { version = "0.9.0", features = [
+  "runtime-tokio",
+  "sqlite",
+], optional = true }
 thiserror = { workspace = true, optional = true }
-tokio = { workspace = true, default-features = true, features = ["sync"], optional = true }
+tokio = { workspace = true, default-features = true, features = [
+  "sync",
+], optional = true }
 
 [dev-dependencies]
 cbor-core = { version = "0.10.1", features = ["serde"] }
 futures-test = { workspace = true }
 p2panda-core = { workspace = true, features = ["test_utils"] }
 p2panda-store = { path = ".", features = ["test_utils"] }
-tokio = { workspace = true, default-features = true, features = ["rt", "macros"] }
+tokio = { workspace = true, default-features = true, features = [
+  "rt",
+  "macros",
+] }

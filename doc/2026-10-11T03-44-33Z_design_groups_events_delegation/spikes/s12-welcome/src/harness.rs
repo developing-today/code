@@ -69,9 +69,15 @@ fn init_adder(rng: &enc::Rng) -> (Y, Dcgka0) {
     let mut probe_keys = None;
     for id in [ADMIN, BOB, CAROL, PROBE, JOIN] {
         let identity = enc::test_utils::crypto::SecretKey::from_bytes(rng.random_array().unwrap());
-        let keys = ok(KeyManager::init_and_generate_prekey(&identity, lifetime, rng), "prekey");
+        let keys = ok(
+            KeyManager::init_and_generate_prekey(&identity, lifetime, rng),
+            "prekey",
+        );
         let bundle = ok(KeyManager::prekey_bundle(&keys), "prekey bundle");
-        registry = ok(KeyRegistry::add_longterm_bundle(registry, id, bundle), "register");
+        registry = ok(
+            KeyRegistry::add_longterm_bundle(registry, id, bundle),
+            "register",
+        );
         match id {
             ADMIN => adder_keys = Some(keys),
             PROBE => probe_keys = Some(keys),
@@ -123,7 +129,9 @@ fn sizes(dm: &Dm) -> (usize, usize, usize) {
     (
         encode_cbor(dm).expect("encode the welcome").len(),
         encode_cbor(history).expect("encode the history").len(),
-        encode_cbor(ciphertext).expect("encode the ciphertext").len(),
+        encode_cbor(ciphertext)
+            .expect("encode the ciphertext")
+            .len(),
     )
 }
 
@@ -135,7 +143,12 @@ fn learned(joiner: &Dcgka0, dm: Dm, seq: Mid) -> SecretBundleState {
         control_message: ControlMessage::Add { added: PROBE },
         direct_message: Some(dm),
     };
-    match ok(Dcgka::process(joiner.clone(), input), "joiner processes the welcome").1 {
+    match ok(
+        Dcgka::process(joiner.clone(), input),
+        "joiner processes the welcome",
+    )
+    .1
+    {
         GroupSecretOutput::Bundle(bundle) => bundle,
         _ => panic!("a welcome carries a bundle"),
     }

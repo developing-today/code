@@ -40,12 +40,8 @@ export function createSessionEnv(deps: {
   fetchFn?: FetchLike;
 }): SessionEnvAdapter {
   const done = new Set<string>();
-  const fetchFn: FetchLike =
-    deps.fetchFn ?? ((url, init) => fetch(url, init) as ReturnType<FetchLike>);
-  const send = async (
-    sessionID: string,
-    vars: Record<string, string>,
-  ): Promise<boolean> => {
+  const fetchFn: FetchLike = deps.fetchFn ?? ((url, init) => fetch(url, init) as ReturnType<FetchLike>);
+  const send = async (sessionID: string, vars: Record<string, string>): Promise<boolean> => {
     if (deps.serverUrl === undefined) return false;
     const variables: Record<string, string> = {};
     for (const [k, v] of Object.entries(deps.baseEnv)) {
@@ -53,14 +49,11 @@ export function createSessionEnv(deps: {
     }
     for (const [k, v] of Object.entries(vars)) variables[k] = v;
     const base = deps.serverUrl.replace(/\/+$/, "");
-    const res = await fetchFn(
-      `${base}/api/session/${encodeURIComponent(sessionID)}/environment`,
-      {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ variables }),
-      },
-    );
+    const res = await fetchFn(`${base}/api/session/${encodeURIComponent(sessionID)}/environment`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ variables }),
+    });
     return res.ok;
   };
   return {

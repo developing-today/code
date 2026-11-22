@@ -64,7 +64,10 @@ export async function computeCheckoutDrift(cwd: string, run: GitRun = defaultGit
     head = await revParse(run, cwd, "HEAD");
     originMain = await revParse(run, cwd, "origin/main");
   } catch (err) {
-    return { state: "unknown", reason: `checkout refs unreadable: ${err instanceof Error ? err.message : String(err)}` };
+    return {
+      state: "unknown",
+      reason: `checkout refs unreadable: ${err instanceof Error ? err.message : String(err)}`,
+    };
   }
   let behindBy: number;
   let aheadBy: number;

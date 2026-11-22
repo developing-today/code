@@ -54,10 +54,10 @@ what is skipped, so a rise reports exactly which test or check is new.
 The aim is zero failed and zero skipped. Every skip still standing is listed
 here with its reason; anything not listed is a regression the records catch.
 
-| where | what | why it stays |
-| --- | --- | --- |
-| client 2026-07-28 | `http-standard-headers` for `initialize` and `notifications/initialized` (2) | A 2026-07-28 client never sends either: the revision removed the handshake. The suite checks the header on every method it knows and has no way to mark these not applicable. Permanent. |
-| server 2026-07-28, `--suite all` | `tasks-status-notifications` (1 each) | The suite skips it unconditionally: `src/scenarios/server/tasks/notifications.ts` returns SKIPPED with "pending subscriptions/listen rewrite". mcpx does deliver task status on a `subscriptions/listen` stream; `TestListenDeliversTaskStatusNotifications` covers it. Until the suite is rewritten. |
+| where                            | what                                                                         | why it stays                                                                                                                                                                                                                                                                                          |
+| -------------------------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| client 2026-07-28                | `http-standard-headers` for `initialize` and `notifications/initialized` (2) | A 2026-07-28 client never sends either: the revision removed the handshake. The suite checks the header on every method it knows and has no way to mark these not applicable. Permanent.                                                                                                              |
+| server 2026-07-28, `--suite all` | `tasks-status-notifications` (1 each)                                        | The suite skips it unconditionally: `src/scenarios/server/tasks/notifications.ts` returns SKIPPED with "pending subscriptions/listen rewrite". mcpx does deliver task status on a `subscriptions/listen` stream; `TestListenDeliversTaskStatusNotifications` covers it. Until the suite is rewritten. |
 
 Skipped checks: 4 of 1,014, all above. Skipped Go tests: 0.
 
@@ -75,9 +75,9 @@ macOS-only filesystem tests, now compiled only on macOS rather than counted
 as skipped on Linux.
 
 **Records.** Each leg keeps two records in a repository variable, each always
-one whole run. *best* is the lowest share of checks that did not pass --
+one whole run. _best_ is the lowest share of checks that did not pass --
 failed **plus skipped** -- at a total no smaller than the record's; a tie goes
-to the run with more checks passed. *largest* is the run with the most checks.
+to the run with more checks passed. _largest_ is the run with the most checks.
 Skips count against a run because a skipped check passes nothing: when only
 failures counted, a run that cut skips from 44 to 1 at zero failures tied the
 record and replaced nothing.
@@ -90,7 +90,7 @@ On `main` each leg's counts are compared with two records kept in the repository
 `MCPX_CONFORMANCE_<LEG>` -- the best failed/total ratio and the largest total -- and a run that
 goes backwards on either gets a large warning on its summary. The rules are in
 `scripts/conformance-record.py`. Saving the records needs the secret
-`MCPX_CONFORMANCE_VARS_TOKEN`, a fine-grained token with *Variables: read and write* on this
+`MCPX_CONFORMANCE_VARS_TOKEN`, a fine-grained token with _Variables: read and write_ on this
 repository; GITHUB_TOKEN cannot write variables.
 
 `modelcontextprotocol/conformance` (npm `@modelcontextprotocol/conformance`)
@@ -131,7 +131,7 @@ Every daemon and the fixture are stopped on exit.
 (`src/scenarios/server/tasks/*.ts`) ask for `greet`, `slow_compute`,
 `failing_job`, `protocol_error_job`, `confirm_delete`, `multi_input` and
 `test_tool_with_task`. Nothing in the suite defines them: `everything-server.ts`
-does not, and the suite's `known-sdks.ts` points each SDK at its *own*
+does not, and the suite's `known-sdks.ts` points each SDK at its _own_
 conformance server (`test/conformance/src/everythingServer.ts` in
 typescript-sdk, `conformance/everything-server` in go-sdk). They are SDK
 fixtures.
@@ -166,17 +166,17 @@ check. Columns before `64f3471` put mcpx's test fake (one tool, `echo`) behind
 the daemon; `64f3471` is that setup re-measured as the "before" of this
 change; the last column is the fixture in pass-through.
 
-| leg | `05c78b2` (first run) | `408bc2b` | `60068c6` | `64f3471` (fake) | `mcpx-fix2` (fixtures, pass-through) |
-| --- | --- | --- | --- | --- | --- |
-| server `--spec-version 2025-03-26` | not run | not run | not run | not run | **3 passed, 0 failed** |
-| server `--spec-version 2025-06-18` | not run | not run | not run | not run | **56 / 0** |
-| server `--requirements 2025-11-25` | 47 passed, 19 failed | 45 / 21 | 45 / 21 | 45 / 21 | **80 / 0** |
-| server `--requirements 2026-07-28` | 60 / 104 | 117 / 54 | 109 / 62 | 110 / 62 | **195 / 0** |
-| server `--suite all` | 84 / 106 | 136 / 61 | 128 / 67 | 131 / 67 | **229 / 0** |
-| client `--spec-version 2025-03-26` | not run | not run | not run | not run | **0 / 7** (both scenarios are OAuth) |
-| client `--spec-version 2025-06-18` | not run | not run | not run | not run | **3 / 9** |
-| client `--requirements 2025-11-25` | 5 / 64 | 20 / 56 | 20 / 48 | 20 / 56 | **20 / 56** |
-| client `--requirements 2026-07-28` | 23 / 84 | 62–63 / 68–69 | 63 / 59 | 63 / 68 | **63 / 68** |
+| leg                                | `05c78b2` (first run) | `408bc2b`     | `60068c6` | `64f3471` (fake) | `mcpx-fix2` (fixtures, pass-through) |
+| ---------------------------------- | --------------------- | ------------- | --------- | ---------------- | ------------------------------------ |
+| server `--spec-version 2025-03-26` | not run               | not run       | not run   | not run          | **3 passed, 0 failed**               |
+| server `--spec-version 2025-06-18` | not run               | not run       | not run   | not run          | **56 / 0**                           |
+| server `--requirements 2025-11-25` | 47 passed, 19 failed  | 45 / 21       | 45 / 21   | 45 / 21          | **80 / 0**                           |
+| server `--requirements 2026-07-28` | 60 / 104              | 117 / 54      | 109 / 62  | 110 / 62         | **195 / 0**                          |
+| server `--suite all`               | 84 / 106              | 136 / 61      | 128 / 67  | 131 / 67         | **229 / 0**                          |
+| client `--spec-version 2025-03-26` | not run               | not run       | not run   | not run          | **0 / 7** (both scenarios are OAuth) |
+| client `--spec-version 2025-06-18` | not run               | not run       | not run   | not run          | **3 / 9**                            |
+| client `--requirements 2025-11-25` | 5 / 64                | 20 / 56       | 20 / 48   | 20 / 56          | **20 / 56**                          |
+| client `--requirements 2026-07-28` | 23 / 84               | 62–63 / 68–69 | 63 / 59   | 63 / 68          | **63 / 68**                          |
 
 **No server check fails, in any leg.** The `--suite all` leg needed one thing
 beyond the fixtures: its daemon fronts the upstream with `protocol: follow`,
@@ -250,25 +250,25 @@ scenario passing in all three.
 
 ### Server, 2025-11-25 (3)
 
-| scenario / check | message | kind |
-| --- | --- | --- |
-| `tools-call-with-logging` | No log notifications received | mcpx defect: no relay of upstream `notifications/message` (#212) |
-| `tools-call-with-progress` | No progress notifications received | mcpx defect: no relay of upstream `notifications/progress` (#212) |
-| `server-sse-polling` / `scenario-timeout` | did not complete within 30000ms | open: the fixture closes the POST stream to mcpx (SEP-1699); mcpx reconnects with `Last-Event-ID` (the fixture logs it) and no replayed response arrives, so the call never finishes. Not scored for 2025-11-25 (`pending`); root cause not established |
+| scenario / check                          | message                            | kind                                                                                                                                                                                                                                                    |
+| ----------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tools-call-with-logging`                 | No log notifications received      | mcpx defect: no relay of upstream `notifications/message` (#212)                                                                                                                                                                                        |
+| `tools-call-with-progress`                | No progress notifications received | mcpx defect: no relay of upstream `notifications/progress` (#212)                                                                                                                                                                                       |
+| `server-sse-polling` / `scenario-timeout` | did not complete within 30000ms    | open: the fixture closes the POST stream to mcpx (SEP-1699); mcpx reconnects with `Last-Event-ID` (the fixture logs it) and no replayed response arrives, so the call never finishes. Not scored for 2025-11-25 (`pending`); root cause not established |
 
 ### Server, 2026-07-28 (12 failed, 2 warnings, with taskmcp fronted)
 
 Every tasks-extension check passes. Before taskmcp, 27 of them failed as
 `no tool named "…"` or as untestable downstream of one.
 
-| scenario / check | message | kind |
-| --- | --- | --- |
-| `tools-call-with-progress` | No progress notifications received | mcpx defect (#212) |
-| `server-stateless` / `sep-2575-http-server-no-independent-requests-on-stream`, `sep-2575-server-no-log-without-loglevel` | no frames from the streaming / logging tool | mcpx defect: same relay gap (#212) |
-| `server-stateless` / `sep-2575-server-sends-prompts-list-changed-on-subscription` (WARNING) | no `notifications/prompts/list_changed` on the listen stream | mcpx gap: an upstream's list change on *its* listen stream is not subscribed to and relayed |
-| `server-stateless` / `sep-2575-server-rejects-undeclared-capability`, `sep-2575-missing-capability-http-400` | executed `test_missing_capability` although the client did not declare `sampling` | mcpx defect: the upstream sees mcpx's own client capabilities, not the calling client's; a pass-through call should carry the caller's |
-| `input-required-result-basic-list-roots` / `sep-2322-list-roots-incomplete`; `input-required-result-multiple-input-requests` / `sep-2322-multiple-inputs-incomplete` (2 of 3 asked) | no `roots/list` inputRequest | decision to revisit: mcpx answers an upstream's `roots/list` from its own configured roots and never relays it |
-| `input-required-result-ignore-extra-params` / `sep-2322-ignore-unexpected-params` (WARNING) | no complete result | mcpx gap: a request carrying `inputResponses` without a `requestState` is treated as a new call; the fixture accepts such answers directly, mcpx does not forward them |
+| scenario / check                                                                                                                                                                    | message                                                                           | kind                                                                                                                                                                   |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tools-call-with-progress`                                                                                                                                                          | No progress notifications received                                                | mcpx defect (#212)                                                                                                                                                     |
+| `server-stateless` / `sep-2575-http-server-no-independent-requests-on-stream`, `sep-2575-server-no-log-without-loglevel`                                                            | no frames from the streaming / logging tool                                       | mcpx defect: same relay gap (#212)                                                                                                                                     |
+| `server-stateless` / `sep-2575-server-sends-prompts-list-changed-on-subscription` (WARNING)                                                                                         | no `notifications/prompts/list_changed` on the listen stream                      | mcpx gap: an upstream's list change on _its_ listen stream is not subscribed to and relayed                                                                            |
+| `server-stateless` / `sep-2575-server-rejects-undeclared-capability`, `sep-2575-missing-capability-http-400`                                                                        | executed `test_missing_capability` although the client did not declare `sampling` | mcpx defect: the upstream sees mcpx's own client capabilities, not the calling client's; a pass-through call should carry the caller's                                 |
+| `input-required-result-basic-list-roots` / `sep-2322-list-roots-incomplete`; `input-required-result-multiple-input-requests` / `sep-2322-multiple-inputs-incomplete` (2 of 3 asked) | no `roots/list` inputRequest                                                      | decision to revisit: mcpx answers an upstream's `roots/list` from its own configured roots and never relays it                                                         |
+| `input-required-result-ignore-extra-params` / `sep-2322-ignore-unexpected-params` (WARNING)                                                                                         | no complete result                                                                | mcpx gap: a request carrying `inputResponses` without a `requestState` is treated as a new call; the fixture accepts such answers directly, mcpx does not forward them |
 
 ### Server, `--suite all` (17)
 

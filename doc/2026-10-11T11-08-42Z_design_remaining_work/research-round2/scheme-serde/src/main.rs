@@ -132,14 +132,40 @@ fn serde_read_check() {
     let as_array = encode_cbor(&data).expect("encode the array form");
     let as_bytes = encode_cbor(&Bytes::new(&data[..])).expect("encode the byte-string form");
     println!("## serde read check (one byte field, 4 bytes)");
-    println!("Vec<u8> encodes to {:02x?} ({} B)", as_array, as_array.len());
-    println!("serde_bytes encodes to {:02x?} ({} B)", as_bytes, as_bytes.len());
-    println!("read Vec<u8> from the array form: {}", read::<Vec<u8>>(&as_array));
-    println!("read Vec<u8> from the byte-string form: {}", read::<Vec<u8>>(&as_bytes));
-    println!("read ByteBuf from the array form: {}", read::<ByteBuf>(&as_array));
-    println!("read ByteBuf from the byte-string form: {}", read::<ByteBuf>(&as_bytes));
-    println!("read EitherForm from the array form: {}", read::<EitherForm>(&as_array));
-    println!("read EitherForm from the byte-string form: {}", read::<EitherForm>(&as_bytes));
+    println!(
+        "Vec<u8> encodes to {:02x?} ({} B)",
+        as_array,
+        as_array.len()
+    );
+    println!(
+        "serde_bytes encodes to {:02x?} ({} B)",
+        as_bytes,
+        as_bytes.len()
+    );
+    println!(
+        "read Vec<u8> from the array form: {}",
+        read::<Vec<u8>>(&as_array)
+    );
+    println!(
+        "read Vec<u8> from the byte-string form: {}",
+        read::<Vec<u8>>(&as_bytes)
+    );
+    println!(
+        "read ByteBuf from the array form: {}",
+        read::<ByteBuf>(&as_array)
+    );
+    println!(
+        "read ByteBuf from the byte-string form: {}",
+        read::<ByteBuf>(&as_bytes)
+    );
+    println!(
+        "read EitherForm from the array form: {}",
+        read::<EitherForm>(&as_array)
+    );
+    println!(
+        "read EitherForm from the byte-string form: {}",
+        read::<EitherForm>(&as_bytes)
+    );
     println!();
 }
 
@@ -148,7 +174,10 @@ fn serde_read_check() {
 fn envelope_overhead(len: usize) -> (usize, usize) {
     let body = vec![0u8; len];
     let body = Bytes::new(&body[..]);
-    let array = encode_cbor(&(1u8, body)).expect("encode the array envelope").len() - len;
+    let array = encode_cbor(&(1u8, body))
+        .expect("encode the array envelope")
+        .len()
+        - len;
     let map = encode_cbor(&Envelope { v: 1, body })
         .expect("encode the map envelope")
         .len()
@@ -156,21 +185,79 @@ fn envelope_overhead(len: usize) -> (usize, usize) {
     (array, map)
 }
 
-fn cross_checks(seed: u8, out_dir: &Path, s: &stock::Dumps, b: &both::Dumps, i: &inner::Dumps, o: &outer::Dumps) {
-    println!("## cross-decode, seed {seed} (decode_cbor of the whole direct message; the inner layer is inside the AEAD and is not read)");
-    println!("stock K=1 welcome read by both: {:?}", both::decode_welcome(&s.k1_welcome));
-    println!("both K=1 welcome read by stock: {:?}", stock::decode_welcome(&b.k1_welcome));
-    println!("stock K=1 welcome read by inner: {:?}", inner::decode_welcome(&s.k1_welcome));
-    println!("stock K=1 welcome read by outer: {:?}", outer::decode_welcome(&s.k1_welcome));
-    println!("inner K=1 welcome read by stock: {:?}", stock::decode_welcome(&i.k1_welcome));
-    println!("outer K=1 welcome read by stock: {:?}", stock::decode_welcome(&o.k1_welcome));
-    println!("stock re-add welcome read by both: {:?}", both::decode_welcome(&s.k1000_readd));
-    println!("both re-add welcome read by stock: {:?}", stock::decode_welcome(&b.k1000_readd));
-    println!("stock K=1000 bytes are canonical (decode then encode is identity): {}", Value::decode_owned(&s.k1000_welcome).map(|v| v.encode() == s.k1000_welcome).unwrap_or(false));
-    println!("stock K=1 welcome: stock build re-encodes it byte-exact: {}", stock::reencode_welcome(&s.k1_welcome).map(|v| v == s.k1_welcome).unwrap_or(false));
-    println!("stock K=1 welcome: Value decode then encode is identity: {}", Value::decode_owned(&s.k1_welcome).map(|v| v.encode() == s.k1_welcome).unwrap_or(false));
-    println!("outer K=1 welcome (outer layout, not transcoded): outer build re-encodes it byte-exact: {}", outer::reencode_welcome(&o.k1_welcome).map(|v| v == o.k1_welcome).unwrap_or(false));
-    println!("both K=1 welcome: both build re-encodes it byte-exact: {}", both::reencode_welcome(&b.k1_welcome).map(|v| v == b.k1_welcome).unwrap_or(false));
+fn cross_checks(
+    seed: u8,
+    out_dir: &Path,
+    s: &stock::Dumps,
+    b: &both::Dumps,
+    i: &inner::Dumps,
+    o: &outer::Dumps,
+) {
+    println!(
+        "## cross-decode, seed {seed} (decode_cbor of the whole direct message; the inner layer is inside the AEAD and is not read)"
+    );
+    println!(
+        "stock K=1 welcome read by both: {:?}",
+        both::decode_welcome(&s.k1_welcome)
+    );
+    println!(
+        "both K=1 welcome read by stock: {:?}",
+        stock::decode_welcome(&b.k1_welcome)
+    );
+    println!(
+        "stock K=1 welcome read by inner: {:?}",
+        inner::decode_welcome(&s.k1_welcome)
+    );
+    println!(
+        "stock K=1 welcome read by outer: {:?}",
+        outer::decode_welcome(&s.k1_welcome)
+    );
+    println!(
+        "inner K=1 welcome read by stock: {:?}",
+        stock::decode_welcome(&i.k1_welcome)
+    );
+    println!(
+        "outer K=1 welcome read by stock: {:?}",
+        stock::decode_welcome(&o.k1_welcome)
+    );
+    println!(
+        "stock re-add welcome read by both: {:?}",
+        both::decode_welcome(&s.k1000_readd)
+    );
+    println!(
+        "both re-add welcome read by stock: {:?}",
+        stock::decode_welcome(&b.k1000_readd)
+    );
+    println!(
+        "stock K=1000 bytes are canonical (decode then encode is identity): {}",
+        Value::decode_owned(&s.k1000_welcome)
+            .map(|v| v.encode() == s.k1000_welcome)
+            .unwrap_or(false)
+    );
+    println!(
+        "stock K=1 welcome: stock build re-encodes it byte-exact: {}",
+        stock::reencode_welcome(&s.k1_welcome)
+            .map(|v| v == s.k1_welcome)
+            .unwrap_or(false)
+    );
+    println!(
+        "stock K=1 welcome: Value decode then encode is identity: {}",
+        Value::decode_owned(&s.k1_welcome)
+            .map(|v| v.encode() == s.k1_welcome)
+            .unwrap_or(false)
+    );
+    println!(
+        "outer K=1 welcome (outer layout, not transcoded): outer build re-encodes it byte-exact: {}",
+        outer::reencode_welcome(&o.k1_welcome)
+            .map(|v| v == o.k1_welcome)
+            .unwrap_or(false)
+    );
+    println!(
+        "both K=1 welcome: both build re-encodes it byte-exact: {}",
+        both::reencode_welcome(&b.k1_welcome)
+            .map(|v| v == b.k1_welcome)
+            .unwrap_or(false)
+    );
 
     println!("## transcoder: stock PreKey welcome to the outer-only layout (seed {seed})");
     for (label, bytes) in [("K=1", &s.k1_welcome), ("K=1000", &s.k1000_welcome)] {
@@ -178,18 +265,35 @@ fn cross_checks(seed: u8, out_dir: &Path, s: &stock::Dumps, b: &both::Dumps, i: 
         let back = from_wire(&wire);
         println!("{label}: stock {} B -> wire {} B", bytes.len(), wire.len());
         println!("{label}: from_wire(to_wire(x)) == x: {}", back == *bytes);
-        println!("{label}: stock reads the round trip: {:?}", stock::decode_welcome(&back));
-        println!("{label}: outer build reads the wire form: {:?}", outer::decode_welcome(&wire));
-        let exact = outer::reencode_welcome(&wire).map(|v| v == wire).unwrap_or(false);
+        println!(
+            "{label}: stock reads the round trip: {:?}",
+            stock::decode_welcome(&back)
+        );
+        println!(
+            "{label}: outer build reads the wire form: {:?}",
+            outer::decode_welcome(&wire)
+        );
+        let exact = outer::reencode_welcome(&wire)
+            .map(|v| v == wire)
+            .unwrap_or(false);
         println!("{label}: outer build re-encodes the wire form byte-exact: {exact}");
         if label == "K=1000" {
-            fs::write(out_dir.join(format!("transcoded-outer-s{seed}-welcome-k1000.bin")), &wire).expect("write transcoded dump");
+            fs::write(
+                out_dir.join(format!("transcoded-outer-s{seed}-welcome-k1000.bin")),
+                &wire,
+            )
+            .expect("write transcoded dump");
             let (arr, map) = envelope_overhead(wire.len());
-            println!("{label}: version tag overhead on the wire form: array (version, body) +{arr} B, map {{v, body}} +{map} B");
+            println!(
+                "{label}: version tag overhead on the wire form: array (version, body) +{arr} B, map {{v, body}} +{map} B"
+            );
         }
     }
     let (arr, map) = envelope_overhead(b.k1000_welcome.len());
-    println!("both K=1000 welcome {} B: version tag overhead: array +{arr} B, map +{map} B", b.k1000_welcome.len());
+    println!(
+        "both K=1000 welcome {} B: version tag overhead: array +{arr} B, map +{map} B",
+        b.k1000_welcome.len()
+    );
     println!();
 }
 

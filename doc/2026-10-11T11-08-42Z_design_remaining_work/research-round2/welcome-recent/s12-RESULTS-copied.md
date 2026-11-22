@@ -25,11 +25,11 @@ Task 05 and the design review ask for the welcome size at 1,000 rotations, with 
 
 ### Builds
 
-| Build | Source | Change from the pin |
-|---|---|---|
-| stock | git, p2panda rev `3e84cac`, p2panda-encryption 0.7.1, features `data_scheme`, `test_utils` | none |
-| serde-bytes | `variants/serde-bytes/p2panda-encryption`, a copy of `/home/user/work/spikes/s3-history/patched/p2panda-encryption` | `#[serde(with = "serde_bytes")]` on `TwoPartyPlaintext.plaintext` (`src/two_party/two_party.rs:244`) and on `X3dhCiphertext.ciphertext` (`src/two_party/x3dh.rs:41`). `logs/variant-diff-serde-bytes-vs-s3-path.diff` shows only these two lines. |
-| found-as-is (control) | copy of the same S3 path copy, in `variants/found/` | Package renamed to `p2panda-encryption-found`. Two path packages with the same name and version collide in the lockfile. Otherwise unchanged. |
+| Build                 | Source                                                                                                              | Change from the pin                                                                                                                                                                                                                               |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| stock                 | git, p2panda rev `3e84cac`, p2panda-encryption 0.7.1, features `data_scheme`, `test_utils`                          | none                                                                                                                                                                                                                                              |
+| serde-bytes           | `variants/serde-bytes/p2panda-encryption`, a copy of `/home/user/work/spikes/s3-history/patched/p2panda-encryption` | `#[serde(with = "serde_bytes")]` on `TwoPartyPlaintext.plaintext` (`src/two_party/two_party.rs:244`) and on `X3dhCiphertext.ciphertext` (`src/two_party/x3dh.rs:41`). `logs/variant-diff-serde-bytes-vs-s3-path.diff` shows only these two lines. |
+| found-as-is (control) | copy of the same S3 path copy, in `variants/found/`                                                                 | Package renamed to `p2panda-encryption-found`. Two path packages with the same name and version collide in the lockfile. Otherwise unchanged.                                                                                                     |
 
 **The S3 path copy does not have the serde_bytes change.** Its `two_party/` and `x3dh.rs` have no `serde(with` attributes. `diff -rq` against the pinned checkout's `src` shows only `data_scheme/dcgka.rs` and `data_scheme/group.rs` differ (the membership fix and `add_from_join`). S3's RESULTS list the serde_bytes fix as "described, not built". The `patch.diff` in S3's logs has no field-level `serde_bytes` change. Its `Cargo.toml` hunk only turns workspace dependencies into explicit versions and drops `[lints]`. The brief's "serde_bytes variant from the patched path" therefore does not exist as described, so I built the variant myself.
 
@@ -124,23 +124,23 @@ Fit: slope 40.00 B per secret, intercept 450.5 B, largest residual 1.5 B. Final 
 
 Mean over the five runs, with sample sd in brackets.
 
-| build | probe welcome B | `EncryptionGroup::add` welcome B | B per epoch (fit) | fixed part, intercept (B) | largest fit residual (B) | cumulative re-add B |
-|---|---|---|---|---|---|---|
-| stock | 147,362 (124) | 147,368 (174) | 146.6 (0.1) | 583 (6) | 78 (33) | 19,467,376 (16,192) |
-| serde-bytes | 40,493 (0) | 40,493 (0) | 40.00 (0) | 450.5 (0) | 1.5 (0) | 10,211,722 (0) |
-| found-as-is (control) | 147,319 (152) | 147,358 (177) | 146.6 (0.1) | 587 (12) | 76 (25) | 19,467,813 (16,009) |
+| build                 | probe welcome B | `EncryptionGroup::add` welcome B | B per epoch (fit) | fixed part, intercept (B) | largest fit residual (B) | cumulative re-add B |
+| --------------------- | --------------- | -------------------------------- | ----------------- | ------------------------- | ------------------------ | ------------------- |
+| stock                 | 147,362 (124)   | 147,368 (174)                    | 146.6 (0.1)       | 583 (6)                   | 78 (33)                  | 19,467,376 (16,192) |
+| serde-bytes           | 40,493 (0)      | 40,493 (0)                       | 40.00 (0)         | 450.5 (0)                 | 1.5 (0)                  | 10,211,722 (0)      |
+| found-as-is (control) | 147,319 (152)   | 147,358 (177)                    | 146.6 (0.1)       | 587 (12)                  | 76 (25)                  | 19,467,813 (16,009) |
 
 The per-epoch cost decomposes as 40 B raw × 1.91 × 1.91 ≈ 145 B. There are two `Vec<u8>` layers: the bundle inside `TwoPartyPlaintext.plaintext`, then the AEAD output inside `X3dhCiphertext.ciphertext`. The measured 146.6 B is close to that. The found-as-is build matches stock, which confirms the S3 path copy has no serde-level change on the welcome path.
 
 ### recent N and the empty welcome, K = 1,000, five runs
 
-| bundle | stock B (mean, range) | serde-bytes B |
-|---|---|---|
-| empty (from_join) | 596 (593–600) | 448 |
-| N = 1 | 747 (734–754) | 489 |
-| N = 8 | 1,775 (1,764–1,783) | 771 |
-| N = 32 | 5,323 (5,285–5,353) | 1,732 |
-| full, 1,001 secrets | 147,362 | 40,493 |
+| bundle              | stock B (mean, range) | serde-bytes B |
+| ------------------- | --------------------- | ------------- |
+| empty (from_join)   | 596 (593–600)         | 448           |
+| N = 1               | 747 (734–754)         | 489           |
+| N = 8               | 1,775 (1,764–1,783)   | 771           |
+| N = 32              | 5,323 (5,285–5,353)   | 1,732         |
+| full, 1,001 secrets | 147,362               | 40,493        |
 
 The serde-bytes values did not vary across runs. Stock welcomes did.
 
@@ -152,22 +152,22 @@ All 60 checks pass: 3 builds × 5 runs × 4 checks (full, N = 1, 8, 32). For eac
 
 ### Time at K = 1,000
 
-| step | stock | serde-bytes |
-|---|---|---|
+| step                                                                                                                       | stock               | serde-bytes         |
+| -------------------------------------------------------------------------------------------------------------------------- | ------------------- | ------------------- |
 | `Dcgka::add`: builds the welcome (bundle encoding, 2SM/X3DH encryption). Median of 50 per run, mean over five runs (range) | 1.76 ms (1.46–1.90) | 0.51 ms (0.47–0.65) |
-| `encode_cbor` of the welcome | 1.96 ms (1.72–2.16) | 0.003 ms |
-| `EncryptionGroup::add` (full public API, with local processing) | 1.67 ms (1.42–1.84) | 0.47 ms (0.45–0.50) |
+| `encode_cbor` of the welcome                                                                                               | 1.96 ms (1.72–2.16) | 0.003 ms            |
+| `EncryptionGroup::add` (full public API, with local processing)                                                            | 1.67 ms (1.42–1.84) | 0.47 ms (0.45–0.50) |
 
 Run seed 1, `Dcgka::add` median by K (250 / 500 / 750 / 1000): stock 621 / 916 / 1,212 / 1,861 µs; serde-bytes 347 / 436 / 436 / 647 µs. This machine is shared and noisy, so read these as order-of-magnitude figures in release builds.
 
 ### Churn: welcomes sent for re-adds, run seed 1
 
-| K | stock cumulative B | serde-bytes cumulative B |
-|---|---|---|
-| 250 | 1,262,259 | 677,726 |
-| 500 | 4,926,282 | 2,605,722 |
-| 750 | 10,993,683 | 5,783,722 |
-| 1,000 | 19,468,141 | 10,211,722 |
+| K     | stock cumulative B | serde-bytes cumulative B |
+| ----- | ------------------ | ------------------------ |
+| 250   | 1,262,259          | 677,726                  |
+| 500   | 4,926,282          | 2,605,722                |
+| 750   | 10,993,683         | 5,783,722                |
+| 1,000 | 19,468,141         | 10,211,722               |
 
 Ratios for each step: stock 3.90 (500/250), 2.23 (750/500, quadratic prediction 2.25), 1.77 (1000/750, prediction 1.78). serde-bytes: 3.85, 2.22, 1.77.
 
@@ -175,12 +175,12 @@ Derived average per epoch in a re-add welcome, from the totals: about 78 B for s
 
 ### Cross-decode (run seed 1)
 
-| welcome | encoded by | decoded by | result |
-|---|---|---|---|
-| K = 1 joiner, PreKey | stock | serde-bytes | `Err("incompatible CBOR type Array")` |
-| K = 1 joiner, PreKey | serde-bytes | stock | `Err("expected array, got Bytes")` |
-| re-add, HPKE | stock | serde-bytes | `Ok(())` |
-| re-add, HPKE | serde-bytes | stock | `Ok(())` |
+| welcome              | encoded by  | decoded by  | result                                |
+| -------------------- | ----------- | ----------- | ------------------------------------- |
+| K = 1 joiner, PreKey | stock       | serde-bytes | `Err("incompatible CBOR type Array")` |
+| K = 1 joiner, PreKey | serde-bytes | stock       | `Err("expected array, got Bytes")`    |
+| re-add, HPKE         | stock       | serde-bytes | `Ok(())`                              |
+| re-add, HPKE         | serde-bytes | stock       | `Ok(())`                              |
 
 The PreKey failures happen at the outer DM decode, so the welcome cannot be read on the other build.
 

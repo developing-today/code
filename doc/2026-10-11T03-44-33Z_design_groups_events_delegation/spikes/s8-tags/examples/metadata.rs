@@ -7,7 +7,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use cbor_core::Value;
-use s8_tags::{Body, Device, Dot, Entry, Op, Replica, Rng, State, encode_op, encode_state, op_id, reference};
+use s8_tags::{
+    Body, Device, Dot, Entry, Op, Replica, Rng, State, encode_op, encode_state, op_id, reference,
+};
 
 fn device(i: usize) -> Device {
     let mut d = [0u8; 32];
@@ -59,7 +61,9 @@ fn tombstone_bytes(state: &State, applied: &BTreeMap<Dot, Op>) -> usize {
 }
 
 fn log_bytes(ops: &[Op]) -> usize {
-    ops.iter().map(|op| encode_op(op).len() + op_id(op).len()).sum()
+    ops.iter()
+        .map(|op| encode_op(op).len() + op_id(op).len())
+        .sum()
 }
 
 /// Table 1: one entry, one device, `cycles` of set-then-clear, then one final set.
@@ -123,7 +127,9 @@ fn random_run(devices: usize, steps: usize, seed: u64) -> (Vec<Replica>, Vec<Op>
         } else {
             let live: Vec<Dot> = reps[r].state.live.keys().copied().collect();
             if !live.is_empty() {
-                let names: BTreeSet<Dot> = (0..=rng.below(3)).map(|_| live[rng.below(live.len())]).collect();
+                let names: BTreeSet<Dot> = (0..=rng.below(3))
+                    .map(|_| live[rng.below(live.len())])
+                    .collect();
                 issued.push(reps[r].clear(names));
             }
         }
@@ -141,7 +147,9 @@ fn random_run(devices: usize, steps: usize, seed: u64) -> (Vec<Replica>, Vec<Op>
 /// Table 3: random multi-device runs. Final state is the join of all devices.
 fn table_multi_device() {
     println!("## T3. Random run, several devices, partial gossip (3000 steps, seed 20261011)\n");
-    println!("| devices | ops | live dots | vv entries | state B | tomb B | log B | join = reference |");
+    println!(
+        "| devices | ops | live dots | vv entries | state B | tomb B | log B | join = reference |"
+    );
     println!("|---:|---:|---:|---:|---:|---:|---:|---|");
     for devices in [2usize, 5] {
         let (reps, issued) = random_run(devices, 3000, 20261011);
@@ -178,10 +186,16 @@ fn table_clear_size() {
                 .collect();
             let clock = (0..devices).map(|d| (device(d), 1000u64)).collect();
             let op = Op {
-                dot: Dot { device: device(0), seq: 5000 },
+                dot: Dot {
+                    device: device(0),
+                    seq: 5000,
+                },
                 body: Body::Clear { names, clock },
             };
-            println!("| {names_n} | {devices} | {} |", encode_op(&op).len() + op_id(&op).len());
+            println!(
+                "| {names_n} | {devices} | {} |",
+                encode_op(&op).len() + op_id(&op).len()
+            );
         }
     }
     println!();
@@ -189,8 +203,12 @@ fn table_clear_size() {
 
 /// Table 5: compaction at a cut. The snapshot is the reference over the prefix, and the tail is the rest.
 fn table_compaction() {
-    println!("## T5. Compaction of the 5-device run at a causal cut (cut = prefix of issue order)\n");
-    println!("| cut at | dropped ops | snapshot B | tail B | dropped headers B (32 each) | total B | uncompacted log B |");
+    println!(
+        "## T5. Compaction of the 5-device run at a causal cut (cut = prefix of issue order)\n"
+    );
+    println!(
+        "| cut at | dropped ops | snapshot B | tail B | dropped headers B (32 each) | total B | uncompacted log B |"
+    );
     println!("|---:|---:|---:|---:|---:|---:|---:|");
     let (_reps, issued) = random_run(5, 3000, 20261011);
     let full = log_bytes(&issued);

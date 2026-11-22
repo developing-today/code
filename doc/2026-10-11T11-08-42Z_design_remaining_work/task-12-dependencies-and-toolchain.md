@@ -6,18 +6,18 @@
 
 ## Where things stand (checked 2026-10-11)
 
-| Item | Current in `pkgs/id` | Latest found | Notes |
-| --- | --- | --- | --- |
-| Rust toolchain | 1.97.0 (`rust-toolchain.toml`) | 1.99.0 (stable, 2026-09-28) | nixpkgs store on this machine has rustc 1.98.1 and 1.99.0. |
-| Nightly | none | not needed | `#![feature` found nowhere in `pkgs/`. |
-| MSRV | declared 1.91 in `pkgs/id/Cargo.toml` | p2panda and the spikes need 1.96 | Discrepancy, also in task 01. |
-| p2panda | git rev `3e84cac` (2026-10-09) | crates.io 0.7.1 (2026-08-21) for core, store, stream, sync | We are ahead of 0.7.1 on purpose. |
-| iroh stack | iroh 1.3, iroh-relay 1.3, iroh-tickets 1.0, iroh-blobs =0.103.1, iroh-docs 0.101, iroh-gossip 0.101 | (check) | iroh-blobs 0.97.0, 0.99.0, 0.100.0 to 0.103.0 and 0.28.0 are yanked. 0.103.1 is not. |
-| redb | =4.3.0 | (check) | Also used by iroh-blobs' FsStore. |
-| CBOR | cbor-core =0.10.1; dcbor =0.25.2 (dev) | (check) | cbor-core is the canonical encoder the headers use. |
-| ed25519 | ed25519-dalek 3.0 in the product; p2panda-core uses 2.2 | (check) | Index decision 19. |
-| SQLite family | libsql 0.9.30, optional behind `web` | Turso 0.8.2 (candidate) | Depends on the storage decision (task 02). |
-| distributed-topic-tracker | 0.3.5 | (check) | Pulled in by iroh-related code. |
+| Item                      | Current in `pkgs/id`                                                                                | Latest found                                               | Notes                                                                                |
+| ------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| Rust toolchain            | 1.97.0 (`rust-toolchain.toml`)                                                                      | 1.99.0 (stable, 2026-09-28)                                | nixpkgs store on this machine has rustc 1.98.1 and 1.99.0.                           |
+| Nightly                   | none                                                                                                | not needed                                                 | `#![feature` found nowhere in `pkgs/`.                                               |
+| MSRV                      | declared 1.91 in `pkgs/id/Cargo.toml`                                                               | p2panda and the spikes need 1.96                           | Discrepancy, also in task 01.                                                        |
+| p2panda                   | git rev `3e84cac` (2026-10-09)                                                                      | crates.io 0.7.1 (2026-08-21) for core, store, stream, sync | We are ahead of 0.7.1 on purpose.                                                    |
+| iroh stack                | iroh 1.3, iroh-relay 1.3, iroh-tickets 1.0, iroh-blobs =0.103.1, iroh-docs 0.101, iroh-gossip 0.101 | (check)                                                    | iroh-blobs 0.97.0, 0.99.0, 0.100.0 to 0.103.0 and 0.28.0 are yanked. 0.103.1 is not. |
+| redb                      | =4.3.0                                                                                              | (check)                                                    | Also used by iroh-blobs' FsStore.                                                    |
+| CBOR                      | cbor-core =0.10.1; dcbor =0.25.2 (dev)                                                              | (check)                                                    | cbor-core is the canonical encoder the headers use.                                  |
+| ed25519                   | ed25519-dalek 3.0 in the product; p2panda-core uses 2.2                                             | (check)                                                    | Index decision 19.                                                                   |
+| SQLite family             | libsql 0.9.30, optional behind `web`                                                                | Turso 0.8.2 (candidate)                                    | Depends on the storage decision (task 02).                                           |
+| distributed-topic-tracker | 0.3.5                                                                                               | (check)                                                    | Pulled in by iroh-related code.                                                      |
 
 ## Procedure
 

@@ -20,7 +20,7 @@ MCPX_EOF
 The heredoc is quoted, which is the whole trick: an example full of
 apostrophes, `$` signs and backticks arrives at `mcpx exec` byte for
 byte, because `mcpx exec` takes its source as an argument and its stdin
-belongs to the script. *Copy as script* puts the source itself on the
+belongs to the script. _Copy as script_ puts the source itself on the
 clipboard instead, for a file under `.mcpx/scripts/` and `mcpx run`.
 
 **Run it in the page.** The example is editable, and Run executes the

@@ -49,7 +49,13 @@ pub fn dataset(n: usize, seed: u64) -> Vec<Claim> {
         } else {
             Some(values[rng.below(VALUES as u64) as usize].clone())
         };
-        out.push(Claim { author: authors[a], seq, subject, name, value });
+        out.push(Claim {
+            author: authors[a],
+            seq,
+            subject,
+            name,
+            value,
+        });
     }
     out
 }
@@ -65,7 +71,9 @@ fn us(d: Duration) -> f64 {
 }
 
 fn wal_len(path: &Path) -> u64 {
-    std::fs::metadata(format!("{}-wal", path.display())).map(|m| m.len()).unwrap_or(0)
+    std::fs::metadata(format!("{}-wal", path.display()))
+        .map(|m| m.len())
+        .unwrap_or(0)
 }
 
 pub fn run<S: Store>(dir: &Path, n: usize) -> Result<()> {
@@ -105,7 +113,10 @@ pub fn run<S: Store>(dir: &Path, n: usize) -> Result<()> {
         *expect_subject.entry(c.subject).or_default() += 1;
         *expect_author.entry(c.author).or_default() += 1;
         if let Some(v) = &c.value {
-            expect_pair.entry((c.name.clone(), v.clone())).or_default().push(c.subject);
+            expect_pair
+                .entry((c.name.clone(), v.clone()))
+                .or_default()
+                .push(c.subject);
         }
     }
     for subjects in expect_pair.values_mut() {
@@ -125,7 +136,11 @@ pub fn run<S: Store>(dir: &Path, n: usize) -> Result<()> {
         let t = Instant::now();
         let got = store.by_subject(&subject)?;
         lat_subject.push(t.elapsed());
-        ensure!(got.len() == expect_subject[&subject], "by_subject: {} rows", got.len());
+        ensure!(
+            got.len() == expect_subject[&subject],
+            "by_subject: {} rows",
+            got.len()
+        );
         hits_subject += got.len();
     }
     for _ in 0..LOOKUPS {
@@ -137,7 +152,12 @@ pub fn run<S: Store>(dir: &Path, n: usize) -> Result<()> {
         lat_pair.push(t.elapsed());
         got.sort();
         let want = &expect_pair[&(name, value)];
-        ensure!(&got == want, "subjects_with: {} rows, expected {}", got.len(), want.len());
+        ensure!(
+            &got == want,
+            "subjects_with: {} rows, expected {}",
+            got.len(),
+            want.len()
+        );
         hits_pair += got.len();
     }
     for _ in 0..LOOKUPS {
@@ -145,8 +165,15 @@ pub fn run<S: Store>(dir: &Path, n: usize) -> Result<()> {
         let t = Instant::now();
         let got = store.by_author(&author)?;
         lat_author.push(t.elapsed());
-        ensure!(got.len() == expect_author[&author], "by_author: {} rows", got.len());
-        ensure!(got.windows(2).all(|w| w[0].seq < w[1].seq), "by_author out of seq order");
+        ensure!(
+            got.len() == expect_author[&author],
+            "by_author: {} rows",
+            got.len()
+        );
+        ensure!(
+            got.windows(2).all(|w| w[0].seq < w[1].seq),
+            "by_author out of seq order"
+        );
         hits_author += got.len();
     }
     let peak_end_kb = status_kb("VmHWM:");

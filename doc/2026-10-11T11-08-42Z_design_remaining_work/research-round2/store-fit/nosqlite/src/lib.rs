@@ -42,27 +42,56 @@ where
 {
     type Error = StoreError;
 
-    async fn get_latest_entry(&self, _author: &VerifyingKey, _log_id: &L) -> Result<Option<AnyOperation>, StoreError> {
+    async fn get_latest_entry(
+        &self,
+        _author: &VerifyingKey,
+        _log_id: &L,
+    ) -> Result<Option<AnyOperation>, StoreError> {
         Ok(None)
     }
 
-    async fn get_latest_entry_tx(&self, _author: &VerifyingKey, _log_id: &L) -> Result<Option<AnyOperation>, StoreError> {
+    async fn get_latest_entry_tx(
+        &self,
+        _author: &VerifyingKey,
+        _log_id: &L,
+    ) -> Result<Option<AnyOperation>, StoreError> {
         Ok(None)
     }
 
-    async fn get_log_heights(&self, _author: &VerifyingKey, _logs: &[L]) -> Result<Option<BTreeMap<L, SeqNum>>, StoreError> {
+    async fn get_log_heights(
+        &self,
+        _author: &VerifyingKey,
+        _logs: &[L],
+    ) -> Result<Option<BTreeMap<L, SeqNum>>, StoreError> {
         Ok(None)
     }
 
-    async fn get_log_size(&self, _author: &VerifyingKey, _log_id: &L, _after: Option<SeqNum>, _until: Option<SeqNum>) -> Result<Option<(u32, u32)>, StoreError> {
+    async fn get_log_size(
+        &self,
+        _author: &VerifyingKey,
+        _log_id: &L,
+        _after: Option<SeqNum>,
+        _until: Option<SeqNum>,
+    ) -> Result<Option<(u32, u32)>, StoreError> {
         Ok(None)
     }
 
-    fn log_entries(&self, _author: &VerifyingKey, _log_id: &L, _after: Option<SeqNum>, _until: Option<SeqNum>) -> Result<BoxStream<'static, Result<LogEntry<AnyOperation, L>, StoreError>>, StoreError> {
+    fn log_entries(
+        &self,
+        _author: &VerifyingKey,
+        _log_id: &L,
+        _after: Option<SeqNum>,
+        _until: Option<SeqNum>,
+    ) -> Result<BoxStream<'static, Result<LogEntry<AnyOperation, L>, StoreError>>, StoreError> {
         Ok(Box::pin(stream::empty()))
     }
 
-    async fn prune_entries(&self, _author: &VerifyingKey, _log_id: &L, _until: &SeqNum) -> Result<u64, StoreError> {
+    async fn prune_entries(
+        &self,
+        _author: &VerifyingKey,
+        _log_id: &L,
+        _until: &SeqNum,
+    ) -> Result<u64, StoreError> {
         Ok(0)
     }
 }

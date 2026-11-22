@@ -22,6 +22,7 @@ NOTE: Only 2 batches because there are only 4 files and all 3 tests depend on th
 ## Batch 1: Module Refactor (1 implementer)
 
 ### Task 1.1: Refactor `nix/id-module.nix` to instances pattern
+
 **File:** `pkgs/id/nix/id-module.nix`
 **Test:** none (verified by `nix eval` in Batch 2 tasks, and end-to-end by all test files)
 **Depends:** none
@@ -196,9 +197,11 @@ in
 ```
 
 **Verify:** From the repo root worktree (`/home/user/.local/share/opencode/worktree/code/e2e-nix`), run:
+
 ```bash
 nix eval .#checks.x86_64-linux --apply 'x: builtins.attrNames x' 2>&1
 ```
+
 This should succeed without evaluation errors. The actual test names will change (services reference `id-primary` etc.) but evaluation should not fail since `nix eval` just checks the attribute set structure.
 
 **Commit:** `feat(nix): refactor id-module.nix to multi-instance pattern`
@@ -210,6 +213,7 @@ This should succeed without evaluation errors. The actual test names will change
 All tasks in this batch depend on Task 1.1 completing first.
 
 ### Task 2.1: Update `nix/tests/serve-test.nix` — Dual HTTP API test
+
 **File:** `pkgs/id/nix/tests/serve-test.nix`
 **Test:** none (this IS the NixOS VM test — verified by `nix build .#checks.x86_64-linux.nixos-serve`)
 **Depends:** 1.1
@@ -389,9 +393,11 @@ All tasks in this batch depend on Task 1.1 completing first.
 ```
 
 **Verify:** From the repo root worktree:
+
 ```bash
 cd /home/user/.local/share/opencode/worktree/code/e2e-nix && nix build .#checks.x86_64-linux.nixos-serve --no-link 2>&1
 ```
+
 (Full VM test — takes a few minutes. For quick syntax check: `nix eval .#checks.x86_64-linux --apply 'x: builtins.attrNames x'`)
 
 **Commit:** `test(nix): update serve-test.nix to dual-instance with isolation`
@@ -399,6 +405,7 @@ cd /home/user/.local/share/opencode/worktree/code/e2e-nix && nix build .#checks.
 ---
 
 ### Task 2.2: Update `nix/tests/e2e-test.nix` — Dual Browser DOM test
+
 **File:** `pkgs/id/nix/tests/e2e-test.nix`
 **Test:** none (this IS the NixOS VM test — verified by `nix build .#checks.x86_64-linux.nixos-e2e`)
 **Depends:** 1.1
@@ -563,6 +570,7 @@ cd /home/user/.local/share/opencode/worktree/code/e2e-nix && nix build .#checks.
 ```
 
 **Verify:** From the repo root worktree:
+
 ```bash
 cd /home/user/.local/share/opencode/worktree/code/e2e-nix && nix build .#checks.x86_64-linux.nixos-e2e --no-link 2>&1
 ```
@@ -572,6 +580,7 @@ cd /home/user/.local/share/opencode/worktree/code/e2e-nix && nix build .#checks.
 ---
 
 ### Task 2.3: Update `nix/tests/playwright-e2e-test.nix` — Dual Playwright (4 VMs)
+
 **File:** `pkgs/id/nix/tests/playwright-e2e-test.nix`
 **Test:** none (this IS the NixOS VM test — verified by `nix build .#checks.x86_64-linux.playwright-e2e`)
 **Depends:** 1.1
@@ -765,6 +774,7 @@ cd /home/user/.local/share/opencode/worktree/code/e2e-nix && nix build .#checks.
 ```
 
 **Verify:** From the repo root worktree:
+
 ```bash
 cd /home/user/.local/share/opencode/worktree/code/e2e-nix && nix build .#checks.x86_64-linux.playwright-e2e --no-link 2>&1
 ```
@@ -778,27 +788,33 @@ cd /home/user/.local/share/opencode/worktree/code/e2e-nix && nix build .#checks.
 After all 4 tasks are complete, run these in order:
 
 ### 1. Fast evaluation check (seconds)
+
 ```bash
 cd /home/user/.local/share/opencode/worktree/code/e2e-nix && nix eval .#checks.x86_64-linux --apply 'x: builtins.attrNames x' 2>&1
 ```
+
 Confirms all nix files parse and evaluate without type errors.
 
 ### 2. serve-test (fastest VM test, ~2-3 min)
+
 ```bash
 cd /home/user/.local/share/opencode/worktree/code/e2e-nix && nix build .#checks.x86_64-linux.nixos-serve --no-link 2>&1
 ```
 
 ### 3. e2e-test (browser DOM test, ~3-5 min)
+
 ```bash
 cd /home/user/.local/share/opencode/worktree/code/e2e-nix && nix build .#checks.x86_64-linux.nixos-e2e --no-link 2>&1
 ```
 
 ### 4. playwright-e2e (full browser test, ~15-20 min)
+
 ```bash
 cd /home/user/.local/share/opencode/worktree/code/e2e-nix && nix build .#checks.x86_64-linux.playwright-e2e --no-link 2>&1
 ```
 
 ### 5. Commit all together
+
 ```bash
 git add pkgs/id/nix/id-module.nix pkgs/id/nix/tests/serve-test.nix pkgs/id/nix/tests/e2e-test.nix pkgs/id/nix/tests/playwright-e2e-test.nix
 git commit -m "feat(nix): multi-instance module with dual-instance tests and isolation"

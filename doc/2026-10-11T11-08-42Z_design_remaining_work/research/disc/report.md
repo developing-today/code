@@ -2,13 +2,13 @@
 
 **Answer.** Make n0's pkarr and DNS the default, since the N0 preset publishes only your relay URL. Keep the mainline DHT and a self-hosted Worker relay opt-in, and leave mDNS off because it publishes every IP to the LAN. Two surprises: pkarr HTTP has no timeout, so an ID-only `connect()` can hang on a stalled relay; and the DHT dependency is `n0-mainline`, not the `mainline` crate. Nothing was compiled; [inferred] marks deductions, other claims are [read].
 
-| Service | Default | Privacy cost | Switch | Notes |
-|---|---|---|---|---|
-| n0 pkarr publish + resolve | On (`presets::N0`) | n0 learns ID↔relay, your IP, each ID you dial | `presets::Minimal`, `.clear_address_lookup()`; or `PkarrPublisher::builder(url)` | Relay-only publish; republish every 5 min |
-| n0 DNS | On (N0) | Your resolver sees each ID you dial | Drop from preset; `DnsResolver::builder().disable_fallback()` | Public resolvers only if primary fails |
-| Worker pkarr relay | Off | Host sees what n0 sees | Relay URL | Durable Objects, not KV |
-| Mainline DHT | Off | Public per-key record, hourly refresh; DHT nodes see your IP | `.address_lookup(DhtAddressLookup::builder())`; `.no_publish()` | Relay-only by default; bootstrap replaceable |
-| mDNS | Off (not in N0) | LAN hosts learn ID and all IPs | Omit; `.advertise(false)`; `.addr_filter(AddrFilter::relay_only())` | IPv4 multicast TTL 16 |
+| Service                    | Default            | Privacy cost                                                 | Switch                                                                           | Notes                                        |
+| -------------------------- | ------------------ | ------------------------------------------------------------ | -------------------------------------------------------------------------------- | -------------------------------------------- |
+| n0 pkarr publish + resolve | On (`presets::N0`) | n0 learns ID↔relay, your IP, each ID you dial                | `presets::Minimal`, `.clear_address_lookup()`; or `PkarrPublisher::builder(url)` | Relay-only publish; republish every 5 min    |
+| n0 DNS                     | On (N0)            | Your resolver sees each ID you dial                          | Drop from preset; `DnsResolver::builder().disable_fallback()`                    | Public resolvers only if primary fails       |
+| Worker pkarr relay         | Off                | Host sees what n0 sees                                       | Relay URL                                                                        | Durable Objects, not KV                      |
+| Mainline DHT               | Off                | Public per-key record, hourly refresh; DHT nodes see your IP | `.address_lookup(DhtAddressLookup::builder())`; `.no_publish()`                  | Relay-only by default; bootstrap replaceable |
+| mDNS                       | Off (not in N0)    | LAN hosts learn ID and all IPs                               | Omit; `.advertise(false)`; `.addr_filter(AddrFilter::relay_only())`              | IPv4 multicast TTL 16                        |
 
 Paths are `<crate>/src/…` under `/tmp/research-disc/src/<crate>-<ver>/<crate>-<ver>/`. Short names: `iroh` = iroh-1.3.0; `lookup-dht` = iroh-mainline-address-lookup-0.6.0; `lookup-mdns` = iroh-mdns-address-lookup-0.6.0. Line refs are in `notes/findings.md`.
 
@@ -25,6 +25,7 @@ Paths are `<crate>/src/…` under `/tmp/research-disc/src/<crate>-<ver>/<crate>-
 **(f) Combining and blocking.** Multiple lookups: yes. `address_lookup(...)` appends (`iroh/src/endpoint.rs:616-618`) and all run concurrently (`iroh/src/address_lookup.rs:565-579`). Precedence: none; addresses merge into one path set (`remote_state.rs:906-937`). An ID-only dial returns at the first item, or once every service has yielded or ended (`path_state.rs:161-207`). DNS ends within about 6 s (`iroh-dns/src/dns.rs:1197-1228`); mDNS within 10 s; DHT once nothing is in flight. Pkarr HTTP has no timeout (`iroh/src/util.rs:21-71`), so a stalled relay blocks indefinitely [inferred]. The 10 s connect timeout starts after resolution (`iroh/src/endpoint.rs:1146-1153`). Wrap `connect` in `tokio::time::timeout`.
 
 **(g) Recommendation.**
+
 1. **On by default:** n0 pkarr and DNS (`presets::N0`). Cost: n0 sees your ID↔relay mapping, IP and each ID you dial. Switch: `presets::Minimal`; `.disable_fallback()` on the DNS resolver. Dropping only `PkarrPublisher` means others cannot dial you by ID, but you can still dial them [inferred].
 2. **Opt-in:** (i) a Worker pkarr relay. Cost: its host sees what n0 sees; Cloudflare terminates TLS [inferred]. Switch: the URL. (ii) Mainline DHT. Cost: a public per-key record, refreshed hourly; DHT nodes see your IP. Switch: `.address_lookup(DhtAddressLookup::builder())`; `.no_publish()` for lookup-only.
 3. **Off:** mDNS. Cost: every LAN host learns your ID and all IPs. Switch: omit it, or `.advertise(false)` or `relay_only`.

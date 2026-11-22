@@ -12,9 +12,14 @@ away while the other is reading the DOM.
 ## Get your own instance
 
 ```jsonc
-{ "mcpServers": { "chrome-devtools": {
-    "command": "chrome-devtools-mcp",
-    "mcpx": { "sharing": "exclusive", "scope": "session" } } } }
+{
+  "mcpServers": {
+    "chrome-devtools": {
+      "command": "chrome-devtools-mcp",
+      "mcpx": { "sharing": "exclusive", "scope": "session" },
+    },
+  },
+}
 ```
 
 `exclusive` plus `session` means each agent session leases its own browser
@@ -50,7 +55,12 @@ Snapshots and network logs are **large**. Print a length first, then a slice:
 ```ts
 const net = String(await chrome_devtools.list_network_requests({ pageId }));
 // one line per request: "reqid=1 GET https://example.com/ [200]"
-console.log(net.split("\n").filter((l) => /\[(failed|[45]\d\d)\b/i.test(l)).join("\n"));
+console.log(
+  net
+    .split("\n")
+    .filter((l) => /\[(failed|[45]\d\d)\b/i.test(l))
+    .join("\n"),
+);
 ```
 
 Four failing requests is what you wanted. The other six hundred are not.
@@ -59,7 +69,7 @@ Four failing requests is what you wanted. The other six hundred are not.
 
 ```ts
 const shot = await chrome_devtools.take_screenshot({ pageId, format: "png" });
-const ref = await artifact("page.png", shot);   // the image, not the caption
+const ref = await artifact("page.png", shot); // the image, not the caption
 console.log(ref.size, ref.uri);
 ```
 

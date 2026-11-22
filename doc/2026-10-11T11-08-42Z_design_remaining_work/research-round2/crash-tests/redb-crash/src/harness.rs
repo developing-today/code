@@ -122,7 +122,10 @@ fn post_recovery(db: Database, backing: &FaultFs, expected: &Model) -> Result<()
         .create_with_backend(FaultFs::new(backing.disk_image(), None, false))
         .map_err(|e| format!("reopen: {e}"))?;
     let mut want = expected.clone();
-    want.insert((workload::META_TAG, b"post-recovery".to_vec()), b"ok".to_vec());
+    want.insert(
+        (workload::META_TAG, b"post-recovery".to_vec()),
+        b"ok".to_vec(),
+    );
     let got = workload::dump(&again).map_err(|e| format!("dump: {e}"))?;
     if got == want {
         Ok(())
@@ -196,7 +199,11 @@ fn panic_text(payload: &(dyn Any + Send)) -> String {
 
 /// Runs one plan (or no plan, for the clean run). Returns the outcome and the storage-call trace.
 /// Panics never escape: a panic before the cut, or while reopening, is a verdict.
-pub fn run_one(plan: Option<Plan>, lying_sync: bool, models: &[Model]) -> (Outcome, Vec<(Kind, u64, usize)>) {
+pub fn run_one(
+    plan: Option<Plan>,
+    lying_sync: bool,
+    models: &[Model],
+) -> (Outcome, Vec<(Kind, u64, usize)>) {
     let fs = FaultFs::new(Vec::new(), plan, lying_sync);
     let mut acked = 0u64;
     let attempt = panic::catch_unwind(AssertUnwindSafe(|| run_workload(&fs, &mut acked)));
@@ -206,7 +213,10 @@ pub fn run_one(plan: Option<Plan>, lying_sync: bool, models: &[Model]) -> (Outco
             verdict: Verdict::Panic,
             acked,
             repairs: 0,
-            detail: format!("panic before the power cut: {}", panic_text(payload.as_ref())),
+            detail: format!(
+                "panic before the power cut: {}",
+                panic_text(payload.as_ref())
+            ),
         },
         Ok(Err(e)) if !fs.cut() => Outcome {
             verdict: Verdict::NoCrashError,
@@ -216,13 +226,17 @@ pub fn run_one(plan: Option<Plan>, lying_sync: bool, models: &[Model]) -> (Outco
         },
         // A cut (or a clean finish) leaves a disk image to reopen. A panic or error after the cut
         // is the dead process failing, not a finding.
-        _ => match panic::catch_unwind(AssertUnwindSafe(|| verify(fs.disk_image(), acked, models))) {
+        _ => match panic::catch_unwind(AssertUnwindSafe(|| verify(fs.disk_image(), acked, models)))
+        {
             Ok(outcome) => outcome,
             Err(payload) => Outcome {
                 verdict: Verdict::Panic,
                 acked,
                 repairs: 0,
-                detail: format!("panic while reopening the image: {}", panic_text(payload.as_ref())),
+                detail: format!(
+                    "panic while reopening the image: {}",
+                    panic_text(payload.as_ref())
+                ),
             },
         },
     };

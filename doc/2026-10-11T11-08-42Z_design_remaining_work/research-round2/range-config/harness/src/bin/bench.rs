@@ -31,7 +31,13 @@ fn logsync_control(chains: usize) -> Option<usize> {
 
 /// Copies the base store to two files, adds `n_new` events to the first, and returns the paths
 /// and the IDs of the new events (the ground truth for the symmetric difference).
-fn prepare(dir: &Path, base: &Path, tag: &str, chains: usize, n_new: usize) -> Result<(PathBuf, PathBuf, HashSet<Id>)> {
+fn prepare(
+    dir: &Path,
+    base: &Path,
+    tag: &str,
+    chains: usize,
+    n_new: usize,
+) -> Result<(PathBuf, PathBuf, HashSet<Id>)> {
     let a = dir.join(format!("a-{tag}.redb"));
     let b = dir.join(format!("b-{tag}.redb"));
     std::fs::copy(base, &a)?;
@@ -81,7 +87,14 @@ impl Record {
     }
 }
 
-async fn sync_once(dir: &Path, base: &Path, chains: usize, n_new: usize, p: Params, tag: &str) -> Result<Record> {
+async fn sync_once(
+    dir: &Path,
+    base: &Path,
+    chains: usize,
+    n_new: usize,
+    p: Params,
+    tag: &str,
+) -> Result<Record> {
     let (a_path, b_path, truth) = prepare(dir, base, tag, chains, n_new)?;
     let mut rec = Record::default();
 
@@ -97,8 +110,14 @@ async fn sync_once(dir: &Path, base: &Path, chains: usize, n_new: usize, p: Para
     rec.sim_flights = sim.flights;
 
     let run = sync_pair(
-        Side { store: store_a.clone(), party: party_a.clone() },
-        Side { store: store_b.clone(), party: party_b.clone() },
+        Side {
+            store: store_a.clone(),
+            party: party_a.clone(),
+        },
+        Side {
+            store: store_b.clone(),
+            party: party_b.clone(),
+        },
         p,
         Cut::Never,
     )
@@ -132,15 +151,19 @@ async fn sync_once(dir: &Path, base: &Path, chains: usize, n_new: usize, p: Para
             rec.failures.push(format!("dialer inserted {}", a.inserted));
         }
         if b.inserted != n_new {
-            rec.failures.push(format!("acceptor inserted {} of {n_new}", b.inserted));
+            rec.failures
+                .push(format!("acceptor inserted {} of {n_new}", b.inserted));
         }
         if a.duplicates + b.duplicates != 0 {
             rec.failures.push("duplicate inserts".into());
         }
         if a.learned != truth || b.learned != truth {
-            rec.failures.push("a side did not learn the true difference".into());
+            rec.failures
+                .push("a side did not learn the true difference".into());
         }
-        if rec.flights != sim.flights || rec.control != sim.bytes_a + sim.bytes_b + 4 * sim.flights as usize {
+        if rec.flights != sim.flights
+            || rec.control != sim.bytes_a + sim.bytes_b + 4 * sim.flights as usize
+        {
             rec.failures.push(format!(
                 "wire run differs from in-memory run: flights {} vs {}, control {} vs {}",
                 rec.flights,
@@ -174,7 +197,9 @@ fn median(mut v: Vec<Duration>) -> Duration {
 }
 
 fn parse_list(s: &str) -> Result<Vec<usize>> {
-    s.split(',').map(|x| x.trim().parse::<usize>().map_err(Into::into)).collect()
+    s.split(',')
+        .map(|x| x.trim().parse::<usize>().map_err(Into::into))
+        .collect()
 }
 
 fn fmt_ms(d: Duration) -> String {
@@ -183,8 +208,13 @@ fn fmt_ms(d: Duration) -> String {
 
 async fn matrix(dir: &Path, chains: usize, repeats: usize, p: Params, ns: &[usize]) -> Result<()> {
     let base = dir.join(format!("base-{chains}.redb"));
-    println!("## matrix: chains={chains} K={} T={} batch={} repeats={repeats}", p.k, p.t, p.batch);
-    println!("| N | flights (A+B) | control B | data B | transport B (QUIC) | wall ms, median | of which commit ms, median | index ms, median | checks |");
+    println!(
+        "## matrix: chains={chains} K={} T={} batch={} repeats={repeats}",
+        p.k, p.t, p.batch
+    );
+    println!(
+        "| N | flights (A+B) | control B | data B | transport B (QUIC) | wall ms, median | of which commit ms, median | index ms, median | checks |"
+    );
     println!("|---|---|---|---|---|---|---|---|---|");
     for &n in ns {
         let mut runs = Vec::new();
@@ -203,12 +233,18 @@ async fn matrix(dir: &Path, chains: usize, repeats: usize, p: Params, ns: &[usiz
                 fmt_ms(rec.index),
                 rec.transport,
                 rec.ok(),
-                if rec.ok() { String::new() } else { format!(" FAILED: {}", rec.failures.join("; ")) }
+                if rec.ok() {
+                    String::new()
+                } else {
+                    format!(" FAILED: {}", rec.failures.join("; "))
+                }
             );
             runs.push(rec);
         }
         let first = &runs[0];
-        let same = runs.iter().all(|r| r.flights == first.flights && r.control == first.control && r.data == first.data);
+        let same = runs.iter().all(|r| {
+            r.flights == first.flights && r.control == first.control && r.data == first.data
+        });
         let all_ok = runs.iter().all(Record::ok);
         let mut transport: Vec<u64> = runs.iter().map(|r| r.transport).collect();
         transport.sort();
@@ -221,11 +257,17 @@ async fn matrix(dir: &Path, chains: usize, repeats: usize, p: Params, ns: &[usiz
             fmt_ms(median(runs.iter().map(|r| r.wall).collect())),
             fmt_ms(median(runs.iter().map(|r| r.commit).collect())),
             fmt_ms(median(runs.iter().map(|r| r.index).collect())),
-            if all_ok && same { "all ok, identical across runs" } else { "SEE RUN LINES" }
+            if all_ok && same {
+                "all ok, identical across runs"
+            } else {
+                "SEE RUN LINES"
+            }
         );
     }
     if let Some(ls) = logsync_control(chains) {
-        println!("LogSync control for this chain count (S1, CBOR, not re-run): {ls} B, 2 flights before data.");
+        println!(
+            "LogSync control for this chain count (S1, CBOR, not re-run): {ls} B, 2 flights before data."
+        );
     }
     Ok(())
 }
@@ -246,7 +288,11 @@ async fn sweep(dir: &Path, chains: usize, ks: &[usize], ts: &[usize], ns: &[usiz
                     rec.control,
                     rec.data,
                     rec.ok(),
-                    if rec.ok() { String::new() } else { format!(" {}", rec.failures.join("; ")) }
+                    if rec.ok() {
+                        String::new()
+                    } else {
+                        format!(" {}", rec.failures.join("; "))
+                    }
                 );
             }
         }
@@ -257,19 +303,31 @@ async fn sweep(dir: &Path, chains: usize, ks: &[usize], ts: &[usize], ns: &[usiz
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let arg = |i: usize| -> Result<&str> { args.get(i).map(String::as_str).context("missing argument") };
+    let arg =
+        |i: usize| -> Result<&str> { args.get(i).map(String::as_str).context("missing argument") };
     match arg(0)? {
         "matrix" => {
             let dir = PathBuf::from(arg(1)?);
             let chains: usize = arg(2)?.parse()?;
             let repeats: usize = arg(3)?.parse()?;
-            let p = Params { k: arg(4)?.parse()?, t: arg(5)?.parse()?, batch: 256 };
+            let p = Params {
+                k: arg(4)?.parse()?,
+                t: arg(5)?.parse()?,
+                batch: 256,
+            };
             matrix(&dir, chains, repeats, p, &parse_list(arg(6)?)?).await
         }
         "sweep" => {
             let dir = PathBuf::from(arg(1)?);
             let chains: usize = arg(2)?.parse()?;
-            sweep(&dir, chains, &parse_list(arg(3)?)?, &parse_list(arg(4)?)?, &parse_list(arg(5)?)?).await
+            sweep(
+                &dir,
+                chains,
+                &parse_list(arg(3)?)?,
+                &parse_list(arg(4)?)?,
+                &parse_list(arg(5)?)?,
+            )
+            .await
         }
         other => bail!("unknown command {other}"),
     }

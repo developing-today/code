@@ -37,11 +37,20 @@ fn frontier_only_clock_leaves_an_add_the_clearer_saw() {
     // C clears x with a clock naming only the frontier (y, from B). C has seen x, but the clock does not cover it.
     let frontier_clock = [(device(1), 1)].into_iter().collect();
     let frontier_clear = Op {
-        dot: Dot { device: device(2), seq: 1 },
-        body: Body::Clear { names: BTreeSet::from([x.dot]), clock: frontier_clock },
+        dot: Dot {
+            device: device(2),
+            seq: 1,
+        },
+        body: Body::Clear {
+            names: BTreeSet::from([x.dot]),
+            clock: frontier_clock,
+        },
     };
     c.receive(frontier_clear.clone());
-    assert!(c.state.live.contains_key(&x.dot), "frontier clock: x survives a clear that saw it");
+    assert!(
+        c.state.live.contains_key(&x.dot),
+        "frontier clock: x survives a clear that saw it"
+    );
 
     // The same clear with the full clock. C's version vector covers x, so x is removed.
     let mut c_full = Replica::new(device(2));

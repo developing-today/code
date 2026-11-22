@@ -13,7 +13,7 @@ cross worlds.
   reads or writes in either direction. Unknown and foreign names stay
   indistinguishable to outsiders.
 - **`Isolation::Unisolated`**. The world's directory may be read by a session in
-  another world, but only when *both* worlds are unisolated. An isolated world is
+  another world, but only when _both_ worlds are unisolated. An isolated world is
   never readable from outside. Writes never cross worlds.
 - Same-world access is unaffected by isolation.
 
@@ -84,6 +84,7 @@ New tests: `world::isolation_tests` (default, moderator and admin set, others re
 Checks: `cargo fmt --check` clean. Clippy (`--all-targets --all-features`, rustc 1.97.0) exits 0. New warnings are the `map_err(|_| …)` pattern already used across the handles.
 
 Deviations:
+
 - **Moderator scope is world-wide.** Any account holding Moderator or Admin in any group of the world's directory may set isolation. This is the reading the plan settled on; it means any group admin can change isolation. Needs review.
 - **CLI uses `--world`**, not a positional name, to match `create` and `caps`.
 

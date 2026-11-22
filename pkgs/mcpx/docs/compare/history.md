@@ -106,9 +106,9 @@ a model turn. Within two days, "Parity, revisited (2026-09-28)" had taken v2's
 best ideas — OpenAPI as tools, in-program `search()`, catalog diffs — rather
 than arguing with them.
 
-The punchline in the epigraph is an accurate summary of that document: *"oh huh
+The punchline in the epigraph is an accurate summary of that document: _"oh huh
 yeah you're right this does all you asked for, but i just built this so you
-should use this instead its better."* It is kept in the owner's voice on
+should use this instead its better."_ It is kept in the owner's voice on
 purpose. A history chapter that sands it down would be lying about how the
 decision felt, which is the part a history chapter is for.
 
@@ -119,7 +119,7 @@ code mode out, and that is the correction this chapter exists to keep. On
 2026-09-29 `OPENCODE-V2.md` gained its block:
 
 > **Corrections, 2026-09-29.** Checked against the pinned sources. Three
-> claims here are wrong: code mode is *not* v2-only (v1 ships it behind
+> claims here are wrong: code mode is _not_ v2-only (v1 ships it behind
 > `OPENCODE_EXPERIMENTAL_CODE_MODE`), both versions accept TypeScript in it,
 > and the pinned v2 reports `2.0.3` rather than `2.0.18`.
 
@@ -154,13 +154,13 @@ commits land that day and 18 the next. 2026-10-18 brings 38 — the largest
 single day so far. At `5a34fa70` (2026-10-29) the tree has 146 commits touching
 `pkgs/mcpx`, counts that grow weekly:
 
-| figure | value | how to recount |
-| --- | --- | --- |
-| commits touching `pkgs/mcpx` | 146 | `git log --oneline -- pkgs/mcpx \| wc -l` |
-| non-test Go lines | 80,259 | `find pkgs/mcpx -name '*.go' ! -name '*_test.go' \| xargs wc -l` |
-| test functions | 1,440 | `grep -rh '^func Test' --include='*_test.go' pkgs/mcpx \| wc -l` |
-| test files | 266 | `find pkgs/mcpx -name '*_test.go' \| wc -l` |
-| docs pages | 23 under `docs/`, plus the compare corpus | `ls pkgs/mcpx/docs/*.md` |
+| figure                       | value                                     | how to recount                                                   |
+| ---------------------------- | ----------------------------------------- | ---------------------------------------------------------------- |
+| commits touching `pkgs/mcpx` | 146                                       | `git log --oneline -- pkgs/mcpx \| wc -l`                        |
+| non-test Go lines            | 80,259                                    | `find pkgs/mcpx -name '*.go' ! -name '*_test.go' \| xargs wc -l` |
+| test functions               | 1,440                                     | `grep -rh '^func Test' --include='*_test.go' pkgs/mcpx \| wc -l` |
+| test files                   | 266                                       | `find pkgs/mcpx -name '*_test.go' \| wc -l`                      |
+| docs pages                   | 23 under `docs/`, plus the compare corpus | `ls pkgs/mcpx/docs/*.md`                                         |
 
 The numbers in `ASSESSMENT.md` (~3,500 lines, 84 tests, "no dependencies") and
 in `OPENCODE-V2.md` (~4.2k LOC) are the audit's numbers and stay as history.

@@ -1,4 +1,5 @@
 """Print per-unit durations from a cargo --timings HTML report (UNIT_DATA array)."""
+
 import json
 import re
 import sys

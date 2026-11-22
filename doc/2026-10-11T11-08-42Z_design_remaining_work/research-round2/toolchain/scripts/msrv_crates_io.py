@@ -18,7 +18,13 @@ results = []
 UA = "research-round2-toolchain-msrv-check (read-only metadata lookup)"
 for name, version in sorted(pairs):
     url = f"https://crates.io/api/v1/crates/{name}/{version}"
-    rec = {"name": name, "version": version, "rust_version": None, "yanked": None, "error": None}
+    rec = {
+        "name": name,
+        "version": version,
+        "rust_version": None,
+        "yanked": None,
+        "error": None,
+    }
     for attempt in range(3):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": UA})

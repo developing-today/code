@@ -50,7 +50,10 @@ fn show_lines(label: &str, lines: &[String]) {
 /// Defaults, flags, and the WITHOUT ROWID rules. Prints each result.
 pub fn features(dir: &Path) -> Result<()> {
     let s6 = TursoStore::open_with(&reset(dir, "s6-settings.db")?, false)?;
-    println!("== settings after TursoStore::open (the S6 settings): {}", s6.settings()?);
+    println!(
+        "== settings after TursoStore::open (the S6 settings): {}",
+        s6.settings()?
+    );
     drop(s6);
     println!("== defaults: plain Builder::new_local, no pragmas");
     let uri = uri_of(&reset(dir, "defaults.db")?)?;
@@ -75,7 +78,8 @@ pub fn features(dir: &Path) -> Result<()> {
         let conn = db.connect()?;
         show(
             "CREATE TABLE ... WITHOUT ROWID",
-            conn.execute("CREATE TABLE w (k BLOB PRIMARY KEY) WITHOUT ROWID", ()).await,
+            conn.execute("CREATE TABLE w (k BLOB PRIMARY KEY) WITHOUT ROWID", ())
+                .await,
         );
         Ok::<_, turso::Error>(())
     })?;
@@ -83,19 +87,38 @@ pub fn features(dir: &Path) -> Result<()> {
     println!("== WITHOUT ROWID with experimental_without_rowid (the flag the S6 schema needs)");
     let uri = uri_of(&reset(dir, "wr.db")?)?;
     block_on(async {
-        let db = Builder::new_local(&uri).experimental_without_rowid(true).build().await?;
+        let db = Builder::new_local(&uri)
+            .experimental_without_rowid(true)
+            .build()
+            .await?;
         let conn = db.connect()?;
         show(
             "CREATE",
-            conn.execute("CREATE TABLE w (k BLOB PRIMARY KEY, v BLOB) WITHOUT ROWID", ()).await,
+            conn.execute(
+                "CREATE TABLE w (k BLOB PRIMARY KEY, v BLOB) WITHOUT ROWID",
+                (),
+            )
+            .await,
         );
-        show("INSERT x2", async {
-            conn.execute("INSERT INTO w VALUES (x'01', x'aa')", ()).await?;
-            conn.execute("INSERT INTO w VALUES (x'02', x'bb')", ()).await
-        }
-        .await);
-        show("UPDATE", conn.execute("UPDATE w SET v = x'cc' WHERE k = x'01'", ()).await);
-        show("DELETE", conn.execute("DELETE FROM w WHERE k = x'01'", ()).await);
+        show(
+            "INSERT x2",
+            async {
+                conn.execute("INSERT INTO w VALUES (x'01', x'aa')", ())
+                    .await?;
+                conn.execute("INSERT INTO w VALUES (x'02', x'bb')", ())
+                    .await
+            }
+            .await,
+        );
+        show(
+            "UPDATE",
+            conn.execute("UPDATE w SET v = x'cc' WHERE k = x'01'", ())
+                .await,
+        );
+        show(
+            "DELETE",
+            conn.execute("DELETE FROM w WHERE k = x'01'", ()).await,
+        );
         show(
             "secondary UNIQUE (CREATE UNIQUE INDEX)",
             conn.execute("CREATE UNIQUE INDEX wv ON w (v)", ()).await,
@@ -116,13 +139,25 @@ pub fn features(dir: &Path) -> Result<()> {
             )
             .await,
         );
-        show("INSERT (a,1)", conn.execute("INSERT INTO rw VALUES (x'a1', 1, x'01')", ()).await);
+        show(
+            "INSERT (a,1)",
+            conn.execute("INSERT INTO rw VALUES (x'a1', 1, x'01')", ())
+                .await,
+        );
         show(
             "INSERT (a,1) again, other id",
-            conn.execute("INSERT INTO rw VALUES (x'a1', 1, x'02')", ()).await,
+            conn.execute("INSERT INTO rw VALUES (x'a1', 1, x'02')", ())
+                .await,
         );
-        show("UPDATE", conn.execute("UPDATE rw SET id = x'03' WHERE seq = 1", ()).await);
-        show("DELETE", conn.execute("DELETE FROM rw WHERE seq = 1", ()).await);
+        show(
+            "UPDATE",
+            conn.execute("UPDATE rw SET id = x'03' WHERE seq = 1", ())
+                .await,
+        );
+        show(
+            "DELETE",
+            conn.execute("DELETE FROM rw WHERE seq = 1", ()).await,
+        );
         let mut rows = conn.query("PRAGMA index_list('rw')", ()).await?;
         while let Some(r) = rows.next().await? {
             println!(
@@ -139,7 +174,10 @@ pub fn features(dir: &Path) -> Result<()> {
     let p = reset(dir, "enc.db")?;
     let uri = uri_of(&p)?;
     let marker = b"secret-marker-7731";
-    let enc = |hexkey: &str| EncryptionOpts { cipher: "aes256gcm".to_string(), hexkey: hexkey.to_string() };
+    let enc = |hexkey: &str| EncryptionOpts {
+        cipher: "aes256gcm".to_string(),
+        hexkey: hexkey.to_string(),
+    };
     block_on(async {
         let db = Builder::new_local(&uri)
             .experimental_encryption(true)
@@ -148,14 +186,25 @@ pub fn features(dir: &Path) -> Result<()> {
             .await?;
         let conn = db.connect()?;
         conn.execute("CREATE TABLE t (x BLOB)", ()).await?;
-        conn.execute("INSERT INTO t VALUES (?1)", (marker.to_vec(),)).await?;
+        conn.execute("INSERT INTO t VALUES (?1)", (marker.to_vec(),))
+            .await?;
         Ok::<_, turso::Error>(())
     })?;
     let raw = std::fs::read(&p)?;
     let wal = std::fs::read(format!("{}-wal", p.display())).unwrap_or_default();
-    println!("  file header (16 bytes): {:?}", String::from_utf8_lossy(&raw[..16.min(raw.len())]));
-    println!("  marker visible in db file: {}", raw.windows(marker.len()).any(|w| w == marker));
-    println!("  db-wal file bytes: {}; marker visible in db-wal: {}", wal.len(), wal.windows(marker.len()).any(|w| w == marker));
+    println!(
+        "  file header (16 bytes): {:?}",
+        String::from_utf8_lossy(&raw[..16.min(raw.len())])
+    );
+    println!(
+        "  marker visible in db file: {}",
+        raw.windows(marker.len()).any(|w| w == marker)
+    );
+    println!(
+        "  db-wal file bytes: {}; marker visible in db-wal: {}",
+        wal.len(),
+        wal.windows(marker.len()).any(|w| w == marker)
+    );
     let reopen = |key: Option<&str>| -> std::result::Result<String, String> {
         block_on(async {
             let mut b = Builder::new_local(&uri).experimental_encryption(true);
@@ -164,7 +213,10 @@ pub fn features(dir: &Path) -> Result<()> {
             }
             let db = b.build().await.map_err(|e| format!("open: {e}"))?;
             let conn = db.connect().map_err(|e| format!("connect: {e}"))?;
-            let mut rows = conn.query("SELECT x FROM t", ()).await.map_err(|e| format!("query: {e}"))?;
+            let mut rows = conn
+                .query("SELECT x FROM t", ())
+                .await
+                .map_err(|e| format!("query: {e}"))?;
             let row = rows.next().await.map_err(|e| format!("next: {e}"))?;
             Ok(match row {
                 Some(r) => format!("read {:?}", r.get_value(0).map_err(|e| e.to_string())?),
@@ -172,7 +224,10 @@ pub fn features(dir: &Path) -> Result<()> {
             })
         })
     };
-    println!("  reopen with correct key: {:?}", reopen(Some(PROBE_HEXKEY)));
+    println!(
+        "  reopen with correct key: {:?}",
+        reopen(Some(PROBE_HEXKEY))
+    );
     println!("  reopen with no key: {:?}", reopen(None));
     let wrong = "00".repeat(32);
     println!("  reopen with wrong key: {:?}", reopen(Some(&wrong)));
@@ -185,7 +240,10 @@ pub fn probe(path: &Path) -> Result<()> {
     let t = Instant::now();
     match TursoStore::open_with(path, false) {
         Ok(_) => println!("  rw open: OK ({:.1} ms)", t.elapsed().as_secs_f64() * 1e3),
-        Err(e) => println!("  rw open: ERR after {:.1} ms: {e:#}", t.elapsed().as_secs_f64() * 1e3),
+        Err(e) => println!(
+            "  rw open: ERR after {:.1} ms: {e:#}",
+            t.elapsed().as_secs_f64() * 1e3
+        ),
     }
     let uri = uri_of(path)?;
     let ro = block_on(async {
@@ -211,9 +269,15 @@ pub fn write_try(path: &Path, from: u64, to: u64) -> Result<()> {
     let claims: Vec<Claim> = (from..=to).map(expected_claim).collect();
     let t = Instant::now();
     match TursoStore::open_with(path, false) {
-        Err(e) => println!("  write: open ERR after {:.1} ms: {e:#}", t.elapsed().as_secs_f64() * 1e3),
+        Err(e) => println!(
+            "  write: open ERR after {:.1} ms: {e:#}",
+            t.elapsed().as_secs_f64() * 1e3
+        ),
         Ok(mut store) => match store.insert_batch(&claims) {
-            Ok(b) => println!("  write: OK {b:?} elapsed_ms={:.1}", t.elapsed().as_secs_f64() * 1e3),
+            Ok(b) => println!(
+                "  write: OK {b:?} elapsed_ms={:.1}",
+                t.elapsed().as_secs_f64() * 1e3
+            ),
             Err(e) => println!("  write: insert ERR {e:#}"),
         },
     }
@@ -227,29 +291,60 @@ pub fn plan_probe(dir: &Path) -> Result<()> {
     let p = reset(dir, "plan.db")?;
     let uri = uri_of(&p)?;
     block_on(async {
-        let conn = Builder::new_local(&uri).experimental_without_rowid(true).build().await?.connect()?;
+        let conn = Builder::new_local(&uri)
+            .experimental_without_rowid(true)
+            .build()
+            .await?
+            .connect()?;
         conn.execute_batch(crate::turso_store::SCHEMA).await?;
         for (label, q) in [
-            ("author_seq lookup", "SELECT id FROM author_seq WHERE author = ?1 AND seq = ?2"),
+            (
+                "author_seq lookup",
+                "SELECT id FROM author_seq WHERE author = ?1 AND seq = ?2",
+            ),
             ("claims by id", "SELECT body FROM claims WHERE id = ?1"),
-            ("alpha range", "SELECT key FROM alpha WHERE key >= ?1 AND key < ?2 ORDER BY key"),
+            (
+                "alpha range",
+                "SELECT key FROM alpha WHERE key >= ?1 AND key < ?2 ORDER BY key",
+            ),
         ] {
             print!("  WITHOUT ROWID {label}:");
-            let mut rows = conn.query(&format!("EXPLAIN QUERY PLAN {q}"), (vec![0u8; 32], vec![0u8; 33])).await?;
+            let mut rows = conn
+                .query(
+                    &format!("EXPLAIN QUERY PLAN {q}"),
+                    (vec![0u8; 32], vec![0u8; 33]),
+                )
+                .await?;
             while let Some(r) = rows.next().await? {
                 print!(" [{:?}]", r.get_value(3)?);
             }
             println!();
         }
-        let rconn = Builder::new_local(&format!("{uri}.rowid")).build().await?.connect()?;
-        rconn.execute_batch(crate::turso_store::SCHEMA_ROWID).await?;
+        let rconn = Builder::new_local(&format!("{uri}.rowid"))
+            .build()
+            .await?
+            .connect()?;
+        rconn
+            .execute_batch(crate::turso_store::SCHEMA_ROWID)
+            .await?;
         for (label, q) in [
-            ("author_seq lookup", "SELECT id FROM author_seq WHERE author = ?1 AND seq = ?2"),
+            (
+                "author_seq lookup",
+                "SELECT id FROM author_seq WHERE author = ?1 AND seq = ?2",
+            ),
             ("claims by id", "SELECT body FROM claims WHERE id = ?1"),
-            ("alpha range", "SELECT key FROM alpha WHERE key >= ?1 AND key < ?2 ORDER BY key"),
+            (
+                "alpha range",
+                "SELECT key FROM alpha WHERE key >= ?1 AND key < ?2 ORDER BY key",
+            ),
         ] {
             print!("  rowid {label}:");
-            let mut rows = rconn.query(&format!("EXPLAIN QUERY PLAN {q}"), (vec![0u8; 32], vec![0u8; 33])).await?;
+            let mut rows = rconn
+                .query(
+                    &format!("EXPLAIN QUERY PLAN {q}"),
+                    (vec![0u8; 32], vec![0u8; 33]),
+                )
+                .await?;
             while let Some(r) = rows.next().await? {
                 print!(" [{:?}]", r.get_value(3)?);
             }
@@ -257,7 +352,9 @@ pub fn plan_probe(dir: &Path) -> Result<()> {
         }
         let conn = rconn;
         let sql = "SELECT id FROM author_seq WHERE author = ?1 AND seq = ?2";
-        let mut rows = conn.query(&format!("EXPLAIN QUERY PLAN {sql}"), (vec![0u8; 32], 1i64)).await?;
+        let mut rows = conn
+            .query(&format!("EXPLAIN QUERY PLAN {sql}"), (vec![0u8; 32], 1i64))
+            .await?;
         while let Some(r) = rows.next().await? {
             println!("  plan: {:?}", r.get_value(3)?);
         }
@@ -267,7 +364,9 @@ pub fn plan_probe(dir: &Path) -> Result<()> {
             a
         };
         let mut inserted = 0u32;
-        let mut ins = conn.prepare("INSERT INTO author_seq (author, seq, id) VALUES (?1, ?2, ?3)").await?;
+        let mut ins = conn
+            .prepare("INSERT INTO author_seq (author, seq, id) VALUES (?1, ?2, ?3)")
+            .await?;
         conn.execute("BEGIN IMMEDIATE", ()).await?;
         for i in 0..20_000u32 {
             ins.execute((author(i), 1i64, vec![1u8; 32])).await?;
@@ -279,7 +378,10 @@ pub fn plan_probe(dir: &Path) -> Result<()> {
                     let mut rows = look.query((author(j), 1i64)).await?;
                     while rows.next().await?.is_some() {}
                 }
-                println!("  lookups with 1000 rows: {:.1} ms per 1000", t.elapsed().as_secs_f64() * 1e3);
+                println!(
+                    "  lookups with 1000 rows: {:.1} ms per 1000",
+                    t.elapsed().as_secs_f64() * 1e3
+                );
             }
         }
         conn.execute("COMMIT", ()).await?;
@@ -289,7 +391,10 @@ pub fn plan_probe(dir: &Path) -> Result<()> {
             let mut rows = look.query((author(j), 1i64)).await?;
             while rows.next().await?.is_some() {}
         }
-        println!("  lookups with {inserted} rows: {:.1} ms per 1000", t.elapsed().as_secs_f64() * 1e3);
+        println!(
+            "  lookups with {inserted} rows: {:.1} ms per 1000",
+            t.elapsed().as_secs_f64() * 1e3
+        );
         Ok::<_, anyhow::Error>(())
     })
 }
@@ -301,48 +406,82 @@ pub fn txn_probe(dir: &Path) -> Result<()> {
     let p = reset(dir, "txn.db")?;
     let uri = uri_of(&p)?;
     block_on(async {
-        let mut conn = Builder::new_local(&uri).experimental_without_rowid(true).build().await?.connect()?;
+        let mut conn = Builder::new_local(&uri)
+            .experimental_without_rowid(true)
+            .build()
+            .await?
+            .connect()?;
         conn.pragma_update("journal_mode", "'wal'").await?;
         conn.pragma_update("synchronous", "FULL").await?;
-        conn.execute("CREATE TABLE t (k BLOB PRIMARY KEY, v BLOB)", ()).await?;
+        conn.execute("CREATE TABLE t (k BLOB PRIMARY KEY, v BLOB)", ())
+            .await?;
         let row = |i: u32| (i.to_be_bytes().to_vec(), vec![1u8; 64]);
-        conn.execute("CREATE TABLE w (k BLOB PRIMARY KEY, v BLOB) WITHOUT ROWID", ()).await?;
-        conn.execute("CREATE TABLE s (k BLOB PRIMARY KEY, v BLOB)", ()).await?;
-        conn.execute("CREATE TABLE ws (k BLOB PRIMARY KEY, v BLOB) WITHOUT ROWID", ()).await?;
+        conn.execute(
+            "CREATE TABLE w (k BLOB PRIMARY KEY, v BLOB) WITHOUT ROWID",
+            (),
+        )
+        .await?;
+        conn.execute("CREATE TABLE s (k BLOB PRIMARY KEY, v BLOB)", ())
+            .await?;
+        conn.execute(
+            "CREATE TABLE ws (k BLOB PRIMARY KEY, v BLOB) WITHOUT ROWID",
+            (),
+        )
+        .await?;
 
         // D: WITHOUT ROWID inserts only, one transaction.
         let t = Instant::now();
         conn.execute("BEGIN IMMEDIATE", ()).await?;
         for i in 0..1000 {
-            conn.execute("INSERT INTO w VALUES (?1, ?2)", row(i)).await?;
+            conn.execute("INSERT INTO w VALUES (?1, ?2)", row(i))
+                .await?;
         }
         conn.execute("COMMIT", ()).await?;
-        println!("  D WITHOUT ROWID inserts, one transaction: {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
+        println!(
+            "  D WITHOUT ROWID inserts, one transaction: {:.1} ms",
+            t.elapsed().as_secs_f64() * 1e3
+        );
 
         // E: rowid table, a SELECT before each INSERT, one transaction (the insert_in pattern).
         let t = Instant::now();
         conn.execute("BEGIN IMMEDIATE", ()).await?;
         for i in 0..1000u32 {
-            let mut rows = conn.query("SELECT v FROM s WHERE k = ?1", (i.to_be_bytes().to_vec(),)).await?;
+            let mut rows = conn
+                .query("SELECT v FROM s WHERE k = ?1", (i.to_be_bytes().to_vec(),))
+                .await?;
             while rows.next().await?.is_some() {}
-            conn.execute("INSERT INTO s VALUES (?1, ?2)", row(i)).await?;
+            conn.execute("INSERT INTO s VALUES (?1, ?2)", row(i))
+                .await?;
         }
         conn.execute("COMMIT", ()).await?;
-        println!("  E rowid, SELECT then INSERT, one transaction: {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
+        println!(
+            "  E rowid, SELECT then INSERT, one transaction: {:.1} ms",
+            t.elapsed().as_secs_f64() * 1e3
+        );
 
         // F: WITHOUT ROWID table, a SELECT before each INSERT, one transaction.
         let t = Instant::now();
         conn.execute("BEGIN IMMEDIATE", ()).await?;
         for i in 0..1000u32 {
-            let mut rows = conn.query("SELECT v FROM ws WHERE k = ?1", (i.to_be_bytes().to_vec(),)).await?;
+            let mut rows = conn
+                .query("SELECT v FROM ws WHERE k = ?1", (i.to_be_bytes().to_vec(),))
+                .await?;
             while rows.next().await?.is_some() {}
-            conn.execute("INSERT INTO ws VALUES (?1, ?2)", row(i)).await?;
+            conn.execute("INSERT INTO ws VALUES (?1, ?2)", row(i))
+                .await?;
         }
         conn.execute("COMMIT", ()).await?;
-        println!("  F WITHOUT ROWID, SELECT then INSERT, one transaction: {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
+        println!(
+            "  F WITHOUT ROWID, SELECT then INSERT, one transaction: {:.1} ms",
+            t.elapsed().as_secs_f64() * 1e3
+        );
 
         // G: prepared once and reused, one transaction, WITHOUT ROWID inserts only.
-        conn.execute("CREATE TABLE pw (k BLOB PRIMARY KEY, v BLOB) WITHOUT ROWID", ()).await?;
+        conn.execute(
+            "CREATE TABLE pw (k BLOB PRIMARY KEY, v BLOB) WITHOUT ROWID",
+            (),
+        )
+        .await?;
         let t = Instant::now();
         conn.execute("BEGIN IMMEDIATE", ()).await?;
         let mut ins = conn.prepare("INSERT INTO pw VALUES (?1, ?2)").await?;
@@ -350,10 +489,17 @@ pub fn txn_probe(dir: &Path) -> Result<()> {
             ins.execute(row(i)).await?;
         }
         conn.execute("COMMIT", ()).await?;
-        println!("  G prepared INSERT reused, WITHOUT ROWID, one transaction: {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
+        println!(
+            "  G prepared INSERT reused, WITHOUT ROWID, one transaction: {:.1} ms",
+            t.elapsed().as_secs_f64() * 1e3
+        );
 
         // H: prepared SELECT and prepared INSERT, reused, WITHOUT ROWID (the insert_in pattern).
-        conn.execute("CREATE TABLE ph (k BLOB PRIMARY KEY, v BLOB) WITHOUT ROWID", ()).await?;
+        conn.execute(
+            "CREATE TABLE ph (k BLOB PRIMARY KEY, v BLOB) WITHOUT ROWID",
+            (),
+        )
+        .await?;
         let t = Instant::now();
         conn.execute("BEGIN IMMEDIATE", ()).await?;
         let mut sel = conn.prepare("SELECT v FROM ph WHERE k = ?1").await?;
@@ -364,33 +510,55 @@ pub fn txn_probe(dir: &Path) -> Result<()> {
             ins.execute(row(i)).await?;
         }
         conn.execute("COMMIT", ()).await?;
-        println!("  H prepared SELECT+INSERT reused, WITHOUT ROWID, one transaction: {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
+        println!(
+            "  H prepared SELECT+INSERT reused, WITHOUT ROWID, one transaction: {:.1} ms",
+            t.elapsed().as_secs_f64() * 1e3
+        );
 
         let t = Instant::now();
         conn.execute("BEGIN IMMEDIATE", ()).await?;
-        println!("  explicit: is_autocommit inside BEGIN = {:?}", conn.is_autocommit());
+        println!(
+            "  explicit: is_autocommit inside BEGIN = {:?}",
+            conn.is_autocommit()
+        );
         for i in 0..1000 {
-            conn.execute("INSERT INTO t VALUES (?1, ?2)", row(i)).await?;
+            conn.execute("INSERT INTO t VALUES (?1, ?2)", row(i))
+                .await?;
         }
         conn.execute("COMMIT", ()).await?;
-        println!("  A explicit BEGIN IMMEDIATE/COMMIT, 1000 inserts: {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
+        println!(
+            "  A explicit BEGIN IMMEDIATE/COMMIT, 1000 inserts: {:.1} ms",
+            t.elapsed().as_secs_f64() * 1e3
+        );
 
         let t = Instant::now();
         {
-            let tx = conn.transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate).await?;
-            println!("  API: is_autocommit inside Transaction = {:?}", tx.is_autocommit());
+            let tx = conn
+                .transaction_with_behavior(turso::transaction::TransactionBehavior::Immediate)
+                .await?;
+            println!(
+                "  API: is_autocommit inside Transaction = {:?}",
+                tx.is_autocommit()
+            );
             for i in 1000..2000 {
                 tx.execute("INSERT INTO t VALUES (?1, ?2)", row(i)).await?;
             }
             tx.commit().await?;
         }
-        println!("  B Transaction API, 1000 inserts: {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
+        println!(
+            "  B Transaction API, 1000 inserts: {:.1} ms",
+            t.elapsed().as_secs_f64() * 1e3
+        );
 
         let t = Instant::now();
         for i in 2000..3000 {
-            conn.execute("INSERT INTO t VALUES (?1, ?2)", row(i)).await?;
+            conn.execute("INSERT INTO t VALUES (?1, ?2)", row(i))
+                .await?;
         }
-        println!("  C autocommit, 1000 inserts: {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
+        println!(
+            "  C autocommit, 1000 inserts: {:.1} ms",
+            t.elapsed().as_secs_f64() * 1e3
+        );
         let mut rows = conn.query("SELECT count(*) FROM t", ()).await?;
         if let Some(r) = rows.next().await? {
             println!("  rows after A+B+C: {:?}", r.get_value(0)?);
@@ -403,16 +571,24 @@ pub fn txn_probe(dir: &Path) -> Result<()> {
 /// pending polls, WAL bytes), so the last line names the batch that hangs.
 pub fn stress(path: &Path, batches: u64, batch: u64, pragmas: &[String]) -> Result<()> {
     let mut store = TursoStore::open(path)?;
-    println!("start: PRAGMA cache_size = {:?}", store.query_int("PRAGMA cache_size"));
+    println!(
+        "start: PRAGMA cache_size = {:?}",
+        store.query_int("PRAGMA cache_size")
+    );
     for p in pragmas {
         store.exec(&format!("PRAGMA {p}"))?;
         println!("set: PRAGMA {p}");
     }
-    println!("now: PRAGMA cache_size = {:?}", store.query_int("PRAGMA cache_size"));
+    println!(
+        "now: PRAGMA cache_size = {:?}",
+        store.query_int("PRAGMA cache_size")
+    );
     let wal = format!("{}-wal", path.display());
     let t0 = Instant::now();
     for b in 0..batches {
-        let claims: Vec<Claim> = (b * batch + 1..=(b + 1) * batch).map(expected_claim).collect();
+        let claims: Vec<Claim> = (b * batch + 1..=(b + 1) * batch)
+            .map(expected_claim)
+            .collect();
         let before = PENDING_POLLS.load(Ordering::Relaxed);
         let t = Instant::now();
         let r = store.insert_batch(&claims)?;
@@ -458,7 +634,13 @@ pub fn mp_test(dir: &Path) -> Result<()> {
     let p_str = uri_of(&p)?;
     let spawn = |from: u64, to: u64| -> Result<Child> {
         Ok(Command::new(&exe)
-            .args(["turso-mp-write", &p_str, &from.to_string(), &to.to_string(), "100"])
+            .args([
+                "turso-mp-write",
+                &p_str,
+                &from.to_string(),
+                &to.to_string(),
+                "100",
+            ])
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()?)
@@ -474,7 +656,10 @@ pub fn mp_test(dir: &Path) -> Result<()> {
     }
     let store = TursoStore::open(&p).context("default-mode reopen after both writers exited")?;
     let claims = store.all_claims()?;
-    let mismatched = claims.iter().filter(|c| **c != expected_claim(c.seq)).count();
+    let mismatched = claims
+        .iter()
+        .filter(|c| **c != expected_claim(c.seq))
+        .count();
     println!(
         "  reopen (default mode): claims={} counts={:?} mismatched={mismatched}",
         claims.len(),
@@ -492,7 +677,9 @@ struct Proc {
 impl Proc {
     fn start(args: &[&str], env: &[(&str, &str)]) -> Result<Proc> {
         let mut cmd = Command::new(std::env::current_exe()?);
-        cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::inherit());
+        cmd.args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
         for (k, v) in env {
             cmd.env(k, v);
         }
@@ -545,21 +732,36 @@ pub fn concurrency(dir: &Path) -> Result<()> {
     println!("== holder: IMMEDIATE transaction with 1000 uncommitted claims, 4 s");
     let mut holder = Proc::start(&["turso-hold", &p_str, "4", "1001", "2000"], &[])?;
     println!("  holder: {}", holder.wait_for("ready")?);
-    show_lines("probe while held", &run_to_end(&["turso-probe", &p_str], &[])?);
-    show_lines("second writer while held", &run_to_end(&["turso-write", &p_str, "2001", "2100"], &[])?);
+    show_lines(
+        "probe while held",
+        &run_to_end(&["turso-probe", &p_str], &[])?,
+    );
+    show_lines(
+        "second writer while held",
+        &run_to_end(&["turso-write", &p_str, "2001", "2100"], &[])?,
+    );
     println!("  holder: {}", holder.wait_for("released")?);
     show_lines("holder exit", &holder.finish()?);
-    show_lines("second writer after release", &run_to_end(&["turso-write", &p_str, "3001", "4000"], &[])?);
+    show_lines(
+        "second writer after release",
+        &run_to_end(&["turso-write", &p_str, "3001", "4000"], &[])?,
+    );
 
     println!("== holder again, then the probe with LIMBO_DISABLE_FILE_LOCK=1");
     let mut holder = Proc::start(&["turso-hold", &p_str, "3", "4001", "5000"], &[])?;
     println!("  holder: {}", holder.wait_for("ready")?);
     show_lines(
         "probe with lock disabled",
-        &run_to_end(&["turso-probe", &p_str], &[("LIMBO_DISABLE_FILE_LOCK", "1")])?,
+        &run_to_end(
+            &["turso-probe", &p_str],
+            &[("LIMBO_DISABLE_FILE_LOCK", "1")],
+        )?,
     );
     println!("  holder: {}", holder.wait_for("released")?);
     show_lines("holder exit", &holder.finish()?);
-    println!("rss_kb (VmRSS) at end of concurrency: {}", status_kb("VmRSS:"));
+    println!(
+        "rss_kb (VmRSS) at end of concurrency: {}",
+        status_kb("VmRSS:")
+    );
     Ok(())
 }

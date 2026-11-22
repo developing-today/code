@@ -15,7 +15,8 @@ N=${N:-5}
 now() { python3 -c 'import time;print(time.time())'; }
 
 bench() { # name, count, command...
-  local name=$1 count=$2; shift 2
+  local name=$1 count=$2
+  shift 2
   local start end
   start=$(now)
   local ok=0

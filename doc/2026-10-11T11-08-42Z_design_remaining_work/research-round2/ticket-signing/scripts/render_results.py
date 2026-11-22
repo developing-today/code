@@ -17,7 +17,7 @@ def read(name):
 def value_after(prefix, text):
     for line in text.splitlines():
         if line.startswith(prefix):
-            return line[len(prefix):]
+            return line[len(prefix) :]
     raise SystemExit(f"missing line starting with {prefix!r}")
 
 
@@ -47,7 +47,9 @@ def main():
     for line in read("test-output.txt").splitlines():
         if line.startswith("test "):
             test_lines.append(line)
-        elif line.startswith("test result:") and not line.startswith("test result: ok. 0 passed"):
+        elif line.startswith("test result:") and not line.startswith(
+            "test result: ok. 0 passed"
+        ):
             test_lines.append(line)
     if not any(line.startswith("test result: ok. 19 passed") for line in test_lines):
         raise SystemExit("expected 19 passing tests in test-output.txt")

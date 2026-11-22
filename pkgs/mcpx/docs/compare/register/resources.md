@@ -19,24 +19,24 @@ ERR-04 overlap the errors register.
 
 Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.md](../README.md).
 
-| ID | Difference | Labels | Where it exists | mcpx @ 05c78b2 | Value | Effort | Risk |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| RES-01 | `Resource.title` / `ResourceTemplate.title` | `2025-06-18 has` `mcpx missing` | `24-11 — · 25-03 — · 25-06 ✓ · 25-11 ✓ · 26-07 ✓` | ✗ — dropped on parse (#207) | + low | S | low |
-| RES-02 | `Resource.size`: in the 2024-11-05 schema, in prose from 2025-03-26 | `2024-11-05 has` `specs conflict` `mcpx missing` | `all five ✓ (schema) · prose from 25-03 · templates never` | ✗ — dropped on parse (#207) | + med | S | low |
-| RES-03 | resource `annotations` (`audience`, `priority`) | `2024-11-05 has` `mcpx missing` | `all five ✓ (mixin until 25-03, same wire)` | ✗ — dropped on parse (#207) | + med | S | low |
-| RES-04 | `Annotations.lastModified` | `2025-06-18 has` `mcpx missing` | `25-06 ✓ · 25-11 ✓ · 26-07 ✓` | ✗ — dropped with `annotations` (#207) | + low | S | low |
-| RES-05 | `Resource.icons` / `ResourceTemplate.icons` | `2025-11-25 has` `mcpx missing` | `25-11 ✓ · 26-07 ✓` | ✗ — dropped on parse (#207) | + low | S | low |
-| RES-06 | `_meta` on `Resource`, `ResourceTemplate`, read contents | `2025-06-18 has` `mcpx missing` | `25-06 ✓ · 25-11 ✓ · 26-07 ✓` | ✗ — dropped on parse and on read (#207) | + med | S | med |
-| RES-07 | `ResourceTemplate.uriTemplate` (required) | `2024-11-05 has` `mcpx missing` | `all five ✓` | ✗ — broken: mcpx sends `uri` (wire W18) (#207) | + high | S | high |
-| RES-08 | upstream URIs re-exposed as `mcpx://<ns>/<uri>` | `mcpx has, others don't` | `mcpx only` | partial — disambiguates; leading `/` trimmed so URIs can collide | + med | S | low |
-| RES-09 | text vs base64 `blob` contents, unchanged since 2024-11-05 | `2024-11-05 has` `mcpx missing` | `all five ✓ (+ _meta 25-06)` | ✗ — always `text`; binary as base64 text or a placeholder (#206) | + med | S | med |
-| RES-10 | `contents[]` may hold several items | `2024-11-05 has` `mcpx missing` | `all five ✓` | ✗ — merged into one text item under the requested URI (#206) | + low | S | low |
-| RES-11 | a missing resource MUST NOT read as empty `contents` | `2026-07-28 has` | `26-07 ✓ only` | ✓ — failures are errors, never `contents: []` | + low | S | low |
-| RES-12 | `resources/subscribe` removed in 2026 | `2024-11-05 has` `2026-07-28 removes` `has better replacement` | `24-11..25-11 ✓ · 26-07 rem (listen filter) · opencode never sends` | acc. — accepted from every era | + med | S | low |
-| RES-13 | `resources/unsubscribe` removed in 2026 | `2024-11-05 has` `2026-07-28 removes` `has better replacement` | `24-11..25-11 ✓ · 26-07 rem` | acc. — accepted from every era | + low | S | low |
-| RES-14 | `notifications/resources/updated` listen-only and tagged in 2026 | `2024-11-05 has` `2026-07-28 has` `mcpx missing` | `24-11..25-11 after subscribe · 26-07 listen stream + subscriptionId` | partial — sent untagged (#208) | + med | S | med |
-| RES-15 | `resources/updated` carries the upstream URI, not `mcpx://` | `2024-11-05 has` `mcpx missing` | `all five (the uri param)` | ✗ — the host cannot correlate the update (#208) | + med | S | med |
-| RES-16 | how resources reach the model in each host | `opencode v1 has` `opencode v2 has` | `opencode v1 3 model tools · v2 TUI @ list only · mcpx tool + script API` | ✓ — `mcpx_resource_read` and `readResource()` | + med | S | med |
+| ID     | Difference                                                          | Labels                                                         | Where it exists                                                           | mcpx @ 05c78b2                                                   | Value  | Effort | Risk |
+| ------ | ------------------------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------- | ------ | ------ | ---- |
+| RES-01 | `Resource.title` / `ResourceTemplate.title`                         | `2025-06-18 has` `mcpx missing`                                | `24-11 — · 25-03 — · 25-06 ✓ · 25-11 ✓ · 26-07 ✓`                         | ✗ — dropped on parse (#207)                                      | + low  | S      | low  |
+| RES-02 | `Resource.size`: in the 2024-11-05 schema, in prose from 2025-03-26 | `2024-11-05 has` `specs conflict` `mcpx missing`               | `all five ✓ (schema) · prose from 25-03 · templates never`                | ✗ — dropped on parse (#207)                                      | + med  | S      | low  |
+| RES-03 | resource `annotations` (`audience`, `priority`)                     | `2024-11-05 has` `mcpx missing`                                | `all five ✓ (mixin until 25-03, same wire)`                               | ✗ — dropped on parse (#207)                                      | + med  | S      | low  |
+| RES-04 | `Annotations.lastModified`                                          | `2025-06-18 has` `mcpx missing`                                | `25-06 ✓ · 25-11 ✓ · 26-07 ✓`                                             | ✗ — dropped with `annotations` (#207)                            | + low  | S      | low  |
+| RES-05 | `Resource.icons` / `ResourceTemplate.icons`                         | `2025-11-25 has` `mcpx missing`                                | `25-11 ✓ · 26-07 ✓`                                                       | ✗ — dropped on parse (#207)                                      | + low  | S      | low  |
+| RES-06 | `_meta` on `Resource`, `ResourceTemplate`, read contents            | `2025-06-18 has` `mcpx missing`                                | `25-06 ✓ · 25-11 ✓ · 26-07 ✓`                                             | ✗ — dropped on parse and on read (#207)                          | + med  | S      | med  |
+| RES-07 | `ResourceTemplate.uriTemplate` (required)                           | `2024-11-05 has` `mcpx missing`                                | `all five ✓`                                                              | ✗ — broken: mcpx sends `uri` (wire W18) (#207)                   | + high | S      | high |
+| RES-08 | upstream URIs re-exposed as `mcpx://<ns>/<uri>`                     | `mcpx has, others don't`                                       | `mcpx only`                                                               | partial — disambiguates; leading `/` trimmed so URIs can collide | + med  | S      | low  |
+| RES-09 | text vs base64 `blob` contents, unchanged since 2024-11-05          | `2024-11-05 has` `mcpx missing`                                | `all five ✓ (+ _meta 25-06)`                                              | ✗ — always `text`; binary as base64 text or a placeholder (#206) | + med  | S      | med  |
+| RES-10 | `contents[]` may hold several items                                 | `2024-11-05 has` `mcpx missing`                                | `all five ✓`                                                              | ✗ — merged into one text item under the requested URI (#206)     | + low  | S      | low  |
+| RES-11 | a missing resource MUST NOT read as empty `contents`                | `2026-07-28 has`                                               | `26-07 ✓ only`                                                            | ✓ — failures are errors, never `contents: []`                    | + low  | S      | low  |
+| RES-12 | `resources/subscribe` removed in 2026                               | `2024-11-05 has` `2026-07-28 removes` `has better replacement` | `24-11..25-11 ✓ · 26-07 rem (listen filter) · opencode never sends`       | acc. — accepted from every era                                   | + med  | S      | low  |
+| RES-13 | `resources/unsubscribe` removed in 2026                             | `2024-11-05 has` `2026-07-28 removes` `has better replacement` | `24-11..25-11 ✓ · 26-07 rem`                                              | acc. — accepted from every era                                   | + low  | S      | low  |
+| RES-14 | `notifications/resources/updated` listen-only and tagged in 2026    | `2024-11-05 has` `2026-07-28 has` `mcpx missing`               | `24-11..25-11 after subscribe · 26-07 listen stream + subscriptionId`     | partial — sent untagged (#208)                                   | + med  | S      | med  |
+| RES-15 | `resources/updated` carries the upstream URI, not `mcpx://`         | `2024-11-05 has` `mcpx missing`                                | `all five (the uri param)`                                                | ✗ — the host cannot correlate the update (#208)                  | + med  | S      | med  |
+| RES-16 | how resources reach the model in each host                          | `opencode v1 has` `opencode v2 has`                            | `opencode v1 3 model tools · v2 TUI @ list only · mcpx tool + script API` | ✓ — `mcpx_resource_read` and `readResource()`                    | + med  | S      | med  |
 
 ## RES-01 `Resource.title` / `ResourceTemplate.title`
 
@@ -152,7 +152,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **Risk.** Low; the collision needs an upstream that publishes bare paths.
 - **Detail.** The daemon's `/v1/resources` and the `mcpx_resources` tool use the same listing. Reads strip the prefix
   back off before calling the upstream.
-- **Sources.** `internal/cli/serve.go:490` "URI:         \"mcpx://\" + r.Namespace + \"/\" + strings.TrimPrefix(r.URI,
+- **Sources.** `internal/cli/serve.go:490` "URI: \"mcpx://\" + r.Namespace + \"/\" + strings.TrimPrefix(r.URI,
   \"/\"),"; `internal/cli/serve.go:486-495`
 
 ## RES-09 text versus `blob` contents

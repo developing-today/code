@@ -4,7 +4,9 @@ updated: 2026-04-03T06:32:44.930Z
 ---
 
 ## Task
+
 Add missing enrichment rows to `doc/inventory/routing-and-switching.md` for devices #1-#7:
+
 - C4 Protocol-based VLAN
 - C7 Trunk negotiation
 - C9 STP convergence
@@ -14,6 +16,7 @@ Add missing enrichment rows to `doc/inventory/routing-and-switching.md` for devi
 - K7 DNS
 
 ## Accomplishments
+
 - Read the target file and located the 7 relevant device sections:
   1. Celestica DX010
   2. IBM RackSwitch G8264
@@ -36,9 +39,11 @@ Add missing enrichment rows to `doc/inventory/routing-and-switching.md` for devi
 - Verified important original content remained intact after edits.
 
 ## Files Modified
+
 - `doc/inventory/routing-and-switching.md`
 
 ## Important Technical Notes
+
 - The normal edit workflow kept failing because the file appeared to change between reads/edits.
 - Worked around that by:
   - copying the file to `/tmp/rs-edit.md`
@@ -48,6 +53,7 @@ Add missing enrichment rows to `doc/inventory/routing-and-switching.md` for devi
 - Also fixed row ordering so `LAG failover` and `Min-links` appear before `LAG Latency Impact` in Link Aggregation sections.
 
 ## Final Insertions Made
+
 - **DX010:** added C4, C9, D7, D8, J8, K7
 - **G8264:** added C9, D7, D8, J8, K7
 - **G8264e:** added C9, D7, D8, J8, K7
@@ -57,5 +63,6 @@ Add missing enrichment rows to `doc/inventory/routing-and-switching.md` for devi
 - **Mono Gateway:** added D7, D8
 
 ## Current State
+
 - The requested enrichment rows for devices #1-#7 have been added to `doc/inventory/routing-and-switching.md`.
 - Final file integrity was spot-checked and the new rows were verified present.

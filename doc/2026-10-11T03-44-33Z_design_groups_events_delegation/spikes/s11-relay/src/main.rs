@@ -53,7 +53,10 @@ impl Relay {
         let log = OpenOptions::new().create(true).append(true).open(log)?;
         let child = std::process::Command::new(RELAY_BIN)
             .args(["--config-path", config])
-            .env("RUST_LOG", std::env::var("S11_RELAY_LOG").unwrap_or_else(|_| "info".into()))
+            .env(
+                "RUST_LOG",
+                std::env::var("S11_RELAY_LOG").unwrap_or_else(|_| "info".into()),
+            )
             .stdout(Stdio::null())
             .stderr(log)
             .spawn()
@@ -166,7 +169,13 @@ struct Flow {
 }
 
 fn first_echo_after(flow: &Flow, t: Instant) -> Option<Instant> {
-    flow.echoed.lock().unwrap().values().copied().filter(|&e| e > t).min()
+    flow.echoed
+        .lock()
+        .unwrap()
+        .values()
+        .copied()
+        .filter(|&e| e > t)
+        .min()
 }
 
 /// Opens a bidirectional stream to `to` and runs a sender and a reader on it.
@@ -207,7 +216,11 @@ async fn read_echoes(mut recv: RecvStream, flow: Arc<Flow>) {
     let mut buf = [0u8; FRAME];
     while recv.read_exact(&mut buf).await.is_ok() {
         let seq = u64::from_be_bytes(buf[..8].try_into().unwrap());
-        flow.echoed.lock().unwrap().entry(seq).or_insert_with(Instant::now);
+        flow.echoed
+            .lock()
+            .unwrap()
+            .entry(seq)
+            .or_insert_with(Instant::now);
     }
 }
 
@@ -215,9 +228,13 @@ async fn read_echoes(mut recv: RecvStream, flow: Arc<Flow>) {
 async fn serve_echo(ep: Endpoint) {
     while let Some(incoming) = ep.accept().await {
         tokio::spawn(async move {
-            let Ok(accepting) = incoming.accept() else { return };
+            let Ok(accepting) = incoming.accept() else {
+                return;
+            };
             let Ok(conn) = accepting.await else { return };
-            let Ok((mut send, mut recv)) = conn.accept_bi().await else { return };
+            let Ok((mut send, mut recv)) = conn.accept_bi().await else {
+                return;
+            };
             let mut buf = [0u8; FRAME];
             while recv.read_exact(&mut buf).await.is_ok() {
                 if send.write_all(&buf).await.is_err() {
@@ -247,8 +264,12 @@ async fn restart_run(sig: Sig, down: Duration, run: u32) -> Result<Value> {
     wait_listening(RESTART_ADDR).await?;
     let a = bind_peer(std::slice::from_ref(&url)).await?;
     let b = bind_peer(std::slice::from_ref(&url)).await?;
-    timeout(Duration::from_secs(20), a.online()).await.context("A never online")?;
-    timeout(Duration::from_secs(20), b.online()).await.context("B never online")?;
+    timeout(Duration::from_secs(20), a.online())
+        .await
+        .context("A never online")?;
+    timeout(Duration::from_secs(20), b.online())
+        .await
+        .context("B never online")?;
     let b_addr = b.addr();
     tokio::spawn(serve_echo(b.clone()));
     let (home_a, home_b) = (watch_home(&a), watch_home(&b));
@@ -266,7 +287,10 @@ async fn restart_run(sig: Sig, down: Duration, run: u32) -> Result<Value> {
     let inflight: Vec<u64> = {
         let sent = flow.sent.lock().unwrap();
         let echoed = flow.echoed.lock().unwrap();
-        sent.keys().filter(|s| !echoed.contains_key(s)).copied().collect()
+        sent.keys()
+            .filter(|s| !echoed.contains_key(s))
+            .copied()
+            .collect()
     };
     relay.signal(sig.num);
     let (t_exit, status) = relay.wait_exit().await?;
@@ -368,7 +392,11 @@ fn median(mut v: Vec<f64>) -> Option<f64> {
     }
     v.sort_by(|x, y| x.partial_cmp(y).unwrap());
     let n = v.len();
-    Some(if n % 2 == 1 { v[n / 2] } else { (v[n / 2 - 1] + v[n / 2]) / 2.0 })
+    Some(if n % 2 == 1 {
+        v[n / 2]
+    } else {
+        (v[n / 2 - 1] + v[n / 2]) / 2.0
+    })
 }
 
 fn summarize(rows: &[Value]) -> Value {
@@ -397,9 +425,18 @@ fn summarize(rows: &[Value]) -> Value {
 
 async fn restart(args: &[String]) -> Result<()> {
     let sig = match args.first().map(String::as_str) {
-        Some("TERM") => Sig { name: "SIGTERM", num: libc::SIGTERM },
-        Some("KILL") => Sig { name: "SIGKILL", num: libc::SIGKILL },
-        Some("INT") => Sig { name: "SIGINT", num: libc::SIGINT },
+        Some("TERM") => Sig {
+            name: "SIGTERM",
+            num: libc::SIGTERM,
+        },
+        Some("KILL") => Sig {
+            name: "SIGKILL",
+            num: libc::SIGKILL,
+        },
+        Some("INT") => Sig {
+            name: "SIGINT",
+            num: libc::SIGINT,
+        },
         _ => bail!("signal must be TERM, KILL or INT"),
     };
     let runs: u32 = args.get(1).context("runs")?.parse()?;
@@ -413,32 +450,47 @@ async fn restart(args: &[String]) -> Result<()> {
     }
     let summary = summarize(&rows);
     println!("SUMMARY {summary}");
-    let file = format!("logs/restart-{}-{}ms-summary.json", sig.name, down.as_millis());
-    fs::write(file, serde_json::to_string_pretty(&json!({ "runs": rows, "median": summary }))?)?;
+    let file = format!(
+        "logs/restart-{}-{}ms-summary.json",
+        sig.name,
+        down.as_millis()
+    );
+    fs::write(
+        file,
+        serde_json::to_string_pretty(&json!({ "runs": rows, "median": summary }))?,
+    )?;
     Ok(())
 }
 
 /// Scenario 4. A is homed on one of two relays and reaches B, which is homed on the other.
 async fn idle() -> Result<()> {
-    let (u1, u2): (RelayUrl, RelayUrl) =
-        ("http://127.0.0.1:19111".parse()?, "http://127.0.0.1:19112".parse()?);
+    let (u1, u2): (RelayUrl, RelayUrl) = (
+        "http://127.0.0.1:19111".parse()?,
+        "http://127.0.0.1:19112".parse()?,
+    );
     let _r1 = Relay::start("config/idle-r1.toml", Path::new("logs/idle-r1.log"))?;
     let _r2 = Relay::start("config/idle-r2.toml", Path::new("logs/idle-r2.log"))?;
     wait_listening("127.0.0.1:19111").await?;
     wait_listening("127.0.0.1:19112").await?;
 
     let a = bind_peer(&[u1.clone(), u2.clone()]).await?;
-    timeout(Duration::from_secs(20), a.online()).await.context("A never online")?;
+    timeout(Duration::from_secs(20), a.online())
+        .await
+        .context("A never online")?;
     let home_a = connected_url(&a);
     let non_home = if home_a == u1 { u2 } else { u1 };
     let b = bind_peer(std::slice::from_ref(&non_home)).await?;
-    timeout(Duration::from_secs(20), b.online()).await.context("B never online")?;
+    timeout(Duration::from_secs(20), b.online())
+        .await
+        .context("B never online")?;
     let b_addr = b.addr();
     tokio::spawn(serve_echo(b.clone()));
     let home_log = watch_home(&a);
     info!(%home_a, %non_home, "A is homed on the first relay and reaches B through the second");
 
-    let conn = timeout(Duration::from_secs(20), a.connect(b_addr, ALPN)).await.context("connect")??;
+    let conn = timeout(Duration::from_secs(20), a.connect(b_addr, ALPN))
+        .await
+        .context("connect")??;
     let (mut send, mut recv) = conn.open_bi().await?;
     send.write_all(&vec![7u8; FRAME]).await?;
     let mut buf = vec![0u8; FRAME];
@@ -446,13 +498,19 @@ async fn idle() -> Result<()> {
     info!("one frame echoed; no application traffic from here on");
 
     sleep(Duration::from_secs(70)).await;
-    info!(open = conn.close_reason().is_none(), "70 s idle: QUIC still open (5 s keep-alives)");
+    info!(
+        open = conn.close_reason().is_none(),
+        "70 s idle: QUIC still open (5 s keep-alives)"
+    );
     conn.close(0u32.into(), b"s11 idle test");
     info!("closed the QUIC connection; this is the last datagram A sends to the non-home relay");
     sleep(Duration::from_secs(150)).await;
 
     let transitions = home_log.lock().unwrap().clone();
-    info!(?transitions, "home relay status changes over the whole run (time, connected)");
+    info!(
+        ?transitions,
+        "home relay status changes over the whole run (time, connected)"
+    );
     drop((send, recv));
     Ok(())
 }
@@ -465,7 +523,9 @@ async fn dial(args: &[String]) -> Result<()> {
     let mut timeout_s = 15;
     let mut rest = args[1..].iter();
     while let Some(flag) = rest.next() {
-        let value = rest.next().with_context(|| format!("{flag} needs a value"))?;
+        let value = rest
+            .next()
+            .with_context(|| format!("{flag} needs a value"))?;
         match flag.as_str() {
             "--ca" => cas.push(CertificateDer::from(fs::read(value)?)),
             "--token" => token = Some(value.clone()),
@@ -487,7 +547,10 @@ async fn dial(args: &[String]) -> Result<()> {
     let ep = builder.bind().await?;
     let t0 = Instant::now();
     match timeout(Duration::from_secs(timeout_s), ep.online()).await {
-        Ok(()) => println!("ONLINE relay={url} after_ms={}", ms_from(t0, Instant::now())),
+        Ok(()) => println!(
+            "ONLINE relay={url} after_ms={}",
+            ms_from(t0, Instant::now())
+        ),
         Err(_) => {
             let mut watch = ep.home_relay_status();
             let statuses = watch.get();

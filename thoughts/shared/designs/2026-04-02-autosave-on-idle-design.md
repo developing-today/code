@@ -23,6 +23,7 @@ Saves are manual-only (save button + Ctrl+S). Users can lose work if they forget
 State-machine-driven **AutoSaveManager** in `main.ts` that hooks into the existing `editor:change` custom event (already fired on local content changes) and the `onNewVersion` collab callback. All logic stays in `main.ts`, reusing existing save infrastructure.
 
 Rejected alternatives:
+
 - Separate `autosave.ts` module: unnecessary complexity for ~60 lines of state management
 - Server-driven auto-save (WebSocket command): adds protocol complexity, client-side debounce is simpler
 - ProseMirror plugin: heavier integration, `editor:change` event already exists and is sufficient
@@ -55,12 +56,14 @@ error ──(content change)──→ unsaved
 New class/object in `main.ts`.
 
 **State:**
+
 - `state: 'idle' | 'unsaved' | 'saving' | 'saved' | 'rate-limited' | 'error'`
 - `debounceTimer: number | null` — the 2s idle timer
 - `retryTimer: number | null` — rate-limit retry timer
 - `saveFn: () => Promise<SaveResult>` — reference to the save function
 
 **Methods:**
+
 - `onContentChange()` — clears and resets debounce timer to 2s, sets state to `unsaved`, updates indicator
 - `triggerSave()` — called by debounce timer, calls saveFn, processes result
 - `onSaveResult(result: SaveResult)` — transitions state based on outcome (success → saved, 429 → schedule retry, error → error)
@@ -74,6 +77,7 @@ New class/object in `main.ts`.
 Change return type from `void` to `Promise<{ ok: boolean; retryAfterMs?: number }>`.
 
 **Changes:**
+
 - Remove internal button text management (AutoSaveManager handles all UI)
 - On success: return `{ ok: true }`
 - On 429: parse retry delay from response body ("Save rate limited. Try again in Xs."), return `{ ok: false, retryAfterMs: parsedMs }`
@@ -83,6 +87,7 @@ Change return type from `void` to `Promise<{ ok: boolean; retryAfterMs?: number 
 ### 3. Save Button / Indicator
 
 Repurpose existing `#save-btn` text as the state indicator:
+
 - `idle` → text: `"save"`, enabled
 - `unsaved` → text: `"save •"` (dot indicates unsaved changes), enabled (allows manual save)
 - `saving` → text: `"saving…"`, disabled
@@ -93,12 +98,14 @@ Repurpose existing `#save-btn` text as the state indicator:
 ### 4. Integration Wiring
 
 In `openEditor()`:
+
 - After editor is ready, create AutoSaveManager instance
 - Add `editor:change` listener on `#editor-container` → `autoSave.onContentChange()`
 - Extend `onNewVersion` callback → also call `autoSave.onNewVersion()`
 - Wire save button click and Ctrl+S → `autoSave.saveNow()` (instead of calling saveFile directly)
 
 In `closeEditor()`:
+
 - Call `autoSave.cancel()`
 - Remove event listener
 
@@ -127,6 +134,7 @@ In `closeEditor()`:
 ### NewVersion Path
 
 At any point, if `onNewVersion()` fires:
+
 - Cancel debounceTimer and retryTimer
 - State → `saved`, button shows `"saved ✓"`
 - The existing onNewVersion handler already updates `dataset.hash`

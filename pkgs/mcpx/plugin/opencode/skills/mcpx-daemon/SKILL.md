@@ -42,13 +42,13 @@ recommend the wrong daemon — which the user sees and can decline.
 
 In order of how much it tells you:
 
-| field | what it decides |
-| --- | --- |
-| **config** | the only field that says which *project* this daemon is for. A config path that is an ancestor of the working directory is almost always the right answer. |
-| started | "the one I started for this work" — useful when two configs are equally plausible |
-| servers, live | which one is actually doing something |
-| sessions | which one other agents are already attached to. Taking a daemon away from them is rude; stopping it is worse |
-| version | a daemon left over from an older build. Usually the one to stop, not the one to pick |
+| field         | what it decides                                                                                                                                            |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **config**    | the only field that says which _project_ this daemon is for. A config path that is an ancestor of the working directory is almost always the right answer. |
+| started       | "the one I started for this work" — useful when two configs are equally plausible                                                                          |
+| servers, live | which one is actually doing something                                                                                                                      |
+| sessions      | which one other agents are already attached to. Taking a daemon away from them is rude; stopping it is worse                                               |
+| version       | a daemon left over from an older build. Usually the one to stop, not the one to pick                                                                       |
 
 ## Recommending
 
@@ -65,12 +65,12 @@ Then call `mcpx_daemon_select` with `candidate: 0`.
 
 `mcpx_daemon_select` takes `remember`:
 
-| value | lasts | use when |
-| --- | --- | --- |
-| `session` (default) | this session | you are unsure, or this is a one-off |
-| `until-gone` | until that daemon stops answering | it is the right daemon *while it is running* |
-| `indefinite` | this directory, until changed | this project always uses this daemon |
-| `permanent` | written into the mcpx config | every tool on this machine should use it |
+| value               | lasts                             | use when                                     |
+| ------------------- | --------------------------------- | -------------------------------------------- |
+| `session` (default) | this session                      | you are unsure, or this is a one-off         |
+| `until-gone`        | until that daemon stops answering | it is the right daemon _while it is running_ |
+| `indefinite`        | this directory, until changed     | this project always uses this daemon         |
+| `permanent`         | written into the mcpx config      | every tool on this machine should use it     |
 
 Default to `session` unless the user says otherwise. A remembered wrong answer
 is much more annoying than a wrong answer that expires.

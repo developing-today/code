@@ -48,7 +48,10 @@ pub fn sample_addr(relay: bool, ips: &[&str]) -> EndpointAddr {
 
 /// Base32 (no padding, lowercase) with a prefix, the same shape as an iroh ticket string.
 pub fn string_with_kind(kind: &str, payload: &[u8]) -> String {
-    format!("{kind}{}", BASE32_NOPAD.encode(payload).to_ascii_lowercase())
+    format!(
+        "{kind}{}",
+        BASE32_NOPAD.encode(payload).to_ascii_lowercase()
+    )
 }
 
 /// Decodes a string made by `string_with_kind`, lets `edit` change the bytes, and encodes it again.

@@ -42,7 +42,7 @@ designer into inventing semantics the native side does not have:
    source of truth.
 
 With those three rules, ordering, conflict, replay, and trust semantics across
-the seam are *the native semantics*, and the remaining work is transport
+the seam are _the native semantics_, and the remaining work is transport
 engineering plus the open questions in §8.
 
 ## 1. Who bridges
@@ -72,8 +72,8 @@ flowchart LR
   worlds) terminates HTTPS/WebSocket sync sessions and runs the store side of
   them against its SQLite tables. It never initiates Iroh connections — it
   cannot (§2.2 of the Workers-fit investigation: no UDP in Workers) — so on the
-  hosted side the bridge is *passive*: it answers sessions, and it can dial
-  *out* over WebSocket to a native node that exposes an HTTPS/WS endpoint.
+  hosted side the bridge is _passive_: it answers sessions, and it can dial
+  _out_ over WebSocket to a native node that exposes an HTTPS/WS endpoint.
 - **A dual-homed native node (required).** Any native node that adds the
   HTTPS/WS transport can initiate bridge sessions to a DO, in both directions
   of data flow (push its missing events, pull the DO's). This is the general
@@ -83,10 +83,10 @@ flowchart LR
 - **A third-party relay bridge (optional, later).** A native node may bridge on
   behalf of others as store-and-forward (the LIST 9 optional privacy-relay role,
   #2036/#2035). It is a courier under §5's trust rules: trusted for
-  *availability only, never for content*. It is not needed for v1 and must not
+  _availability only, never for content_. It is not needed for v1 and must not
   become a required hop — direct dual-homed bridging is the v1 path.
 
-**Conclusion:** "who bridges" is *whoever is dual-homed*, with the DO as the
+**Conclusion:** "who bridges" is _whoever is dual-homed_, with the DO as the
 always-reachable passive endpoint. There is no bridge operator role in the
 trust model, and no bridge-specific identity.
 
@@ -103,13 +103,13 @@ batch); a refused event is counted and does not end the session.
 
 The bridge session keeps this shape verbatim, with transport substitutions:
 
-| Native session element | Bridge equivalent |
-|---|---|
-| Iroh stream pair on `SYNC_ALPN` | One hibernating WebSocket per session to the DO (frames batched, Workers-fit §1.3) |
-| `Request`/`Answer` + method choice | Identical messages and the identical 3.5% crossover rule — the rule is about set difference vs. chain count, not about transport |
-| Ingest worker + `ingest_batch` | Identical; on the DO side a batch is one SQLite transaction (which is also the write-cost unit — batching is doubly rewarded, Workers-fit §5) |
-| One deadline per session stage | Identical; plus the DO's CPU-per-invocation cap, so a bridge session must be *resumable mid-session* (§4) |
-| Gossip for live propagation | WebSocket fan-out from the DO to connected subscribers (hosted leg only); native gossip unchanged native-side |
+| Native session element             | Bridge equivalent                                                                                                                             |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Iroh stream pair on `SYNC_ALPN`    | One hibernating WebSocket per session to the DO (frames batched, Workers-fit §1.3)                                                            |
+| `Request`/`Answer` + method choice | Identical messages and the identical 3.5% crossover rule — the rule is about set difference vs. chain count, not about transport              |
+| Ingest worker + `ingest_batch`     | Identical; on the DO side a batch is one SQLite transaction (which is also the write-cost unit — batching is doubly rewarded, Workers-fit §5) |
+| One deadline per session stage     | Identical; plus the DO's CPU-per-invocation cap, so a bridge session must be _resumable mid-session_ (§4)                                     |
+| Gossip for live propagation        | WebSocket fan-out from the DO to connected subscribers (hosted leg only); native gossip unchanged native-side                                 |
 
 Two bridge-only additions, both transport-level, neither semantic:
 
@@ -119,7 +119,7 @@ Two bridge-only additions, both transport-level, neither semantic:
   tracks) instead of restarting the method negotiation. Positions are already
   the store's own bookkeeping, so this adds no new state — only carrying them
   in the resume frame.
-- **Blob leg separation.** Events sync as above; blob *bytes* never travel in
+- **Blob leg separation.** Events sync as above; blob _bytes_ never travel in
   the event session. The DO side serves/fetches them from R2 by hash over
   plain HTTPS (Workers-fit §3.3); a native peer fetches them the same way it
   would from any HTTP mirror. The event layer already treats blobs as
@@ -173,7 +173,7 @@ Two bridge-only additions, both transport-level, neither semantic:
   thereafter. The cadence value is an open question (§8 Q1), the requirement
   is not.
 - **The DO's single-writer serialization does not prevent forks.** It
-  serializes *writes to one store*; an author signs on their own key from any
+  serializes _writes to one store_; an author signs on their own key from any
   device. An author's native node and their browser client can fork the
   author's chain across the seam exactly as two native devices can. The DO
   must therefore run the genuine fork machinery, not a "last writer wins by
@@ -197,7 +197,7 @@ Two bridge-only additions, both transport-level, neither semantic:
   proceeds in `ingest_batch`-sized chunks across invocations/alarms, with the
   store's own `(author, seq)` positions as the progress cursor — the same
   cursor as §2's resumption token. A native store imposes no chunking; the
-  *result* must be identical, and that identity is testable (§9).
+  _result_ must be identical, and that identity is testable (§9).
 - **DO point-in-time recovery is not journal replay.** SQLite bookmarks
   (30-day window, Workers-fit §1.2) are an operator disaster-recovery tool for
   the hosted copy only. They must never be presented as, or substituted for,
@@ -214,13 +214,13 @@ Two bridge-only additions, both transport-level, neither semantic:
 - **Signatures are the trust model; transport adds none and removes none.**
   Verification on receipt is the native `decode` path (canonical CBOR,
   `verify_strict`, BLAKE3 over received bytes). TLS on the hosted leg protects
-  *privacy in transit* and authenticates the *endpoint the client dialed* —
+  _privacy in transit_ and authenticates the _endpoint the client dialed_ —
   it is not what makes an event trustworthy, and a bridge session over a
   compromised or malicious relay still cannot inject a forged event.
 - **What a bridge (or relay) CAN do:** withhold events, delay them, reorder
   arrival, refuse service, and observe metadata (who syncs what topic, when,
-  how much). It cannot forge, alter, or undetectably suppress *to a peer that
-  also syncs elsewhere*: per-author chain heads and `after` frontiers make
+  how much). It cannot forge, alter, or undetectably suppress _to a peer that
+  also syncs elsewhere_: per-author chain heads and `after` frontiers make
   gaps visible — a withheld event shows up as a chain that stops advancing or
   a frontier referencing hashes the receiver lacks. Withholding is therefore
   an availability attack with evidence, not an integrity attack. Detection
@@ -246,18 +246,18 @@ the native leg it is the existing live-session machinery. Where an ephemeral
 stream settles into a signed result (a finished turn, a final state), only
 the settled, signed object crosses as an event. The exact journal/ephemeral
 boundary for chat is owned by the chat design (§8 Q3); the bridge rule is
-only: *if it isn't signed, it isn't synced, and it isn't replayed.*
+only: _if it isn't signed, it isn't synced, and it isn't replayed._
 
 ## 8. Open questions that block downstream designs (with owners)
 
-| # | Question | Blocks | Owner |
-|---|---|---|---|
-| Q1 | Fork-proof cadence for bridge relationships: how often must the proof-carrying exchange run (vs. `LogSync`) per topic/peer class, and what does it cost in DO rows/CPU at wave-1 scale? Requirement is settled in §4; the number is not. | #2046 (serverless edition v1 — cannot freeze its sync spec without it) | #2046 design |
-| Q2 | Shared worlds: is a WorldDO the serialized writer for its world's journal (a semantic choice — it *creates* a total order native worlds don't have) or a CRDT replica like every other store? (Carried from Workers-fit §8.) | #2046; world design under #2028 | #2046 design |
-| Q3 | The journal/ephemeral boundary for chat: which chat traffic settles into signed events (messages? edits? reactions?) and which stays ephemeral. | #2051 (chat v1) | #2051 design, input #2049 |
-| Q4 | Hosted-leg retrieval for graph-linked objects: boards/chat readers on the hosted edition pull linked objects over HTTPS from a DO/R2 only — no swarm chunk retrieval. Acceptable for v1, or does boards v1 require a native gateway for linked media? | #2054 (boards v1) | #2054 design, input #2052 |
-| Q5 | Withholding detection: what evidence threshold turns "bridge/relay hasn't delivered author X's events" into an actionable alert vs. normal idleness? | #2036 (messaging/relay v1) abuse/availability story | #2036 design |
-| Q6 | Bridge session auth for *read* scope: events are self-verifying, but which topics/graphs may an unauthenticated dual-homed node pull from a UserDO? (Write scope is settled — signatures; read scope is a privacy decision.) | #2046 (must state the DO's read policy) | #2046 design |
+| #   | Question                                                                                                                                                                                                                                              | Blocks                                                                 | Owner                     |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ------------------------- |
+| Q1  | Fork-proof cadence for bridge relationships: how often must the proof-carrying exchange run (vs. `LogSync`) per topic/peer class, and what does it cost in DO rows/CPU at wave-1 scale? Requirement is settled in §4; the number is not.              | #2046 (serverless edition v1 — cannot freeze its sync spec without it) | #2046 design              |
+| Q2  | Shared worlds: is a WorldDO the serialized writer for its world's journal (a semantic choice — it _creates_ a total order native worlds don't have) or a CRDT replica like every other store? (Carried from Workers-fit §8.)                          | #2046; world design under #2028                                        | #2046 design              |
+| Q3  | The journal/ephemeral boundary for chat: which chat traffic settles into signed events (messages? edits? reactions?) and which stays ephemeral.                                                                                                       | #2051 (chat v1)                                                        | #2051 design, input #2049 |
+| Q4  | Hosted-leg retrieval for graph-linked objects: boards/chat readers on the hosted edition pull linked objects over HTTPS from a DO/R2 only — no swarm chunk retrieval. Acceptable for v1, or does boards v1 require a native gateway for linked media? | #2054 (boards v1)                                                      | #2054 design, input #2052 |
+| Q5  | Withholding detection: what evidence threshold turns "bridge/relay hasn't delivered author X's events" into an actionable alert vs. normal idleness?                                                                                                  | #2036 (messaging/relay v1) abuse/availability story                    | #2036 design              |
+| Q6  | Bridge session auth for _read_ scope: events are self-verifying, but which topics/graphs may an unauthenticated dual-homed node pull from a UserDO? (Write scope is settled — signatures; read scope is a privacy decision.)                          | #2046 (must state the DO's read policy)                                | #2046 design              |
 
 Explicitly **not** blocking: SSO→ID binding and key recovery — routed to
 #2258 (from #2045); multi-hop native relay fan-out — routed to #2035/#2249,

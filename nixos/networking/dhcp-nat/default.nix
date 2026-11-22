@@ -53,7 +53,7 @@ in
               ];
             };
           })
-          interface
+            interface
         )
       ]
     ) { } internalInterfaces;

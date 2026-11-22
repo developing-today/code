@@ -7,8 +7,8 @@ use crate::Rng;
 use crate::keys::{self, Claim, Id};
 use crate::redb_store::RedbStore;
 use crate::sqlite_store::SqliteStore;
-use crate::turso_store::{TursoRowidStore, TursoStore};
 use crate::store::{Batch, Store};
+use crate::turso_store::{TursoRowidStore, TursoStore};
 use anyhow::{Context, Result, bail, ensure};
 use std::path::{Path, PathBuf};
 
@@ -52,7 +52,13 @@ fn adversarial(n: usize, seed: u64) -> Vec<Claim> {
                 Some(rng.bytes(len, BYTES))
             };
             let subject = subjects[rng.below(subjects.len() as u64) as usize];
-            Claim { author: [0x77; 32], seq: i as u64 + 1, subject, name, value }
+            Claim {
+                author: [0x77; 32],
+                seq: i as u64 + 1,
+                subject,
+                name,
+                value,
+            }
         })
         .collect()
 }
@@ -62,29 +68,51 @@ pub fn selftest() -> Result<()> {
     let n = claims.len();
     let ids: Vec<Id> = claims.iter().map(Claim::id).collect();
     for c in &claims {
-        ensure!(Claim::from_body(&c.body())? == *c, "body round trip failed at seq {}", c.seq);
+        ensure!(
+            Claim::from_body(&c.body())? == *c,
+            "body round trip failed at seq {}",
+            c.seq
+        );
     }
 
-    let alpha: Vec<Vec<u8>> = (0..n).map(|i| keys::alpha_key(&claims[i], &ids[i])).collect();
-    let omega: Vec<Vec<u8>> = (0..n).map(|i| keys::omega_key(&claims[i], &ids[i])).collect();
+    let alpha: Vec<Vec<u8>> = (0..n)
+        .map(|i| keys::alpha_key(&claims[i], &ids[i]))
+        .collect();
+    let omega: Vec<Vec<u8>> = (0..n)
+        .map(|i| keys::omega_key(&claims[i], &ids[i]))
+        .collect();
 
     let mut tuple_order: Vec<usize> = (0..n).collect();
     tuple_order.sort_by(|&x, &y| {
-        (claims[x].subject, &claims[x].name, &claims[x].value, ids[x])
-            .cmp(&(claims[y].subject, &claims[y].name, &claims[y].value, ids[y]))
+        (claims[x].subject, &claims[x].name, &claims[x].value, ids[x]).cmp(&(
+            claims[y].subject,
+            &claims[y].name,
+            &claims[y].value,
+            ids[y],
+        ))
     });
     let mut key_order: Vec<usize> = (0..n).collect();
     key_order.sort_by(|&x, &y| alpha[x].cmp(&alpha[y]));
-    ensure!(tuple_order == key_order, "alpha key order differs from (subject, name, value, id)");
+    ensure!(
+        tuple_order == key_order,
+        "alpha key order differs from (subject, name, value, id)"
+    );
 
     let mut tuple_order: Vec<usize> = (0..n).collect();
     tuple_order.sort_by(|&x, &y| {
-        (&claims[x].value, &claims[x].name, claims[x].subject, ids[x])
-            .cmp(&(&claims[y].value, &claims[y].name, claims[y].subject, ids[y]))
+        (&claims[x].value, &claims[x].name, claims[x].subject, ids[x]).cmp(&(
+            &claims[y].value,
+            &claims[y].name,
+            claims[y].subject,
+            ids[y],
+        ))
     });
     let mut key_order: Vec<usize> = (0..n).collect();
     key_order.sort_by(|&x, &y| omega[x].cmp(&omega[y]));
-    ensure!(tuple_order == key_order, "omega key order differs from (value, name, subject, id)");
+    ensure!(
+        tuple_order == key_order,
+        "omega key order differs from (value, name, subject, id)"
+    );
 
     // Prefix ranges (binary search with prefix_end) must hold exactly the matching keys.
     let mut alpha_sorted = alpha.clone();
@@ -102,19 +130,36 @@ pub fn selftest() -> Result<()> {
     for c in &claims {
         let (lo, hi) = range(&alpha_sorted, &c.subject);
         let want = claims.iter().filter(|d| d.subject == c.subject).count();
-        ensure!(hi - lo == want, "alpha range for a subject holds {} keys, expected {want}", hi - lo);
-        ensure!(alpha_sorted[lo..hi].iter().all(|k| k.starts_with(&c.subject)), "alpha range leaks");
+        ensure!(
+            hi - lo == want,
+            "alpha range for a subject holds {} keys, expected {want}",
+            hi - lo
+        );
+        ensure!(
+            alpha_sorted[lo..hi]
+                .iter()
+                .all(|k| k.starts_with(&c.subject)),
+            "alpha range leaks"
+        );
 
         let (olo, ohi) = keys::omega_bounds(&c.name, c.value.as_deref());
         let lo = omega_sorted.partition_point(|k| k.as_slice() < olo.as_slice());
         let hi = omega_sorted.partition_point(|k| k.as_slice() < ohi.as_slice());
-        let want = claims.iter().filter(|d| d.name == c.name && d.value == c.value).count();
-        ensure!(hi - lo == want, "omega range for a (name, value) holds {} keys, expected {want}", hi - lo);
-        ensure!(omega_sorted[lo..hi].iter().all(|k| k.starts_with(&olo)), "omega range leaks");
+        let want = claims
+            .iter()
+            .filter(|d| d.name == c.name && d.value == c.value)
+            .count();
+        ensure!(
+            hi - lo == want,
+            "omega range for a (name, value) holds {} keys, expected {want}",
+            hi - lo
+        );
+        ensure!(
+            omega_sorted[lo..hi].iter().all(|k| k.starts_with(&olo)),
+            "omega range leaks"
+        );
     }
-    println!(
-        "selftest: PASS ({n} claims: body round trip, alpha and omega order, prefix ranges)"
-    );
+    println!("selftest: PASS ({n} claims: body round trip, alpha and omega order, prefix ranges)");
     Ok(())
 }
 
@@ -152,18 +197,54 @@ fn cases<S: Store>(store: &mut S) -> Result<()> {
     let z1 = claim(B, 1, S1, "tag", Some("d"));
     let z2 = claim(B, 1, S2, "tag", Some("e"));
 
-    expect_ok(store, "insert x1 at (A,5)", std::slice::from_ref(&x1), Batch { inserted: 1, duplicates: 0 })?;
-    expect_ok(store, "replay x1 (identical)", std::slice::from_ref(&x1), Batch { inserted: 0, duplicates: 1 })?;
+    expect_ok(
+        store,
+        "insert x1 at (A,5)",
+        std::slice::from_ref(&x1),
+        Batch {
+            inserted: 1,
+            duplicates: 0,
+        },
+    )?;
+    expect_ok(
+        store,
+        "replay x1 (identical)",
+        std::slice::from_ref(&x1),
+        Batch {
+            inserted: 0,
+            duplicates: 1,
+        },
+    )?;
     expect_fork(store, "x2 at (A,5), held by x1", std::slice::from_ref(&x2))?;
-    expect_fork(store, "batch [y at (A,6), x2 at (A,5)]", &[y.clone(), x2.clone()])?;
-    expect_fork(store, "batch [z1, z2], both at (B,1)", &[z1.clone(), z2.clone()])?;
+    expect_fork(
+        store,
+        "batch [y at (A,6), x2 at (A,5)]",
+        &[y.clone(), x2.clone()],
+    )?;
+    expect_fork(
+        store,
+        "batch [z1, z2], both at (B,1)",
+        &[z1.clone(), z2.clone()],
+    )?;
 
     let counts = store.counts()?;
-    ensure!(counts == [1, 1, 1, 1], "counts after refused batches are {counts:?}");
+    ensure!(
+        counts == [1, 1, 1, 1],
+        "counts after refused batches are {counts:?}"
+    );
     println!("  ok   counts after the refusals: {counts:?} (no part of a refused batch kept)");
-    ensure!(store.by_author(&A)? == vec![x1.clone()], "by_author(A) changed");
-    ensure!(store.by_subject(&S1)? == vec![x1.clone()], "by_subject(S1) changed");
-    ensure!(store.subjects_with(b"tag", b"c")?.is_empty(), "y leaked into the index");
+    ensure!(
+        store.by_author(&A)? == vec![x1.clone()],
+        "by_author(A) changed"
+    );
+    ensure!(
+        store.by_subject(&S1)? == vec![x1.clone()],
+        "by_subject(S1) changed"
+    );
+    ensure!(
+        store.subjects_with(b"tag", b"c")?.is_empty(),
+        "y leaked into the index"
+    );
     println!("  ok   queries still show only x1");
     Ok(())
 }

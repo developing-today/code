@@ -25,13 +25,12 @@ workspace = true
 default = ["data_scheme"]
 data_scheme = []
 message_scheme = []
-test_utils = [
-  "data_scheme",
-  "message_scheme",
-]
+test_utils = ["data_scheme", "message_scheme"]
 
 [dependencies]
-chacha20poly1305 = { version = "0.10.1", features = ["alloc"], default-features = false }
+chacha20poly1305 = { version = "0.10.1", features = [
+  "alloc",
+], default-features = false }
 curve25519-dalek = "4.1.3"
 hex = { workspace = true }
 hkdf = "0.12.4"

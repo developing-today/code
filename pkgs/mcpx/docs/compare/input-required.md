@@ -24,8 +24,8 @@ connection that stays open and a server that remembers who is on the other end.
 
 2026-07-28 removed both. So the server now **answers early instead of
 asking**. It replies to the client's request with a result that says, in
-effect, *"not finished; first tell me these things, then send me the same
-request again."* That reply is `resultType: "input_required"`. It carries:
+effect, _"not finished; first tell me these things, then send me the same
+request again."_ That reply is `resultType: "input_required"`. It carries:
 
 - `inputRequests`: what the server needs, as a map from a key the server picks
   to a request-shaped object (`{method, params}`). Only three kinds are
@@ -68,7 +68,7 @@ sequenceDiagram
 ## The rules that are easy to miss
 
 - **The server must not ask for something the client did not declare.** No
-  `elicitation/create` in `inputRequests` unless *this request's*
+  `elicitation/create` in `inputRequests` unless _this request's_
   `clientCapabilities` includes `elicitation`
   (`2026-07-28/basic/patterns/mrtr.mdx:246`). If the request cannot finish
   without it, the answer is `-32021` MissingRequiredClientCapability
@@ -134,7 +134,7 @@ sequenceDiagram
 
 - **The upstream call runs as a daemon task**, because the host's request has
   already returned by the time the answer exists
-  (`internal/mcpserver/ask.go:110-121`). The task *is* server-side state. The
+  (`internal/mcpserver/ask.go:110-121`). The task _is_ server-side state. The
   specification allows it, since `requestState` only has to name it safely.
   mcpx is one local process, so the pattern's motivation, avoiding shared
   storage across server instances (`2026-07-28/basic/patterns/mrtr.mdx:30-31`),

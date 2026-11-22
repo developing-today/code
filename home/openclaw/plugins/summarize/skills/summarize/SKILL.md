@@ -2,24 +2,7 @@
 name: summarize
 description: "Summarize or transcribe URLs, YouTube/videos, podcasts, articles, transcripts, PDFs, and local files."
 homepage: https://summarize.sh
-metadata:
-  {
-    "openclaw":
-      {
-        "emoji": "🧾",
-        "requires": { "bins": ["summarize"] },
-        "install":
-          [
-            {
-              "id": "brew",
-              "kind": "brew",
-              "formula": "steipete/tap/summarize",
-              "bins": ["summarize"],
-              "label": "Install summarize (brew)",
-            },
-          ],
-      },
-  }
+metadata: { "openclaw": { "emoji": "🧾", "requires": { "bins": ["summarize"] }, "install": [{ "id": "brew", "kind": "brew", "formula": "steipete/tap/summarize", "bins": ["summarize"], "label": "Install summarize (brew)" }] } }
 ---
 
 # Summarize

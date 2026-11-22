@@ -19,33 +19,33 @@
  *   bun test plugin/opencode/mcpx/instructions.test.ts
  */
 
-import { afterEach, describe, expect, mock, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { afterEach, describe, expect, mock, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // A schema builder that answers every chain (string().describe(),
 // .optional(), ...) with itself.
 const anySchema: any = new Proxy(function () {}, {
   get: (_target, prop) => (prop === Symbol.toPrimitive ? () => "" : anySchema),
   apply: () => anySchema,
-})
+});
 mock.module("@opencode-ai/plugin", () => ({
   tool: Object.assign((def: unknown) => def, { schema: anySchema }),
-}))
+}));
 
 // Captured before any test points TMPDIR at a scratch directory:
 // tmpdir() reads TMPDIR, so asking it later would aim mkdtemp at a
 // directory afterEach has already deleted.
-const REAL_TMP = tmpdir()
-const scratch: string[] = []
+const REAL_TMP = tmpdir();
+const scratch: string[] = [];
 const tempRoot = (): string => {
-  const dir = mkdtempSync(join(REAL_TMP, "mcpxt-"))
-  scratch.push(dir)
-  return dir
-}
+  const dir = mkdtempSync(join(REAL_TMP, "mcpxt-"));
+  scratch.push(dir);
+  return dir;
+};
 
-const savedEnv = { ...process.env }
+const savedEnv = { ...process.env };
 afterEach(() => {
   // Restore in place, on the original process.env object: replacing
   // process.env wholesale does not restore the native environment that
@@ -53,11 +53,11 @@ afterEach(() => {
   // later test files (daemon.test.ts then failed with ENOENT creating
   // temp directories). Delete added keys, reassign saved ones.
   for (const key of Object.keys(process.env)) {
-    if (!(key in savedEnv)) delete process.env[key]
+    if (!(key in savedEnv)) delete process.env[key];
   }
-  Object.assign(process.env, savedEnv)
-  for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true })
-})
+  Object.assign(process.env, savedEnv);
+  for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
 
 /**
  * Build the plugin's hooks with discovery isolated the way daemon.test.ts
@@ -65,45 +65,46 @@ afterEach(() => {
  * discovery cannot see (or start) anything real.
  */
 const hooksFor = async (options: Record<string, unknown>) => {
-  const dir = tempRoot()
-  process.env.MCPX_STATE_DIR = dir
-  process.env.TMPDIR = tempRoot()
-  delete process.env.MCPX_PLUGIN_INSTRUCTIONS
-  delete process.env.MCPX_DAEMON_ENDPOINT
-  delete process.env.MCPX_ENDPOINT
-  delete process.env.MCPX_SOCKET
+  const dir = tempRoot();
+  process.env.MCPX_STATE_DIR = dir;
+  process.env.TMPDIR = tempRoot();
+  delete process.env.MCPX_PLUGIN_INSTRUCTIONS;
+  delete process.env.MCPX_DAEMON_ENDPOINT;
+  delete process.env.MCPX_ENDPOINT;
+  delete process.env.MCPX_SOCKET;
   const client = {
     tui: { showToast: async () => {} },
-    session: { get: async () => { throw new Error("no such session") } },
-  }
-  const plugin = (await import("../mcpx-session.ts")).default as any
-  return plugin(
-    { directory: dir, worktree: dir, project: {}, client },
-    { headless: true, ...options },
-  )
-}
+    session: {
+      get: async () => {
+        throw new Error("no such session");
+      },
+    },
+  };
+  const plugin = (await import("../mcpx-session.ts")).default as any;
+  return plugin({ directory: dir, worktree: dir, project: {}, client }, { headless: true, ...options });
+};
 
 describe("instructions option (experimental.chat.system.transform)", () => {
   test("pushes the guidance text onto output.system, v1's shape", async () => {
-    const hooks = await hooksFor({ instructions: true })
-    const output = { system: [] as string[] }
-    await hooks["experimental.chat.system.transform"]({}, output)
-    expect(output.system).toHaveLength(1)
-    expect(output.system[0]).toContain("MCP servers are reached through `mcpx`")
-  })
+    const hooks = await hooksFor({ instructions: true });
+    const output = { system: [] as string[] };
+    await hooks["experimental.chat.system.transform"]({}, output);
+    expect(output.system).toHaveLength(1);
+    expect(output.system[0]).toContain("MCP servers are reached through `mcpx`");
+  });
 
   test("appends after entries v1 already placed in system", async () => {
-    const hooks = await hooksFor({ instructions: true })
-    const output = { system: ["existing guidance"] }
-    await hooks["experimental.chat.system.transform"]({}, output)
-    expect(output.system).toHaveLength(2)
-    expect(output.system[0]).toBe("existing guidance")
-  })
+    const hooks = await hooksFor({ instructions: true });
+    const output = { system: ["existing guidance"] };
+    await hooks["experimental.chat.system.transform"]({}, output);
+    expect(output.system).toHaveLength(2);
+    expect(output.system[0]).toBe("existing guidance");
+  });
 
   test("stays off by default: system is left untouched", async () => {
-    const hooks = await hooksFor({})
-    const output = { system: [] as string[] }
-    await hooks["experimental.chat.system.transform"]({}, output)
-    expect(output.system).toHaveLength(0)
-  })
-})
+    const hooks = await hooksFor({});
+    const output = { system: [] as string[] };
+    await hooks["experimental.chat.system.transform"]({}, output);
+    expect(output.system).toHaveLength(0);
+  });
+});

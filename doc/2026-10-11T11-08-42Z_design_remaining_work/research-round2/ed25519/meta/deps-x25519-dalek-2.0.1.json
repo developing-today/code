@@ -1,1 +1,88 @@
-{"dependencies":[{"id":9274417,"version_id":1042240,"crate_id":"bincode","req":"^1","optional":false,"default_features":true,"features":[],"target":null,"kind":"dev","downloads":0},{"id":9274418,"version_id":1042240,"crate_id":"criterion","req":"^0.5","optional":false,"default_features":true,"features":[],"target":null,"kind":"dev","downloads":0},{"id":9274413,"version_id":1042240,"crate_id":"curve25519-dalek","req":"^4","optional":false,"default_features":false,"features":[],"target":null,"kind":"normal","downloads":0},{"id":9274419,"version_id":1042240,"crate_id":"rand_core","req":"^0.6","optional":false,"default_features":false,"features":["getrandom"],"target":null,"kind":"dev","downloads":0},{"id":9274414,"version_id":1042240,"crate_id":"rand_core","req":"^0.6","optional":false,"default_features":false,"features":[],"target":null,"kind":"normal","downloads":0},{"id":9274415,"version_id":1042240,"crate_id":"serde","req":"^1","optional":true,"default_features":false,"features":["derive"],"target":null,"kind":"normal","downloads":0},{"id":9274416,"version_id":1042240,"crate_id":"zeroize","req":"^1","optional":true,"default_features":false,"features":["zeroize_derive"],"target":null,"kind":"normal","downloads":0}]}
+{
+  "dependencies": [
+    {
+      "id": 9274417,
+      "version_id": 1042240,
+      "crate_id": "bincode",
+      "req": "^1",
+      "optional": false,
+      "default_features": true,
+      "features": [],
+      "target": null,
+      "kind": "dev",
+      "downloads": 0
+    },
+    {
+      "id": 9274418,
+      "version_id": 1042240,
+      "crate_id": "criterion",
+      "req": "^0.5",
+      "optional": false,
+      "default_features": true,
+      "features": [],
+      "target": null,
+      "kind": "dev",
+      "downloads": 0
+    },
+    {
+      "id": 9274413,
+      "version_id": 1042240,
+      "crate_id": "curve25519-dalek",
+      "req": "^4",
+      "optional": false,
+      "default_features": false,
+      "features": [],
+      "target": null,
+      "kind": "normal",
+      "downloads": 0
+    },
+    {
+      "id": 9274419,
+      "version_id": 1042240,
+      "crate_id": "rand_core",
+      "req": "^0.6",
+      "optional": false,
+      "default_features": false,
+      "features": ["getrandom"],
+      "target": null,
+      "kind": "dev",
+      "downloads": 0
+    },
+    {
+      "id": 9274414,
+      "version_id": 1042240,
+      "crate_id": "rand_core",
+      "req": "^0.6",
+      "optional": false,
+      "default_features": false,
+      "features": [],
+      "target": null,
+      "kind": "normal",
+      "downloads": 0
+    },
+    {
+      "id": 9274415,
+      "version_id": 1042240,
+      "crate_id": "serde",
+      "req": "^1",
+      "optional": true,
+      "default_features": false,
+      "features": ["derive"],
+      "target": null,
+      "kind": "normal",
+      "downloads": 0
+    },
+    {
+      "id": 9274416,
+      "version_id": 1042240,
+      "crate_id": "zeroize",
+      "req": "^1",
+      "optional": true,
+      "default_features": false,
+      "features": ["zeroize_derive"],
+      "target": null,
+      "kind": "normal",
+      "downloads": 0
+    }
+  ]
+}

@@ -48,10 +48,7 @@ export type PermissionAssertInput = {
 
 /** The slice of the v2 permission domain this plugin uses. */
 export type PermissionDomainLike = {
-  hook(
-    name: "evaluate",
-    fn: (input: PermissionEvaluationLike) => void,
-  ): Promise<unknown>;
+  hook(name: "evaluate", fn: (input: PermissionEvaluationLike) => void): Promise<unknown>;
   assert(input: PermissionAssertInput): Promise<void>;
 };
 

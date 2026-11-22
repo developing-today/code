@@ -1,4 +1,5 @@
 # One `/id-sync/1` handshake, and why serve's range flights moved to
+
 # `/id-range-sync/1`
 
 Related: [`#179`](https://github.com/developing-today/code/issues/179) (the
@@ -28,7 +29,7 @@ At the time of writing the unification is half done:
 - `run_agreed` still dispatches only `SyncMethod::Log`;
   `SyncMethod::Range` returns `SyncError::NotWired`.
 - `commands/serve.rs` registers the node's own `LocalEvents` store for range
-  flights. That acceptor used to accept the *same* `/id-sync/1` ALPN but
+  flights. That acceptor used to accept the _same_ `/id-sync/1` ALPN but
   started a range flight immediately, with no `Request`/`Answer` first frame
   — a second, unlabelled session shape on one ALPN (#792).
 
@@ -66,7 +67,7 @@ Alternatives considered:
    ownership change to the sync seams, not a dispatch arm, and it deserves
    its own dated record and tests.
 2. **Leave both shapes on `/id-sync/1` and sniff the first frame.** Gives up
-   the refusal property: a mis-typed frame is still parsed as *something*, and
+   the refusal property: a mis-typed frame is still parsed as _something_, and
    the acceptor has to guess.
 3. **Wire `Range` under the handshake now and leave serve on the old ALPN.**
    This is the direction the design intends, but it is not implementable in

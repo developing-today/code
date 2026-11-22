@@ -5,8 +5,8 @@
 **Scope:** A match's full netcode-level log (every key up/down, low-level
 state-machine detail) can be recorded and sent to an AUDITOR who replays it.
 Investigate: (1) log format and size, (2) deterministic replay requirements,
-(3) the metadata competitive play needs to distinguish a *technically-valid*
-state machine from *actually-valid* gameplay (speedrunning, competitive FPS).
+(3) the metadata competitive play needs to distinguish a _technically-valid_
+state machine from _actually-valid_ gameplay (speedrunning, competitive FPS).
 **Deliverable asked for:** audit pipeline sketch + metadata list.
 **Sibling / consumer:** #2037 (match-result attestation investigation) is the
 other input; the gated synthesis #2039 ("match attestation + audit v1") merges
@@ -26,17 +26,17 @@ permanent feature.
 journaled, sandboxed programs — but replay alone proves only the weakest
 claim people want from it.**
 
-| Claim | What replay actually proves |
-|---|---|
-| "This log is authentic" | **Provable**, if the log is hash-chained and signed, and its header pins the exact program build. Cheap, do this first. |
-| "The game would technically play this way" | **Provable**, if — and only if — the world program is deterministic under replay (fixed tick, seeded RNG, no wall-clock or float nondeterminism leaking in). ID's clock abstraction is the right seam; determinism is a property we must *engineer and test for*, not one we have today by default. |
-| "The result follows from these inputs" | **Provable** as a corollary: replay reproduces the checkpoint hashes and the final state, so the recorded result is the result of the recorded inputs under the pinned rules. |
-| "A human really played this, fairly" | **Not provable by replay, ever.** A bot, a tool-assisted run, or a spliced log can all be technically valid. This claim comes only from *metadata observed by someone other than the player* (peer/relay/witness-observed latency, connection path, timing) plus statistical screening — and even then the honest verdict is "flagged / not flagged", never "proven fair". |
+| Claim                                      | What replay actually proves                                                                                                                                                                                                                                                                                                                                                |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| "This log is authentic"                    | **Provable**, if the log is hash-chained and signed, and its header pins the exact program build. Cheap, do this first.                                                                                                                                                                                                                                                    |
+| "The game would technically play this way" | **Provable**, if — and only if — the world program is deterministic under replay (fixed tick, seeded RNG, no wall-clock or float nondeterminism leaking in). ID's clock abstraction is the right seam; determinism is a property we must _engineer and test for_, not one we have today by default.                                                                        |
+| "The result follows from these inputs"     | **Provable** as a corollary: replay reproduces the checkpoint hashes and the final state, so the recorded result is the result of the recorded inputs under the pinned rules.                                                                                                                                                                                              |
+| "A human really played this, fairly"       | **Not provable by replay, ever.** A bot, a tool-assisted run, or a spliced log can all be technically valid. This claim comes only from _metadata observed by someone other than the player_ (peer/relay/witness-observed latency, connection path, timing) plus statistical screening — and even then the honest verdict is "flagged / not flagged", never "proven fair". |
 
 **Bottom line:** build the audit in three layers with three different
-strengths of verdict — L1 *authentic + replay-valid* (cryptographic,
-certain), L2 *rule-valid* (the replayed state machine accepted every
-operation), L3 *plausibility-screened* (metadata + statistics, probabilistic).
+strengths of verdict — L1 _authentic + replay-valid_ (cryptographic,
+certain), L2 _rule-valid_ (the replayed state machine accepted every
+operation), L3 _plausibility-screened_ (metadata + statistics, probabilistic).
 Conflating L3 with L1 is how audit systems overclaim and lose trust. The
 pipeline sketch in §5 keeps the layers separate end to end.
 
@@ -61,22 +61,22 @@ Facts from the current tree that shape this design:
   world programs (examples: `examples/tic-tac-toe`, `examples/territory`,
   `examples/roc-world`) over an event/journal substrate
   (`src/event_store/`: ingest, claims, sync, resolve). A match log is
-  therefore not a new kind of object: it is a *delimited, exportable slice of
-  the journal* for one match, plus the inputs that arrived from outside it.
+  therefore not a new kind of object: it is a _delimited, exportable slice of
+  the journal_ for one match, plus the inputs that arrived from outside it.
 - **Time already has a seam.** `src/world/clock.rs` exists precisely so
   "schedule and tick tests run without sleeping": the world core reads time
   decisions (ticks, expiries) from a clock abstraction. That is the exact
   injection point a replay mode needs — replay = same core, clock driven by
   the log instead of the wall.
 - **Program provenance exists as a concern already** (see the
-  `doc/2026-10-16…_feature_world_module_provenance` notes): pinning *which
-  build* of a world program produced a state is already an ID problem, and
+  `doc/2026-10-16…_feature_world_module_provenance` notes): pinning _which
+  build_ of a world program produced a state is already an ID problem, and
   the audit header (§2) simply consumes a program hash.
 - **There is no real-time game in ID yet.** The examples are turn-based or
   slow-tick. So the format must be designed at the journal/input layer —
   tick-indexed inputs, not game-specific packets — and validated first on a
-  turn-based example, with the FPS/speedrun cases treated as *sizing and
-  metadata requirements*, not as the first implementation target. Anyone who
+  turn-based example, with the FPS/speedrun cases treated as _sizing and
+  metadata requirements_, not as the first implementation target. Anyone who
   designs this format around a hypothetical FPS engine first will get both
   wrong.
 
@@ -122,7 +122,7 @@ Design rules that matter:
   footer signatures bind both ends. This is what makes L1 (authenticity)
   cheap and certain.
 - **The header is signed before play, not only bound at the end.** Each
-  player signs the header hash *before the first input tick*; those
+  player signs the header hash _before the first input tick_; those
   signatures travel in the log's prologue and in the sealed metadata, and
   the auditor verifies them before it accepts anything downstream. Footer
   signatures over `header hash ‖ final chain hash` alone are insufficient:
@@ -135,20 +135,20 @@ Design rules that matter:
 - **Inputs are tick-indexed, never wall-clock-indexed.** Wall-clock times
   live only in the metadata section. The state machine consumes inputs at
   tick boundaries; anything that happened "between ticks" is normalized to
-  a tick by the *recording* side, under a stated rule, so the auditor
+  a tick by the _recording_ side, under a stated rule, so the auditor
   replays the same normalization.
 - **The payload is game-defined bytes; the envelope is not.** The format
   does not standardize what "aim" means. It standardizes identity, order,
   integrity, checkpoints, and provenance — the parts an auditor needs
   regardless of game.
 - **Checkpoints are the audit accelerator, compared in order.** State hash
-  every second lets an auditor find the *first divergent checkpoint interval*
+  every second lets an auditor find the _first divergent checkpoint interval_
   without replaying from genesis, and lets a light auditor verify a sampled
   segment instead of the whole match (matters for §5's tiered audit). The
   search is a **prefix scan, not a binary search**: checkpoint equality is not
   monotonic, because replayed and recorded states can diverge and later
   reconverge (a position differs for a few ticks and returns to the same
-  place). A matching midpoint therefore does *not* prove the interval before
+  place). A matching midpoint therefore does _not_ prove the interval before
   it is clean, and a binary search that assumes it would skip the first
   divergence. Replay compares checkpoints in ascending tick order until the
   first mismatch, then replays that single checkpoint interval at full
@@ -162,11 +162,11 @@ Design rules that matter:
   checkpoint hashing the run of checkpoints before it) restores a monotone
   predicate — but that is an optimization the format does not need to require.
   Note also what the chain does and does not do here: it authenticates the
-  *submitted* checkpoints, it does not prove that replay reproduced their
+  _submitted_ checkpoints, it does not prove that replay reproduced their
   prefixes — only the replay comparison does that.
 - **Result is a claim inside the log, not a property of it.** The footer
   records what the participants say happened; the auditor's replay either
-  reproduces it or doesn't. (How a reproduced result becomes an *attested*
+  reproduces it or doesn't. (How a reproduced result becomes an _attested_
   result is #2037/#2039's question, not this doc's.)
 
 ### 2.2 Size
@@ -174,10 +174,10 @@ Design rules that matter:
 Inputs dominate; everything else is noise by comparison. Two recording
 styles:
 
-| Style | When | Size math |
-|---|---|---|
-| **Event-based** (record transitions only: key down/up, button change) | Turn-based, strategy, most keyboard play — inputs are sparse | ~4–10 B per transition (tick delta varint + player + code; chain hash amortized over a block, see below). A busy human produces ~2–6 transitions/s → **~50–200 KB per player-hour**, worst case low single-digit MB. Chess/turn-based: KBs per match, total. |
-| **Frame-based** (record every tick's full input state) | Analog aim/sticks, where "no change" is itself information | Fixed record ≈ 8 B/tick/player (tick implicit, buttons 2 B, aim 2×i16, misc), **excluding** the chain hash. At 60 Hz: **≈1.7 MB per player-hour raw**; delta+RLE compression on real play typically cuts this 3–10×. A 5v5, 45-minute FPS match ≈ 10 players × 0.75 h × 1.7 MB ≈ **13 MB raw, ~2–5 MB compressed** — emailable, trivially storable. |
+| Style                                                                 | When                                                         | Size math                                                                                                                                                                                                                                                                                                                                           |
+| --------------------------------------------------------------------- | ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Event-based** (record transitions only: key down/up, button change) | Turn-based, strategy, most keyboard play — inputs are sparse | ~4–10 B per transition (tick delta varint + player + code; chain hash amortized over a block, see below). A busy human produces ~2–6 transitions/s → **~50–200 KB per player-hour**, worst case low single-digit MB. Chess/turn-based: KBs per match, total.                                                                                        |
+| **Frame-based** (record every tick's full input state)                | Analog aim/sticks, where "no change" is itself information   | Fixed record ≈ 8 B/tick/player (tick implicit, buttons 2 B, aim 2×i16, misc), **excluding** the chain hash. At 60 Hz: **≈1.7 MB per player-hour raw**; delta+RLE compression on real play typically cuts this 3–10×. A 5v5, 45-minute FPS match ≈ 10 players × 0.75 h × 1.7 MB ≈ **13 MB raw, ~2–5 MB compressed** — emailable, trivially storable. |
 
 **Chain-hash overhead is amortized, not per record.** The 4–8 B record
 figures above are the input payload only. A naive format that stores a
@@ -192,7 +192,7 @@ the unit the footer signs and the unit checkpoints reference. Overhead
 becomes 32 B per block per player ≈ 32 B/s → ≈ 86 KB per player-hour
 (≈ 0.9 MB for the 10-player, 45-minute match), which is noise next to the
 13 MB input payload, and a block is self-delimiting so a torn tail is
-detectable. Splicing, reordering, or truncation at *block* granularity
+detectable. Splicing, reordering, or truncation at _block_ granularity
 still breaks the chain; a tamperer who edits inside a block must recompute
 that block's hash and every later one, exactly as before. If per-record
 tamper-evidence is wanted, add a 2–4 B per-record CRC (integrity against
@@ -200,7 +200,7 @@ corruption, not against a rewriter) — never a full hash per record.
 
 Checkpoints: 32 B state hash per second ≈ 115 KB/hour; full snapshots are
 game-sized and sparse (1/minute), the only term that can dominate — for big
-worlds, snapshot *hashes* every minute and full snapshots on demand instead.
+worlds, snapshot _hashes_ every minute and full snapshots on demand instead.
 
 **Conclusion on size: a non-issue.** Even the worst realistic case
 (frame-based FPS) is single-digit MB per match. Anyone proposing to sample
@@ -221,7 +221,7 @@ order they will bite:
    local keys, timers — everything is mapped to tick-indexed records at
    ingest. If any code path reads a sensor, socket, or clock directly,
    replay diverges there first. ID's journal discipline already pushes
-   this way; the audit makes it a *tested invariant*, not a habit.
+   this way; the audit makes it a _tested invariant_, not a habit.
 3. **Clock through the existing abstraction.** `src/world/clock.rs` is the
    seam: live mode reads wall/monotonic time, replay mode reads the log.
    Any world-program-visible time must come through it.
@@ -240,7 +240,7 @@ order they will bite:
    in the synthesis, with a test: replay a recorded log on two different
    architectures and diff every checkpoint hash.
 6. **Program + rules pinned by hash.** Header carries the world program
-   build hash and config/rules hash; the auditor runs *that* build in the
+   build hash and config/rules hash; the auditor runs _that_ build in the
    sandbox, never "latest". A rules patch mid-season must not retro-
    invalidate old logs.
 7. **Replay is read-only and total.** The auditor's run produces checkpoint
@@ -261,8 +261,8 @@ UI or pipeline polish.
 
 ## 4. Metadata: separating technically-valid from actually-valid
 
-Replay validates the *log*. Competitive validity is a claim about the
-*play* — that a human, on that connection, in that place, produced those
+Replay validates the _log_. Competitive validity is a claim about the
+_play_ — that a human, on that connection, in that place, produced those
 inputs in real time. The evidence for it is metadata, and the first rule
 is provenance:
 
@@ -275,21 +275,21 @@ is provenance:
 Per player, per match. `O` = observed/countersigned, `S` = self-reported
 (usable as a consistency check against observed data, never alone).
 
-| Field | O/S | What it catches / enables |
-|---|---|---|
-| ID public key + roster slot | O (roster is mutual) | Binds log to identities; prerequisite for everything in #2037. |
-| Observed source IP (by relay/peer/witness) | O | Ban-evasion and account-sharing checks; region/latency plausibility (claimed region vs observed RTT floor); "known IP" continuity across a season. **Sensitive:** see privacy note below. |
-| RTT samples over the match (per ~5 s: min/median/p95, jitter, loss) | O | Latency plausibility: inputs that consistently anticipate events faster than the observed RTT + human reaction allows; mid-match connection switching (VPN hop shows as a step change); distinguishes "lag" claims from input anomalies. |
-| Connection path (direct P2P / which relay / relay hops) | O | Explains RTT; a path change mid-match is itself an event in the log (§2.1 EVENTS). |
-| Clock offset/skew estimate vs observer | O | Detects timestamp manipulation on the recording side; bounds how much a player could backdate inputs. |
-| Join / leave / reconnect / pause events with observer ticks | O | Splice cover: a "disconnect" exactly spanning an anomalous segment is a classic log-editing alibi; the events are in the chain so they can't be quietly dropped either. |
-| Client build hash + input device class (kbd/mouse, controller, touch) | S (build hash becomes O if the witness challenges the client) | Tool-assistance screening context: device class sets the plausible input statistics (e.g. analog smoothness vs mouse flicks); build hash pins the recording code. |
-| Input timing microstructure (derived from the log itself: inter-input intervals, reaction latencies to in-game events) | derived | The statistical screen of §4.2 — derived, so it inherits the log's authenticity, but its *interpretation* is probabilistic. |
-| Coarse session context (matchmaking bracket, tournament id, stakes) | S/O | Sets the screening threshold: casual play gets authenticity checks only; prize play gets the full screen. Audit depth should scale with stakes, not be uniform. |
+| Field                                                                                                                  | O/S                                                           | What it catches / enables                                                                                                                                                                                                                |
+| ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ID public key + roster slot                                                                                            | O (roster is mutual)                                          | Binds log to identities; prerequisite for everything in #2037.                                                                                                                                                                           |
+| Observed source IP (by relay/peer/witness)                                                                             | O                                                             | Ban-evasion and account-sharing checks; region/latency plausibility (claimed region vs observed RTT floor); "known IP" continuity across a season. **Sensitive:** see privacy note below.                                                |
+| RTT samples over the match (per ~5 s: min/median/p95, jitter, loss)                                                    | O                                                             | Latency plausibility: inputs that consistently anticipate events faster than the observed RTT + human reaction allows; mid-match connection switching (VPN hop shows as a step change); distinguishes "lag" claims from input anomalies. |
+| Connection path (direct P2P / which relay / relay hops)                                                                | O                                                             | Explains RTT; a path change mid-match is itself an event in the log (§2.1 EVENTS).                                                                                                                                                       |
+| Clock offset/skew estimate vs observer                                                                                 | O                                                             | Detects timestamp manipulation on the recording side; bounds how much a player could backdate inputs.                                                                                                                                    |
+| Join / leave / reconnect / pause events with observer ticks                                                            | O                                                             | Splice cover: a "disconnect" exactly spanning an anomalous segment is a classic log-editing alibi; the events are in the chain so they can't be quietly dropped either.                                                                  |
+| Client build hash + input device class (kbd/mouse, controller, touch)                                                  | S (build hash becomes O if the witness challenges the client) | Tool-assistance screening context: device class sets the plausible input statistics (e.g. analog smoothness vs mouse flicks); build hash pins the recording code.                                                                        |
+| Input timing microstructure (derived from the log itself: inter-input intervals, reaction latencies to in-game events) | derived                                                       | The statistical screen of §4.2 — derived, so it inherits the log's authenticity, but its _interpretation_ is probabilistic.                                                                                                              |
+| Coarse session context (matchmaking bracket, tournament id, stakes)                                                    | S/O                                                           | Sets the screening threshold: casual play gets authenticity checks only; prize play gets the full screen. Audit depth should scale with stakes, not be uniform.                                                                          |
 
 **Privacy note (a real design constraint, not boilerplate):** observed IP
 is the most sensitive field here and the one Drew's directive explicitly
-names ("known IP"). Recommendation for the synthesis: the *public* log
+names ("known IP"). Recommendation for the synthesis: the _public_ log
 carries a **keyed pseudonym** — a season-scoped HMAC of the IP under a
 secret key held by the auditor/witness, never in the public log — so
 continuity checks work without disclosure. A plain salted hash is not
@@ -304,13 +304,13 @@ forever, and a design that does will (rightly) be refused by players.
 
 ### 4.2 Cheating signals the screen looks for
 
-None of these is proof. Each is a *flag with a false-positive rate*, and
+None of these is proof. Each is a _flag with a false-positive rate_, and
 the pipeline (§5) reports them as flags, not verdicts of guilt.
 
 - **Superhuman reaction distribution:** not one fast reaction — a
-  *distribution* with no human tail (e.g. sustained sub-100 ms responses
+  _distribution_ with no human tail (e.g. sustained sub-100 ms responses
   to events that were not predictable from prior state).
-- **Frame-perfect sequences — only as a *pre-quantization* signal, never
+- **Frame-perfect sequences — only as a _pre-quantization_ signal, never
   from tick-quantized records.** In a log recorded per §2.1, every input is
   normalized to a tick boundary before storage and records keep only the
   tick, not sub-tick arrival time, so honest human inputs also land exactly
@@ -321,14 +321,14 @@ the pipeline (§5) reports them as flags, not verdicts of guilt.
   timestamps or witness observation, retained in the sealed metadata of §4.1
   precisely for this test), and is restricted to patterns that remain
   distinguishable after quantization: long runs of exact-boundary inputs
-  *combined with* response latencies that are impossibly uniform or that
+  _combined with_ response latencies that are impossibly uniform or that
   react to events before observed one-way delivery timing allowed
   them to be known (§4.2, third bullet). Where only tick-quantized records exist, this flag is
   reported as `INCONCLUSIVE — no sub-tick timing`, not as a positive.
 - **Aim/input geometry anomalies:** snap-to-target angular velocities,
   correction patterns that track information the player could not have
   had yet when it could first have reached them (wallhack/aimbot tell).
-  **Correction (Codex review, PR #2252):** observed RTT is *not* a lower
+  **Correction (Codex review, PR #2252):** observed RTT is _not_ a lower
   bound on one-way event delivery — paths are asymmetric (a 10 ms
   observer-to-player leg plus a 190 ms return leg yields a 200 ms RTT,
   yet an honest player can receive the event and produce an input after
@@ -342,7 +342,7 @@ the pipeline (§5) reports them as flags, not verdicts of guilt.
 - **Entropy collapse:** input streams that are statistically too regular
   (macro/script) or identical across matches/accounts (replayed or shared
   input streams wearing different identities — the hash chain makes the
-  *logs* differ; the input *content* comparison still catches reuse).
+  _logs_ differ; the input _content_ comparison still catches reuse).
 - **Splice and edit attempts:** chain breaks, checkpoint mismatch, footer
   signature failures — these are not flags, they're L1 failures:
   cryptographic, certain, match invalid as a record.
@@ -382,8 +382,8 @@ Properties the sketch is enforcing:
   it from L2.** It is `full-history` when L2 replayed the complete
   history, and `PARTIALLY VERIFIED — intervals <list>` when L2 verified
   sampled segments. The L3 node is shared by both replay paths, so
-  relabeling the boxes alone is not the fix: the qualifier and the *same
-  interval list* must travel with both L3 outcomes and with the
+  relabeling the boxes alone is not the fix: the qualifier and the _same
+  interval list_ must travel with both L3 outcomes and with the
   attestation hand-off record. A sampled-only result that reaches
   #2037/#2039 labeled plainly `TECHNICALLY VALID` would be read by a
   consumer — which sees the label, not the audit history — as a result
@@ -396,7 +396,7 @@ Properties the sketch is enforcing:
   checkpoint-sampled segment replay for routine spot checks (possible
   only because §2.1 put snapshots in the log); L3 screen depth scales
   with the stakes field in the metadata. **Correction (Codex review,
-  PR #2252):** the two depths produce *different verdicts*. Sampled
+  PR #2252):** the two depths produce _different verdicts_. Sampled
   replay success is `PARTIALLY VERIFIED — intervals <list>`: it does not
   establish that the snapshots follow from genesis, or that the final
   result follows from the full input history — a signed log can carry a
@@ -418,7 +418,7 @@ Properties the sketch is enforcing:
   (`full-history`, or the `PARTIALLY VERIFIED` qualifier and interval
   list); the bare form does not exist.
 - **Hand-off, not absorption:** the audit output (verdict + evidence
-  references + the L2 basis and interval list) is an *input* to the
+  references + the L2 basis and interval list) is an _input_ to the
   attestation flow of #2037/#2039, which decides what the result means for
   records, rankings, and currencies. The auditor decides nothing about
   prizes or bans.
@@ -434,13 +434,13 @@ Properties the sketch is enforcing:
   float discipline (§3.5), L2 degrades to "valid on the pinned runtime",
   which is still useful but must be labeled as such everywhere.
 - **Anti-cheat is an arms race; audit is not prevention.** This system
-  raises the cost of cheating (you must fake a consistent log *and*
+  raises the cost of cheating (you must fake a consistent log _and_
   consistent observed metadata) and makes disputes decidable after the
   fact. It does not stop a sophisticated in-match cheat that produces
   human-plausible inputs in real time. Say so wherever the feature is
   described.
 - **Metadata collection cuts against ID's P2P/offline grain.** Observed
-  metadata requires *someone* observing — fine for witnessed/relayed
+  metadata requires _someone_ observing — fine for witnessed/relayed
   competitive play, absent for a purely offline match. Offline matches
   can still produce L1/L2-valid logs; their L3 is permanently
   `INCONCLUSIVE — no observed metadata`, and the attestation design
@@ -460,11 +460,11 @@ Properties the sketch is enforcing:
    after seeing the log)?
 
 **Proposed buildable slices** (for #2039 to adopt or cut — deliberately
-*not* filed as separate issues here, so the synthesis owns the set):
+_not_ filed as separate issues here, so the synthesis owns the set):
 
 1. **Determinism proof:** replay harness over the existing world clock —
    record a session of an existing example world, replay cross-machine,
-   assert checkpoint hashes. *Gates everything else.*
+   assert checkpoint hashes. _Gates everything else._
 2. **Log format v0 + reference exporter** for one turn-based example
    (tic-tac-toe): header/inputs/checkpoints/footer as §2, signatures from
    the players' ID keys.
@@ -491,5 +491,5 @@ Properties the sketch is enforcing:
 - ⏳ Follow-on routing — synthesis #2039 is the named consumer and stays
   gated on #2037; proposed slices in §6 are its input, not pre-filed
   issues. Nothing here is presented as a permanent feature; slice 1 is a
-  proof-of-determinism, and building *on* it waits for the #2039 review
+  proof-of-determinism, and building _on_ it waits for the #2039 review
   round.

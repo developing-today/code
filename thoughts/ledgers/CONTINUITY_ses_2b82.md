@@ -3,22 +3,21 @@ session: ses_2b82
 updated: 2026-04-02T05:02:20.145Z
 ---
 
-
-
 ## Summary: Phase 6 Identity Persistence Implementation
 
 ### Overall Project
+
 Building a collaborative editor identity system in `pkgs/id/` with Ed25519-signed tokens, WebSocket auth, and persistent storage.
 
 ### Completed Phases (1-5) — All Merged to Main
 
-| Phase | Description                                                             | Commit             |
-| ----- | ----------------------------------------------------------------------- | ------------------ |
-| 1     | `identity.rs` — IdentityStore with Ed25519 tokens, 3 API routes, 15 tests | `bdb0638d`           |
-| 2     | Wired identity into collab + settings UI                                | `a1692d4f`           |
-| 3     | Cursor name optimization (watch channels, immediate broadcast)          | 3 commits          |
-| 4     | First-message AUTH protocol, token expiry (30 days)                     | `79da5893`           |
-| 5     | Token renewal — HTTP + WS AUTH_OK + SPA 24h guard                       | `cd593ff3`, `474875bc` |
+| Phase | Description                                                               | Commit                 |
+| ----- | ------------------------------------------------------------------------- | ---------------------- |
+| 1     | `identity.rs` — IdentityStore with Ed25519 tokens, 3 API routes, 15 tests | `bdb0638d`             |
+| 2     | Wired identity into collab + settings UI                                  | `a1692d4f`             |
+| 3     | Cursor name optimization (watch channels, immediate broadcast)            | 3 commits              |
+| 4     | First-message AUTH protocol, token expiry (30 days)                       | `79da5893`             |
+| 5     | Token renewal — HTTP + WS AUTH_OK + SPA 24h guard                         | `cd593ff3`, `474875bc` |
 
 **Wire protocol:** INIT=0, STEPS=1, UPDATE=2, ACK=3, CURSOR=4, ERROR=5, CURSOR_REMOVE=6, NEW_VERSION=7, AUTH=8, AUTH_OK=9
 
@@ -29,6 +28,7 @@ Building a collaborative editor identity system in `pkgs/id/` with Ed25519-signe
 **Goal:** Persist identities to encrypted SQLite so tokens survive server restarts, deriving all keys from iroh's SecretKey.
 
 **Design decisions:**
+
 - Derive signing key from iroh SecretKey via HKDF-SHA256 (info: "id-identity-signing")
 - Derive DB encryption key via HKDF-SHA256 (info: "id-identity-encryption")
 - Store in encrypted Turso/libsql DB (`.identity.db` next to `.iroh-key`, cipher: aes256gcm)
@@ -49,11 +49,13 @@ Building a collaborative editor identity system in `pkgs/id/` with Ed25519-signe
 4. **`pkgs/id/src/commands/serve.rs`** — Passes `key.to_bytes()` + `.identity.db` path to `web_router()`, uses `.await?`
 
 ### Immediate Next Steps
+
 1. **Compile** the project and fix any errors
 2. **Run tests** (549 existing + any new persistence tests)
 3. **Commit** Phase 6
 
 ### Key Technical Context
+
 - iroh `SecretKey` is 32-byte Ed25519, available in `serve.rs` L284 as `key`
 - `key.to_bytes()` returns `[u8; 32]`
 - Turso DB: `Builder::new_local(uri).experimental_encryption(true).build().await?`

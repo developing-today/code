@@ -58,9 +58,9 @@ chosen, reads only renew within the convention.
 
 ## Decision
 
-1. **Touch-on-read is the default.** An *item* read of a pending
+1. **Touch-on-read is the default.** An _item_ read of a pending
    resource sets `lastTouched = now` and the effective deadline to
-   `min(created + maxAge, lastTouched + ttl)`. *Collection* reads do
+   `min(created + maxAge, lastTouched + ttl)`. _Collection_ reads do
    not touch: listing what exists must not keep it alive.
 2. **Touch never shortens and never revives.** A deadline set
    explicitly at creation stands; a resource whose deadline has
@@ -99,9 +99,9 @@ renewed by re-minting.
 
 ## Mapping
 
-| term              | from                    | becomes                                        |
-| ----------------- | ----------------------- | ---------------------------------------------- |
-| renew endpoint    | #1884 option A          | forbidden — touch-on-read instead              |
-| absolute expiry   | elicit/tasks/artifacts  | idle deadline + maxAge ceiling (per family PR) |
-| `elicit.ttl`      | compiled-in default     | declared registry setting                      |
-| stateTTL renewal  | proto state             | re-minting the token (documented exception)    |
+| term             | from                   | becomes                                        |
+| ---------------- | ---------------------- | ---------------------------------------------- |
+| renew endpoint   | #1884 option A         | forbidden — touch-on-read instead              |
+| absolute expiry  | elicit/tasks/artifacts | idle deadline + maxAge ceiling (per family PR) |
+| `elicit.ttl`     | compiled-in default    | declared registry setting                      |
+| stateTTL renewal | proto state            | re-minting the token (documented exception)    |

@@ -108,7 +108,11 @@ impl FaultFs {
     /// The disk to reopen: the image at the cut, or the live bytes if no cut happened.
     pub fn disk_image(&self) -> Vec<u8> {
         let st = self.lock();
-        if st.cut { st.image.clone() } else { st.live.clone() }
+        if st.cut {
+            st.image.clone()
+        } else {
+            st.live.clone()
+        }
     }
 }
 
@@ -163,7 +167,9 @@ fn surviving_image(st: &State) -> Vec<u8> {
 }
 
 fn flush(st: &mut State) {
-    let State { durable, pending, .. } = st;
+    let State {
+        durable, pending, ..
+    } = st;
     for op in pending.drain(..) {
         apply(durable, &op);
     }
@@ -185,7 +191,10 @@ impl StorageBackend for FaultFs {
         let start = offset as usize;
         let end = start + out.len();
         if end > st.live.len() {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "read past end"));
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "read past end",
+            ));
         }
         out.copy_from_slice(&st.live[start..end]);
         Ok(())
@@ -248,7 +257,13 @@ impl StorageBackend for FaultFs {
                 }
             };
             if landed > 0 {
-                apply(&mut image, &Op::Write { offset, data: data[..landed].to_vec() });
+                apply(
+                    &mut image,
+                    &Op::Write {
+                        offset,
+                        data: data[..landed].to_vec(),
+                    },
+                );
             }
             st.image = image;
             st.cut = true;
@@ -259,7 +274,10 @@ impl StorageBackend for FaultFs {
             st.live.resize(end, 0);
         }
         st.live[offset as usize..end].copy_from_slice(data);
-        st.pending.push(Op::Write { offset, data: data.to_vec() });
+        st.pending.push(Op::Write {
+            offset,
+            data: data.to_vec(),
+        });
         Ok(())
     }
 }

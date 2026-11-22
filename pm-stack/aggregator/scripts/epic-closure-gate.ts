@@ -14,8 +14,7 @@ function parseArgs(args: string[]): RefKey[] {
     if (args[i] !== "--root" || !args[i + 1])
       throw new Error("usage: epic-closure-gate.ts --root owner/repo#123 [--root owner/repo#456]");
     const root = args[++i]!;
-    if (!/^[^/#]+\/[^/#]+#[1-9][0-9]*$/.test(root))
-      throw new Error(`invalid --root ref: ${root}`);
+    if (!/^[^/#]+\/[^/#]+#[1-9][0-9]*$/.test(root)) throw new Error(`invalid --root ref: ${root}`);
     roots.push(root as RefKey);
   }
   if (roots.length === 0) throw new Error("at least one --root is required");
@@ -50,7 +49,7 @@ async function fetchRootState(root: RefKey, token: string): Promise<"OPEN" | "CL
     signal: AbortSignal.timeout(20_000),
   });
   if (!response.ok) throw new Error(`github GraphQL HTTP ${response.status} reading root ${root}`);
-  const body = await response.json() as {
+  const body = (await response.json()) as {
     errors?: unknown;
     data?: { repository?: { issue?: { state?: string } | null } | null };
   };

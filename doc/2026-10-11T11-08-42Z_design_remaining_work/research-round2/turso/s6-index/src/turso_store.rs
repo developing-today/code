@@ -57,7 +57,12 @@ impl TursoStore {
 
     /// The same open with another schema. `without_rowid` enables turso's experimental
     /// WITHOUT ROWID support, which the schema needs when it uses that clause.
-    pub fn open_schema(path: &Path, multiprocess: bool, schema: &str, without_rowid: bool) -> Result<Self> {
+    pub fn open_schema(
+        path: &Path,
+        multiprocess: bool,
+        schema: &str,
+        without_rowid: bool,
+    ) -> Result<Self> {
         block_on(async {
             let uri = path.to_str().context("non-UTF-8 path")?;
             let db = Builder::new_local(uri)
@@ -115,7 +120,10 @@ impl TursoStore {
     /// The indexes on author_seq, as turso reports them.
     pub fn describe_unique(&self) -> Result<Vec<String>> {
         block_on(async {
-            let mut rows = self.conn.query("PRAGMA index_list('author_seq')", ()).await?;
+            let mut rows = self
+                .conn
+                .query("PRAGMA index_list('author_seq')", ())
+                .await?;
             let mut out = Vec::new();
             while let Some(row) = rows.next().await? {
                 out.push(format!("{:?}", row.get_value(1)?) + &format!(" {:?}", row.get_value(2)?));
@@ -178,7 +186,9 @@ pub async fn insert_in(conn: &Connection, claims: &[Claim]) -> Result<Batch> {
     let mut find = conn
         .prepare("SELECT id FROM author_seq WHERE author = ?1 AND seq = ?2")
         .await?;
-    let mut ins_claim = conn.prepare("INSERT INTO claims (id, body) VALUES (?1, ?2)").await?;
+    let mut ins_claim = conn
+        .prepare("INSERT INTO claims (id, body) VALUES (?1, ?2)")
+        .await?;
     let mut ins_alpha = conn.prepare("INSERT INTO alpha (key) VALUES (?1)").await?;
     let mut ins_omega = conn.prepare("INSERT INTO omega (key) VALUES (?1)").await?;
     let mut ins_seq = conn
@@ -211,14 +221,20 @@ pub async fn insert_in(conn: &Connection, claims: &[Claim]) -> Result<Batch> {
         ins_claim.execute((id.to_vec(), c.body())).await?;
         ins_alpha.execute((keys::alpha_key(c, &id),)).await?;
         ins_omega.execute((keys::omega_key(c, &id),)).await?;
-        ins_seq.execute((c.author.to_vec(), c.seq as i64, id.to_vec())).await?;
+        ins_seq
+            .execute((c.author.to_vec(), c.seq as i64, id.to_vec()))
+            .await?;
         batch.inserted += 1;
     }
     Ok(batch)
 }
 
 /// Every row's first column as a blob, in the query's order.
-async fn blob_rows(conn: &Connection, sql: &str, params: impl turso::IntoParams) -> Result<Vec<Vec<u8>>> {
+async fn blob_rows(
+    conn: &Connection,
+    sql: &str,
+    params: impl turso::IntoParams,
+) -> Result<Vec<Vec<u8>>> {
     let mut rows = conn.query(sql, params).await?;
     let mut out = Vec::new();
     while let Some(row) = rows.next().await? {
@@ -228,7 +244,12 @@ async fn blob_rows(conn: &Connection, sql: &str, params: impl turso::IntoParams)
 }
 
 async fn claim_by_id(conn: &Connection, id: &Id) -> Result<Claim> {
-    let rows = blob_rows(conn, "SELECT body FROM claims WHERE id = ?1", (id.to_vec(),)).await?;
+    let rows = blob_rows(
+        conn,
+        "SELECT body FROM claims WHERE id = ?1",
+        (id.to_vec(),),
+    )
+    .await?;
     let body = rows.first().context("claim row missing")?;
     Claim::from_body(body)
 }
@@ -351,7 +372,12 @@ impl Store for TursoRowidStore {
     const NAME: &'static str = "turso-rowid";
 
     fn open(path: &Path) -> Result<Self> {
-        Ok(Self(TursoStore::open_schema(path, false, SCHEMA_ROWID, false)?))
+        Ok(Self(TursoStore::open_schema(
+            path,
+            false,
+            SCHEMA_ROWID,
+            false,
+        )?))
     }
 
     fn insert_batch(&mut self, claims: &[Claim]) -> Result<Batch> {

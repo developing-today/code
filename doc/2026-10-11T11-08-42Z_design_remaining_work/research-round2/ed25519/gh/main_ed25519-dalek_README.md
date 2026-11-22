@@ -7,6 +7,7 @@ verification.
 
 To import `ed25519-dalek`, add the following to the dependencies section of
 your project's `Cargo.toml`:
+
 ```toml
 ed25519-dalek = "3.0.0"
 ```
@@ -15,18 +16,18 @@ ed25519-dalek = "3.0.0"
 
 This crate is `#[no_std]` compatible with `default-features = false`.
 
-| Feature                | Default? | Description |
-| :---                   | :---     | :---        |
-| `alloc`                |          | When `pkcs8` is enabled, implements `EncodePrivateKey`/`EncodePublicKey` for `SigningKey`/`VerifyingKey`, respectively. |
-| `fast`                 | ✓        | Enables the use of precomputed tables for curve arithmetic. Makes key generation, signing, and verifying faster. |
-| `zeroize`              | ✓        | Implements `Zeroize` and `ZeroizeOnDrop` for `SigningKey` |
-| `rand_core`            |          | Enables `SigningKey::generate` |
-| `batch`                |          | Enables `verify_batch` for verifying many signatures quickly. Also enables `alloc` and `rand_core`. |
-| `digest`               |          | Enables `Context`, `SigningKey::{with_context, sign_prehashed}` and `VerifyingKey::{with_context, verify_prehashed, verify_prehashed_strict}` for Ed25519ph prehashed signatures. Implements `KeySizeUser` for `VerifyingKey`, and `KeySizeUser + TryKeyInit + Generate` for `SigningKey`.
-| `pkcs8`                |          | Enables [PKCS#8](https://en.wikipedia.org/wiki/PKCS_8) serialization/deserialization for `SigningKey` and `VerifyingKey` |
-| `pem`                  |          | Enables PEM serialization support for PKCS#8 private keys and SPKI public keys. Also enables `alloc`. |
-| `legacy_compatibility` |          | **Unsafe:** Disables certain signature checks. See [below](#malleability-and-the-legacy_compatibility-feature) |
-| `hazmat` |          | **Unsafe:** Exposes the `hazmat` module for raw signing/verifying. Misuse of these functions will expose the private key, as in the [signing oracle attack](https://github.com/MystenLabs/ed25519-unsafe-libs). |
+| Feature                | Default? | Description                                                                                                                                                                                                                                                                                |
+| :--------------------- | :------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `alloc`                |          | When `pkcs8` is enabled, implements `EncodePrivateKey`/`EncodePublicKey` for `SigningKey`/`VerifyingKey`, respectively.                                                                                                                                                                    |
+| `fast`                 | ✓        | Enables the use of precomputed tables for curve arithmetic. Makes key generation, signing, and verifying faster.                                                                                                                                                                           |
+| `zeroize`              | ✓        | Implements `Zeroize` and `ZeroizeOnDrop` for `SigningKey`                                                                                                                                                                                                                                  |
+| `rand_core`            |          | Enables `SigningKey::generate`                                                                                                                                                                                                                                                             |
+| `batch`                |          | Enables `verify_batch` for verifying many signatures quickly. Also enables `alloc` and `rand_core`.                                                                                                                                                                                        |
+| `digest`               |          | Enables `Context`, `SigningKey::{with_context, sign_prehashed}` and `VerifyingKey::{with_context, verify_prehashed, verify_prehashed_strict}` for Ed25519ph prehashed signatures. Implements `KeySizeUser` for `VerifyingKey`, and `KeySizeUser + TryKeyInit + Generate` for `SigningKey`. |
+| `pkcs8`                |          | Enables [PKCS#8](https://en.wikipedia.org/wiki/PKCS_8) serialization/deserialization for `SigningKey` and `VerifyingKey`                                                                                                                                                                   |
+| `pem`                  |          | Enables PEM serialization support for PKCS#8 private keys and SPKI public keys. Also enables `alloc`.                                                                                                                                                                                      |
+| `legacy_compatibility` |          | **Unsafe:** Disables certain signature checks. See [below](#malleability-and-the-legacy_compatibility-feature)                                                                                                                                                                             |
+| `hazmat`               |          | **Unsafe:** Exposes the `hazmat` module for raw signing/verifying. Misuse of these functions will expose the private key, as in the [signing oracle attack](https://github.com/MystenLabs/ed25519-unsafe-libs).                                                                            |
 
 # Major Changes
 
@@ -34,10 +35,10 @@ See [CHANGELOG.md](CHANGELOG.md) for a list of changes made in past versions of 
 
 ## Important Breaking Changes in 3.0.0
 
-* Update edition to 2024
-* Update the MSRV from 1.60 to 1.85
-* Remove `std` feature now that `error::Error` is in `core`
-* Make signing and verifying keys use `pkcs8::spki::SignatureAlgorithmIdentifier` instead of `DynSignatureAlgorithmIdentifier` ([#779](https://github.com/dalek-cryptography/curve25519-dalek/pull/779))
+- Update edition to 2024
+- Update the MSRV from 1.60 to 1.85
+- Remove `std` feature now that `error::Error` is in `core`
+- Make signing and verifying keys use `pkcs8::spki::SignatureAlgorithmIdentifier` instead of `DynSignatureAlgorithmIdentifier` ([#779](https://github.com/dalek-cryptography/curve25519-dalek/pull/779))
 
 # Documentation
 
@@ -50,11 +51,11 @@ SemVer exemptions are outlined below for MSRV and public API.
 
 ## Minimum Supported Rust Version
 
-| Releases | MSRV   |
-| :---     | :---   |
-| 3.x      | 1.85   |
-| 2.x      | 1.60   |
-| 1.x      | 1.41   |
+| Releases | MSRV |
+| :------- | :--- |
+| 3.x      | 1.85 |
+| 2.x      | 1.60 |
+| 1.x      | 1.41 |
 
 From 2.x onwards, MSRV changes will be accompanied by a minor version bump.
 
@@ -64,8 +65,8 @@ Breaking changes to SemVer-exempted components affecting the public API will be 
 
 Below are the specific policies:
 
-| Releases | Public API Component(s) | Policy |
-| :---     | :---                    | :---   |
+| Releases | Public API Component(s)                        | Policy            |
+| :------- | :--------------------------------------------- | :---------------- |
 | 3.x      | Dependencies `digest`, `pkcs8` and `rand_core` | Minor SemVer bump |
 | 2.x      | Dependencies `digest`, `pkcs8` and `rand_core` | Minor SemVer bump |
 
@@ -93,20 +94,20 @@ cargo +nightly bench --features "batch"
 
 On an Intel 10700K running at stock comparing between the `curve25519-dalek` backends.
 
-| Benchmark                       | u64       | simd +avx2         | fiat               |
-| :---                            | :----     | :---               | :---               |
-| signing                         | 15.017 µs | 13.906 µs -7.3967% | 15.877 μs +5.7268% |
-| signature verification          | 40.144 µs | 25.963 µs -35.603% | 42.118 μs +4.9173% |
-| strict signature verification   | 41.334 µs | 27.874 µs -32.660% | 43.985 μs +6.4136% |
-| batch signature verification/4  | 109.44 µs | 81.778 µs -25.079% | 117.80 μs +7.6389% |
-| batch signature verification/8  | 182.75 µs | 138.40 µs -23.871% | 195.86 μs +7.1737% |
-| batch signature verification/16 | 328.67 µs | 251.39 µs -23.744% | 351.55 μs +6.9614% |
-| batch signature verification/32 | 619.49 µs | 477.36 µs -23.053% | 669.41 μs +8.0582% |
-| batch signature verification/64 | 1.2136 ms | 936.85 µs -22.543% | 1.3028 ms +7.3500% |
-| batch signature verification/96 | 1.8677 ms | 1.2357 ms -33.936% | 2.0552 ms +10.039% |
-| batch signature verification/128| 2.3281 ms | 1.5795 ms -31.996% | 2.5596 ms +9.9437% |
-| batch signature verification/256| 4.1868 ms | 2.8864 ms -31.061% | 4.6494 μs +11.049% |
-| keypair generation              | 13.973 µs | 13.108 µs -6.5062% | 15.099 μs +8.0584% |
+| Benchmark                        | u64       | simd +avx2         | fiat               |
+| :------------------------------- | :-------- | :----------------- | :----------------- |
+| signing                          | 15.017 µs | 13.906 µs -7.3967% | 15.877 μs +5.7268% |
+| signature verification           | 40.144 µs | 25.963 µs -35.603% | 42.118 μs +4.9173% |
+| strict signature verification    | 41.334 µs | 27.874 µs -32.660% | 43.985 μs +6.4136% |
+| batch signature verification/4   | 109.44 µs | 81.778 µs -25.079% | 117.80 μs +7.6389% |
+| batch signature verification/8   | 182.75 µs | 138.40 µs -23.871% | 195.86 μs +7.1737% |
+| batch signature verification/16  | 328.67 µs | 251.39 µs -23.744% | 351.55 μs +6.9614% |
+| batch signature verification/32  | 619.49 µs | 477.36 µs -23.053% | 669.41 μs +8.0582% |
+| batch signature verification/64  | 1.2136 ms | 936.85 µs -22.543% | 1.3028 ms +7.3500% |
+| batch signature verification/96  | 1.8677 ms | 1.2357 ms -33.936% | 2.0552 ms +10.039% |
+| batch signature verification/128 | 2.3281 ms | 1.5795 ms -31.996% | 2.5596 ms +9.9437% |
+| batch signature verification/256 | 4.1868 ms | 2.8864 ms -31.061% | 4.6494 μs +11.049% |
+| keypair generation               | 13.973 µs | 13.108 µs -6.5062% | 15.099 μs +8.0584% |
 
 ## Batch Performance
 

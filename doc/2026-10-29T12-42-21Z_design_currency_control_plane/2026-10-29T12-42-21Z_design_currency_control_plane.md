@@ -21,21 +21,21 @@ authentication at all**. A currency is a bare `u32` `ledger` value on accounts
 and transfers, and any process that can reach the cluster can move any money on
 any ledger.
 
-So the control plane is not an add-on; it is *the product*. It has three parts:
+So the control plane is not an add-on; it is _the product_. It has three parts:
 
 1. **Currency registry** — a control-plane database that allocates `ledger`
    IDs and holds the metadata TigerBeetle refuses to: name, symbol, scale,
-   issuer, supply policy, status. It is the authority for *which u32 means
-   what*, and it is the only thing standing between "a u32" and "a currency".
+   issuer, supply policy, status. It is the authority for _which u32 means
+   what_, and it is the only thing standing between "a u32" and "a currency".
 2. **Account factory** — a deterministic scheme that maps an ID identity to a
    TigerBeetle account, plus the per-currency system accounts (issuer,
-   liquidity, fee, burn). Account IDs are *derived*, not allocated, so account
+   liquidity, fee, burn). Account IDs are _derived_, not allocated, so account
    creation is idempotent and needs no coordination round-trip.
 3. **Gateway service** — the **only** TigerBeetle client. It verifies the
    caller's ID signature, checks issuance/transfer/conversion permission
    against the registry, enforces abuse controls, and only then submits a
    batch. TigerBeetle's lack of auth is not a gap we paper over; the gateway
-   *is* the auth boundary, and the threat model (§1) is the design.
+   _is_ the auth boundary, and the threat model (§1) is the design.
 
 The sharp edges, stated up front:
 
@@ -44,7 +44,7 @@ The sharp edges, stated up front:
   one service, not a fleet of peers that each hold the client key), or the
   registry checks are advisory.
 - **The registry is a second source of truth and can drift.** The ledger is
-  balance truth; the ID graph is identity truth; the registry is *metadata*
+  balance truth; the ID graph is identity truth; the registry is _metadata_
   truth. §7 designs the linkage (`user_data_128` + a signed graph object per
   currency) and the reconciliation job, because "the DB and the ledger
   disagree" is a failure mode we must be able to detect, not one we can assume
@@ -62,16 +62,16 @@ The sharp edges, stated up front:
 These are facts from the TigerBeetle investigation, restated because the whole
 design is a response to them:
 
-| Fact | Consequence for this design |
-| --- | --- |
-| `ledger` is a bare non-zero `u32`; no metadata, no DDL, no creation call | The registry *is* the meaning of a ledger. Allocation is application-side. |
-| No authentication, authorization, or user identity anywhere in the DB | The gateway is the sole auth boundary; TigerBeetle must be network-isolated (§1). |
-| Cross-ledger transfers are forbidden | A "currency" is exactly one ledger; conversions are app-composed pairs (#2063), not a gateway primitive. |
-| Posted transfers are immutable and undeletable | Corrections are compensating transfers; the gateway's write path is append-only. |
-| Amounts are `u128`; `code` is `u16`; `user_data_128` is free for us | Amount/scale validation is ours; `code` and `user_data_128` are our linkage channels. |
-| Idempotency is client-generated 128-bit IDs, deduplicated by the cluster | The gateway owns ID generation and the replay ledger (§4). |
-| Accounts carry flags fixed at creation (`debits_must_not_exceed_credits`, `history`, …) | Flags are a design decision at factory time; they cannot be relaxed later. |
-| Pending (two-phase) transfers exist with timeouts | Available for refundable redemption (#2065), not needed for the basic path. |
+| Fact                                                                                    | Consequence for this design                                                                              |
+| --------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `ledger` is a bare non-zero `u32`; no metadata, no DDL, no creation call                | The registry _is_ the meaning of a ledger. Allocation is application-side.                               |
+| No authentication, authorization, or user identity anywhere in the DB                   | The gateway is the sole auth boundary; TigerBeetle must be network-isolated (§1).                        |
+| Cross-ledger transfers are forbidden                                                    | A "currency" is exactly one ledger; conversions are app-composed pairs (#2063), not a gateway primitive. |
+| Posted transfers are immutable and undeletable                                          | Corrections are compensating transfers; the gateway's write path is append-only.                         |
+| Amounts are `u128`; `code` is `u16`; `user_data_128` is free for us                     | Amount/scale validation is ours; `code` and `user_data_128` are our linkage channels.                    |
+| Idempotency is client-generated 128-bit IDs, deduplicated by the cluster                | The gateway owns ID generation and the replay ledger (§4).                                               |
+| Accounts carry flags fixed at creation (`debits_must_not_exceed_credits`, `history`, …) | Flags are a design decision at factory time; they cannot be relaxed later.                               |
+| Pending (two-phase) transfers exist with timeouts                                       | Available for refundable redemption (#2065), not needed for the basic path.                              |
 
 ---
 
@@ -103,23 +103,23 @@ write". The model is written around that fact.
 ```
 
 - **Untrusted:** every client, every signed request, every graph object. A
-  valid signature proves *who*, never *what they may do*.
+  valid signature proves _who_, never _what they may do_.
 - **Trusted:** the gateway process, its registry DB, and the network segment
   TigerBeetle sits on. Trust here is assumed, not verified, and is therefore
-  *bounded* by §1.4's isolation requirement.
+  _bounded_ by §1.4's isolation requirement.
 
 ### 1.3 Adversaries and what the gateway must do
 
-| Adversary action | Gateway control |
-| --- | --- |
-| Forge an issuance (mint without authority) | Verify the ID signature, then check the caller against the registry's issuer/minter set **and** the supply policy. Signature alone is never sufficient. |
-| Replay a captured signed request | Deterministic idempotency ID + a replay ledger; TigerBeetle's dedup is the backstop, not the primary check. |
-| Double-submit to race a balance check | The balance check and the write are one submitted batch; `debits_must_not_exceed_credits` makes the overspend fail atomically at the cluster. Never "check then write". |
+| Adversary action                                | Gateway control                                                                                                                                                                                                 |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Forge an issuance (mint without authority)      | Verify the ID signature, then check the caller against the registry's issuer/minter set **and** the supply policy. Signature alone is never sufficient.                                                         |
+| Replay a captured signed request                | Deterministic idempotency ID + a replay ledger; TigerBeetle's dedup is the backstop, not the primary check.                                                                                                     |
+| Double-submit to race a balance check           | The balance check and the write are one submitted batch; `debits_must_not_exceed_credits` makes the overspend fail atomically at the cluster. Never "check then write".                                         |
 | Reach TigerBeetle directly and skip the gateway | Network isolation: no public listener, mTLS/allow-list between gateway and replicas, replicas on a private segment. This is the control that makes "the gateway is the boundary" true rather than aspirational. |
-| Steal a user's ID key | Out of scope for the gateway (no key custody); mitigated by ID-graph revocation and per-request nonce windows. |
-| Compromise the gateway | The gateway holds no user keys, but it does hold the cluster client key. Mitigation is operational (§1.4), not cryptographic. |
-| Malicious/greedy issuer over-issuing | Supply policy (`cap`, `mintable`), revocable minter grants, and a supply audit (§7.3). |
-| Corrupt registry metadata | Registry writes are themselves signed by an authorized ID and recorded in the graph (§2.4); the DB is a derived index. |
+| Steal a user's ID key                           | Out of scope for the gateway (no key custody); mitigated by ID-graph revocation and per-request nonce windows.                                                                                                  |
+| Compromise the gateway                          | The gateway holds no user keys, but it does hold the cluster client key. Mitigation is operational (§1.4), not cryptographic.                                                                                   |
+| Malicious/greedy issuer over-issuing            | Supply policy (`cap`, `mintable`), revocable minter grants, and a supply audit (§7.3).                                                                                                                          |
+| Corrupt registry metadata                       | Registry writes are themselves signed by an authorized ID and recorded in the graph (§2.4); the DB is a derived index.                                                                                          |
 
 ### 1.4 Non-goals and operational bounds
 
@@ -128,7 +128,7 @@ write". The model is written around that fact.
   unreachable otherwise, and the registry DB is backed up and append-audited.
 - **Not** confidentiality of ledger contents. TigerBeetle data is plaintext on
   disk; treat balances as public-to-operators.
-- **Not** a defense against a malicious *cluster operator*. Currency is the
+- **Not** a defense against a malicious _cluster operator_. Currency is the
   centralised exception in an otherwise serverless ID architecture
   ([#2066](https://github.com/developing-today/code/issues/2066)); centralisation
   means one operator is trusted.
@@ -143,12 +143,12 @@ metadata TigerBeetle does not.
 
 ### 2.1 `ledger_allocation` — the u32 allocator
 
-| column | type | notes |
-| --- | --- | --- |
-| `ledger_id` | `integer` (u32, PK) | the value written into TigerBeetle. |
-| `kind` | `text` | `currency` \| `system` \| `tenancy` — why this u32 is spent. |
-| `owner_ref` | `text` | currency id, system-account purpose, or tenant id. |
-| `allocated_at` | `timestamptz` | |
+| column         | type                | notes                                                        |
+| -------------- | ------------------- | ------------------------------------------------------------ |
+| `ledger_id`    | `integer` (u32, PK) | the value written into TigerBeetle.                          |
+| `kind`         | `text`              | `currency` \| `system` \| `tenancy` — why this u32 is spent. |
+| `owner_ref`    | `text`              | currency id, system-account purpose, or tenant id.           |
+| `allocated_at` | `timestamptz`       |                                                              |
 
 Rules:
 
@@ -159,18 +159,18 @@ Rules:
 
 ### 2.2 `currency` — the currency record
 
-| column | type | notes |
-| --- | --- | --- |
-| `ledger_id` | PK, FK → `ledger_allocation` | the ledger this currency is. |
-| `currency_id` | `text` | stable, human-typable id (e.g. `abc`) used in graph objects and APIs. |
-| `name` | `text` | display name. Free-form; not unique. |
-| `symbol` | `text` | short ticker. Unique **per issuer**, not globally (§2.3). |
-| `scale` | `smallint` | decimal places. Immutable once balances exist (§0). |
-| `issuer_id` | `text` | the ID that owns issuance. |
-| `supply_policy` | `jsonb` | `{ mintable: bool, cap: u128\|null, policy_uri: text\|null }`. |
-| `status` | `text` | `active` \| `frozen` \| `sunset`. `frozen` = gateway refuses new writes; `sunset` = no new writes, redemption window only. |
-| `graph_object_id` | `text` | the signed graph object that is the currency's canonical record (§2.4). |
-| `created_at` / `updated_at` | `timestamptz` | |
+| column                      | type                         | notes                                                                                                                      |
+| --------------------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `ledger_id`                 | PK, FK → `ledger_allocation` | the ledger this currency is.                                                                                               |
+| `currency_id`               | `text`                       | stable, human-typable id (e.g. `abc`) used in graph objects and APIs.                                                      |
+| `name`                      | `text`                       | display name. Free-form; not unique.                                                                                       |
+| `symbol`                    | `text`                       | short ticker. Unique **per issuer**, not globally (§2.3).                                                                  |
+| `scale`                     | `smallint`                   | decimal places. Immutable once balances exist (§0).                                                                        |
+| `issuer_id`                 | `text`                       | the ID that owns issuance.                                                                                                 |
+| `supply_policy`             | `jsonb`                      | `{ mintable: bool, cap: u128\|null, policy_uri: text\|null }`.                                                             |
+| `status`                    | `text`                       | `active` \| `frozen` \| `sunset`. `frozen` = gateway refuses new writes; `sunset` = no new writes, redemption window only. |
+| `graph_object_id`           | `text`                       | the signed graph object that is the currency's canonical record (§2.4).                                                    |
+| `created_at` / `updated_at` | `timestamptz`                |                                                                                                                            |
 
 ### 2.3 Identity of a currency
 
@@ -214,7 +214,7 @@ and lands in the graph. The DB is never edited by hand in production.
 
 TigerBeetle accounts are created explicitly with a 128-bit `id` and a `ledger`,
 and their **flags are fixed at creation**. The factory's job is to make account
-identity *derivable* and account creation *idempotent*.
+identity _derivable_ and account creation _idempotent_.
 
 ### 3.1 Deterministic account IDs
 
@@ -238,23 +238,23 @@ no lock.**
 
 ### 3.2 The per-currency account set
 
-| account | kind | owner | flags | purpose |
-| --- | --- | --- | --- | --- |
-| **Issuer** | `issuer` | `currency.issuer_id` | unconstrained (issuer balance may go negative = net issued) | source of every mint; its counters are the supply audit basis. |
-| **Liquidity** | `liquidity` | liquidity provider id | unconstrained | one per (currency, direction) for conversion legs (#2063). |
-| **Fee** | `fee` | platform | `debits_must_not_exceed_credits` | collects transfer/conversion fees. |
-| **Burn** | `burn` | platform | `debits_must_not_exceed_credits` | destination for retirement; balances here are out of circulation. |
-| **Holder** | `holder` | any ID | `debits_must_not_exceed_credits`; `history` where audit matters | one per (currency, user). No overdraft — this is the double-spend guard. |
+| account       | kind        | owner                 | flags                                                           | purpose                                                                  |
+| ------------- | ----------- | --------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| **Issuer**    | `issuer`    | `currency.issuer_id`  | unconstrained (issuer balance may go negative = net issued)     | source of every mint; its counters are the supply audit basis.           |
+| **Liquidity** | `liquidity` | liquidity provider id | unconstrained                                                   | one per (currency, direction) for conversion legs (#2063).               |
+| **Fee**       | `fee`       | platform              | `debits_must_not_exceed_credits`                                | collects transfer/conversion fees.                                       |
+| **Burn**      | `burn`      | platform              | `debits_must_not_exceed_credits`                                | destination for retirement; balances here are out of circulation.        |
+| **Holder**    | `holder`    | any ID                | `debits_must_not_exceed_credits`; `history` where audit matters | one per (currency, user). No overdraft — this is the double-spend guard. |
 
 Two deliberate choices:
 
 - **Holder accounts are constrained** (`debits_must_not_exceed_credits`), so an
-  overspend is rejected *by the cluster* even if the gateway's logic is wrong.
+  overspend is rejected _by the cluster_ even if the gateway's logic is wrong.
   The gateway does not get to be the only thing preventing negative balances.
 - **The issuer account is deliberately unconstrained**, because issuance is
   modelled as a debit from the issuer — "money out of thin air" is exactly a
   negative issuer balance, and its magnitude is the circulating supply. A supply
-  cap is therefore a *registry* check, not a ledger invariant (TigerBeetle
+  cap is therefore a _registry_ check, not a ledger invariant (TigerBeetle
   cannot cap an unconstrained account's negativity in currency terms).
 
 ### 3.3 Factory API
@@ -299,7 +299,7 @@ signed as Signed { key, at, nonce, signature }
 ```
 
 - **Canonicalisation is part of the protocol.** Follow the repo's event
-  convention: canonical CBOR with a domain tag, and decoders that *refuse*
+  convention: canonical CBOR with a domain tag, and decoders that _refuse_
   non-canonical input (`chain.rs:30` tag `id.events.v1`; `chain.rs:321-342`
   `decode` rejects non-canonical CBOR). The bytes signed must be byte-for-byte
   reproducible by both sides; an ambiguous encoding is a forgery surface.
@@ -324,25 +324,25 @@ Two key layers already exist, and the choice decides what "issuer" means:
 
 **Issuance authority binds to the account key, not the device key.** A currency
 is owned by an account; a device signs on the account's behalf; `device.revoke`
-must be able to withdraw a lost device's minting power *without moving the
-currency*. `register_currency` and `grant_minter` therefore record account ids,
+must be able to withdraw a lost device's minting power _without moving the
+currency_. `register_currency` and `grant_minter` therefore record account ids,
 and the gateway resolves device → account before the authorization check in
 §4.2.
 
-### 4.2 Authorization: signature is *who*, registry is *what*
+### 4.2 Authorization: signature is _who_, registry is _what_
 
 After signature verification, every operation is checked against the registry
 **before** any ledger call:
 
-| op | authorization check |
-| --- | --- |
+| op                  | authorization check                                                                                                         |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `register_currency` | caller's ID is the claimed `issuer_id`; `currency_id`/`ledger` allocation succeeds; symbol free in that issuer's namespace. |
-| `grant_minter` | caller is the currency's `issuer_id`; writes `currency_issuer(role=minter)`. |
-| `issue` (mint) | caller ∈ `{issuer_id} ∪ minters` for the currency; `supply_policy.mintable`; projected supply ≤ `cap`. |
-| `transfer` | caller controls `from` (is its `owner_id`, or holds a delegation); `from`/`to` same currency; currency `active`. |
-| `convert` | delegated to the conversion engine's rate authorization (#2063); the gateway enforces the same signature + nonce envelope. |
-| `balance`/`history` | caller may read its own accounts; operator/issuer reads gated by role. |
-| `freeze`/`sunset` | caller is `issuer_id` or platform operator. |
+| `grant_minter`      | caller is the currency's `issuer_id`; writes `currency_issuer(role=minter)`.                                                |
+| `issue` (mint)      | caller ∈ `{issuer_id} ∪ minters` for the currency; `supply_policy.mintable`; projected supply ≤ `cap`.                      |
+| `transfer`          | caller controls `from` (is its `owner_id`, or holds a delegation); `from`/`to` same currency; currency `active`.            |
+| `convert`           | delegated to the conversion engine's rate authorization (#2063); the gateway enforces the same signature + nonce envelope.  |
+| `balance`/`history` | caller may read its own accounts; operator/issuer reads gated by role.                                                      |
+| `freeze`/`sunset`   | caller is `issuer_id` or platform operator.                                                                                 |
 
 **A valid signature with no matching registry entry is rejected.** This is the
 single most important rule: the registry, not the signature, decides authority.
@@ -379,19 +379,19 @@ unit-tested without a cluster; step 7–8 is the only part that needs TigerBeetl
 
 A reserved, documented range so the ledger history is self-describing:
 
-| range | meaning |
-| --- | --- |
-| `0x0001–0x00FF` | issuance (mint) |
-| `0x0100–0x01FF` | holder transfer |
-| `0x0200–0x02FF` | conversion leg (paired; #2063) |
-| `0x0300–0x03FF` | fee |
-| `0x0400–0x04FF` | correction / refund |
+| range           | meaning                                      |
+| --------------- | -------------------------------------------- |
+| `0x0001–0x00FF` | issuance (mint)                              |
+| `0x0100–0x01FF` | holder transfer                              |
+| `0x0200–0x02FF` | conversion leg (paired; #2063)               |
+| `0x0300–0x03FF` | fee                                          |
+| `0x0400–0x04FF` | correction / refund                          |
 | `0xF000–0xFFFF` | reserved for pending-hold redemption (#2065) |
 
 ### 4.5 One gateway, HA as a service
 
 "Only the gateway may write" is only true if there is one authority. The gateway
-must therefore be deployed as **a single logical writer** — an HA *service*
+must therefore be deployed as **a single logical writer** — an HA _service_
 (leader election, or a single active with a hot standby that shares no client
 key) — **not** as a horizontally scaled fleet where every replica holds the
 TigerBeetle client key. A fleet of writers makes the registry checks advisory,
@@ -401,15 +401,15 @@ because two replicas can each pass a cap check and both mint.
 
 Everything the envelope needs already exists in `pkgs/id`:
 
-| need | existing code |
-| --- | --- |
-| envelope, canonical message, clock window, replay guard | `src/directory_auth.rs` (`Signed`, `sign_request`, `verify_signed`, `ReplayGuard`) |
-| canonical CBOR with domain tags and strict decoding | `src/chain.rs` (`id.events.v1`; `decode` refuses non-canonical input) |
-| `verify_strict` discipline + forgery regression fixtures | `src/test_forgeries.rs` |
-| account/device key derivation and delegation | `src/directory.rs`, `src/groups/mod.rs` |
-| signed-object recording | `src/artifact.rs`, `src/chain.rs` |
+| need                                                     | existing code                                                                      |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| envelope, canonical message, clock window, replay guard  | `src/directory_auth.rs` (`Signed`, `sign_request`, `verify_signed`, `ReplayGuard`) |
+| canonical CBOR with domain tags and strict decoding      | `src/chain.rs` (`id.events.v1`; `decode` refuses non-canonical input)              |
+| `verify_strict` discipline + forgery regression fixtures | `src/test_forgeries.rs`                                                            |
+| account/device key derivation and delegation             | `src/directory.rs`, `src/groups/mod.rs`                                            |
+| signed-object recording                                  | `src/artifact.rs`, `src/chain.rs`                                                  |
 
-The only *new* pieces are the per-op body encoders (domain-tagged CBOR), the
+The only _new_ pieces are the per-op body encoders (domain-tagged CBOR), the
 account-ID derivation (§3.1), and the idempotency-ID derivation (§4.3). Put
 those in one Rust crate/module (`id-currency-wire`, alongside `pkgs/id`) so the
 gateway and every client share them; nothing reimplements the encoding.
@@ -472,7 +472,7 @@ rejection as a typed error — never as a silent success.
   currency to old history. Exhaustion (2³²−1) means a new cluster, not reuse.
 - **Reserve ranges now.** Partition the space before spending it, e.g.
   `0x00000001–0x000FFFFF` tenancy/system, `0x00100000–…` currencies. The exact
-  split is a follow-up decision, but the *rule* — no recycling, documented
+  split is a follow-up decision, but the _rule_ — no recycling, documented
   ranges — belongs in the design.
 - **Scale is registry-only and immutable in practice.** Changing a currency's
   scale after balances exist reinterprets every stored integer; treat it as a
@@ -485,7 +485,7 @@ decision and is orthogonal to the control plane; the gateway is agnostic to it.
 
 ## 7. Consistency: graph ↔ registry ↔ ledger
 
-Three stores, three truths. The design keeps them linked and *checkable*.
+Three stores, three truths. The design keeps them linked and _checkable_.
 
 ### 7.1 Linkage
 
@@ -499,12 +499,12 @@ Three stores, three truths. The design keeps them linked and *checkable*.
 
 ### 7.2 What can drift, and what it costs
 
-| drift | detection | repair |
-| --- | --- | --- |
-| Registry row lost/corrupted | rebuild from graph objects (§2.4) | replay graph → registry |
-| Graph object missing for a ledger write | reconciliation job: every transfer's `user_data_128` resolves to an object | re-anchor from the signed receipt |
-| Ledger and graph disagree on an amount | reconciliation compares transfer counters to graph events | ledger wins (balance truth); flag the graph object for review |
-| Two registry rows for one `currency_id` | uniqueness constraint + signed-write path | reject at write time |
+| drift                                   | detection                                                                  | repair                                                        |
+| --------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| Registry row lost/corrupted             | rebuild from graph objects (§2.4)                                          | replay graph → registry                                       |
+| Graph object missing for a ledger write | reconciliation job: every transfer's `user_data_128` resolves to an object | re-anchor from the signed receipt                             |
+| Ledger and graph disagree on an amount  | reconciliation compares transfer counters to graph events                  | ledger wins (balance truth); flag the graph object for review |
+| Two registry rows for one `currency_id` | uniqueness constraint + signed-write path                                  | reject at write time                                          |
 
 ### 7.3 Reconciliation and supply audit
 
@@ -534,9 +534,9 @@ history flag can be set where it matters.
 4. **Direct cluster access.** An attacker who can reach the TigerBeetle port
    bypasses every check. Control: the cluster listens only on the private
    gateway segment, with mTLS/allow-list — the same "untrusted processes must
-   not reach the server *or its data file*" rule the investigation quoted.
+   not reach the server _or its data file_" rule the investigation quoted.
 5. **Greedy issuer.** The issuer mints past a promised cap. Registry cap check
-   rejects it; the audit (§7.3) shows any breach of a *lower* real-world promise
+   rejects it; the audit (§7.3) shows any breach of a _lower_ real-world promise
    (e.g. an off-chain commitment) as a policy matter, since the ledger cannot
    enforce a cap it was never told.
 6. **Registry DB compromise.** Attacker edits a row to point a currency at a
@@ -558,12 +558,12 @@ history flag can be set where it matters.
    and the single-writer deployment (leader election over a shared client key
    vs one active + keyless standby).
 3. **Idempotency ID vs the TigerBeetle monotonic-ID guidance.** TigerBeetle's
-   reliable-submission pattern wants client-generated, persisted, *monotonic*
+   reliable-submission pattern wants client-generated, persisted, _monotonic_
    128-bit IDs; graph object ids are BLAKE3 hashes (non-monotonic). This design
    derives the transfer/idempotency ID by hashing (stateless, stable) and leans
    on the cluster's dedup as the backstop. Decide in F3 whether that is enough
    or a gateway monotonic sequence with durable counter state is required. Note
-   this is a *different* id from `user_data_128`, which carries the **graph
+   this is a _different_ id from `user_data_128`, which carries the **graph
    object id** and must be a hash to be content-addressed.
 4. **Key type for the gateway's TigerBeetle client:** one key or per-operator
    keys; rotation procedure.
@@ -582,13 +582,13 @@ Filed as issues linked from #2062; each is a slice of the above, not the whole
 feature, and the PoC (F5) is explicitly a PoC that makes its own decisions and
 must be reviewed before anything permanent is built on it.
 
-| # | slice | depends on |
-| --- | --- | --- |
-| F1 | Currency registry schema + migrations (`ledger_allocation`, `currency`, `currency_issuer`, `account`) and the ledger allocator | — |
-| F2 | Account factory: deterministic account IDs, `ensure_account`, `ensure_currency_accounts`, transfer-code table | F1 |
-| F3 | Gateway envelope: canonical encoding, ed25519 verify, nonce window, idempotency ID derivation, typed errors | — |
-| F4 | Reconciliation + supply-audit job (issuer counters vs holders; `user_data_128` → graph object) | F1, F2 |
-| F5 | PoC: registry + factory + gateway over a single-currency end-to-end issue→transfer, with the graph object and signed receipt | F1–F3 |
+| #   | slice                                                                                                                          | depends on |
+| --- | ------------------------------------------------------------------------------------------------------------------------------ | ---------- |
+| F1  | Currency registry schema + migrations (`ledger_allocation`, `currency`, `currency_issuer`, `account`) and the ledger allocator | —          |
+| F2  | Account factory: deterministic account IDs, `ensure_account`, `ensure_currency_accounts`, transfer-code table                  | F1         |
+| F3  | Gateway envelope: canonical encoding, ed25519 verify, nonce window, idempotency ID derivation, typed errors                    | —          |
+| F4  | Reconciliation + supply-audit job (issuer counters vs holders; `user_data_128` → graph object)                                 | F1, F2     |
+| F5  | PoC: registry + factory + gateway over a single-currency end-to-end issue→transfer, with the graph object and signed receipt   | F1–F3      |
 
 F5 is a proof of concept: it should demonstrate the pipeline and surface
 unknowns, **not** be promoted into the permanent currency service without a

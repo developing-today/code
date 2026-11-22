@@ -67,7 +67,10 @@ fn init_adder(rng: &enc::Rng) -> (Y, Dcgka0) {
             "prekey",
         );
         let bundle = ok(KeyManager::prekey_bundle(&keys), "prekey bundle");
-        registry = ok(KeyRegistry::add_longterm_bundle(registry, id, bundle), "register");
+        registry = ok(
+            KeyRegistry::add_longterm_bundle(registry, id, bundle),
+            "register",
+        );
         match id {
             ADMIN => adder_keys = Some(keys),
             PROBE => probe_keys = Some(keys),
@@ -120,7 +123,10 @@ fn update_dm(y: &Y, rng: &enc::Rng) -> Dm {
 
 // Carol's re-add welcome after remove and add (HPKE path, full bundle).
 fn readd_welcome(y: &Y, rng: &enc::Rng) -> Dm {
-    let (without, _) = ok(EncryptionGroup::remove(y.clone(), CAROL, rng), "remove probe");
+    let (without, _) = ok(
+        EncryptionGroup::remove(y.clone(), CAROL, rng),
+        "remove probe",
+    );
     let (_, msg) = ok(EncryptionGroup::add(without, CAROL, rng), "re-add probe");
     dm_for(&msg, CAROL)
 }
@@ -221,8 +227,11 @@ pub fn run(name: &str, seed: u8, out_dir: &Path) -> Dumps {
 
     let file_name = name.replace(' ', "-");
     let write = |suffix: &str, bytes: &[u8]| {
-        fs::write(out_dir.join(format!("{file_name}-s{seed}-{suffix}.bin")), bytes)
-            .expect("write dump");
+        fs::write(
+            out_dir.join(format!("{file_name}-s{seed}-{suffix}.bin")),
+            bytes,
+        )
+        .expect("write dump");
     };
     write("welcome-k1", &dumps.k1_welcome);
     write("welcome-k1000", &dumps.k1000_welcome);

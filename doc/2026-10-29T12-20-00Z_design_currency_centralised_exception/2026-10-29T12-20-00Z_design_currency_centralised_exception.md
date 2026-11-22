@@ -62,7 +62,7 @@ This also resolves the open boundary question left by #2040 §8 ("which
 tokens are TigerBeetle-backed vs graph-only claims?"): **TigerBeetle-backed
 tokens are online currency** — every operation goes through the gateway.
 Offline or peer-to-peer value transfer, where it exists, is the graph-claims
-tier and is *not* currency in this design; the two tiers must never be
+tier and is _not_ currency in this design; the two tiers must never be
 presented to users as the same thing.
 
 ## 2. Topology and boundary rules
@@ -98,7 +98,7 @@ Boundary rules:
   client; the cluster sits on a private network reachable only from the
   gateway (#2040 §5). The gateway is a conventional small server (the "a
   little container use is acceptable" allowance in the LIST 12 directive) —
-  but it is *per-system*, not per-user, so it does not violate the hosted
+  but it is _per-system_, not per-user, so it does not violate the hosted
   edition's "no indefinite per-user container spend" rule.
 - **B3 — The hosted tier holds no ledger truth.** A UserDO may cache a
   **signed balance snapshot** (balance + the transfer watermark it reflects,
@@ -111,7 +111,7 @@ Boundary rules:
   binding model of #2044 §4.3 and the recovery design of #2060: the key
   lives with the user (browser-held, or a bound native device); the UserDO
   relays client-signed intents and verifies results. A custodial gateway
-  key that could sign *as the user* is explicitly rejected — the gateway
+  key that could sign _as the user_ is explicitly rejected — the gateway
   signs only its own receipts and snapshots, never user intents.
 - **B5 — Gateway placement follows the cluster.** Every TigerBeetle commit
   pays quorum-replication latency (#2040 §4), so the gateway runs near the
@@ -126,7 +126,7 @@ Conventions first, because they carry the safety properties:
 - **Idempotency IDs are client-generated and persisted before submission**
   (#2040 §5, Reliable Transaction Submission). The client — native node, or
   the browser client with its UserDO mirroring the record — writes the
-  request ID into its own durable store *first*, then submits. Every retry
+  request ID into its own durable store _first_, then submits. Every retry
   reuses the same ID. The gateway maps it to the TigerBeetle transfer ID;
   an `exists` result is success, any `exists_with_different_*` result is a
   hard error surfaced to the user, never retried into a second operation.
@@ -147,46 +147,46 @@ Conventions first, because they carry the safety properties:
 
 Endpoints (v1 sketch; field-level schemas belong to #2062/#2043):
 
-| Endpoint | Purpose | Notes |
-|---|---|---|
-| `POST /v1/currencies` | Create a currency: signed issuance statement (name, symbol, scale, supply policy) → registry record + allocated `ledger` u32 + issuer account | Scale is effectively immutable once accounts exist (#2040 §1) — the API must force an explicit scale confirmation |
-| `GET /v1/currencies/{ledger}` | Currency metadata (name/symbol/scale/issuer/status) | Public, cacheable (KV at the hosted edge); status ∈ active / frozen / sunset is a control-plane flag — TigerBeetle has no freeze or retire primitive (#2040 §5) |
-| `GET /v1/balances/{account}` | Balance + watermark for an account the caller owns or is authorised to read | Response is a **signed snapshot** (§2 B3) so hosted caches can prove freshness |
-| `GET /v1/accounts/{account}/transfers` | Transfer history | Only meaningful for accounts created with `flags.history` (#2040 §5); the account factory decides history per account class |
-| `POST /v1/transfers` | Single-ledger transfer from a signed intent | The workhorse; covers mint (issuer account is the source) and burn (issuer/burn account is the destination) — there is no separate mint verb, mirroring TigerBeetle (#2040 §1) |
-| `POST /v1/holds` · `POST /v1/holds/{id}/post` · `POST /v1/holds/{id}/void` | Two-phase (pending) transfers with timeout | Native TigerBeetle primitive (#2040 §2); backs purchases, escrow, and refundable redemptions |
-| `POST /v1/conversions` | Convert between currencies under a standing rate authorisation | Gateway computes both legs at the authorised rate, submits the linked pair, stamps one conversion ID into `user_data_128` on both legs (the linkage itself is not persisted by TigerBeetle, #2040 §2) |
-| `POST /v1/corrections` | Refund / revocation as a compensating transfer with a correction `code` | Restricted (§4); **can fail** if the holder has spent the balance — the API returns that failure honestly instead of pretending finality |
-| `POST /v1/authorisations` | Create/revoke a signed standing authorisation (conversion rate, mint allowance, …) | Authorisations are control-plane records signed by their issuer; the gateway enforces, TigerBeetle never sees them |
+| Endpoint                                                                   | Purpose                                                                                                                                       | Notes                                                                                                                                                                                                 |
+| -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /v1/currencies`                                                      | Create a currency: signed issuance statement (name, symbol, scale, supply policy) → registry record + allocated `ledger` u32 + issuer account | Scale is effectively immutable once accounts exist (#2040 §1) — the API must force an explicit scale confirmation                                                                                     |
+| `GET /v1/currencies/{ledger}`                                              | Currency metadata (name/symbol/scale/issuer/status)                                                                                           | Public, cacheable (KV at the hosted edge); status ∈ active / frozen / sunset is a control-plane flag — TigerBeetle has no freeze or retire primitive (#2040 §5)                                       |
+| `GET /v1/balances/{account}`                                               | Balance + watermark for an account the caller owns or is authorised to read                                                                   | Response is a **signed snapshot** (§2 B3) so hosted caches can prove freshness                                                                                                                        |
+| `GET /v1/accounts/{account}/transfers`                                     | Transfer history                                                                                                                              | Only meaningful for accounts created with `flags.history` (#2040 §5); the account factory decides history per account class                                                                           |
+| `POST /v1/transfers`                                                       | Single-ledger transfer from a signed intent                                                                                                   | The workhorse; covers mint (issuer account is the source) and burn (issuer/burn account is the destination) — there is no separate mint verb, mirroring TigerBeetle (#2040 §1)                        |
+| `POST /v1/holds` · `POST /v1/holds/{id}/post` · `POST /v1/holds/{id}/void` | Two-phase (pending) transfers with timeout                                                                                                    | Native TigerBeetle primitive (#2040 §2); backs purchases, escrow, and refundable redemptions                                                                                                          |
+| `POST /v1/conversions`                                                     | Convert between currencies under a standing rate authorisation                                                                                | Gateway computes both legs at the authorised rate, submits the linked pair, stamps one conversion ID into `user_data_128` on both legs (the linkage itself is not persisted by TigerBeetle, #2040 §2) |
+| `POST /v1/corrections`                                                     | Refund / revocation as a compensating transfer with a correction `code`                                                                       | Restricted (§4); **can fail** if the holder has spent the balance — the API returns that failure honestly instead of pretending finality                                                              |
+| `POST /v1/authorisations`                                                  | Create/revoke a signed standing authorisation (conversion rate, mint allowance, …)                                                            | Authorisations are control-plane records signed by their issuer; the gateway enforces, TigerBeetle never sees them                                                                                    |
 
 ## 4. Which operations each edition may perform
 
 The organising principle: **authority follows keys and authorisations, not
-editions.** The hosted edition is a *transport and cache* for the user's own
+editions.** The hosted edition is a _transport and cache_ for the user's own
 signed intents; it is never a principal. With that stated, the matrix:
 
-| Operation | Native edition | Hosted (Workers) edition | Path / constraints |
-|---|---|---|---|
-| **Balance** (read own) | Yes | Yes | Gateway `GET`; hosted serves the signed snapshot from the UserDO cache between refreshes, always labelled with its watermark |
-| **Balance** (read another's) | Only as authorised (issuer, counterparty, auditor) | Same | Authorisation checked at the gateway; no edition difference |
-| **Transfer** | Yes | Yes | Signed intent; hosted intent is signed in the browser/bound key and relayed by the UserDO (B4). The UserDO cannot originate, alter, or replay an intent |
-| **Issue — create currency** | Yes | Yes | Signed issuance statement to `POST /v1/currencies`; registry + ledger allocation are gateway-side by necessity |
-| **Issue — mint supply** | Yes, issuer key | Yes, issuer key — with a step-up | Minting is a transfer out of the issuer account. From the hosted edition it additionally requires a *fresh* signature per mint operation (no standing session authority), because a hosted session is a browser session and must not silently carry mint power. A custodial key may never mint (B4) |
-| **Convert** | Yes | Yes | Both editions *use* standing rate authorisations via `POST /v1/conversions`; creating an authorisation is itself a signed control-plane operation available from either edition |
-| **Holds** (pending transfers) | Yes | Yes | Required by hosted commerce (e.g. redeem-now-validate-later flows) exactly as by native; timeout semantics are TigerBeetle's |
-| **Corrections** (refund/revoke) | Restricted: issuer or original counterparty, per currency policy | Same restriction | Gateway-enforced; failure on spend-down is a normal, reportable outcome (#2040 §5), and hosted UI must surface "correction failed — balance spent" rather than a false success |
-| **Freeze / sunset a currency, close accounts** | Issuer-signed control-plane operation | Same, as transport | Enforcement is gateway refusal — TigerBeetle will process anything the gateway submits, so these are only as strong as the gateway (#2040 §5) |
-| **Run a local ledger / settle offline** | **No** | **No** | §1: TigerBeetle-backed tokens are online currency. Offline value moves are graph claims, a different tier with different promises |
+| Operation                                      | Native edition                                                   | Hosted (Workers) edition         | Path / constraints                                                                                                                                                                                                                                                                                  |
+| ---------------------------------------------- | ---------------------------------------------------------------- | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Balance** (read own)                         | Yes                                                              | Yes                              | Gateway `GET`; hosted serves the signed snapshot from the UserDO cache between refreshes, always labelled with its watermark                                                                                                                                                                        |
+| **Balance** (read another's)                   | Only as authorised (issuer, counterparty, auditor)               | Same                             | Authorisation checked at the gateway; no edition difference                                                                                                                                                                                                                                         |
+| **Transfer**                                   | Yes                                                              | Yes                              | Signed intent; hosted intent is signed in the browser/bound key and relayed by the UserDO (B4). The UserDO cannot originate, alter, or replay an intent                                                                                                                                             |
+| **Issue — create currency**                    | Yes                                                              | Yes                              | Signed issuance statement to `POST /v1/currencies`; registry + ledger allocation are gateway-side by necessity                                                                                                                                                                                      |
+| **Issue — mint supply**                        | Yes, issuer key                                                  | Yes, issuer key — with a step-up | Minting is a transfer out of the issuer account. From the hosted edition it additionally requires a _fresh_ signature per mint operation (no standing session authority), because a hosted session is a browser session and must not silently carry mint power. A custodial key may never mint (B4) |
+| **Convert**                                    | Yes                                                              | Yes                              | Both editions _use_ standing rate authorisations via `POST /v1/conversions`; creating an authorisation is itself a signed control-plane operation available from either edition                                                                                                                     |
+| **Holds** (pending transfers)                  | Yes                                                              | Yes                              | Required by hosted commerce (e.g. redeem-now-validate-later flows) exactly as by native; timeout semantics are TigerBeetle's                                                                                                                                                                        |
+| **Corrections** (refund/revoke)                | Restricted: issuer or original counterparty, per currency policy | Same restriction                 | Gateway-enforced; failure on spend-down is a normal, reportable outcome (#2040 §5), and hosted UI must surface "correction failed — balance spent" rather than a false success                                                                                                                      |
+| **Freeze / sunset a currency, close accounts** | Issuer-signed control-plane operation                            | Same, as transport               | Enforcement is gateway refusal — TigerBeetle will process anything the gateway submits, so these are only as strong as the gateway (#2040 §5)                                                                                                                                                       |
+| **Run a local ledger / settle offline**        | **No**                                                           | **No**                           | §1: TigerBeetle-backed tokens are online currency. Offline value moves are graph claims, a different tier with different promises                                                                                                                                                                   |
 
 ## 5. Failure and consistency semantics at the boundary
 
 - **Gateway or cluster unavailable** (including the cluster halting when it
   loses quorum — a 3-replica cluster tolerates exactly one loss, #2040 §4):
-  writes are rejected or held client-side and retried with the *same*
+  writes are rejected or held client-side and retried with the _same_
   idempotency ID; reads fall back to the last signed snapshot, labelled
   stale with its watermark. Nothing else in ID is affected (§1 containment).
 - **Hosted hibernation mid-operation:** the UserDO persists
-  `{request ID, intent hash, state}` in its SQLite *before* the gateway
+  `{request ID, intent hash, state}` in its SQLite _before_ the gateway
   fetch; on wake it reconciles by querying the gateway for that request ID
   (the gateway's durable record answers "did this land?") instead of
   resubmitting blindly. This is the DO-shaped version of #2040's
@@ -218,7 +218,7 @@ Open questions this design surfaces for the synthesis:
 
 1. Snapshot signing: does the gateway sign balance snapshots with a service
    key, and how do native clients pin/discover that key (directory record)?
-2. Should hosted *reads* also be available straight from the gateway to the
+2. Should hosted _reads_ also be available straight from the gateway to the
    browser (skipping the UserDO) for lower latency, with the DO cache used
    only for offline/stale display?
 3. Mint step-up UX for hosted issuers: per-mint signature prompts will be

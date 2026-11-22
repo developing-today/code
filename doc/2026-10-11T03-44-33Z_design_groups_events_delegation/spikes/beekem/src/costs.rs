@@ -4,7 +4,8 @@
 //! replica with the owner swapped to them, which gives the same op a replica of theirs would make
 //! (same tree, their leaf key). Member 1 is a real receiver: it merges every op and derives the key.
 
-use crate::common::{block, contains, mean, median, micros, wire_len, Member};
+use crate::common::{Member, block, contains, mean, median, micros, wire_len};
+use beekem::operation::CgkaOperation;
 use beekem::{cgka::Cgka, id::TreeId, keys::ShareKeyMap, pcs_key::PcsKey};
 use future_form::Local;
 use keyhive_crypto::{
@@ -13,8 +14,7 @@ use keyhive_crypto::{
     signer::memory::MemorySigner,
     verifiable::Verifiable,
 };
-use beekem::operation::CgkaOperation;
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::{sync::Arc, time::Instant};
 
 type Op = Arc<Signed<CgkaOperation>>;
@@ -31,7 +31,10 @@ struct Acc {
 
 impl Acc {
     fn new(label: &'static str) -> Self {
-        Self { label, ..Default::default() }
+        Self {
+            label,
+            ..Default::default()
+        }
     }
 
     fn add(&mut self, bytes: usize, committer_us: f64, receiver_us: f64) {
@@ -55,14 +58,20 @@ impl Acc {
 
 /// Commit as `who` on the canonical replica. Returns the op, the root key it produced, and the
 /// committer's CPU time.
-fn commit_as(state: &mut Cgka, who: &Member, leaf: &mut Leaf, rng: &mut StdRng) -> (Op, PcsKey, f64) {
+fn commit_as(
+    state: &mut Cgka,
+    who: &Member,
+    leaf: &mut Leaf,
+    rng: &mut StdRng,
+) -> (Op, PcsKey, f64) {
     let saved_id = std::mem::replace(&mut state.owner_id, who.id);
     let saved_sks = std::mem::replace(&mut state.owner_sks, ShareKeyMap::new());
     state.owner_sks.insert(leaf.0, leaf.1);
     let sk = ShareSecretKey::generate(rng);
     let pk = sk.share_key();
     let t = Instant::now();
-    let (pcs, op, _) = block(state.update::<Local, _, StdRng>(pk, sk, &who.signer, rng)).expect("update");
+    let (pcs, op, _) =
+        block(state.update::<Local, _, StdRng>(pk, sk, &who.signer, rng)).expect("update");
     let cpu = micros(t.elapsed());
     state.owner_id = saved_id;
     state.owner_sks = saved_sks;
@@ -73,7 +82,9 @@ fn commit_as(state: &mut Cgka, who: &Member, leaf: &mut Leaf, rng: &mut StdRng) 
 /// Merge on a receiver and return its CPU time.
 fn receive(replica: &mut Cgka, op: &Op) -> f64 {
     let t = Instant::now();
-    replica.merge_concurrent_operation(op.clone()).expect("receiver merges an in-order op");
+    replica
+        .merge_concurrent_operation(op.clone())
+        .expect("receiver merges an in-order op");
     micros(t.elapsed())
 }
 
@@ -82,7 +93,10 @@ fn check_key(receiver: &mut Cgka, expected: &PcsKey, when: &str) {
     let got = receiver
         .pcs_key_from_tree_root()
         .unwrap_or_else(|e| panic!("{when}: receiver cannot derive the root key: {e:?}"));
-    assert!(got == *expected, "{when}: receiver derived a different root key");
+    assert!(
+        got == *expected,
+        "{when}: receiver derived a different root key"
+    );
 }
 
 /// `fill` members (1..=fill) commit once in the fill pass. Use fewer than n-1 when the full fill is
@@ -139,7 +153,11 @@ pub fn run(n: usize, fill: usize) {
     let fill_total: usize = fill_acc.bytes.iter().sum();
     rows.push(fill_acc.row(n));
     rows.push(fill_tail.row(n));
-    check_key(&mut observer, epoch_keys.last().expect("a commit"), "end of fill");
+    check_key(
+        &mut observer,
+        epoch_keys.last().expect("a commit"),
+        "end of fill",
+    );
 
     // 4. Steady state: random committers on the filled tree. Also time signature verification,
     //    which receivers must do because the crate does not.
@@ -206,11 +224,16 @@ pub fn run(n: usize, fill: usize) {
     rows.push(after_add.row(n));
 
     // Print the table: bytes per op, the sender's egress if it unicasts to all n-1 members, and CPU.
-    println!("## N = {n} (committer: member 0; receiver: member 1); fill pass: members 1..={fill} of {}\n", n - 1);
+    println!(
+        "## N = {n} (committer: member 0; receiver: member 1); fill pass: members 1..={fill} of {}\n",
+        n - 1
+    );
     if fill < n - 1 {
         println!("NOTE: partial fill. Rows after the fill pass are transient, not steady state.\n");
     }
-    println!("| Commit | Samples | Bytes per op (one copy) | Committer egress, unicast to n-1 | Committer CPU median (µs) | Receiver merge median (µs) |");
+    println!(
+        "| Commit | Samples | Bytes per op (one copy) | Committer egress, unicast to n-1 | Committer CPU median (µs) | Receiver merge median (µs) |"
+    );
     println!("|---|---|---|---|---|---|");
     for r in &rows {
         println!("{r}");
@@ -230,12 +253,19 @@ pub fn run(n: usize, fill: usize) {
         .sum();
     let owner_bytes = bincode::serialized_size(&observer.owner_sks).expect("keys serialize");
     println!("\n### Receiver state (member 1)");
-    println!("ops in graph: {}; members: {}", observer.ops_count(), observer.group_size());
+    println!(
+        "ops in graph: {}; members: {}",
+        observer.ops_count(),
+        observer.group_size()
+    );
     println!("serialized state right after creation (adds + first update): {after_create} B");
     println!("total serialized state at end of run: {state} B");
     println!("  op bytes (all ops, wire form): {ops_bytes} B");
     println!("  owner_sks: {owner_bytes} B");
-    println!("  residual (tree, graph index, cached keys): {} B", state - ops_bytes as u64 - owner_bytes);
+    println!(
+        "  residual (tree, graph index, cached keys): {} B",
+        state - ops_bytes as u64 - owner_bytes
+    );
 
     // 8. What a joiner gets today: a replica of the state, owned by the joiner (keys stripped).
     let joiner = Member::new(&mut rng);
@@ -254,7 +284,16 @@ pub fn run(n: usize, fill: usize) {
         .iter()
         .filter(|k| contains(&naive, k.0.as_slice()))
         .count();
-    println!("\n### Leak check (committer's replica, serialized as-is: {} B)", naive.len());
-    println!("sender's own leaf secret key present: {}", contains(&naive, members[0].sk.as_slice()));
-    println!("epoch keys present: {leaked_epoch_keys} of {}", epoch_keys.len());
+    println!(
+        "\n### Leak check (committer's replica, serialized as-is: {} B)",
+        naive.len()
+    );
+    println!(
+        "sender's own leaf secret key present: {}",
+        contains(&naive, members[0].sk.as_slice())
+    );
+    println!(
+        "epoch keys present: {leaked_epoch_keys} of {}",
+        epoch_keys.len()
+    );
 }

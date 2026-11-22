@@ -10,16 +10,22 @@
 //! Read from S1's code, not run: when a mismatched range starts at key 0 and has fewer than K
 //! items, S1 computes a bound at position 0 and panics. S1's runs did not reach that case.
 
-use crate::store::{Id, Key, KEY_LEN};
+use crate::store::{Id, KEY_LEN, Key};
 use anyhow::{Result, bail, ensure};
 use std::collections::HashSet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Mode {
     Skip,
-    Fp { fp: [u8; 16], count: u32 },
+    Fp {
+        fp: [u8; 16],
+        count: u32,
+    },
     /// `reply` asks the receiver to answer with its own IDs for the same range.
-    Ids { ids: Vec<Id>, reply: bool },
+    Ids {
+        ids: Vec<Id>,
+        reply: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,7 +50,10 @@ impl Party {
     /// Keys must be sorted and distinct, as a store's index is.
     pub fn new(keys: Vec<Key>, ids: Vec<Id>) -> Self {
         assert_eq!(keys.len(), ids.len());
-        assert!(keys.windows(2).all(|w| w[0] < w[1]), "keys must be sorted and distinct");
+        assert!(
+            keys.windows(2).all(|w| w[0] < w[1]),
+            "keys must be sorted and distinct"
+        );
         let mut xor = Vec::with_capacity(ids.len() + 1);
         let mut acc = [0u8; 16];
         xor.push(acc);
@@ -81,19 +90,30 @@ impl Party {
     /// Shortest prefix of keys[p] that sorts above keys[p - 1]. Requires 0 < p < len.
     fn separator(&self, p: usize) -> Vec<u8> {
         let (a, b) = (&self.keys[p - 1], &self.keys[p]);
-        let d = (0..KEY_LEN).find(|&i| a[i] != b[i]).expect("keys are distinct");
+        let d = (0..KEY_LEN)
+            .find(|&i| a[i] != b[i])
+            .expect("keys are distinct");
         b[..=d].to_vec()
     }
 
     /// The whole key space as one fingerprint range.
     pub fn full_range(&self) -> Entry {
         let (fp, count) = self.fp(0, self.len());
-        Entry { upper: None, mode: Mode::Fp { fp, count } }
+        Entry {
+            upper: None,
+            mode: Mode::Fp { fp, count },
+        }
     }
 
     /// Answers each entry of a message from the other side. IDs in the symmetric difference
     /// go into `learned`.
-    pub fn respond(&self, msg: &[Entry], thresh: usize, k: usize, learned: &mut HashSet<Id>) -> Vec<Entry> {
+    pub fn respond(
+        &self,
+        msg: &[Entry],
+        thresh: usize,
+        k: usize,
+        learned: &mut HashSet<Id>,
+    ) -> Vec<Entry> {
         assert!(k >= 2, "K must be at least 2, or a split makes no progress");
         let mut out: Vec<Entry> = Vec::new();
         let mut lower: Option<&[u8]> = None;
@@ -109,11 +129,16 @@ impl Party {
                         push(&mut out, entry.upper.clone(), Mode::Skip);
                     } else if (n as usize) <= thresh {
                         let ids = self.ids[lo..hi].to_vec();
-                        push(&mut out, entry.upper.clone(), Mode::Ids { ids, reply: true });
+                        push(
+                            &mut out,
+                            entry.upper.clone(),
+                            Mode::Ids { ids, reply: true },
+                        );
                     } else {
                         // n > thresh >= 1, so parts >= 2 and every child holds at least one key.
                         let parts = k.min(n as usize);
-                        let pos: Vec<usize> = (0..=parts).map(|j| lo + j * (hi - lo) / parts).collect();
+                        let pos: Vec<usize> =
+                            (0..=parts).map(|j| lo + j * (hi - lo) / parts).collect();
                         for j in 0..parts {
                             let child_upper = if j + 1 < parts {
                                 Some(self.separator(pos[j + 1]))
@@ -123,7 +148,10 @@ impl Party {
                             let (cfp, ccount) = self.fp(pos[j], pos[j + 1]);
                             out.push(Entry {
                                 upper: child_upper,
-                                mode: Mode::Fp { fp: cfp, count: ccount },
+                                mode: Mode::Fp {
+                                    fp: cfp,
+                                    count: ccount,
+                                },
                             });
                         }
                     }
@@ -134,7 +162,11 @@ impl Party {
                     learned.extend(mine.symmetric_difference(&theirs).copied());
                     if *reply {
                         let ids = self.ids[lo..hi].to_vec();
-                        push(&mut out, entry.upper.clone(), Mode::Ids { ids, reply: false });
+                        push(
+                            &mut out,
+                            entry.upper.clone(),
+                            Mode::Ids { ids, reply: false },
+                        );
                     } else {
                         push(&mut out, entry.upper.clone(), Mode::Skip);
                     }
@@ -236,7 +268,11 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Entry>> {
     let mut out = Vec::new();
     for _ in 0..n {
         let len = r.byte()? as usize;
-        let upper = if len == 0 { None } else { Some(r.take(len)?.to_vec()) };
+        let upper = if len == 0 {
+            None
+        } else {
+            Some(r.take(len)?.to_vec())
+        };
         let mode = match r.byte()? {
             0 => Mode::Skip,
             1 => {
@@ -296,7 +332,13 @@ pub fn simulate(a: &Party, b: &Party, thresh: usize, k: usize) -> Sim {
         a_sends = !a_sends;
         assert!(flights < 10_000, "reconciliation did not terminate");
     }
-    Sim { flights, bytes_a, bytes_b, learned_a, learned_b }
+    Sim {
+        flights,
+        bytes_a,
+        bytes_b,
+        learned_a,
+        learned_b,
+    }
 }
 
 #[cfg(test)]
@@ -343,16 +385,35 @@ mod tests {
         let p = party(&keys, 1);
         for pos in 1..p.len() {
             let s = p.separator(pos);
-            assert_eq!(p.idx(&s), pos, "separator {} at {pos} splits the keys wrongly", hex::encode(&s));
+            assert_eq!(
+                p.idx(&s),
+                pos,
+                "separator {} at {pos} splits the keys wrongly",
+                hex::encode(&s)
+            );
         }
     }
 
     #[test]
     fn respond_learns_exact_difference() {
-        for (keys_seed, k, t) in [(11u64, 2, 4), (12, 16, 16), (13, 16, 4), (14, 32, 16), (15, 32, 1)] {
+        for (keys_seed, k, t) in [
+            (11u64, 2, 4),
+            (12, 16, 16),
+            (13, 16, 4),
+            (14, 32, 16),
+            (15, 32, 1),
+        ] {
             let all = zero_heavy(700, keys_seed);
-            let a_keys: Vec<Key> = all.iter().copied().filter(|k| k[0] == 0 || k[1] == 0).collect();
-            let b_keys: Vec<Key> = all.iter().copied().filter(|k| k[2] == 0 || k[31] == 1).collect();
+            let a_keys: Vec<Key> = all
+                .iter()
+                .copied()
+                .filter(|k| k[0] == 0 || k[1] == 0)
+                .collect();
+            let b_keys: Vec<Key> = all
+                .iter()
+                .copied()
+                .filter(|k| k[2] == 0 || k[31] == 1)
+                .collect();
             let a = party(&a_keys, 5);
             let b = party(&b_keys, 5);
             let sim = simulate(&a, &b, t, k);

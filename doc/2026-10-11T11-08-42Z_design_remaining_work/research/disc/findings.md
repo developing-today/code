@@ -9,15 +9,15 @@ No claim below rests on a search snippet.
 
 ## Versions (crates.io max stable, confirmed)
 
-| crate | version | notes |
-|---|---|---|
-| iroh | 1.3.0 | lock: iroh-dns 1.3.0, iroh-base 1.3.0, n0-dns-resolver 0.1.0; no `pkarr` or `hickory-resolver` crate in lock |
-| iroh-mainline-address-lookup | 0.6.0 | deps `n0-mainline ^0.7` (lock 0.7.0), `iroh ^1.0.0` (lock 1.0.0), `iroh-dns ^1.0.0` [read: Cargo.toml, lock, docs.rs] |
-| iroh-mdns-address-lookup | 0.6.0 | dep `swarm-discovery ^0.6` (lock 0.6.1) [read] |
-| mainline | 8.0.1 | NOT the dependency. The DHT crate is `n0-mainline` [read] |
-| pkarr | 8.1.0 | NOT used by iroh 1.3.0; iroh-dns reimplements the format [read] |
-| iroh-dns-server | 1.3.0 | reference pkarr relay + DNS + DoH server [read] |
-| iroh-tickets | 1.0.0 | EndpointTicket [read] |
+| crate                        | version | notes                                                                                                                 |
+| ---------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------- |
+| iroh                         | 1.3.0   | lock: iroh-dns 1.3.0, iroh-base 1.3.0, n0-dns-resolver 0.1.0; no `pkarr` or `hickory-resolver` crate in lock          |
+| iroh-mainline-address-lookup | 0.6.0   | deps `n0-mainline ^0.7` (lock 0.7.0), `iroh ^1.0.0` (lock 1.0.0), `iroh-dns ^1.0.0` [read: Cargo.toml, lock, docs.rs] |
+| iroh-mdns-address-lookup     | 0.6.0   | dep `swarm-discovery ^0.6` (lock 0.6.1) [read]                                                                        |
+| mainline                     | 8.0.1   | NOT the dependency. The DHT crate is `n0-mainline` [read]                                                             |
+| pkarr                        | 8.1.0   | NOT used by iroh 1.3.0; iroh-dns reimplements the format [read]                                                       |
+| iroh-dns-server              | 1.3.0   | reference pkarr relay + DNS + DoH server [read]                                                                       |
+| iroh-tickets                 | 1.0.0   | EndpointTicket [read]                                                                                                 |
 
 Compile check: not done. The mainline crate's import paths exist in iroh 1.3.0 (`iroh::endpoint_info`
 re-exports `iroh_dns::endpoint_info`, lib.rs:291; `iroh_dns::pkarr::Timestamp::from_micros` exists).

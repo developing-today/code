@@ -18,13 +18,13 @@ value is read (config file, `MCPX_UPSTREAM_PROTOCOL`, `--upstream-protocol`,
 `mcpx settings`, `mcpx config` and `GET /v1/protocol` report. Case does not
 matter. Any other value is refused with this list.
 
-| canonical | meaning | aliases (accepted, normalised to the canonical) |
-| --- | --- | --- |
+| canonical                   | meaning                                            | aliases (accepted, normalised to the canonical)                |
+| --------------------------- | -------------------------------------------------- | -------------------------------------------------------------- |
 | `prefer-discover` (default) | `server/discover` first, fall back to `initialize` | `modern`, `prefer-modern`, `prefer-stateless`, `prefer-newest` |
-| `prefer-initialize` | `initialize` first, fall back to `server/discover` | `legacy`, `prefer-legacy`, `prefer-session`, `prefer-oldest` |
-| `force-discover` | `server/discover` only | `force-modern`, `force-stateless` |
-| `force-initialize` | `initialize` only | `force-legacy`, `force-session` |
-| `follow` | unchanged | — |
+| `prefer-initialize`         | `initialize` first, fall back to `server/discover` | `legacy`, `prefer-legacy`, `prefer-session`, `prefer-oldest`   |
+| `force-discover`            | `server/discover` only                             | `force-modern`, `force-stateless`                              |
+| `force-initialize`          | `initialize` only                                  | `force-legacy`, `force-session`                                |
+| `follow`                    | unchanged                                          | —                                                              |
 
 What each value does against a server that speaks only the old
 (`initialize`, 2025-11-25 and earlier) protocol, both, or only the new
@@ -33,13 +33,13 @@ handshake; "modern session" means per-request `_meta` with no handshake. With
 the era cache on, the `prefer-*` and `follow` values try the cached era first
 on later starts; the result is the same.
 
-| value | old-only server | dual-version server | new-only server |
-| --- | --- | --- | --- |
-| `prefer-discover` | discover is refused (or unanswered within `upstream.probeTimeout` on stdio), then `initialize`: legacy session | discover answers: modern session | modern session |
-| `prefer-initialize` | legacy session, no discover sent | `initialize` answers: legacy session, so the server's 2026-07-28 features are not used | `initialize` is refused, then discover: modern session (fails if a stdio server exits on the refused `initialize`) |
-| `force-discover` | fails to connect; no fallback | modern session | modern session |
-| `force-initialize` | legacy session | legacy session | fails to connect; no fallback |
-| `follow` | as `prefer-discover`: one legacy session, shared by every caller | modern session for 2026-07-28 callers plus a second, legacy session for callers on an older revision ([Follow](#follow)) | modern session; the legacy session is refused, so older callers share the modern one |
+| value               | old-only server                                                                                                | dual-version server                                                                                                      | new-only server                                                                                                    |
+| ------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `prefer-discover`   | discover is refused (or unanswered within `upstream.probeTimeout` on stdio), then `initialize`: legacy session | discover answers: modern session                                                                                         | modern session                                                                                                     |
+| `prefer-initialize` | legacy session, no discover sent                                                                               | `initialize` answers: legacy session, so the server's 2026-07-28 features are not used                                   | `initialize` is refused, then discover: modern session (fails if a stdio server exits on the refused `initialize`) |
+| `force-discover`    | fails to connect; no fallback                                                                                  | modern session                                                                                                           | modern session                                                                                                     |
+| `force-initialize`  | legacy session                                                                                                 | legacy session                                                                                                           | fails to connect; no fallback                                                                                      |
+| `follow`            | as `prefer-discover`: one legacy session, shared by every caller                                               | modern session for 2026-07-28 callers plus a second, legacy session for callers on an older revision ([Follow](#follow)) | modern session; the legacy session is refused, so older callers share the modern one                               |
 
 ## Order
 
@@ -91,14 +91,14 @@ official suite's `test_elicitation`, `test_sampling`).
 `server/discover` is sent with the full `_meta` (newest version mcpx offers,
 client capabilities, client info). Then:
 
-| answer | era | next |
-| --- | --- | --- |
-| a result with a `supportedVersions` array | modern | newest mutual version; none mutual is an error |
-| `-32020`, `-32021`, `-32022` | modern | `-32022` retries with the newest mutual version from `data.supported`, each version at most once; otherwise an error. Never `initialize`. |
-| any other error | legacy | `initialize` + `notifications/initialized` |
-| a success that is not a DiscoverResult | legacy | a catch-all handler answered under legacy semantics |
-| nothing within `upstream.probeTimeout` | undecided | `initialize` is sent *alongside* the pending discover; whichever settles the era first wins |
-| the connection closes | legacy | `ErrClosedDuringProbe`; the pool starts a new process and connects legacy-only |
+| answer                                    | era       | next                                                                                                                                      |
+| ----------------------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| a result with a `supportedVersions` array | modern    | newest mutual version; none mutual is an error                                                                                            |
+| `-32020`, `-32021`, `-32022`              | modern    | `-32022` retries with the newest mutual version from `data.supported`, each version at most once; otherwise an error. Never `initialize`. |
+| any other error                           | legacy    | `initialize` + `notifications/initialized`                                                                                                |
+| a success that is not a DiscoverResult    | legacy    | a catch-all handler answered under legacy semantics                                                                                       |
+| nothing within `upstream.probeTimeout`    | undecided | `initialize` is sent _alongside_ the pending discover; whichever settles the era first wins                                               |
+| the connection closes                     | legacy    | `ErrClosedDuringProbe`; the pool starts a new process and connects legacy-only                                                            |
 
 The timeout does not abandon the discover because the commonest slow server is
 a modern one being downloaded by `npx`. Giving up on its answer at 2s would

@@ -31,16 +31,16 @@ cargo generate-lockfile in run/conflict/rusqlite-V  # resolver only
 
 N = 200,000 claims in 200 transactions of 1,000. Subjects are 32 bytes, names 8–12 bytes, values 16–24 bytes, and 5% of values are null. After a reopen, 1,000 random lookups of each shape were timed, and each result was checked against answers computed in memory.
 
-| | redb | SQLite (WAL, FULL) |
-|---|---|---|
-| Insert total | 18.6 s | 37.4 s |
-| Per claim | 93 µs | 187 µs |
-| Per transaction p50 / p99 | 94 / 148 ms | 177 / 375 ms |
-| On disk after close | 269.5 MB (134.9 MB after compaction) | 97.4 MB |
-| Peak RSS (VmHWM) | 193 MB | 104 MB |
-| Subject lookup (~5 rows), p50 / p99 | 24 / 68 µs | 57 / 131 µs |
-| name=value lookup (~1 row), p50 / p99 | 5.7 / 24 µs | 11.9 / 22 µs |
-| Author lookup (~2,000 rows), p50 / p99 | 4.0 / 11.7 ms | 14.7 / 49.3 ms |
+|                                        | redb                                 | SQLite (WAL, FULL) |
+| -------------------------------------- | ------------------------------------ | ------------------ |
+| Insert total                           | 18.6 s                               | 37.4 s             |
+| Per claim                              | 93 µs                                | 187 µs             |
+| Per transaction p50 / p99              | 94 / 148 ms                          | 177 / 375 ms       |
+| On disk after close                    | 269.5 MB (134.9 MB after compaction) | 97.4 MB            |
+| Peak RSS (VmHWM)                       | 193 MB                               | 104 MB             |
+| Subject lookup (~5 rows), p50 / p99    | 24 / 68 µs                           | 57 / 131 µs        |
+| name=value lookup (~1 row), p50 / p99  | 5.7 / 24 µs                          | 11.9 / 22 µs       |
+| Author lookup (~2,000 rows), p50 / p99 | 4.0 / 11.7 ms                        | 14.7 / 49.3 ms     |
 
 Peak RSS includes about 41 MB of in-memory dataset in both processes. redb's default 1 GiB cache limit was not tuned.
 
@@ -54,12 +54,12 @@ Clean compile, release profile:
 
 SIGKILL at a random time from 200 to 3,000 ms, 20 trials per store. The child commits batches of 1,000 and prints an acknowledgement after each commit. The parent reopens the store and checks that each batch is complete or absent, that each row matches its expected content, and that the count fits the acknowledgements.
 
-| | redb | SQLite |
-|---|---|---|
-| Trials passed | 20 / 20 | 20 / 20 |
+|                                 | redb          | SQLite    |
+| ------------------------------- | ------------- | --------- |
+| Trials passed                   | 20 / 20       | 20 / 20   |
 | Batches acked / present (total) | 1,030 / 1,039 | 430 / 440 |
-| Partial batches / mismatches | 0 / 0 | 0 / 0 |
-| Present = acked / acked + 1 | 11 / 9 | 10 / 10 |
+| Partial batches / mismatches    | 0 / 0         | 0 / 0     |
+| Present = acked / acked + 1     | 11 / 9        | 10 / 10   |
 
 "Acked + 1" means a batch committed just before the kill, before its acknowledgement printed. SIGKILL tests process death, not power loss.
 
@@ -88,11 +88,11 @@ SIGKILL at a random time from 200 to 3,000 ms, 20 trials per store. The child co
 
 ## Exit criteria
 
-| Criterion | Result |
-|---|---|
+| Criterion                  | Result             |
+| -------------------------- | ------------------ |
 | Store chosen, with numbers | Pass. redb, below. |
-| Durability recorded | Pass. See (c). |
-| Concurrency recorded | Pass. See (d). |
+| Durability recorded        | Pass. See (c).     |
+| Concurrency recorded       | Pass. See (d).     |
 
 ## Recommendation: redb
 

@@ -59,6 +59,7 @@ More: [the story](./story.md) for the token evidence.
   to the port can run tools as you.** The network is the access
   control; that is why the example is a tailnet address, not the open
   internet.
+
 - **Corral scripts, APIs and binaries.** Named scripts live in
   `.mcpx/scripts/`; an OpenAPI service becomes tools with
   `mcpx api tools --spec <url>` (served over MCP today); a plain

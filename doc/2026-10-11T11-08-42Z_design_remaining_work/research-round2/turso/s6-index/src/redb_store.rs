@@ -30,7 +30,9 @@ impl RedbStore {
             old.is_some()
         };
         txn.commit()?;
-        Ok(format!("raw insert returned no error; it replaced an existing mapping: {replaced}"))
+        Ok(format!(
+            "raw insert returned no error; it replaced an existing mapping: {replaced}"
+        ))
     }
 }
 
@@ -48,7 +50,8 @@ impl Store for RedbStore {
     const NAME: &'static str = "redb";
 
     fn open(path: &Path) -> Result<Self> {
-        let db = Database::create(path).with_context(|| format!("redb: opening {}", path.display()))?;
+        let db =
+            Database::create(path).with_context(|| format!("redb: opening {}", path.display()))?;
         Ok(Self { db })
     }
 
@@ -64,7 +67,9 @@ impl Store for RedbStore {
                 let id = c.id();
                 let seq_key = keys::author_seq_key(&c.author, c.seq);
                 // Unique (author, seq): look the position up in this transaction first.
-                let held = t_author_seq.get(seq_key.as_slice())?.map(|g| g.value().to_vec());
+                let held = t_author_seq
+                    .get(seq_key.as_slice())?
+                    .map(|g| g.value().to_vec());
                 match held {
                     Some(prev) if prev.as_slice() == id.as_slice() => {
                         batch.duplicates += 1;
@@ -101,7 +106,9 @@ impl Store for RedbStore {
         for row in rows {
             let (key, _) = row?;
             let id = keys::key_id(key.value());
-            let body = claims.get(id.as_slice())?.context("alpha key without a claim")?;
+            let body = claims
+                .get(id.as_slice())?
+                .context("alpha key without a claim")?;
             out.push(Claim::from_body(body.value())?);
         }
         Ok(out)
@@ -133,7 +140,9 @@ impl Store for RedbStore {
         for row in rows {
             let (_, id) = row?;
             let id: Id = id.value().try_into()?;
-            let body = claims.get(id.as_slice())?.context("author_seq entry without a claim")?;
+            let body = claims
+                .get(id.as_slice())?
+                .context("author_seq entry without a claim")?;
             out.push(Claim::from_body(body.value())?);
         }
         Ok(out)

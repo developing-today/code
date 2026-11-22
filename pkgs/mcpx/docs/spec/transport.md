@@ -102,7 +102,7 @@ catch, and it should be refused as that rather than quietly served as legacy.
   made before the stream opens delivers once it does; with no stream open a
   notification is dropped, since mcpx keeps no redelivery buffer and the
   legacy transport lets a client choose not to listen.
-- **Cancellation.** In a session, a dropped connection is *not* a
+- **Cancellation.** In a session, a dropped connection is _not_ a
   cancellation — the legacy revisions say it SHOULD NOT be read as one — and
   `notifications/cancelled` posted on the session cancels the request's
   context and withholds its reply (the POST ends as an event stream with

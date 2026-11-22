@@ -13,9 +13,7 @@ import {
   type PermissionEvaluationLike,
 } from "./permission.ts";
 
-const event = (
-  over: Partial<PermissionEvaluationLike> = {},
-): PermissionEvaluationLike => ({
+const event = (over: Partial<PermissionEvaluationLike> = {}): PermissionEvaluationLike => ({
   sessionID: "s1",
   action: DAEMON_SELECT_ACTION,
   resources: ["unix:///tmp/m.sock"],

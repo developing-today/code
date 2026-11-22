@@ -53,7 +53,7 @@ The session begins with `initialize`
   Otherwise it **MUST** answer with another version it supports, which
   **SHOULD** be its latest
   ([#version-negotiation](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle#version-negotiation)).
-  The answer is a *result*, not an error, and the client decides whether it
+  The answer is a _result_, not an error, and the client decides whether it
   can continue. Answering with an error takes that decision away from the
   client. The modern error code `-32022` did not exist in any legacy revision,
   so a legacy client has no rule for recognising it.
@@ -81,8 +81,8 @@ There is no handshake. Every request carries
 - A server **MUST** implement `server/discover`
   ([spec/2026-07-28/server/discover](https://modelcontextprotocol.io/specification/2026-07-28/server/discover)).
   The `DiscoverResult` is `{supportedVersions, capabilities, instructions?,
-  _meta: {"io.modelcontextprotocol/serverInfo": …}, ttlMs, cacheScope,
-  resultType}`. The field is `supportedVersions`, not `protocolVersions`, and
+_meta: {"io.modelcontextprotocol/serverInfo": …}, ttlMs, cacheScope,
+resultType}`. The field is `supportedVersions`, not `protocolVersions`, and
   `serverInfo` lives in `_meta`, not at the top level. Discovery is a
   cacheable result, so `ttlMs` and `cacheScope` are required here too, even
   though the changelog's list omits `server/discover`.
@@ -91,7 +91,7 @@ There is no handshake. Every request carries
 - A request that omits the required `_meta` fields **MUST** be rejected with
   `-32602`.
 - A server **MUST NOT** infer client capabilities from earlier requests (schema
-  `RequestMetaObject`). The capabilities on *this* request are the only ones
+  `RequestMetaObject`). The capabilities on _this_ request are the only ones
   that exist for it.
 - Every result **MUST** carry `resultType`. A client treats an absent
   `resultType` as `"complete"`.
@@ -106,7 +106,7 @@ conversation or session". A server "SHOULD NOT require that a client reuse the
 same connection or process". Three consequences follow, none of them spelled
 out:
 
-- A `requestState`, a task id or a subscription cannot be *validated* by
+- A `requestState`, a task id or a subscription cannot be _validated_ by
   comparing it with the connection it arrived on. If a server needs to bind a
   handle to a caller, the binding has to be inside the handle (signed claims:
   principal, expiry, originating method and parameters) or come from the
@@ -147,11 +147,11 @@ session, even though the era answer is inherited.
 A **dual-era server** answers both `initialize` and `_meta`-versioned requests.
 It faces three kinds of inbound request, and the spec defines two of them:
 
-| inbound | spec says | what the server has to do |
-| --- | --- | --- |
-| `_meta` carries a protocol version | modern semantics, stateless | ignore any legacy session state; use this request's capabilities |
-| `initialize`, or a request on a session that was initialised | legacy semantics, scoped to the process (stdio) or session (HTTP) | keep the version and capabilities from `initialize` |
-| neither | modern: MUST reject `-32602`; legacy: "not the first interaction" | unspecified. mcpx serves it as 2025-03-26, a choice rather than a rule ([`../compare/stateless.md` §4](../compare/stateless.md#4-the-conflict-at-the-centre)) |
+| inbound                                                      | spec says                                                         | what the server has to do                                                                                                                                     |
+| ------------------------------------------------------------ | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `_meta` carries a protocol version                           | modern semantics, stateless                                       | ignore any legacy session state; use this request's capabilities                                                                                              |
+| `initialize`, or a request on a session that was initialised | legacy semantics, scoped to the process (stdio) or session (HTTP) | keep the version and capabilities from `initialize`                                                                                                           |
+| neither                                                      | modern: MUST reject `-32602`; legacy: "not the first interaction" | unspecified. mcpx serves it as 2025-03-26, a choice rather than a rule ([`../compare/stateless.md` §4](../compare/stateless.md#4-the-conflict-at-the-centre)) |
 
 A modern-only server that receives `initialize` **SHOULD** name its supported
 versions in the error. A dual-era server has to decide per request whether a
@@ -193,13 +193,12 @@ One endpoint answers POST and, in the legacy revisions, GET.
 
 - **Origin.** Every revision: a server **MUST** validate `Origin` to prevent
   DNS rebinding, and from 2025-11-25 an invalid origin gets 403. On a
-  loopback, unauthenticated server this is the *only* defence the transport
+  loopback, unauthenticated server this is the _only_ defence the transport
   offers against any web page the user visits. Binding to loopback alone does
   not stop DNS rebinding. (mcpx checks it on `/mcp` and on the daemon's `/v1` routes beside it: [`transport.md`](transport.md#origin-every-revision-with-streamable-http), `internal/daemon/origin.go`.)
 - **Local binding.** A local server **SHOULD** bind to 127.0.0.1 and **SHOULD**
   authenticate.
-- **POST responses.** A POST carrying only responses or notifications gets
-  202. A POST carrying a request gets either `application/json` or an SSE
+- **POST responses.** A POST carrying only responses or notifications gets 202. A POST carrying a request gets either `application/json` or an SSE
   stream, and the client must accept both.
 - **Batches.** 2025-03-26 alone requires a server to accept JSON-RPC batches.
   2025-06-18 removed them.
@@ -250,6 +249,7 @@ Authorization is an HTTP concern. A stdio server gets its credentials from the
 environment and **SHOULD NOT** use the OAuth flow.
 
 An HTTP server that implements authorization:
+
 - **MUST** publish Protected Resource Metadata. From 2025-06-18 it answers 401
   with `WWW-Authenticate` naming that metadata.
 - **MUST** validate that tokens were issued for it (audience).
@@ -302,7 +302,7 @@ matters in §4.4 and §5.
   - The subscriptions page: it **SHOULD** send a successful
     `subscriptions/listen` result instead.
   - The `CancelledNotification` doc comment: the server-sent cancel happens
-    *on stdio*.
+    _on stdio_.
 
   Only one of the three is a MUST, and only one ordering satisfies it:
   a cancellation may name only a request that is still in progress, so the
@@ -316,6 +316,7 @@ matters in §4.4 and §5.
   both on both transports (`internal/mcpserver/listen.go`, `announceEnd`).
   The quotes are in
   [conflicts C-21](../compare/conflicts.md#b-one-revision-against-itself).
+
 - **A proxy has to propagate cancellation.** When the downstream cancels, the
   proxy cancels upstream:
   - legacy upstream: `notifications/cancelled`;
@@ -367,7 +368,7 @@ method under a new id with `inputResponses` and the `requestState`.
   `resources/read`. A question that arises during any other method cannot
   reach a modern client.
 - The server **MUST NOT** put an input request in `inputRequests` unless
-  *that* request declared the matching client capability. A retry carries its
+  _that_ request declared the matching client capability. A retry carries its
   own capabilities, and the check is repeated on every round.
 - The server **MUST NOT** assume the retry will come. It **MUST** treat
   `requestState` as attacker-controlled, and **SHOULD** make it tamper-evident
@@ -382,7 +383,7 @@ method under a new id with `inputResponses` and the `requestState`.
 
 - **2025-11-25 (core).**
   - A server that declares `tasks.requests.tools.call` **MUST** respect each
-    tool's `execution.taskSupport`, and a tool without it is *forbidden* by
+    tool's `execution.taskSupport`, and a tool without it is _forbidden_ by
     default. So the capability alone enables nothing: a server has to mark
     tools.
   - Task ids **MUST** be unique.
@@ -496,31 +497,31 @@ and unsolicited `list_changed` notifications.
 ## 6. Accept liberally, send conservatively, field by field
 
 A server that also serves older revisions must not send a peer anything its
-revision did not define. Unknown fields are *usually* ignored, but no revision
+revision did not define. Unknown fields are _usually_ ignored, but no revision
 guarantees it.
 
-| carried | send to | otherwise |
-| --- | --- | --- |
-| `resultType` | 2026 requests | omit; accept absence as `complete` |
-| `structuredContent` | ≥ 2025-06-18; must be an object for 2025-06-18 and 2025-11-25 | render into `content` as text |
-| `outputSchema` with a non-object root | 2026 | withhold the tool's schema, or wrap it |
-| `resource_link` block | ≥ 2025-06-18 | embedded `resource` |
-| `audio` block | ≥ 2025-03-26 | drop, or describe as text |
-| tool `annotations` | ≥ 2025-03-26 | strip |
-| `title`, resource `lastModified` | ≥ 2025-06-18 | strip |
-| `icons`, `description`, `websiteUrl` on `Implementation` | ≥ 2025-11-25 | strip |
-| `ttlMs`, `cacheScope` | 2026 (REQUIRED there) | omit |
-| `serverInfo` | 2026 in result `_meta` | `InitializeResult.serverInfo` |
-| `io.modelcontextprotocol/*` `_meta` keys | ≥ 2025-11-25, and only keys that revision defines | omit |
-| error codes | only those the peer's revision defines | nearest defined code |
-| batches | never send | accept on input (2025-03-26 MUST; nothing forbids receiving them) |
-| server → client requests | legacy peers that declared the capability | MRTR `inputRequests` for 2026 |
-| `list_changed`, `resources/updated` | legacy: the session; 2026: matching listen streams only | nothing |
-| logs | legacy: at or above the session level; 2026: only when the request set a level | nothing |
+| carried                                                  | send to                                                                        | otherwise                                                         |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------ | ----------------------------------------------------------------- |
+| `resultType`                                             | 2026 requests                                                                  | omit; accept absence as `complete`                                |
+| `structuredContent`                                      | ≥ 2025-06-18; must be an object for 2025-06-18 and 2025-11-25                  | render into `content` as text                                     |
+| `outputSchema` with a non-object root                    | 2026                                                                           | withhold the tool's schema, or wrap it                            |
+| `resource_link` block                                    | ≥ 2025-06-18                                                                   | embedded `resource`                                               |
+| `audio` block                                            | ≥ 2025-03-26                                                                   | drop, or describe as text                                         |
+| tool `annotations`                                       | ≥ 2025-03-26                                                                   | strip                                                             |
+| `title`, resource `lastModified`                         | ≥ 2025-06-18                                                                   | strip                                                             |
+| `icons`, `description`, `websiteUrl` on `Implementation` | ≥ 2025-11-25                                                                   | strip                                                             |
+| `ttlMs`, `cacheScope`                                    | 2026 (REQUIRED there)                                                          | omit                                                              |
+| `serverInfo`                                             | 2026 in result `_meta`                                                         | `InitializeResult.serverInfo`                                     |
+| `io.modelcontextprotocol/*` `_meta` keys                 | ≥ 2025-11-25, and only keys that revision defines                              | omit                                                              |
+| error codes                                              | only those the peer's revision defines                                         | nearest defined code                                              |
+| batches                                                  | never send                                                                     | accept on input (2025-03-26 MUST; nothing forbids receiving them) |
+| server → client requests                                 | legacy peers that declared the capability                                      | MRTR `inputRequests` for 2026                                     |
+| `list_changed`, `resources/updated`                      | legacy: the session; 2026: matching listen streams only                        | nothing                                                           |
+| logs                                                     | legacy: at or above the session level; 2026: only when the request set a level | nothing                                                           |
 
 Accepting is the other direction. A method beyond the negotiated revision
 (for example `subscriptions/listen` from a legacy client) withholds nothing,
-and answering it is not a violation. *Declaring* it is: a capability is a
+and answering it is not a violation. _Declaring_ it is: a capability is a
 promise about the revision in force. For 2026 peers the answer is narrower,
 because an unknown method is `-32601` with 404 on HTTP, and a modern peer
 should expect exactly the methods 2026 defines.

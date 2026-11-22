@@ -28,6 +28,6 @@ scrape_configs:
     static_configs:
       - targets: ["localhost:9090"]
 
-  - job_name: 'identity' # Define a unique job name for your service
+  - job_name: "identity" # Define a unique job name for your service
     static_configs:
-      - targets: ['localhost:9222'] # The target endpoint for your service metrics
+      - targets: ["localhost:9222"] # The target endpoint for your service metrics

@@ -68,7 +68,7 @@ A small addition can be a heading and two links:
 
 Anything larger opens with a key block:
 
-````markdown
+```markdown
 ## Session-isolated process pools
 
 ​`
@@ -84,7 +84,7 @@ description:  one sentence, present tense, what it does
 Prose, examples, the reasoning that is not obvious from the code.
 
 2026-09-27T05:05:00-05:00
-````
+```
 
 Required keys: `created`, `last-updated`, `id`, `since`, `status`, `description`.
 

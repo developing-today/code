@@ -34,7 +34,10 @@ def main():
             data, (ip, sport) = s.recvfrom(2048)
         except socket.timeout:
             continue
-        print(f"recv local={args.port} from={ip}:{sport} data={data.decode(errors='replace')}", flush=True)
+        print(
+            f"recv local={args.port} from={ip}:{sport} data={data.decode(errors='replace')}",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":

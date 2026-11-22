@@ -90,7 +90,11 @@ impl Kit for HeadsKit {
     type O = HeadsOrderer<Dgm>;
 
     fn name(&self) -> String {
-        let scope = if self.track_app { "all events" } else { "control only" };
+        let scope = if self.track_app {
+            "all events"
+        } else {
+            "control only"
+        };
         let backlink = if self.backlink { ", backlink" } else { "" };
         match self.cap {
             Some(cap) => format!("heads ({scope}, cap {cap}{backlink})"),
@@ -187,8 +191,8 @@ fn init_states<K: Kit>(kit: &K, members: &[(Id, Lifetime)], rng: &enc::Rng) -> V
         .map(|(id, _)| {
             let mut registry = KeyRegistry::<Id>::init();
             for (other, bundle) in &bundles {
-                registry = KeyRegistry::add_longterm_bundle(registry, *other, bundle.clone())
-                    .unwrap();
+                registry =
+                    KeyRegistry::add_longterm_bundle(registry, *other, bundle.clone()).unwrap();
             }
             GroupState {
                 my_id: *id,
@@ -263,11 +267,7 @@ impl<K: Kit> Net<K> {
         let named = serde_json::to_value(&msg).expect("message serialises")["previous"]
             .as_array()
             .map_or(0, Vec::len);
-        self.samples.push(Sample {
-            kind,
-            heads,
-            named,
-        });
+        self.samples.push(Sample { kind, heads, named });
         self.seen.insert((author, msg.id()));
         self.log.push((author, msg));
         self.put(y);
@@ -328,9 +328,8 @@ impl<K: Kit> Net<K> {
                 continue;
             }
             let y = self.take(member);
-            let (y, outputs) = EncryptionGroup::receive(y, msg).map_err(|err| {
-                format!("receive {} at member {member}: {err:?}", msg.id())
-            })?;
+            let (y, outputs) = EncryptionGroup::receive(y, msg)
+                .map_err(|err| format!("receive {} at member {member}: {err:?}", msg.id()))?;
             for output in outputs {
                 if let GroupOutput::Application { plaintext } = output {
                     let label = String::from_utf8_lossy(&plaintext).into_owned();
@@ -416,7 +415,10 @@ impl<K: Kit> Net<K> {
         }
         let converged = id_sets.len() == 1 && latest.len() == 1 && members_ok && missing == 0;
         if converged {
-            return format!("CONVERGED ({} secrets each)", counts.iter().next().unwrap_or(&0));
+            return format!(
+                "CONVERGED ({} secrets each)",
+                counts.iter().next().unwrap_or(&0)
+            );
         }
         format!(
             "NOT converged (secrets per member {counts:?}, identical id sets: {}, latest ids: {}, membership {}, app msgs missing {missing})",
@@ -570,7 +572,11 @@ fn case_opts<K: Kit>(
     let named_max = events.iter().map(|s| s.named).max().unwrap_or(0);
     let heads: Vec<usize> = events.iter().filter_map(|s| s.heads).collect();
     let fmt_opt = |v: Option<usize>| v.map_or("-".to_string(), |v| v.to_string());
-    let would_max = if heads.is_empty() { None } else { heads.iter().max().copied() };
+    let would_max = if heads.is_empty() {
+        None
+    } else {
+        heads.iter().max().copied()
+    };
     let ge = heads.iter().filter(|h| **h >= DESIGN_CAP).count();
     let gt = heads.iter().filter(|h| **h > DESIGN_CAP).count();
     let verdict = match outcome {
@@ -597,33 +603,80 @@ fn case_opts<K: Kit>(
 fn main() {
     println!(
         "{:<26}| {:<26}| {:>4} {:>4} {:>4} | {:>3} {:>3} {:>3} | {:>4} {:>4} | {:>3} {:>3} {:>3} | {:>7} | result",
-        "scenario", "orderer", "evts", "upd", "mrg", "nmd", "lst", "hds", ">=32", ">32", "vw", "pk", "lw", "time"
+        "scenario",
+        "orderer",
+        "evts",
+        "upd",
+        "mrg",
+        "nmd",
+        "lst",
+        "hds",
+        ">=32",
+        ">32",
+        "vw",
+        "pk",
+        "lw",
+        "time"
     );
-    let heads_all = |cap| HeadsKit { cap, track_app: true, backlink: false };
+    let heads_all = |cap| HeadsKit {
+        cap,
+        track_app: true,
+        backlink: false,
+    };
 
     // The crate baseline, then the heads orderer uncapped (to measure the frontier), then the
     // design's cap, then control-only heads (the S3 measure).
     run_matrix(|| CrateKit);
     run_matrix(|| heads_all(None));
     run_matrix(|| heads_all(Some(DESIGN_CAP)));
-    run_matrix(|| HeadsKit { cap: None, track_app: false, backlink: false });
-    run_matrix(|| HeadsKit { cap: Some(DESIGN_CAP), track_app: false, backlink: false });
+    run_matrix(|| HeadsKit {
+        cap: None,
+        track_app: false,
+        backlink: false,
+    });
+    run_matrix(|| HeadsKit {
+        cap: Some(DESIGN_CAP),
+        track_app: false,
+        backlink: false,
+    });
 
     // The smallest cap that works: the concurrent scenarios at smaller caps.
     for cap in [2, 4, 8, 16, 24, 40] {
-        case("b burst+turns, updates", heads_all(Some(cap)), |n| burst_then_turns(n, Want::Update));
+        case("b burst+turns, updates", heads_all(Some(cap)), |n| {
+            burst_then_turns(n, Want::Update)
+        });
         case("b2 storm x2", heads_all(Some(cap)), |n| storm(n, 2));
-        case("c partition p=10 k=2", heads_all(Some(cap)), |n| partition(n, 10, 2));
-        case("c partition p=20 k=2", heads_all(Some(cap)), |n| partition(n, 20, 2));
+        case("c partition p=10 k=2", heads_all(Some(cap)), |n| {
+            partition(n, 10, 2)
+        });
+        case("c partition p=20 k=2", heads_all(Some(cap)), |n| {
+            partition(n, 20, 2)
+        });
     }
 
     // Adversarial delivery: each member hears a round in its own order, for two orders per cap,
     // without and with the backlink (own latest event always named first).
     for salt in [1u64, 2] {
-        for cap in [Some(2), Some(4), Some(8), Some(16), Some(24), Some(DESIGN_CAP), Some(40), None] {
+        for cap in [
+            Some(2),
+            Some(4),
+            Some(8),
+            Some(16),
+            Some(24),
+            Some(DESIGN_CAP),
+            Some(40),
+            None,
+        ] {
             for backlink in [false, true] {
-                let opts = Opts { reorder: Some(salt), merger_only: false };
-                let kit = || HeadsKit { cap, track_app: true, backlink };
+                let opts = Opts {
+                    reorder: Some(salt),
+                    merger_only: false,
+                };
+                let kit = || HeadsKit {
+                    cap,
+                    track_app: true,
+                    backlink,
+                };
                 case_opts("b2 storm x3", kit(), opts, |n| storm(n, 3));
                 case_opts("c partition p=2 k=3", kit(), opts, |n| partition(n, 2, 3));
             }
@@ -631,11 +684,21 @@ fn main() {
     }
     // Designated merger: only member 0 merges at the cap. In publication order, and reordered.
     for opts in [
-        Opts { reorder: None, merger_only: true },
-        Opts { reorder: Some(1), merger_only: true },
+        Opts {
+            reorder: None,
+            merger_only: true,
+        },
+        Opts {
+            reorder: Some(1),
+            merger_only: true,
+        },
     ] {
         for cap in [Some(16), Some(DESIGN_CAP)] {
-            let kit = || HeadsKit { cap, track_app: true, backlink: false };
+            let kit = || HeadsKit {
+                cap,
+                track_app: true,
+                backlink: false,
+            };
             case_opts("b2 storm x3", kit(), opts, |n| storm(n, 3));
             case_opts("c partition p=2 k=3", kit(), opts, |n| partition(n, 2, 3));
             case_opts("c partition p=20 k=3", kit(), opts, |n| partition(n, 20, 3));
@@ -645,13 +708,23 @@ fn main() {
 
 /// The scenario set, run with one orderer.
 fn run_matrix<K: Kit>(make: impl Fn() -> K) {
-    case("a steady, app posts x2", make(), |n| steady(n, Want::App, 2));
-    case("a steady, updates x2", make(), |n| steady(n, Want::Update, 2));
-    case("b burst, updates", make(), |n| burst_then_turns(n, Want::Update));
-    case("b burst, app posts", make(), |n| burst_then_turns(n, Want::App));
+    case("a steady, app posts x2", make(), |n| {
+        steady(n, Want::App, 2)
+    });
+    case("a steady, updates x2", make(), |n| {
+        steady(n, Want::Update, 2)
+    });
+    case("b burst, updates", make(), |n| {
+        burst_then_turns(n, Want::Update)
+    });
+    case("b burst, app posts", make(), |n| {
+        burst_then_turns(n, Want::App)
+    });
     case("b2 storm x3", make(), |n| storm(n, 3));
     for p in [2, 10, 20] {
-        case(&format!("c partition p={p} k=3"), make(), |n| partition(n, p, 3));
+        case(&format!("c partition p={p} k=3"), make(), |n| {
+            partition(n, p, 3)
+        });
     }
     case("d offline, 10 cycles", make(), |n| offline(n, 10, false));
     case("d offline, shuffled", make(), |n| offline(n, 10, true));

@@ -20,12 +20,12 @@ this + #2034 (ephemeral live data vs the chained event graph).
 ## TL;DR verdicts
 
 1. **Three different things are all called "relay" in ID today; only one of them
-   is this issue.** (a) The *Iroh infrastructure relay* (n0 preset, home relay,
+   is this issue.** (a) The _Iroh infrastructure relay_ (n0 preset, home relay,
    relay kit) is a per-connection NAT-traversal fallback — it forwards encrypted
    QUIC packets for one connection pair and is already ID's default. (b) The
-   *bridging peer* — an application-level group member who forwards messages to
+   _bridging peer_ — an application-level group member who forwards messages to
    members the sender cannot reach — **does not exist yet and is the real subject
-   of this investigation**. (c) The *privacy relay* — a deliberate hairpin that
+   of this investigation**. (c) The _privacy relay_ — a deliberate hairpin that
    hides peer IPs from each other — is a policy mode layered on (a) or (b),
    opt-in per session, never the default path. Conflating (a) and (b) is the
    main design trap: (a) cannot fan out, cannot see group membership, and cannot
@@ -36,14 +36,14 @@ this + #2034 (ephemeral live data vs the chained event graph).
    broadcast trees (HyParView membership + PlumTree dissemination): a topic
    swarm already delivers a broadcast to peers the sender has no direct
    connection to, via intermediate swarm members, with duplicate suppression
-   and tree repair. What it does *not* know is ID's group membership, signing,
+   and tree repair. What it does _not_ know is ID's group membership, signing,
    and chain rules — those stay ID's layer, exactly as gossip is used today
    only for peer-discovery announcements (`pkgs/id/src/commands/peers.rs`).
 3. **Relay validity rests on the origin signature alone; the hop chain is an
    audit record, not a trust input.** A relayed message carries the origin's
    signature over (content, prev-references, group, sequence). Each relay
    appends a signed hop record (relay ID, previous hop, wall-clock receipt
-   time) *outside* the signed envelope. A relay can delay or withhold — an
+   time) _outside_ the signed envelope. A relay can delay or withhold — an
    availability fault, mitigated by duplicate paths and range-sync catch-up —
    but cannot forge, alter, or re-attribute a message. Receivers dedupe by
    message ID and ignore later copies.
@@ -51,25 +51,25 @@ this + #2034 (ephemeral live data vs the chained event graph).
    Voice/video/screen-share use direct peer connections (QUIC datagrams for
    live media packets, streams for control). Small groups (≤ ~6) use a full
    mesh. When a member is reachable only through a bridge, the bridge acts as a
-   *selective forwarder* of already-encrypted media packets — it routes on a
+   _selective forwarder_ of already-encrypted media packets — it routes on a
    cleartext header (session, sender, packet seq) and cannot read payloads
    (group key held by endpoints only). A central-server hairpin exists only in
    privacy-relay mode (verdict 1c), at a stated latency/bandwidth cost.
 5. **Chunking verdict: no wire-level chunking protocol is needed — QUIC already
    does it — but two application-level size problems remain, and both already
-   have an in-repo answer.** (i) *Transport segmentation:* QUIC streams are
+   have an in-repo answer.** (i) _Transport segmentation:_ QUIC streams are
    reliable ordered byte streams with flow control; a sender writes any length
    and QUIC segments, retransmits, and reassembles. Inventing message chunking
-   under a stream would duplicate the transport. (ii) *ID's own 1 MiB frame
-   cap* (`MAX_FRAME_BYTES`, `pkgs/id/src/frames.rs:20`): an object that must
+   under a stream would duplicate the transport. (ii) _ID's own 1 MiB frame
+   cap_ (`MAX_FRAME_BYTES`, `pkgs/id/src/frames.rs:20`): an object that must
    travel as one framed message and exceeds the cap needs the checked-chunk
    split/join ID already built for MLS welcomes
    (`pkgs/id/src/encryption/welcome.rs`, `CHUNK_PAYLOAD_BYTES`) — reuse it,
-   don't design a second one. (iii) *Large payloads generally should not travel
-   inside messages at all:* the message carries a BLAKE3 hash reference and the
+   don't design a second one. (iii) _Large payloads generally should not travel
+   inside messages at all:_ the message carries a BLAKE3 hash reference and the
    payload moves via iroh-blobs (already a dependency), which does verified
    streaming in 16 KiB chunk groups, range requests, resume, and
-   multi-provider download. The one place application packetisation *is*
+   multi-provider download. The one place application packetisation _is_
    required is live media over QUIC datagrams: a datagram is a single packet
    (RFC 9221, not fragmentable, ~1200 B safe payload), so the media layer —
    not the messaging layer — must emit codec-sized packets. That is standard
@@ -79,18 +79,18 @@ this + #2034 (ephemeral live data vs the chained event graph).
 
 ## 1. Current state on `main` (verified 2026-10-29)
 
-| Fact | Evidence |
-|---|---|
-| Transport stack is Iroh 1.x over QUIC; endpoint policy centralised (`RelayPolicy::N0` default, `--no-relay` disables) | `pkgs/id/Cargo.toml` (`iroh = "1"`); `pkgs/id/src/connectivity.rs`; doc `2026-10-11T11-08-42Z_feature_n0_relay_default` |
-| Iroh infra relays are the default fallback; a self-host relay kit exists (Cloudflare Tunnel / VPS modes, QAD ordering) | doc `2026-10-12T08-58-59Z_phase_3_sync_relays` (P3.5, P3.6, P3.8); doc `2026-10-12T21-22-53Z_phase_7_connectivity` (P7.1) |
-| Event sync is **pairwise** range reconciliation (`/id-sync/1`): two peers reconcile, then each sends the events the other lacks; ingest verifies signatures and refuses tampered events | `pkgs/id/src/event_sync.rs` module docs; `SYNC_INTERVAL` 30 s offer cadence |
-| iroh-gossip 0.101 is a dependency but is used **only for peer-discovery announcements**, not message fan-out | `pkgs/id/Cargo.toml` (`iroh-gossip = { version = "0.101", features = ["net"] }`); `pkgs/id/src/commands/peers.rs` |
-| iroh-blobs 0.103 and iroh-docs 0.101 are dependencies | `pkgs/id/Cargo.toml` |
-| Framing is length-prefixed with a hard 1 MiB cap; several call sites enforce it | `pkgs/id/src/frames.rs:20` (`MAX_FRAME_BYTES = 1024 * 1024`) |
-| App-level checked chunking above the frame cap already exists for MLS welcomes (split into headered chunks, joiner reassembles in order, one-chunk fast path) | `pkgs/id/src/encryption/welcome.rs`; tests in `pkgs/id/src/encryption/tests.rs` (~L816–890) |
-| Chunked flights under the frame cap were already needed once at bootstrap (512 KiB budget under the 1 MiB stream cap) | phase-3 doc, P3.1c |
+| Fact                                                                                                                                                                                    | Evidence                                                                                                                  |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| Transport stack is Iroh 1.x over QUIC; endpoint policy centralised (`RelayPolicy::N0` default, `--no-relay` disables)                                                                   | `pkgs/id/Cargo.toml` (`iroh = "1"`); `pkgs/id/src/connectivity.rs`; doc `2026-10-11T11-08-42Z_feature_n0_relay_default`   |
+| Iroh infra relays are the default fallback; a self-host relay kit exists (Cloudflare Tunnel / VPS modes, QAD ordering)                                                                  | doc `2026-10-12T08-58-59Z_phase_3_sync_relays` (P3.5, P3.6, P3.8); doc `2026-10-12T21-22-53Z_phase_7_connectivity` (P7.1) |
+| Event sync is **pairwise** range reconciliation (`/id-sync/1`): two peers reconcile, then each sends the events the other lacks; ingest verifies signatures and refuses tampered events | `pkgs/id/src/event_sync.rs` module docs; `SYNC_INTERVAL` 30 s offer cadence                                               |
+| iroh-gossip 0.101 is a dependency but is used **only for peer-discovery announcements**, not message fan-out                                                                            | `pkgs/id/Cargo.toml` (`iroh-gossip = { version = "0.101", features = ["net"] }`); `pkgs/id/src/commands/peers.rs`         |
+| iroh-blobs 0.103 and iroh-docs 0.101 are dependencies                                                                                                                                   | `pkgs/id/Cargo.toml`                                                                                                      |
+| Framing is length-prefixed with a hard 1 MiB cap; several call sites enforce it                                                                                                         | `pkgs/id/src/frames.rs:20` (`MAX_FRAME_BYTES = 1024 * 1024`)                                                              |
+| App-level checked chunking above the frame cap already exists for MLS welcomes (split into headered chunks, joiner reassembles in order, one-chunk fast path)                           | `pkgs/id/src/encryption/welcome.rs`; tests in `pkgs/id/src/encryption/tests.rs` (~L816–890)                               |
+| Chunked flights under the frame cap were already needed once at bootstrap (512 KiB budget under the 1 MiB stream cap)                                                                   | phase-3 doc, P3.1c                                                                                                        |
 
-**Gap statement, narrowed (Codex review, PR #2246):** for *stored* events,
+**Gap statement, narrowed (Codex review, PR #2246):** for _stored_ events,
 eventual transitive delivery already exists and must not be treated as
 absent: `EventStore::sync_entries`
 (`pkgs/id/src/event_store/sync.rs`) enumerates all stored event hashes
@@ -108,7 +108,7 @@ close.
 
 ### 2.1 Topology and roles
 
-Model the group as a *visibility graph*: nodes are members, an edge A–B means
+Model the group as a _visibility graph_: nodes are members, an edge A–B means
 "A currently holds a working Iroh connection to B" (direct, or via an Iroh
 infra relay — from the application layer both are just "a connection").
 Drew's example: {A, B, C, D} mutually visible; E visible only to D.
@@ -131,7 +131,7 @@ flowchart LR
   knowledge) have not seen it forwards it onward "in the same manner" —
   fan-out to its own visible neighbours, excluding the neighbour it arrived
   from. In the example, D is E's bridge for every other member's traffic, and
-  E's bridge outbound. Bridging is a *role any member can take*, not a server:
+  E's bridge outbound. Bridging is a _role any member can take_, not a server:
   it emerges from the visibility graph and disappears when a direct edge
   appears (E comes into direct reach of A → A sends directly; D's copies are
   deduped away).
@@ -153,10 +153,10 @@ would re-implement tree maintenance, loop avoidance, and repair.
 
 The division of labour for protocol v1 (#2036):
 
-| Layer | Owns |
-|---|---|
-| iroh-gossip | Swarm membership (HyParView), broadcast-tree fan-out, duplicate suppression, missed-message repair |
-| ID messaging layer | Group membership (who may speak/read — gossip topics are open to anyone who knows the topic ID, so the topic ID is a capability at most, never the access control), origin signing, prev-hash chaining, hop records, dedupe by message ID as the *semantic* check behind gossip's transport dedupe, ingest verification (same posture as `event_sync`: verify, refuse tampered) |
+| Layer              | Owns                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| iroh-gossip        | Swarm membership (HyParView), broadcast-tree fan-out, duplicate suppression, missed-message repair                                                                                                                                                                                                                                                                              |
+| ID messaging layer | Group membership (who may speak/read — gossip topics are open to anyone who knows the topic ID, so the topic ID is a capability at most, never the access control), origin signing, prev-hash chaining, hop records, dedupe by message ID as the _semantic_ check behind gossip's transport dedupe, ingest verification (same posture as `event_sync`: verify, refuse tampered) |
 
 Three cautions the synthesis must resolve:
 
@@ -234,8 +234,8 @@ Rules:
 
 Chained-class messages name their predecessors (`prev[]`), so arrival order
 over multi-hop paths does not matter for correctness: a receiver that gets
-message *n+1* before *n* holds it (or notes the gap) and fetches *n* — from
-the neighbour who sent *n+1*, any other neighbour, or later range sync. This
+message _n+1_ before _n_ holds it (or notes the gap) and fetches _n_ — from
+the neighbour who sent _n+1_, any other neighbour, or later range sync. This
 is Drew's "ordering is mostly safe because messages chain by previous
 messages", and it is the same property the event graph already relies on in
 pairwise sync. The relay layer therefore needs **no sequencing, no vector
@@ -287,7 +287,7 @@ worse leg. Consequences baked into the model:
 
 ## 3. Media paths (voice / video / screen share)
 
-The requirement is *do not preclude*, with no central hairpin as the default.
+The requirement is _do not preclude_, with no central hairpin as the default.
 
 ### 3.1 Small groups: direct mesh
 
@@ -333,7 +333,7 @@ the proposed privacy mode can expose exactly the IPs it promises to hide.
 Costs,
 stated so the choice is informed: +1 leg of latency on every packet, all
 session bandwidth concentrated on the relay, relay learns session metadata
-(not content). This mode *is* Drew's "optional privacy proxy" — a mode, not
+(not content). This mode _is_ Drew's "optional privacy proxy" — a mode, not
 the architecture.
 
 ### 3.4 What media needs from the messaging layer
@@ -348,11 +348,11 @@ Media itself is not messages and must not be modelled as graph events.
 
 ### 4.1 The three size problems, kept separate
 
-| Problem | Where it lives | Answer |
-|---|---|---|
-| A byte stream longer than one packet | QUIC transport | **Already solved.** QUIC segments streams into packets, retransmits losses, enforces flow control, reassembles in order. No ID-level chunking on streams — answering Drew's question directly: yes, QUIC/Iroh streams handle the breakup. |
-| An object longer than ID's 1 MiB frame cap that must travel *as a message* | ID framing (`frames.rs`) | **Solved in-repo, reuse it.** The MLS-welcome checked chunking (`encryption/welcome.rs`: headered chunks, bounded header budget, in-order joiner, one-chunk fast path) is the pattern; P3.1c's chunked flights are the second precedent. Protocol v1 should generalise this one implementation rather than add a third. |
-| A genuinely large payload (image, file, recording, world snapshot) | Message design | **Don't put it in the message.** The message carries `blob_ref` (BLAKE3 hash); the payload moves via iroh-blobs: verified streaming (receiver detects corruption within a 16 KiB chunk group), range requests, resume after interruption, fetch from *any* member who has it — including a bridge, which is how E receives a large file from A without A–E connectivity: E pulls the blob from D, who pulled it from A, each hop verified against the same root hash. |
+| Problem                                                                    | Where it lives           | Answer                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| -------------------------------------------------------------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A byte stream longer than one packet                                       | QUIC transport           | **Already solved.** QUIC segments streams into packets, retransmits losses, enforces flow control, reassembles in order. No ID-level chunking on streams — answering Drew's question directly: yes, QUIC/Iroh streams handle the breakup.                                                                                                                                                                                                                             |
+| An object longer than ID's 1 MiB frame cap that must travel _as a message_ | ID framing (`frames.rs`) | **Solved in-repo, reuse it.** The MLS-welcome checked chunking (`encryption/welcome.rs`: headered chunks, bounded header budget, in-order joiner, one-chunk fast path) is the pattern; P3.1c's chunked flights are the second precedent. Protocol v1 should generalise this one implementation rather than add a third.                                                                                                                                               |
+| A genuinely large payload (image, file, recording, world snapshot)         | Message design           | **Don't put it in the message.** The message carries `blob_ref` (BLAKE3 hash); the payload moves via iroh-blobs: verified streaming (receiver detects corruption within a 16 KiB chunk group), range requests, resume after interruption, fetch from _any_ member who has it — including a bridge, which is how E receives a large file from A without A–E connectivity: E pulls the blob from D, who pulled it from A, each hop verified against the same root hash. |
 
 ### 4.2 Datagrams are the exception that proves the rule
 
@@ -412,7 +412,7 @@ packetisation confined to the media layer.
 
 ---
 
-*Sources: `pkgs/id` source as cited inline (frames.rs, event_sync.rs,
+_Sources: `pkgs/id` source as cited inline (frames.rs, event_sync.rs,
 welcome.rs, peers.rs, connectivity.rs, Cargo.toml); repo design docs
 `2026-10-11T11-08-42Z_feature_n0_relay_default`,
 `2026-10-12T08-58-59Z_phase_3_sync_relays`,
@@ -420,4 +420,4 @@ welcome.rs, peers.rs, connectivity.rs, Cargo.toml); repo design docs
 (epidemic broadcast trees, HyParView + PlumTree); iroh-blobs design notes
 (BLAKE3 verified streaming, 16 KiB chunk groups, range/resume); RFC 9221
 (QUIC DATAGRAM). Companion investigations: #2040 (TigerBeetle), #2044
-(Cloudflare Workers fit), #2034 (ephemeral vs chained, in progress).*
+(Cloudflare Workers fit), #2034 (ephemeral vs chained, in progress)._

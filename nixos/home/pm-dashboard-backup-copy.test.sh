@@ -40,7 +40,9 @@ fail() {
 BIN="$TMP_ROOT/bin"
 mkdir -p "$BIN"
 
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 if [[ "${1:-} ${2:-}" == "secret list" ]]; then
   printf '%s\n' '[{"key":"cloudflare.r2-backups-access-key-id","value":"fake-access-key-id"},{"key":"cloudflare.r2-backups-secret-access-key","value":"fake-secret-access-key"},{"key":"cloudflare.r2-endpoint","value":"https://example.invalid"}]'
   exit 0
@@ -50,13 +52,17 @@ exit 1
 STUB
 } >"$BIN/bws"
 
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 echo "stub journal line"
 exit 0
 STUB
 } >"$BIN/journalctl"
 
-{ printf '#!%s\n' "$BASH"; cat <<'STUB'
+{
+  printf '#!%s\n' "$BASH"
+  cat <<'STUB'
 store="${RCLONE_STUB_DIR:?RCLONE_STUB_DIR unset}"
 mkdir -p "$store"
 key() { printf '%s' "$1" | tr '/:' '__'; }
@@ -98,7 +104,7 @@ setup_and_run() {
     "$HOME_DIR/backups/pm-stack/$DATE_ARG"
   local f
   for f in actions.json comments.json fleet-feed.json quota-current.json \
-           registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json; do
+    registry.json quota-gatherer-state.json quota-gatherer-heartbeat.json; do
     printf '{}\n' >"$agg/$f"
   done
   printf '{}\n' >"$agg/snapshots/snap1.json"
@@ -106,8 +112,8 @@ setup_and_run() {
   printf '{}\n' >"$meta/history.jsonl"
   printf 'dump\n' >"$HOME_DIR/backups/pm-stack/$DATE_ARG/dump.sql"
   echo "$PRESET" >"$HOME_DIR/backups/dashboard/.last-run-epoch"
-  if [[ -n "$break_rel" ]]; then
-    if [[ "$break_rel" == MISSING:* ]]; then
+  if [[ -n $break_rel ]]; then
+    if [[ $break_rel == MISSING:* ]]; then
       rm -f "${HOME_DIR}/${break_rel#MISSING:}"
     else
       chmod 000 "${HOME_DIR}/${break_rel}"
@@ -125,7 +131,7 @@ uploads() { find "$STORE_DIR" -type f 2>/dev/null | wc -l; }
 
 expect_copy_failure() {
   local name="$1" needle="$2"
-  if [[ "$RC" -ne 0 ]]; then
+  if [[ $RC -ne 0 ]]; then
     echo "ok: $name: script exited non-zero ($RC)"
   else
     fail "$name: expected non-zero exit, got 0; log: $(cat "$TMP_ROOT/$name.log")"
@@ -165,7 +171,7 @@ expect_copy_failure unreadable-dumps "pm-stack"
 # at verify naming it, uploads nothing, and keeps the marker. (Before
 # #1025 this control expected success; #1025 supersedes that half.)
 setup_and_run missing-warn "MISSING:.local/state/pm-aggregator/comments.json"
-if [[ "$RC" -ne 0 ]]; then
+if [[ $RC -ne 0 ]]; then
   echo "ok: missing-warn: script exited non-zero ($RC)"
 else
   fail "missing-warn: expected non-zero exit, got 0; log: $(cat "$TMP_ROOT/missing-warn.log")"
@@ -191,7 +197,7 @@ else
   fail "missing-warn: marker advanced on a failed run — was $PRESET, now $(marker)"
 fi
 
-if (( failures > 0 )); then
+if ((failures > 0)); then
   echo "pm-dashboard-backup copy tests: $failures failure(s)" >&2
   exit 1
 fi

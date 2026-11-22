@@ -132,7 +132,12 @@ fn blob_rows(conn: &Connection, sql: &str, args: impl rusqlite::Params) -> Resul
 
 /// Keys in `table` within [lo, hi), in key order: a range scan on the primary key.
 /// `hi` of None means no upper bound.
-fn range_rows(conn: &Connection, table: &str, lo: &[u8], hi: Option<&[u8]>) -> Result<Vec<Vec<u8>>> {
+fn range_rows(
+    conn: &Connection,
+    table: &str,
+    lo: &[u8],
+    hi: Option<&[u8]>,
+) -> Result<Vec<Vec<u8>>> {
     match hi {
         Some(hi) => blob_rows(
             conn,
@@ -168,7 +173,9 @@ impl Store for SqliteStore {
     }
 
     fn insert_batch(&mut self, claims: &[Claim]) -> Result<Batch> {
-        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let batch = insert_in(&tx, claims)?;
         tx.commit()?;
         Ok(batch)
@@ -208,10 +215,17 @@ impl Store for SqliteStore {
 
     fn counts(&self) -> Result<Counts> {
         let count = |table: &str| -> Result<u64> {
-            let n: i64 = self.conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))?;
+            let n: i64 =
+                self.conn
+                    .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))?;
             Ok(n as u64)
         };
-        Ok([count("claims")?, count("alpha")?, count("omega")?, count("author_seq")?])
+        Ok([
+            count("claims")?,
+            count("alpha")?,
+            count("omega")?,
+            count("author_seq")?,
+        ])
     }
 
     fn all_claims(&self) -> Result<Vec<Claim>> {

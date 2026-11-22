@@ -38,7 +38,7 @@ artifacts (`internal/cli/serve.go:174-186`). So:
 - **`image`**, **embedded `resource`**, annotations, `_meta` on content:
   never touched by `downgrade()`, and never passed through by `mcpx_call`.
 
-mcpx did not *need* the audio, `structuredContent` and `resource_link` branches
+mcpx did not _need_ the audio, `structuredContent` and `resource_link` branches
 for what it does today. It will need them when `mcpx_call` stops flattening,
 and it should stop, for two reasons unrelated to revisions. It drops
 `isError`, so a failed upstream call looks like a success (wire W20). And it
@@ -52,18 +52,18 @@ would have rendered (`v2:packages/core/src/mcp/client.ts:325-328`).
 A result can reach a host by six paths. What each does with each type at
 `05c78b2`:
 
-| content | `mcpx_call` (MCP tool; also `mcpx call` on the CLI) | `mcpx_exec` (MCP tool) | a call that stopped to ask a question | `prompts/get` | `resources/read` | generated script client (`tools.ns.tool()`) |
-| --- | --- | --- | --- | --- | --- | --- |
-| `text` | kept; blocks joined with `\n`, unless `structuredContent` is present, in which case **the text is dropped** and only the structured value is shown | whatever the script prints | kept, joined | kept; non-user roles prefixed `[role]`; all merged into **one user message** | kept; multi-part contents merged into one | joined; parsed as JSON when it looks like JSON |
-| `image` | **dropped**; if no text block exists the whole result is dumped as JSON text, base64 and all | stored as an artifact and replaced by a `resource_link` | dropped | dropped | n/a | kept in the returned block array and on `.raw` |
-| `audio` | **dropped** (same as image) | stored as an artifact, replaced by a `resource_link` | dropped | dropped | n/a | kept in the block array and on `.raw` |
-| embedded `resource` (text) | dropped | passed as the script returns it | dropped | dropped | n/a | kept in the block array |
-| embedded `resource` (blob) | dropped | stored as an artifact, replaced by a `resource_link` | dropped | dropped | n/a | kept in the block array |
-| `resource_link` | dropped | **emitted**, one per artifact, with size in the description | dropped | dropped | n/a | kept in the block array |
-| `structuredContent` | pretty-printed JSON as the only text | n/a | dropped | n/a | n/a | **returned as the value** (preferred over text) |
-| upstream result with `isError: true` | **dropped**: the host sees a normal result (W20). An upstream JSON-RPC error or transport failure, by contrast, *is* reported as `isError: true` (`internal/mcpserver/server.go:665-675`) | a script failure becomes the tool's `isError` result | **dropped** the same way; a failed task is reported as `isError: true` (`internal/cli/serve_ask.go:174-181`) | n/a | n/a | thrown as `ToolError`, envelope on `.raw` |
-| resource `text` contents | n/a | n/a | n/a | n/a | kept | n/a |
-| resource `blob` contents | n/a | n/a | n/a | n/a | an upstream blob is **described**, "(N bytes of mime, base64)"; an mcpx artifact comes back as base64 in `text` with its real mime type | n/a |
+| content                              | `mcpx_call` (MCP tool; also `mcpx call` on the CLI)                                                                                                                                       | `mcpx_exec` (MCP tool)                                      | a call that stopped to ask a question                                                                        | `prompts/get`                                                                | `resources/read`                                                                                                                        | generated script client (`tools.ns.tool()`)     |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `text`                               | kept; blocks joined with `\n`, unless `structuredContent` is present, in which case **the text is dropped** and only the structured value is shown                                        | whatever the script prints                                  | kept, joined                                                                                                 | kept; non-user roles prefixed `[role]`; all merged into **one user message** | kept; multi-part contents merged into one                                                                                               | joined; parsed as JSON when it looks like JSON  |
+| `image`                              | **dropped**; if no text block exists the whole result is dumped as JSON text, base64 and all                                                                                              | stored as an artifact and replaced by a `resource_link`     | dropped                                                                                                      | dropped                                                                      | n/a                                                                                                                                     | kept in the returned block array and on `.raw`  |
+| `audio`                              | **dropped** (same as image)                                                                                                                                                               | stored as an artifact, replaced by a `resource_link`        | dropped                                                                                                      | dropped                                                                      | n/a                                                                                                                                     | kept in the block array and on `.raw`           |
+| embedded `resource` (text)           | dropped                                                                                                                                                                                   | passed as the script returns it                             | dropped                                                                                                      | dropped                                                                      | n/a                                                                                                                                     | kept in the block array                         |
+| embedded `resource` (blob)           | dropped                                                                                                                                                                                   | stored as an artifact, replaced by a `resource_link`        | dropped                                                                                                      | dropped                                                                      | n/a                                                                                                                                     | kept in the block array                         |
+| `resource_link`                      | dropped                                                                                                                                                                                   | **emitted**, one per artifact, with size in the description | dropped                                                                                                      | dropped                                                                      | n/a                                                                                                                                     | kept in the block array                         |
+| `structuredContent`                  | pretty-printed JSON as the only text                                                                                                                                                      | n/a                                                         | dropped                                                                                                      | n/a                                                                          | n/a                                                                                                                                     | **returned as the value** (preferred over text) |
+| upstream result with `isError: true` | **dropped**: the host sees a normal result (W20). An upstream JSON-RPC error or transport failure, by contrast, _is_ reported as `isError: true` (`internal/mcpserver/server.go:665-675`) | a script failure becomes the tool's `isError` result        | **dropped** the same way; a failed task is reported as `isError: true` (`internal/cli/serve_ask.go:174-181`) | n/a                                                                          | n/a                                                                                                                                     | thrown as `ToolError`, envelope on `.raw`       |
+| resource `text` contents             | n/a                                                                                                                                                                                       | n/a                                                         | n/a                                                                                                          | n/a                                                                          | kept                                                                                                                                    | n/a                                             |
+| resource `blob` contents             | n/a                                                                                                                                                                                       | n/a                                                         | n/a                                                                                                          | n/a                                                                          | an upstream blob is **described**, "(N bytes of mime, base64)"; an mcpx artifact comes back as base64 in `text` with its real mime type | n/a                                             |
 
 Sources, in column order: `internal/cli/commands.go:384-415` (`renderResult`);
 `internal/cli/serve.go:125-187` and `internal/execsvc/media.go:27-126`;
@@ -103,15 +103,15 @@ Three things in that table are worth saying out loud:
 What the edge function would do if a block reached it, by client revision.
 "Untouched" means the block is sent as is.
 
-| carried | 2025-03-26 client | 2025-06-18 | 2025-11-25 | 2026-07-28 | live at `05c78b2`? |
-| --- | --- | --- | --- | --- | --- |
-| `structuredContent` | removed, appended to `content` as indented JSON text | untouched | untouched | untouched | no: nothing emits it |
-| `resource_link` | becomes `{type:"resource", resource:{uri, mimeType: <the link's mime>, text: "name — uri"}}` | untouched | untouched | untouched | **yes**, for `mcpx_exec` artifacts |
-| `audio` | untouched (2025-03-26 defines it) | untouched | untouched | untouched | no: the branch is for revisions below 2025-03-26, which mcpx refuses |
-| `image`, `text`, embedded `resource` | untouched in every revision | | | | n/a |
-| `resultType` | removed | removed | removed | stamped `"complete"` unless set | **yes** |
-| `inputRequests` / `requestState` | never built for a legacy client | | | built | yes, modern only |
-| annotations, `_meta` on blocks, `title`, `icons` | not examined by `downgrade()` | | | | leaks are possible: `prompts/list` sends `title` to 2025-03-26 |
+| carried                                          | 2025-03-26 client                                                                            | 2025-06-18 | 2025-11-25 | 2026-07-28                      | live at `05c78b2`?                                                   |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------- | ---------- | ---------- | ------------------------------- | -------------------------------------------------------------------- |
+| `structuredContent`                              | removed, appended to `content` as indented JSON text                                         | untouched  | untouched  | untouched                       | no: nothing emits it                                                 |
+| `resource_link`                                  | becomes `{type:"resource", resource:{uri, mimeType: <the link's mime>, text: "name — uri"}}` | untouched  | untouched  | untouched                       | **yes**, for `mcpx_exec` artifacts                                   |
+| `audio`                                          | untouched (2025-03-26 defines it)                                                            | untouched  | untouched  | untouched                       | no: the branch is for revisions below 2025-03-26, which mcpx refuses |
+| `image`, `text`, embedded `resource`             | untouched in every revision                                                                  |            |            |                                 | n/a                                                                  |
+| `resultType`                                     | removed                                                                                      | removed    | removed    | stamped `"complete"` unless set | **yes**                                                              |
+| `inputRequests` / `requestState`                 | never built for a legacy client                                                              |            |            | built                           | yes, modern only                                                     |
+| annotations, `_meta` on blocks, `title`, `icons` | not examined by `downgrade()`                                                                |            |            |                                 | leaks are possible: `prompts/list` sends `title` to 2025-03-26       |
 
 Sources: `internal/mcpserver/revisions.go:132-289`,
 `internal/mcpserver/server.go:432-440`.
@@ -130,15 +130,15 @@ would be honest.
 Passing a block through is only useful if the host keeps it. The two hosts
 this repository pins:
 
-| content | opencode v1 (direct tools) | opencode v1 (code mode) | opencode v2 |
-| --- | --- | --- | --- |
-| `text` | text | text | text |
-| `image` | attachment | not traced | media |
-| `audio` | **dropped** | not traced | media |
-| embedded `resource` | text, or an allow-listed blob | not traced | text or media |
-| `resource_link` | **dropped** | `name: uri` text | `uri` text |
-| `structuredContent` | used only when `content` is empty | preferred | becomes the tool's `output` |
-| `isError` | thrown with its text | thrown | `ToolFailure` with its text |
+| content             | opencode v1 (direct tools)        | opencode v1 (code mode) | opencode v2                 |
+| ------------------- | --------------------------------- | ----------------------- | --------------------------- |
+| `text`              | text                              | text                    | text                        |
+| `image`             | attachment                        | not traced              | media                       |
+| `audio`             | **dropped**                       | not traced              | media                       |
+| embedded `resource` | text, or an allow-listed blob     | not traced              | text or media               |
+| `resource_link`     | **dropped**                       | `name: uri` text        | `uri` text                  |
+| `structuredContent` | used only when `content` is empty | preferred               | becomes the tool's `output` |
+| `isError`           | thrown with its text              | thrown                  | `ToolFailure` with its text |
 
 Sources: `v1:packages/opencode/src/session/tools.ts:429-436`,
 `v1:packages/opencode/src/tool/code-mode.ts:104-109`,

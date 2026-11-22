@@ -23,7 +23,7 @@ HERE=$(dirname "$(dirname "$SELF")")
 BIN=${BIN:-/home/user/work/spikes/target/debug/iroh-allowlist-spike}
 
 if [ "${1:-}" != "--inner" ]; then
-	exec unshare -Urn bash "$SELF" --inner "$@"
+  exec unshare -Urn bash "$SELF" --inner "$@"
 fi
 shift
 
@@ -43,9 +43,9 @@ multi-allow) srv_bind=0.0.0.0:0 srv_mode=refuse seed=2 cli_bind=0.0.0.0:0 kind=s
 multi-app) srv_bind=0.0.0.0:0 srv_mode=app seed=3 cli_bind=0.0.0.0:0 kind=stream ;;
 filter-refuse) srv_bind=0.0.0.0:0 srv_mode=filter seed=3 cli_bind=0.0.0.0:0 kind=connect ;;
 *)
-	echo "unknown scenario: $scenario" >&2
-	exit 2
-	;;
+  echo "unknown scenario: $scenario" >&2
+  exit 2
+  ;;
 esac
 
 out="${LOG_ROOT:-$HERE/logs}/$scenario"
@@ -54,25 +54,25 @@ mkdir -p "$out"
 echo "scenario=$scenario runs=$runs server=$srv_bind/$srv_mode client=seed$seed/$cli_bind/$kind"
 
 for i in $(seq -w 1 "$runs"); do
-	d="$out/run-$i"
-	mkdir -p "$d"
-	"$BIN" server --bind "$srv_bind" --mode "$srv_mode" --ready "$d/ready.txt" >"$d/server.log" 2>&1 &
-	spid=$!
-	for _ in $(seq 1 200); do
-		[ -s "$d/ready.txt" ] && break
-		sleep 0.05
-	done
-	if [ ! -s "$d/ready.txt" ]; then
-		echo "run $i: server never became ready (see $d/server.log)" >&2
-		kill "$spid" 2>/dev/null || true
-		wait "$spid" 2>/dev/null || true
-		continue
-	fi
-	"$BIN" client --seed "$seed" --bind "$cli_bind" --kind "$kind" --ticket "$d/ready.txt" \
-		>"$d/client.log" 2>&1 || true
-	sleep 0.3
-	kill "$spid" 2>/dev/null || true
-	wait "$spid" 2>/dev/null || true
+  d="$out/run-$i"
+  mkdir -p "$d"
+  "$BIN" server --bind "$srv_bind" --mode "$srv_mode" --ready "$d/ready.txt" >"$d/server.log" 2>&1 &
+  spid=$!
+  for _ in $(seq 1 200); do
+    [ -s "$d/ready.txt" ] && break
+    sleep 0.05
+  done
+  if [ ! -s "$d/ready.txt" ]; then
+    echo "run $i: server never became ready (see $d/server.log)" >&2
+    kill "$spid" 2>/dev/null || true
+    wait "$spid" 2>/dev/null || true
+    continue
+  fi
+  "$BIN" client --seed "$seed" --bind "$cli_bind" --kind "$kind" --ticket "$d/ready.txt" \
+    >"$d/client.log" 2>&1 || true
+  sleep 0.3
+  kill "$spid" 2>/dev/null || true
+  wait "$spid" 2>/dev/null || true
 done
 
 echo "done: $out"

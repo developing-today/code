@@ -14,6 +14,7 @@ PM JSON → comrak → .md file (GFM features lost on round-trip)
 ```
 
 **Schema**: `prosemirror-schema-basic` + `prosemirror-schema-list`
+
 - Nodes: doc, paragraph, text, blockquote, horizontal_rule, heading, code_block, image, hard_break, ordered_list, bullet_list, list_item
 - Marks: link, em, strong, code
 
@@ -25,6 +26,7 @@ PM JSON → comrak (GFM extensions enabled) → .md file (full round-trip)
 ```
 
 **Schema additions**:
+
 - Nodes: `table`, `table_row`, `table_cell`, `table_header`, `task_list`, `task_list_item`
 - Marks: `strikethrough`
 - Modified: `image` node gains `width`, `height` attrs
@@ -38,6 +40,7 @@ Both sides (Rust `markdown.rs` + TypeScript `editor.ts`) must stay in sync — a
 **What**: Add `~~text~~` support — the simplest GFM extension. A new mark type, comrak option, bidirectional conversion, and a toolbar button.
 
 **Files**:
+
 - `pkgs/id/src/web/markdown.rs` — Enable comrak strikethrough extension, add conversion in both directions
 - `pkgs/id/web/src/editor.ts` — Add `strikethrough` mark to `richSchema`, add toolbar button, add keymap
 
@@ -46,11 +49,13 @@ Both sides (Rust `markdown.rs` + TypeScript `editor.ts`) must stay in sync — a
 ### markdown.rs
 
 1. In `commonmark_options()` (~line 64-70), enable strikethrough:
+
    ```rust
    options.extension.strikethrough = true;
    ```
 
 2. In `convert_node()`, replace the strikethrough fallback (~line 332-335) with mark-aware conversion:
+
    ```rust
    NodeValue::Strikethrough => {
        let mut child_marks = parent_marks.to_vec();
@@ -65,14 +70,18 @@ Both sides (Rust `markdown.rs` + TypeScript `editor.ts`) must stay in sync — a
 ### editor.ts
 
 1. Extend `richSchema` to include a `strikethrough` mark:
+
    ```typescript
    const strikethroughMark = {
      strikethrough: {
        parseDOM: [{ tag: "s" }, { tag: "del" }, { tag: "strike" }, { style: "text-decoration=line-through" }],
-       toDOM() { return ["s", 0] as const; },
+       toDOM() {
+         return ["s", 0] as const;
+       },
      },
    };
    ```
+
    Merge into schema marks alongside the basic marks.
 
 2. Add toolbar button in row 1 (after `code`): `markItem(schema.marks.strikethrough, { title: "Strikethrough", icon: { text: "S̶", css: "" } })`
@@ -80,6 +89,7 @@ Both sides (Rust `markdown.rs` + TypeScript `editor.ts`) must stay in sync — a
 3. Add keymap: `Mod-Shift-s` → `toggleMark(schema.marks.strikethrough)`
 
 **Test spec**:
+
 - E2E: Create `.md` file with `~~deleted~~`, open in editor, verify strikethrough renders. Toggle strikethrough via toolbar, save, verify `~~deleted~~` in markdown output.
 - Unit (Rust): `markdown_to_prosemirror("~~deleted~~")` produces text node with `strikethrough` mark. Round-trip preserves `~~text~~`.
 
@@ -90,6 +100,7 @@ Both sides (Rust `markdown.rs` + TypeScript `editor.ts`) must stay in sync — a
 **What**: Add `- [ ] todo` / `- [x] done` checkbox support. A new node type that extends list behavior with a `checked` attribute.
 
 **Files**:
+
 - `pkgs/id/src/web/markdown.rs` — Enable comrak tasklist extension, convert TaskItem with `checked` attr
 - `pkgs/id/web/src/editor.ts` — Add `task_list` and `task_list_item` nodes, checkbox nodeView, click-to-toggle
 
@@ -98,11 +109,13 @@ Both sides (Rust `markdown.rs` + TypeScript `editor.ts`) must stay in sync — a
 ### markdown.rs
 
 1. In `commonmark_options()`, enable tasklist:
+
    ```rust
    options.extension.tasklist = true;
    ```
 
 2. Replace TaskItem fallback (~line 319-330). TaskItem is a variant of list_item — comrak represents it as `NodeValue::TaskItem` with a `checked: bool` field:
+
    ```rust
    NodeValue::TaskItem(checked) => {
        let children = convert_children(node, parent_marks);
@@ -121,6 +134,7 @@ Both sides (Rust `markdown.rs` + TypeScript `editor.ts`) must stay in sync — a
 ### editor.ts
 
 1. Add `task_list` node to schema (group: `block`, content: `task_list_item+`):
+
    ```typescript
    task_list: {
      group: "block",
@@ -131,6 +145,7 @@ Both sides (Rust `markdown.rs` + TypeScript `editor.ts`) must stay in sync — a
    ```
 
 2. Add `task_list_item` node (content: `paragraph block*`, attrs: `{ checked: { default: false } }`):
+
    ```typescript
    task_list_item: {
      content: "paragraph block*",
@@ -156,6 +171,7 @@ Both sides (Rust `markdown.rs` + TypeScript `editor.ts`) must stay in sync — a
 5. Register the nodeView in the editor plugins array inside `initEditor()`.
 
 **Test spec**:
+
 - E2E: Create `.md` with `- [ ] buy milk\n- [x] write code`, verify checkboxes render. Click unchecked item, verify it toggles. Save, verify `- [x] buy milk` in output.
 - Unit (Rust): Round-trip `- [ ] unchecked\n- [x] checked` preserves checkbox state.
 
@@ -166,6 +182,7 @@ Both sides (Rust `markdown.rs` + TypeScript `editor.ts`) must stay in sync — a
 **What**: Add pipe-table support. This is the most complex part — requires a new npm dependency (`prosemirror-tables`), 5 new node types, table editing commands, and bidirectional comrak conversion.
 
 **Files**:
+
 - `pkgs/id/web/package.json` — Add `prosemirror-tables` dependency
 - `pkgs/id/web/src/editor.ts` — Add table nodes to schema, table plugins, table menu items
 - `pkgs/id/src/web/markdown.rs` — Enable comrak table extension, convert Table/TableRow/TableCell/TableHeader
@@ -182,6 +199,7 @@ npm install prosemirror-tables
 ### markdown.rs
 
 1. In `commonmark_options()`, enable table:
+
    ```rust
    options.extension.table = true;
    ```
@@ -227,6 +245,7 @@ npm install prosemirror-tables
 ### editor.ts
 
 1. Add table nodes to schema. The `prosemirror-tables` package provides `tableNodes()` helper but we define manually for control:
+
    ```typescript
    table: { content: "table_row+", group: "block", tableRole: "table", ... }
    table_row: { content: "(table_cell | table_header)*", tableRole: "row", ... }
@@ -243,10 +262,12 @@ npm install prosemirror-tables
 ### table-commands.ts (new file)
 
 Wrapper commands for the toolbar:
+
 - `insertTable(rows, cols)` — creates a table node and inserts at cursor
 - Re-export relevant `prosemirror-tables` commands: `addColumnAfter`, `addRowAfter`, `deleteColumn`, `deleteRow`, `deleteTable`
 
 **Test spec**:
+
 - E2E: Create `.md` with a pipe table, open in editor, verify table renders with cells. Edit cell content, add a row via command, save, verify table markdown output.
 - Unit (Rust): Round-trip a 2×3 table with header row preserves structure and cell content. Round-trip table with inline formatting (bold, links) in cells.
 
@@ -257,6 +278,7 @@ Wrapper commands for the toolbar:
 **What**: Add a UI to edit the `alt` attribute on existing image nodes. Currently alt-text is set at upload time but cannot be changed afterward.
 
 **Files**:
+
 - `pkgs/id/web/src/editor.ts` — Custom image nodeView with alt-text popover
 - `pkgs/id/web/src/image-node-view.ts` (new) — Image nodeView class
 
@@ -288,6 +310,7 @@ Create an `ImageNodeView` class implementing ProseMirror's `NodeView` interface:
 2. This replaces ProseMirror's default image rendering, so the nodeView must also handle basic display (src, alt as tooltip, title).
 
 **Test spec**:
+
 - E2E: Upload image, click on it, verify alt-text popover appears. Change alt text, blur, verify the node's alt attr updated. Save as `.md`, verify `![new alt text](url)` in output.
 
 ---
@@ -297,6 +320,7 @@ Create an `ImageNodeView` class implementing ProseMirror's `NodeView` interface:
 **What**: Allow users to drag image corners/edges to resize. Persist `width` and `height` in the ProseMirror document and markdown output.
 
 **Files**:
+
 - `pkgs/id/web/src/editor.ts` — Extend image node schema with `width`/`height` attrs
 - `pkgs/id/web/src/image-node-view.ts` — Add resize handles to the nodeView from Part 4
 - `pkgs/id/src/web/markdown.rs` — Serialize/deserialize image dimensions (HTML `<img>` tag in markdown)
@@ -360,6 +384,7 @@ Extend the `ImageNodeView` (from Part 4) with resize handle behavior:
 For images with `width`/`height`, comrak doesn't natively support sized images in markdown syntax. Two strategies:
 
 **Strategy: HTML img fallback**. When `width` or `height` is set, serialize as an HTML `<img>` tag instead of `![alt](src)`:
+
 ```rust
 // In json_to_ast(), when handling "image" node:
 if has_width_or_height {
@@ -374,6 +399,7 @@ On parse, comrak's `HtmlBlock`/`HtmlInline` handling already captures `<img>` ta
 **Alternative considered**: Custom markdown syntax like `![alt](src =WxH)`. Rejected because it's non-standard and won't render in other markdown viewers.
 
 **Test spec**:
+
 - E2E: Upload image, drag a corner handle to resize, verify image dimensions change. Save as `.md`, verify `<img>` tag with width/height in output. Reload file, verify dimensions preserved.
 - Unit (Rust): Round-trip image with width/height through `<img>` tag serialization. Image without dimensions uses standard `![alt](src)` syntax.
 
@@ -384,6 +410,7 @@ On parse, comrak's `HtmlBlock`/`HtmlInline` handling already captures `<img>` ta
 **What**: A dialog/panel that lists all images previously uploaded to the current document's blob store, allowing the user to pick and insert one.
 
 **Files**:
+
 - `pkgs/id/src/web/routes.rs` — Add `GET /api/images` endpoint listing uploaded image blobs
 - `pkgs/id/web/src/image-browser.ts` (new) — Image browser UI component
 - `pkgs/id/web/src/editor.ts` — Add "Browse images" toolbar button that opens the browser
@@ -393,6 +420,7 @@ On parse, comrak's `HtmlBlock`/`HtmlInline` handling already captures `<img>` ta
 ### routes.rs
 
 Add a new endpoint `GET /:name/api/images` that:
+
 1. Lists blobs from the iroh blob store that have image MIME types (or image file extensions in their filename metadata).
 2. Returns JSON array: `[{ hash, filename, url, size }]`
 3. The blob store already tracks uploads — this queries existing data, no new storage needed.
@@ -416,6 +444,7 @@ Add a new endpoint `GET /:name/api/images` that:
 2. Button opens the image browser dialog.
 
 **Test spec**:
+
 - E2E: Upload 2 images via paste. Click "Browse images" button. Verify both images appear in the browser grid. Click one, click "Insert", verify image inserted at cursor. Close browser, verify it disappears.
 
 ---
@@ -427,6 +456,7 @@ Part 1 (Strikethrough) → Part 2 (Task Lists) → Part 3 (Tables) → Part 4 (A
 ```
 
 **Rationale**:
+
 - Parts 1-3 are GFM extensions ordered by complexity (strikethrough is simplest, tables most complex). Each builds familiarity with the markdown.rs ↔ editor.ts sync pattern.
 - Part 1 must come first because enabling comrak GFM extensions affects options shared by all parts.
 - Parts 4-5 are image improvements. Part 4 creates the image nodeView that Part 5 extends with resize handles — they must be sequential.
@@ -448,11 +478,11 @@ Parts 1 and 2 could potentially be parallelized since they touch different node/
 
 ## Status
 
-| Part | Description | Status | Commit |
-|------|------------|--------|--------|
-| 1 | GFM Strikethrough | ✅ Done | d5d6bb47 |
-| 2 | Task Lists | ✅ Done | 027054e1 |
-| 3 | Tables | ✅ Done | 25097022 |
-| 4 | Image Alt-Text | ⏳ In Progress | — |
-| 5 | Image Resize | ⏳ Pending | — |
-| 6 | Image Browser | ⏳ Pending | — |
+| Part | Description       | Status         | Commit   |
+| ---- | ----------------- | -------------- | -------- |
+| 1    | GFM Strikethrough | ✅ Done        | d5d6bb47 |
+| 2    | Task Lists        | ✅ Done        | 027054e1 |
+| 3    | Tables            | ✅ Done        | 25097022 |
+| 4    | Image Alt-Text    | ⏳ In Progress | —        |
+| 5    | Image Resize      | ⏳ Pending     | —        |
+| 6    | Image Browser     | ⏳ Pending     | —        |

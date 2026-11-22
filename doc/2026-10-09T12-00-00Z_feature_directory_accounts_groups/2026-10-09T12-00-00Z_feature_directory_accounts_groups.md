@@ -55,8 +55,8 @@ attribution decision) are included.
      for members below `manage`.
    - `admin`: all of the above, sets any level, changes the permission set and
      name, and deletes the group.
-   A group must always keep at least one admin account, directly or through a
-   nested admin group.
+     A group must always keep at least one admin account, directly or through a
+     nested admin group.
 7. **Nested groups.** A group may be a member of another. Cycles are refused.
    A member group's contribution to a parent is its permission set, and its
    members' effective level in the parent is the minimum of the level the
@@ -357,7 +357,6 @@ Known limitations:
 - A sign-in mail can be silently dropped by the resend limit. The response is
   the same either way.
 
-
 ### Phase 7: interactive SSH explorer
 
 Code: `directory_view.rs` (`Line`, `parse_line`, `action_from_fields`, `HELP`),
@@ -631,6 +630,7 @@ Still not done, and deferred:
 
   Deferred because it needs a Worker, a sending domain, and a decision on
   where the token is kept. None of these is in the repo.
+
 - **Per-export module gating.** Deferred. The attenuated-capabilities design
   (open question 4) recommends gating per module first, and per export only
   if needed. Nothing here changes that.
@@ -714,8 +714,8 @@ Decision: keep the refusal, and make it say why and which addresses.
   an ASCII local part is also affected. Its domain could be sent in punycode
   (A-label) form without SMTPUTF8. That is not implemented.
 - The recipient refusal is `cannot mail <address>: it is internationalised
-  (not ASCII), and the SMTP sink does not speak SMTPUTF8 (RFC 6531), so the
-  message was not sent`. The sender refusal names the sender and asks for an
+(not ASCII), and the SMTP sink does not speak SMTPUTF8 (RFC 6531), so the
+message was not sent`. The sender refusal names the sender and asks for an
   ASCII one. Both run before the connection opens, so the relay sees nothing.
 - No account enumeration. A non-ASCII address cannot belong to an account,
   because its confirmation code cannot be mailed, so no account is confirmed
@@ -771,7 +771,7 @@ with an ASCII local part.
   of `s`, `m`, `h`, `d`. Fractions, combined forms such as `1d12h`, and bare
   numbers are refused, so `12` never means twelve seconds by accident.
 - Wording. The refusal changed from `expires_in_secs must be from 1 to 2592000
-  (30 days)` to `invite lifetime must be from 1 second to 30 days`. The rule is
+(30 days)` to `invite lifetime must be from 1 second to 30 days`. The rule is
   the same. HTTP and frame clients now see the new text too.
 
 Verification:

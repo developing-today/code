@@ -64,13 +64,19 @@ for t in "${targets[@]}"; do
     linux)
       case "$desc" in
       *"statically linked"*) ;;
-      *) echo "error: $name is not a static binary: $desc" >&2; exit 1 ;;
+      *)
+        echo "error: $name is not a static binary: $desc" >&2
+        exit 1
+        ;;
       esac
       ;;
     darwin)
       case "$desc" in
       *Mach-O*) ;;
-      *) echo "error: $name is not a Mach-O binary: $desc" >&2; exit 1 ;;
+      *)
+        echo "error: $name is not a Mach-O binary: $desc" >&2
+        exit 1
+        ;;
       esac
       ;;
     esac

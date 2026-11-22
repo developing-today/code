@@ -81,7 +81,13 @@ impl Claim {
             tag => bail!("bad value tag {tag}"),
         };
         ensure!(i == b.len(), "claim body has trailing bytes");
-        Ok(Claim { author, seq, subject, name, value })
+        Ok(Claim {
+            author,
+            seq,
+            subject,
+            name,
+            value,
+        })
     }
 
     /// Claim ID: BLAKE3 over the stored body.
@@ -161,12 +167,16 @@ pub fn author_seq_key(author: &Id, seq: u64) -> Vec<u8> {
 
 /// Subject of an omega key: the 32 bytes before the claim ID.
 pub fn omega_subject(key: &[u8]) -> Id {
-    key[key.len() - 64..key.len() - 32].try_into().expect("omega key holds a 32-byte subject")
+    key[key.len() - 64..key.len() - 32]
+        .try_into()
+        .expect("omega key holds a 32-byte subject")
 }
 
 /// Claim ID at the end of an alpha or omega key.
 pub fn key_id(key: &[u8]) -> Id {
-    key[key.len() - 32..].try_into().expect("key ends with a 32-byte claim ID")
+    key[key.len() - 32..]
+        .try_into()
+        .expect("key ends with a 32-byte claim ID")
 }
 
 /// The smallest key greater than every key that starts with `prefix`, or None when

@@ -170,7 +170,11 @@ fn reset(dir: &Path, name: &str) -> Result<String> {
     for suffix in ["", "-wal", "-shm"] {
         let _ = std::fs::remove_file(dir.join(format!("{name}{suffix}")));
     }
-    Ok(dir.join(name).to_str().context("non-UTF-8 path")?.to_string())
+    Ok(dir
+        .join(name)
+        .to_str()
+        .context("non-UTF-8 path")?
+        .to_string())
 }
 
 pub fn run(dir: &Path) -> Result<()> {
@@ -188,7 +192,10 @@ pub fn run(dir: &Path) -> Result<()> {
     show("setup", &run_to_end(&["sqlite-setup", &sp, "1000"])?);
     let mut writer = Proc::start(&["sqlite-hold", &sp, "6", "1001", "2000"])?;
     println!("  writer: {}", writer.wait_for("ready")?);
-    show("reader during the open write", &run_to_end(&["sqlite-read", &sp])?);
+    show(
+        "reader during the open write",
+        &run_to_end(&["sqlite-read", &sp])?,
+    );
     let readers = (0..4)
         .map(|_| Proc::start(&["sqlite-read", &sp]))
         .collect::<Result<Vec<_>>>()?;

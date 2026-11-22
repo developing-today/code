@@ -161,33 +161,37 @@ Replace the entire `saveFile()` method with:
 4. Temporarily update the Ctrl+S handler (line ~1448-1453) so it still works without AutoSaveManager. Since `saveFile()` now returns a result instead of managing button text, add minimal button feedback:
 
 ```typescript
-    // BEFORE:
-    if ((event.ctrlKey || event.metaKey) && event.key === "s") {
-      event.preventDefault();
-      if (app.collab?.editor) {
-        app.saveFile();
-      }
-      return;
-    }
+// BEFORE:
+if ((event.ctrlKey || event.metaKey) && event.key === "s") {
+  event.preventDefault();
+  if (app.collab?.editor) {
+    app.saveFile();
+  }
+  return;
+}
 
-    // AFTER (temporary — will be replaced in Task 3):
-    if ((event.ctrlKey || event.metaKey) && event.key === "s") {
-      event.preventDefault();
-      if (app.collab?.editor) {
-        app.saveFile().then((result) => {
-          const btn = document.getElementById("save-btn") as HTMLButtonElement | null;
-          if (!btn) return;
-          if (result.ok) {
-            btn.textContent = "saved \u2713";
-            setTimeout(() => { btn.textContent = "save"; }, 2000);
-          } else if (!result.retryAfterMs) {
-            btn.textContent = "error!";
-            setTimeout(() => { btn.textContent = "save"; }, 2000);
-          }
-        });
+// AFTER (temporary — will be replaced in Task 3):
+if ((event.ctrlKey || event.metaKey) && event.key === "s") {
+  event.preventDefault();
+  if (app.collab?.editor) {
+    app.saveFile().then((result) => {
+      const btn = document.getElementById("save-btn") as HTMLButtonElement | null;
+      if (!btn) return;
+      if (result.ok) {
+        btn.textContent = "saved \u2713";
+        setTimeout(() => {
+          btn.textContent = "save";
+        }, 2000);
+      } else if (!result.retryAfterMs) {
+        btn.textContent = "error!";
+        setTimeout(() => {
+          btn.textContent = "save";
+        }, 2000);
       }
-      return;
-    }
+    });
+  }
+  return;
+}
 ```
 
 **Verify:** `just id check` from repo root
@@ -394,6 +398,7 @@ class AutoSaveManager {
 ```
 
 **Important Unicode characters used:**
+
 - `\u2022` = `•` (bullet, for "save •")
 - `\u2713` = `✓` (checkmark, for "saved ✓")
 - `\u2026` = `…` (ellipsis, for "saving…" and "retry…")
@@ -435,14 +440,14 @@ autoSave: null,
 In the `openEditor()` method, inside the editor-ready callback (the callback starting at line ~1024 with `(editor: EditorInstance) => {`), AFTER the save button enable and tag loading lines, add:
 
 ```typescript
-            // Create AutoSaveManager
-            this.autoSave = new AutoSaveManager(() => this.saveFile());
+// Create AutoSaveManager
+this.autoSave = new AutoSaveManager(() => this.saveFile());
 
-            // Listen for local content changes to trigger auto-save
-            const editorContainer = document.getElementById("editor-container");
-            if (editorContainer) {
-              editorContainer.addEventListener("editor:change", this._onEditorChange);
-            }
+// Listen for local content changes to trigger auto-save
+const editorContainer = document.getElementById("editor-container");
+if (editorContainer) {
+  editorContainer.addEventListener("editor:change", this._onEditorChange);
+}
 ```
 
 Also add a bound handler method to the app object (to enable removing the listener later). Add this as a method on the app object:
@@ -460,15 +465,15 @@ Also add a bound handler method to the app object (to enable removing the listen
 Actually, the cleanest approach given the existing code style (plain object literal) is to NOT use a method at all. Instead, create the event handler as a closure in `openEditor()`:
 
 ```typescript
-            // Create AutoSaveManager and wire editor:change listener
-            this.autoSave = new AutoSaveManager(() => this.saveFile());
-            const onEditorChange = () => this.autoSave?.onContentChange();
-            const editorContainer = document.getElementById("editor-container");
-            if (editorContainer) {
-              editorContainer.addEventListener("editor:change", onEditorChange);
-            }
-            // Store reference for cleanup in closeEditor
-            this._editorChangeHandler = onEditorChange;
+// Create AutoSaveManager and wire editor:change listener
+this.autoSave = new AutoSaveManager(() => this.saveFile());
+const onEditorChange = () => this.autoSave?.onContentChange();
+const editorContainer = document.getElementById("editor-container");
+if (editorContainer) {
+  editorContainer.addEventListener("editor:change", onEditorChange);
+}
+// Store reference for cleanup in closeEditor
+this._editorChangeHandler = onEditorChange;
 ```
 
 Add `_editorChangeHandler` to the `IdApp` interface:
@@ -506,18 +511,18 @@ In the `onNewVersion` callback (line ~1038), add `this.autoSave?.onNewVersion()`
 In `closeEditor()` (line ~1055), BEFORE the existing collab disconnect logic, add:
 
 ```typescript
-      // Cancel auto-save timers and remove editor:change listener
-      if (this.autoSave) {
-        this.autoSave.cancel();
-        this.autoSave = null;
-      }
-      if (this._editorChangeHandler) {
-        const editorContainer = document.getElementById("editor-container");
-        if (editorContainer) {
-          editorContainer.removeEventListener("editor:change", this._editorChangeHandler);
-        }
-        this._editorChangeHandler = null;
-      }
+// Cancel auto-save timers and remove editor:change listener
+if (this.autoSave) {
+  this.autoSave.cancel();
+  this.autoSave = null;
+}
+if (this._editorChangeHandler) {
+  const editorContainer = document.getElementById("editor-container");
+  if (editorContainer) {
+    editorContainer.removeEventListener("editor:change", this._editorChangeHandler);
+  }
+  this._editorChangeHandler = null;
+}
 ```
 
 #### 3e. Rewire Ctrl+S to use AutoSaveManager
@@ -525,13 +530,13 @@ In `closeEditor()` (line ~1055), BEFORE the existing collab disconnect logic, ad
 Replace the Ctrl+S handler (the temporary one from Task 1) with:
 
 ```typescript
-    if ((event.ctrlKey || event.metaKey) && event.key === "s") {
-      event.preventDefault();
-      if (app.collab?.editor && app.autoSave) {
-        app.autoSave.saveNow();
-      }
-      return;
-    }
+if ((event.ctrlKey || event.metaKey) && event.key === "s") {
+  event.preventDefault();
+  if (app.collab?.editor && app.autoSave) {
+    app.autoSave.saveNow();
+  }
+  return;
+}
 ```
 
 #### 3f. Rewire save button onclick
@@ -863,13 +868,13 @@ test.describe("Auto-save", () => {
 
 ## Summary of All Changes
 
-| Task | File | Action | Lines Changed (approx) |
-|------|------|--------|----------------------|
-| 1 | `pkgs/id/web/src/main.ts` | Refactor `saveFile()`, add `SaveResult` type | ~80 lines |
-| 2 | `pkgs/id/web/src/main.ts` | Add `AutoSaveManager` class | ~160 lines |
-| 3 | `pkgs/id/web/src/main.ts` | Wire into `openEditor`, `closeEditor`, Ctrl+S, add `triggerSave` | ~60 lines |
-| 4 | `pkgs/id/src/web/templates.rs` | Change onclick from `saveFile` to `triggerSave` | 1 line |
-| 5 | `pkgs/id/e2e/tests/autosave.spec.ts` | New E2E test file | ~200 lines |
+| Task | File                                 | Action                                                           | Lines Changed (approx) |
+| ---- | ------------------------------------ | ---------------------------------------------------------------- | ---------------------- |
+| 1    | `pkgs/id/web/src/main.ts`            | Refactor `saveFile()`, add `SaveResult` type                     | ~80 lines              |
+| 2    | `pkgs/id/web/src/main.ts`            | Add `AutoSaveManager` class                                      | ~160 lines             |
+| 3    | `pkgs/id/web/src/main.ts`            | Wire into `openEditor`, `closeEditor`, Ctrl+S, add `triggerSave` | ~60 lines              |
+| 4    | `pkgs/id/src/web/templates.rs`       | Change onclick from `saveFile` to `triggerSave`                  | 1 line                 |
+| 5    | `pkgs/id/e2e/tests/autosave.spec.ts` | New E2E test file                                                | ~200 lines             |
 
 **Total: ~500 lines across 2 files modified + 1 file created**
 

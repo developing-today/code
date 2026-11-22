@@ -24,19 +24,19 @@ per-counterparty caps — and **no block list, no byte accounting, no IP-keyed d
 and no `Retry-After`**. The `429` status does exist on two web paths; neither carries a
 retry delay.
 
-| Drew's ask | Today | Verdict |
-|---|---|---|
-| IP block | **nothing.** `IpAddr` appears only for bind addresses and test fixtures; no code path reads a peer's IP to decide anything | **absent** |
-| One-button common block lists | no block list of any kind, no mute/ignore, no UI affordance in `web/src` | **absent** |
-| Rate limiting | five limiters, each for one feature (below); none keyed on a counterparty, none configurable | **partial** |
-| `Retry-After` semantics | `429` is returned on two web paths, but no `Retry-After` header and no machine-readable delay anywhere; `Reply::Retry` carries free text only | **absent** |
-| Permanent block by public IP | nothing | **absent** |
-| Permanent block by ID / public key | nothing — and "ID" is four different identifiers (below), so this needs a decision before it needs code | **absent** |
-| Permanent block by topic / tag | nothing — and "topic" is three different things in this tree | **absent** |
-| Budget: MB per window, app-wide / per IP / per ID | nothing. `WorldMetrics::add_frame_bytes` *records* frame bytes; nothing enforces a ceiling | **absent** |
-| Caps for a **specific** counterparty | two exist, both narrow: `WaitingLimits::per_author = 256` held events, `MAX_PENDING_FRIEND_REQUESTS = 20` per sender | **partial** |
-| Frame/message size cap | **present**: `MAX_FRAME_BYTES = 1 MiB`, enforced on read and write | **present** |
-| Peer allow-list | **present**: `AccessPolicy`, `.iroh-allowed`, `--allow-node` / `--open-writes` | **present** |
+| Drew's ask                                        | Today                                                                                                                                         | Verdict     |
+| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
+| IP block                                          | **nothing.** `IpAddr` appears only for bind addresses and test fixtures; no code path reads a peer's IP to decide anything                    | **absent**  |
+| One-button common block lists                     | no block list of any kind, no mute/ignore, no UI affordance in `web/src`                                                                      | **absent**  |
+| Rate limiting                                     | five limiters, each for one feature (below); none keyed on a counterparty, none configurable                                                  | **partial** |
+| `Retry-After` semantics                           | `429` is returned on two web paths, but no `Retry-After` header and no machine-readable delay anywhere; `Reply::Retry` carries free text only | **absent**  |
+| Permanent block by public IP                      | nothing                                                                                                                                       | **absent**  |
+| Permanent block by ID / public key                | nothing — and "ID" is four different identifiers (below), so this needs a decision before it needs code                                       | **absent**  |
+| Permanent block by topic / tag                    | nothing — and "topic" is three different things in this tree                                                                                  | **absent**  |
+| Budget: MB per window, app-wide / per IP / per ID | nothing. `WorldMetrics::add_frame_bytes` _records_ frame bytes; nothing enforces a ceiling                                                    | **absent**  |
+| Caps for a **specific** counterparty              | two exist, both narrow: `WaitingLimits::per_author = 256` held events, `MAX_PENDING_FRIEND_REQUESTS = 20` per sender                          | **partial** |
+| Frame/message size cap                            | **present**: `MAX_FRAME_BYTES = 1 MiB`, enforced on read and write                                                                            | **present** |
+| Peer allow-list                                   | **present**: `AccessPolicy`, `.iroh-allowed`, `--allow-node` / `--open-writes`                                                                | **present** |
 
 **Bottom line:** the shipping path is not a WAF-shaped feature. ID's comms are QUIC
 (Iroh) over nine ALPNs, so there are no HTTP headers to hang `Retry-After` on, no socket
@@ -62,7 +62,7 @@ Four channels carry the traffic the issue cares about:
    `MAX_REQUEST_BYTES = 1 MiB` ([`protocol.rs:238`](../../../pkgs/id/src/protocol.rs)).
 2. **Docs gossip** — CRDT document sync, many small updates.
 3. **Collaboration WebSocket** — ProseMirror collab, MessagePack `[1, version, steps,
-   clientID]` ([`web/collab.rs:6-20`](../../../pkgs/id/src/web/collab.rs)). **This is the
+clientID]` ([`web/collab.rs:6-20`](../../../pkgs/id/src/web/collab.rs)). **This is the
    live-document path and it has neither a size cap nor a rate limit**: the upgrade at
    `web/collab.rs:632` sets no `max_message_size`, and nothing counts `STEPS`/`CURSOR`.
 4. **World sessions** — one JSON object per frame over a shared length-prefixed codec,
@@ -89,27 +89,27 @@ All of it, with defaults and evidence. Note how little of it is reachable by an 
 
 ### 2.1 Size and structural caps
 
-| Control | Value | Evidence |
-|---|---|---|
-| `MAX_FRAME_BYTES` (shared codec, both directions) | **1 MiB** | `frames.rs:20`, enforced `:38-41`, `:88-89`, `:124`, `:158-159`; oversized read marks the stream unusable `:110` |
-| `MAX_REQUEST_BYTES` (meta RPC) | 1 MiB | `protocol.rs:238` |
-| `MAX_WORLD_MODULE_BYTES` / chunk / concurrent uploads | 16 MiB / 6 KiB / 2 | `world_session/types.rs:17,20,32` |
-| `MAX_SESSIONS_PER_CONNECTION` (world) | 16 | `world_net.rs:48`, semaphore `:77` |
-| `HubLimits::max_sessions` / `max_open_worlds` | 1024 / 256 | `world_hub.rs:84-104` |
-| SSH connections / input queue / backlog / packet | 64 / 256 / 8 MiB / 32 KiB | `world_ssh.rs:63-71,158` |
-| HTTP body / upload | 10 MiB / 11 MiB | `web/routes.rs:53,56` |
-| Sync session deadline / ingest batch | 60 s / 256 | `log_sync.rs:59,66` |
-| Dial timeout / envelope delivery timeout | 45 s / 30 s | `connectivity.rs:54`, `envelope_net.rs:31` |
+| Control                                               | Value                     | Evidence                                                                                                         |
+| ----------------------------------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `MAX_FRAME_BYTES` (shared codec, both directions)     | **1 MiB**                 | `frames.rs:20`, enforced `:38-41`, `:88-89`, `:124`, `:158-159`; oversized read marks the stream unusable `:110` |
+| `MAX_REQUEST_BYTES` (meta RPC)                        | 1 MiB                     | `protocol.rs:238`                                                                                                |
+| `MAX_WORLD_MODULE_BYTES` / chunk / concurrent uploads | 16 MiB / 6 KiB / 2        | `world_session/types.rs:17,20,32`                                                                                |
+| `MAX_SESSIONS_PER_CONNECTION` (world)                 | 16                        | `world_net.rs:48`, semaphore `:77`                                                                               |
+| `HubLimits::max_sessions` / `max_open_worlds`         | 1024 / 256                | `world_hub.rs:84-104`                                                                                            |
+| SSH connections / input queue / backlog / packet      | 64 / 256 / 8 MiB / 32 KiB | `world_ssh.rs:63-71,158`                                                                                         |
+| HTTP body / upload                                    | 10 MiB / 11 MiB           | `web/routes.rs:53,56`                                                                                            |
+| Sync session deadline / ingest batch                  | 60 s / 256                | `log_sync.rs:59,66`                                                                                              |
+| Dial timeout / envelope delivery timeout              | 45 s / 30 s               | `connectivity.rs:54`, `envelope_net.rs:31`                                                                       |
 
 ### 2.2 Rate limiters
 
-| # | Where | What it bounds | Default | Evidence |
-|---|---|---|---|---|
-| 1 | World chat | Chat lines per participant, rolling | **50 / 10 s** | `world/mod.rs:53-55`, check `world/core.rs:955-975` |
-| 2 | Web save | Saves of one file name | **1 / 5 s** | `web/mod.rs:86-132`, applied `web/routes.rs:1202-1214` |
-| 3 | Directory auth | Code resend per address | **1 / 60 s** | `directory_auth.rs:25`, `:154-166` |
-| 4 | Directory auth | Signed-request nonce table | **4096**, 5 min window | `directory_auth.rs:28-29`, `:244-260` |
-| 5 | World hub | Boot quiet window for signed requests | default `0`, CLI **600 s** | `world_hub.rs:100`, `cli.rs:412` |
+| #   | Where          | What it bounds                        | Default                    | Evidence                                               |
+| --- | -------------- | ------------------------------------- | -------------------------- | ------------------------------------------------------ |
+| 1   | World chat     | Chat lines per participant, rolling   | **50 / 10 s**              | `world/mod.rs:53-55`, check `world/core.rs:955-975`    |
+| 2   | Web save       | Saves of one file name                | **1 / 5 s**                | `web/mod.rs:86-132`, applied `web/routes.rs:1202-1214` |
+| 3   | Directory auth | Code resend per address               | **1 / 60 s**               | `directory_auth.rs:25`, `:154-166`                     |
+| 4   | Directory auth | Signed-request nonce table            | **4096**, 5 min window     | `directory_auth.rs:28-29`, `:244-260`                  |
+| 5   | World hub      | Boot quiet window for signed requests | default `0`, CLI **600 s** | `world_hub.rs:100`, `cli.rs:412`                       |
 
 **What is not limited at all:** world `input` frames (size cap only), collab `STEPS` and
 `CURSOR`, `/ws/tags`, metadata RPC, blob gets, and `POST /api/identity/register`
@@ -123,7 +123,7 @@ map (#1713).
   inbound cap.
 - `MAX_PENDING_FRIEND_REQUESTS = 20` per sender per server
   ([`directory.rs:306`](../../../pkgs/id/src/directory.rs), enforced `:1250-1252`).
-- World chat's 50/10 s is per *participant capability*, which is per session, not per
+- World chat's 50/10 s is per _participant capability_, which is per session, not per
   person.
 
 ### 2.4 Allow-list (the inverse of a block list)
@@ -134,7 +134,7 @@ Backed by `.iroh-allowed` (`:38`, parser `:127`, loader `:139`), driven by
 `--allow-node` / `--open-writes` ([`cli.rs:464,470`](../../../pkgs/id/src/cli.rs)).
 Its own module doc calls it "deliberately a flat allowlist, not a capability system"
 (`access.rs:1-24`). This is the closest thing to a block list in the tree, and it is
-about *writing*, not about *serving to* or *receiving from*.
+about _writing_, not about _serving to_ or _receiving from_.
 
 ### 2.5 Two gates designed and not wired
 
@@ -180,11 +180,11 @@ protocol carries a free-text message only ([`envelope_net.rs:34-52`](../../../pk
 The issue lists three block key kinds. In this tree each of them is ambiguous, and the
 design cannot proceed without choosing:
 
-| Key kind | Candidates in the code | What blocking it would mean |
-|---|---|---|
-| **ID / public key** | iroh `EndpointId` (transport node ID, `access.rs:97`); `AuthorKey = [u8;32]` (event graph, `waiting.rs:31`); account `id` (directory, `directory.rs:79-92`); web `client_id` (browser, `web/identity.rs:89-120`); world `participant_id: u64` (capability, *not* identity, `world_session/mod.rs:14-16`) | Blocking the `EndpointId` stops transport; blocking the `AuthorKey` stops content and rendering. **There is no join table between them**, so "block this person" is two rows, and a key rotation resets the transport row but not the author row |
-| **Public IP** | no peer-IP decision path exists; `TransportAddr::Ip` appears only in tests and bind addresses | Only meaningful for direct connections; relayed peers have no visible IP |
-| **Topic / tag** | gossip `TopicId` (`discovery.rs:45-60`); metadata `tags` (`tags.rs`, `tag_claims.rs`); a world's `world_name`/`world_id` | Three different objects with three different enforcement points. "Block by tag" most likely means the metadata tag (annotation on files); "block by topic" most likely the gossip channel |
+| Key kind            | Candidates in the code                                                                                                                                                                                                                                                                                   | What blocking it would mean                                                                                                                                                                                                                      |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **ID / public key** | iroh `EndpointId` (transport node ID, `access.rs:97`); `AuthorKey = [u8;32]` (event graph, `waiting.rs:31`); account `id` (directory, `directory.rs:79-92`); web `client_id` (browser, `web/identity.rs:89-120`); world `participant_id: u64` (capability, _not_ identity, `world_session/mod.rs:14-16`) | Blocking the `EndpointId` stops transport; blocking the `AuthorKey` stops content and rendering. **There is no join table between them**, so "block this person" is two rows, and a key rotation resets the transport row but not the author row |
+| **Public IP**       | no peer-IP decision path exists; `TransportAddr::Ip` appears only in tests and bind addresses                                                                                                                                                                                                            | Only meaningful for direct connections; relayed peers have no visible IP                                                                                                                                                                         |
+| **Topic / tag**     | gossip `TopicId` (`discovery.rs:45-60`); metadata `tags` (`tags.rs`, `tag_claims.rs`); a world's `world_name`/`world_id`                                                                                                                                                                                 | Three different objects with three different enforcement points. "Block by tag" most likely means the metadata tag (annotation on files); "block by topic" most likely the gossip channel                                                        |
 
 Recommendation for #2033: define the block row as `{kind, value}` with `kind` naming
 exactly which of these, rather than inventing a unified "ID".
@@ -201,14 +201,14 @@ Four layers, in build order. Each names where it is enforced, because in a P2P s
 A token bucket per `(local node, remote endpoint key)`, applied at frame read before
 decode, plus a per-connection bucket for cheap fairness:
 
-| Knob | Proposed default | Why |
-|---|---|---|
-| `frames_per_sec` (authorized, interactive) | **60**, burst **180** | 10 keystrokes/s + cursor at pointer rate fits; 3 s of burst absorbs a paste or scroll storm |
-| `bytes_per_sec` (authorized) | **512 KiB/s**, burst **4 MiB** | A 4-frame burst covers one paste; sustained media belongs in blobs |
-| `frames_per_sec` (not yet authorized) | **10**, burst **30** | No legitimate pre-capability stream needs more |
-| `connections_per_peer` | **4** concurrent | One tab plus a retry; stops fan-out |
-| Collab `STEPS`/`CURSOR` | **120 frames/s**, burst **360**, and a **1 MiB message cap** | Currently uncapped in both directions (`web/collab.rs:632`) — this is the largest single hole |
-| Refusal shape | frame `{code, reason, retry_after_ms}`; HTTP routes get `429` + `Retry-After` | QUIC streams have no headers, so the value must live in the protocol |
+| Knob                                       | Proposed default                                                              | Why                                                                                           |
+| ------------------------------------------ | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `frames_per_sec` (authorized, interactive) | **60**, burst **180**                                                         | 10 keystrokes/s + cursor at pointer rate fits; 3 s of burst absorbs a paste or scroll storm   |
+| `bytes_per_sec` (authorized)               | **512 KiB/s**, burst **4 MiB**                                                | A 4-frame burst covers one paste; sustained media belongs in blobs                            |
+| `frames_per_sec` (not yet authorized)      | **10**, burst **30**                                                          | No legitimate pre-capability stream needs more                                                |
+| `connections_per_peer`                     | **4** concurrent                                                              | One tab plus a retry; stops fan-out                                                           |
+| Collab `STEPS`/`CURSOR`                    | **120 frames/s**, burst **360**, and a **1 MiB message cap**                  | Currently uncapped in both directions (`web/collab.rs:632`) — this is the largest single hole |
+| Refusal shape                              | frame `{code, reason, retry_after_ms}`; HTTP routes get `429` + `Retry-After` | QUIC streams have no headers, so the value must live in the protocol                          |
 
 `retry_after_ms = max(1000, ms_until_next_token)`, capped at **60 s**, never zero.
 
@@ -216,12 +216,12 @@ decode, plus a per-connection bucket for cheap fairness:
 
 One persisted list, several key kinds, one enforcement point each:
 
-| Key kind | Semantics | Enforced at |
-|---|---|---|
-| **Endpoint key** (`EndpointId`) | refuse new sessions, drop gossip subscriptions, stop serving blobs | `connectivity.rs` accept path, blobs router, `blob_gate` |
-| **Author key** (`AuthorKey`) | filter their objects out of views and refusals | view/projection filter, `waiting.rs` queue |
-| **IP** | refuse direct connections | Iroh endpoint listener / host firewall; **not** enforceable when relayed |
-| **Tag / topic** | refuse to pull, serve or subscribe | `PullGate` (wire it up) and subscription filter |
+| Key kind                        | Semantics                                                          | Enforced at                                                              |
+| ------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------ |
+| **Endpoint key** (`EndpointId`) | refuse new sessions, drop gossip subscriptions, stop serving blobs | `connectivity.rs` accept path, blobs router, `blob_gate`                 |
+| **Author key** (`AuthorKey`)    | filter their objects out of views and refusals                     | view/projection filter, `waiting.rs` queue                               |
+| **IP**                          | refuse direct connections                                          | Iroh endpoint listener / host firewall; **not** enforceable when relayed |
+| **Tag / topic**                 | refuse to pull, serve or subscribe                                 | `PullGate` (wire it up) and subscription filter                          |
 
 Storage: a redb table in the existing event store (or a small dedicated file beside
 `.identity.redb`), `{kind, value, added_at, reason, expires_at}`; `expires_at = null` is
@@ -229,13 +229,13 @@ the permanent block the issue asks for.
 
 ### L3 — Budgets (app-wide, per IP, per ID) and per-counterparty overrides
 
-| Budget | Proposed default | Window |
-|---|---|---|
-| App-wide inbound | **32 MiB/s**, **20 GiB/hour** | rolling |
-| App-wide outbound (serving) | **64 MiB/s**, **40 GiB/hour** | rolling |
-| Per peer (endpoint key) | **100 MiB/hour**, burst **8 MiB/min** | rolling |
-| Per IP (direct only) | **250 MiB/hour** | rolling |
-| **Specific counterparty** | `{peer, bytes_per_window, messages_per_window}` override rows; default none | operator-set |
+| Budget                      | Proposed default                                                            | Window       |
+| --------------------------- | --------------------------------------------------------------------------- | ------------ |
+| App-wide inbound            | **32 MiB/s**, **20 GiB/hour**                                               | rolling      |
+| App-wide outbound (serving) | **64 MiB/s**, **40 GiB/hour**                                               | rolling      |
+| Per peer (endpoint key)     | **100 MiB/hour**, burst **8 MiB/min**                                       | rolling      |
+| Per IP (direct only)        | **250 MiB/hour**                                                            | rolling      |
+| **Specific counterparty**   | `{peer, bytes_per_window, messages_per_window}` override rows; default none | operator-set |
 
 The per-counterparty override is the issue's key distinction and is genuinely missing
 today: the two existing per-sender caps are count-based and hard-coded (`per_author = 256`,
@@ -259,20 +259,20 @@ can be capped at 1 MiB/day without touching the global budget.
 ## 5. How this composes with "servers accept all signed objects"
 
 The trust model (#2030) says a server stores and relays every correctly signed object and
-only *views* are scoped by who may write. Abuse controls must not quietly become an
+only _views_ are scoped by who may write. Abuse controls must not quietly become an
 acceptance filter, or the graph diverges between nodes. Therefore:
 
-- **Blocks never reject a signed object.** A block changes *serving, subscribing and
-  rendering*: we stop pulling from you, stop serving you, stop showing your objects. What
+- **Blocks never reject a signed object.** A block changes _serving, subscribing and
+  rendering_: we stop pulling from you, stop serving you, stop showing your objects. What
   is already in the graph stays there, so sync and auditability survive.
-- **Rate limits and budgets do reject traffic**, and that is fine: they reject *work*, not
-  *content*. A rate-limited peer is asked to come back, not told its object is invalid.
+- **Rate limits and budgets do reject traffic**, and that is fine: they reject _work_, not
+  _content_. A rate-limited peer is asked to come back, not told its object is invalid.
 - **The exception is the listener and the relay**, where IP refusal is a transport decision
   that happens before ID semantics exist.
 
-The rule for #2033: *a refusal carries a reason class — `rate_limited`,
+The rule for #2033: _a refusal carries a reason class — `rate_limited`,
 `budget_exhausted`, `blocked_by_operator`, `unauthorized` — and only the last is ever
-about the object itself.*
+about the object itself._
 
 ---
 

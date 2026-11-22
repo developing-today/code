@@ -65,8 +65,13 @@ pub struct Outcome {
 }
 
 async fn write_frame(send: &mut SendStream, payload: &[u8]) -> Result<usize> {
-    ensure!(payload.len() <= MAX_FRAME, "frame of {} bytes", payload.len());
-    send.write_all(&(payload.len() as u32).to_be_bytes()).await?;
+    ensure!(
+        payload.len() <= MAX_FRAME,
+        "frame of {} bytes",
+        payload.len()
+    );
+    send.write_all(&(payload.len() as u32).to_be_bytes())
+        .await?;
     send.write_all(payload).await?;
     Ok(4 + payload.len())
 }
@@ -82,7 +87,13 @@ async fn read_frame(recv: &mut RecvStream) -> Result<Vec<u8>> {
 }
 
 /// Writes one reconciliation message, or closes the connection if the cut is due.
-async fn flight(send: &mut SendStream, conn: &Connection, out: &mut Outcome, msg: &[Entry], cut: Cut) -> Result<()> {
+async fn flight(
+    send: &mut SendStream,
+    conn: &Connection,
+    out: &mut Outcome,
+    msg: &[Entry],
+    cut: Cut,
+) -> Result<()> {
     if cut == Cut::AfterFlights(out.flights) {
         conn.close(1u32.into(), b"cut");
         bail!("cut before flight {}", out.flights + 1);
@@ -102,8 +113,19 @@ fn commit(store: &Store, pending: &mut Vec<Item>) -> Result<(Batch, Duration)> {
 }
 
 /// Runs one session on an open connection. `initiator` is the dialer.
-pub async fn run(store: &Store, party: &Party, conn: &Connection, initiator: bool, p: Params, cut: Cut) -> Result<Outcome> {
-    let (mut send, mut recv) = if initiator { conn.open_bi().await? } else { conn.accept_bi().await? };
+pub async fn run(
+    store: &Store,
+    party: &Party,
+    conn: &Connection,
+    initiator: bool,
+    p: Params,
+    cut: Cut,
+) -> Result<Outcome> {
+    let (mut send, mut recv) = if initiator {
+        conn.open_bi().await?
+    } else {
+        conn.accept_bi().await?
+    };
     let mut out = Outcome::default();
     let mut learned = HashSet::new();
 
@@ -131,7 +153,9 @@ pub async fn run(store: &Store, party: &Party, conn: &Connection, initiator: boo
             need.insert(*id);
         }
     }
-    let offers: Vec<usize> = (0..party.len()).filter(|&i| learned.contains(&party.ids()[i])).collect();
+    let offers: Vec<usize> = (0..party.len())
+        .filter(|&i| learned.contains(&party.ids()[i]))
+        .collect();
 
     let sending = async {
         let mut bytes = write_frame(&mut send, &(offers.len() as u32).to_be_bytes()).await?;
@@ -148,9 +172,16 @@ pub async fn run(store: &Store, party: &Party, conn: &Connection, initiator: boo
 
     let receiving = async {
         let count_frame = read_frame(&mut recv).await?;
-        let count: [u8; 4] = count_frame.as_slice().try_into().map_err(|_| anyhow!("count frame is not 4 bytes"))?;
+        let count: [u8; 4] = count_frame
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow!("count frame is not 4 bytes"))?;
         let count = u32::from_be_bytes(count) as usize;
-        ensure!(count == need.len(), "peer offers {count} events, and {} are missing here", need.len());
+        ensure!(
+            count == need.len(),
+            "peer offers {count} events, and {} are missing here",
+            need.len()
+        );
         let mut seen: HashSet<Id> = HashSet::with_capacity(count);
         let mut pending: Vec<Item> = Vec::with_capacity(p.batch);
         let mut total = Batch::default();
@@ -159,9 +190,21 @@ pub async fn run(store: &Store, party: &Party, conn: &Connection, initiator: boo
             let record = read_frame(&mut recv).await?;
             let (header, body) = split_record(&record)?;
             let v = chain::verify(header, body)?;
-            ensure!(need.contains(&v.id), "event {} was not expected", hex::encode(v.id));
-            ensure!(seen.insert(v.id), "event {} arrived twice", hex::encode(v.id));
-            pending.push(Item { key: key_of(&v.author, v.seq), id: v.id, record });
+            ensure!(
+                need.contains(&v.id),
+                "event {} was not expected",
+                hex::encode(v.id)
+            );
+            ensure!(
+                seen.insert(v.id),
+                "event {} arrived twice",
+                hex::encode(v.id)
+            );
+            pending.push(Item {
+                key: key_of(&v.author, v.seq),
+                id: v.id,
+                record,
+            });
             if pending.len() == p.batch {
                 let (b, t) = commit(store, &mut pending)?;
                 total.inserted += b.inserted;
@@ -226,18 +269,39 @@ pub async fn sync_pair(dialer: Side, acceptor: Side, p: Params, cut: Cut) -> Res
 }
 
 /// As [`sync_pair`], with separate parameters: the dialer runs with `pd`, the acceptor with `pa`.
-pub async fn sync_pair_mixed(dialer: Side, acceptor: Side, pd: Params, pa: Params, cut: Cut) -> Result<Run> {
+pub async fn sync_pair_mixed(
+    dialer: Side,
+    acceptor: Side,
+    pd: Params,
+    pa: Params,
+    cut: Cut,
+) -> Result<Run> {
     let server = endpoint(vec![ALPN.to_vec()]).await?;
     let client = endpoint(vec![]).await?;
-    let sock = *server.addr().ip_addrs().next().context("server has no IP address")?;
+    let sock = *server
+        .addr()
+        .ip_addrs()
+        .next()
+        .context("server has no IP address")?;
     let target = EndpointAddr::new(server.id()).with_ip_addr(sock);
 
     let accepting = tokio::spawn({
         let server = server.clone();
         async move {
-            let incoming = server.accept().await.context("endpoint closed before a connection")?;
+            let incoming = server
+                .accept()
+                .await
+                .context("endpoint closed before a connection")?;
             let conn = incoming.await?;
-            let out = run(&acceptor.store, &acceptor.party, &conn, false, pa, Cut::Never).await?;
+            let out = run(
+                &acceptor.store,
+                &acceptor.party,
+                &conn,
+                false,
+                pa,
+                Cut::Never,
+            )
+            .await?;
             anyhow::Ok((out, conn))
         }
     });

@@ -52,12 +52,12 @@ and joining with the repo root would have been wrong. It is also why
 **3. Is there a realpath that does not involve cwd?**
 → **answered.** `realpath(1)` exists as a shell command, and Go's
 `filepath.EvalSymlinks` is the in-process equivalent. Neither needs cwd for an
-*absolute* path; both resolve a *relative* one against cwd. So the order is
+_absolute_ path; both resolve a _relative_ one against cwd. So the order is
 forced: absolutise first, resolve second. Doing it the other way silently
 resolves against the wrong directory.
 
 **4. Would `--absolute-git-dir` work instead?**
-→ **answered: no, for either scope.** It returns the *git directory*, and for a
+→ **answered: no, for either scope.** It returns the _git directory_, and for a
 linked worktree that is the worktree's private `.git/worktrees/<name>`, not the
 shared common dir. Using it for `repo` scope would make every worktree look
 like a separate repository — the exact bug the scope exists to avoid. And for
@@ -87,9 +87,9 @@ of it". Collapsing them would make the common case need a flag, and would
 ration an agent that already knows what it wants.
 
 **9. How are signatures ranked — is there similarity indexing? An agent? A
-library?** → **answered: none of those.** Catalogue ranking is by *cost*,
+library?** → **answered: none of those.** Catalogue ranking is by _cost_,
 `len(line)/4`, ties broken by path. No embeddings, no model, no dependency.
-That is deliberately different from `mcpx search`, which is *relevance*-ranked
+That is deliberately different from `mcpx search`, which is _relevance_-ranked
 by substring scoring. Two rankings because they answer two questions.
 
 **10. Could a query bias what fits?** → **shipped** as `--bias`, which promotes
@@ -115,12 +115,12 @@ and fuzzy, similarity is expensive and needs a model or an index.
 feasible: the codegen already consumes JSON Schema, which is what an OpenAPI
 operation carries.
 
-**15. Emit OpenAPI *per namespace*.** The inverse, so non-agent consumers can
+**15. Emit OpenAPI _per namespace_.** The inverse, so non-agent consumers can
 use the same servers without speaking MCP. → proposal.
 
 **16. Expose mcpx itself as an MCP server and/or an OpenAPI endpoint**,
 optionally secured, with or without the MCP type wrappers. → proposal. This is
-distinct from 15: it makes mcpx a *server*, not just a client.
+distinct from 15: it makes mcpx a _server_, not just a client.
 
 **17. A common adapter interface** so MCP, OpenAPI and anything later plug in
 the same way. → proposal.
@@ -141,7 +141,7 @@ server does not have.
 **20. Can you attach to different Chrome processes?** → **answered: yes**, via
 `--browserUrl http://127.0.0.1:9222` or `--wsEndpoint ws://...`. That is the
 case where per-instance templating becomes necessary, because each instance
-needs a *different* URL.
+needs a _different_ URL.
 
 **21. Auto-increment or random ports as a general feature.** → proposal, as
 argument templating plus an allocator. Generalises beyond Chrome to any server
@@ -151,7 +151,7 @@ that does take a port.
 → **answered: argv and environment, and that is all there is.** MCP defines no
 configuration channel, so a server's options are its command-line flags and its
 environment. mcpx passes `command`, `args`, `env` and `cwd` per server. The one
-thing MCP *does* define that mcpx was ignoring is `instructions` from
+thing MCP _does_ define that mcpx was ignoring is `instructions` from
 `initialize` — now surfaced.
 
 **23. `--pageIdRouting` defaults to true** and is documented as "useful for
@@ -268,7 +268,7 @@ costs a write even when nothing will print. → proposal.
 **77. Should source capture be configurable globally and per server?**
 → **shipped for global** (`logging.source` in config, plus the flag and the
 environment variable), and per-server `logLevel` now resolves. Per-server
-*source* is not meaningful, because source capture describes the script, not
+_source_ is not meaningful, because source capture describes the script, not
 the server it is talking to.
 
 ### Harness integration and distribution
@@ -354,7 +354,7 @@ The AI-assisted version is already sketched (#114 has the `--help` parse plan,
 #83 has it as step 5), but both park it behind a large design and neither owns
 it. The deterministic half is shippable on its own. → **#295.**
 
-The thing worth keeping from the thinking: `--help` is the *worst* regular
+The thing worth keeping from the thinking: `--help` is the _worst_ regular
 source, not the best, and leading with it is why this looks harder than it is.
 Shell completion scripts are generated data structures — fish's
 `complete -c tool -l flag -d 'desc'` is nearly a declaration already, and zsh
@@ -364,13 +364,13 @@ is `paths.apis`, not an adapter at all) → man → `--help` → `--bare`.
 
 And completions need **two ways in, not one**. Extracting from the binary
 (`tool completion fish`, `__complete`) is the convenient path and only works
-when the program ships a generator. Accepting a completion *file* is the one
+when the program ships a generator. Accepting a completion _file_ is the one
 that matters: distributions already ship completions for programs that have no
 generator at all — `/usr/share/bash-completion/completions/*`, zsh
 `site-functions`, the Homebrew and Nix prefixes — and those are frequently
 packager-written for old tools whose `--help` is the worst in the first place.
 It also makes the parser testable from a corpus instead of from installed
-binaries, lets someone fix the *source* and re-import rather than hand-editing
+binaries, lets someone fix the _source_ and re-import rather than hand-editing
 generated JSON, and covers binaries mcpx cannot run at all. So extraction is
 sugar over the file parser; build the parser first. Best version of the idea:
 `import` searches the system completion directories by name before it ever
@@ -383,7 +383,7 @@ drifting silently. That was #83's open question.
 **79. Can I just say `git` is an MCP that takes the subcommand and the flags?**
 Not ideal but fast. → **#295**, as `--bare`, opt-in and loud.
 
-Worth keeping *why* it is allowed at all, because #83 Approach A rejects the
+Worth keeping _why_ it is allowed at all, because #83 Approach A rejects the
 shell-escape version and the distinction is the whole argument: a bare adapter
 is an **argv** hole, not a **shell** hole. The cost is that it has no schema
 beyond "array of strings", so the agent gets nothing to reason about and
@@ -418,10 +418,10 @@ product". Both sit under #175.
 **82. Roc.** → **#296.**
 
 The reason it is not just "another interpreter": Roc's platform/application
-split means an application is pure and a *platform* supplies every effect it
+split means an application is pure and a _platform_ supplies every effect it
 may have. That is the exact shape of an mcpx script — pure logic whose only
 effects are tool calls — and no other language in the runtime list models it
-natively. The dream version is mcpx *as* a Roc platform, where the capability
+natively. The dream version is mcpx _as_ a Roc platform, where the capability
 boundary becomes the type system rather than a Deno flag set.
 
 Why it is staged behind a codegen backend anyway: a Roc host is ordinarily
@@ -431,7 +431,7 @@ boring backend, keep the platform as research.
 
 **83. Iroh.** → **#297.**
 
-Reach a daemon by *identity* rather than by address — no port forwarding, no
+Reach a daemon by _identity_ rather than by address — no port forwarding, no
 public IP, no ssh key copied. ssh (#85) solves encryption and auth and solves
 routing only if you can already reach the host, which is exactly the
 laptop-behind-NAT case.
@@ -457,7 +457,7 @@ Not a bug — it is written down three times as a deliberate choice
 access control, and the TCP bind host is deliberately not defaulted because
 "that has to be somebody's decision rather than a default."
 
-The first draft called it *blocking* — a precondition for ssh, p2p and browser
+The first draft called it _blocking_ — a precondition for ssh, p2p and browser
 surfaces. → **answered: no.** There is no blocker for adding security and no
 blocker for not having it. An unauthenticated local daemon is a complete answer
 and stays one. The issue was rewritten to say so, and the auth coupling was
@@ -471,24 +471,24 @@ issues ordered behind it — and other issues reference it without depending on 
 **85. The permissive-interface trick.** → **#300**, and this is the part worth
 remembering.
 
-When a spec demands an interface mcpx does not have, the move is to *build the
-interface and make it say yes*: accept a user and a password, and reply "good
+When a spec demands an interface mcpx does not have, the move is to _build the
+interface and make it say yes_: accept a user and a password, and reply "good
 job, you're authorized." That satisfies every conformance row asserting the
 endpoint exists, is well-formed and accepts a valid credential — which is most
 of #253's 61 rows — and it cannot break anyone, because a daemon that authorizes
 everyone is exactly as secure as a daemon with no interface at all.
 
-The rows that require an **invalid** credential to be *refused* are the ones
+The rows that require an **invalid** credential to be _refused_ are the ones
 that change behaviour and can lock you out of your own daemon. Those get their
 own issue (#300), ordered behind #253, blocking nothing.
 
-The one hazard, and it is real: a permissive interface must be *visibly*
+The one hazard, and it is real: a permissive interface must be _visibly_
 permissive. `mcpx doctor` and startup should say "authorisation: permissive" so
 nobody ships it believing otherwise.
 
 **86. WASM as a tool source.** → **#299.**
 
-Distinct from #84, which is mcpx compiled *to* WASM. This is mcpx *running* a
+Distinct from #84, which is mcpx compiled _to_ WASM. This is mcpx _running_ a
 `.wasm` as a sandboxed tool source — a module reaches nothing until the host
 hands it an import, which is the inverse of `internal/runner/runner.go:43`'s
 admission that only Deno has a permission model worth the name.
@@ -499,4 +499,3 @@ release matrix does not grow. The open tension is that the component model —
 which is what would make the capability set a per-module declaration — may
 require wasmtime and therefore cgo, forfeiting the advantage. That is the one
 piece of research gating the rest.
-

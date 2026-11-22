@@ -26,7 +26,9 @@ use p2panda_core::cbor::encode_cbor;
 use serde::{Deserialize, Serialize};
 
 use enc::crypto::xchacha20::XAeadNonce;
-use enc::data_scheme::dcgka::{ControlMessage, Dcgka, DirectMessage, DirectMessageContent, ProcessInput};
+use enc::data_scheme::dcgka::{
+    ControlMessage, Dcgka, DirectMessage, DirectMessageContent, ProcessInput,
+};
 use enc::data_scheme::group::{EncryptionGroup, GroupError, GroupOutput, GroupState};
 use enc::data_scheme::group_secret::{GroupSecret, GroupSecretId, SecretBundle, SecretBundleState};
 use enc::key_bundle::Lifetime;
@@ -345,9 +347,15 @@ fn cast(rng: &enc::Rng) -> (BTreeMap<Id, KeyManagerState>, KeyRegistryState<Id>)
     let mut registry = KeyRegistry::<Id>::init();
     for id in [ADMIN, BOB, CAROL, JOIN, JOIN2] {
         let identity = enc::test_utils::crypto::SecretKey::from_bytes(rng.random_array().unwrap());
-        let manager = ok(KeyManager::init_and_generate_prekey(&identity, lifetime, rng), "prekey");
+        let manager = ok(
+            KeyManager::init_and_generate_prekey(&identity, lifetime, rng),
+            "prekey",
+        );
         let bundle = ok(KeyManager::prekey_bundle(&manager), "prekey bundle");
-        registry = ok(KeyRegistry::add_longterm_bundle(registry, id, bundle), "register");
+        registry = ok(
+            KeyRegistry::add_longterm_bundle(registry, id, bundle),
+            "register",
+        );
         keys.insert(id, manager);
     }
     (keys, registry)
@@ -363,7 +371,11 @@ fn party(keys: &BTreeMap<Id, KeyManagerState>, registry: &KeyRegistryState<Id>, 
     )
 }
 
-fn create(keys: &BTreeMap<Id, KeyManagerState>, registry: &KeyRegistryState<Id>, rng: &enc::Rng) -> Y {
+fn create(
+    keys: &BTreeMap<Id, KeyManagerState>,
+    registry: &KeyRegistryState<Id>,
+    rng: &enc::Rng,
+) -> Y {
     let (y, _) = ok(
         EncryptionGroup::create(party(keys, registry, ADMIN), vec![ADMIN, BOB, CAROL], rng),
         "create",
@@ -432,7 +444,9 @@ fn sizes(dm: &Dm) -> (usize, usize, usize) {
     (
         encode_cbor(dm).expect("encode the welcome").len(),
         encode_cbor(history).expect("encode the history").len(),
-        encode_cbor(ciphertext).expect("encode the ciphertext").len(),
+        encode_cbor(ciphertext)
+            .expect("encode the ciphertext")
+            .len(),
     )
 }
 
@@ -448,7 +462,12 @@ struct Rotated {
     readd_count: usize,
 }
 
-fn rotate(keys: &BTreeMap<Id, KeyManagerState>, registry: &KeyRegistryState<Id>, k_max: usize, rng: &enc::Rng) -> Rotated {
+fn rotate(
+    keys: &BTreeMap<Id, KeyManagerState>,
+    registry: &KeyRegistryState<Id>,
+    k_max: usize,
+    rng: &enc::Rng,
+) -> Rotated {
     let mut y = create(keys, registry, rng);
     let mut epochs = Vec::new();
     let (next, msg) = ok(EncryptionGroup::send(y, b"epoch 0", rng), "send");
@@ -466,14 +485,20 @@ fn rotate(keys: &BTreeMap<Id, KeyManagerState>, registry: &KeyRegistryState<Id>,
             // only the welcome bytes differ. The mode's welcome goes to a clone, not to the state.
             for (i, mode) in MODES.iter().enumerate() {
                 let bundle = mode.bundle(&without.secrets);
-                let (_, output) = ok(Dcgka::add(without.dcgka.clone(), CAROL, &bundle, rng), "re-add");
+                let (_, output) = ok(
+                    Dcgka::add(without.dcgka.clone(), CAROL, &bundle, rng),
+                    "re-add",
+                );
                 let dm = welcome_for_output(output, CAROL);
                 readd_total[i] += encode_cbor(&dm).expect("encode the re-add").len();
             }
             readd_count += 1;
             y = ok(EncryptionGroup::add(without, CAROL, rng), "add back").0;
         }
-        let (next, msg) = ok(EncryptionGroup::send(y, format!("epoch {k}").as_bytes(), rng), "send");
+        let (next, msg) = ok(
+            EncryptionGroup::send(y, format!("epoch {k}").as_bytes(), rng),
+            "send",
+        );
         y = next;
         epochs.push(msg);
     }
@@ -516,7 +541,14 @@ struct Check {
     refusal: Option<String>,
 }
 
-fn check(run: &Rotated, keys: &BTreeMap<Id, KeyManagerState>, registry: &KeyRegistryState<Id>, mode: Mode, reps: usize, rng: &enc::Rng) -> Check {
+fn check(
+    run: &Rotated,
+    keys: &BTreeMap<Id, KeyManagerState>,
+    registry: &KeyRegistryState<Id>,
+    mode: Mode,
+    reps: usize,
+    rng: &enc::Rng,
+) -> Check {
     let total = run.epochs.len();
     let admin = &run.admin;
 
@@ -550,7 +582,10 @@ fn check(run: &Rotated, keys: &BTreeMap<Id, KeyManagerState>, registry: &KeyRegi
 
     // The joiner processes the welcome with its own keys.
     let joiner0 = party(keys, registry, JOIN);
-    let (joiner, _) = ok(EncryptionGroup::receive(joiner0, &join), "joiner processes the welcome");
+    let (joiner, _) = ok(
+        EncryptionGroup::receive(joiner0, &join),
+        "joiner processes the welcome",
+    );
     let welcome_ok = joiner.is_welcomed
         && joiner.secrets.len() == bundle.len()
         && bundle.ids().all(|id| joiner.secrets.contains(id));
@@ -613,11 +648,21 @@ fn check(run: &Rotated, keys: &BTreeMap<Id, KeyManagerState>, registry: &KeyRegi
 
 /// The joiner receives every epoch message before the welcome (as a sync would deliver history), then
 /// the welcome. The crate queues the messages, then fails on the welcome for any it cannot decrypt.
-fn pre_welcome(run: &Rotated, keys: &BTreeMap<Id, KeyManagerState>, registry: &KeyRegistryState<Id>, mode: Mode, rng: &enc::Rng) -> String {
+fn pre_welcome(
+    run: &Rotated,
+    keys: &BTreeMap<Id, KeyManagerState>,
+    registry: &KeyRegistryState<Id>,
+    mode: Mode,
+    rng: &enc::Rng,
+) -> String {
     let (_, join) = join_message(run.admin.clone(), mode, rng);
     let mut joiner = party(keys, registry, JOIN);
     for msg in &run.epochs {
-        joiner = ok(EncryptionGroup::receive(joiner, msg), "queue before the welcome").0;
+        joiner = ok(
+            EncryptionGroup::receive(joiner, msg),
+            "queue before the welcome",
+        )
+        .0;
     }
     match EncryptionGroup::receive(joiner, &join) {
         Ok((_, outputs)) => format!("welcome ok, {} application outputs", outputs.len()),

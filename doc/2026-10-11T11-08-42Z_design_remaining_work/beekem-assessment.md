@@ -15,21 +15,21 @@ BeeKEM is a tree-based group key agreement (a concurrent variant of TreeKEM). On
 
 All numbers are from the spike. Steady-state update means one commit by one member in a settled group.
 
-| Measure | Result |
-| --- | --- |
-| Steady-state update, 100 members | 2.8 KB |
-| Steady-state update, 1,000 members | 3.9 KB |
-| Steady-state update, 5,000 members | about 5.0 KB (extrapolated; not run in full) |
-| Remove plus the root-restoring update, 1,000 members | about 5.3 KB |
-| Committer CPU per update | 0.6 to 0.8 ms |
-| Receiver merge plus verify | about 40 µs plus about 45 µs |
-| First commit after a bulk build, 1,000 members | 122 KB (cost is O(n)) |
-| First commit after a bulk build, 5,000 members | 603 KB (partial run) |
-| Per-member state after a full fill, 1,000 members | 64 MB, with nothing pruned |
-| Joiner replica right after creation, 1,000 members | 0.74 MB |
-| Joiner replica after history, 1,000 members | 64 MB |
-| DataScheme comparison under unicast | BeeKEM one operation is 7 to 16 times DataScheme's bytes |
-| Break-even under fan-out | BeeKEM wins on bytes only from about 11 to 17 members |
+| Measure                                              | Result                                                   |
+| ---------------------------------------------------- | -------------------------------------------------------- |
+| Steady-state update, 100 members                     | 2.8 KB                                                   |
+| Steady-state update, 1,000 members                   | 3.9 KB                                                   |
+| Steady-state update, 5,000 members                   | about 5.0 KB (extrapolated; not run in full)             |
+| Remove plus the root-restoring update, 1,000 members | about 5.3 KB                                             |
+| Committer CPU per update                             | 0.6 to 0.8 ms                                            |
+| Receiver merge plus verify                           | about 40 µs plus about 45 µs                             |
+| First commit after a bulk build, 1,000 members       | 122 KB (cost is O(n))                                    |
+| First commit after a bulk build, 5,000 members       | 603 KB (partial run)                                     |
+| Per-member state after a full fill, 1,000 members    | 64 MB, with nothing pruned                               |
+| Joiner replica right after creation, 1,000 members   | 0.74 MB                                                  |
+| Joiner replica after history, 1,000 members          | 64 MB                                                    |
+| DataScheme comparison under unicast                  | BeeKEM one operation is 7 to 16 times DataScheme's bytes |
+| Break-even under fan-out                             | BeeKEM wins on bytes only from about 11 to 17 members    |
 
 The bytes comparison assumes one copy of the BeeKEM operation per recipient, which is what our unicast transport would do. The win needs a transport that can send one message to many members.
 
@@ -37,8 +37,8 @@ The bytes comparison assumes one copy of the BeeKEM operation per recipient, whi
 
 Each item says what is wrong, why it matters for us, and whether a fix is in the crate or in our code.
 
-1. **No welcome or join API.** A new member cannot be given a small welcome. The only route the spike found is a copy of an existing member's replica. The copy carries that member's secrets and every epoch key, so it must be stripped before it is sent. A fresh replica cannot start from the latest update. This makes join the hardest part of the design. *Fix:* a crate change or our own join protocol with a path-only welcome. Not tested: a path-only welcome needs a crate change.
-2. **State grows without bound.** Each member keeps the full operation history: 64 MB at 1,000 members after a full fill. Nothing in the crate prunes it. *Fix:* snapshots at causal cuts, the same idea as tag compaction. Not designed.
+1. **No welcome or join API.** A new member cannot be given a small welcome. The only route the spike found is a copy of an existing member's replica. The copy carries that member's secrets and every epoch key, so it must be stripped before it is sent. A fresh replica cannot start from the latest update. This makes join the hardest part of the design. _Fix:_ a crate change or our own join protocol with a path-only welcome. Not tested: a path-only welcome needs a crate change.
+2. **State grows without bound.** Each member keeps the full operation history: 64 MB at 1,000 members after a full fill. Nothing in the crate prunes it. _Fix:_ snapshots at causal cuts, the same idea as tag compaction. Not designed.
 3. **The first commit after a bulk build is O(n).** 122 KB at 1,000 members. A group that starts large pays this once.
 4. **Concurrency needs causal delivery.** Concurrent operations converge only when a member buffers out-of-order operations. Dropping them converged in 1 of 300 trials. So BeeKEM depends on our ordering layer (the heads orderer and its caps, see the explainers) being correct first.
 5. **Liveness gaps under concurrency.** A concurrent commit leaves no root key until the next commit. A concurrent removal applies lazily, so a member can read a stale membership list for a while. Both need product rules for what the UI shows and what sends are allowed while a root is missing.

@@ -88,7 +88,7 @@ do: world state must replay from the journal alone. Replicas
 restore from a verified journal without a store connection, and
 `WorldCore::restore` is a pure function of the entries; the actor's
 execute path is synchronous and holds no store handle. The
-*address* is the iroh-blobs hash, so nothing about the naming
+_address_ is the iroh-blobs hash, so nothing about the naming
 changes if the bytes later move behind the store: the journal
 would then carry the same put/remove facts and the same bounds,
 and this slice's replay checks would verify presence instead of

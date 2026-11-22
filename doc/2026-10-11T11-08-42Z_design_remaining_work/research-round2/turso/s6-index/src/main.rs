@@ -4,6 +4,7 @@
 //! started as child processes by `concurrency`.
 
 mod bench;
+mod block;
 mod checks;
 mod concurrency;
 mod durability;
@@ -11,7 +12,6 @@ mod keys;
 mod redb_store;
 mod sqlite_store;
 mod store;
-mod block;
 mod turso_plan;
 mod turso_probe;
 mod turso_store;
@@ -102,7 +102,11 @@ fn main() -> Result<()> {
     match arg(0)? {
         "selftest" => checks::selftest(),
         "bench" => {
-            let n = if args.len() > 3 { num(3)? as usize } else { 200_000 };
+            let n = if args.len() > 3 {
+                num(3)? as usize
+            } else {
+                200_000
+            };
             bench(arg(1)?, Path::new(arg(2)?), n)
         }
         "durable-child" => durability::child_for(arg(1)?, Path::new(arg(2)?), num(3)?),
@@ -124,7 +128,9 @@ fn main() -> Result<()> {
         "turso-features" => turso_probe::features(Path::new(arg(1)?)),
         "turso-concurrency" => turso_probe::concurrency(Path::new(arg(1)?)),
         "turso-hold" => {
-            let claims: Vec<keys::Claim> = (num(3)?..=num(4)?).map(durability::expected_claim).collect();
+            let claims: Vec<keys::Claim> = (num(3)?..=num(4)?)
+                .map(durability::expected_claim)
+                .collect();
             turso_store::TursoStore::hold(Path::new(arg(1)?), num(2)?, &claims)
         }
         "turso-probe" => turso_probe::probe(Path::new(arg(1)?)),

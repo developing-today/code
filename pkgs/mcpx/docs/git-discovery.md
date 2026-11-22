@@ -22,10 +22,10 @@ A server scoped `repo` gets one process per clone -- every linked worktree of
 one repository shares it. A server scoped `worktree` gets one per checkout.
 The keys are the answers to two questions git already has commands for:
 
-| scope | key | git's command |
-| --- | --- | --- |
-| `repo` | the common git directory | `git rev-parse --git-common-dir` |
-| `worktree` | the top of the checkout | `git rev-parse --show-toplevel` |
+| scope      | key                      | git's command                    |
+| ---------- | ------------------------ | -------------------------------- |
+| `repo`     | the common git directory | `git rev-parse --git-common-dir` |
+| `worktree` | the top of the checkout  | `git rev-parse --show-toplevel`  |
 
 Until this change mcpx asked exactly those, by forking git twice per
 directory and caching both answers -- negative ones included -- for the
@@ -37,7 +37,7 @@ testing the replacement:
    image is owned by the host's uid, the image runs as uid 1000, and git
    refuses a repository someone else owns (`safe.directory`). Every mounted
    checkout, measured: `fatal: detected dubious ownership in repository at
-   '/work/proj'`. The old image shipped git so that these scopes would work,
+'/work/proj'`. The old image shipped git so that these scopes would work,
    and in the ordinary way of using it they fell back to per-directory keys.
 3. **The daemon's environment leaked into every caller's key.** An
    autostarted daemon inherits the environment of whoever ran mcpx first. A
@@ -83,12 +83,12 @@ decides on. Nothing else, and it executes nothing.
 
 Every outcome is one of four:
 
-| outcome | meaning | what the scope does |
-| --- | --- | --- |
-| found | the same answer git gives | keys by it |
-| not a repository | git would say so too | keys by directory |
-| broken | something on disk git dies on -- a `.git` file naming nothing | keys by directory; `doctor` warns, with the fix |
-| unsure | a layout this port will not vouch for | asks git |
+| outcome          | meaning                                                       | what the scope does                             |
+| ---------------- | ------------------------------------------------------------- | ----------------------------------------------- |
+| found            | the same answer git gives                                     | keys by it                                      |
+| not a repository | git would say so too                                          | keys by directory                               |
+| broken           | something on disk git dies on -- a `.git` file naming nothing | keys by directory; `doctor` warns, with the fix |
+| unsure           | a layout this port will not vouch for                         | asks git                                        |
 
 **Git is the fallback only for "unsure".** It is asked once, as `git
 rev-parse --path-format=absolute --git-common-dir --show-toplevel`: the
@@ -119,34 +119,34 @@ compared with `git rev-parse` for both questions. Test names are in
 
 ### Checkouts
 
-| case | decision | test |
-| --- | --- | --- |
-| main clone, from its root or any depth below | same as git | parity: `main clone` |
-| linked worktree, git's relative `commondir` (`../..`) | same as git: `.git` file → private dir → `commondir` → common dir | parity: `linked worktree with git's relative commondir` |
-| linked worktree, absolute `commondir` | same | parity |
-| linked worktree with relative paths (`worktree.useRelativePaths`, git 2.48; sets `extensions.relativeWorktrees` and format 1) | same; the extension is one native knows | parity |
-| linked worktree moved by hand | same as git: still resolves, from its new place; the stale back-pointer is not consulted | parity |
-| main clone moved: its worktrees' `.git` files name nothing | same as git: an error, not a fallback. `doctor` warns and names `git worktree repair` | parity; `TestWithoutGitABrokenGitfileIsAWarning` |
-| **submodule** | **its own repository**, as git says: common dir `.git/modules/<name>`, top the submodule's directory. A submodule has its own HEAD, objects and history; a server scoped to "the repository" that saw the superproject's instead would be looking at the wrong code | parity: `submodule is its own repository` (built from a local path, no network) |
-| nested repositories | innermost wins, as in git | parity |
-| `--separate-git-dir`, a relative `.git` file, CRLF endings | same | parity |
-| `.git` file path through a symlink and `..` | resolved by the kernel, not lexically, as git's `chdir` does | parity |
-| `.git` is a symlink to a git directory elsewhere | same: the symlink's target | parity |
-| symlinked checkout; `/tmp` vs `/private/tmp` | the physical path, as git; both spellings key alike | parity; `TestGitParityTmpAndPrivateTmp` |
-| a directory that is both a bare repository and holds a `.git` | `.git` wins, as in git's order | parity |
+| case                                                                                                                          | decision                                                                                                                                                                                                                                                            | test                                                                            |
+| ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| main clone, from its root or any depth below                                                                                  | same as git                                                                                                                                                                                                                                                         | parity: `main clone`                                                            |
+| linked worktree, git's relative `commondir` (`../..`)                                                                         | same as git: `.git` file → private dir → `commondir` → common dir                                                                                                                                                                                                   | parity: `linked worktree with git's relative commondir`                         |
+| linked worktree, absolute `commondir`                                                                                         | same                                                                                                                                                                                                                                                                | parity                                                                          |
+| linked worktree with relative paths (`worktree.useRelativePaths`, git 2.48; sets `extensions.relativeWorktrees` and format 1) | same; the extension is one native knows                                                                                                                                                                                                                             | parity                                                                          |
+| linked worktree moved by hand                                                                                                 | same as git: still resolves, from its new place; the stale back-pointer is not consulted                                                                                                                                                                            | parity                                                                          |
+| main clone moved: its worktrees' `.git` files name nothing                                                                    | same as git: an error, not a fallback. `doctor` warns and names `git worktree repair`                                                                                                                                                                               | parity; `TestWithoutGitABrokenGitfileIsAWarning`                                |
+| **submodule**                                                                                                                 | **its own repository**, as git says: common dir `.git/modules/<name>`, top the submodule's directory. A submodule has its own HEAD, objects and history; a server scoped to "the repository" that saw the superproject's instead would be looking at the wrong code | parity: `submodule is its own repository` (built from a local path, no network) |
+| nested repositories                                                                                                           | innermost wins, as in git                                                                                                                                                                                                                                           | parity                                                                          |
+| `--separate-git-dir`, a relative `.git` file, CRLF endings                                                                    | same                                                                                                                                                                                                                                                                | parity                                                                          |
+| `.git` file path through a symlink and `..`                                                                                   | resolved by the kernel, not lexically, as git's `chdir` does                                                                                                                                                                                                        | parity                                                                          |
+| `.git` is a symlink to a git directory elsewhere                                                                              | same: the symlink's target                                                                                                                                                                                                                                          | parity                                                                          |
+| symlinked checkout; `/tmp` vs `/private/tmp`                                                                                  | the physical path, as git; both spellings key alike                                                                                                                                                                                                                 | parity; `TestGitParityTmpAndPrivateTmp`                                         |
+| a directory that is both a bare repository and holds a `.git`                                                                 | `.git` wins, as in git's order                                                                                                                                                                                                                                      | parity                                                                          |
 
 ### Git directories
 
-| case | decision | test |
-| --- | --- | --- |
-| bare repository, from itself or inside it | common dir yes, worktree no -- `worktree` keys by directory | parity |
-| inside `.git`, or a worktree's private dir | same: a git directory, no worktree | parity |
-| worktree of a bare clone | has a worktree: a linked worktree ignores the common `core.bare` | parity |
-| bare clone with `extensions.worktreeConfig` | its worktrees become bare, as in git -- git's documented trap, reproduced rather than corrected | parity |
-| `HEAD` as a symlink into `refs/`, detached SHA-1, detached SHA-256 | valid | parity |
-| reftable repository | same | parity |
-| stray `.git` directory that is not a repository | skipped; discovery continues upward | parity |
-| nested repository whose `HEAD` is almost valid (40 non-hex characters, a symlink out of `refs/`, `ref:` outside `refs/`), or has no `objects/` | skipped, as git validates it | parity |
+| case                                                                                                                                           | decision                                                                                        | test   |
+| ---------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ------ |
+| bare repository, from itself or inside it                                                                                                      | common dir yes, worktree no -- `worktree` keys by directory                                     | parity |
+| inside `.git`, or a worktree's private dir                                                                                                     | same: a git directory, no worktree                                                              | parity |
+| worktree of a bare clone                                                                                                                       | has a worktree: a linked worktree ignores the common `core.bare`                                | parity |
+| bare clone with `extensions.worktreeConfig`                                                                                                    | its worktrees become bare, as in git -- git's documented trap, reproduced rather than corrected | parity |
+| `HEAD` as a symlink into `refs/`, detached SHA-1, detached SHA-256                                                                             | valid                                                                                           | parity |
+| reftable repository                                                                                                                            | same                                                                                            | parity |
+| stray `.git` directory that is not a repository                                                                                                | skipped; discovery continues upward                                                             | parity |
+| nested repository whose `HEAD` is almost valid (40 non-hex characters, a symlink out of `refs/`, `ref:` outside `refs/`), or has no `objects/` | skipped, as git validates it                                                                    | parity |
 
 ### `.git` files and entries git refuses
 
@@ -154,45 +154,45 @@ Git stops at these rather than skipping them, so mcpx does too -- skipping
 would find the enclosing repository and share its instance. Every one is
 built inside a real repository so that skipping would be caught.
 
-| case | test |
-| --- | --- |
-| garbage; `gitdir:` without the space; no path; a path that does not exist; a path that is not a repository; trailing spaces (part of the path, as in git) | parity: `broken .git file: …` |
-| a `.git` file over git's 1 MiB ceiling (`git.gitfileMaxBytes`) | parity |
-| a `.git` that is neither file nor directory (fifo) | parity against git ≥ 2.54, which made this fatal; older git skipped it, and mcpx follows current git |
-| an empty `commondir` | parity |
-| a directory discovery cannot look inside | `a directory discovery cannot look inside` (git cannot `chdir` there at all) |
-| cwd that does not exist, or is a file | `cwd that does not exist, and cwd that is a file` |
+| case                                                                                                                                                      | test                                                                                                 |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| garbage; `gitdir:` without the space; no path; a path that does not exist; a path that is not a repository; trailing spaces (part of the path, as in git) | parity: `broken .git file: …`                                                                        |
+| a `.git` file over git's 1 MiB ceiling (`git.gitfileMaxBytes`)                                                                                            | parity                                                                                               |
+| a `.git` that is neither file nor directory (fifo)                                                                                                        | parity against git ≥ 2.54, which made this fatal; older git skipped it, and mcpx follows current git |
+| an empty `commondir`                                                                                                                                      | parity                                                                                               |
+| a directory discovery cannot look inside                                                                                                                  | `a directory discovery cannot look inside` (git cannot `chdir` there at all)                         |
+| cwd that does not exist, or is a file                                                                                                                     | `cwd that does not exist, and cwd that is a file`                                                    |
 
 ### The repository's config
 
-| case | decision | test |
-| --- | --- | --- |
-| `core.worktree` absolute, relative (to the git dir, not the common dir), or with only its last component missing | same as git | parity |
-| `core.worktree` git cannot enter | git dies before printing either answer, so both scopes fall back | parity |
-| `core.bare`; `core.bare` with `core.worktree` | no worktree (git warns that the pair makes no sense) | parity |
-| per-worktree `config.worktree` with `worktreeConfig` | read, as git reads it | parity |
-| no `config`; a `config` without `repositoryformatversion` | as git: everything else in it is discarded, so `core.bare = true` there means nothing | parity |
-| `[include]` setting `core.worktree` | ignored, as git ignores it here: the repository format is read without includes | parity |
-| upper-case names, `[core "x"]`, `[foo "core"]`, `[core.x]`, quoting, comments, continuation lines, a BOM, CRLF, bare keys, numeric booleans | parsed as git parses them | parity; `TestGitConfigParserAgainstGitsOwn` compares values with `git config --file` |
-| an unknown extension in a version-0 repository | ignored, as git does | parity |
-| format version > 1; an unknown extension in version 1; a version-1 extension in version 0; a syntax error; a value git refuses (`bare = maybe`, `objectformat = md5`, a bare `worktree` key); a value git takes that this port does not parse (`bare = 1k`) | **unsure → git.** The git on the machine may be newer than this port | parity, marked unsure |
+| case                                                                                                                                                                                                                                                        | decision                                                                              | test                                                                                 |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `core.worktree` absolute, relative (to the git dir, not the common dir), or with only its last component missing                                                                                                                                            | same as git                                                                           | parity                                                                               |
+| `core.worktree` git cannot enter                                                                                                                                                                                                                            | git dies before printing either answer, so both scopes fall back                      | parity                                                                               |
+| `core.bare`; `core.bare` with `core.worktree`                                                                                                                                                                                                               | no worktree (git warns that the pair makes no sense)                                  | parity                                                                               |
+| per-worktree `config.worktree` with `worktreeConfig`                                                                                                                                                                                                        | read, as git reads it                                                                 | parity                                                                               |
+| no `config`; a `config` without `repositoryformatversion`                                                                                                                                                                                                   | as git: everything else in it is discarded, so `core.bare = true` there means nothing | parity                                                                               |
+| `[include]` setting `core.worktree`                                                                                                                                                                                                                         | ignored, as git ignores it here: the repository format is read without includes       | parity                                                                               |
+| upper-case names, `[core "x"]`, `[foo "core"]`, `[core.x]`, quoting, comments, continuation lines, a BOM, CRLF, bare keys, numeric booleans                                                                                                                 | parsed as git parses them                                                             | parity; `TestGitConfigParserAgainstGitsOwn` compares values with `git config --file` |
+| an unknown extension in a version-0 repository                                                                                                                                                                                                              | ignored, as git does                                                                  | parity                                                                               |
+| format version > 1; an unknown extension in version 1; a version-1 extension in version 0; a syntax error; a value git refuses (`bare = maybe`, `objectformat = md5`, a bare `worktree` key); a value git takes that this port does not parse (`bare = 1k`) | **unsure → git.** The git on the machine may be newer than this port                  | parity, marked unsure                                                                |
 
 ### Environment
 
-| variable | decision | test |
-| --- | --- | --- |
-| `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY` and the rest of git's local list | **Not honoured**, and removed from the fallback's environment. The key is computed in the daemon, for many callers, and the daemon's environment belongs to whoever started it -- honouring it is §1.3. The *caller's* variables never reach the daemon (`CallContext` carries the cwd, not the environment), and they do not need to: everywhere git itself sets `GIT_DIR` -- hooks, aliases, `submodule foreach` -- it also puts the cwd inside that repository, so discovery from the cwd reaches the same answer | `TestGitEnvironmentThatNamesARepositoryIsIgnored`; `TestGitLocalEnvCoversWhatGitCallsLocal` checks the list against the installed git; e2e `TestTheDaemonsOwnGitDirDoesNotPinEveryCaller` |
-| `GIT_CEILING_DIRECTORIES` | **Honoured**, with git's exact rules: relative entries ignored, entries symlink-resolved unless they follow an empty entry, a ceiling never examined from below it but honoured-as-absent when the walk starts there. It can only make keys narrower, and it lives in shell profiles, so a user who set it expects mcpx to agree with their shell | parity: `TestGitParityCeilingDirectories`, eight cases |
-| `GIT_DISCOVERY_ACROSS_FILESYSTEM`, and mount points | **Honoured**: discovery stops where the device changes, as git's does. A value that is not a boolean is unsure | `TestDiscoveryStopsAtAFilesystemBoundary` (a boundary cannot be mounted without privileges, so the device lookup is substituted); verified with a real tmpfs in the image, `docs/container.md` §3 |
+| variable                                                                                              | decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | test                                                                                                                                                                                              |
+| ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY` and the rest of git's local list | **Not honoured**, and removed from the fallback's environment. The key is computed in the daemon, for many callers, and the daemon's environment belongs to whoever started it -- honouring it is §1.3. The _caller's_ variables never reach the daemon (`CallContext` carries the cwd, not the environment), and they do not need to: everywhere git itself sets `GIT_DIR` -- hooks, aliases, `submodule foreach` -- it also puts the cwd inside that repository, so discovery from the cwd reaches the same answer | `TestGitEnvironmentThatNamesARepositoryIsIgnored`; `TestGitLocalEnvCoversWhatGitCallsLocal` checks the list against the installed git; e2e `TestTheDaemonsOwnGitDirDoesNotPinEveryCaller`         |
+| `GIT_CEILING_DIRECTORIES`                                                                             | **Honoured**, with git's exact rules: relative entries ignored, entries symlink-resolved unless they follow an empty entry, a ceiling never examined from below it but honoured-as-absent when the walk starts there. It can only make keys narrower, and it lives in shell profiles, so a user who set it expects mcpx to agree with their shell                                                                                                                                                                    | parity: `TestGitParityCeilingDirectories`, eight cases                                                                                                                                            |
+| `GIT_DISCOVERY_ACROSS_FILESYSTEM`, and mount points                                                   | **Honoured**: discovery stops where the device changes, as git's does. A value that is not a boolean is unsure                                                                                                                                                                                                                                                                                                                                                                                                       | `TestDiscoveryStopsAtAFilesystemBoundary` (a boundary cannot be mounted without privileges, so the device lookup is substituted); verified with a real tmpfs in the image, `docs/container.md` §3 |
 
 ### Deliberate differences from git
 
-| case | git | mcpx | why | test |
-| --- | --- | --- | --- | --- |
-| a repository owned by another user (`safe.directory`) | refuses | resolves | `safe.directory` stops git *running* configuration from a repository someone else controls. Native discovery runs nothing from it; it reads three small files and five keys. And the refusal is exactly what broke the container (§1.2). The fallback does not override git's check, so an unsure layout in a foreign repository still falls back, with git's reason | `TestGitOwnershipIsNotCheckedNatively` |
-| an implicit bare repository under `safe.bareRepository=explicit` | refuses | resolves | the same reasoning: the setting protects against embedded bare repositories' configuration | `TestGitSafeBareRepositoryIsNotCheckedNatively` |
-| a cwd spelled in the wrong case on a case-insensitive volume | on-disk spelling | the spelling given | Getting the on-disk spelling needs `F_GETPATH`, reachable from Go only outside the `unsafe` rules; the `cwd` scope has always behaved this way; the error over-isolates. Belongs in `canonical()` for every scope: [#190](https://github.com/dezren39/nix/issues/190) | `TestGitCaseOfAWrongCaseCwdIsKept` asserts the difference is case and nothing else |
-| git older than 2.31 as the fallback | prints `--path-format=absolute` back | refuses its answer | the echoed option would otherwise be read as a path. Only reachable for unsure layouts | `TestGitFallbackRejectsAGitWithoutPathFormat` |
+| case                                                             | git                                  | mcpx               | why                                                                                                                                                                                                                                                                                                                                                                  | test                                                                               |
+| ---------------------------------------------------------------- | ------------------------------------ | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| a repository owned by another user (`safe.directory`)            | refuses                              | resolves           | `safe.directory` stops git _running_ configuration from a repository someone else controls. Native discovery runs nothing from it; it reads three small files and five keys. And the refusal is exactly what broke the container (§1.2). The fallback does not override git's check, so an unsure layout in a foreign repository still falls back, with git's reason | `TestGitOwnershipIsNotCheckedNatively`                                             |
+| an implicit bare repository under `safe.bareRepository=explicit` | refuses                              | resolves           | the same reasoning: the setting protects against embedded bare repositories' configuration                                                                                                                                                                                                                                                                           | `TestGitSafeBareRepositoryIsNotCheckedNatively`                                    |
+| a cwd spelled in the wrong case on a case-insensitive volume     | on-disk spelling                     | the spelling given | Getting the on-disk spelling needs `F_GETPATH`, reachable from Go only outside the `unsafe` rules; the `cwd` scope has always behaved this way; the error over-isolates. Belongs in `canonical()` for every scope: [#190](https://github.com/dezren39/nix/issues/190)                                                                                                | `TestGitCaseOfAWrongCaseCwdIsKept` asserts the difference is case and nothing else |
+| git older than 2.31 as the fallback                              | prints `--path-format=absolute` back | refuses its answer | the echoed option would otherwise be read as a path. Only reachable for unsure layouts                                                                                                                                                                                                                                                                               | `TestGitFallbackRejectsAGitWithoutPathFormat`                                      |
 
 Windows is not handled: drive letters, `\`, and `//server/share` ceilings are
 not ported, because mcpx does not build there (`internal/runner` uses
@@ -239,7 +239,7 @@ without it:
   mutations first written so that they did not compile were rewritten, since
   a compile error proves nothing about a test. The first runs found five
   gaps, now covered: the order of the `.git` and bare checks at one level, a
-  section whose *subsection* is `core`, `HEAD` values that are almost valid,
+  section whose _subsection_ is `core`, `HEAD` values that are almost valid,
   a `.git` that cannot be stat'd, and a `.git` file over the size ceiling.
 
 **In the image.** §3 of `docs/container.md`, "No git".
@@ -258,5 +258,5 @@ without it:
   here; `internal/daemon/registry.go` is another area's.
 - **Debian bookworm's git (2.39) refuses a checkout made by a current git**
   that used `worktree.useRelativePaths`: `unknown repository extension found:
-  relativeworktrees`. Native discovery reads it, so the image is now more
+relativeworktrees`. Native discovery reads it, so the image is now more
   capable than the git it used to ship.

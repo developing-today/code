@@ -72,6 +72,7 @@ Each item below gives my recommendation first, then the alternatives. The owner 
 **Preferred, accepted: removal and re-enrolment.** When a chain forks, the chain is frozen at the fork point, and the fork proof is stored and shared. The managers remove the author. The person re-enrols under a new device key. Events from the forked chain after the fork point are not applied.
 
 **Alternative: quarantine with approval.** Same first step, the freeze and the proof. Then, instead of an immediate removal, the post-fork events of each branch are held in quarantine. They are stored, not applied, and not voided. A manager then chooses one of three paths:
+
 1. Approve one branch. Its events are applied, and the other branch stays frozen.
 2. Approve neither. The author is removed and re-enrols, which is the preferred path.
 3. Approve a merged view, only if the two branches can be reconciled by hand.

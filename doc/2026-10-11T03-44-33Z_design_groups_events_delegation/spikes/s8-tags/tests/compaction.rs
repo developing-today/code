@@ -75,7 +75,9 @@ fn random_history(seed: u64) -> (Vec<Replica>, Vec<Op>) {
         } else {
             let live: Vec<Dot> = reps[r].state.live.keys().copied().collect();
             if !live.is_empty() {
-                let names: BTreeSet<Dot> = (0..=rng.below(2)).map(|_| live[rng.below(live.len())]).collect();
+                let names: BTreeSet<Dot> = (0..=rng.below(2))
+                    .map(|_| live[rng.below(live.len())])
+                    .collect();
                 issued.push(reps[r].clear(names));
             }
         }

@@ -26,7 +26,7 @@ export TMPDIR="${TMPDIR:-/tmp}"
 (cd "$mcpx_root" && go build -o "$work/fakemcp" ./internal/testsupport/fakemcp)
 
 mkdir -p "$work/home"
-printf '{"mcpServers":{"demo":{"command":"%s"}}}' "$work/fakemcp" > "$work/.mcpx.json"
+printf '{"mcpServers":{"demo":{"command":"%s"}}}' "$work/fakemcp" >"$work/.mcpx.json"
 
 export HOME="$work/home"
 export XDG_CONFIG_HOME="$work/xdg"

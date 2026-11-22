@@ -8,7 +8,14 @@ with open(path, "rb") as f:
 print("manifest-version:", m.get("manifest-version"))
 print("date:", m.get("date"))
 pkgs = m.get("pkg", {})
-for name in ("rustc", "cargo", "clippy-preview", "rustfmt-preview", "rust-std", "rust-src"):
+for name in (
+    "rustc",
+    "cargo",
+    "clippy-preview",
+    "rustfmt-preview",
+    "rust-std",
+    "rust-src",
+):
     p = pkgs.get(name)
     if not p:
         print(name, "MISSING")

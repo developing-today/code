@@ -3,16 +3,17 @@
 //! A compromise is a copy of a replica (its secret keys and cached state). The attacker then gets
 //! the public ops it asks for and tries to derive keys with the copy.
 
-use crate::party::{build, Op};
+use crate::party::{Op, build};
 use beekem::{cgka::Cgka, pcs_key::PcsKey};
 use keyhive_crypto::digest::Digest;
-use rand::{rngs::StdRng, SeedableRng};
+use rand::{SeedableRng, rngs::StdRng};
 
 /// A copy of a replica, given the public ops in order.
 fn attacker(snapshot: &Cgka, ops: &[&Op]) -> Cgka {
     let mut a = snapshot.clone();
     for op in ops {
-        a.merge_concurrent_operation((*op).clone()).expect("public ops apply in order");
+        a.merge_concurrent_operation((*op).clone())
+            .expect("public ops apply in order");
     }
     a
 }
@@ -33,7 +34,10 @@ fn in_group_compromise(rng: &mut StdRng) {
     println!("## T1: c's replica is copied (compromise); c stays in the group");
     let (mut ps, _, op0, k0) = build(4, rng);
     // c derives the root as a member does, so the copy holds the path secrets c used.
-    assert!(ps[2].root().is_ok_and(|k| k == k0), "c derives the epoch-0 root");
+    assert!(
+        ps[2].root().is_ok_and(|k| k == k0),
+        "c derives the epoch-0 root"
+    );
     let copy = ps[2].c.clone();
 
     let op_b = ps[1].update(rng).expect("b updates");
@@ -42,7 +46,10 @@ fn in_group_compromise(rng: &mut StdRng) {
     }
     let k1 = ps[0].root().expect("root after b");
     let mut a1 = attacker(&copy, &[&op_b]);
-    println!("  after b's update, the copy derives the new root: {}", reads_now(&mut a1, &k1));
+    println!(
+        "  after b's update, the copy derives the new root: {}",
+        reads_now(&mut a1, &k1)
+    );
 
     let op_c = ps[2].update(rng).expect("c updates");
     for i in [0, 1, 3] {
@@ -50,15 +57,24 @@ fn in_group_compromise(rng: &mut StdRng) {
     }
     let k2 = ps[0].root().expect("root after c");
     let mut a2 = attacker(&copy, &[&op_b, &op_c]);
-    println!("  after c's own update, the copy derives the new root: {}", reads_now(&mut a2, &k2));
-    println!("  the copy derives the epoch-0 root (earlier than the compromise): {}", reads_epoch(&mut a2, &k0, &op0));
+    println!(
+        "  after c's own update, the copy derives the new root: {}",
+        reads_now(&mut a2, &k2)
+    );
+    println!(
+        "  the copy derives the epoch-0 root (earlier than the compromise): {}",
+        reads_epoch(&mut a2, &k0, &op0)
+    );
 }
 
 /// a removes c. Two attackers: c informed of its removal, and c fed only a's later update.
 fn removal(rng: &mut StdRng) {
     println!("## T2: a removes c; c's copy is then fed public ops");
     let (mut ps, _, op0, k0) = build(4, rng);
-    assert!(ps[2].root().is_ok_and(|k| k == k0), "c derives the epoch-0 root");
+    assert!(
+        ps[2].root().is_ok_and(|k| k == k0),
+        "c derives the epoch-0 root"
+    );
     let copy = ps[2].c.clone();
     let victim = ps[2].id();
 
@@ -71,17 +87,26 @@ fn removal(rng: &mut StdRng) {
         ps[i].merge(&op_a).expect("in order");
     }
     let k1 = ps[0].root().expect("root after removal");
-    println!("  b (a member) derives the post-removal root: {}", ps[1].root().is_ok_and(|k| k == k1));
+    println!(
+        "  b (a member) derives the post-removal root: {}",
+        ps[1].root().is_ok_and(|k| k == k1)
+    );
 
     let mut informed = attacker(&copy, &[&rm, &op_a]);
-    println!("  c, informed of its removal, derives a root: {}", informed.pcs_key_from_tree_root().is_ok());
+    println!(
+        "  c, informed of its removal, derives a root: {}",
+        informed.pcs_key_from_tree_root().is_ok()
+    );
     // A c that ignores its removal cannot accept a's later update: the update names the removal.
     let mut ignorant = copy.clone();
     println!(
         "  c that ignores its removal, given a's later update: {:?}",
         ignorant.merge_concurrent_operation(op_a.clone()).err()
     );
-    println!("  c's copy derives the pre-removal (epoch-0) root: {}", reads_epoch(&mut informed, &k0, &op0));
+    println!(
+        "  c's copy derives the pre-removal (epoch-0) root: {}",
+        reads_epoch(&mut informed, &k0, &op0)
+    );
 }
 
 pub fn run() {

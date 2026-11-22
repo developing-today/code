@@ -16,11 +16,11 @@ and `resources/read` also get `ttlMs` and `cacheScope`, which the caching page
 makes a MUST on complete results -- and only complete ones: an
 `input_required` or a task handle carries none.
 
-| method | cacheScope | ttlMs from |
-| --- | --- | --- |
-| `server/discover`, `tools/list`, `prompts/list`, `resources/templates/list` | public | `protoMessages.listMaxAge` |
-| `resources/list` | private (it includes the caller's session artifacts) | `protoMessages.listMaxAge` |
-| `resources/read` | private | `protoMessages.readMaxAge` (0: a resource is whatever upstream says now) |
+| method                                                                      | cacheScope                                           | ttlMs from                                                               |
+| --------------------------------------------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------ |
+| `server/discover`, `tools/list`, `prompts/list`, `resources/templates/list` | public                                               | `protoMessages.listMaxAge`                                               |
+| `resources/list`                                                            | private (it includes the caller's session artifacts) | `protoMessages.listMaxAge`                                               |
+| `resources/read`                                                            | private                                              | `protoMessages.readMaxAge` (0: a resource is whatever upstream says now) |
 
 Legacy clients get none of it; `downgrade` strips all four fields.
 
@@ -38,13 +38,13 @@ a level holds trivially; a test pins it.
 
 Checked against each revision's `schema.ts`, for everything mcpx sends:
 
-| field | first revision | older clients get |
-| --- | --- | --- |
-| audio content | 2025-03-26 | a text block describing it |
-| `Tool.annotations`, `completions` capability | 2025-03-26 | nothing |
-| `title` (tools, prompts, arguments, resources), `resource_link`, `structuredContent`, `outputSchema` | 2025-06-18 | nothing; a link becomes an embedded resource, structured content becomes text |
-| `icons`, `execution`, core `tasks` capability, url elicitation | 2025-11-25 | nothing |
-| `extensions` capability, `resultType`, cache hints, `serverInfo` in `_meta` | 2026-07-28 | nothing |
+| field                                                                                                | first revision | older clients get                                                             |
+| ---------------------------------------------------------------------------------------------------- | -------------- | ----------------------------------------------------------------------------- |
+| audio content                                                                                        | 2025-03-26     | a text block describing it                                                    |
+| `Tool.annotations`, `completions` capability                                                         | 2025-03-26     | nothing                                                                       |
+| `title` (tools, prompts, arguments, resources), `resource_link`, `structuredContent`, `outputSchema` | 2025-06-18     | nothing; a link becomes an embedded resource, structured content becomes text |
+| `icons`, `execution`, core `tasks` capability, url elicitation                                       | 2025-11-25     | nothing                                                                       |
+| `extensions` capability, `resultType`, cache hints, `serverInfo` in `_meta`                          | 2026-07-28     | nothing                                                                       |
 
 Two mistakes this found. `extensions` was sent to 2025-11-25, whose
 `ServerCapabilities` has no such field. And `resources/templates/list` sent

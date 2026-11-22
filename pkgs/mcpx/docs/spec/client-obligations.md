@@ -17,7 +17,7 @@ client of every upstream server it runs, and its client behaviour is in
 in [`../compare/`](../compare/).
 
 "Legacy" means 2024-11-05 through 2025-11-25, and "modern" means 2026-07-28.
-Several obligations below attach to the *host*, the application that shows
+Several obligations below attach to the _host_, the application that shows
 things to a user. The spec addresses these to clients. A proxy is a client
 with no user of its own, so for each of them it has to decide whether it meets
 the obligation itself or passes it downstream.
@@ -52,7 +52,7 @@ Sources: [2025-11-25 lifecycle](https://modelcontextprotocol.io/specification/20
 
 - **Every request carries `_meta`.** Every request **MUST** carry
   `_meta["io.modelcontextprotocol/protocolVersion"]` and `clientCapabilities`.
-  The client capabilities apply to *that request only*. An empty object means
+  The client capabilities apply to _that request only_. An empty object means
   none.
 - **`clientInfo`.** A client **SHOULD** send `clientInfo`.
 - **`resultType`.** An absent `resultType` means `"complete"`. An unknown
@@ -133,7 +133,7 @@ Sources: [2024-11-05 transports](https://modelcontextprotocol.io/specification/2
   when it is done.
 - **Version header (2025-06-18 and later).** Send
   `MCP-Protocol-Version: <negotiated version>` on every request after
-  `initialize`. This is the version the server *answered*, not the one the
+  `initialize`. This is the version the server _answered_, not the one the
   client prefers. A constant header is wrong whenever negotiation settled
   lower.
 - **Disconnects.** A disconnect is not a cancellation. To cancel, send
@@ -308,7 +308,7 @@ clients. The spec does not address proxies here, but the rules above force
 the following:
 
 - **Check the capability per hop.** Before forwarding a question downstream,
-  the proxy checks that *that* downstream declared the capability, **on the
+  the proxy checks that _that_ downstream declared the capability, **on the
   request being answered** (2026), and down to the mode: `elicitation.url`,
   `sampling.tools` and `sampling.context` each need their own check.
 - **Scope `includeContext`.** Through a proxy, `"thisServer"` means every

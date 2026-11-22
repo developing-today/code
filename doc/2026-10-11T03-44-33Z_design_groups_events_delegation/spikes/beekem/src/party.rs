@@ -1,6 +1,6 @@
 //! A group member with its own replica. Shared by the concurrency, secrecy and join experiments.
 
-use crate::common::{block, Member};
+use crate::common::{Member, block};
 use beekem::{
     cgka::Cgka,
     error::CgkaError,
@@ -30,7 +30,11 @@ pub struct Party {
 impl Party {
     pub fn new(doc_id: TreeId, m: Member) -> Self {
         let c = Cgka::new(doc_id, m.id, m.keys());
-        Self { m, c, buffer: Vec::new() }
+        Self {
+            m,
+            c,
+            buffer: Vec::new(),
+        }
     }
 
     pub fn id(&self) -> MemberId {
@@ -40,7 +44,11 @@ impl Party {
     /// Rotate this member's leaf key and encrypt its path.
     pub fn update(&mut self, rng: &mut StdRng) -> Result<Op, CgkaError> {
         let sk = ShareSecretKey::generate(rng);
-        let (_, op, _) = block(self.c.update::<Local, _, StdRng>(sk.share_key(), sk, &self.m.signer, rng))?;
+        let (_, op, _) =
+            block(
+                self.c
+                    .update::<Local, _, StdRng>(sk.share_key(), sk, &self.m.signer, rng),
+            )?;
         Ok(Arc::new(op))
     }
 
@@ -67,7 +75,9 @@ impl Party {
 /// replica applies each op right away. Returns the parties, the doc id, the settling op and its key.
 pub fn build(n: usize, rng: &mut StdRng) -> (Vec<Party>, TreeId, Op, PcsKey) {
     let doc_id = TreeId(MemorySigner::generate(rng).verifying_key());
-    let mut ps: Vec<Party> = (0..n).map(|_| Party::new(doc_id, Member::new(rng))).collect();
+    let mut ps: Vec<Party> = (0..n)
+        .map(|_| Party::new(doc_id, Member::new(rng)))
+        .collect();
     for i in 0..n {
         let (id, pk) = (ps[i].id(), ps[i].m.pk);
         let op = ps[0].add(id, pk).expect("add").expect("new member");

@@ -14,7 +14,7 @@
 | P5.3 Compaction              | compact | done   | `79efff10`             | `tests/tag_claims.rs` (16-case property)     | in memory; closes #184            |
 | P5.4 Documents               | docs    | done   | `b36e26dc`, `9bcd86fa` | `tests/documents.rs` (5)                     | live editing not built            |
 | P5.5 Search                  | search  | done   | `7563e10d`, `edcdaf7a` | `tests/search.rs` (9)                        | over `tag_claims()` and the index |
-| P5.6 Content on removal      | docs    | done   | `781ac3b8`, `b3b63f1f` | `tests/content_removal.rs` (7) | decision 4: content kept; #195 |
+| P5.6 Content on removal      | docs    | done   | `781ac3b8`, `b3b63f1f` | `tests/content_removal.rs` (7)               | decision 4: content kept; #195    |
 | P5.7 Aliases as tags         | alias   | done   | `e92c72de`, `c2af7b90` | `tests/aliases.rs` (7), `src/aliases.rs` (3) | #185, #160 open                   |
 | Step                         | Track   | Status | Commits                | Tests                                        | Notes                             |
 | ---------------------------- | ------- | ------ | ---------------------- | -------------------------------------------- | ---------------                   |
@@ -223,7 +223,7 @@ Base: `f42c549c` (phase-5). Track: `p5-alias`. Commits, in order:
 - `c2af7b90` `feat(rust): alias display over tag claims and the server primary alias [P5.7]`
 - this record: `docs(id): phase 5 aliases [phase 5]`
   | Step | Status | Commits | Tests |
-  | -------------------- | ------ | ---------------------- | ------------------------------------------------------------------- |
+  | ---- | ------ | ------- | ----- |
 - Red: `tests/aliases.rs` was committed with `src/aliases.rs` stubbed to the final API (no aliases, no rows). All 7 tests failed on their assertions (for example `left: 0`, `right: 1`).
 - Green: `tests/aliases.rs` 7 of 7 passed. `cargo test --lib`: 1111 passed, 0 failed, 3 ignored (1108 before, plus the 3 unit tests).
 - **An alias is a `tag.set` named `alias`, whose value is its text.** It is attributed to the signing key. Its subject is the object's ID.

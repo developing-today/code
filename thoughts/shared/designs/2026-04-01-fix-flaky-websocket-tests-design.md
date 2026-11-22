@@ -70,12 +70,14 @@ This creates a self-healing loop: any desync (lag, reconnect, step failure) resu
 #### 1. `collab.rs` — Server-Side Fixes
 
 **Init + Catch-Up (handle_collab_socket)**:
+
 - Change Init to always send `version: 0` with the original `doc.doc`
 - After sending Init, read `doc.steps` snapshot
 - If steps exist, encode them as an Update message and send immediately
 - Client receives Init(v0, base_doc) → creates editor at v0 → receives Update(all_steps) → applies them → reaches current version
 
 **Broadcast Lag Recovery (broadcast_task)**:
+
 - When `RecvError::Lagged(n)`, send `Error("Session desynchronized: N messages lost")` to the client
 - Break out of the broadcast loop (task terminates)
 - The server's main receiver loop continues until the client closes its WS
@@ -84,11 +86,13 @@ This creates a self-healing loop: any desync (lag, reconnect, step failure) resu
 #### 2. `collab.ts` — Client-Side Fixes
 
 **Extend Error Handler**:
+
 - Currently only reconnects on "Version mismatch"
 - Add "desynchronized" to reconnect-triggering error patterns
 - Same reconnect flow: close WS code 4000, schedule reconnect
 
 **receiveTransaction Failure Recovery**:
+
 - In the UPDATE handler's catch block, trigger reconnect instead of just logging
 - Close WS with code 4001, schedule reconnect
 - On reconnect, Init + catch-up restores correct state
@@ -153,15 +157,18 @@ All recovery paths converge to the same outcome: fresh Init(v=0) + Update(all st
 ## Testing Strategy
 
 ### Existing Tests (must still pass)
+
 - 71/73 Playwright tests that currently pass
 - All Rust integration tests (96 total)
 - NixOS serve-test and e2e-test (dual-instance)
 
 ### Flaky Tests (must become stable)
+
 - Test 474: "can save file and content persists" — fixed by correct Init + catch-up after reload
 - Test 638: "edits from one user appear in other user's editor" — fixed by broadcast lag recovery + timing adjustment
 
 ### Verification
+
 1. `cargo test --features web` — Rust unit tests including collab.rs tests
 2. Local Playwright: `cd e2e && npx playwright test tests/websocket.spec.ts`
 3. NixOS VM: `nix build .#checks.x86_64-linux.id-nixos-playwright-e2e`

@@ -46,11 +46,16 @@ fn every_op_and_state_encoding_is_strictly_canonical() {
                 let names: BTreeSet<Dot> = if live.is_empty() {
                     BTreeSet::new()
                 } else {
-                    (0..rng.below(3)).map(|_| live[rng.below(live.len())]).collect()
+                    (0..rng.below(3))
+                        .map(|_| live[rng.below(live.len())])
+                        .collect()
                 };
                 reps[r].clear(names)
             };
-            assert!(strict_round_trip(&encode_op(&op)), "op not canonical, seed {seed}");
+            assert!(
+                strict_round_trip(&encode_op(&op)),
+                "op not canonical, seed {seed}"
+            );
             ops_checked += 1;
             let other = rng.below(3);
             if other != r {
@@ -58,7 +63,10 @@ fn every_op_and_state_encoding_is_strictly_canonical() {
                 reps[other].merge(&src);
             }
             for rep in &reps {
-                assert!(strict_round_trip(&encode_state(&rep.state)), "state not canonical, seed {seed}");
+                assert!(
+                    strict_round_trip(&encode_state(&rep.state)),
+                    "state not canonical, seed {seed}"
+                );
                 states_checked += 1;
             }
         }

@@ -20,28 +20,28 @@ that results routed through it come back flattened to text (MRTR-19).
 
 Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.md](../README.md).
 
-| ID | Difference | Labels | Where it exists | mcpx @ 05c78b2 | Value | Effort | Risk |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| MRTR-01 | `InputRequiredResult` with `resultType: "input_required"` | `2026-07-28 has` | `26-07 only` | ✓ — produced for 2026 hosts and consumed from upstreams | + high | S | low |
-| MRTR-02 | `inputRequests`: server-assigned keys, bare `{method, params}` values | `2026-07-28 has` | `26-07 only` | ✓ — keys are broker question ids | + med | S | low |
-| MRTR-03 | Only `tools/call`, `prompts/get`, `resources/read` may answer `input_required` | `2026-07-28 has` `specs conflict` | `26-07 only` | ✓ — exactly these three are interruptible | + low | S | low |
-| MRTR-04 | Server-initiated requests removed (`ServerRequest` union gone) | `2026-07-28 removes` `has better replacement` | `24-11..25-11 ✓ · 26-07 —` | ✓ — wire requests for legacy, MRTR for 2026 | + high | S | low |
-| MRTR-05 | No input request of a kind the client did not declare | `2026-07-28 has` | `26-07 only` | ✓ — only sendable questions included | + med | S | low |
-| MRTR-06 | `requestState` opaque; client echoes it exactly, never invents one | `2026-07-28 has` | `26-07 only` | ✓ — echoed verbatim; stale fields removed per retry | + med | S | low |
-| MRTR-07 | Server MUST integrity-protect `requestState` | `2026-07-28 has` | `26-07 only` | ✓ — `base64url(payload).HMAC-SHA256`, per-process key | + high | S | low |
-| MRTR-08 | `requestState` SHOULD bind the authenticated principal | `2026-07-28 has` `mcpx missing` | `26-07 only` | ✗ — bound to `Mcp-Session-Id`, which 2026 removed (#201) | + high | M | high |
-| MRTR-09 | `requestState` SHOULD carry a short expiry | `2026-07-28 has` | `26-07 only` | ✓ — `e` expiry, `proto.stateTTL` 30 m | + low | S | low |
-| MRTR-10 | `requestState` SHOULD identify method and parameters digest | `2026-07-28 has` `mcpx missing` | `26-07 only` | ✗ — call id only; retry params ignored (#201) | + med | S | med |
-| MRTR-11 | Single use needs server-side enforcement | `2026-07-28 has` | `26-07 only` | n/a — not enforced; replay re-polls the same call | − moot | S | low |
-| MRTR-12 | Retry carries `inputResponses` keyed like `inputRequests` | `2026-07-28 has` | `26-07 only` | ✓ — built per key; relayed per key | + med | S | low |
-| MRTR-13 | Retry uses a new JSON-RPC id; state only for that retry | `2026-07-28 has` | `26-07 only` | ✓ — each round takes a fresh id | + low | S | low |
-| MRTR-14 | `requestState`-only result: client MAY retry at once | `2026-07-28 has` | `26-07 only` | partial — retries immediately, no backoff | + low | S | med |
-| MRTR-15 | Rounds are unbounded on the server side | `2026-07-28 has` | `26-07 only` | partial — mcpx as server abandons after 8 rounds | + low | S | low |
-| MRTR-16 | Client-side cap on rounds | `2026-07-28 has` `opencode v2 has` | spec: none; mcpx 8; opencode v2 10 | ✓ — `elicit.inputRounds` 8, then an error | + low | S | low |
-| MRTR-17 | No per-input error channel | `2026-07-28 has` `specs conflict` `has no replacement` | `26-07 only` | partial — one failed input aborts the whole call | + low | M | low |
-| MRTR-18 | Client fulfils `input_required` and retries | `2026-07-28 has` `opencode v2 has` | mcpx ✓; opencode v2 SDK ✓; opencode v1, lootbox ✗ | partial — implemented; unreachable until discovery is fixed | + high | S | med |
-| MRTR-19 | Results returned through MRTR keep their full shape | `mcpx missing` | spec: result is the method's own; mcpx: text | ✗ — flattened to one text block (#201) | + med | M | med |
-| MRTR-20 | Where the interrupted call's state lives | `2026-07-28 has` | spec: in `requestState`; mcpx: daemon task | partial — call runs as a daemon task; token names it | + med | L | med |
+| ID      | Difference                                                                     | Labels                                                 | Where it exists                                   | mcpx @ 05c78b2                                              | Value  | Effort | Risk |
+| ------- | ------------------------------------------------------------------------------ | ------------------------------------------------------ | ------------------------------------------------- | ----------------------------------------------------------- | ------ | ------ | ---- |
+| MRTR-01 | `InputRequiredResult` with `resultType: "input_required"`                      | `2026-07-28 has`                                       | `26-07 only`                                      | ✓ — produced for 2026 hosts and consumed from upstreams     | + high | S      | low  |
+| MRTR-02 | `inputRequests`: server-assigned keys, bare `{method, params}` values          | `2026-07-28 has`                                       | `26-07 only`                                      | ✓ — keys are broker question ids                            | + med  | S      | low  |
+| MRTR-03 | Only `tools/call`, `prompts/get`, `resources/read` may answer `input_required` | `2026-07-28 has` `specs conflict`                      | `26-07 only`                                      | ✓ — exactly these three are interruptible                   | + low  | S      | low  |
+| MRTR-04 | Server-initiated requests removed (`ServerRequest` union gone)                 | `2026-07-28 removes` `has better replacement`          | `24-11..25-11 ✓ · 26-07 —`                        | ✓ — wire requests for legacy, MRTR for 2026                 | + high | S      | low  |
+| MRTR-05 | No input request of a kind the client did not declare                          | `2026-07-28 has`                                       | `26-07 only`                                      | ✓ — only sendable questions included                        | + med  | S      | low  |
+| MRTR-06 | `requestState` opaque; client echoes it exactly, never invents one             | `2026-07-28 has`                                       | `26-07 only`                                      | ✓ — echoed verbatim; stale fields removed per retry         | + med  | S      | low  |
+| MRTR-07 | Server MUST integrity-protect `requestState`                                   | `2026-07-28 has`                                       | `26-07 only`                                      | ✓ — `base64url(payload).HMAC-SHA256`, per-process key       | + high | S      | low  |
+| MRTR-08 | `requestState` SHOULD bind the authenticated principal                         | `2026-07-28 has` `mcpx missing`                        | `26-07 only`                                      | ✗ — bound to `Mcp-Session-Id`, which 2026 removed (#201)    | + high | M      | high |
+| MRTR-09 | `requestState` SHOULD carry a short expiry                                     | `2026-07-28 has`                                       | `26-07 only`                                      | ✓ — `e` expiry, `proto.stateTTL` 30 m                       | + low  | S      | low  |
+| MRTR-10 | `requestState` SHOULD identify method and parameters digest                    | `2026-07-28 has` `mcpx missing`                        | `26-07 only`                                      | ✗ — call id only; retry params ignored (#201)               | + med  | S      | med  |
+| MRTR-11 | Single use needs server-side enforcement                                       | `2026-07-28 has`                                       | `26-07 only`                                      | n/a — not enforced; replay re-polls the same call           | − moot | S      | low  |
+| MRTR-12 | Retry carries `inputResponses` keyed like `inputRequests`                      | `2026-07-28 has`                                       | `26-07 only`                                      | ✓ — built per key; relayed per key                          | + med  | S      | low  |
+| MRTR-13 | Retry uses a new JSON-RPC id; state only for that retry                        | `2026-07-28 has`                                       | `26-07 only`                                      | ✓ — each round takes a fresh id                             | + low  | S      | low  |
+| MRTR-14 | `requestState`-only result: client MAY retry at once                           | `2026-07-28 has`                                       | `26-07 only`                                      | partial — retries immediately, no backoff                   | + low  | S      | med  |
+| MRTR-15 | Rounds are unbounded on the server side                                        | `2026-07-28 has`                                       | `26-07 only`                                      | partial — mcpx as server abandons after 8 rounds            | + low  | S      | low  |
+| MRTR-16 | Client-side cap on rounds                                                      | `2026-07-28 has` `opencode v2 has`                     | spec: none; mcpx 8; opencode v2 10                | ✓ — `elicit.inputRounds` 8, then an error                   | + low  | S      | low  |
+| MRTR-17 | No per-input error channel                                                     | `2026-07-28 has` `specs conflict` `has no replacement` | `26-07 only`                                      | partial — one failed input aborts the whole call            | + low  | M      | low  |
+| MRTR-18 | Client fulfils `input_required` and retries                                    | `2026-07-28 has` `opencode v2 has`                     | mcpx ✓; opencode v2 SDK ✓; opencode v1, lootbox ✗ | partial — implemented; unreachable until discovery is fixed | + high | S      | med  |
+| MRTR-19 | Results returned through MRTR keep their full shape                            | `mcpx missing`                                         | spec: result is the method's own; mcpx: text      | ✗ — flattened to one text block (#201)                      | + med  | M      | med  |
+| MRTR-20 | Where the interrupted call's state lives                                       | `2026-07-28 has`                                       | spec: in `requestState`; mcpx: daemon task        | partial — call runs as a daemon task; token names it        | + med  | L      | med  |
 
 ## MRTR-01 `InputRequiredResult` with `resultType: "input_required"`
 
@@ -162,7 +162,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **Effort.** S — done; fix the comment.
 - **Risk.** low.
 - **Detail.** Observed on the wire (M2, decode of the base64url part): `{"c":"tsk-685a4a42635a4122",
-  "b":"sess-e4af48671de84810a1c018d965371751","e":1790768865}`, that is a daemon task id, the session id, and a Unix
+"b":"sess-e4af48671de84810a1c018d965371751","e":1790768865}`, that is a daemon task id, the session id, and a Unix
   expiry. A daemon restart invalidates every token, as intended, because the calls they name do not survive either.
 - **Sources.** `2026-07-28/basic/patterns/mrtr.mdx:232` "servers **MUST** treat `requestState` as an attacker-controlled input.";
   `internal/mcpserver/state.go:73` "return body + \".\" + s.sign(body), nil";
@@ -294,7 +294,7 @@ Status column: **mcpx @ 05c78b2**. Legend and citation conventions: [../README.m
 - **Effort.** S.
 - **Risk.** low: an upstream wizard asking more than eight questions fails through mcpx.
 - **Detail.** mcpx also bounds the whole hold by `proto.askTimeout` (10 m). Abandoning after a cap is allowed; the spec only
-  asks servers not to error for *missing* answers.
+  asks servers not to error for _missing_ answers.
 - **Sources.** `2026-07-28/basic/patterns/mrtr.mdx:247` "Servers **MAY** choose to return an `InputRequiredResult` on multiple attempts";
   `2026-07-28/basic/patterns/mrtr.mdx:267` "rather than returning an error.";
   `internal/mcpserver/ask.go:195-199`; `internal/defaults/defaults.json:72` "\"askRounds\": 8,".

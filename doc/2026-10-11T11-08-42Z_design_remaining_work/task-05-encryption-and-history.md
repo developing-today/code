@@ -66,6 +66,7 @@ p2panda-encryption (git, pinned), with the `data_scheme` feature. Do not enable 
 ## 2026-10-11T12-49-09Z Update: welcome size (S12), heads orderer (S10), BeeKEM spike
 
 Welcome size (S12):
+
 - Stock: 146.6 B per epoch, 147.4 KB at 1,000 epochs (mean of five runs). Encoded with `p2panda_core::cbor::encode_cbor`, which is cbor-core 0.10.1.
 - serde_bytes variant: 40.0 B per epoch, 40.5 KB at 1,000 epochs. This is S12's own annotated copy. The S3 "patched" copy has no serde_bytes change, and S3's RESULTS say it was never built. Correct the earlier claim: the patch does not exist yet.
 - The serde_bytes fix is wire-incompatible. A PreKey welcome fails to decode across the two builds in both directions. Ship it as a new scheme version, not a silent patch (N10 changes accordingly).
@@ -77,6 +78,7 @@ Welcome size (S12):
 - Not tested: receiving across the group (Bob and Carol never process messages); joiner decryption of application messages; groups above three members; K above 1,000.
 
 Heads orderer (S10):
+
 - The per-event cap of 32 holds with the merge rule. No event named more than 32 heads.
 - The frontier does not stay at 32. At 40 members a burst gives 40 heads (one per member). The merge rule is needed at a cap of 32, and not needed at 40 or more.
 - Concurrent merges cannot name each other. A member's view grows by 8 per storm round (40, 48, 56). A designated merger keeps the view at 40, but skips about a quarter of storm events.
@@ -86,6 +88,7 @@ Heads orderer (S10):
 - Not tested: membership changes, real transport, byte sizes, group sizes other than 40.
 
 BeeKEM (beekem 0.4.0, MSRV 1.90):
+
 - Steady-state update: 2.8 KB at 100 members, 3.9 KB at 1,000, about 5.0 KB at 5,000 (extrapolated). A remove plus the root-restoring update is about 5.3 KB at 1,000. Committer CPU is 0.6 to 0.8 ms per update.
 - The first commit after a bulk build is O(n): 122 KB at 1,000 members. Per-member state is mostly operation history: 64 MB at 1,000 after a full fill, and nothing prunes it.
 - Concurrency converges only with causal buffering. Dropping out-of-order operations converged in 1 of 300 trials. A concurrent commit leaves no root key until the next commit. A concurrent removal applies lazily, so membership reads are stale.

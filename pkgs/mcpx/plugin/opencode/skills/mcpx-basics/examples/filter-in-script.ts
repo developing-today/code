@@ -18,8 +18,8 @@ const value = r instanceof String ? String(r) : r;
 const shape = Array.isArray(value)
   ? `array of ${value.length}`
   : value !== null && typeof value === "object"
-  ? `object with keys ${Object.keys(value).slice(0, 20).join(", ")}`
-  : `${typeof value}, ${String(value).length} chars`;
+    ? `object with keys ${Object.keys(value).slice(0, 20).join(", ")}`
+    : `${typeof value}, ${String(value).length} chars`;
 console.log(shape);
 
 if (field !== undefined) {

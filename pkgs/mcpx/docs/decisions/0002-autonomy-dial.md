@@ -32,17 +32,17 @@ generated script is not. The dial governs the second kind and never the first.
 
 ### What ships
 
-| knob | where | values | what it actually does |
-| --- | --- | --- | --- |
-| `prompt.mode` | `internal/settings/consumer.go:97`, call scope | `script` (default), `run` | the default for `/v1/intent`; a body `mode` overrides it unconditionally (`internal/daemon/routes_consumer.go:344-347`) |
-| `mcpx prompt --run` | `internal/cli/consumer.go:402`, `:423-426` | flag | sends `mode: run` |
-| recipe run `mode` | `routes_consumer.go:268-271`; `mcpx recipes run --script` | `script`, `run` (default) | render and diagnose only, or run |
-| `prompt.sample` | `consumer.go:105`, daemon scope | `never` (default), `ask` | whether mcpx may ask a model at all |
-| `elicit.confirmDestructive` | `consumer.go:47`, daemon scope | bool, off | ask before a `destructiveHint` call; unanswered refuses |
-| `elicit.disambiguate` | `consumer.go:23`, daemon scope | `never`, `ask` | ask which live instance to use |
-| `diagnose.preflight` | `consumer.go:65`, call scope | bool, on | refuse a script whose calls no longer match the schemas |
-| `script.typecheck` | `internal/settings/registry.go:244` | `off`, `on`, `strict` | refuse a program that does not type-check |
-| `elicit.mode` | `docs/elicitation.md` §4, *status: proposed* | `ask`, `auto`, `decline`, `error` | not implemented; who answers an upstream server's question |
+| knob                        | where                                                     | values                            | what it actually does                                                                                                   |
+| --------------------------- | --------------------------------------------------------- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `prompt.mode`               | `internal/settings/consumer.go:97`, call scope            | `script` (default), `run`         | the default for `/v1/intent`; a body `mode` overrides it unconditionally (`internal/daemon/routes_consumer.go:344-347`) |
+| `mcpx prompt --run`         | `internal/cli/consumer.go:402`, `:423-426`                | flag                              | sends `mode: run`                                                                                                       |
+| recipe run `mode`           | `routes_consumer.go:268-271`; `mcpx recipes run --script` | `script`, `run` (default)         | render and diagnose only, or run                                                                                        |
+| `prompt.sample`             | `consumer.go:105`, daemon scope                           | `never` (default), `ask`          | whether mcpx may ask a model at all                                                                                     |
+| `elicit.confirmDestructive` | `consumer.go:47`, daemon scope                            | bool, off                         | ask before a `destructiveHint` call; unanswered refuses                                                                 |
+| `elicit.disambiguate`       | `consumer.go:23`, daemon scope                            | `never`, `ask`                    | ask which live instance to use                                                                                          |
+| `diagnose.preflight`        | `consumer.go:65`, call scope                              | bool, on                          | refuse a script whose calls no longer match the schemas                                                                 |
+| `script.typecheck`          | `internal/settings/registry.go:244`                       | `off`, `on`, `strict`             | refuse a program that does not type-check                                                                               |
+| `elicit.mode`               | `docs/elicitation.md` §4, _status: proposed_              | `ask`, `auto`, `decline`, `error` | not implemented; who answers an upstream server's question                                                              |
 
 Three things were found reading this, the third by running it:
 
@@ -82,14 +82,14 @@ has no way to say "a caller may lower this but not raise it".
 
 ### What the issues propose
 
-| source | name | values | default |
-| --- | --- | --- | --- |
-| #111 | `repair.level` | `off`, `explain`, `confirm`, `propose`, `retry`, `rewrite` | `explain` |
-| #112 | hook `effect` | `advise`, `transform`, `script`, `retry` | `advise` |
-| #113 | `prompt.mode` | adds `plan` | — |
-| #114 | generators | "a generated artefact is a file a human reviews"; never a runtime behaviour | — |
-| #110 | `sampling.answerLocally` | a model answering an upstream question itself | off |
-| #111, last paragraph | `ClampedBy` | "the daemon sets the maximum autonomy it will ever exercise, a caller may lower it but never raise it" | — |
+| source               | name                     | values                                                                                                 | default   |
+| -------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------ | --------- |
+| #111                 | `repair.level`           | `off`, `explain`, `confirm`, `propose`, `retry`, `rewrite`                                             | `explain` |
+| #112                 | hook `effect`            | `advise`, `transform`, `script`, `retry`                                                               | `advise`  |
+| #113                 | `prompt.mode`            | adds `plan`                                                                                            | —         |
+| #114                 | generators               | "a generated artefact is a file a human reviews"; never a runtime behaviour                            | —         |
+| #110                 | `sampling.answerLocally` | a model answering an upstream question itself                                                          | off       |
+| #111, last paragraph | `ClampedBy`              | "the daemon sets the maximum autonomy it will ever exercise, a caller may lower it but never raise it" | —         |
 
 #176 asked for #111's `repair.level` to be the one dial.
 
@@ -104,10 +104,10 @@ implemented three times (#181 row 5).
 
 ### B — #111's `repair.level` everywhere, as #176 proposed
 
-It is the earliest and the most worked-out. But the name says *repair* on a
+It is the earliest and the most worked-out. But the name says _repair_ on a
 setting that governs prompts and hooks, and `level` already means log level
-(`logging.level`). Its top two stops, `retry` and `rewrite`, differ in *what*
-runs, not in *how far* mcpx goes — both execute code the caller did not send,
+(`logging.level`). Its top two stops, `retry` and `rewrite`, differ in _what_
+runs, not in _how far_ mcpx goes — both execute code the caller did not send,
 and a ceiling cannot tell them apart. And it has no stop for #112's `transform`,
 replacing the value the caller receives without running anything, so #112 would
 still need words of its own.
@@ -131,14 +131,14 @@ feature.
 
 Ordered from least to most. Each permits everything below it.
 
-| level | may | may not |
-| --- | --- | --- |
-| `off` | nothing — the caller receives exactly what it would have without mcpx's opinion | attach anything |
-| `advise` | attach text or diagnostics to the result or the error | stop, replace, or run anything |
-| `ask` | stop the operation: raise a question through the broker, where an unanswered one refuses, as `confirmDestructive` already does; or refuse with a structured reason | replace or run anything |
-| `propose` | return a replacement beside the original, unapplied: a script, a plan, a transformed value, a declaration | apply it |
-| `apply` | replace the value the caller receives, with the original kept visible | execute anything the caller did not send |
-| `run` | execute code or an operation the caller did not send, with the caller's own permissions and nothing more | exceed the caller's permissions, or skip a consent gate |
+| level     | may                                                                                                                                                                | may not                                                 |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
+| `off`     | nothing — the caller receives exactly what it would have without mcpx's opinion                                                                                    | attach anything                                         |
+| `advise`  | attach text or diagnostics to the result or the error                                                                                                              | stop, replace, or run anything                          |
+| `ask`     | stop the operation: raise a question through the broker, where an unanswered one refuses, as `confirmDestructive` already does; or refuse with a structured reason | replace or run anything                                 |
+| `propose` | return a replacement beside the original, unapplied: a script, a plan, a transformed value, a declaration                                                          | apply it                                                |
+| `apply`   | replace the value the caller receives, with the original kept visible                                                                                              | execute anything the caller did not send                |
+| `run`     | execute code or an operation the caller did not send, with the caller's own permissions and nothing more                                                           | exceed the caller's permissions, or skip a consent gate |
 
 Two rules hold at every level. **No level skips a consent gate**:
 `elicit.confirmDestructive` still asks before a destructive call, whoever wrote
@@ -148,13 +148,13 @@ made general.
 
 ### The settings
 
-| setting | scope | default | replaces |
-| --- | --- | --- | --- |
-| `autonomy.max` | daemon, not hot | `run` | nothing; new |
-| `prompt.autonomy` | call, `ClampedBy: autonomy.max` | `propose` | `prompt.mode` (`script` → `propose`, `run` → `run`) |
-| `repair.autonomy` | call, `ClampedBy: autonomy.max` | `advise` | #111's `repair.level` |
-| `hooks.autonomy` | call, `ClampedBy: autonomy.max` | `run` — each hook's own `effect` is the real limit | nothing; new |
-| hook `effect` | per hook ([0001](0001-hook-vocabulary.md)) | `advise` | #112's `effect` |
+| setting           | scope                                      | default                                            | replaces                                            |
+| ----------------- | ------------------------------------------ | -------------------------------------------------- | --------------------------------------------------- |
+| `autonomy.max`    | daemon, not hot                            | `run`                                              | nothing; new                                        |
+| `prompt.autonomy` | call, `ClampedBy: autonomy.max`            | `propose`                                          | `prompt.mode` (`script` → `propose`, `run` → `run`) |
+| `repair.autonomy` | call, `ClampedBy: autonomy.max`            | `advise`                                           | #111's `repair.level`                               |
+| `hooks.autonomy`  | call, `ClampedBy: autonomy.max`            | `run` — each hook's own `effect` is the real limit | nothing; new                                        |
+| hook `effect`     | per hook ([0001](0001-hook-vocabulary.md)) | `advise`                                           | #112's `effect`                                     |
 
 The `mode` field on `/v1/intent` and `/v1/recipes/{name}/run` becomes
 `autonomy`, and an unknown value is a 400 rather than a silent `propose`.
@@ -243,7 +243,7 @@ Four hooks into existing code, each small:
    closes the half-read above for all seven settings at once, and makes a
    runtime `PUT` mean what its `"applied": true` says.
 
-Version one supports `KindEnum` only. A floor — a daemon requiring *more*
+Version one supports `KindEnum` only. A floor — a daemon requiring _more_
 checking than a caller asks for, as `diagnose.preflight` might want — is the same
 mechanism with the order reversed; nothing needs one yet, and
 `elicit.confirmDestructive` gets the same effect today by being daemon-scoped
@@ -251,7 +251,7 @@ so a caller cannot touch it at all.
 
 **Landed** with `autonomy.max`, `repair.autonomy` and `hooks.autonomy`
 (`internal/settings/clamp.go`). Two deviations from the sketch above: a
-clamped setting's `Enum` is an ordered *subset* of the ceiling's rather than
+clamped setting's `Enum` is an ordered _subset_ of the ceiling's rather than
 equal to it, so `prompt.autonomy` keeps its two levels; and a prompt route
 whose level is lowered below `propose` returns neither the script nor a
 generation, only the candidates and diagnostics. `repair.autonomy` governs
@@ -283,7 +283,7 @@ The tests it lands with:
   reading the start-time policy instead of the request's: both answer
   `propose`, which is today's behaviour for `prompt.mode`.
 - `PUT /v1/settings/autonomy.max` answers `applied: false,
-  restartRequired: true` (`routes_settings.go:216-227`), because the ceiling
+restartRequired: true` (`routes_settings.go:216-227`), because the ceiling
   is not hot.
 
 What it does not defend against, stated so nobody reads more into it: a caller
@@ -337,45 +337,45 @@ without an API change.
 
 ## Mapping
 
-| term | from | level |
-| --- | --- | --- |
-| `prompt.mode: script` | shipped | `propose` |
-| `prompt.mode: run`, `mcpx prompt --run` | shipped | `run` |
-| an unknown `mode`, e.g. `plan` | shipped behaviour | `propose`, silently — becomes a 400 |
-| recipe run `mode: script`, `--script` | shipped | `propose` |
-| recipe run `mode: run` (the route's default) | shipped | `run` |
-| `off` | #111 | `off` |
-| `explain` | #111 | `advise` |
-| `confirm` | #111 | `ask` |
-| `propose` | #111 | `propose` |
-| `retry` | #111 | `run` |
-| `rewrite` | #111 | `run` |
-| rung 0, deterministic diagnostic | #111 | `advise` |
-| rung 1, deterministic near-miss | #111 | `propose`; `run` when the fix is provably the intended one and the caller allows `run` |
-| rung 2, explain | #111 | `advise` |
-| rung 3, warn / confirm | #111 | `ask` |
-| rung 4, propose as an artifact | #111 | `propose` |
-| rungs 5 and 6, retry and reinterpret | #111 | `run` |
-| refusal with a reason (approach B, item 7) | #111 | `ask` |
-| pass-through | #111 | `off` |
-| `advise` | #112 | `advise` |
-| `transform` | #112 | `apply` |
-| `script` | #112 | `run`, or `propose` |
-| `retry` | #112 | `run` |
-| a `pre` hook that refuses | #112 | `ask` |
-| `observe` | #81 | `off` |
-| a `before` hook that denies | #81 | `ask` |
-| a `before` hook that returns a replacement result | #81 | `apply` |
-| an `after` hook that rewrites the result | #81 | `apply` |
-| `prompt.mode: plan` | #113 | `propose` |
-| `mode: run` | #113 | `run` |
-| generators | #114 | `propose`, fixed |
-| `sampling.answerLocally` | #110 | `apply` |
-| `ClampedBy` | #111 | `Setting.ClampedBy` in `internal/settings` |
-| a caller lowering the level | #111 | a call-scoped `<feature>.autonomy` |
-| the daemon's maximum | #111 | `autonomy.max` |
-| `dryRun` | #111 | not the dial: a flag on the caller's own script |
-| `elicit.confirmDestructive`, `elicit.disambiguate` | shipped | not the dial: consent and clarification gates, unchanged |
-| `diagnose.preflight`, `script.typecheck` | shipped | not the dial: checks on the caller's own code |
-| `prompt.sample`, `model.provider` | shipped, #110 | not the dial: whether a model is consulted |
-| `elicit.mode` | `docs/elicitation.md`, proposed | not the dial: who answers an upstream question, by rules the user wrote |
+| term                                               | from                            | level                                                                                  |
+| -------------------------------------------------- | ------------------------------- | -------------------------------------------------------------------------------------- |
+| `prompt.mode: script`                              | shipped                         | `propose`                                                                              |
+| `prompt.mode: run`, `mcpx prompt --run`            | shipped                         | `run`                                                                                  |
+| an unknown `mode`, e.g. `plan`                     | shipped behaviour               | `propose`, silently — becomes a 400                                                    |
+| recipe run `mode: script`, `--script`              | shipped                         | `propose`                                                                              |
+| recipe run `mode: run` (the route's default)       | shipped                         | `run`                                                                                  |
+| `off`                                              | #111                            | `off`                                                                                  |
+| `explain`                                          | #111                            | `advise`                                                                               |
+| `confirm`                                          | #111                            | `ask`                                                                                  |
+| `propose`                                          | #111                            | `propose`                                                                              |
+| `retry`                                            | #111                            | `run`                                                                                  |
+| `rewrite`                                          | #111                            | `run`                                                                                  |
+| rung 0, deterministic diagnostic                   | #111                            | `advise`                                                                               |
+| rung 1, deterministic near-miss                    | #111                            | `propose`; `run` when the fix is provably the intended one and the caller allows `run` |
+| rung 2, explain                                    | #111                            | `advise`                                                                               |
+| rung 3, warn / confirm                             | #111                            | `ask`                                                                                  |
+| rung 4, propose as an artifact                     | #111                            | `propose`                                                                              |
+| rungs 5 and 6, retry and reinterpret               | #111                            | `run`                                                                                  |
+| refusal with a reason (approach B, item 7)         | #111                            | `ask`                                                                                  |
+| pass-through                                       | #111                            | `off`                                                                                  |
+| `advise`                                           | #112                            | `advise`                                                                               |
+| `transform`                                        | #112                            | `apply`                                                                                |
+| `script`                                           | #112                            | `run`, or `propose`                                                                    |
+| `retry`                                            | #112                            | `run`                                                                                  |
+| a `pre` hook that refuses                          | #112                            | `ask`                                                                                  |
+| `observe`                                          | #81                             | `off`                                                                                  |
+| a `before` hook that denies                        | #81                             | `ask`                                                                                  |
+| a `before` hook that returns a replacement result  | #81                             | `apply`                                                                                |
+| an `after` hook that rewrites the result           | #81                             | `apply`                                                                                |
+| `prompt.mode: plan`                                | #113                            | `propose`                                                                              |
+| `mode: run`                                        | #113                            | `run`                                                                                  |
+| generators                                         | #114                            | `propose`, fixed                                                                       |
+| `sampling.answerLocally`                           | #110                            | `apply`                                                                                |
+| `ClampedBy`                                        | #111                            | `Setting.ClampedBy` in `internal/settings`                                             |
+| a caller lowering the level                        | #111                            | a call-scoped `<feature>.autonomy`                                                     |
+| the daemon's maximum                               | #111                            | `autonomy.max`                                                                         |
+| `dryRun`                                           | #111                            | not the dial: a flag on the caller's own script                                        |
+| `elicit.confirmDestructive`, `elicit.disambiguate` | shipped                         | not the dial: consent and clarification gates, unchanged                               |
+| `diagnose.preflight`, `script.typecheck`           | shipped                         | not the dial: checks on the caller's own code                                          |
+| `prompt.sample`, `model.provider`                  | shipped, #110                   | not the dial: whether a model is consulted                                             |
+| `elicit.mode`                                      | `docs/elicitation.md`, proposed | not the dial: who answers an upstream question, by rules the user wrote                |

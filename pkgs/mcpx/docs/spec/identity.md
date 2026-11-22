@@ -27,13 +27,13 @@ arrived on, and puts it in the request's context
 (`internal/mcpserver/identity.go`). The backend builds the daemon call context
 from that (`mcpCaller` in `internal/cli/serve.go`):
 
-| request arrives on | identity | session | cwd / pid |
-| --- | --- | --- | --- |
-| stdio (`mcpx serve`) | the process | `$MCPX_SESSION_ID`, else `mcp-<pid>` | the process's |
-| a legacy Streamable HTTP session | its `Mcp-Session-Id` | `mcp-<session id>` | unknown |
-| any request carrying `_meta["dev.mcpx/session"]` | that name | the name, verbatim | unknown |
-| any request carrying `_meta["ai.opencode/sessionID"]` (and no `dev.mcpx/session`) | that id | the id, verbatim | unknown |
-| a 2026-07-28 request without it, or a legacy POST outside a session | none | none: a fresh call id | unknown |
+| request arrives on                                                                | identity             | session                              | cwd / pid     |
+| --------------------------------------------------------------------------------- | -------------------- | ------------------------------------ | ------------- |
+| stdio (`mcpx serve`)                                                              | the process          | `$MCPX_SESSION_ID`, else `mcp-<pid>` | the process's |
+| a legacy Streamable HTTP session                                                  | its `Mcp-Session-Id` | `mcp-<session id>`                   | unknown       |
+| any request carrying `_meta["dev.mcpx/session"]`                                  | that name            | the name, verbatim                   | unknown       |
+| any request carrying `_meta["ai.opencode/sessionID"]` (and no `dev.mcpx/session`) | that id              | the id, verbatim                     | unknown       |
+| a 2026-07-28 request without it, or a legacy POST outside a session               | none                 | none: a fresh call id                | unknown       |
 
 The rows are in precedence order except that an explicit session key
 wins over the connection's own identity. When a request carries more

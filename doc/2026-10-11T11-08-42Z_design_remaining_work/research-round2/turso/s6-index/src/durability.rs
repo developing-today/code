@@ -5,7 +5,12 @@
 
 use crate::keys::{Claim, Id};
 use crate::store::Store;
-use crate::{Rng, redb_store::RedbStore, sqlite_store::SqliteStore, turso_store::{TursoRowidStore, TursoStore}};
+use crate::{
+    Rng,
+    redb_store::RedbStore,
+    sqlite_store::SqliteStore,
+    turso_store::{TursoRowidStore, TursoStore},
+};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
@@ -33,7 +38,9 @@ pub fn expected_claim(seq: u64) -> Claim {
 
 /// Batch `b` holds seqs `b*1000+1 ..= b*1000+1000`.
 fn batch_claims(b: u64) -> Vec<Claim> {
-    (b * BATCH + 1..=(b + 1) * BATCH).map(expected_claim).collect()
+    (b * BATCH + 1..=(b + 1) * BATCH)
+        .map(expected_claim)
+        .collect()
 }
 
 /// Child: commit batches until killed, printing `committed <b>` after each commit.
@@ -105,7 +112,12 @@ fn test<S: Store>(trials: usize, dir: &Path) -> Result<()> {
         std::fs::create_dir_all(&tdir)?;
         let path = tdir.join(format!("index-{}.db", S::NAME));
         let mut child = Command::new(std::env::current_exe()?)
-            .args(["durable-child", S::NAME, path.to_str().context("non-UTF-8 path")?, "1000000"])
+            .args([
+                "durable-child",
+                S::NAME,
+                path.to_str().context("non-UTF-8 path")?,
+                "1000000",
+            ])
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()?;
@@ -121,13 +133,21 @@ fn test<S: Store>(trials: usize, dir: &Path) -> Result<()> {
         std::thread::sleep(Duration::from_millis(delay_ms));
         child.kill()?; // SIGKILL on Unix
         let status = child.wait()?;
-        let committed = reader.join().map_err(|_| anyhow!("reader thread panicked"))?;
+        let committed = reader
+            .join()
+            .map_err(|_| anyhow!("reader thread panicked"))?;
         let acked = committed.last().map_or(0, |b| b + 1);
         let v = verify::<S>(&path, acked)?;
         let ok = v.ok();
         println!(
             "trial {t:02}: delay_ms={delay_ms} exit=\"{status}\" acked_batches={} present_batches={} present_claims={} partial={} mismatched={} gap={} index_rows_mismatch={} ok={ok}",
-            v.acked, v.present_batches, v.present_claims, v.partial_batches, v.mismatched_claims, v.gap, v.index_rows_mismatch
+            v.acked,
+            v.present_batches,
+            v.present_claims,
+            v.partial_batches,
+            v.mismatched_claims,
+            v.gap,
+            v.index_rows_mismatch
         );
         if !ok {
             failed += 1;
@@ -141,7 +161,13 @@ fn test<S: Store>(trials: usize, dir: &Path) -> Result<()> {
     }
     println!(
         "summary store={} trials={trials} failed={failed} acked_batches={} present_batches={} partial_batches={} mismatched_claims={} present_eq_acked={} present_eq_acked_plus_1={}",
-        S::NAME, totals[0], totals[1], totals[2], totals[3], totals[4], totals[5]
+        S::NAME,
+        totals[0],
+        totals[1],
+        totals[2],
+        totals[3],
+        totals[4],
+        totals[5]
     );
     ensure!(failed == 0, "{failed} trials failed");
     Ok(())

@@ -11,14 +11,14 @@ re-runs anything.
 
 ## Start with the shape of the problem
 
-| question | command |
-| --- | --- |
-| what is slow | `mcpx stats calls` |
-| what keeps failing | `mcpx stats errors` |
-| is a server unstable | `mcpx stats servers` |
-| which process died | `mcpx stats instances` |
-| what happened just now | `mcpx log --since 5m` |
-| what led to this call | `mcpx log --chain <trace>` |
+| question               | command                    |
+| ---------------------- | -------------------------- |
+| what is slow           | `mcpx stats calls`         |
+| what keeps failing     | `mcpx stats errors`        |
+| is a server unstable   | `mcpx stats servers`       |
+| which process died     | `mcpx stats instances`     |
+| what happened just now | `mcpx log --since 5m`      |
+| what led to this call  | `mcpx log --chain <trace>` |
 
 `mcpx stats calls` is ordered by **total time spent**, not by count, because
 the question behind it is "what is costing me" and a rare ten-second tool

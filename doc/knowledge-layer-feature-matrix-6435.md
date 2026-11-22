@@ -338,11 +338,11 @@ RTC are alpha and data loss is possible; automated/SQLite backups are
 recommended.
 
 - Data model: Graph -> Pages / Blocks as a block outliner (Markdown
-    or Org-mode support). The DB version unifies pages and blocks as
-    Nodes (a node is a page or a block; the two now behave similarly),
-    referenced with [[]], with properties, tags that can carry
-    inherited tag properties, journals, tasks, queries,
-    cards/flashcards, templates, and a Library for namespaced pages.
+      or Org-mode support). The DB version unifies pages and blocks as
+      Nodes (a node is a page or a block; the two now behave similarly),
+      referenced with [[]], with properties, tags that can carry
+      inherited tag properties, journals, tasks, queries,
+      cards/flashcards, templates, and a Library for namespaced pages.
 - Local vs cloud: local-first / privacy-first. File graphs are
   Markdown/Org files; DB graphs are backed by SQLite (graph export
   is a .db file; automated backups keep the last 12 in a backups
@@ -376,10 +376,10 @@ recommended.
   sync does not lock in the data. The app is open source, supported
   via Open Collective.
 - Graph: nodes have Linked References and Unlinked References
-    sections; [[]] page/node references and block embeds. A visual
-    graph-view claim from a primary page in this pass: unknown (the
-    references model is verified; the visualisation is not stated on
-    the pages opened).
+      sections; [[]] page/node references and block embeds. A visual
+      graph-view claim from a primary page in this pass: unknown (the
+      references model is verified; the visualisation is not stated on
+      the pages opened).
 - AI over notes: no built-in AI chat or summarisation is documented
   in the primary README/DB doc. AI access is via an optional MCP
   Server (enable in Settings > AI, HTTP-server auth token): AI apps

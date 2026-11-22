@@ -16,17 +16,30 @@ agg = defaultdict(list)
 for r in rows:
     agg[(r[1], int(r[3]), r[4])].append(r)
 
+
 def mean(key, idx):
     xs = [float(r[idx]) for r in agg[key]]
     return sum(xs) / len(xs)
 
+
 INF = 10**9
-MODES = {"full": INF, "recent:1": 1, "recent:8": 8, "recent:32": 32, "recent:128": 128, "recent:512": 512}
+MODES = {
+    "full": INF,
+    "recent:1": 1,
+    "recent:8": 8,
+    "recent:32": 32,
+    "recent:128": 128,
+    "recent:512": 512,
+}
+
 
 def secrets_sum(K, N):
     return sum(min(N, 2 * i + 1) for i in range(1, K // 2 + 1))
 
-print("| build | history | welcome B at K=100 | welcome B at K=1,000 | welcome B at K=10,000 (extrap.) | build µs at K=1,000 | build µs at K=10,000 (extrap.) | re-add churn B at K=1,000 | re-add churn B at K=10,000 (extrap.) |")
+
+print(
+    "| build | history | welcome B at K=100 | welcome B at K=1,000 | welcome B at K=10,000 (extrap.) | build µs at K=1,000 | build µs at K=10,000 (extrap.) | re-add churn B at K=1,000 | re-add churn B at K=10,000 (extrap.) |"
+)
 print("|---|---|---|---|---|---|---|---|---|")
 for build in ["stock", "serde-bytes"]:
     for mode, N in MODES.items():
@@ -57,7 +70,9 @@ for build in ["stock", "serde-bytes"]:
             c1 = (c100 * t2 - c1000 * t1) / det
             c0 = (t1 - c1 * s100) / c100
         churn10k = c0 * 5000 + c1 * secrets_sum(10000, N)
-        print(f"| {build} | {mode} | {w1:,.0f} | {w2:,.0f} | {w10k_s} | {b2:,.0f} | {b10k_s} | {t2:,.0f} | {churn10k / 1e6:,.1f} MB |")
+        print(
+            f"| {build} | {mode} | {w1:,.0f} | {w2:,.0f} | {w10k_s} | {b2:,.0f} | {b10k_s} | {t2:,.0f} | {churn10k / 1e6:,.1f} MB |"
+        )
 
 print()
 print("Frame check (inferred: one welcome per 1 MiB frame, `design…md:519`):")
@@ -68,4 +83,6 @@ for build, slope_key in [("stock", None), ("serde-bytes", None)]:
     slope = (w2 - w1) / (n2 - n1)
     intercept = w1 - slope * n1
     cross = (1048576 - intercept) / slope
-    print(f"- {build}: full welcome passes 1,048,576 B at about {cross:,.0f} secrets, i.e. about {cross - 1:,.0f} rotations")
+    print(
+        f"- {build}: full welcome passes 1,048,576 B at about {cross:,.0f} secrets, i.e. about {cross - 1:,.0f} rotations"
+    )

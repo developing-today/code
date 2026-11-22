@@ -6,9 +6,11 @@ updated: 2026-04-01T21:35:14.209Z
 ## Summary
 
 ### Task
+
 Create a detailed implementation plan for the image drag-drop/paste upload feature at `thoughts/shared/plans/2026-04-01-image-upload.md`, based on the design document at `thoughts/shared/designs/2026-04-01-image-upload-design.md`.
 
 ### What Was Done
+
 1. **Read and analyzed all relevant source files** to understand existing patterns:
    - `thoughts/shared/designs/2026-04-01-image-upload-design.md` — the validated design document
    - `src/web/routes.rs` — full 2026-line file with all API handlers, router setup, existing patterns for `save_handler`, `new_file_handler`, blob storage, tag creation, serde structs, and unit tests
@@ -33,6 +35,7 @@ Create a detailed implementation plan for the image drag-drop/paste upload featu
    - Exact file locations, line numbers, find/replace instructions
 
 ### What Remains
+
 The plan content was fully drafted but **the file write failed** due to the content being too large for the tool's JSON parameter handling. The plan needs to be written to:
 
 **`thoughts/shared/plans/2026-04-01-image-upload.md`** (under the `pkgs/id` package directory)
@@ -40,9 +43,11 @@ The plan content was fully drafted but **the file write failed** due to the cont
 The directory exists (contains `2026-03-27-ws-collab-nix-design.md`). The full plan content was composed — it's a complete, ready-to-write markdown document covering all 5 batches with detailed code, tests, verification steps, and commit messages.
 
 ### Next Step
+
 **Write the plan file.** Since the previous attempt failed due to content size, the plan should be written in multiple smaller chunks or sections. I should proceed with writing the file now.
 
 ### Critical Technical Context
+
 - **No new cargo dependencies needed** — `axum::extract::Multipart` and `DefaultBodyLimit` are built into axum 0.7
 - **No new npm packages needed** — ProseMirror has everything (Decoration, DecorationSet, Plugin, image node)
 - **Must touch `src/web/assets.rs`** after CSS changes to force rust-embed recompilation
@@ -51,6 +56,7 @@ The directory exists (contains `2026-03-27-ws-collab-nix-design.md`). The full p
 - **Total changes**: 4 files modified (routes.rs, editor.ts, editor-compat.css, editor-features.spec.ts), 2 files created (image-upload.ts, image-upload.test.ts)
 
 ### User Preferences (Persistent)
+
 - Verify builds with `just` and `nix flake`
 - Ensure generated artifacts are synced/up-to-date
 - Use `just id <command>` pattern for id-package-specific commands

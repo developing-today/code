@@ -10,12 +10,12 @@
 
 **What it carries.**
 
-| Field | Meaning |
-| --- | --- |
-| `kind` | What the event is: a group operation, a message, a tag, a document, an invite, and so on. Text. |
-| `group` | The group the event belongs to, as an optional hash. A node can index and route by group without decrypting the payload. |
-| `after` | The causal frontier: hashes of the latest events from any author that this author had seen when writing the event. At most 32. |
-| domain tag | The constant `id.events.v1`, so our header type cannot be confused with another protocol's. |
+| Field      | Meaning                                                                                                                        |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `kind`     | What the event is: a group operation, a message, a tag, a document, an invite, and so on. Text.                                |
+| `group`    | The group the event belongs to, as an optional hash. A node can index and route by group without decrypting the payload.       |
+| `after`    | The causal frontier: hashes of the latest events from any author that this author had seen when writing the event. At most 32. |
+| domain tag | The constant `id.events.v1`, so our header type cannot be confused with another protocol's.                                    |
 
 **Why it is needed.** The p2panda header already gives a per-author chain: the author's key, a sequence number, a backlink to the author's previous event, the payload size and hash, and a signature. That orders one author's events. It does not say which events from other authors this event depends on. The membership rules need that, because a removal must be ordered against the concurrent events it did or did not see. `after` carries that. Because it sits inside the signed header, nobody can change the causal links or the group without breaking the signature.
 
@@ -34,6 +34,7 @@ Details: [task 02](./task-02-events-and-storage.md).
 **Why caps.** Anyone can send events whose dependencies never arrive. Without a bound, a malicious or broken device can fill memory with waiting events. A cap bounds the memory.
 
 **The two caps (accepted, configurable per world).**
+
 - A count cap: at most 256 waiting events per author.
 - A time cap: a waiting event is dropped after 7 days.
 
@@ -71,11 +72,11 @@ Details: [task 05](./task-05-encryption-and-history.md) and the S10 results.
 
 **History modes (decided: `full` by default).**
 
-| Mode | What the joiner can read | Welcome per join, K = 1,000 rotations | Experience |
-| --- | --- | --- | --- |
-| `full` (default) | Everything since the group began | 147 KB stock, 40 KB serde_bytes (measured) | A new member sees the whole history, as members expect |
-| `recent:128` | The last 128 epochs | 19.3 KB stock, 5.6 KB serde_bytes (measured) | Older messages show as unavailable until requested |
-| `recent:32` | The last 32 epochs | 5.3 KB stock, 1.7 KB serde_bytes (measured) | Smallest join. Older messages show as unavailable until requested |
+| Mode             | What the joiner can read         | Welcome per join, K = 1,000 rotations        | Experience                                                        |
+| ---------------- | -------------------------------- | -------------------------------------------- | ----------------------------------------------------------------- |
+| `full` (default) | Everything since the group began | 147 KB stock, 40 KB serde_bytes (measured)   | A new member sees the whole history, as members expect            |
+| `recent:128`     | The last 128 epochs              | 19.3 KB stock, 5.6 KB serde_bytes (measured) | Older messages show as unavailable until requested                |
+| `recent:32`      | The last 32 epochs               | 5.3 KB stock, 1.7 KB serde_bytes (measured)  | Smallest join. Older messages show as unavailable until requested |
 
 **What 32 means in practice.** An epoch is a rotation, not a time. In our design every join, removal, and explicit update is one epoch. So in a group with frequent joins, 32 epochs can cover only the last few hours or days of membership activity. In a quiet group they can cover years. The window is the same number of events, so the experience depends on how busy the group is. That is why `recent:N` is set per world.
 
@@ -86,6 +87,7 @@ Details: [task 05](./task-05-encryption-and-history.md) and the S10 results.
 **Frame size.** The world session in this codebase caps frames at 1 MiB (`world_session.rs:48`). If a welcome has to fit one frame, stock `full` stops fitting near 7,150 rotations (inferred from the sizes above). So the identity transport needs an explicit cap, and large welcomes must be chunked. Decision needed: see the owner questions in the index.
 
 **Two rules that the round 2 results make mandatory.**
+
 1. A `recent:N` joiner cannot read older messages through the crate. The adapter must check the group secret ID before it calls `receive`, and keep pre-welcome history outside the crate. In round 2 delivering that older history to the crate failed the welcome in 80 of 120 runs (agent-reported; the reproduction is the first red test in Phase 4).
 2. Welcome bytes depend on hash-map order, so the welcome must be sorted before it is signed or hashed.
 
@@ -98,27 +100,30 @@ Details: [task 05](./task-05-encryption-and-history.md) and [welcome-recent resu
 Both sync two peers' event sets. They differ in how they find what the other side lacks.
 
 **LogSync** (p2panda-sync). Each peer sends the latest position of every log (here, every device chain), and the other side replies with what is missing.
+
 - Round trips to start: 2.
 - Control bytes at 1,000 chains: about 76 KB, roughly 76 bytes per chain. Grows linearly with chains.
 
 **Range sync** (ours). Each peer summarizes sorted ranges of (author, seq) keys with a fingerprint and a count. Mismatched ranges are split until a range is small enough to send its keys.
+
 - Round trips to start: 7 to 8.
 - Control bytes at 1,000 chains: about 6.5 KB on real stores (S7). Grows slowly with chains.
 - Fingerprints are XORs of 16-byte BLAKE3 hashes, with counts.
 
 **The crossover, measured in round 2 (range-config).** The earlier 40-chain figure held only for two new events. The real crossover is about 3.5% of chains, which is the proposed rule: use LogSync when the estimated difference exceeds 0.035 times the number of chains, or when bootstrapping. Otherwise use range.
+
 - At 4% of chains, range costs 1.2 times LogSync's control bytes. At 20%, 4.7 times.
 - Range takes 7 to 9 flights against 2.
 
 **Tradeoffs.**
 
-| | LogSync | Range |
-| --- | --- | --- |
-| Bytes when the difference is small and chains are many | Worse, grows with chains | Better |
-| Bytes when the difference is large | Better | Worse |
-| Round trips | 2 | 7 to 9 (8 round trips at 150 ms is 1.2 s before data moves) |
-| Code we own | Upstream, but it pulls in SQLite (below) | Ours, covered by the S7 and round 2 tests |
-| Failure modes | Upstream's | Ours. Round 2 found a fork that aborts its whole batch and loses 20 unrelated events in the harness. That is a required fix with a test |
+|                                                        | LogSync                                  | Range                                                                                                                                   |
+| ------------------------------------------------------ | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Bytes when the difference is small and chains are many | Worse, grows with chains                 | Better                                                                                                                                  |
+| Bytes when the difference is large                     | Better                                   | Worse                                                                                                                                   |
+| Round trips                                            | 2                                        | 7 to 9 (8 round trips at 150 ms is 1.2 s before data moves)                                                                             |
+| Code we own                                            | Upstream, but it pulls in SQLite (below) | Ours, covered by the S7 and round 2 tests                                                                                               |
+| Failure modes                                          | Upstream's                               | Ours. Round 2 found a fork that aborts its whole batch and loses 20 unrelated events in the harness. That is a required fix with a test |
 
 **Dependency note.** p2panda-sync depends on p2panda-store with default features, and those include `sqlite`. Using LogSync from p2panda-sync therefore brings SQLite back into the build, which the redb decision is meant to avoid. Options: (a) fork p2panda-sync and change that one dependency line to `default-features = false` (we own the fork), (b) implement LogSync ourselves over our traits (the protocol is small), or (c) accept SQLite as an unused build dependency. Preferred: (a), because the owner accepts forks we own.
 
@@ -181,13 +186,13 @@ Nothing has shipped, and `pkgs/id` does not depend on p2panda-encryption yet. So
 
 **The options, with measured joiner welcome size per epoch (round 2 scheme-serde).**
 
-| Option | Bytes per epoch | Fork needed | Notes |
-| --- | --- | --- | --- |
-| Keep stock (v0) | 146.5 | No | Largest. No migration cost |
-| `serde_bytes` on both fields (v1) | 40.00 | Yes, two lines in the fork we already carry for from_join | 3.66 times smaller. Follows the crate's own serde convention. Incompatible with stock in both directions (verified) |
-| Transcoder on the outer field only | 76.9 | No | Reaches the outer layer only, not the inner one |
-| Our own compact encoding | about 40 (floor) | No, but custom crypto | At most about 15% better than v1, with custom crypto to maintain |
-| Compression (bzip2) | 78 KB at K=1,000 | No | Does nothing for v1. Keys are random |
+| Option                             | Bytes per epoch  | Fork needed                                               | Notes                                                                                                               |
+| ---------------------------------- | ---------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Keep stock (v0)                    | 146.5            | No                                                        | Largest. No migration cost                                                                                          |
+| `serde_bytes` on both fields (v1)  | 40.00            | Yes, two lines in the fork we already carry for from_join | 3.66 times smaller. Follows the crate's own serde convention. Incompatible with stock in both directions (verified) |
+| Transcoder on the outer field only | 76.9             | No                                                        | Reaches the outer layer only, not the inner one                                                                     |
+| Our own compact encoding           | about 40 (floor) | No, but custom crypto                                     | At most about 15% better than v1, with custom crypto to maintain                                                    |
+| Compression (bzip2)                | 78 KB at K=1,000 | No                                                        | Does nothing for v1. Keys are random                                                                                |
 
 **Why v1 is the best choice.** It is the only option that reaches the floor. It is two lines in a fork we carry anyway. It uses the crate's own convention, not a format we invent. Nothing needs migrating, since nothing has shipped. Its costs are that stock and v1 cannot decode each other, that updates gain only about 10%, and that we need a version tag and a determinism fix. If the owner refuses the fork, the transcoder is the fallback.
 
@@ -203,13 +208,13 @@ Details: [task 05](./task-05-encryption-and-history.md) and [scheme-serde result
 
 **Options (round 2 ticket-signing, tested through the iroh-tickets parser).**
 
-| Option | What the user pastes | Validation | Trade-off |
-| --- | --- | --- | --- |
-| A: standard ticket only | 124 characters | None | Simplest. Nothing proves who issued it |
-| B: our signed envelope | 361 characters | Our clients verify the signature | Standard clients cannot parse it |
-| C: standard ticket plus a signed invite event | 124 characters | The event is checked when present | The signature lives in the event, not the paste |
-| D: ticket with appended signature | 277 characters | Parser ignores the bytes | A standard re-share strips the signature |
-| E: A plus C (recommended) | 124 characters | Automatic when the event is available | Regular tickets work, and signatures are optional |
+| Option                                        | What the user pastes | Validation                            | Trade-off                                         |
+| --------------------------------------------- | -------------------- | ------------------------------------- | ------------------------------------------------- |
+| A: standard ticket only                       | 124 characters       | None                                  | Simplest. Nothing proves who issued it            |
+| B: our signed envelope                        | 361 characters       | Our clients verify the signature      | Standard clients cannot parse it                  |
+| C: standard ticket plus a signed invite event | 124 characters       | The event is checked when present     | The signature lives in the event, not the paste   |
+| D: ticket with appended signature             | 277 characters       | Parser ignores the bytes              | A standard re-share strips the signature          |
+| E: A plus C (recommended)                     | 124 characters       | Automatic when the event is available | Regular tickets work, and signatures are optional |
 
 **Recommendation: E.** The pasted string stays a standard ticket. The invite link carries `by=<inviter key>` as the trust anchor. The inviter's signed invite event is checked automatically when it is present, and the joiner checks it before sending the accept. The user does nothing special.
 
@@ -250,6 +255,7 @@ Details: [turso results](./research-round2/turso/RESULTS.md).
 **The corpus.** A checked-in TSV, one crash point per line, with the expected class. Every failure found in a sweep is appended with its fix, and a replay test fails if a recorded verdict changes. The workload's call count and a hash of its call trace are recorded, so a changed workload fails loudly instead of testing the wrong points.
 
 **Two design items for the store (from the sweep).**
+
 1. A crash during the very first creation leaves a file that redb refuses to open ("magic number mismatch"). Nothing acknowledged is lost, but the store cannot start. Fix: create the file under a temporary name, make the first commit, then rename it into place, and fsync the directory.
 2. Debug and release builds recover different valid prefixes at four boundary points. This is not yet explained, so the corpus accepts either prefix for those points. If it turns out to be a redb bug, the engine decision gets a second look.
 

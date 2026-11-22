@@ -11,9 +11,15 @@ use std::time::Instant;
 use turso::{Builder, Connection, Statement, Value, params_from_iter};
 
 const QUERIES: [(&str, &str); 3] = [
-    ("author_seq lookup", "SELECT id FROM author_seq WHERE author = ?1 AND seq = ?2"),
+    (
+        "author_seq lookup",
+        "SELECT id FROM author_seq WHERE author = ?1 AND seq = ?2",
+    ),
     ("claims by id", "SELECT body FROM claims WHERE id = ?1"),
-    ("alpha range", "SELECT key FROM alpha WHERE key >= ?1 AND key < ?2 ORDER BY key"),
+    (
+        "alpha range",
+        "SELECT key FROM alpha WHERE key >= ?1 AND key < ?2 ORDER BY key",
+    ),
 ];
 
 const LOOKUP: &str = "SELECT id FROM author_seq WHERE author = ?1 AND seq = ?2";
@@ -28,7 +34,9 @@ async fn plans(conn: &Connection, schema: &str) -> Result<()> {
     for (label, q) in QUERIES {
         let n = q.matches('?').count();
         let params: Vec<Value> = (0..n).map(|i| Value::Blob(vec![0u8; 32 + i])).collect();
-        let mut rows = conn.query(&format!("EXPLAIN QUERY PLAN {q}"), params_from_iter(params)).await?;
+        let mut rows = conn
+            .query(&format!("EXPLAIN QUERY PLAN {q}"), params_from_iter(params))
+            .await?;
         let mut detail = Vec::new();
         while let Some(r) = rows.next().await? {
             detail.push(format!("{:?}", r.get_value(3)?));
@@ -50,17 +58,25 @@ async fn lookups(look: &mut Statement) -> Result<f64> {
 
 async fn fill_and_time(conn: &Connection, label: &str) -> Result<()> {
     conn.execute("BEGIN IMMEDIATE", ()).await?;
-    let mut ins = conn.prepare("INSERT INTO author_seq (author, seq, id) VALUES (?1, ?2, ?3)").await?;
+    let mut ins = conn
+        .prepare("INSERT INTO author_seq (author, seq, id) VALUES (?1, ?2, ?3)")
+        .await?;
     for i in 0..20_000u32 {
         ins.execute((author(i), 1i64, vec![1u8; 32])).await?;
         if i + 1 == 1_000 {
             let mut look = conn.prepare(LOOKUP).await?;
-            println!("  {label}: 1000 lookups with 1000 rows: {:.1} ms", lookups(&mut look).await?);
+            println!(
+                "  {label}: 1000 lookups with 1000 rows: {:.1} ms",
+                lookups(&mut look).await?
+            );
         }
     }
     conn.execute("COMMIT", ()).await?;
     let mut look = conn.prepare(LOOKUP).await?;
-    println!("  {label}: 1000 lookups with 20000 rows: {:.1} ms", lookups(&mut look).await?);
+    println!(
+        "  {label}: 1000 lookups with 20000 rows: {:.1} ms",
+        lookups(&mut look).await?
+    );
     Ok(())
 }
 

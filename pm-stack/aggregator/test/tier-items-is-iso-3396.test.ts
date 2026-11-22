@@ -87,11 +87,15 @@ describe("isIso impossible calendar dates (#3396)", () => {
     // proposalExpired read the phantom Feb-30 (parsed as Mar 2) as
     // unexpired well past a Feb-28 control. Now the delegation drops
     // at sanitize time, so there is no live proposal to expire.
-    const out = sanitizeTierItemExtensions(rawWith(proposalDelegation("2026-02-30T00:00:00.000Z", "2026-02-27T00:00:00.000Z")));
+    const out = sanitizeTierItemExtensions(
+      rawWith(proposalDelegation("2026-02-30T00:00:00.000Z", "2026-02-27T00:00:00.000Z")),
+    );
     expect(out.delegation).toBeUndefined();
     expect(proposalExpired(out.delegation, Date.parse("2026-03-10T00:00:00.000Z"))).toBe(false);
     // A valid old proposal still expires on schedule.
-    const live = sanitizeTierItemExtensions(rawWith(proposalDelegation("2026-02-27T00:00:00.000Z", "2026-02-27T00:00:00.000Z")));
+    const live = sanitizeTierItemExtensions(
+      rawWith(proposalDelegation("2026-02-27T00:00:00.000Z", "2026-02-27T00:00:00.000Z")),
+    );
     expect(live.delegation).toBeDefined();
     expect(proposalExpired(live.delegation, Date.parse("2026-03-10T00:00:00.000Z"))).toBe(true);
     expect(proposalExpired(live.delegation, Date.parse("2026-02-27T12:00:00.000Z"))).toBe(false);
