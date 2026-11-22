@@ -1615,6 +1615,46 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
         format!("{}||2|install some-crate\\n", caller.display())
     );
 
+    let path_install = std::process::Command::new("/bin/bash")
+        .arg(&lock_script)
+        .args(["cargo", "install", "--path"])
+        .arg(&workspace)
+        .env("HOME", &home)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                tools.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env_remove("CARGO_TARGET_DIR")
+        .current_dir(&caller)
+        .output()
+        .unwrap();
+    assert!(
+        path_install.status.success(),
+        "{}",
+        String::from_utf8_lossy(&path_install.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("broker.log")).unwrap(),
+        format!(
+            "exec --repo id --profile dev --workspace-cwd {} --wait 900 -- cargo install --path {}\\n",
+            workspace.display(),
+            workspace.display()
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("cargo.log")).unwrap(),
+        format!(
+            "{}|{}|2|install --path {}\\n",
+            caller.display(),
+            home.join("leased-target").display(),
+            workspace.display()
+        )
+    );
+
     for (args, expected_profile) in [
         (vec!["cargo", "+1.84.1", "test"], "test"),
         (
