@@ -79,6 +79,7 @@ jobs:
             exit 1
           fi
           bun test
+          python3 -I -m unittest discover -s scripts -p 'test_*.py'
 
       - name: Test seed and deploy/install scripts
         run: |

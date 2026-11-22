@@ -5,17 +5,20 @@ One hostname carries the dashboard (pm-aggregator) and the console
 (pm-console). This script makes each of these true, changing only what
 is not already so, and prints what it did:
 
-1. The tunnel routes the hostname: /console and the Android asset-links
-   file to the console, every other path to the dashboard.
-2. DNS points the hostname at the tunnel.
-3. A Cloudflare Access application covers the hostname, with one policy:
+1. A Cloudflare Access application covers the hostname, with one policy:
    the owner's address. Sign-in methods are the one-time PIN, plus Google
    when the secrets `google.access-sso.client-id` and
    `google.access-sso.client-secret` exist.
-4. Three public paths bypass sign-in, because a phone fetches them before
+2. Three public paths bypass sign-in, because a phone fetches them before
    anyone has signed in: the asset-links file, the install manifest and
    its icons. None of them says anything about the fleet.
-5. The console's environment file names the Access issuer and the owner.
+3. The console's environment file names the Access issuer and the owner.
+4. The tunnel routes the hostname: /console and the Android asset-links
+   file to the console, every other path to the dashboard.
+5. DNS points the hostname at the tunnel.
+
+The gate comes first and the route last, so the origin is never
+reachable without sign-in in front of it.
 
 Every secret is read by name through `fleet secrets get` and stays in
 memory. Nothing printed is a secret.
@@ -88,12 +91,19 @@ class Cloudflare:
         return self.call(method, path, body)["result"]
 
 
-def ensure_routes(cf: Cloudflare, account: str, host: str) -> str:
+def find_tunnel(cf: Cloudflare, account: str) -> tuple[str, dict]:
     tunnels = cf.get(f"/accounts/{account}/cfd_tunnel?name={TUNNEL}&is_deleted=false")
     if len(tunnels) != 1:
         raise SystemExit(f"expected one tunnel named {TUNNEL}, found {len(tunnels)}")
     tunnel = tunnels[0]["id"]
-    config = cf.get(f"/accounts/{account}/cfd_tunnel/{tunnel}/configurations")["config"]
+    return tunnel, cf.get(f"/accounts/{account}/cfd_tunnel/{tunnel}/configurations")[
+        "config"
+    ]
+
+
+def ensure_routes(
+    cf: Cloudflare, account: str, host: str, tunnel: str, config: dict
+) -> None:
     ingress = config.get("ingress") or []
     wanted = [
         {"hostname": host, "path": CONSOLE_PATHS, "service": CONSOLE},
@@ -117,31 +127,18 @@ def ensure_routes(cf: Cloudflare, account: str, host: str) -> str:
             f"/accounts/{account}/cfd_tunnel/{tunnel}/configurations",
             {"config": config},
         )
-    return tunnel
 
 
-def ensure_dns(cf: Cloudflare, host: str, tunnel: str) -> None:
+def dns_plan(cf: Cloudflare, host: str, tunnel: str) -> tuple[str, bool]:
+    """Read DNS for the host. Returns the zone and whether a record is
+    needed; refuses if the host already points anywhere else."""
     zone_name = ".".join(host.split(".")[-2:])
     zones = cf.get(f"/zones?name={zone_name}")
     if len(zones) != 1:
         raise SystemExit(f"zone {zone_name} not found")
-    zone = zones[0]["id"]
+    records = cf.get(f"/zones/{zones[0]['id']}/dns_records?name={host}")
     target = f"{tunnel}.cfargotunnel.com"
-    records = cf.get(f"/zones/{zone}/dns_records?name={host}")
-    if not records:
-        cf.change(
-            f"dns: {host} -> tunnel",
-            "POST",
-            f"/zones/{zone}/dns_records",
-            {
-                "type": "CNAME",
-                "name": host,
-                "content": target,
-                "proxied": True,
-                "comment": f"pm stack via tunnel {TUNNEL}",
-            },
-        )
-    elif (
+    if records and (
         len(records) != 1
         or records[0]["type"] != "CNAME"
         or records[0]["content"] != target
@@ -149,6 +146,23 @@ def ensure_dns(cf: Cloudflare, host: str, tunnel: str) -> None:
     ):
         raise SystemExit(
             f"dns: {host} already has records that are not this tunnel; not touching them"
+        )
+    return zones[0]["id"], not records
+
+
+def ensure_dns(cf: Cloudflare, host: str, tunnel: str, zone: str, needed: bool) -> None:
+    if needed:
+        cf.change(
+            f"dns: {host} -> tunnel",
+            "POST",
+            f"/zones/{zone}/dns_records",
+            {
+                "type": "CNAME",
+                "name": host,
+                "content": f"{tunnel}.cfargotunnel.com",
+                "proxied": True,
+                "comment": f"pm stack via tunnel {TUNNEL}",
+            },
         )
 
 
@@ -235,9 +249,16 @@ def ensure_app(
             app,
         )
     policies = cf.get(f"/accounts/{account}/access/apps/{app['id']}/policies")
-    if not any(
-        p.get("decision") == decision and p.get("include") == include for p in policies
-    ):
+    mine = [
+        p
+        for p in policies
+        if p.get("decision") == decision and p.get("include") == include
+    ]
+    if len(mine) != len(policies):
+        raise SystemExit(
+            f"access: {domain} carries {len(policies) - len(mine)} policy(ies) this script did not write; review them before going on"
+        )
+    if not mine:
         cf.change(
             f"access: {decision} policy on {domain}",
             "POST",
@@ -246,17 +267,8 @@ def ensure_app(
                 "name": f"{decision}: {name}",
                 "decision": decision,
                 "include": include,
-                "precedence": len(policies) + 1,
+                "precedence": 1,
             },
-        )
-    extra = [
-        p
-        for p in policies
-        if not (p.get("decision") == decision and p.get("include") == include)
-    ]
-    if extra:
-        raise SystemExit(
-            f"access: {domain} carries {len(extra)} policy(ies) this script did not write; review them before going on"
         )
     return app.get("aud")
 
@@ -303,12 +315,15 @@ def main() -> int:
     account = accounts[0]["id"]
     team = cf.get(f"/accounts/{account}/access/organizations")["auth_domain"]
 
-    tunnel = ensure_routes(cf, account, args.host)
-    ensure_dns(cf, args.host, tunnel)
+    # Look before changing anything: a hostname that already points
+    # somewhere else stops the run with nothing written.
+    tunnel, tunnel_config = find_tunnel(cf, account)
+    zone, dns_needed = dns_plan(cf, args.host, tunnel)
+
+    # Order matters. The sign-in gate is put in place first and the route
+    # last, so the origin is never reachable without the gate in front.
     idps = ensure_idps(cf, account)
     apps = cf.get(f"/accounts/{account}/access/apps?per_page=200")
-    # The public paths first: until the main application exists nothing
-    # routes here, and once it does these must already be open.
     for path in PUBLIC_PATHS:
         ensure_app(
             cf,
@@ -341,6 +356,13 @@ def main() -> int:
             },
             args.check,
             cf.changes,
+        )
+    if aud or args.check:
+        ensure_routes(cf, account, args.host, tunnel, tunnel_config)
+        ensure_dns(cf, args.host, tunnel, zone, dns_needed)
+    else:
+        raise SystemExit(
+            "the Access application has no audience tag; not routing the hostname"
         )
 
     for change in cf.changes:
