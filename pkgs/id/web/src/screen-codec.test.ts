@@ -84,7 +84,7 @@ describe("decodeViewPatch", () => {
     // offered as a view patch it must fail safely, not decode.
     const patchOnly = Uint8Array.from(
       atob(
-        "gqd2ZXJzaW9uAaVwYXRjaISmdmVyc2lvbgFld2lkdGgCpmhlaWdodAGkcnVuc5GCpXN0YXJ0AKVjZWxsc5KGpnN5bWJvbKFBomZnAaJiZwKkYm9sZMOnY29sdW1ucwGldG9rZW6nd2FybmluZ4Wmc3ltYm9so+awtKJmZwCiYmcApGJvbGTCp2NvbHVtbnMC",
+        "gqd2ZXJzaW9uAaVwYXRjaISndmVyc2lvbgGld2lkdGgCpmhlaWdodAGkcnVuc5GCpXN0YXJ0AKVjZWxsc5KGpnN5bWJvbKFBomZnAaJiZwKkYm9sZMOnY29sdW1ucwGldG9rZW6nd2FybmluZ4Wmc3ltYm9so+awtKJmZwCiYmcApGJvbGTCp2NvbHVtbnMC",
       ),
       (c) => c.charCodeAt(0),
     );

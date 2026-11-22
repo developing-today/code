@@ -48,13 +48,18 @@ function isUintOrNull(value: unknown, max: number): value is number | null {
 }
 
 function decodeCell(value: unknown): ScreenPatch["runs"][number]["cells"][number] | null {
-  if (!isRecord(value) || !hasExactlyKeys(value, ["symbol", "fg", "bg", "bold", "columns", "token"])) {
-    return null;
-  }
+  // The Rust encoder omits `token` when it is None
+  // (skip_serializing_if), so a cell carries five or six keys.
+  if (!isRecord(value)) return null;
+  const keys = Object.keys(value);
+  const allowed = ["symbol", "fg", "bg", "bold", "columns", "token"];
+  if (!allowed.slice(0, 5).every((key) => key in value)) return null;
+  if (!keys.every((key) => allowed.includes(key))) return null;
   if (typeof value.symbol !== "string") return null;
   if (!isUint(value.fg, 0xff) || !isUint(value.bg, 0xff) || !isUint(value.columns, 0xff)) return null;
   if (typeof value.bold !== "boolean") return null;
-  if (value.token !== null && (typeof value.token !== "string" || !STYLE_TOKENS.has(value.token))) {
+  const token = "token" in value ? value.token : null;
+  if (token !== null && (typeof token !== "string" || !STYLE_TOKENS.has(token))) {
     return null;
   }
   return {
@@ -63,7 +68,7 @@ function decodeCell(value: unknown): ScreenPatch["runs"][number]["cells"][number
     bg: value.bg,
     bold: value.bold,
     columns: value.columns,
-    token: value.token,
+    token,
   };
 }
 
