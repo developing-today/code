@@ -172,7 +172,7 @@ describe("image alt-text editor accessibility", () => {
   it.each(["Enter", " "])("opens the alt-text editor with %s", (key) => {
     const { nv } = setup();
     expect(nv.dom.getAttribute("role")).toBe("button");
-    expect(nv.dom.getAttribute("aria-label")).toBe("Edit image alt text");
+    expect(nv.dom.getAttribute("aria-label")).toBe("Edit image alt text: cat");
     expect(nv.dom.tabIndex).toBe(0);
 
     const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
@@ -203,6 +203,15 @@ describe("image alt-text editor accessibility", () => {
       // Enter commits and closes the editor; the figure must not reopen it.
       expect(nv.dom.querySelector(".pm-image-popover")).toBeNull();
     }
+  });
+
+  it("keeps the image description in the edit button's name as it changes", () => {
+    const { nv } = setup();
+    const image = (alt: string) => richSchema.nodes.image.create({ src: "/api/images/abc123", alt });
+    nv.update(image("a dog"));
+    expect(nv.dom.getAttribute("aria-label")).toBe("Edit image alt text: a dog");
+    nv.update(image(""));
+    expect(nv.dom.getAttribute("aria-label")).toBe("Edit image alt text");
   });
 
   it("does not open the alt-text editor for other keys", () => {

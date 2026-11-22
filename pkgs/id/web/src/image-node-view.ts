@@ -15,6 +15,15 @@ import type { EditorView, NodeView } from "prosemirror-view";
 // ImageNodeView
 // ============================================================================
 
+/**
+ * Accessible name for the image's edit button. A button's children are
+ * presentational, so the image's own description has to be carried in
+ * the button's name or screen readers lose it.
+ */
+function editLabel(alt: unknown): string {
+  return typeof alt === "string" && alt.trim() !== "" ? `Edit image alt text: ${alt}` : "Edit image alt text";
+}
+
 export class ImageNodeView implements NodeView {
   dom: HTMLElement;
   private img: HTMLImageElement;
@@ -51,7 +60,7 @@ export class ImageNodeView implements NodeView {
     figure.className = "pm-image-view";
     figure.contentEditable = "false";
     figure.setAttribute("role", "button");
-    figure.setAttribute("aria-label", "Edit image alt text");
+    figure.setAttribute("aria-label", editLabel(node.attrs.alt));
     figure.tabIndex = 0;
 
     const img = document.createElement("img");
@@ -272,6 +281,7 @@ export class ImageNodeView implements NodeView {
     const nextSrc = node.attrs.src || "";
     if (this.img.getAttribute("src") !== nextSrc) this.img.src = nextSrc;
     if (node.attrs.alt != null) this.img.alt = node.attrs.alt;
+    this.dom.setAttribute("aria-label", editLabel(node.attrs.alt));
     if (node.attrs.title != null) this.img.title = node.attrs.title;
 
     if (node.attrs.width) {
