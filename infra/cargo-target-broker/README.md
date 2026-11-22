@@ -22,7 +22,10 @@ dispatch: a bounded pool, exclusive leases, no concurrent writers.
 - `checkout` grants an **exclusive lease** on a warm pooled dir (or
   creates one). A concurrent request for the same key gets a second
   pooled dir — up to the per-key cap (default 3) — or waits; it never
-  shares a live dir.
+  shares a live dir. Before returning the lease, the broker cleans the
+  current workspace members' outputs from that target dir, preventing
+  checkout-sensitive artifacts from leaking between worktrees while
+  retaining dependency artifacts.
 - `checkin` releases the lease and refreshes the dir's recorded
   size. The dir stays warm for the next lane of the same repo.
 - Bounds: total pool cap (default 300 GiB) with LRU eviction of

@@ -209,6 +209,7 @@ Run `repo-queue <verb> --help` for flags:\n\
   verify-disposition <issue> --repo <owner/name> [--pr <n,n>] [--follow-up-task <id> | --follow-up-issue <n|url> | --follow-up-pr <n>] [--reason <text>] [--staleness-seconds <n>] [--json]\n\
   timeline <task-id> [--worker <id>] [--json]\n\
   history <task-id> [--worker <id>] [--json]  (alias of timeline)\n\
+  show <task-id> [--limit <n>] [--json]\n\
   models [--days <n>] [--json]\n\
   health [--queue <name>] [--worker <id>]\n\
   signal [--queue <name>] [--reason <text>]\n\
@@ -287,6 +288,9 @@ pub(crate) fn usage(verb: &str) -> &'static str {
         }
         "history" => {
             "usage: repo-queue history <task-id> [--worker <id>] [--json]\n\nAlias of timeline: shows a task's event timeline."
+        }
+        "show" => {
+            "usage: repo-queue show <task-id> [--limit <n>] [--json]\n\nShows one task's current details and recent history."
         }
         "models" => {
             "usage: repo-queue models [--days <n>] [--json]\n\nRolls up serving-model stamps."
