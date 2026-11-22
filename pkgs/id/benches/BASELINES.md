@@ -440,6 +440,32 @@ first run's bench and profile lines are appended to `baseline.txt`;
 the 2026-11-10 reference line is unchanged (the ratios above were
 taken under heavier load and are not comparable to it).
 
+## Fuel-spin isolation on the CI runner — noise-dominated, no verdict (2026-11-22, #1067)
+
+Machine class: `ci-runner` (GitHub-hosted ubuntu-24.04 via the
+fleet-run workflow; 4 visible CPUs, so the full profile runs with
+3 spinners). Four runs of the exact full profile (3 s phases,
+100 commands/s, 20,000,000 spin fuel), two on `main` (`c9fbfa0`) and
+two on the #1067 blocking-context branch (`780ddbe`, guest calls
+under `tokio::task::block_in_place`):
+
+```text
+bench fuel_spin_isolation unit=ms_per_command victim_p99_ms_calm=1.425 victim_p99_ms_spinning=3.562 ratio=2.500 spins=545 (main, run 45024947483)
+bench fuel_spin_isolation unit=ms_per_command victim_p99_ms_calm=2.372 victim_p99_ms_spinning=5.147 ratio=2.170 spins=1591 (branch, run 45024947483)
+bench fuel_spin_isolation unit=ms_per_command victim_p99_ms_calm=1.731 victim_p99_ms_spinning=6.693 ratio=3.867 spins=543 (branch, run 45027312468)
+bench fuel_spin_isolation unit=ms_per_command victim_p99_ms_calm=1.439 victim_p99_ms_spinning=83.794 ratio=58.228 spins=525 (main, run 45027312468)
+```
+
+Identical code on this venue produced ratios of 2.500 and 58.228 —
+the spinning-phase p99 over 300 samples on shared 4-vCPU runners is
+dominated by neighbour noise, and the calm p99 varies by ~65%
+between legs. This venue and profile therefore cannot decide
+whether a change moves the ratio; a before/after pair has to run on
+the reference machine class above (16 threads, 15 spinners), where
+the 2.517 baseline was recorded. These lines are recorded so the
+next #1067 worker does not spend runner time re-learning it; they
+are not a baseline and nothing here is appended to `baseline.txt`.
+
 ## Benchmark matrix results bundle (#5896)
 
 The four loadgen-core workloads (`journal_append_fsync`,
