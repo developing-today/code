@@ -42,15 +42,9 @@ describe("fetchNativeSubissueTree", () => {
     const fetchFn: ProjectFetch = async (_input, init) => {
       const { owner, name, number } = JSON.parse(String(init?.body)).variables;
       calls.push(`${owner}/${name}#${number}`);
-      return calls.length === 1
-        ? page([{ ...child(1), repository: { nameWithOwner: "another/repo" } }])
-        : page([]);
+      return calls.length === 1 ? page([{ ...child(1), repository: { nameWithOwner: "another/repo" } }]) : page([]);
     };
-    const tree = await fetchNativeSubissueTree(
-      "developing-today/code#1",
-      "token",
-      fetchFn,
-    );
+    const tree = await fetchNativeSubissueTree("developing-today/code#1", "token", fetchFn);
     expect(tree[0]?.ref).toBe("another/repo#1");
     expect(tree[0]?.parentRef).toBe("developing-today/code#1");
     expect(calls).toEqual(["developing-today/code#1", "another/repo#1"]);
@@ -63,13 +57,7 @@ describe("fetchNativeSubissueTree", () => {
       page([{ ...child(2), labels: undefined }]),
       Response.json({ data: { repository: { issue: null } } }),
     ]) {
-      await expect(
-        fetchNativeSubissueTree(
-          "developing-today/code#1",
-          "token",
-          async () => response,
-        ),
-      ).rejects.toThrow();
+      await expect(fetchNativeSubissueTree("developing-today/code#1", "token", async () => response)).rejects.toThrow();
     }
   });
 
@@ -81,19 +69,13 @@ describe("fetchNativeSubissueTree", () => {
       };
       const { number, after } = body.variables;
       requests.push({ number, after });
-      if (number === 1 && after === null)
-        return page([child(2)], true, "cursor-1", 2);
-      if (number === 1 && after === "cursor-1")
-        return page([child(2), child(3, ["kind/bug"])]);
+      if (number === 1 && after === null) return page([child(2)], true, "cursor-1", 2);
+      if (number === 1 && after === "cursor-1") return page([child(2), child(3, ["kind/bug"])]);
       if (number === 2) return page([child(1), child(4)]);
       return page([]);
     };
 
-    const tree = await fetchNativeSubissueTree(
-      "developing-today/code#1",
-      "test-token",
-      fetchFn,
-    );
+    const tree = await fetchNativeSubissueTree("developing-today/code#1", "test-token", fetchFn);
 
     expect(tree.map((item) => item.ref)).toEqual([
       "developing-today/code#2",
@@ -114,14 +96,13 @@ describe("fetchNativeSubissueTree", () => {
 
   test("fails closed on missing pagination cursor or API errors", async () => {
     const stuck: ProjectFetch = async () => page([child(2)], true, null);
-    await expect(
-      fetchNativeSubissueTree("developing-today/code#1", "token", stuck),
-    ).rejects.toThrow("pagination did not advance");
+    await expect(fetchNativeSubissueTree("developing-today/code#1", "token", stuck)).rejects.toThrow(
+      "pagination did not advance",
+    );
 
-    const failed: ProjectFetch = async () =>
-      Response.json({ errors: [{ message: "denied" }] });
-    await expect(
-      fetchNativeSubissueTree("developing-today/code#1", "token", failed),
-    ).rejects.toThrow("GraphQL returned errors");
+    const failed: ProjectFetch = async () => Response.json({ errors: [{ message: "denied" }] });
+    await expect(fetchNativeSubissueTree("developing-today/code#1", "token", failed)).rejects.toThrow(
+      "GraphQL returned errors",
+    );
   });
 });

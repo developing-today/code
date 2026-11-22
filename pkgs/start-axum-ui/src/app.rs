@@ -1,9 +1,9 @@
 use crate::dark_mode::DarkModeToggle;
-use start_axum_error::{AppError, ErrorTemplate};
 use cfg_if::cfg_if;
 use leptos::*;
 use leptos_meta::*;
 use leptos_router::*;
+use start_axum_error::{AppError, ErrorTemplate};
 
 cfg_if! {
     if #[cfg(feature = "ssr")] {

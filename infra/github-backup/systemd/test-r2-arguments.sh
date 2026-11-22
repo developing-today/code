@@ -9,7 +9,7 @@ for script in "$here/run-r2.sh" "$here/install-units.sh"; do
   output="$(bash "$script" --unexpected 2>&1)"
   status=$?
   set -e
-  if [[ $status -ne 2 || "$output" != *--unexpected* || "$output" != *Usage:* ]]; then
+  if [[ $status -ne 2 || $output != *--unexpected* || $output != *Usage:* ]]; then
     printf 'FAIL: %s did not reject an unknown argument (status=%s)\n%s\n' \
       "$script" "$status" "$output" >&2
     exit 1

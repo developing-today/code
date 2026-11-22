@@ -263,7 +263,7 @@ describe("Codex findings on PR #8357 (class change, partial progress, surfacing 
 
     const actions = planRecovery(second, "2026-11-10T06:00:00Z");
     expect(actions.map((a) => a.type)).toEqual(["comment_issue", "comment_issue"]);
-    expect(actions.map((a) => a.type === "comment_issue" ? a.issueNumber : null)).toEqual([222, 111]);
+    expect(actions.map((a) => (a.type === "comment_issue" ? a.issueNumber : null))).toEqual([222, 111]);
 
     const backAgain: SourceHealth = { ...second, currentClass: "session-expired" };
     const plan = planEscalation(backAgain, CTX);

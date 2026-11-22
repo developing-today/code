@@ -21,18 +21,18 @@ web-sys = { version = "0.3.64", features = ["HtmlDocument"] }
 
 [features]
 hydrate = [
-    "dep:tracing",
-    "start-axum-error/hydrate",
-    "leptos/hydrate",
-    "leptos_meta/hydrate",
-    "leptos_router/hydrate",
+  "dep:tracing",
+  "start-axum-error/hydrate",
+  "leptos/hydrate",
+  "leptos_meta/hydrate",
+  "leptos_router/hydrate",
 ]
 ssr = [
-    "start-axum-error/ssr",
-    "dep:leptos_axum",
-    "dep:libsql",
-    "dep:tracing",
-    "leptos/ssr",
-    "leptos_meta/ssr",
-    "leptos_router/ssr",
+  "start-axum-error/ssr",
+  "dep:leptos_axum",
+  "dep:libsql",
+  "dep:tracing",
+  "leptos/ssr",
+  "leptos_meta/ssr",
+  "leptos_router/ssr",
 ]

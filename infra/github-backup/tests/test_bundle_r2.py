@@ -63,7 +63,9 @@ class BundleR2Tests(unittest.TestCase):
                         "owner/repo", root, "supabase-backups"
                     )
             expected_head = git("--git-dir", mirror, "rev-parse", "HEAD").stdout.strip()
-            self.assertFalse(os.path.exists(calls[0][1]), "verified local staging bundle is removed")
+            self.assertFalse(
+                os.path.exists(calls[0][1]), "verified local staging bundle is removed"
+            )
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(len(calls), 2)
@@ -95,7 +97,10 @@ class BundleR2Tests(unittest.TestCase):
                         bundle_r2.upload_repo("owner/repo", root, "supabase-backups")
 
             self.assertEqual([call[0] for call in calls], ["copyto", "copyto"])
-            self.assertFalse(os.path.exists(calls[0][1]), "failed verification removes local staging bundle")
+            self.assertFalse(
+                os.path.exists(calls[0][1]),
+                "failed verification removes local staging bundle",
+            )
 
     def test_upload_failure_removes_local_staging_bundle(self):
         with tempfile.TemporaryDirectory() as root:
@@ -106,13 +111,17 @@ class BundleR2Tests(unittest.TestCase):
                 source.append(args[1])
                 raise RuntimeError("upload unavailable")
 
-            with patch.object(bundle_r2, "load_plan", return_value=([{"repo": "owner/repo"}], [])):
+            with patch.object(
+                bundle_r2, "load_plan", return_value=([{"repo": "owner/repo"}], [])
+            ):
                 with patch.object(bundle_r2, "_run_rclone", side_effect=failed_upload):
                     with self.assertRaisesRegex(RuntimeError, "upload unavailable"):
                         bundle_r2.upload_repo("owner/repo", root, "supabase-backups")
 
             self.assertEqual(len(source), 1)
-            self.assertFalse(os.path.exists(source[0]), "failed upload removes local staging bundle")
+            self.assertFalse(
+                os.path.exists(source[0]), "failed upload removes local staging bundle"
+            )
 
     def test_each_upload_uses_a_distinct_bundle_snapshot(self):
         with tempfile.TemporaryDirectory() as root:

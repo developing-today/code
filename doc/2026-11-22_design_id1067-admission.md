@@ -56,10 +56,10 @@ shared()` is the default every `WorldInstance` draws from).
 - **Queue, never refuse.** A call that arrives past the bound waits
   for a permit; it is never refused. The codebase's refusal
   vocabulary (capability, ceiling, and bound refusals in the actor's
-  `execute`) rejects *requests a world is not allowed to make*; a
+  `execute`) rejects _requests a world is not allowed to make_; a
   guest call is an execution the world is already entitled to, and
   refusing it under contention would reject the victim's inputs
-  precisely because *other* worlds are burning — the opposite of
+  precisely because _other_ worlds are burning — the opposite of
   the fairness criterion, and a semantics change to every program
   call. Queueing is the host-side back-pressure this criterion
   calls for, and it cannot deadlock: every admitted call is
@@ -67,7 +67,7 @@ shared()` is the default every `WorldInstance` draws from).
   of work, and the queue always drains.
 - **Fair grant order.** Permits are not granted FIFO. When a permit
   frees, it goes to the waiting call whose charge key has the least
-  *attained service* — settled fuel, exponentially decayed with a
+  _attained service_ — settled fuel, exponentially decayed with a
   one-second half-life — with arrival order breaking ties. A world
   that has just burned 20M fuel goes behind a world that has burned
   almost nothing, so the victim's wait is bounded by roughly one
@@ -86,7 +86,7 @@ shared()` is the default every `WorldInstance` draws from).
 ## The charge, and the quota hook
 
 Each call is charged to a **charge key** at admission and settled
-with its *actual* spent fuel afterwards — the figure
+with its _actual_ spent fuel afterwards — the figure
 `WorldInstance::settle` already measures for `CallMetrics`. The
 budget keeps per-key counters (`admitted`, `settled_fuel`,
 `waits`, current and high-water in-flight) behind a `snapshot()`
@@ -108,7 +108,7 @@ knows it:
   exactly one live instance in its actor, so per-instance and
   per-world attribution coincide while a world is live; the bench
   labels its instances with the world names it already uses, so
-  the spinner *workers'* charges persist across their per-spin
+  the spinner _workers'_ charges persist across their per-spin
   re-instantiations.
 
 A permit that is dropped without settling (a panic path) charges
@@ -122,7 +122,7 @@ The bound follows the `RuntimeLimits` pattern (runtime
 configuration, never journaled, validated positive at parse):
 
 - `RuntimeLimits` gains `guest_burn_concurrency: usize`, `0`
-  meaning *auto* (the `available_parallelism − 2` default). The
+  meaning _auto_ (the `available_parallelism − 2` default). The
   serve path configures the shared budget from it once at startup,
   before any world opens; a later configuration attempt is a no-op
   (first configuration wins, like the budget itself: one hub, one

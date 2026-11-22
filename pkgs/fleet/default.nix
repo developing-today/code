@@ -176,7 +176,7 @@ let
           cargoExtraArgs = "--locked " + lib.concatStringsSep " " cargoFlags;
           # buildDepsOnly also builds test targets unless this is forwarded.
           # Runtime NixOS packages skip those; checked package outputs keep them.
-          doCheck = doCheck;
+          inherit doCheck;
           env = envAttrs;
         };
 
@@ -203,7 +203,7 @@ let
           # cargoExtraArgs.
           # SQLite concurrency regressions use Python's stdlib sqlite3.
           nativeCheckInputs = [ python3 ];
-          doCheck = doCheck;
+          inherit doCheck;
           checkPhaseCargoCommand = "cargoWithProfile test --locked";
 
           # The atlas-search server tests (#9973) write trace and
@@ -231,7 +231,7 @@ let
 
         nativeCheckInputs = [ python3 ];
         cargoBuildFlags = cargoFlags;
-        doCheck = doCheck;
+        inherit doCheck;
 
         # Same check-phase HOME fix as the crane path above (#6400).
         preCheck = ''

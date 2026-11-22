@@ -1117,9 +1117,7 @@ fn manifest_selected_cargo_builds_use_the_selected_workspace_lane() {
     .unwrap();
     let command = plan.args.last().unwrap();
     assert!(command.contains("--workspace-cwd"));
-    assert!(
-        command.contains("locate-project --workspace --message-format plain --manifest-path")
-    );
+    assert!(command.contains("locate-project --workspace --message-format plain --manifest-path"));
     assert!(command.contains(manifest));
 }
 
@@ -1260,7 +1258,10 @@ fn a_background_cargo_build_holds_its_target_lease_until_exit() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!checked_in_early, "target lease returned while Cargo was active");
+    assert!(
+        !checked_in_early,
+        "target lease returned while Cargo was active"
+    );
     assert!(home.join("finished").exists());
     assert_eq!(
         std::fs::read_to_string(home.join("broker.log")).unwrap(),
@@ -1334,12 +1335,7 @@ fn a_leased_cargo_run_preserves_the_callers_stdin() {
         .spawn()
         .unwrap();
     use std::io::Write;
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"payload\n")
-        .unwrap();
+    child.stdin.take().unwrap().write_all(b"payload\n").unwrap();
     let output = child.wait_with_output().unwrap();
     assert!(
         output.status.success(),
@@ -1576,7 +1572,11 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
             .current_dir(&caller)
             .output()
             .unwrap();
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert_eq!(
             std::fs::read_to_string(home.join("broker.log")).unwrap(),
             initial_broker_log
@@ -1678,7 +1678,11 @@ printf '%s|%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$CARGO_BUILD_JOBS" "$*" > "$H
             .current_dir(&caller)
             .output()
             .unwrap();
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         let log = std::fs::read_to_string(home.join("broker.log")).unwrap();
         let cargo_args = args[1..].join(" ");
         assert_eq!(
@@ -1788,9 +1792,8 @@ printf '%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$*" >> "$HOME/cargo.log"
     }
 
     let manifest = "../code/pkgs/id/Cargo.toml";
-    let command = format!(
-        "cargo test --manifest-path {manifest} && cargo check --manifest-path {manifest}"
-    );
+    let command =
+        format!("cargo test --manifest-path {manifest} && cargo check --manifest-path {manifest}");
     let plan = shell::plan(
         Target::Local,
         "test".into(),
@@ -1815,7 +1818,10 @@ printf '%s|%s|%s\n' "$PWD" "$CARGO_TARGET_DIR" "$*" >> "$HOME/cargo.log"
         caller.display(),
         home.join("target").display()
     );
-    assert_eq!(std::fs::read_to_string(home.join("cargo.log")).unwrap(), expected);
+    assert_eq!(
+        std::fs::read_to_string(home.join("cargo.log")).unwrap(),
+        expected
+    );
     assert_eq!(
         std::fs::read_to_string(home.join("broker.log")).unwrap(),
         format!(

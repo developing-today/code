@@ -21,7 +21,7 @@ adding a database or writing into the disposable projector.
   `(period, templateVersion)`.
 - `appendReportSnapshot(file, record, snapshotAt)` freezes the record once per
   period. A changed snapshot conflicts. `appendReportSnapshotCorrection(file,
-  snapshotId, record, correctedAt)` creates a separate linked correction event
+snapshotId, record, correctedAt)` creates a separate linked correction event
   without mutating the snapshot; correction records must match the snapshot
   period. `readReportSnapshots(file)` reads immutable snapshots, and
   `readReportSnapshotCorrections(file)` reads their correction history.

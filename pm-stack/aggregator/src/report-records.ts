@@ -48,12 +48,19 @@ export type ReportUpdateOperation = (typeof REPORT_UPDATE_OPERATIONS)[number];
 const REPORT_PERIOD_KINDS = ["daily", "weekly", "monthly", "quarterly", "annual"] as const;
 const REPORT_CLASSIFICATIONS = ["implemented", "cancelled", "duplicate", "in-progress", "blocked", "queued"] as const;
 
-const ALLOWED_AFTER_SOFT_CLOSE: ReadonlySet<ReportUpdateOperation> = new Set(["quote", "append", "banner", "event-log", "feedback"]);
+const ALLOWED_AFTER_SOFT_CLOSE: ReadonlySet<ReportUpdateOperation> = new Set([
+  "quote",
+  "append",
+  "banner",
+  "event-log",
+  "feedback",
+]);
 
 /** Enforce the report's soft-close allowlist; the close instant is exclusive. */
 export function assertReportUpdateAllowed(period: ReportPeriod, operation: ReportUpdateOperation, at: string): void {
   requireIsoDate(at, "update time");
-  if (!(REPORT_UPDATE_OPERATIONS as readonly string[]).includes(operation)) throw new Error(`unknown report operation: ${operation}`);
+  if (!(REPORT_UPDATE_OPERATIONS as readonly string[]).includes(operation))
+    throw new Error(`unknown report operation: ${operation}`);
   if (Date.parse(at) < Date.parse(period.softCloseAt)) return;
   if (!ALLOWED_AFTER_SOFT_CLOSE.has(operation)) {
     throw new Error(`report operation ${operation} is not allowed after soft close ${period.softCloseAt}`);
@@ -101,15 +108,29 @@ export function makeReportRecord(input: ReportRecordInput, generatedAt = new Dat
   const identity = match?.[2];
   let canonicalPeriod: ReportPeriod | null = null;
   if (kind && identity) {
-    try { canonicalPeriod = reportPeriod(kind, identity); } catch { /* common validation error below */ }
+    try {
+      canonicalPeriod = reportPeriod(kind, identity);
+    } catch {
+      /* common validation error below */
+    }
   }
-  if (!canonicalPeriod || input.period.kind !== canonicalPeriod.kind || input.period.periodStart !== canonicalPeriod.periodStart || input.period.periodEnd !== canonicalPeriod.periodEnd || input.period.softCloseAt !== canonicalPeriod.softCloseAt) {
+  if (
+    !canonicalPeriod ||
+    input.period.kind !== canonicalPeriod.kind ||
+    input.period.periodStart !== canonicalPeriod.periodStart ||
+    input.period.periodEnd !== canonicalPeriod.periodEnd ||
+    input.period.softCloseAt !== canonicalPeriod.softCloseAt
+  ) {
     throw new Error("period must be a canonical C7 reportPeriod value");
   }
-  if (Date.parse(input.asOf) < Date.parse(input.period.periodStart) || Date.parse(input.asOf) >= Date.parse(input.period.periodEnd)) {
+  if (
+    Date.parse(input.asOf) < Date.parse(input.period.periodStart) ||
+    Date.parse(input.asOf) >= Date.parse(input.period.periodEnd)
+  ) {
     throw new Error("asOf must fall within the report period");
   }
-  if (!Array.isArray(input.sources) || !Array.isArray(input.blocks)) throw new Error("sources and blocks must be arrays");
+  if (!Array.isArray(input.sources) || !Array.isArray(input.blocks))
+    throw new Error("sources and blocks must be arrays");
   for (const source of input.sources) {
     if (!source.id.trim() || !source.uri.trim()) throw new Error("each source requires id and uri");
     requireIsoDate(source.observedAt, "source observedAt");
@@ -120,7 +141,12 @@ export function makeReportRecord(input: ReportRecordInput, generatedAt = new Dat
     if (blockIds.has(block.id)) throw new Error(`duplicate report block id: ${block.id}`);
     blockIds.add(block.id);
     requireIsoDate(block.relatedAt, "block relatedAt");
-    if (block.importance && (!Array.isArray(block.importance) || block.importance.some((kind) => !(REPORT_PERIOD_KINDS as readonly string[]).includes(kind)) || new Set(block.importance).size !== block.importance.length)) {
+    if (
+      block.importance &&
+      (!Array.isArray(block.importance) ||
+        block.importance.some((kind) => !(REPORT_PERIOD_KINDS as readonly string[]).includes(kind)) ||
+        new Set(block.importance).size !== block.importance.length)
+    ) {
       throw new Error(`report block ${block.id} has invalid importance levels`);
     }
     if (block.classification && !(REPORT_CLASSIFICATIONS as readonly string[]).includes(block.classification)) {
@@ -129,7 +155,10 @@ export function makeReportRecord(input: ReportRecordInput, generatedAt = new Dat
     if (block.classification && (!block.links || block.links.length === 0)) {
       throw new Error(`classified activity block ${block.id} must link its members`);
     }
-    if (block.links && (!Array.isArray(block.links) || block.links.some((link) => typeof link !== "string" || !link.trim()))) {
+    if (
+      block.links &&
+      (!Array.isArray(block.links) || block.links.some((link) => typeof link !== "string" || !link.trim()))
+    ) {
       throw new Error(`report block ${block.id} has invalid links`);
     }
   }
@@ -148,9 +177,27 @@ function parseEvent(line: string): ReportRecordEvent | null {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const event = value as Record<string, unknown>;
     if (typeof event.eventId !== "string" || typeof event.ts !== "string") return null;
-    if (event.type === "report.generated" && event.record && typeof event.record === "object" && !Array.isArray(event.record)) return value as ReportRecordEvent;
-    if (event.type === "report.snapshot" && event.snapshot && typeof event.snapshot === "object" && !Array.isArray(event.snapshot)) return value as ReportRecordEvent;
-    if (event.type === "report.snapshot-correction" && event.correction && typeof event.correction === "object" && !Array.isArray(event.correction)) return value as ReportRecordEvent;
+    if (
+      event.type === "report.generated" &&
+      event.record &&
+      typeof event.record === "object" &&
+      !Array.isArray(event.record)
+    )
+      return value as ReportRecordEvent;
+    if (
+      event.type === "report.snapshot" &&
+      event.snapshot &&
+      typeof event.snapshot === "object" &&
+      !Array.isArray(event.snapshot)
+    )
+      return value as ReportRecordEvent;
+    if (
+      event.type === "report.snapshot-correction" &&
+      event.correction &&
+      typeof event.correction === "object" &&
+      !Array.isArray(event.correction)
+    )
+      return value as ReportRecordEvent;
     return null;
   } catch {
     return null; // Ignore a malformed/torn final line, matching decision-events.ts.
@@ -198,7 +245,8 @@ async function readLocationEvents(location: ReportRecordLocation): Promise<Repor
   if (typeof location === "string") return readEvents(location);
   const rows = await location.listPrefix(REPORT_DOCUMENT_PREFIX);
   const events = rows.map(({ store, document }) => {
-    if (!store.startsWith(REPORT_DOCUMENT_PREFIX)) throw new Error("permanent report store returned a key outside its namespace");
+    if (!store.startsWith(REPORT_DOCUMENT_PREFIX))
+      throw new Error("permanent report store returned a key outside its namespace");
     return parseDocumentEvent(document);
   });
   // The table's stable key ordering is arbitrary; projections need event-time order.
@@ -211,10 +259,23 @@ function sameReportEvent(left: ReportRecordEvent, right: ReportRecordEvent): boo
     return !!left.record && !!right.record && sameRecordContent(left.record, right.record);
   }
   if (left.type === "report.snapshot" && right.type === "report.snapshot") {
-    return !!left.snapshot && !!right.snapshot && left.snapshot.id === right.snapshot.id && left.snapshot.reportRecordId === right.snapshot.reportRecordId && sameRecordContent(left.snapshot.record, right.snapshot.record);
+    return (
+      !!left.snapshot &&
+      !!right.snapshot &&
+      left.snapshot.id === right.snapshot.id &&
+      left.snapshot.reportRecordId === right.snapshot.reportRecordId &&
+      sameRecordContent(left.snapshot.record, right.snapshot.record)
+    );
   }
   if (left.type === "report.snapshot-correction" && right.type === "report.snapshot-correction") {
-    return !!left.correction && !!right.correction && left.correction.id === right.correction.id && left.correction.snapshotId === right.correction.snapshotId && left.correction.originalRecordId === right.correction.originalRecordId && sameRecordContent(left.correction.record, right.correction.record);
+    return (
+      !!left.correction &&
+      !!right.correction &&
+      left.correction.id === right.correction.id &&
+      left.correction.snapshotId === right.correction.snapshotId &&
+      left.correction.originalRecordId === right.correction.originalRecordId &&
+      sameRecordContent(left.correction.record, right.correction.record)
+    );
   }
   return false;
 }
@@ -226,10 +287,14 @@ async function claimRemoteRecord(location: AppendOnlyDocumentRemote, record: Rep
   if (!stored || !isObject(stored.document) || typeof stored.document.id !== "string") {
     throw new Error(`permanent report identity claim disappeared or is malformed: ${record.id}`);
   }
-  if (!sameRecordContent(stored.document as unknown as ReportRecord, record)) throw new ReportRecordConflictError(record.id);
+  if (!sameRecordContent(stored.document as unknown as ReportRecord, record))
+    throw new ReportRecordConflictError(record.id);
 }
 
-async function appendDocumentEvent(location: AppendOnlyDocumentRemote, event: ReportRecordEvent): Promise<{ inserted: boolean; event: ReportRecordEvent }> {
+async function appendDocumentEvent(
+  location: AppendOnlyDocumentRemote,
+  event: ReportRecordEvent,
+): Promise<{ inserted: boolean; event: ReportRecordEvent }> {
   const key = reportDocumentKey(event);
   if (await location.insertIfAbsent(key, 1, event)) return { inserted: true, event };
   const stored = await location.load(key);
@@ -273,7 +338,10 @@ export interface AppendReportRecordResult {
  * Append once by stable record ID. A content-equivalent rerun is a no-op; the
  * same id with changed content is a conflict and is never silently replaced.
  */
-export async function appendReportRecord(location: ReportRecordLocation, record: ReportRecord): Promise<AppendReportRecordResult> {
+export async function appendReportRecord(
+  location: ReportRecordLocation,
+  record: ReportRecord,
+): Promise<AppendReportRecordResult> {
   assertCanonicalRecord(record);
   const event: ReportRecordEvent = {
     eventId: record.id,
@@ -285,7 +353,8 @@ export async function appendReportRecord(location: ReportRecordLocation, record:
     assertRecordIdContent(await readLocationEvents(location), record);
     await claimRemoteRecord(location, record);
     const result = await appendDocumentEvent(location, event);
-    if (result.event.type !== "report.generated" || !result.event.record) throw new Error("permanent report record has an invalid event type");
+    if (result.event.type !== "report.generated" || !result.event.record)
+      throw new Error("permanent report record has an invalid event type");
     return { inserted: result.inserted, record: result.event.record };
   }
   return serializeAppend(location, async () => {
@@ -343,7 +412,11 @@ export interface AppendReportSnapshotCorrectionResult {
 /** Freeze a dated view in the same append-only PM-stack log. Existing snapshot
  * IDs are immutable: a repeated identical write is idempotent, changed content
  * is a conflict that must become a separately linked correction record. */
-export async function appendReportSnapshot(location: ReportRecordLocation, record: ReportRecord, snapshotAt: string): Promise<AppendReportSnapshotResult> {
+export async function appendReportSnapshot(
+  location: ReportRecordLocation,
+  record: ReportRecord,
+  snapshotAt: string,
+): Promise<AppendReportSnapshotResult> {
   assertCanonicalRecord(record);
   requireIsoDate(snapshotAt, "snapshotAt");
   const snapshot: ReportSnapshot = {
@@ -363,13 +436,16 @@ export async function appendReportSnapshot(location: ReportRecordLocation, recor
     assertRecordIdContent(events, record);
     await claimRemoteRecord(location, record);
     const result = await appendDocumentEvent(location, event);
-    if (result.event.type !== "report.snapshot" || !result.event.snapshot) throw new Error("permanent snapshot has an invalid event type");
+    if (result.event.type !== "report.snapshot" || !result.event.snapshot)
+      throw new Error("permanent snapshot has an invalid event type");
     return { inserted: result.inserted, snapshot: result.event.snapshot };
   }
   return serializeAppend(location, async () => {
     const events = await readEvents(location);
     assertRecordIdContent(events, record);
-    const existing = events.find((event) => event.type === "report.snapshot" && event.snapshot?.id === snapshot.id)?.snapshot;
+    const existing = events.find(
+      (event) => event.type === "report.snapshot" && event.snapshot?.id === snapshot.id,
+    )?.snapshot;
     if (existing) {
       if (existing.reportRecordId !== snapshot.reportRecordId || !sameRecordContent(existing.record, snapshot.record)) {
         throw new ReportRecordConflictError(snapshot.id);
@@ -384,11 +460,21 @@ export async function appendReportSnapshot(location: ReportRecordLocation, recor
 }
 
 export async function readReportSnapshots(location: ReportRecordLocation): Promise<ReportSnapshot[]> {
-  return (await readLocationEvents(location)).filter((event): event is ReportRecordEvent & { snapshot: ReportSnapshot } => event.type === "report.snapshot" && !!event.snapshot).map((event) => event.snapshot);
+  return (await readLocationEvents(location))
+    .filter(
+      (event): event is ReportRecordEvent & { snapshot: ReportSnapshot } =>
+        event.type === "report.snapshot" && !!event.snapshot,
+    )
+    .map((event) => event.snapshot);
 }
 
 /** Append a correction as a new record linked to an immutable snapshot. */
-export async function appendReportSnapshotCorrection(location: ReportRecordLocation, snapshotId: string, record: ReportRecord, correctedAt: string): Promise<AppendReportSnapshotCorrectionResult> {
+export async function appendReportSnapshotCorrection(
+  location: ReportRecordLocation,
+  snapshotId: string,
+  record: ReportRecord,
+  correctedAt: string,
+): Promise<AppendReportSnapshotCorrectionResult> {
   assertCanonicalRecord(record);
   requireIsoDate(correctedAt, "correctedAt");
   const correction: ReportSnapshotCorrection = {
@@ -400,7 +486,9 @@ export async function appendReportSnapshotCorrection(location: ReportRecordLocat
   };
   if (typeof location !== "string") {
     const events = await readLocationEvents(location);
-    const snapshot = events.find((event) => event.type === "report.snapshot" && event.snapshot?.id === snapshotId)?.snapshot;
+    const snapshot = events.find(
+      (event) => event.type === "report.snapshot" && event.snapshot?.id === snapshotId,
+    )?.snapshot;
     if (!snapshot) throw new Error(`snapshot does not exist: ${snapshotId}`);
     if (snapshot.record.period.id !== record.period.id) throw new Error("correction period must match the snapshot");
     correction.originalRecordId = snapshot.reportRecordId;
@@ -419,14 +507,22 @@ export async function appendReportSnapshotCorrection(location: ReportRecordLocat
   }
   return serializeAppend(location, async () => {
     const events = await readEvents(location);
-    const snapshot = events.find((event) => event.type === "report.snapshot" && event.snapshot?.id === snapshotId)?.snapshot;
+    const snapshot = events.find(
+      (event) => event.type === "report.snapshot" && event.snapshot?.id === snapshotId,
+    )?.snapshot;
     if (!snapshot) throw new Error(`snapshot does not exist: ${snapshotId}`);
     if (snapshot.record.period.id !== record.period.id) throw new Error("correction period must match the snapshot");
     correction.originalRecordId = snapshot.reportRecordId;
     assertRecordIdContent(events, record);
-    const existing = events.find((event) => event.type === "report.snapshot-correction" && event.correction?.id === correction.id)?.correction;
+    const existing = events.find(
+      (event) => event.type === "report.snapshot-correction" && event.correction?.id === correction.id,
+    )?.correction;
     if (existing) {
-      if (existing.snapshotId !== correction.snapshotId || existing.originalRecordId !== correction.originalRecordId || !sameRecordContent(existing.record, correction.record)) {
+      if (
+        existing.snapshotId !== correction.snapshotId ||
+        existing.originalRecordId !== correction.originalRecordId ||
+        !sameRecordContent(existing.record, correction.record)
+      ) {
         throw new ReportRecordConflictError(correction.id);
       }
       return { inserted: false, correction: existing };
@@ -444,7 +540,9 @@ export async function appendReportSnapshotCorrection(location: ReportRecordLocat
   });
 }
 
-export async function readReportSnapshotCorrections(location: ReportRecordLocation): Promise<ReportSnapshotCorrection[]> {
+export async function readReportSnapshotCorrections(
+  location: ReportRecordLocation,
+): Promise<ReportSnapshotCorrection[]> {
   return (await readLocationEvents(location))
     .filter(
       (
@@ -458,7 +556,12 @@ export async function readReportSnapshotCorrections(location: ReportRecordLocati
 
 function assertRecordIdContent(events: ReportRecordEvent[], candidate: ReportRecord): void {
   for (const event of events) {
-    const persisted = event.type === "report.generated" ? event.record : event.type === "report.snapshot" ? event.snapshot?.record : event.correction?.record;
+    const persisted =
+      event.type === "report.generated"
+        ? event.record
+        : event.type === "report.snapshot"
+          ? event.snapshot?.record
+          : event.correction?.record;
     if (persisted?.id === candidate.id && !sameRecordContent(persisted, candidate)) {
       throw new ReportRecordConflictError(candidate.id);
     }
