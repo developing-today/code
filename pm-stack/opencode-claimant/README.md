@@ -141,6 +141,24 @@ whose claim does not land parks nothing. Saturation is a success
 state, not a failure — a Claude lane can still claim the task if
 urgent.
 
+## Babysitter Rounds (#1338)
+
+Every fire also runs one babysitter round (`babysitter.py`):
+every root session at the location — bound or unbound; unbound
+sessions are observed, never driven — gets a verdict
+(progressing / stalled / done-unreported / blocked / walled /
+idle) under #1338's stall rule (suspect at ≥20 min silent with
+no live CI on the bound PR; confirmed on a second suspect round
+or on expiry-equivalent silence). The round record rides the
+fire log under its `babysitter` key; live fires also append it
+to `babysitter-rounds.jsonl` in the claimant state dir and
+persist the round state (`babysitter-state.json`) that stall
+confirmation reads next fire. Shadow fires compute the round
+and mutate nothing. Pool wall state is read from
+`pool-state.json` in the state dir (operator/tooling-written;
+unread is recorded, never invented). Nudges are not here — they
+are #1187's next slice, consuming this round's confirmed stalls.
+
 ## Recovery Rules (#4758, Phase 3 of #4912)
 
 ### Zero-Message Recovery
