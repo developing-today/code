@@ -28,7 +28,7 @@ if ! command -v rclone >/dev/null 2>&1; then
 fi
 secrets="$(bws secret list 2>/dev/null)" || { echo "github-backup-r2: bws secret list failed" >&2; exit 1; }
 secret() {
-  printf '%s' "$secrets" | /usr/bin/python3 -c 'import json,sys
+  printf '%s' "$secrets" | python3 -c 'import json,sys
 key=sys.argv[1]
 for item in json.load(sys.stdin):
     if item.get("key") == key:

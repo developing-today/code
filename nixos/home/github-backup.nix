@@ -45,7 +45,7 @@ in
       github-backup-drain = netService "github-backup: drain webhook queue from the Worker and fetch" "${infra}/systemd/drain-wrapper.sh";
       github-backup-fetch = netService "github-backup: daily fetch of all mirrors" "/usr/bin/env python3 ${infra}/bin/fetch_mirrors.py";
       github-backup-reconcile = netService "github-backup: weekly reconciliation sweep" "/usr/bin/env python3 ${infra}/bin/reconcile.py";
-      github-backup-r2 = netService "github-backup: verify and upload all planned cold bundles to R2" "${infra}/systemd/run-r2.sh";
+      github-backup-r2 = netService "github-backup: verify and upload all planned cold bundles to R2" "/usr/bin/env bash ${infra}/systemd/run-r2.sh";
     };
 
     systemd.user.timers = {
