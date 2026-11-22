@@ -5,4 +5,5 @@
 //! consumers do not edit this root. The root records the slice
 //! registry only — see [`slices::B_SLICE_REGISTRY`].
 
+pub mod record_join;
 pub mod slices;
