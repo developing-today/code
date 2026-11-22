@@ -56,11 +56,16 @@ async function setup() {
   const clock = () => now.t;
   const access = await signer("k1");
   const pushes: { url: string; body: Uint8Array; authorization: string }[] = [];
+  const pushFailures = { remaining: 0 };
   const outward = async (url: string | URL | Request, init?: { body?: unknown; headers?: Record<string, string> }) => {
     const u = String(url);
     if (u === ISSUER.jwksUri) return { ok: true, status: 200, json: async () => ({ keys: [access.jwk] }) };
     if (u.startsWith("https://fcm.googleapis.com/")) {
       pushes.push({ url: u, body: init?.body as Uint8Array, authorization: init?.headers?.Authorization ?? "" });
+      if (pushFailures.remaining > 0) {
+        pushFailures.remaining--;
+        return { status: 500 };
+      }
       return { status: 201 };
     }
     throw new Error(`unexpected fetch ${u}`);
@@ -322,6 +327,7 @@ async function setup() {
     done,
     alarm,
     pushes,
+    pushFailures,
     hostDocs,
     hostDeps,
     data,
@@ -1112,6 +1118,49 @@ describe("notifications and phones, from the edge", () => {
     expect(JSON.parse(await phone.open(w.pushes[2].body)).title).toBe("The laptop is back");
     w.now.t += 60_000;
     await w.edge.now.alarm();
+    expect(w.pushes).toHaveLength(3);
+  });
+
+  test("a failed quiet-state push is retried by a later alarm", async () => {
+    const w = await setup();
+    const phone = await browser();
+    await w.hostReads();
+    await w.link.now.once();
+    await w.act("push.on", { subscription: phone.subscription, label: "Pocket" });
+
+    w.now.t = w.alarm.at;
+    w.pushFailures.remaining = 1;
+    await w.edge.now.alarm();
+    expect(w.stored.get("silent")).toBeUndefined();
+    expect(w.pushes).toHaveLength(1);
+
+    await w.edge.now.alarm();
+    expect(w.stored.get("silent")).toBe(true);
+    expect(w.pushes).toHaveLength(2);
+    await w.edge.now.alarm();
+    expect(w.pushes).toHaveLength(2);
+  });
+
+  test("a failed recovery push remains pending and is retried on the next host report", async () => {
+    const w = await setup();
+    const phone = await browser();
+    await w.hostReads();
+    await w.link.now.once();
+    await w.act("push.on", { subscription: phone.subscription, label: "Pocket" });
+
+    w.now.t = w.alarm.at;
+    await w.edge.now.alarm();
+    expect(w.stored.get("silent")).toBe(true);
+
+    w.pushFailures.remaining = 1;
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect(w.stored.get("silent")).toBe(true);
+    expect(w.pushes).toHaveLength(2);
+
+    w.now.t += 1_000;
+    await w.link.now.once();
+    expect(w.stored.get("silent")).toBeUndefined();
     expect(w.pushes).toHaveLength(3);
   });
 
