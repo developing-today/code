@@ -6,4 +6,5 @@
 //! registry only — see [`slices::B_SLICE_REGISTRY`].
 
 pub mod record_join;
+pub mod record_store;
 pub mod slices;

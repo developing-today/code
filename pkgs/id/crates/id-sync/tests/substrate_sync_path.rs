@@ -5,10 +5,13 @@
 //! Both halves of the substrate are used through their crates, not by
 //! `#[path]`: part A from `id_core` (signed graph records, `id://`
 //! content addresses, profile dispatch) and part B from `id_sync`
-//! (ingest gate, conflict store, sync scope, anti-entropy). Nothing
-//! here opens a socket or a store on disk: the two nodes are two
-//! in-process [`Replica`]s and the link between them is [`reconcile`].
-//! Carrying the same exchange over the real transport is the next slice.
+//! (ingest gate, conflict store, sync scope, anti-entropy). The first
+//! tests run between two in-process [`Replica`]s and the link between
+//! them is [`reconcile`]; the last runs the same exchange between
+//! disk-backed nodes ([`StoredReplica`]) that are dropped and
+//! reopened between steps, and restart with what they had. Nothing
+//! here opens a socket: carrying the same exchange over the real
+//! transport is the next slice.
 //!
 //! # How a part A record becomes a part B version
 //!
@@ -46,9 +49,10 @@ use id_core::id_uri_format::resolve_context;
 use id_core::id_uri_parse::{IdUriV1, UriTarget};
 use id_core::signed_envelope::{Envelope as RecordEnvelope, LogicalGraphId};
 use id_sync::federation::record_join::JoinRefusal;
+use id_sync::federation::record_store::{DiskReplica, StoredReplica};
 use id_sync::federation::slices::b07_conflict_report::{
-    ConflictStore, IngestError, IngestOutcome, ObjectId, RetentionPolicy, VersionHeader,
-    conflict_key,
+    ConflictStore, IngestError, IngestOutcome, ObjectId, ReportStatus, RetentionPolicy,
+    VersionHeader, conflict_key,
 };
 use id_sync::federation::slices::b08_sync_scope::SyncScopeConfig;
 use id_sync::federation::slices::b09_anti_entropy::{Replica, reconcile};
@@ -71,7 +75,7 @@ fn key(writer: usize) -> SigningKey {
     SigningKey::from_bytes(&[WRITERS[writer].1; 32])
 }
 
-fn node(name: &str) -> Replica {
+fn conflict_store() -> ConflictStore {
     let signers = WRITERS
         .iter()
         .enumerate()
@@ -85,11 +89,19 @@ fn node(name: &str) -> Replica {
         max_age: 1_000_000,
         max_future_skew: 30,
     };
-    Replica::new(
-        name,
-        TRUST_DOMAIN,
-        ConflictStore::new(signers, freshness, RetentionPolicy { retain_for: 3_600 }),
-    )
+    ConflictStore::new(signers, freshness, RetentionPolicy { retain_for: 3_600 })
+}
+
+fn node(name: &str) -> Replica {
+    Replica::new(name, TRUST_DOMAIN, conflict_store())
+}
+
+/// Open the disk-backed node called `name` on `dir`, fresh or
+/// restarted: what it had is replayed from its directory.
+async fn disk_node(dir: &std::path::Path, name: &str) -> DiskReplica {
+    StoredReplica::open_dir(dir, Replica::new(name, TRUST_DOMAIN, conflict_store()))
+        .await
+        .unwrap()
 }
 
 fn link() -> SyncScopeConfig {
@@ -147,6 +159,31 @@ fn publish(
     };
     let version = sign_envelope(&key(writer), identity, SCOPE, &header.encode(), event, now);
     let outcome = node.produce(&version, now).unwrap();
+    (Written { signed, event }, outcome)
+}
+
+/// `publish`, for a disk-backed node: sign `record`, wrap it as a
+/// version that follows `parents`, and produce it on `node`, which
+/// persists it before returning.
+async fn publish_disk(
+    node: &mut DiskReplica,
+    writer: usize,
+    record: &GraphRecord,
+    parents: &[EventId],
+    now: u64,
+) -> (Written, IngestOutcome) {
+    let identity = WRITERS[writer].0;
+    let signed = record.sign(CONTEXT, identity, &key(writer)).unwrap();
+    let event: EventId = *signed.id.content_id().digest();
+    let object: ObjectId = *record.graph.as_bytes();
+    let header = VersionHeader {
+        object_id: object,
+        resolves: (parents.len() >= 2).then(|| conflict_key(parents)),
+        parents: parents.to_vec(),
+        body: signed.envelope.canonical_bytes().unwrap(),
+    };
+    let version = sign_envelope(&key(writer), identity, SCOPE, &header.encode(), event, now);
+    let outcome = node.produce(&version, now).await.unwrap();
     (Written { signed, event }, outcome)
 }
 
@@ -477,4 +514,133 @@ fn a_version_whose_body_breaks_the_join_is_refused_at_admission() {
     let event = *honest.id.content_id().digest();
     a.produce(&wrap(ALICE, event, GRAPH, bytes), START).unwrap();
     assert_eq!(read(&a, &address_of(&event, "node-a")), Ok(honest));
+}
+
+#[test]
+fn a_node_restarts_with_what_it_had() {
+    // The same exchange as the in-process tests, between disk-backed
+    // nodes that are dropped and reopened between steps. A reopened
+    // node is the dropped node: same inventory, same heads, same
+    // reports, and it serves the same records from their addresses
+    // with no exchange in between. Restarting between any two steps
+    // changes no outcome (the metamorphic oracle of the tests above,
+    // with a restart inserted).
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let mut a = disk_node(dir_a.path(), "node-a").await;
+        let mut b = disk_node(dir_b.path(), "node-b").await;
+
+        // Write on A, exchange, read on B from the address.
+        let (base, outcome) = publish_disk(&mut a, ALICE, &note(b"first draft"), &[], START).await;
+        assert_eq!(outcome, IngestOutcome::Applied);
+        let exchange = a.reconcile_with(&mut b, &link(), START + 1).await.unwrap();
+        assert_eq!(exchange.forward.offer.send, vec![base.event]);
+        assert_eq!(
+            read(b.replica(), &base.address("node-b")).unwrap(),
+            base.signed
+        );
+
+        // B restarts with what it had: no exchange, and the record
+        // is still read from its address. (Shutdown is what a
+        // process exit does to the blob store; drop alone leaves
+        // its database locked.)
+        let inventory_before = b.replica().inventory();
+        b.shutdown().await.unwrap();
+        drop(b);
+        let mut b = disk_node(dir_b.path(), "node-b").await;
+        assert_eq!(b.replica().inventory(), inventory_before);
+        assert_eq!(heads(b.replica()), BTreeSet::from([base.event]));
+        assert_eq!(
+            read(b.replica(), &base.address("node-b")).unwrap(),
+            base.signed
+        );
+
+        // Conflicting writes on both nodes, exchanged: both report.
+        let (from_a, _) = publish_disk(
+            &mut a,
+            ALICE,
+            &note(b"alice's edit"),
+            &[base.event],
+            START + 2,
+        )
+        .await;
+        let (from_b, _) =
+            publish_disk(&mut b, BOB, &note(b"bob's edit"), &[base.event], START + 2).await;
+        a.reconcile_with(&mut b, &link(), START + 3).await.unwrap();
+        let expected = BTreeSet::from([from_a.event, from_b.event]);
+        let key = conflict_key(&[from_a.event, from_b.event]);
+        let report_a = a.store().open_report(&GRAPH).unwrap();
+        let report_b = b.store().open_report(&GRAPH).unwrap();
+        assert_eq!(
+            a.store().report(&report_a).unwrap().report.conflict_key(),
+            key
+        );
+        assert_eq!(
+            b.store().report(&report_b).unwrap().report.conflict_key(),
+            key
+        );
+
+        // Both restart: the open report is still on both, under the
+        // same id, naming the same versions and base, and both edits
+        // still read from their addresses.
+        a.shutdown().await.unwrap();
+        b.shutdown().await.unwrap();
+        drop(a);
+        drop(b);
+        let mut a = disk_node(dir_a.path(), "node-a").await;
+        let mut b = disk_node(dir_b.path(), "node-b").await;
+        for (side, name, report_id) in [(&a, "node-a", report_a), (&b, "node-b", report_b)] {
+            assert_eq!(side.store().open_report(&GRAPH), Some(report_id), "{name}");
+            let stored = side.store().report(&report_id).unwrap();
+            assert_eq!(stored.report.conflict_key(), key, "{name}");
+            let named: BTreeSet<EventId> =
+                stored.report.versions.iter().map(|v| v.event_id).collect();
+            assert_eq!(named, expected, "{name}");
+            assert_eq!(stored.report.base, vec![base.event], "{name}");
+            assert_eq!(
+                read(side.replica(), &from_a.address(name)).unwrap(),
+                from_a.signed
+            );
+            assert_eq!(
+                read(side.replica(), &from_b.address(name)).unwrap(),
+                from_b.signed
+            );
+            assert_eq!(
+                read(side.replica(), &base.address(name)).unwrap(),
+                base.signed
+            );
+        }
+
+        // A resolution written after the restart closes the report
+        // on both nodes, and the closure survives a further restart.
+        let (merged, outcome) = publish_disk(
+            &mut b,
+            BOB,
+            &note(b"both edits, merged by bob"),
+            &[from_a.event, from_b.event],
+            START + 5,
+        )
+        .await;
+        assert_eq!(outcome, IngestOutcome::Resolved(report_b));
+        a.reconcile_with(&mut b, &link(), START + 6).await.unwrap();
+        assert!(a.store().open_report(&GRAPH).is_none());
+        a.shutdown().await.unwrap();
+        drop(a);
+        let a = disk_node(dir_a.path(), "node-a").await;
+        assert!(a.store().open_report(&GRAPH).is_none());
+        assert_eq!(heads(a.replica()), BTreeSet::from([merged.event]));
+        assert_eq!(
+            read(a.replica(), &merged.address("node-a")).unwrap(),
+            merged.signed
+        );
+        assert_eq!(
+            a.store().report(&report_a).unwrap().status,
+            ReportStatus::Resolved {
+                by: merged.event,
+                at: START + 6,
+            }
+        );
+    });
 }
