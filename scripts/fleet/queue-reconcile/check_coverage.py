@@ -48,6 +48,19 @@ dedupe-keyed merge-watch packet per PR instead, whose job is the
 refresh the branch, merge, or close with a salvage note. Fixtures
 carry the PR set under a top-level `"pulls": {"owner/repo": [...]}`.
 
+Verdict coverage (#12233 F2b, decision record on the issue): an open
+`effort/l` or `effort/m` issue whose newest agent note records a
+triage verdict with a valid resume condition
+(`resume=<slice_landed|dependency_closed>:<number>`) is parked by
+that verdict — the note is the park record for the triage
+disposition — so the broker calling it uncovered does not get it
+re-enqueued for triage. The lane-guard `coverage` check
+(`pm-stack/lane-guard/lane_guard.py`) applies the same rules to a
+single issue. Fixtures carry the fields on the issue objects:
+`labels`, `verdict`, `resume_condition`. In live mode the labels
+come with the enumeration and the verdict is read from the issue's
+comments, for broker-uncovered effort issues only.
+
 Exit codes: 0 = run completed (uncovered may be > 0 in observe mode),
 2 = configuration/usage error, 3 = a fetch or broker call failed (the
 report names which; a failure never masquerades as "0 uncovered").
@@ -111,7 +124,8 @@ def fetch_open_issues(repo: str, gh: str = "gh") -> list[dict]:
         "--paginate",
         f"repos/{repo}/issues?state=open&per_page=100",
         "--jq",
-        '.[] | select(has("pull_request") | not) | {number, title}',
+        '.[] | select(has("pull_request") | not) | '
+        "{number, title, labels: [.labels[].name]}",
     ]
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
@@ -204,6 +218,151 @@ def build_pr_coverage(prs: list[dict]) -> dict[int, dict]:
         for n in pr_issue_numbers(pr):
             coverage.setdefault(n, info)
     return coverage
+
+
+# ---------------------------------------------------------------------------
+# Verdict coverage (#12233 F2b): a recorded verdict parks a large issue
+# ---------------------------------------------------------------------------
+
+# The rules in this section are the F2b decision record on #12233 and
+# are kept in step with pm-stack/lane-guard/lane_guard.py, whose
+# `coverage` check applies them to a single issue: an open effort/l
+# or effort/m issue whose newest agent note is a triage verdict with
+# a recorded verdict token and a valid resume condition is covered.
+VERDICT_EFFORT_LABELS = frozenset({"effort/l", "effort/m"})
+RESUME_KINDS = frozenset({"slice_landed", "dependency_closed"})
+NON_VERDICTS = frozenset({"none", "unknown", "untriaged", "needs_triage"})
+
+_RESUME_VALUE_RE = re.compile(r"([A-Za-z][A-Za-z_ -]*?)\s*(?::|#|\s)\s*#?(\d+)\b")
+_AGENT_NOTE_MARKER = re.compile(r"agent-note[:-]v1|\*\*Agent note\*\*", re.IGNORECASE)
+_NOTE_STATE_RE = re.compile(r"\bstate\s*[:=]\s*([A-Za-z_-]+)", re.IGNORECASE)
+_NOTE_VERDICT_RE = re.compile(r"\bverdict\s*[:=]\s*([A-Za-z0-9][\w -]*)", re.IGNORECASE)
+_NOTE_RESUME_RE = re.compile(r"\bresume\s*[:=]\s*([^\n;]+)", re.IGNORECASE)
+
+
+def _issue_label_names(issue: dict) -> list[str]:
+    names: list[str] = []
+    for lab in issue.get("labels") or []:
+        if isinstance(lab, dict):
+            lab = lab.get("name")
+        if isinstance(lab, str) and lab:
+            names.append(lab)
+    return names
+
+
+def _norm_token(raw: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(raw).lower()).strip("_")
+
+
+def parse_resume_condition(value) -> str | None:
+    """Canonical `kind:target` for a resume condition, or None.
+
+    Accepts the string forms a note or fixture carries
+    (`dependency_closed:539`, `slice landed #12543`) and the dict
+    form (`{"kind": ..., "target": ...}`). The kind must be a
+    checkable event and the target an issue/PR number: a date, a
+    person, or a kind with no target is not a resume condition.
+    """
+    if isinstance(value, dict):
+        kind = _norm_token(value.get("kind") or "")
+        target = str(value.get("target") or "").lstrip("#")
+        if kind in RESUME_KINDS and target.isdigit():
+            return f"{kind}:{target}"
+        return None
+    if not isinstance(value, str):
+        return None
+    m = _RESUME_VALUE_RE.search(value.strip())
+    if not m:
+        return None
+    kind = _norm_token(m.group(1))
+    if kind not in RESUME_KINDS:
+        return None
+    return f"{kind}:{m.group(2)}"
+
+
+def verdict_coverage(issue: dict) -> dict | None:
+    """{"verdict", "resume"} when the issue's recorded verdict parks
+    it under F2b, else None. The issue dict carries `labels`,
+    `verdict` and `resume_condition` (fixture fields, or the live
+    enrichment from fetch_issue_verdict)."""
+    if not (set(_issue_label_names(issue)) & VERDICT_EFFORT_LABELS):
+        return None
+    verdict = _norm_token(issue.get("verdict") or "")
+    if not verdict or verdict in NON_VERDICTS:
+        return None
+    resume = parse_resume_condition(
+        issue.get("resume_condition") or issue.get("resume")
+    )
+    if not resume:
+        return None
+    return {"verdict": verdict, "resume": resume}
+
+
+def verdict_from_comments(comments: list) -> dict:
+    """{"verdict", "resume_condition"} read from the newest agent
+    note, or {} when that note is not a recorded triage verdict.
+
+    Mirrors the lane-guard freshness rule: the scan stops at the
+    newest non-bot comment — a human comment or a newer agent note
+    of any other state means the verdict is no longer the newest
+    signal, so it does not cover.
+    """
+    for c in reversed(comments or []):
+        body = c.get("body") or ""
+        if not _AGENT_NOTE_MARKER.search(body):
+            user = c.get("user") or {}
+            if user.get("type") == "Bot":
+                continue  # bots (CI, sweepers) are not news
+            return {}
+        head = body[:600]
+        m_state = _NOTE_STATE_RE.search(head)
+        m_verdict = _NOTE_VERDICT_RE.search(head)
+        if (
+            not m_state
+            or m_state.group(1).lower().replace("-", "_") != "triaged"
+            or not m_verdict
+        ):
+            return {}
+        out = {"verdict": _norm_token(m_verdict.group(1))}
+        m_resume = _NOTE_RESUME_RE.search(head)
+        if m_resume:
+            resume = parse_resume_condition(m_resume.group(1))
+            if resume:
+                out["resume_condition"] = resume
+        return out
+    return {}
+
+
+def fetch_issue_verdict(repo: str, number: int, gh: str = "gh") -> dict:
+    """The recorded verdict on one issue, from its comments.
+
+    A failed fetch is a FetchError, exactly like the enumerations:
+    an unread issue must never read as verdict-covered (which would
+    suppress triage) or silently as verdict-free.
+    """
+    cmd = [
+        gh,
+        "api",
+        "--paginate",
+        f"repos/{repo}/issues/{number}/comments?per_page=100",
+        "--jq",
+        '.[] | {body, created_at, user: {type: .user.type}}',
+    ]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise FetchError(f"github comments failed for {repo}#{number}: {exc}") from exc
+    if out.returncode != 0:
+        raise FetchError(
+            f"github comments failed for {repo}#{number} (exit {out.returncode}): "
+            f"{out.stderr.strip()[:400]}"
+        )
+    comments: list[dict] = []
+    for line in out.stdout.splitlines():
+        line = line.strip()
+        if line:
+            comments.append(json.loads(line))
+    return verdict_from_comments(comments)
 
 
 # ---------------------------------------------------------------------------
@@ -455,25 +614,29 @@ def render_report(
         f"# Queue coverage reconciliation — {checked_at}",
         "",
         f"Mode: **{mode}**. Doctrine: every open issue must hold a LIVE task "
-        "(queued/claimed/parked/blocked) in its own pilot queue; a done task is not coverage.",
+        "(queued/claimed/parked/blocked) in its own pilot queue; a done task is not coverage, "
+        "but a recorded verdict with a resume condition is parked coverage (#12233 F2b).",
         "",
-        "| repo | queue | open issues | covered | open-PR covered | uncovered | imported | watch imported |",
-        "|---|---|---|---|---|---|---|---|",
+        "| repo | queue | open issues | covered | open-PR covered | verdict covered | uncovered | imported | watch imported |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for r in results:
         lines.append(
             f"| {r['repo']} | {r['queue']} | {r['open_issues']} | {r['covered']} "
-            f"| {r.get('pr_covered', 0)} | {r['uncovered']} | {r['imported']} "
+            f"| {r.get('pr_covered', 0)} | {r.get('verdict_covered', 0)} "
+            f"| {r['uncovered']} | {r['imported']} "
             f"| {r.get('watch_imported', 0)} |"
         )
     total_uncovered = sum(r["uncovered"] for r in results)
     total_imported = sum(r["imported"] for r in results)
     total_pr = sum(r.get("pr_covered", 0) for r in results)
+    total_verdict = sum(r.get("verdict_covered", 0) for r in results)
     total_watch = sum(r.get("watch_imported", 0) for r in results)
     lines += [
         "",
         f"**Total uncovered: {total_uncovered}** · imported this run: {total_imported}",
         f"Open-PR covered (#4951): {total_pr} · merge-watch imported this run: {total_watch}",
+        f"Verdict covered (#12233 F2b): {total_verdict}",
         "",
     ]
     if errors:
@@ -489,6 +652,20 @@ def render_report(
             lines.append(
                 f"- {r['repo']}#{i['number']} — PR #{pr.get('number')} "
                 f"({pr.get('branch') or 'branch unknown'})"
+            )
+        lines.append("")
+    verdict_any = [
+        (r, i) for r in results for i in r.get("verdict_covered_issues", [])
+    ]
+    if verdict_any:
+        lines += [
+            "## Covered by a recorded verdict — parked, no triage packet (#12233 F2b)",
+            "",
+        ]
+        for r, i in verdict_any:
+            lines.append(
+                f"- {r['repo']}#{i['number']} — verdict {i.get('verdict')} "
+                f"(resume {i.get('resume')})"
             )
         lines.append("")
     uncovered_any = [(r, i) for r in results for i in r.get("uncovered_issues", [])]
@@ -574,6 +751,24 @@ def main(argv: list[str] | None = None) -> int:
             errors.append(str(exc))
             continue
 
+        if not fixture:
+            # #12233 F2b: the broker diff cannot see verdicts. For
+            # the effort issues it calls uncovered, read the recorded
+            # verdict from the issue's comments and merge it into the
+            # issue dict the verdict split below reads. A failed read
+            # is recorded as an error, never as "no verdict".
+            by_number = {i["number"]: i for i in issues}
+            for entry in cov.get("uncovered_issues", []):
+                issue = by_number.get(entry["number"])
+                if issue is None or not (
+                    set(_issue_label_names(issue)) & VERDICT_EFFORT_LABELS
+                ):
+                    continue
+                try:
+                    issue.update(fetch_issue_verdict(repo, issue["number"]))
+                except FetchError as exc:
+                    errors.append(str(exc))
+
         # #4951: an issue the broker calls uncovered whose fix PR is
         # still open is in-flight, not ownerless — no triage packet.
         pr_coverage = build_pr_coverage(pulls)
@@ -584,6 +779,21 @@ def main(argv: list[str] | None = None) -> int:
             for i in broker_uncovered
             if i["number"] in pr_coverage
         ]
+
+        # #12233 F2b: an issue the broker calls uncovered whose
+        # recorded verdict parks it is verdict-covered — the verdict
+        # note is the park record, so no triage packet.
+        by_number = {i["number"]: i for i in issues}
+        verdict_covered: list[dict] = []
+        still_uncovered: list[dict] = []
+        for entry in uncovered:
+            info = verdict_coverage(by_number.get(entry["number"], entry))
+            if info:
+                verdict_covered.append({**entry, **info})
+            else:
+                still_uncovered.append(entry)
+        uncovered = still_uncovered
+
         imported = 0
         if do_import and uncovered:
             for issue in uncovered:
@@ -620,6 +830,8 @@ def main(argv: list[str] | None = None) -> int:
                 "covered": cov.get("covered", 0),
                 "pr_covered": len(pr_covered),
                 "pr_covered_issues": pr_covered,
+                "verdict_covered": len(verdict_covered),
+                "verdict_covered_issues": verdict_covered,
                 "uncovered": len(uncovered),
                 "imported": imported,
                 "watch_imported": watch_imported,

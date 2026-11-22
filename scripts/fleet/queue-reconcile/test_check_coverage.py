@@ -13,7 +13,10 @@ Covers:
   the queue's dedupe key, but the script must not double-submit within
   a run or across runs given the same coverage answer);
 - a fetch failure is an ERROR with exit 3, never a silent "0 uncovered";
-- the triage packet is schema-shaped and carries the issue dedupe basis.
+- the triage packet is schema-shaped and carries the issue dedupe basis;
+- an open PR covers its issue with a merge-watch packet, not triage;
+- a recorded verdict with a resume condition covers an effort/l or
+  effort/m issue (#12233 F2b), and an issue with no verdict does not.
 """
 
 import importlib.util
@@ -380,6 +383,155 @@ class OpenPrCoverageTest(unittest.TestCase):
                 ]
             ),
             {},
+        )
+
+
+class VerdictCoverageTest(unittest.TestCase):
+    """#12233 F2b: a triaged large issue is covered by its recorded
+    verdict and not re-enqueued; an issue with no verdict is still
+    uncovered. The broker diff cannot see verdicts, so the fixture
+    carries them on the issue objects (labels / verdict /
+    resume_condition), exactly as the live enrichment merges them."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.fleet = StubFleet(self.tmp)
+        self.state = self.tmp / "state"
+        self.base = CoverageReconcileTest("test_observe_mode_imports_nothing")
+        self.base.tmp = self.tmp
+        self.base.fleet = self.fleet
+        self.base.state = self.state
+
+    def run_cli(self, fx: dict, *extra: str):
+        return self.base.run_cli(fx, *extra)
+
+    @staticmethod
+    def vfixture(entries: dict, uncovered: list[int]) -> dict:
+        issues = [
+            {"number": n, "title": f"issue {n}", **extra}
+            for n, extra in entries.items()
+        ]
+        covered = [n for n in entries if n not in uncovered]
+        return {
+            "issues": {REPO: issues},
+            "pulls": {REPO: []},
+            "coverage": {
+                REPO: {
+                    "queue": QUEUE,
+                    "repo": REPO,
+                    "open_issues": len(issues),
+                    "covered": len(covered),
+                    "uncovered": len(uncovered),
+                    "covered_issues": [{"number": n} for n in covered],
+                    "uncovered_issues": [
+                        {
+                            "number": n,
+                            "title": f"issue {n}",
+                            "url": f"https://github.com/{REPO}/issues/{n}",
+                        }
+                        for n in uncovered
+                    ],
+                }
+            },
+        }
+
+    def test_verdict_covered_issue_is_not_reenqueued(self):
+        # The F2b done-test: a triaged large issue is covered.
+        fx = self.vfixture(
+            {
+                3: {
+                    "labels": ["effort/l"],
+                    "verdict": "still_blocked",
+                    "resume_condition": "dependency_closed:539",
+                }
+            },
+            [3],
+        )
+        code, out = self.run_cli(fx, "--import")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.fleet.calls(), [])
+        self.assertIn("Total uncovered: 0", out)
+        self.assertIn("Verdict covered (#12233 F2b): 1", out)
+        self.assertIn(f"{REPO}#3", out)
+
+    def test_issue_with_no_verdict_is_still_uncovered(self):
+        # The other half of the F2b done-test.
+        fx = self.vfixture({4: {"labels": ["effort/l"]}}, [4])
+        code, _ = self.run_cli(fx, "--import")
+        self.assertEqual(code, 0)
+        calls = self.fleet.calls()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["packet"]["payload"]["kind"], "triage")
+        self.assertEqual(calls[0]["packet"]["payload"]["issue"]["number"], 4)
+
+    def test_verdict_without_resume_condition_is_still_uncovered(self):
+        fx = self.vfixture(
+            {5: {"labels": ["effort/m"], "verdict": "still_blocked"}}, [5]
+        )
+        code, _ = self.run_cli(fx, "--import")
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.fleet.calls()), 1)
+
+    def test_small_issue_verdict_does_not_cover(self):
+        fx = self.vfixture(
+            {
+                6: {
+                    "labels": ["effort/s"],
+                    "verdict": "still_blocked",
+                    "resume_condition": "dependency_closed:539",
+                }
+            },
+            [6],
+        )
+        code, _ = self.run_cli(fx, "--import")
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.fleet.calls()), 1)
+
+    def test_placeholder_verdict_does_not_cover(self):
+        fx = self.vfixture(
+            {
+                7: {
+                    "labels": ["effort/l"],
+                    "verdict": "untriaged",
+                    "resume_condition": "dependency_closed:539",
+                }
+            },
+            [7],
+        )
+        code, _ = self.run_cli(fx, "--import")
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.fleet.calls()), 1)
+
+    def test_parse_resume_condition_forms(self):
+        parse = check_coverage.parse_resume_condition
+        self.assertEqual(parse("dependency_closed:539"), "dependency_closed:539")
+        self.assertEqual(parse("slice landed #12543"), "slice_landed:12543")
+        self.assertEqual(
+            parse({"kind": "dependency_closed", "target": "#539"}),
+            "dependency_closed:539",
+        )
+        for bad in ("next week", "2027-01-01", "the owner", "slice_landed", None, ""):
+            with self.subTest(bad=bad):
+                self.assertIsNone(parse(bad))
+
+    def test_verdict_from_comments_reads_the_newest_note(self):
+        note = (
+            "<!-- agent-note:v1 state=triaged task=11111 "
+            "resume=dependency_closed:539 verdict=still_blocked -->\nTriaged."
+        )
+        comments = [{"body": note, "user": {"type": "User"}}]
+        self.assertEqual(
+            check_coverage.verdict_from_comments(comments),
+            {"verdict": "still_blocked", "resume_condition": "dependency_closed:539"},
+        )
+        # A human comment after the verdict ends its coverage.
+        comments.append({"body": "take another look", "user": {"type": "User"}})
+        self.assertEqual(check_coverage.verdict_from_comments(comments), {})
+        # A bot comment does not.
+        comments[1] = {"body": "CI summary", "user": {"type": "Bot"}}
+        self.assertEqual(
+            check_coverage.verdict_from_comments(comments)["verdict"],
+            "still_blocked",
         )
 
 
