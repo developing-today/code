@@ -10931,6 +10931,12 @@ mod schedule_tests {
         fn url(&self, path: &str) -> String {
             format!("http://127.0.0.1:{}{path}", self.port)
         }
+
+        /// The allowlist entry for this server: its host and port.
+        /// A bare `127.0.0.1` would admit only port 80.
+        fn entry(&self) -> String {
+            format!("127.0.0.1:{}", self.port)
+        }
     }
 
     fn fetch_server() -> FetchServer {
@@ -10964,6 +10970,11 @@ mod schedule_tests {
                     "/away" => (
                         "302 Found",
                         format!("Location: http://localhost:{port}/hello\r\n"),
+                        Vec::new(),
+                    ),
+                    "/default-port" => (
+                        "302 Found",
+                        "Location: http://127.0.0.1/hello\r\n".to_owned(),
                         Vec::new(),
                     ),
                     "/loop" => ("302 Found", "Location: /loop\r\n".to_owned(), Vec::new()),
@@ -11053,6 +11064,27 @@ mod schedule_tests {
             error.to_string().contains("not in the allowlist"),
             "{error}"
         );
+        // A bare host admits only the scheme's default port.
+        assert!(core.check_http_fetch("https://example.com:443/").is_ok());
+        let error = core
+            .check_http_fetch("https://example.com:8443/")
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("not in the allowlist"),
+            "{error}"
+        );
+        // Listing `host:port` opens that port and no other.
+        core.limits
+            .http_fetch_hosts
+            .insert("example.com:8443".to_owned());
+        assert!(core.check_http_fetch("https://example.com:8443/").is_ok());
+        let error = core
+            .check_http_fetch("https://example.com:8444/")
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("not in the allowlist"),
+            "{error}"
+        );
 
         // The rate bound: a full window of attempts refuses the
         // next check, and the window admits again once it passes.
@@ -11072,8 +11104,12 @@ mod schedule_tests {
         // Granted, and the host allowlisted — but the operator
         // never named the provider in a ceiling, so the default
         // ceiling refuses it before any provider code runs.
-        let (mut actor, _clock, token, _journal) =
-            http_fetch_actor("fetch-default-off", &["http.fetch"], &["127.0.0.1"], false);
+        let (mut actor, _clock, token, _journal) = http_fetch_actor(
+            "fetch-default-off",
+            &["http.fetch"],
+            &[server.entry().as_str()],
+            false,
+        );
         ask(
             &mut actor,
             &token,
@@ -11093,7 +11129,7 @@ mod schedule_tests {
     async fn an_ungranted_http_fetch_is_refused_and_counted() {
         let server = fetch_server();
         let (mut actor, _clock, token, _journal) =
-            http_fetch_actor("fetch-ungranted", &[], &["127.0.0.1"], true);
+            http_fetch_actor("fetch-ungranted", &[], &[server.entry().as_str()], true);
         ask(
             &mut actor,
             &token,
@@ -11142,10 +11178,42 @@ mod schedule_tests {
     }
 
     #[tokio::test]
+    async fn a_bare_host_entry_refuses_a_non_default_port() {
+        let server = fetch_server();
+        // The host is listed without a port, so only port 80 is
+        // open; the server's own port is refused before any
+        // connection is made.
+        let (mut actor, _clock, token, _journal) =
+            http_fetch_actor("fetch-bare-host", &["http.fetch"], &["127.0.0.1"], true);
+        ask(
+            &mut actor,
+            &token,
+            serde_json::json!({"requests": [
+                {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/hello")}},
+            ]}),
+        )
+        .await;
+        let refused = schedule_result(&actor, "f1").unwrap();
+        assert_eq!(refused["error"], "bad_args", "{refused}");
+        assert!(
+            refused["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("not in the allowlist"),
+            "{refused}"
+        );
+        assert_eq!(server.hits(), 0, "an unlisted port is never contacted");
+    }
+
+    #[tokio::test]
     async fn http_fetch_round_trip_through_the_actor() {
         let server = fetch_server();
-        let (mut actor, _clock, token, _journal) =
-            http_fetch_actor("fetch-round-trip", &["http.fetch"], &["127.0.0.1"], true);
+        let (mut actor, _clock, token, _journal) = http_fetch_actor(
+            "fetch-round-trip",
+            &["http.fetch"],
+            &[server.entry().as_str()],
+            true,
+        );
         ask(
             &mut actor,
             &token,
@@ -11182,8 +11250,12 @@ mod schedule_tests {
     #[tokio::test]
     async fn http_fetch_refuses_redirects_off_the_list_and_past_the_hop_cap() {
         let server = fetch_server();
-        let (mut actor, _clock, token, _journal) =
-            http_fetch_actor("fetch-redirects", &["http.fetch"], &["127.0.0.1"], true);
+        let (mut actor, _clock, token, _journal) = http_fetch_actor(
+            "fetch-redirects",
+            &["http.fetch"],
+            &[server.entry().as_str()],
+            true,
+        );
         ask(
             &mut actor,
             &token,
@@ -11191,6 +11263,7 @@ mod schedule_tests {
                 {"id": "f1", "cap": "http.fetch", "args": {"url": server.url("/away")}},
                 {"id": "f2", "cap": "http.fetch", "args": {"url": server.url("/loop")}},
                 {"id": "f3", "cap": "http.fetch", "args": {"url": server.url("/big")}},
+                {"id": "f4", "cap": "http.fetch", "args": {"url": server.url("/default-port")}},
             ]}),
         )
         .await;
@@ -11223,12 +11296,23 @@ mod schedule_tests {
                 .contains("response_too_large"),
             "{big}"
         );
+        // /default-port redirects to the same host on port 80,
+        // which the `host:port` entry does not list: refused.
+        let other_port = schedule_result(&actor, "f4").unwrap();
+        assert_eq!(other_port["error"], "bad_args", "{other_port}");
+        assert!(
+            other_port["reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("host_not_allowed"),
+            "{other_port}"
+        );
         // Exactly the requests made: /away once (the redirect was
         // not followed), /loop for the initial fetch plus the hop
-        // cap of follows, /big once.
+        // cap of follows, /big once, /default-port once.
         assert_eq!(
             server.hits(),
-            1 + (1 + crate::world_caps::MAX_HTTP_FETCH_REDIRECTS) + 1
+            1 + (1 + crate::world_caps::MAX_HTTP_FETCH_REDIRECTS) + 1 + 1
         );
     }
 
@@ -11238,7 +11322,7 @@ mod schedule_tests {
         let (mut actor, _clock, token, journal) = http_fetch_actor(
             "fetch-replay",
             &["kv.set", "http.fetch"],
-            &["127.0.0.1"],
+            &[server.entry().as_str()],
             true,
         );
         ask(
