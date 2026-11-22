@@ -65,7 +65,7 @@ pub fn DarkModeToggle(cx: Scope) -> impl IntoView {
     // was not resetting input. This is how it should have been implemented
     // all along, which would also have fixed the bug at 49:24!
     let prefers_dark = move || {
-        match (input(), value()) {
+        match (input.get(), value.get()) {
             // if there's some current input, use that optimistically
             (Some(submission), _) => submission.prefers_dark,
             // otherwise, if there was a previous value confirmed by server, use that
