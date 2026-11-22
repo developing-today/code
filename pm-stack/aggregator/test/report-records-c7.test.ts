@@ -15,6 +15,7 @@ import {
   readReportSnapshots,
   readReportSnapshotCorrections,
   reportBlockConflict,
+  compareReportBlock,
   ReportRecordConflictError,
 } from "../src/report-records.ts";
 
@@ -255,6 +256,19 @@ describe("C7 canonical report records", () => {
     const identityFirst = makeReportRecord({ ...base, templateVersion: "daily-v1\nsource", sourceCursor: "cursor" }, "2026-11-22T05:45:01.000Z");
     const identitySecond = makeReportRecord({ ...base, templateVersion: "daily-v1", sourceCursor: "source\ncursor" }, "2026-11-22T05:45:01.000Z");
     expect(identityFirst.id).not.toBe(identitySecond.id);
+  });
+
+  test("compares conflicting prose as line-level hunks while preserving both originals", () => {
+    const comparison = compareReportBlock("Opening\nold detail\nClosing", "Opening\nnew detail\nClosing");
+    expect(comparison.conflict).toBe(true);
+    expect(comparison.hunks).toEqual([{ before: "old detail", after: "new detail" }]);
+    expect(comparison.storedText).toBe("Opening\nold detail\nClosing");
+    expect(comparison.renderedText).toBe("Opening\nnew detail\nClosing");
+    expect(compareReportBlock("a\nold one\nb\nold two\nc", "a\nnew one\nb\nnew two\nc").hunks).toEqual([
+      { before: "old one", after: "new one" },
+      { before: "old two", after: "new two" },
+    ]);
+    expect(compareReportBlock("same  prose", "same\nprose").conflict).toBe(false);
   });
 
   test("uses append-only permanent document keys for report history and snapshots", async () => {

@@ -474,3 +474,59 @@ export function reportBlockConflict(storedText: string, renderedText: string): b
   const normalize = (text: string) => text.replace(/\s+/g, " ").trim();
   return normalize(storedText) !== normalize(renderedText);
 }
+
+export interface ReportBlockDiffHunk {
+  before: string;
+  after: string;
+}
+
+export interface ReportBlockComparison {
+  conflict: boolean;
+  storedText: string;
+  renderedText: string;
+  hunks: ReportBlockDiffHunk[];
+}
+
+/** Compare both immutable inputs and expose changed line runs for review UI. */
+export function compareReportBlock(storedText: string, renderedText: string): ReportBlockComparison {
+  if (!reportBlockConflict(storedText, renderedText)) {
+    return { conflict: false, storedText, renderedText, hunks: [] };
+  }
+  const left = storedText.split(/\r?\n/);
+  const right = renderedText.split(/\r?\n/);
+  // Keep review work bounded for unusually large prose blocks. A single hunk
+  // remains truthful when a full line-level alignment would be too expensive.
+  if ((left.length + 1) * (right.length + 1) > 200_000) {
+    return { conflict: true, storedText, renderedText, hunks: [{ before: storedText, after: renderedText }] };
+  }
+  const rows = left.length + 1;
+  const cols = right.length + 1;
+  const lengths = Array.from({ length: rows }, () => new Uint32Array(cols));
+  for (let i = left.length - 1; i >= 0; i--) {
+    for (let j = right.length - 1; j >= 0; j--) {
+      lengths[i][j] = left[i] === right[j] ? lengths[i + 1][j + 1] + 1 : Math.max(lengths[i + 1][j], lengths[i][j + 1]);
+    }
+  }
+  const hunks: ReportBlockDiffHunk[] = [];
+  let before: string[] = [];
+  let after: string[] = [];
+  const flush = () => {
+    if (before.length || after.length) hunks.push({ before: before.join("\n"), after: after.join("\n") });
+    before = [];
+    after = [];
+  };
+  let i = 0;
+  let j = 0;
+  while (i < left.length && j < right.length) {
+    if (left[i] === right[j]) {
+      flush();
+      i++;
+      j++;
+    } else if (lengths[i + 1][j] >= lengths[i][j + 1]) before.push(left[i++]);
+    else after.push(right[j++]);
+  }
+  while (i < left.length) before.push(left[i++]);
+  while (j < right.length) after.push(right[j++]);
+  flush();
+  return { conflict: true, storedText, renderedText, hunks };
+}
