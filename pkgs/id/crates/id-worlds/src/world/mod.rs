@@ -186,7 +186,8 @@ pub struct WorldLimits {
     /// admin allowlist. Runtime configuration, not journaled; empty
     /// by default, which refuses every fetch. Entries are matched
     /// exactly against the URL's normalized host — no wildcards, no
-    /// implied subdomains.
+    /// implied subdomains. A bare host admits only the scheme's
+    /// default port; `host:port` admits that port only.
     pub http_fetch_hosts: BTreeSet<String>,
 }
 

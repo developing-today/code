@@ -275,7 +275,9 @@ impl WorldCore {
     /// why; the program sees only `bad_args`. Three refusals, in
     /// order: the URL's form (the `id-caps` rule), the admin
     /// allowlist (`limits.http_fetch_hosts`, exact match on the
-    /// normalized host — no wildcards, no implied subdomains), and
+    /// normalized host — no wildcards, no implied subdomains — and
+    /// on the port: a bare host admits only the scheme's default
+    /// port, `host:port` admits that port), and
     /// the rolling rate window. Checking spends nothing: the
     /// executor records the attempt with
     /// [`note_http_fetch_attempt`](Self::note_http_fetch_attempt)
@@ -292,8 +294,8 @@ impl WorldCore {
             self.limits
                 .http_fetch_hosts
                 .iter()
-                .any(|listed| crate::world_caps::normalize_http_fetch_host(listed) == host),
-            "http fetch host {host} is not in the allowlist"
+                .any(|listed| crate::world_caps::http_fetch_entry_admits(listed, url)),
+            "http fetch host {host} at this port is not in the allowlist"
         );
         let now = self.clock.now_ms();
         let window_start = now.saturating_sub(crate::world_caps::HTTP_FETCH_RATE_WINDOW_MS);
