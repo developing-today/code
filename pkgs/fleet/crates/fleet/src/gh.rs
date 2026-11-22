@@ -1365,7 +1365,7 @@ fn closure_binding(
         Ok(id) => id,
         Err(error) => {
             eprintln!("fleet gh: {error}; closure record will omit the session id");
-            None
+            return gh_closure::Binding::from_failed_session_resolution();
         }
     };
     gh_closure::Binding::from_resolved_session_id(resolved_session_id)

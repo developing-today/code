@@ -147,8 +147,14 @@ Every source must match the `ses_` plus ASCII alphanumeric format. Supplied
 identities are persisted at the Git worktree root (not the common Git
 directory), so linked worktrees can track different sessions; Git ignores this
 runtime marker. A recovered marker is accepted only when the local OpenCode
-server returns a matching, non-archived session record; an ended or
-unverifiable marker fails closed.
+server returns a matching, non-archived session record; the check uses
+`OPENCODE_URL`, then `OPENCODE_SERVER_URL`, and the OpenCode Basic-auth password
+from `OPENCODE_AUTH_FILE` or `~/.local/state/opencode/service-prod.json`. An
+ended or unverifiable marker fails closed. A malformed nonempty session ID in
+either environment variable also fails closed for supported Fleet invocations;
+clear or correct that variable to resume unrelated commands.
+`fleet init` validates help and extra arguments before session resolution, and
+`fleet proxy init` resolves identity only once.
 Dispatcher-handled help, dispatcher argument-shape errors, and unavailable
 domains return before session resolution. Supported invocations resolve
 identity before entering their domain handlers; domain-specific help and usage

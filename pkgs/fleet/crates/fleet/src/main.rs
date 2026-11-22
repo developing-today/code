@@ -808,7 +808,10 @@ fn run_domain_with_initializer(
     }
     match surface.cap_state(cap, d.name) {
         CapState::Available => {
-            if let Err(error) = initialize(None) {
+            // proxy init is dispatched through run_init_call, which validates
+            // its leaf arguments and resolves session identity exactly once.
+            let init_leaf = d.name == "proxy" && args.first().is_some_and(|arg| arg == "init");
+            if !init_leaf && let Err(error) = initialize(None) {
                 eprintln!("fleet {}: {error}", d.name);
                 return EXIT_USAGE;
             }
@@ -1331,6 +1334,13 @@ fn run_proxy_ssh(tail: &[String], config: &fleet_config::Config) -> i32 {
 }
 
 fn run_init_call(surface: &Surface, argv: &[String]) -> i32 {
+    if argv.iter().any(|arg| is_help_flag(arg)) {
+        println!("{}", fleet_proxy::client::INIT_USAGE);
+        return EXIT_OK;
+    }
+    if let Some(extra) = argv.first() {
+        return usage_error(&format!("fleet init takes no arguments (got {extra:?})"));
+    }
     if let Err(error) = session_state::initialize(None) {
         eprintln!("fleet init: {error}");
         return EXIT_USAGE;
@@ -1942,6 +1952,43 @@ mod tests {
         assert!(
             !initialized.get(),
             "invalid argv must not inspect the marker"
+        );
+    }
+
+    #[test]
+    fn malformed_proxy_init_does_not_resolve_session_state_twice() {
+        let surface = Surface::new(None, fleet_config::Config::default());
+        let proxy = domain("proxy").expect("proxy domain exists");
+        let initialized = std::cell::Cell::new(false);
+        let code = run_domain_with_initializer(
+            &surface,
+            proxy,
+            &args(&["init", "--bogus"]),
+            "fleet",
+            |_| {
+                initialized.set(true);
+                Ok(None)
+            },
+        );
+        assert_eq!(code, EXIT_USAGE, "proxy init rejects leaf arguments");
+        assert!(
+            !initialized.get(),
+            "proxy init validates its leaf before session resolution"
+        );
+    }
+
+    #[test]
+    fn root_init_help_and_extra_args_return_before_session_resolution() {
+        let surface = Surface::new(None, fleet_config::Config::default());
+        assert_eq!(
+            run_init_call(&surface, &args(&["--help"])),
+            EXIT_OK,
+            "help must be available even with a stale marker"
+        );
+        assert_eq!(
+            run_init_call(&surface, &args(&["--bogus"])),
+            EXIT_USAGE,
+            "extra arguments must be rejected before marker access"
         );
     }
 

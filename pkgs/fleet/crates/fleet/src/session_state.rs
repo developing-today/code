@@ -4,10 +4,11 @@
 //! worktree root. It is not shared through the common Git directory, so each
 //! worktree retains its own active session association.
 
+use base64::Engine;
 use std::path::{Path, PathBuf};
 
 pub const PWD_FILE: &str = ".fleet-session-id";
-const USAGE: &str = "Usage: fleet session bind [--session-id ID]\n\nResolve and persist this worktree's session identity. No automatic launcher integration.";
+const USAGE: &str = "Usage: fleet session bind [--session-id ID]\n\nResolve and persist this worktree's session identity.";
 
 /// This command owns its whole argument list. Validate before Git, marker I/O,
 /// environment mutation or HTTP. In particular, never scan another domain's tail.
@@ -107,8 +108,19 @@ fn nonempty(value: Option<&str>) -> Option<&str> {
 fn worktree_root() -> Result<Option<PathBuf>, String> {
     let output = std::process::Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .map_err(|e| format!("cannot locate worktree root: {e}"))?;
+        .output();
+    worktree_root_from_output(output)
+}
+
+fn worktree_root_from_output(
+    output: std::io::Result<std::process::Output>,
+) -> Result<Option<PathBuf>, String> {
+    // Fleet also runs outside a checkout (and in minimal installed
+    // variants). A missing Git executable means there is no discoverable
+    // worktree, not that unrelated Fleet commands should fail.
+    let Ok(output) = output else {
+        return Ok(None);
+    };
     if !output.status.success() {
         return Ok(None);
     }
@@ -159,27 +171,63 @@ fn resolve_marker(
 /// Best-effort liveness check against the local OpenCode server. An
 /// unavailable server is not proof that the recorded session is live.
 fn session_is_live(session_id: &str) -> bool {
-    let base = std::env::var("OPENCODE_BASE_URL")
-        .ok()
-        .or_else(|| {
-            std::env::var("OPENCODE_PORT")
-                .ok()
-                .map(|port| format!("http://127.0.0.1:{port}"))
-        })
-        .unwrap_or_else(|| "http://127.0.0.1:4096".to_owned());
-    let url = format!("{}/api/session/{}", base.trim_end_matches('/'), session_id);
+    let base = resolve_opencode_base_url(
+        std::env::var("OPENCODE_URL").ok().as_deref(),
+        std::env::var("OPENCODE_SERVER_URL").ok().as_deref(),
+    );
+    let Some(password) = opencode_password() else {
+        return false;
+    };
+    let auth = opencode_basic_auth(&password);
+    let url = format!("{base}/api/session/{session_id}");
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .http_status_as_error(true)
         .timeout_global(Some(std::time::Duration::from_secs(2)))
         .build()
         .into();
-    let Ok(mut response) = agent.get(&url).call() else {
+    let Ok(mut response) = agent.get(&url).header("Authorization", &auth).call() else {
         return false;
     };
     let Ok(body) = response.body_mut().read_to_string() else {
         return false;
     };
     session_record_is_live(&body, session_id)
+}
+
+fn resolve_opencode_base_url(env_url: Option<&str>, env_server_url: Option<&str>) -> String {
+    [env_url, env_server_url]
+        .into_iter()
+        .flatten()
+        .map(|value| value.trim().trim_end_matches('/'))
+        .find(|value| !value.is_empty())
+        .unwrap_or("http://127.0.0.1:13420")
+        .to_owned()
+}
+
+fn resolve_opencode_auth_file(env_file: Option<&str>, home: &str) -> String {
+    env_file
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{home}/.local/state/opencode/service-prod.json"))
+}
+
+fn opencode_basic_auth(password: &str) -> String {
+    format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(format!("opencode:{password}"))
+    )
+}
+
+fn opencode_password() -> Option<String> {
+    let home = std::env::var("HOME")
+        .ok()
+        .filter(|value| !value.is_empty())?;
+    let path =
+        resolve_opencode_auth_file(std::env::var("OPENCODE_AUTH_FILE").ok().as_deref(), &home);
+    let state: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    state.get("password")?.as_str().map(str::to_owned)
 }
 
 fn session_record_is_live(body: &str, session_id: &str) -> bool {
@@ -251,6 +299,44 @@ mod tests {
             |_| false,
         );
         assert_eq!(got, Ok(Resolution::Session("ses_explicit".into())));
+    }
+
+    #[test]
+    fn git_spawn_failure_means_no_discoverable_worktree() {
+        let result = worktree_root_from_output(Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "git missing",
+        )));
+        assert_eq!(
+            result,
+            Ok(None),
+            "missing Git must not block Fleet commands"
+        );
+    }
+
+    #[test]
+    fn opencode_url_resolution_matches_fleet_queue_contract() {
+        assert_eq!(
+            resolve_opencode_base_url(Some(" https://one/ "), Some("https://two/")),
+            "https://one"
+        );
+        assert_eq!(
+            resolve_opencode_base_url(None, Some("https://two/")),
+            "https://two"
+        );
+        assert_eq!(
+            resolve_opencode_base_url(None, None),
+            "http://127.0.0.1:13420"
+        );
+        assert_eq!(
+            resolve_opencode_auth_file(Some(" /tmp/opencode-auth.json "), "/home/test"),
+            "/tmp/opencode-auth.json"
+        );
+        assert_eq!(
+            resolve_opencode_auth_file(None, "/home/test"),
+            "/home/test/.local/state/opencode/service-prod.json"
+        );
+        assert_eq!(opencode_basic_auth("secret"), "Basic b3BlbmNvZGU6c2VjcmV0");
     }
 
     #[test]
