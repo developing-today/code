@@ -871,7 +871,8 @@ async function viewNotify() {
 
 /** A request from the Android app on this phone to be linked, until it is answered. */
 let linkRequest = null;
-let linkApproved = false;
+/** How many phones were linked when the request was approved, or null before that. */
+let linkApprovedAt = null;
 
 /** The address that tells the Android app to collect its token. It carries nothing. */
 function collectUrl() {
@@ -883,20 +884,25 @@ async function viewPhone(sub) {
   if (sub?.startsWith("link=")) {
     const request = sub.slice(5);
     linkRequest = /^[A-Za-z0-9_-]{43}$/.test(request) ? request : null;
-    linkApproved = false;
+    linkApprovedAt = null;
     history.replaceState(null, "", "#more/phone");
   }
   const devices = await api("devices");
+  // The phone has collected its token: the request is finished.
+  if (linkApprovedAt !== null && devices.length > linkApprovedAt) {
+    linkRequest = null;
+    linkApprovedAt = null;
+  }
   const approve = async (e) => {
     const done = await act("device.approve", { challenge: linkRequest }, "Approved", e.target);
     if (!done) return;
-    linkApproved = true;
+    linkApprovedAt = devices.length;
     draw();
     // Hand back to the app, which collects its token and fills the widget.
     location.href = collectUrl();
   };
   const out = [];
-  if (linkRequest && !linkApproved) {
+  if (linkRequest && linkApprovedAt === null) {
     out.push(
       card(
         h("h3", {}, "Link this phone?"),
@@ -905,6 +911,7 @@ async function viewPhone(sub) {
           { class: "meta" },
           "The app's home-screen widget asked to be linked. It will be able to read three counts (in progress, queued, needs you) and the titles at the top of each list, and nothing else. It cannot change anything, and you can remove it here at any time.",
         ),
+        h("p", { class: "why" }, "Approve only if you just tapped the PM widget on this phone. If this appeared after following a link from somewhere else, choose Not now."),
         h(
           "div",
           { class: "row end" },
@@ -923,7 +930,7 @@ async function viewPhone(sub) {
         ),
       ),
     );
-  } else if (linkRequest && linkApproved) {
+  } else if (linkRequest) {
     out.push(
       card(
         h("h3", {}, "Approved"),
@@ -1320,7 +1327,11 @@ if (typeof document !== "undefined" && view) {
   });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") flushPending();
-    else refresh(false);
+    else {
+      refresh(false);
+      // Back from the Android app after linking: show the phone it added.
+      if (route === "more/phone") draw();
+    }
   });
   addEventListener("pagehide", flushPending);
   setInterval(() => document.visibilityState === "visible" && refresh(false), 20_000);

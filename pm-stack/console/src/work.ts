@@ -27,6 +27,9 @@ const SET_ID = /^[A-Za-z0-9._:-]{1,160}$/;
 const REF = /^([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)#([1-9][0-9]{0,8})$/;
 const LEANS = ["none", "skeptical", "approve"] as const;
 const SUBMIT_BATCH = 200;
+/** Replies shown in a prompt's thread, and how many pages back are read to find them. */
+const REPLIES_SHOWN = 6;
+const REPLY_PAGES = 3;
 
 function clip(value: unknown, max: number): string {
   const s = typeof value === "string" ? value : "";
@@ -454,17 +457,21 @@ export class Work {
       if (i.comments > 0 && thread?.updated !== i.updated_at) {
         // The newest comments are on the last page. Bots that only link the
         // issue elsewhere (the board sync) are not the fleet answering.
-        const page = Math.max(1, Math.ceil(i.comments / 100));
-        const comments = (
-          (await this.ops.gh([`repos/${this.repo}/issues/${i.number}/comments?per_page=100&page=${page}`])) as {
-            body: string | null;
-            created_at: string;
-            user?: { type?: string } | null;
-          }[]
-        ).filter((c) => c.user?.type !== "Bot");
+        // Read back from the last page until the replies shown are in
+        // hand: a page boundary, or a tail of bot comments, must not hide
+        // the answer.
+        type Comment = { body: string | null; created_at: string; user?: { type?: string } | null };
+        const last = Math.max(1, Math.ceil(i.comments / 100));
+        let comments: Comment[] = [];
+        for (let page = last; page >= 1 && last - page < REPLY_PAGES && comments.length < REPLIES_SHOWN; page--) {
+          const got = (await this.ops.gh([
+            `repos/${this.repo}/issues/${i.number}/comments?per_page=100&page=${page}`,
+          ])) as Comment[];
+          comments = [...got.filter((c) => c.user?.type !== "Bot"), ...comments];
+        }
         thread = {
           updated: i.updated_at,
-          replies: comments.slice(-6).map((c) => ({
+          replies: comments.slice(-REPLIES_SHOWN).map((c) => ({
             you: (c.body ?? "").includes(OWNER_REPLY_MARK),
             at: c.created_at.slice(0, 19),
             text: clip((c.body ?? "").replace(OWNER_REPLY_MARK, "").trim(), 1500),
