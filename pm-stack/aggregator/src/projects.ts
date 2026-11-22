@@ -56,7 +56,7 @@ export const PROJECT_QUERY = `query($id: ID!, $cursor: String) {
           databaseId
           type
           content {
-            ... on Issue { number title body state url repository { nameWithOwner } updatedAt closedAt milestone { title dueOn closedAt } author { login } labels(first: 20) { nodes { name } } parent { number url repository { nameWithOwner } } blockedBy(first: 50) { nodes { number url repository { nameWithOwner } } } blocking(first: 50) { nodes { number url repository { nameWithOwner } } } }
+            ... on Issue { number title body state url repository { nameWithOwner } updatedAt closedAt milestone { title dueOn closedAt } subIssuesSummary { total completed } author { login } labels(first: 20) { nodes { name } } parent { number url repository { nameWithOwner } } blockedBy(first: 50) { nodes { number url repository { nameWithOwner } } } blocking(first: 50) { nodes { number url repository { nameWithOwner } } } }
             ... on PullRequest { number title state url repository { nameWithOwner } updatedAt mergedAt closedAt milestone { title dueOn closedAt } author { login } isDraft }
             ... on DraftIssue { title }
           }
@@ -98,6 +98,7 @@ interface GqlContent {
   isDraft?: boolean;
   /** Milestone ingestion (#9067): { title, dueOn, closedAt } or null. */
   milestone?: { title?: string; dueOn?: string | null; closedAt?: string | null } | null;
+  subIssuesSummary?: { total?: number; completed?: number } | null;
   labels?: { nodes?: { name?: string }[] } | null;
   /** Sub-issue parent (issues only; null when none). */
   parent?: GqlEdgeNode | null;
@@ -254,6 +255,16 @@ export function parseProjectItems(json: unknown, projectUrl = PROJECT_URL, board
             } satisfies MilestoneRef,
           }
         : {}),
+      ...(c.subIssuesSummary &&
+      Number.isSafeInteger(c.subIssuesSummary.total) &&
+      Number.isSafeInteger(c.subIssuesSummary.completed)
+        ? {
+            subIssuesSummary: {
+              total: c.subIssuesSummary.total!,
+              completed: c.subIssuesSummary.completed!,
+            },
+          }
+        : {}),
       status: singleSelect(item, "Status"),
       area: singleSelect(item, "Area"),
       horizon: singleSelect(item, "Horizon"),
@@ -321,6 +332,41 @@ export function resolveEpicRefs(items: ProjectPoolItem[]): ProjectPoolItem[] {
       cursor = cursor.parentRef ? byRef.get(cursor.parentRef) : undefined;
     }
     return withoutEpicRef;
+  });
+}
+
+/** Add a spawn rollup to design issues from direct native children. The
+ * GitHub summary is authoritative for total/done counts (including children
+ * outside this Project); loaded Project children supply Status for the
+ * in-progress count. Blocking is the intersection of the parent's
+ * blockedBy edges and its direct spawned children. Missing summaries stay
+ * absent rather than inventing a zero. */
+export function resolveSpawnRollups(items: ProjectPoolItem[]): ProjectPoolItem[] {
+  const childrenByParent = new Map<string, ProjectPoolItem[]>();
+  for (const item of items) {
+    if (!item.parentRef) continue;
+    const children = childrenByParent.get(item.parentRef) ?? [];
+    children.push(item);
+    childrenByParent.set(item.parentRef, children);
+  }
+  return items.map((item) => {
+    const isDesign = item.labels?.some((label) => label === "design" || label.startsWith("design/"));
+    const summary = item.subIssuesSummary;
+    if (!isDesign || !summary) {
+      const { spawnRollup: _stale, ...unchanged } = item;
+      return unchanged;
+    }
+    const children = childrenByParent.get(item.ref) ?? [];
+    const directChildRefs = new Set(children.map((child) => child.ref));
+    return {
+      ...item,
+      spawnRollup: {
+        total: summary.total,
+        done: summary.completed,
+        inProgress: children.filter((child) => child.status?.toLowerCase() === "in progress").length,
+        blocking: (item.blockedBy ?? []).filter((ref) => directChildRefs.has(ref)).sort(),
+      },
+    };
   });
 }
 
@@ -551,7 +597,7 @@ export async function fetchProjectSnapshot(
           views: audit.views,
           items: parseBoardEntries(auditItems, audit.url),
         },
-        items: resolveEpicRefs(parsedItems),
+        items: resolveSpawnRollups(resolveEpicRefs(parsedItems)),
         audit,
         counts: {
           reportedTotal: info.totalCount - (auditItems.length - parsedItems.length),
@@ -603,7 +649,7 @@ export async function fetchProjectBoardsSnapshot(
     }
   }
   return {
-    items: resolveEpicRefs(items),
+    items: resolveSpawnRollups(resolveEpicRefs(items)),
     audits,
     boards: snapshots,
     failedBoardIds,
@@ -646,7 +692,7 @@ export async function fetchProjectPool(token: string, fetchFn: ProjectFetch = fe
   }
   // Epic membership needs the whole pool (parents may sit on other
   // pages), so it resolves once over the aggregate, not per page.
-  return resolveEpicRefs(out);
+  return resolveSpawnRollups(resolveEpicRefs(out));
 }
 
 /** Structural check for a pool entry in a feed (collector + live share
@@ -696,6 +742,22 @@ export function isProjectPoolItem(v: unknown): v is ProjectPoolItem {
         typeof p.milestone.title === "string" &&
         (p.milestone.dueOn === null || typeof p.milestone.dueOn === "string") &&
         (p.milestone.closedAt === null || typeof p.milestone.closedAt === "string"))) &&
+    (p.subIssuesSummary === undefined ||
+      (typeof p.subIssuesSummary === "object" &&
+        p.subIssuesSummary !== null &&
+        Number.isSafeInteger(p.subIssuesSummary.total) &&
+        (p.subIssuesSummary.total as number) >= 0 &&
+        Number.isSafeInteger(p.subIssuesSummary.completed) &&
+        (p.subIssuesSummary.completed as number) >= 0 &&
+        (p.subIssuesSummary.completed as number) <= (p.subIssuesSummary.total as number))) &&
+    (p.spawnRollup === undefined ||
+      (typeof p.spawnRollup === "object" &&
+        p.spawnRollup !== null &&
+        Number.isSafeInteger(p.spawnRollup.total) &&
+        Number.isSafeInteger(p.spawnRollup.done) &&
+        Number.isSafeInteger(p.spawnRollup.inProgress) &&
+        Array.isArray(p.spawnRollup.blocking) &&
+        p.spawnRollup.blocking.every(isValidRef))) &&
     (p.state === "open" || p.state === "closed" || p.state === "merged") &&
     (p.parentRef === undefined || isValidRef(p.parentRef)) &&
     (p.epicRef === undefined || isValidRef(p.epicRef)) &&

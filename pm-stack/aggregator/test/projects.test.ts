@@ -17,6 +17,7 @@ import {
   projectDisagreement,
   PROJECT_QUERY,
   resolveEpicRefs,
+  resolveSpawnRollups,
 } from "../src/projects.ts";
 import { renderProjects } from "../src/render.ts";
 import { liveSource } from "../src/sources/live.ts";
@@ -760,6 +761,47 @@ describe("collector graph edges (#2399 contract)", () => {
     ]);
     expect(loop[0]?.epicRef).toBeUndefined();
     expect(loop[1]?.epicRef).toBeUndefined();
+  });
+
+  test("resolveSpawnRollups uses direct native children, summary completion, Status, and blocking edges", () => {
+    const base = parseProjectItems(GQL)[0]!;
+    const parent = {
+      ...base,
+      id: "design-parent",
+      ref: "developing-today/code#3000",
+      number: 3000,
+      title: "Design parent",
+      labels: ["design", "design/parent"],
+      subIssuesSummary: { total: 3, completed: 1 },
+      blockedBy: ["developing-today/code#3003"],
+    };
+    const children = [
+      { ...base, id: "done", ref: "developing-today/code#3001", number: 3001, parentRef: parent.ref, state: "closed" as const, status: "Done" },
+      { ...base, id: "active", ref: "developing-today/code#3002", number: 3002, parentRef: parent.ref, status: "In Progress" },
+      { ...base, id: "blocking", ref: "developing-today/code#3003", number: 3003, parentRef: parent.ref, status: "Todo" },
+    ];
+
+    const resolved = resolveSpawnRollups([parent, ...children]);
+    expect(resolved[0]?.spawnRollup).toEqual({
+      total: 3,
+      done: 1,
+      inProgress: 1,
+      blocking: ["developing-today/code#3003"],
+    });
+    expect(resolved[1]?.spawnRollup).toBeUndefined();
+  });
+
+  test("PROJECT_QUERY and parser carry GitHub sub-issue summary without fabricating missing counts", () => {
+    expect(PROJECT_QUERY).toContain("subIssuesSummary { total completed }");
+    const response = structuredClone(GQL) as unknown as {
+      data: { node: { items: { nodes: Array<{ content: Record<string, unknown> }> } } };
+    };
+    const item = response.data.node.items.nodes[0];
+    if (!item) throw new Error("fixture has no project item");
+    item.content.subIssuesSummary = { total: 4, completed: 2 };
+    const [parent] = parseProjectItems(response);
+    expect(parent?.subIssuesSummary).toEqual({ total: 4, completed: 2 });
+    expect(parseProjectItems(GQL)[0]?.subIssuesSummary).toBeUndefined();
   });
 });
 
