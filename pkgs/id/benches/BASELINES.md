@@ -440,6 +440,50 @@ first run's bench and profile lines are appended to `baseline.txt`;
 the 2026-11-10 reference line is unchanged (the ratios above were
 taken under heavier load and are not comparable to it).
 
+### Post-#12571 check: the placement fix measured on the reference machine
+
+While this slice was in flight, the placement fix the profile names
+landed separately as #12571 (guest calls run under
+`tokio::task::block_in_place`, `run_guest_call` in `sandbox.rs`),
+merged explicitly "awaiting reference-machine bench", and the
+CI-runner section below records that the 4-vCPU runner venue cannot
+decide it. This branch merged main forward, so the same instrumented
+bench now measures the fix on the reference machine. Two
+back-to-back pre/post pairs at light ambient load (load average
+~3–10 and falling, same command, full profile; pre = this
+instrumentation at `63f9558b9`, post = the merged tree):
+
+```text
+bench fuel_spin_isolation unit=ms_per_command median=1.952 min=0.177 reps=1 victim_p99_ms_calm=1.504 victim_p99_ms_spinning=9.100 ratio=6.049 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 spins=2227 spinners=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.041 spinning_elapsed_secs=3.109
+profile fuel_spin_isolation calm_wake_p99_ms=1.396 calm_input_ack_p99_ms=0.151 spinning_wake_p99_ms=6.546 spinning_input_ack_p99_ms=3.963 calm_journal_appends=0 calm_journal_append_mean_us=0 calm_journal_append_p99_us=0 spinning_journal_appends=0 spinning_journal_append_mean_us=0 spinning_journal_append_p99_us=0 calm_command_mean_us=39 calm_command_p99_us=100 spinning_command_mean_us=67 spinning_command_p99_us=2000 victim_queue_depth_max=0 victim_checkpoints=0
+bench fuel_spin_isolation unit=ms_per_command median=2.771 min=0.482 reps=1 victim_p99_ms_calm=2.157 victim_p99_ms_spinning=14.725 ratio=6.826 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 spins=2222 spinners=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.041 spinning_elapsed_secs=3.112
+profile fuel_spin_isolation calm_wake_p99_ms=2.065 calm_input_ack_p99_ms=0.188 spinning_wake_p99_ms=5.931 spinning_input_ack_p99_ms=12.983 calm_journal_appends=0 calm_journal_append_mean_us=0 calm_journal_append_p99_us=0 spinning_journal_appends=0 spinning_journal_append_mean_us=0 spinning_journal_append_p99_us=0 calm_command_mean_us=53 calm_command_p99_us=500 spinning_command_mean_us=1651 spinning_command_p99_us=50000 victim_queue_depth_max=0 victim_checkpoints=0
+bench fuel_spin_isolation unit=ms_per_command median=2.394 min=0.429 reps=1 victim_p99_ms_calm=1.695 victim_p99_ms_spinning=11.377 ratio=6.711 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 spins=1315 spinners=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.041 spinning_elapsed_secs=3.119
+profile fuel_spin_isolation calm_wake_p99_ms=1.587 calm_input_ack_p99_ms=0.357 spinning_wake_p99_ms=9.292 spinning_input_ack_p99_ms=6.456 calm_journal_appends=0 calm_journal_append_mean_us=0 calm_journal_append_p99_us=0 spinning_journal_appends=0 spinning_journal_append_mean_us=0 spinning_journal_append_p99_us=0 calm_command_mean_us=53 calm_command_p99_us=100 spinning_command_mean_us=103 spinning_command_p99_us=2000 victim_queue_depth_max=0 victim_checkpoints=0
+bench fuel_spin_isolation unit=ms_per_command median=4.077 min=1.073 reps=1 victim_p99_ms_calm=3.913 victim_p99_ms_spinning=23.811 ratio=6.085 target_ratio=1.10 target_met=false calm_samples=300 spinning_samples=300 spins=2132 spinners=15 phase_ms=3000 commands_per_second=100 spin_fuel=20000000 calm_elapsed_secs=3.041 spinning_elapsed_secs=3.108
+profile fuel_spin_isolation calm_wake_p99_ms=2.356 calm_input_ack_p99_ms=1.756 spinning_wake_p99_ms=14.086 spinning_input_ack_p99_ms=17.242 calm_journal_appends=0 calm_journal_append_mean_us=0 calm_journal_append_p99_us=0 spinning_journal_appends=0 spinning_journal_append_mean_us=0 spinning_journal_append_p99_us=0 calm_command_mean_us=118 calm_command_p99_us=2000 spinning_command_mean_us=2191 spinning_command_p99_us=50000 victim_queue_depth_max=0 victim_checkpoints=0
+```
+
+Verdict: **the placement fix does not move the ratio on the
+reference machine, and it taxes the victim's own calls.** Ratios
+are indistinguishable (pre 6.049 / 6.711, post 6.826 / 6.085), the
+wake tail persists both ways, and the ack p99 worsens post-fix
+(3.963 / 6.456 → 12.983 / 17.242 ms) because the victim's own guest
+calls now pay the blocking-context round trip under core
+saturation: victim command mean in the spinning phase rose from
+67 / 103 µs pre-fix to 1,651 / 2,191 µs post-fix (~20×), its
+bucketed p99 from 2,000 to 50,000 µs, in both pairs. Placement
+cannot create CPU — 15 burns still saturate 16 cores, now from
+blocking threads — and per-call `block_in_place` charges every
+world, victim included, for the migration. The lever the profile
+now supports is admission: bound how many guest calls burn
+concurrently (with the bound charged per world/account, which is
+also the quota hook), so cores remain for everyone else. Next
+slice in that form: after that PR, the same command's profile line
+shows the spinning ratio below 2 at comparable load, with the
+victim's spinning command mean back at its pre-#12571 level. The
+first pair's lines are appended to `baseline.txt`.
+
 ## Fuel-spin isolation on the CI runner — noise-dominated, no verdict (2026-11-22, #1067)
 
 Machine class: `ci-runner` (GitHub-hosted ubuntu-24.04 via the
