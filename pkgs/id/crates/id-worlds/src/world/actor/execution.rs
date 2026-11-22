@@ -1269,6 +1269,9 @@ impl WorldActor {
             "kv.get" => self.execute_kv_get(&request.args),
             "kv.set" => self.execute_kv_set(&request.args),
             "kv.delete" => self.execute_kv_delete(&request.args),
+            "blob.put" => self.execute_blob_put(&request.args),
+            "blob.get" => self.execute_blob_get(&request.args),
+            "blob.delete" => self.execute_blob_delete(&request.args),
             "schedule.at" => self.execute_schedule_at(&request.args),
             "schedule.cancel" => self.execute_schedule_cancel(&request.args),
             _ => Err(CapError::unknown()),
@@ -1792,6 +1795,89 @@ impl WorldActor {
         }
         self.core.kv.remove(key);
         Ok(serde_json::json!({"key": key, "deleted": true}))
+    }
+
+    /// `blob.put` (#1062): store content under its iroh-blobs
+    /// address. The write is journaled before the result is
+    /// delivered; putting content the world already holds is a
+    /// no-op that journals nothing, because the address is the same.
+    pub(super) fn execute_blob_put(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let encoded = args
+            .get("data")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CapError::bad_args())?;
+        let bytes = super::super::blob_decode(encoded).ok_or(CapError::bad_args())?;
+        let hash = super::super::blob_id(&bytes);
+        if let Err(error) = self.core.check_blob_put(&hash, bytes.len()) {
+            tracing::debug!("world {}: blob put refused: {error:#}", self.core.world_id);
+            return Err(CapError::bad_args_with(format!("{error:#}")));
+        }
+        let size = bytes.len();
+        if !self.core.blobs.contains_key(&hash) {
+            if self
+                .persist(JournalEntry::BlobStored {
+                    hash: hash.clone(),
+                    data: super::super::blob_encode(&bytes),
+                })
+                .is_err()
+            {
+                return Err(CapError::failed());
+            }
+            self.core.blobs.insert(hash.clone(), bytes);
+        }
+        Ok(serde_json::json!({"hash": hash, "size": size}))
+    }
+
+    /// `blob.get` (#1062): the content stored under the address, or
+    /// `null` data when the world holds no such blob.
+    pub(super) fn execute_blob_get(
+        &self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let hash = args
+            .get("hash")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CapError::bad_args())?;
+        if crate::world_caps::validate_blob_hash(hash).is_err() {
+            return Err(CapError::bad_args());
+        }
+        let data = match self.core.blobs.get(hash) {
+            None => serde_json::Value::Null,
+            Some(bytes) => serde_json::json!(super::super::blob_encode(bytes)),
+        };
+        Ok(serde_json::json!({"hash": hash, "data": data}))
+    }
+
+    /// `blob.delete` (#1062): remove the blob under an address.
+    /// `deleted` is false when the world held no such blob, and
+    /// nothing is journaled in that case.
+    pub(super) fn execute_blob_delete(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, CapError> {
+        let hash = args
+            .get("hash")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(CapError::bad_args())?;
+        if crate::world_caps::validate_blob_hash(hash).is_err() {
+            return Err(CapError::bad_args());
+        }
+        if !self.core.blobs.contains_key(hash) {
+            return Ok(serde_json::json!({"hash": hash, "deleted": false}));
+        }
+        if self
+            .persist(JournalEntry::BlobRemoved {
+                hash: hash.to_owned(),
+            })
+            .is_err()
+        {
+            return Err(CapError::failed());
+        }
+        self.core.blobs.remove(hash);
+        Ok(serde_json::json!({"hash": hash, "deleted": true}))
     }
 
     /// `chat.say` commits a host chat line; its result is the new sequence.

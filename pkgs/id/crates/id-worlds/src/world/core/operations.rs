@@ -141,6 +141,46 @@ impl WorldCore {
         Ok(())
     }
 
+    /// The blob set's total charge, in bytes: content bytes per blob
+    /// (#1062).
+    pub(crate) fn blob_bytes(&self) -> usize {
+        self.blobs.values().map(|bytes| bytes.len()).sum()
+    }
+
+    /// Whether a `blob.put` of the content addressed by `hash`, of
+    /// `data_len` bytes, may be stored. The error says why; the
+    /// program sees only `bad_args`. Content the world already holds
+    /// is always accepted: its address is the same, so the put is a
+    /// no-op that consumes neither a second slot nor a second byte
+    /// charge.
+    ///
+    /// # Errors
+    ///
+    /// A malformed hash, oversized content, a full set, or a set
+    /// whose total byte budget the put would exceed.
+    pub(crate) fn check_blob_put(&self, hash: &str, data_len: usize) -> Result<()> {
+        crate::world_caps::validate_blob_hash(hash)?;
+        ensure!(
+            data_len <= crate::world_caps::MAX_BLOB_BYTES,
+            "blob exceeds {} bytes",
+            crate::world_caps::MAX_BLOB_BYTES
+        );
+        if self.blobs.contains_key(hash) {
+            return Ok(());
+        }
+        ensure!(
+            self.blobs.len() < crate::world_caps::MAX_BLOBS,
+            "world already has {} blobs",
+            crate::world_caps::MAX_BLOBS
+        );
+        ensure!(
+            self.blob_bytes() + data_len <= crate::world_caps::MAX_BLOB_TOTAL_BYTES,
+            "blob set would exceed {} total bytes",
+            crate::world_caps::MAX_BLOB_TOTAL_BYTES
+        );
+        Ok(())
+    }
+
     /// Apply one fire of a pending schedule: re-arm it in place while
     /// fires remain (fixed-rate: the next due time advances by the
     /// interval from the planned time, never from now), or consume it.
