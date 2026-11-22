@@ -495,9 +495,13 @@ mod tests {
                     if let Err(expected_refusal) = expected {
                         let actual_refusal = actual.unwrap_err();
                         prop_assert_eq!(actual_refusal, expected_refusal);
-                        // A refusal is whole: nothing but the
-                        // refusal count moves.
-                        prop_assert_eq!(budget.charged_in_window(), before.0);
+                        // A refusal charges nothing: the lifetime
+                        // total does not move, and only the refusal
+                        // count advances. The window counter is not
+                        // pinned here — a charge arriving in a new
+                        // window rolls it to zero first, which is
+                        // time-driven, not charge-driven; it is
+                        // checked against the model below.
                         prop_assert_eq!(budget.total_charged(), before.1);
                         prop_assert_eq!(budget.refusal_count(), before.2 + 1);
                     }
