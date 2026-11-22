@@ -51,6 +51,74 @@ while [ -z "$acquired" ]; do
 done
 
 echo "fleet-build-lock: slot $acquired/$slots, CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-unset}: $*" >&2
+# Direct Cargo compile commands use the same leased target pool as
+# fleet shell --build. Shell commands that can launch Cargo use the
+# Fleet shell's broker-aware wrapper, which holds a lease for the full
+# process group.
+target_dir=$(printenv CARGO_TARGET_DIR 2>/dev/null || true)
+if [ "$1" = "cargo" ] && [ -z "$target_dir" ]; then
+  cargo_action=""
+  saw_program=false
+  skip_value=false
+  for arg in "$@"; do
+    if [ "$saw_program" = false ]; then
+      saw_program=true
+      continue
+    fi
+    if [ "$skip_value" = true ]; then
+      skip_value=false
+      continue
+    fi
+    case "$arg" in
+      --config|-Z) skip_value=true ;;
+      build|check|test|bench|clippy|run|install|doc|rustc|nextest)
+        cargo_action=$arg
+        break
+        ;;
+    esac
+  done
+
+  if [ -n "$cargo_action" ]; then
+    profile=dev
+    case "$cargo_action" in
+      test|bench|nextest) profile=test ;;
+      *)
+        for arg in "$@"; do
+          if [ "$arg" = "--release" ]; then
+            profile=release
+            break
+          fi
+        done
+        ;;
+    esac
+
+    manifest=$(cargo locate-project --workspace --message-format plain 2>/dev/null || true)
+    if [ -n "$manifest" ]; then
+      workspace=$(dirname -- "$manifest")
+      repo=$(printf '%s\n' "$workspace" | sed -n 's#^.*/pkgs/\([^/]*\).*#\1#p')
+      if [ -z "$repo" ]; then repo=$(basename -- "$workspace"); fi
+    else
+      repo=$(basename -- "$PWD")
+    fi
+    repo=$(printf '%s' "$repo" | tr -c 'A-Za-z0-9._-' '_')
+
+    if [ -n "$repo" ]; then
+      broker="$HOME/tools/cargo-target-broker"
+      if [ -x "$broker" ]; then
+        echo "fleet-build-lock: leasing $repo/$profile Cargo target" >&2
+        # The lock fd remains open across exec, so this one heavy-build
+        # slot is held until Cargo exits and the broker checks in its lease.
+        exec "$broker" exec --repo "$repo" --profile "$profile" --wait 900 -- "$@"
+      fi
+
+      CARGO_TARGET_DIR="$HOME/build-cache/$repo"
+      mkdir -p "$CARGO_TARGET_DIR"
+      export CARGO_TARGET_DIR
+      echo "fleet-build-lock: broker unavailable; using $CARGO_TARGET_DIR" >&2
+    fi
+  fi
+fi
+
 # exec keeps the slot fd open in the build process; the lock releases
 # when the build exits.
 exec "$@"
