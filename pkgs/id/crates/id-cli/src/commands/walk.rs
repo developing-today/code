@@ -15,6 +15,11 @@
 //! node restarts with what it had — the restart is the normal
 //! case, not a special mode.
 //!
+//! One process uses a node directory at a time — the store's
+//! rule, surfaced rather than hidden: opening a directory a
+//! `walk serve` holds times out with that explanation, instead of
+//! waiting on the store's lock forever.
+//!
 //! The demo world is deliberately small, and says so: one graph
 //! (the note the substrate suites write), one scope, and two
 //! writers — alice and bob — whose keys are *demonstration keys*,
@@ -175,6 +180,20 @@ fn read_config(dir: &Path) -> anyhow::Result<NodeConfig> {
     serde_json::from_slice(&bytes).with_context(|| format!("reading {}", path.display()))
 }
 
+/// How long an open waits for a node directory before concluding
+/// another walk process holds it. One process uses a node
+/// directory at a time (the store's own rule); without a bound,
+/// opening a directory a `walk serve` holds waits forever.
+const OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+fn open_timed_out(dir: &Path) -> anyhow::Error {
+    anyhow::anyhow!(
+        "opening {} timed out: another walk process is using this node directory \
+         (stop its `id walk serve` first) — one process per node directory",
+        dir.display()
+    )
+}
+
 /// Open a node directory as a one-shot stored replica, plus its
 /// recorded configuration. The caller shuts the store down on
 /// every path out — success and error alike: a store dropped
@@ -182,9 +201,15 @@ fn read_config(dir: &Path) -> anyhow::Result<NodeConfig> {
 /// of the directory waits on it.
 async fn open_node(dir: &Path) -> anyhow::Result<(NodeConfig, DiskReplica)> {
     let config = read_config(dir)?;
-    let stored = DiskReplica::open_dir(dir, replica(&config.name))
-        .await
-        .with_context(|| format!("opening walk node {}", dir.display()))?;
+    let stored = match tokio::time::timeout(
+        OPEN_TIMEOUT,
+        DiskReplica::open_dir(dir, replica(&config.name)),
+    )
+    .await
+    {
+        Ok(stored) => stored.with_context(|| format!("opening walk node {}", dir.display()))?,
+        Err(_) => return Err(open_timed_out(dir)),
+    };
     Ok((config, stored))
 }
 
@@ -216,9 +241,14 @@ pub async fn init_node(dir: &Path, name: &str) -> anyhow::Result<()> {
     // Open once so the directory is a valid node (store + index)
     // before the first real command, and so a broken directory
     // fails here rather than there.
-    let stored = DiskReplica::open_dir(dir, replica(name))
+    let stored = match tokio::time::timeout(OPEN_TIMEOUT, DiskReplica::open_dir(dir, replica(name)))
         .await
-        .with_context(|| format!("creating the store in {}", dir.display()))?;
+    {
+        Ok(stored) => {
+            stored.with_context(|| format!("creating the store in {}", dir.display()))?
+        }
+        Err(_) => return Err(open_timed_out(dir)),
+    };
     stored.shutdown().await?;
     Ok(())
 }
@@ -549,9 +579,17 @@ pub struct WalkServer {
 /// On a store or endpoint failure.
 pub async fn start_server(dir: &Path) -> anyhow::Result<WalkServer> {
     let config = read_config(dir)?;
-    let serving = ServingNode::open_dir(dir, replica(&config.name))
-        .await
-        .with_context(|| format!("opening walk node {}", dir.display()))?;
+    let serving = match tokio::time::timeout(
+        OPEN_TIMEOUT,
+        ServingNode::open_dir(dir, replica(&config.name)),
+    )
+    .await
+    {
+        Ok(serving) => {
+            serving.with_context(|| format!("opening walk node {}", dir.display()))?
+        }
+        Err(_) => return Err(open_timed_out(dir)),
+    };
     let (protocol, mut admissions) = serving.protocol();
     let endpoint = match endpoint(dir).await {
         Ok(endpoint) => endpoint,
