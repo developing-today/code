@@ -22,6 +22,14 @@ The deploy script reads the existing BWS login token from
 encryption key under `${XDG_CONFIG_HOME:-~/.config}/muse-agent-handoff`,
 with mode 0600. They are not committed. The creator prompts for BWS and OP
 tokens with hidden input and prints only an agent name plus a 15-minute URL.
+When the OP token is already in BWS, use `--bws-token-file` and
+`--op-from-bws-key` to resolve it locally without displaying it; for example:
+
+```bash
+python3 scripts/muse/handoff/create-url.py \
+  --bws-token-file ~/.config/bws/access-token \
+  --op-from-bws-key onepassword.service-account-token
+```
 Keep the URL for the prompt that starts that one lane; do not reuse it.
 
 To rotate/redeploy the Worker, run `deploy.sh` again. It reuses the local

@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -22,6 +23,8 @@ def fail(message):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--name", help="stable Fleet agent name; generated if omitted")
+    parser.add_argument("--bws-token-file", help="read the BWS access token from a local 0600 file")
+    parser.add_argument("--op-from-bws-key", help="read the OP service token from this BWS secret key")
     args = parser.parse_args()
 
     name = args.name or "muse-" + datetime.now(timezone.utc).strftime("%Y%m%d") + "-" + secrets.token_hex(2)
@@ -37,8 +40,29 @@ def main():
     if not origin.startswith("https://muse-agent-handoff.") or not origin.endswith(".workers.dev"):
         fail("configured service origin is invalid")
 
-    bws = getpass.getpass("BWS access token: ").strip()
-    op = getpass.getpass("1Password service-account token: ").strip()
+    if args.bws_token_file:
+        try:
+            bws = Path(args.bws_token_file).expanduser().read_text().strip()
+        except OSError:
+            fail("could not read the selected BWS token file")
+    else:
+        bws = getpass.getpass("BWS access token: ").strip()
+    if args.op_from_bws_key:
+        env = os.environ.copy()
+        env["BWS_ACCESS_TOKEN"] = bws
+        try:
+            result = subprocess.run(
+                ["bws", "secret", "list", "-o", "json"],
+                check=True, capture_output=True, text=True, env=env,
+            )
+            matches = [x for x in json.loads(result.stdout) if x.get("key") == args.op_from_bws_key]
+        except Exception:
+            fail("could not resolve the selected OP token from BWS")
+        if len(matches) != 1 or not isinstance(matches[0].get("value"), str):
+            fail("the selected BWS secret key must identify exactly one string value")
+        op = matches[0]["value"].strip()
+    else:
+        op = getpass.getpass("1Password service-account token: ").strip()
     if not bws or not op:
         fail("both credentials are required")
     body = json.dumps({
