@@ -20,6 +20,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/developing-today/code/pkgs/mcpx/internal/cli"
+	"github.com/developing-today/code/pkgs/mcpx/internal/daemon"
+	"github.com/developing-today/code/pkgs/mcpx/internal/events"
 	"github.com/developing-today/code/pkgs/mcpx/internal/settings"
 	"github.com/developing-today/code/pkgs/mcpx/internal/testsupport"
 )
@@ -68,6 +71,7 @@ var implementedEffectProbes = map[string]string{
 	"registry.maxPages":                  "TestTheRegistryPageCapSaysItStoppedEarly",
 	"registry.url":                       "TestRegistryPageSizeChangesWhatTheCLIAsksFor",
 	"deps.source":                        "TestDepsSourceNoneDropsTheManifestLayer",
+	"deps.autoInstall":                   "TestDepsAutoInstallSelectsTheBunInstallPolicyFromTheEnvironment",
 	"deps.manifest":                      "TestDepsManifestNamesTheManifestResolutionReads",
 	"deps.packages":                      "TestDepsPackagesPinContradictingTheManifestFailsTheRun",
 	"paths.deps":                         "TestPathsDepsExtendsManifestDiscovery",
@@ -106,6 +110,7 @@ var implementedEffectProbes = map[string]string{
 	"protoTasks.maxPerRequestor":         "TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment",
 	"protoTasks.perMinute":               "TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment",
 	"events.history":                     "TestEventsHistoryBoundsTheReplay",
+	"events.reconnect":                   "TestEventsReconnectWaitsForTheConfiguredDelay",
 	"script.checkOnUnsupported":          "TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes",
 	"daemon.takeoverTimeout":             "TestDaemonTakeoverTimeoutBoundsTheHandoverFromTheEnvironment",
 	"daemon.socketProbeTimeout":          "TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale",
@@ -287,6 +292,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestStrictUnknownKeysRefusesATypo":                                              TestStrictUnknownKeysRefusesATypo,
 	"TestTheRegistryPageCapSaysItStoppedEarly":                                       TestTheRegistryPageCapSaysItStoppedEarly,
 	"TestDepsSourceNoneDropsTheManifestLayer":                                        TestDepsSourceNoneDropsTheManifestLayer,
+	"TestDepsAutoInstallSelectsTheBunInstallPolicyFromTheEnvironment":                TestDepsAutoInstallSelectsTheBunInstallPolicyFromTheEnvironment,
 	"TestDepsManifestNamesTheManifestResolutionReads":                                TestDepsManifestNamesTheManifestResolutionReads,
 	"TestDepsPackagesPinContradictingTheManifestFailsTheRun":                         TestDepsPackagesPinContradictingTheManifestFailsTheRun,
 	"TestPathsDepsExtendsManifestDiscovery":                                          TestPathsDepsExtendsManifestDiscovery,
@@ -324,6 +330,7 @@ var effectProbeFuncs = map[string]func(*testing.T){
 	"TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment":             TestProtoTasksMaxPerRequestorCapsUnfinishedTasksFromTheEnvironment,
 	"TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment":                      TestProtoTasksPerMinuteWindowsTaskReadsFromTheEnvironment,
 	"TestEventsHistoryBoundsTheReplay":                                               TestEventsHistoryBoundsTheReplay,
+	"TestEventsReconnectWaitsForTheConfiguredDelay":                                  TestEventsReconnectWaitsForTheConfiguredDelay,
 	"TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes":                       TestScriptCheckOnUnsupportedDecidesWhatANonDenoCheckDoes,
 	"TestDaemonTakeoverTimeoutBoundsTheHandoverFromTheEnvironment":                   TestDaemonTakeoverTimeoutBoundsTheHandoverFromTheEnvironment,
 	"TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale":                   TestDaemonSocketProbeTimeoutDecidesWhetherALiveSocketIsStale,
@@ -1683,6 +1690,103 @@ func TestEventsHistoryBoundsTheReplay(t *testing.T) {
 	}
 	if n := strings.Count(body, "event: call.finished"); n > 1 {
 		t.Errorf("events.history=1 should keep at most one event, replayed %d calls:\n%s", n, body)
+	}
+}
+
+// TestEventsReconnectWaitsForTheConfiguredDelay drives the real client
+// against a local endpoint that drops its first connection and serves an
+// event on the retry. The accepted-connection timestamps are the oracle:
+// events.reconnect must delay the second attempt without relying on a daemon
+// restart or a network service.
+func TestEventsReconnectWaitsForTheConfiguredDelay(t *testing.T) {
+	const delay = 200 * time.Millisecond
+	recordSettingProbes(t)
+	t.Setenv("MCPX_EVENTS_RECONNECT", delay.String())
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	accepted := make(chan time.Time, 2)
+	serveErr := make(chan error, 1)
+	go func() {
+		for attempt := 0; attempt < 2; attempt++ {
+			conn, err := ln.Accept()
+			if err != nil {
+				serveErr <- err
+				return
+			}
+			accepted <- time.Now()
+			body := fmt.Sprintf("id: %d\ndata: {\"seq\":%d,\"kind\":\"call.finished\"}\n\n", attempt+1, attempt+1)
+			_, err = fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body)
+			_ = conn.Close()
+			if err != nil {
+				serveErr <- err
+			}
+		}
+	}()
+
+	paths := daemon.PathsAt(t.TempDir(), t.TempDir())
+	sch, err := settings.New(settings.Registry())
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := settings.NewSet(sch)
+	if err := set.SetRuntime("events.reconnect", delay.String()); err != nil {
+		t.Fatal(err)
+	}
+	c := cli.NewClientAtWithSettings(paths, "", "http://"+ln.Addr().String(), set)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	eventsSeen := make(chan events.Event, 1)
+	streamDone := make(chan error, 1)
+	go func() {
+		streamDone <- c.Stream(ctx, events.Filter{}, func(event events.Event) {
+			eventsSeen <- event
+			if event.Seq == 2 {
+				cancel()
+			}
+		})
+	}()
+
+	var first, second time.Time
+	select {
+	case first = <-accepted:
+	case err := <-serveErr:
+		t.Fatal(err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("client did not make its initial event-stream connection")
+	}
+	select {
+	case second = <-accepted:
+	case err := <-serveErr:
+		t.Fatal(err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("client did not retry the dropped event-stream connection")
+	}
+	if elapsed := second.Sub(first); elapsed < delay*3/4 || elapsed >= time.Second {
+		t.Fatalf("events.reconnect=%s should delay a dropped stream (and differ from the 2s default); second connection arrived after %s", delay, elapsed)
+	}
+	select {
+	case event := <-eventsSeen:
+		if event.Kind != events.CallFinished || event.Seq != 1 {
+			t.Fatalf("retry delivered unexpected event kind %q", event.Kind)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("client did not process the event delivered on the first stream")
+	}
+	select {
+	case event := <-eventsSeen:
+		if event.Kind != events.CallFinished || event.Seq != 2 {
+			t.Fatalf("reconnected stream delivered unexpected event: %+v", event)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("client did not process the event delivered on reconnect")
+	}
+	select {
+	case <-streamDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("event stream did not stop after cancellation")
 	}
 }
 
