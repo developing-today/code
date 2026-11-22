@@ -57,18 +57,14 @@ async fn import_key(input: &Path, client: bool, replace: bool) -> Result<()> {
     let key_bytes = Zeroizing::new(key_envelope::decrypt(passphrase.as_bytes(), &envelope)?);
 
     let target = PathBuf::from(if client { CLIENT_KEY_FILE } else { KEY_FILE });
-    if replace {
-        replace_private_file(&target, &key_bytes[..])?;
+    let marker = if client {
+        CLIENT_RESTORED_KEY_FILE
     } else {
-        write_new_private_file(&target, &key_bytes[..]).with_context(|| {
-            format!(
-                "could not create identity key {}; use --replace to overwrite it",
-                target.display()
-            )
-        })?;
-    }
+        RESTORED_KEY_FILE
+    };
+    import_restored_key(&target, marker, &key_bytes, replace)?;
     println!("Imported identity key to {}", target.display());
-    flag_restored(&key_bytes, client)
+    Ok(())
 }
 
 async fn export_seed(client: bool) -> Result<()> {
@@ -90,37 +86,79 @@ async fn import_seed(client: bool, replace: bool) -> Result<()> {
     let key_bytes = seed_phrase::decode_key(&phrase)?;
 
     let target = PathBuf::from(if client { CLIENT_KEY_FILE } else { KEY_FILE });
-    if replace {
-        replace_private_file(&target, &key_bytes[..])?;
-    } else {
-        write_new_private_file(&target, &key_bytes[..]).with_context(|| {
-            format!(
-                "could not create identity key {}; use --replace to overwrite it",
-                target.display()
-            )
-        })?;
-    }
-    println!(
-        "Imported identity key from seed phrase to {}",
-        target.display()
-    );
-    flag_restored(&key_bytes, client)
-}
-
-/// Marks the imported key as restored from a backup (#2381): it stays
-/// flagged until a keyset rotation retires it.
-fn flag_restored(key_bytes: &[u8; 32], client: bool) -> Result<()> {
-    let public = hex_encode(
-        &ed25519_dalek::SigningKey::from_bytes(key_bytes)
-            .verifying_key()
-            .to_bytes(),
-    );
     let marker = if client {
         CLIENT_RESTORED_KEY_FILE
     } else {
         RESTORED_KEY_FILE
     };
-    restored_key::mark_restored(marker, &public)?;
+    import_restored_key(&target, marker, &key_bytes, replace)?;
+    println!(
+        "Imported identity key from seed phrase to {}",
+        target.display()
+    );
+    Ok(())
+}
+
+/// Records the restore before installing the key, so a failed marker write
+/// cannot leave an installed key without rotation-warning state.
+fn import_restored_key(
+    target: &Path,
+    marker: impl AsRef<Path>,
+    key_bytes: &[u8; 32],
+    replace: bool,
+) -> Result<()> {
+    let public = hex_encode(
+        &ed25519_dalek::SigningKey::from_bytes(key_bytes)
+            .verifying_key()
+            .to_bytes(),
+    );
+    let previous_marker = match std::fs::read(&marker) {
+        Ok(contents) => Some(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "could not read restore marker {}",
+                    marker.as_ref().display()
+                )
+            });
+        }
+    };
+    restored_key::mark_restored(&marker, &public)?;
+    let install = if replace {
+        replace_private_file(target, key_bytes)
+    } else {
+        write_new_private_file(target, key_bytes).with_context(|| {
+            format!(
+                "could not create identity key {}; use --replace to overwrite it",
+                target.display()
+            )
+        })
+    };
+    if let Err(error) = install {
+        let rollback = match previous_marker {
+            Some(contents) => {
+                let previous = String::from_utf8_lossy(&contents);
+                restored_key::mark_restored(&marker, previous.trim())
+            }
+            None => match std::fs::remove_file(&marker) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error).with_context(|| {
+                    format!(
+                        "could not remove restore marker {}",
+                        marker.as_ref().display()
+                    )
+                }),
+            },
+        };
+        if let Err(rollback_error) = rollback {
+            return Err(error).context(format!(
+                "could not restore previous restore marker: {rollback_error:#}"
+            ));
+        }
+        return Err(error);
+    }
     println!("{}", restored_key::warning(&public));
     Ok(())
 }
@@ -179,5 +217,51 @@ mod tests {
 
         replace_private_file(&target, &second).unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), second);
+    }
+
+    #[test]
+    fn failed_restore_marker_write_does_not_install_the_imported_key() {
+        let temp = TempDir::new().unwrap();
+        let marker = temp.path().join(RESTORED_KEY_FILE);
+        std::fs::create_dir(marker.with_file_name(format!("{RESTORED_KEY_FILE}.tmp"))).unwrap();
+
+        let existing_path = temp.path().join("existing-key");
+        let existing = SecretKey::from([1; 32]).to_bytes();
+        let imported = SecretKey::from([2; 32]).to_bytes();
+        std::fs::write(&existing_path, existing).unwrap();
+        assert!(import_restored_key(&existing_path, &marker, &imported, true).is_err());
+        assert_eq!(std::fs::read(&existing_path).unwrap(), existing);
+
+        let new_path = temp.path().join("new-key");
+        assert!(import_restored_key(&new_path, &marker, &imported, false).is_err());
+        assert!(!new_path.exists());
+    }
+
+    #[test]
+    fn failed_key_install_preserves_the_previous_restore_marker() {
+        let temp = TempDir::new().unwrap();
+        let target = temp.path().join("existing-key");
+        let marker = temp.path().join(RESTORED_KEY_FILE);
+        let existing = SecretKey::from([1; 32]).to_bytes();
+        let imported = SecretKey::from([2; 32]).to_bytes();
+        let existing_public = hex_encode(
+            &ed25519_dalek::SigningKey::from_bytes(&existing)
+                .verifying_key()
+                .to_bytes(),
+        );
+        std::fs::write(&target, existing).unwrap();
+        restored_key::mark_restored(&marker, &existing_public).unwrap();
+
+        assert!(import_restored_key(&target, &marker, &imported, false).is_err());
+
+        assert_eq!(std::fs::read(&target).unwrap(), existing);
+        assert_eq!(
+            restored_key::restored_key(&marker).unwrap().as_deref(),
+            Some(existing_public.as_str())
+        );
+
+        std::fs::remove_file(&marker).unwrap();
+        assert!(import_restored_key(&target, &marker, &imported, false).is_err());
+        assert!(!marker.exists());
     }
 }

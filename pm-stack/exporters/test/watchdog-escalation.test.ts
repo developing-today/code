@@ -63,12 +63,6 @@ function countingEffectors() {
     commentIssue: async () => {
       calls.push("comment");
     },
-    closeIssue: async () => {
-      calls.push("close");
-    },
-    completeTask: async () => {
-      calls.push("complete");
-    },
   };
   return { calls, effectors };
 }
@@ -122,7 +116,7 @@ describe("packet completeness (#6033 acceptance 2)", () => {
     expect(packet.failure.historyRef).toBe(CTX.historyRef);
     expect(packet.requiredCapability).toContain("browser-enabled");
     expect(packet.requiredCapability).toContain(":19222");
-    expect(packet.acceptance).toContain("auto-closes");
+    expect(packet.acceptance).toContain("authorized disposition");
     expect(packet.stopConditions.join(" ")).toContain("human-only challenge");
     expect(packet.stopConditions.join(" ")).toContain("origin allowlist");
     expect(packet.dedupeKey).toBe("watchdog-escalation:mistral:session-expired");
@@ -143,8 +137,6 @@ describe("queue task wrapper — the repo-task/v1 contract (task 20118)", () => 
       },
       openIssue: async () => 777,
       commentIssue: async () => {},
-      closeIssue: async () => {},
-      completeTask: async () => {},
     };
     const plan = planEscalation(escalatingHealth(), CTX);
     const refs = await applyEscalationActions(plan.actions, effectors);
@@ -200,13 +192,20 @@ describe("queue task wrapper — the repo-task/v1 contract (task 20118)", () => 
 });
 
 describe("recovery (#6033 acceptance 3)", () => {
-  test("producer success plans comment + close + task completion against the recorded refs", async () => {
+  test("producer success records recovery without closing the issue or completing its task", async () => {
     const recorded = recordEscalation(escalatingHealth(), CTX, { queueTaskId: "task-4242", issueNumber: 777 }, T0);
     const actions = planRecovery(recorded, "2026-11-10T06:00:00Z");
-    expect(actions.map((a) => a.type)).toEqual(["comment_issue", "close_issue", "complete_task"]);
+    expect(actions.map((a) => a.type)).toEqual(["comment_issue"]);
+    expect(actions).toEqual([
+      expect.objectContaining({
+        type: "comment_issue",
+        issueNumber: 777,
+        body: expect.stringContaining("issue remains open for authorized disposition"),
+      }),
+    ]);
     const { calls, effectors } = countingEffectors();
     await applyEscalationActions(actions, effectors);
-    expect(calls).toEqual(["comment", "close", "complete"]);
+    expect(calls).toEqual(["comment"]);
   });
 
   test("no recovery actions when nothing was escalated", () => {
@@ -250,7 +249,7 @@ describe("state coercion keeps the escalation record", () => {
 });
 
 describe("Codex findings on PR #8357 (class change, partial progress, surfacing reason)", () => {
-  test("a class change preserves the earlier hand-off; recovery closes both pairs; changing back dedupes", () => {
+  test("a class change preserves the earlier hand-off; recovery records both without disposition; changing back dedupes", () => {
     const first = recordEscalation(escalatingHealth(), CTX, { queueTaskId: "task-a", issueNumber: 111 }, T0);
     const changed: SourceHealth = { ...first, currentClass: "endpoint-changed" };
     const second = recordEscalation(changed, CTX, { queueTaskId: "task-b", issueNumber: 222 }, T0);
@@ -263,16 +262,8 @@ describe("Codex findings on PR #8357 (class change, partial progress, surfacing 
     });
 
     const actions = planRecovery(second, "2026-11-10T06:00:00Z");
-    expect(actions.map((a) => a.type)).toEqual([
-      "comment_issue",
-      "close_issue",
-      "complete_task",
-      "comment_issue",
-      "close_issue",
-      "complete_task",
-    ]);
-    const completes = actions.filter((a) => a.type === "complete_task");
-    expect(completes.map((a) => (a as { queueTaskId: string }).queueTaskId)).toEqual(["task-b", "task-a"]);
+    expect(actions.map((a) => a.type)).toEqual(["comment_issue", "comment_issue"]);
+    expect(actions.map((a) => (a.type === "comment_issue" ? a.issueNumber : null))).toEqual([222, 111]);
 
     const backAgain: SourceHealth = { ...second, currentClass: "session-expired" };
     const plan = planEscalation(backAgain, CTX);
@@ -289,8 +280,6 @@ describe("Codex findings on PR #8357 (class change, partial progress, surfacing 
       },
       openIssue: async () => 777,
       commentIssue: async () => {},
-      closeIssue: async () => {},
-      completeTask: async () => {},
     };
     const err = await applyEscalationActions(plan.actions, failing).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(EscalationPartialError);

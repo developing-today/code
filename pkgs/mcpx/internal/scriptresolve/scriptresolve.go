@@ -41,7 +41,7 @@ const Ext = ".ts"
 // TypeScript's by default, the way every run without a language is. (The
 // #2168 branch originally dropped ".py" here; restored on revival — the
 // CLI's list has always ended with it.)
-var Extensions = []string{".ts", ".mts", ".js", ".mjs", ".py"}
+var Extensions = []string{".ts", ".mts", ".js", ".mjs", ".py", ".roc"}
 
 // SplitPathList accepts either a JSON array, as a configuration file holds
 // it, or a separator-joined string, as an environment variable must. "-" and

@@ -51,6 +51,149 @@ while [ -z "$acquired" ]; do
 done
 
 echo "fleet-build-lock: slot $acquired/$slots, CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-unset}: $*" >&2
+# Direct Cargo compile commands use the same leased target pool as
+# fleet shell --build. Shell commands that can launch Cargo use the
+# Fleet shell's broker-aware wrapper, which holds a lease for the full
+# process group.
+target_dir=$(printenv CARGO_TARGET_DIR 2>/dev/null || true)
+if [ "$1" = "cargo" ] && [ -z "$target_dir" ]; then
+  cargo_action=""
+  saw_program=false
+  skip_value=false
+  for arg in "$@"; do
+    if [ "$saw_program" = false ]; then
+      saw_program=true
+      continue
+    fi
+    if [ "$skip_value" = true ]; then
+      skip_value=false
+      continue
+    fi
+    case "$arg" in
+      --config|-Z|--manifest-path|--color) skip_value=true ;;
+      --manifest-path=*|--config=*|--color=*|-Z*) ;;
+      build|check|test|bench|clippy|run|install|doc|rustc|nextest|fix|package|publish)
+        cargo_action=$arg
+        break
+        ;;
+      +*) ;; # `cargo +toolchain <command>`
+      --locked|--offline|--frozen|--quiet|--verbose|-q|-v|-vv|-vvv) ;;
+      *) break ;; # Only the first Cargo subcommand is authoritative.
+    esac
+  done
+
+  if [ -n "$cargo_action" ]; then
+    profile=dev
+    case "$cargo_action" in
+      test|bench|nextest) profile=test ;;
+      install)
+        profile=release
+        for arg in "$@"; do
+          if [ "$arg" = "--debug" ]; then
+            profile=dev
+            break
+          fi
+        done
+        ;;
+      *)
+        for arg in "$@"; do
+          if [ "$arg" = "--release" ]; then
+            profile=release
+            break
+          fi
+        done
+        ;;
+    esac
+
+    manifest_arg=""
+    install_path_arg=""
+    need_manifest=false
+    need_install_path=false
+    for arg in "$@"; do
+      [ "$arg" = "--" ] && break
+      if [ "$need_manifest" = true ]; then
+        manifest_arg=$arg
+        break
+      fi
+      if [ "$need_install_path" = true ]; then
+        install_path_arg=$arg
+        break
+      fi
+      case "$arg" in
+        --manifest-path) need_manifest=true ;;
+        --manifest-path=*) manifest_arg=${arg#--manifest-path=} ; break ;;
+        --path) need_install_path=true ;;
+        --path=*) install_path_arg=${arg#--path=} ; break ;;
+      esac
+    done
+
+    if [ -n "$manifest_arg" ]; then
+      case "$manifest_arg" in
+        /*) manifest_path=$manifest_arg ;;
+        *) manifest_path="$PWD/$manifest_arg" ;;
+      esac
+      manifest=$(cargo locate-project --workspace --message-format plain --manifest-path "$manifest_path" 2>/dev/null || true)
+    elif [ -n "$install_path_arg" ]; then
+      case "$install_path_arg" in
+        /*) install_path=$install_path_arg ;;
+        *) install_path="$PWD/$install_path_arg" ;;
+      esac
+      case "$install_path" in
+        */Cargo.toml) manifest_path=$install_path ;;
+        *) manifest_path="$install_path/Cargo.toml" ;;
+      esac
+      manifest=$(cargo locate-project --workspace --message-format plain --manifest-path "$manifest_path" 2>/dev/null || true)
+    else
+      manifest=$(cargo locate-project --workspace --message-format plain 2>/dev/null || true)
+    fi
+
+    if [ -n "$manifest" ]; then
+      workspace=$(dirname -- "$manifest")
+      workspace_real=$(cd "$workspace" 2>/dev/null && pwd -P) || workspace_real=""
+      cwd_real=$(pwd -P)
+      repo=$(printf '%s\n' "$workspace" | sed -n 's#^.*/pkgs/\([^/]*\).*#\1#p')
+      if [ -z "$repo" ]; then repo=$(basename -- "$workspace"); fi
+    else
+      # Cargo install <crate> is valid outside a workspace. Broker cleanup
+      # requires metadata, so leave these commands on Cargo's own target
+      # selection instead of turning a valid install into a failure.
+      repo=""
+      workspace_real=""
+      cwd_real=$(pwd -P)
+    fi
+    repo=$(printf '%s' "$repo" | tr -c 'A-Za-z0-9._-' '_')
+
+    if [ -n "$repo" ]; then
+      broker="$HOME/tools/cargo-target-broker"
+      if [ -x "$broker" ]; then
+        echo "fleet-build-lock: leasing $repo/$profile Cargo target" >&2
+        # For --manifest-path outside the caller's current workspace, clean
+        # the selected workspace while keeping Cargo's original cwd intact.
+        outside_workspace=true
+        if [ -n "$workspace_real" ]; then
+          case "$cwd_real/" in
+            "$workspace_real/"*) outside_workspace=false ;;
+          esac
+        fi
+        if [ "$outside_workspace" = true ] && [ -n "$workspace_real" ]; then
+          exec "$broker" exec \
+            --repo "$repo" --profile "$profile" \
+            --workspace-cwd "$workspace_real" --wait 900 -- "$@"
+        fi
+        # The lock fd remains open across exec; the broker checks in the lease
+        # only after the Cargo process exits.
+        exec "$broker" exec \
+          --repo "$repo" --profile "$profile" --wait 900 -- "$@"
+      fi
+
+      CARGO_TARGET_DIR="$HOME/build-cache/$repo"
+      mkdir -p "$CARGO_TARGET_DIR"
+      export CARGO_TARGET_DIR
+      echo "fleet-build-lock: broker unavailable; using $CARGO_TARGET_DIR" >&2
+    fi
+  fi
+fi
+
 # exec keeps the slot fd open in the build process; the lock releases
 # when the build exits.
 exec "$@"

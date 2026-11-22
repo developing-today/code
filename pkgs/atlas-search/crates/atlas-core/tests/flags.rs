@@ -11,7 +11,7 @@ use atlas_core::filters::Filters;
 use atlas_core::types::{
     BranchHit, BranchPools, BranchQuery, ChunkDetail, MessageRow, NeighborRow,
 };
-use atlas_core::{SearchMode, SearchOptions, run_search};
+use atlas_core::{DisclosureContext, SearchMode, SearchOptions, run_search};
 use atlas_proto::RawMode;
 use serde_json::Value as Json;
 
@@ -56,7 +56,11 @@ impl SearchBackend for FakeBackend {
                 l_kind: None,
                 l_topics: None,
                 l_projects: None,
-                eff_sensitivity: None,
+                // Labeled personal: an unlabeled row now
+                // fail-closes to secret-bearing at the
+                // disclosure boundary (#12404), which would
+                // leave these flag tests rendering nothing.
+                eff_sensitivity: Some("personal".to_string()),
             })
             .collect())
     }
@@ -83,6 +87,10 @@ impl QueryEmbedder for FakeEmbedder {
 fn opts() -> SearchOptions {
     let mut o = SearchOptions::new("atlas");
     o.mode = SearchMode::Fts;
+    // The harness models the local operator surface (the
+    // Python-CLI shape these flag tests pin), so it states the
+    // local-owner disclosure context explicitly (#12404).
+    o.context = DisclosureContext::LocalOwner;
     o
 }
 

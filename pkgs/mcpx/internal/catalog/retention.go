@@ -104,22 +104,30 @@ func (ws *WorkingSet) Add(ns, tool string, origin ToolOrigin) *RetainedTool {
 	return rt
 }
 
-// evictLocked evicts tools if the count exceeds maxTools:
-// 1. Unpinned, non-sticky tools (or expired sticky tools) are evicted oldest-seq first.
+// evictLocked first expires sticky tools outside their retention window, even
+// when the working set is below its size limit. If the set still exceeds
+// maxTools, it evicts:
+// 1. Unpinned, non-sticky tools oldest-seq first.
 // 2. If still over ceiling, active sticky tools are evicted oldest-seq first.
 // 3. Pinned tools are never evicted.
 func (ws *WorkingSet) evictLocked() {
+	now := time.Now()
+	for key, tool := range ws.tools {
+		if tool.Origin != OriginPinned && tool.Origin != OriginInjected && now.Sub(tool.LastUsed) > ws.stickyWindow {
+			delete(ws.tools, key)
+		}
+	}
+
 	if len(ws.tools) <= ws.maxTools {
 		return
 	}
 
-	now := time.Now()
 	type cand struct {
 		key string
 		seq uint64
 	}
 
-	// Pass 1: candidate unpinned non-sticky or expired sticky
+	// Pass 1: candidate unpinned injected tools
 	var nonSticky []cand
 	for key, t := range ws.tools {
 		if t.Origin == OriginPinned {
@@ -184,8 +192,9 @@ func (ws *WorkingSet) Contains(ns, tool string) bool {
 
 // List returns all active tools in recency order (newest seq first).
 func (ws *WorkingSet) List() []*RetainedTool {
-	ws.mu.RLock()
-	defer ws.mu.RUnlock()
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	ws.evictLocked()
 	res := make([]*RetainedTool, 0, len(ws.tools))
 	for _, t := range ws.tools {
 		res = append(res, t)

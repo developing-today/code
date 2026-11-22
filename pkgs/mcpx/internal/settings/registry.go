@@ -238,9 +238,9 @@ func scriptSettings() []Setting {
 		{
 			Path: "script.language", Commands: runCommands, Kind: KindEnum, Default: "auto",
 			Scope:       ScopeClient,
-			Enum:        []string{"auto", "typescript", "javascript", "python"},
+			Enum:        []string{"auto", "typescript", "javascript", "python", "roc"},
 			FlagAliases: []string{"language"},
-			Name:        "Script language", Short: "language a script is written in: auto, typescript, javascript or python",
+			Name:        "Script language", Short: "language a script is written in: auto, typescript, javascript, python or roc",
 			Long: "auto detects from the shebang, then the file extension, as before. " +
 				"python runs the script under the machine's Python with the generated " +
 				"Python client installed; typescript and javascript run under " +

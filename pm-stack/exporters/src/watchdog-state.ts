@@ -102,8 +102,8 @@ export interface EscalationRecord {
   /** Earlier hand-offs for OTHER failure classes of this same
    *  incident, displaced as "current" when the class changed but
    *  still open (Codex P2 on PR #8357): dedupe consults them (a class
-   *  that changes back finds its pair here) and recovery closes and
-   *  completes every one. Flat: entries carry no `previous` of their
+   *  that changes back finds its pair here) and recovery comments on
+   *  every existing issue without disposition. Flat: entries carry no `previous` of their
    *  own. Absent = no earlier hand-off. */
   previous?: EscalationRecord[];
 }
@@ -217,7 +217,7 @@ export function decide(
               at,
               rung: 1,
               outcome: "succeeded",
-              detail: "source recovered; incident closed",
+              detail: "source recovered; operational attention cleared",
             }),
       incident: null,
     };

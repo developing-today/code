@@ -34,7 +34,8 @@
 use std::process::Command;
 
 use atlas_core::{
-    AtlasEmbedder, DEFAULT_VEC_TABLE, Filters, SearchOptions, TursoBackend, run_search,
+    AtlasEmbedder, DEFAULT_VEC_TABLE, DisclosureContext, Filters, SearchOptions, TursoBackend,
+    run_search,
 };
 use serde_json::Value as Json;
 
@@ -106,7 +107,10 @@ fn main() {
 
     let mut failures = 0;
     for q in &questions {
-        let opts = SearchOptions::new(q.clone());
+        let mut opts = SearchOptions::new(q.clone());
+        // Live smoke runs as the local operator against the
+        // Python CLI's surface (#12404).
+        opts.context = DisclosureContext::LocalOwner;
         let rust_env = match run_search(&backend, &embedder, &filters, &opts) {
             Ok(env) => env,
             Err(e) => {

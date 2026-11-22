@@ -35,7 +35,9 @@ class Gatherer(unittest.TestCase):
     def tearDown(self):
         self.db.c.close()
 
-    def test_identity_oracle_resolves_cross_source_spellings_to_one_inventory_name(self):
+    def test_identity_oracle_resolves_cross_source_spellings_to_one_inventory_name(
+        self,
+    ):
         # Oracle: AA, models.dev and event rows for one model must resolve to
         # the same canonical name that the current inventory already exposes.
         models = [{"name": "OpenAI | GPT-6 Luna", "provider": "OpenAI"}]
@@ -56,7 +58,10 @@ class Gatherer(unittest.TestCase):
         )
         self.assertIsNone(g.resolve_identity(["DeepSeek V4 Pro 0814"], index))
         ambiguous = g.build_identity_index(
-            [{"name": "Provider A | Shared Model"}, {"name": "Provider B | Shared Model"}],
+            [
+                {"name": "Provider A | Shared Model"},
+                {"name": "Provider B | Shared Model"},
+            ],
             [],
         )
         self.assertIsNone(g.resolve_identity(["Shared Model"], ambiguous))

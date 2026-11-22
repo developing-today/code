@@ -223,6 +223,7 @@ import {
 } from "./notifications.ts";
 import { readJsonBody } from "./request-body.ts";
 import { parseRegistryQuery, queryRegistry } from "./registry-view.ts";
+import { addConsoleShortcut } from "./console-gate.ts";
 import { searchWork } from "./search-view.ts";
 import type { Source } from "./source.ts";
 import { fixtureSource } from "./sources/fixtures.ts";
@@ -4505,7 +4506,8 @@ async function fetchHandler(req: Request): Promise<Response> {
       recordRender(route, res.status < 400);
     }
   }
-  return res;
+  const publicHost = process.env.PM_AGG_CONSOLE_HOST?.trim() || "pm.security.cab";
+  return addConsoleShortcut(res, req, publicHost);
 }
 
 // One server per bind address (PM_AGG_HOSTS). Deployment on the

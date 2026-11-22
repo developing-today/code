@@ -50,6 +50,7 @@ export function recordFromSessionEntry(e: SessionFeedEntry, tokensTotal?: number
     label: e.title ?? e.sessionId,
     agentId,
     agentLabel,
+    provenance: "asserted-legacy",
     parentId: e.parentId ?? null,
     startedAt: e.createdAt,
     lastSeenAt: e.lastActivityAt ?? undefined,
@@ -84,6 +85,7 @@ export function recordFromLaunch(l: ClaudeLaunchRecord): SessionRecord {
     label: l.label ?? l.id,
     agentId: "claude-code",
     agentLabel: "Muse",
+    provenance: "asserted-legacy",
     parentId: l.parentId ?? null,
     startedAt: l.startedAt,
     lastSeenAt: l.lastSeenAt ?? l.startedAt,
@@ -177,6 +179,9 @@ export function mergeRecords(existing: SessionRecord[], incoming: SessionRecord[
     byKey.set(key, {
       ...prev,
       ...present,
+      // Old feeds can still omit provenance. They cannot downgrade an
+      // already verified stored identity when the same row is refreshed.
+      provenance: prev.provenance === "verified" || r.provenance === "verified" ? "verified" : "asserted-legacy",
       parentId: r.parentId ?? prev.parentId,
       label: r.title !== undefined ? r.label : prev.label,
       startedAt: prev.startedAt ?? r.startedAt,
@@ -186,6 +191,21 @@ export function mergeRecords(existing: SessionRecord[], incoming: SessionRecord[
     });
   }
   return [...byKey.values()].sort((a, b) => (b.lastSeenAt ?? "").localeCompare(a.lastSeenAt ?? ""));
+}
+
+/** Add the conservative marker to pre-migration rows, preserving every
+ *  stored identity string. Applying this repeatedly is a no-op. */
+export function migrateRegistryProvenance(records: SessionRecord[]): {
+  records: SessionRecord[];
+  changed: boolean;
+} {
+  let changed = false;
+  const migrated = records.map((record) => {
+    if (record.provenance !== undefined) return record;
+    changed = true;
+    return { ...record, provenance: "asserted-legacy" as const };
+  });
+  return { records: migrated, changed };
 }
 
 /** Structural check for one registry record (feed/store hygiene). */
@@ -219,6 +239,7 @@ export function isSessionRecord(v: unknown): v is SessionRecord {
     typeof r.status === "string" &&
     typeof r.agentId === "string" &&
     typeof r.agentLabel === "string" &&
+    (r.provenance === undefined || r.provenance === "verified" || r.provenance === "asserted-legacy") &&
     (r.tokensTotal === undefined ||
       (typeof r.tokensTotal === "number" && Number.isFinite(r.tokensTotal) && r.tokensTotal >= 0)) &&
     (r.lastSeenAt === undefined || isIsoDate(r.lastSeenAt)) &&
