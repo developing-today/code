@@ -1954,8 +1954,9 @@ async fn terminal_probe(
 /// Render one server frame through the TTY tier presenter when it is a
 /// view carrying a screen or text surface (F13.4). Returns `None` for
 /// every other frame — those keep the JSON-lines presentation — and
-/// `Some("")` for a view the presenter renders as no change. Form views
-/// keep the JSON-lines presentation: the pump has no form collector.
+/// `Some("")` for a view the presenter renders as no change. Form and
+/// scene views keep the JSON-lines presentation: the pump has no form
+/// collector and no scene renderer.
 fn render_view_frame(
     presenter: &mut id_worlds::world_terminal::TierPresenter,
     body: &[u8],
@@ -1981,6 +1982,7 @@ fn render_view_frame(
             Some(presenter.render_lines(&lines))
         }
         id_worlds::world_presentation::WorldSurface::Form(_) => None,
+        id_worlds::world_presentation::WorldSurface::Scene(_) => None,
     }
 }
 

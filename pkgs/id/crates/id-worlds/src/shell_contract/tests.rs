@@ -606,7 +606,7 @@ fn pointer_and_hover_frames_conform_to_the_input_event_model() {
     // (class event), hover is ephemeral, refusals name a reason from
     // the design's table, and scroll deltas are signed cell units.
     let contract = contract();
-    assert_eq!(contract.revision, 12);
+    assert_eq!(contract.revision, 13);
     assert_eq!(contract.client_frames["pointer"].class, FrameClass::Event);
     assert_eq!(contract.client_frames["hover"].class, FrameClass::Ephemeral);
     assert_eq!(
@@ -719,7 +719,7 @@ fn agent_profile_frames_conform_and_are_additive() {
     // stale-decision token on agent input frames. Human shells, which
     // never set the flag or send the new frames, are unaffected.
     let contract = contract();
-    assert_eq!(contract.revision, 12);
+    assert_eq!(contract.revision, 13);
     assert_eq!(
         contract.client_frames["screen_subscribe"].class,
         FrameClass::Ephemeral

@@ -14,6 +14,13 @@
 //! match there is exhaustive, so adding a variant without a projection is a
 //! compile-time error.
 //!
+//! A program may instead return a versioned `kind: scene` JSON document
+//! (`scene/1`, #12657): a bounded list of named nodes with a closed shape
+//! set, positions and sizes — the portable rich-presentation surface a
+//! native shell renders in 3D. A shell without a scene renderer uses the
+//! scene's text projection; a host that does not know the kind at all
+//! drops the document to the legacy text path (see [`parse_surface`]).
+//!
 //! Semantic token adapter contract (xterm-256 foreground, bold; 1-bit):
 //! | token | terminal | 1-bit | text |
 //! |---|---|---|---|
@@ -53,9 +60,20 @@ pub const MAX_TEXT_LINES: usize = 1000;
 pub const MAX_FORM_BYTES: usize = 8 * 1024;
 /// Maximum fields, options, or actions in one form.
 pub const MAX_FORM_ITEMS: usize = 64;
+/// Maximum nodes accepted in one world scene document.
+pub const MAX_SCENE_NODES: usize = 256;
+/// Maximum serialized scene document size in bytes.
+pub const MAX_SCENE_BYTES: usize = 64 * 1024;
+/// Maximum absolute value of a scene position or size component, in world
+/// units. Keeps scene geometry in a range every presenter can scale
+/// without overflow.
+pub const MAX_SCENE_EXTENT: f64 = 1_000_000.0;
 
 /// A validated view understood by more than one transport presenter.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+///
+/// Not `Eq`: a scene carries `f64` geometry. Equality is exact value
+/// equality of every field, floats included.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorldSurface {
     /// A fixed-size terminal cell buffer, suitable for an SSH terminal or web DOM.
@@ -64,6 +82,10 @@ pub enum WorldSurface {
     Text(TextSurface),
     /// Structured input rendered by trusted adapters.
     Form(FormSurface),
+    /// A 3D scene (`scene/1`): named nodes with shapes, positions and
+    /// sizes, rendered by native shells; other shells use its text
+    /// projection.
+    Scene(SceneSurface),
 }
 
 impl WorldSurface {
@@ -77,6 +99,7 @@ impl WorldSurface {
             Self::Screen(screen) => screen.text_projection(),
             Self::Text(text) => text.render_text(),
             Self::Form(form) => form.text_projection(),
+            Self::Scene(scene) => scene.text_projection(),
         }
     }
 }
@@ -758,6 +781,150 @@ impl ScreenSurface {
     }
 }
 
+/// A versioned `scene/1` document: a bounded, flat list of named nodes
+/// with a closed shape set, positions and sizes. Guest input is data
+/// only: there are no mesh, material, script or URL fields — a renderer
+/// derives everything visual from the shape, position and size. The
+/// document shape is the struct shape, so a parsed scene round-trips
+/// through [`parse_surface`].
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SceneSurface {
+    /// Scene format version. `scene/1` defines version 1.
+    pub version: u8,
+    /// Optional caption naming the scene; the text projection's first
+    /// line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// The scene's nodes, in document order. Ids are unique.
+    pub nodes: Vec<SceneNode>,
+}
+
+/// One named object in a [`SceneSurface`].
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SceneNode {
+    /// Stable identifier, unique within the scene.
+    pub id: String,
+    /// Human-readable name, used by the text projection and by
+    /// renderers that label nodes.
+    pub label: String,
+    /// The node's geometry from the closed shape set.
+    pub shape: SceneShape,
+    /// Position in world units (x, y, z).
+    pub position: [f64; 3],
+    /// Extents in world units (x, y, z); every component is positive.
+    /// For a sphere the components are its diameters; for a point, its
+    /// nominal diameter.
+    pub size: [f64; 3],
+}
+
+/// The closed set of node geometries in a `scene/1` document. Guest
+/// documents reject unknown shapes.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SceneShape {
+    /// An axis-aligned box.
+    Box,
+    /// A sphere.
+    Sphere,
+    /// A flat rectangular plane.
+    Plane,
+    /// A point marker.
+    Point,
+}
+
+impl SceneShape {
+    /// The document spelling of the shape, used by the text projection.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Box => "box",
+            Self::Sphere => "sphere",
+            Self::Plane => "plane",
+            Self::Point => "point",
+        }
+    }
+}
+
+impl SceneSurface {
+    /// Validate the version, node set, identifiers, safe text, geometry
+    /// bounds and total size. Hosts run this before any presenter sees
+    /// the scene (via [`parse_surface`]).
+    ///
+    /// # Errors
+    ///
+    /// Rejects unsupported versions, unsafe titles, empty or oversized
+    /// node sets, duplicate ids, unsafe labels, non-finite or
+    /// out-of-extent geometry, non-positive sizes, and oversize
+    /// documents.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.version == 1,
+            "unsupported world scene version {}",
+            self.version
+        );
+        ensure!(
+            self.title.as_deref().is_none_or(safe_form_text),
+            "invalid scene title"
+        );
+        ensure!(
+            !self.nodes.is_empty() && self.nodes.len() <= MAX_SCENE_NODES,
+            "invalid scene node count"
+        );
+        let mut ids = std::collections::HashSet::new();
+        for node in &self.nodes {
+            ensure!(
+                safe_form_id(&node.id) && safe_form_text(&node.label),
+                "invalid scene node id or label"
+            );
+            ensure!(ids.insert(node.id.as_str()), "duplicate scene node id");
+            ensure!(
+                node.position
+                    .iter()
+                    .chain(node.size.iter())
+                    .all(|component| component.is_finite()
+                        && component.abs() <= MAX_SCENE_EXTENT),
+                "scene geometry out of bounds"
+            );
+            ensure!(
+                node.size.iter().all(|component| *component > 0.0),
+                "scene node size must be positive"
+            );
+        }
+        ensure!(
+            serde_json::to_vec(self)?.len() <= MAX_SCENE_BYTES,
+            "scene exceeds {MAX_SCENE_BYTES} bytes"
+        );
+        Ok(())
+    }
+
+    /// Deterministic escape-free projection: the title (or `Scene`),
+    /// then one numbered line per node naming its label, shape,
+    /// position and size. This is what a shell without a scene
+    /// renderer shows, so it is designed here, with the kind, not
+    /// discovered by the renderer slice.
+    #[must_use]
+    pub fn text_projection(&self) -> String {
+        let mut lines = vec![self.title.clone().unwrap_or_else(|| "Scene".to_owned())];
+        for (index, node) in self.nodes.iter().enumerate() {
+            lines.push(format!(
+                "{}. {} ({} at {}, {}, {}; size {}, {}, {})",
+                index + 1,
+                node.label,
+                node.shape.as_str(),
+                node.position[0],
+                node.position[1],
+                node.position[2],
+                node.size[0],
+                node.size[1],
+                node.size[2],
+            ));
+        }
+        lines.join("\n")
+    }
+}
+
 /// A cell-run delta between two consecutive screens (F12.11, first slice).
 ///
 /// A patch carries only the cells that changed, grouped into maximal runs of
@@ -1024,7 +1191,7 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
                     .as_ref()
                     .and_then(|value| value.get("kind"))
                     .and_then(Value::as_str);
-                if matches!(kind, Some("screen" | "text" | "form"))
+                if matches!(kind, Some("screen" | "text" | "form" | "scene"))
                     || top_level_kind_is_duplicated(data)
                 {
                     return Err(err).context("duplicate JSON object key in world presentation");
@@ -1044,6 +1211,16 @@ pub fn parse_surface(data: &str) -> Result<Option<WorldSurface>> {
                 serde_json::from_value(value).context("decode world form presentation")?;
             form.validate()?;
             return Ok(Some(WorldSurface::Form(form)));
+        }
+        Some("scene") => {
+            let mut value = value;
+            if let Some(object) = value.as_object_mut() {
+                object.remove("kind");
+            }
+            let scene: SceneSurface =
+                serde_json::from_value(value).context("decode world scene presentation")?;
+            scene.validate()?;
+            return Ok(Some(WorldSurface::Scene(scene)));
         }
         Some("text") => {
             let payload: TextPayload =
@@ -2050,7 +2227,7 @@ mod tests {
             serde_json::json!({"id": id, "label": "A", "shape": "box",
                 "position": [0, 0, 0], "size": [1, 1, 1]})
         };
-        let scene = |nodes: serde_json::Value| {
+        let scene = |nodes: Value| {
             serde_json::json!({"kind": "scene", "version": 1, "nodes": nodes}).to_string()
         };
         // Bad versions.
@@ -2084,10 +2261,10 @@ mod tests {
         assert!(parse_surface(&scene(serde_json::json!([]))).is_err());
         assert!(parse_surface(&scene(serde_json::json!([node("a"), node("a")]))).is_err());
         // Too many nodes: the bound is 256 (MAX_SCENE_NODES).
-        let many: Vec<serde_json::Value> = (0..257)
+        let many: Vec<Value> = (0..257)
             .map(|index| node(&format!("n{index}")))
             .collect();
-        assert!(parse_surface(&scene(serde_json::Value::Array(many))).is_err());
+        assert!(parse_surface(&scene(Value::Array(many))).is_err());
         // Unsafe label text (a JSON-escaped ESC).
         assert!(parse_surface(&scene(serde_json::json!([
             {"id": "a", "label": "A\u{001b}[2J", "shape": "box", "position": [0, 0, 0], "size": [1, 1, 1]}
@@ -2113,6 +2290,30 @@ mod tests {
             {"id": "a", "label": "x".repeat(70_000), "shape": "box", "position": [0, 0, 0], "size": [1, 1, 1]}
         ])))
         .is_err());
+    }
+
+    #[test]
+    fn scene_validate_rejects_non_finite_geometry() {
+        // A scene built in Rust (not parsed from JSON, where non-finite
+        // numbers cannot be represented) must still refuse NaN and
+        // infinite geometry: presenters scale positions and sizes
+        // without re-checking them.
+        let node = |position: [f64; 3]| SceneNode {
+            id: "a".into(),
+            label: "A".into(),
+            shape: SceneShape::Box,
+            position,
+            size: [1.0, 1.0, 1.0],
+        };
+        let scene = |position: [f64; 3]| SceneSurface {
+            version: 1,
+            title: None,
+            nodes: vec![node(position)],
+        };
+        assert!(scene([0.0, 0.0, 0.0]).validate().is_ok());
+        assert!(scene([f64::NAN, 0.0, 0.0]).validate().is_err());
+        assert!(scene([0.0, f64::INFINITY, 0.0]).validate().is_err());
+        assert!(scene([0.0, 0.0, f64::NEG_INFINITY]).validate().is_err());
     }
 
     #[test]
