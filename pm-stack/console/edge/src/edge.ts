@@ -87,6 +87,8 @@ const AUDIT_KEPT = 300;
 const WATCHING_MS = 90_000;
 /** The host is reported silent after this long without a sync. */
 export const SILENT_MS = 10 * 60_000;
+/** The laptop is quiet long enough to bypass it for safe reads. */
+const DIRECT_READ_AFTER_MS = 60_000;
 const KEY_FETCH_EVERY_MS = 30_000;
 const STATIC: Record<string, string> = {
   "app.js": "text/javascript; charset=utf-8",
@@ -123,6 +125,10 @@ export interface EdgeOptions {
   now?: () => number;
   /** Reaches the sign-in issuer's keys and the push services. */
   fetchImpl?: typeof fetch;
+  /** Reads a section from its source when the host has gone quiet. */
+  freshRead?: (section: string, config: EdgeConfig) => Promise<unknown>;
+  githubReadEnabled?: boolean;
+  githubTokenConfigured?: boolean;
   /** Ask to be woken at a time: the check for a silent host. */
   setAlarm?: (at: number) => Promise<void>;
 }
@@ -132,6 +138,9 @@ export class Edge {
   private now: () => number;
   private fetchImpl: typeof fetch;
   private setAlarm: (at: number) => Promise<void>;
+  private freshRead?: EdgeOptions["freshRead"];
+  private githubReadEnabled: boolean;
+  private githubTokenConfigured: boolean;
   private cfg: EdgeConfig | null | undefined;
   private mirrors = new Map<string, Mirror | null>();
   private held: Held[] | null = null;
@@ -156,6 +165,9 @@ export class Edge {
     this.kv = options.kv;
     this.now = options.now ?? Date.now;
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.freshRead = options.freshRead;
+    this.githubReadEnabled = options.githubReadEnabled ?? false;
+    this.githubTokenConfigured = options.githubTokenConfigured ?? false;
     this.setAlarm = options.setAlarm ?? (async () => {});
     this.docs = new Docs(
       Object.fromEntries(
@@ -502,6 +514,9 @@ export class Edge {
         ok: true,
         edge: true,
         configured: cfg !== null,
+        githubReadEnabled: this.githubReadEnabled,
+        githubTokenConfigured: this.githubTokenConfigured,
+        githubReadReady: this.freshRead !== undefined,
         hostSeen: this.hostSeen || null,
         // Since this object last started: requests it answered as the
         // owner's, and requests it left to the host to judge.
@@ -570,6 +585,15 @@ export class Edge {
         }
         if (seg.length === 2 && seg[0] === "doc" && DOC_NAMES.includes(seg[1] as DocName)) {
           this.lastDocAt = this.now();
+          // Pull requests are a read-only GitHub view. When the laptop is
+          // quiet, refresh them directly if this Worker has that capability.
+          if (seg[1] === "ops" && this.freshRead && this.now() - (this.hostSeen ?? 0) >= DIRECT_READ_AFTER_MS) {
+            try {
+              this.docs.record("prs", await this.freshRead("prs", cfg), this.now());
+            } catch (error) {
+              this.docs.recordFailure("prs", error);
+            }
+          }
           const res = docResponse(req, await this.docs.doc(seg[1] as DocName));
           // When the host last reported, beside the document rather than
           // in it: it changes with every report and the content does not.

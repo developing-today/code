@@ -14,6 +14,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { Edge, type KV, SILENT_MS } from "../edge/src/edge.ts";
 import { forgetPoke, type Io, route } from "../edge/src/entry.ts";
+import { readOpenPullRequests } from "../edge/src/github.ts";
 import type { Action } from "../src/actions.ts";
 import { clearJwksCache, identify } from "../src/auth.ts";
 import { readConfig } from "../src/config.ts";
@@ -51,7 +52,7 @@ const SECTION_NAMES = [
   "more",
 ];
 
-async function setup() {
+async function setup(options: { freshRead?: (section: string, config: EdgeConfig) => Promise<unknown> } = {}) {
   const now = { t: START };
   const clock = () => now.t;
   const access = await signer("k1");
@@ -91,6 +92,7 @@ async function setup() {
       kv,
       now: clock,
       fetchImpl: outward as never,
+      freshRead: options.freshRead,
       setAlarm: async (at) => {
         alarm.at = at;
       },
@@ -366,6 +368,9 @@ describe("before the host's first report", () => {
       ok: true,
       edge: true,
       configured: false,
+      githubReadEnabled: false,
+      githubTokenConfigured: false,
+      githubReadReady: false,
       hostSeen: null,
       answered: 0,
       deferred: 0,
@@ -405,6 +410,64 @@ describe("before the host's first report", () => {
     await w.hostReads();
     await w.link.now.once();
     expect(w.puts.filter((k) => k.startsWith("m:"))).toEqual(["m:board:0", "m:board"]);
+  });
+});
+
+describe("fresh GitHub reads while the host is away", () => {
+  test("uses the read-only GitHub boundary and maps pull requests for the console", async () => {
+    let request: { url: string; init?: RequestInit } | null = null;
+    const pulls = await readOpenPullRequests("developing-today/code", "test-token", async (url, init) => {
+      request = { url: String(url), init };
+      return Response.json([
+        {
+          number: 42,
+          title: "Fresh PR",
+          draft: false,
+          html_url: "https://github.com/developing-today/code/pull/42",
+          created_at: "2026-11-22T12:34:56Z",
+          user: { login: "worker" },
+          head: { ref: "queue/42" },
+        },
+      ]);
+    });
+    expect(request?.url).toBe("https://api.github.com/repos/developing-today/code/pulls?state=open&per_page=60");
+    expect(new Headers(request?.init?.headers).get("authorization")).toBe("Bearer test-token");
+    expect(pulls).toEqual([
+      {
+        number: 42,
+        title: "Fresh PR",
+        draft: false,
+        url: "https://github.com/developing-today/code/pull/42",
+        created: "2026-11-22T12:34",
+        author: "worker",
+        branch: "queue/42",
+      },
+    ]);
+  });
+
+  test("refreshes pull requests only after the host is silent", async () => {
+    const reads: string[] = [];
+    const w = await setup({
+      freshRead: async (section, config) => {
+        reads.push(`${section}:${config.repo}`);
+        return [{ number: 42, title: "Fresh PR", url: "https://example.test/pr/42" }];
+      },
+    });
+    await w.hostReads();
+    await w.link.now.once();
+    const before = await w.browse("/console/api/doc/ops");
+    expect((await before.json()).prs).toEqual([]);
+    expect(reads).toEqual([]);
+
+    w.hostSaw.length = 0;
+    w.net.hostUp = false;
+    w.now.t += 60_000;
+    const fresh = await w.browse("/console/api/doc/ops");
+    expect((await fresh.json()).prs).toEqual([
+      { number: 42, title: "Fresh PR", url: "https://example.test/pr/42" },
+    ]);
+    expect(reads).toEqual(["prs:developing-today/code"]);
+    expect(w.hostSaw).toEqual([]);
   });
 });
 

@@ -11,7 +11,7 @@ runs the fleet's tools can be reached.
 | -------------------------------------------------------- | ------------------------------ | --------------------------------------------------------------------------- |
 | The app's page, script and icons                         | edge                           | unchanged                                                                   |
 | Checking who is calling                                  | edge, and again on the laptop  | the edge still answers the owner; anyone it is unsure of gets nothing       |
-| State (in progress, next, needs me, prompts, pull…)      | edge, from the laptop's report | served as of the last report, with that time shown                          |
+| State (in progress, next, needs me, prompts, pull…)      | edge, from the laptop's report | pull requests can be refreshed from GitHub after one minute of silence; other data remains as of the last report |
 | Notifications: keys, subscriptions, sending              | edge                           | unchanged; and one says the laptop has gone quiet                           |
 | Linked phones and the widget's summary                   | edge                           | unchanged                                                                   |
 | Actions safe to do late (prompts, answers, comments, …)  | laptop, relayed at once        | held at the edge, run once when it is back, dropped after a day and said so |
@@ -77,9 +77,12 @@ laptop: pm-console (../src/server.ts), reporting through ../src/sync.ts
   only actions on the late list, and records each in its audit log as
   `via: edge-held` with who took it and when.
 
-The Worker has no secrets configured. The keys it uses it made itself
-(notification signing) or were published to it (the laptop's, the
-sign-in issuer's).
+The optional direct pull-request read uses the `GITHUB_TOKEN` Worker
+secret only when `GITHUB_READ_ENABLED=on`. It is disabled by default;
+`/console/health` reports whether it is enabled, whether the secret exists,
+and whether the capability is ready. The token is sent only to GitHub's
+read endpoint and is never returned by health. Other edge reads and writes
+are not implemented by this first slice.
 
 ## Deploy, and going back
 
@@ -116,10 +119,11 @@ simply what is behind the hostname.
 
 ## Limits worth knowing
 
-- State at the edge is the laptop's last report. With the laptop gone it
-  ages, and the app says how old it is; it does not go on changing.
-- Reading the queue and filing a prompt straight from the edge, with the
-  laptop off, is not built: it needs the queue store's and GitHub's
-  credentials at the edge.
+- State at the edge is the laptop's last report except for open pull
+  requests, which can refresh from GitHub after the laptop has been quiet
+  for one minute and the direct-read switch and secret are present.
+- Fresh board, ranked-issue and prompt reads, and direct actions remain
+  unimplemented. Prompt queue-task creation still requires the documented
+  fleet queue contract or explicit laptop enqueue on return.
 - The storage is one Durable Object. A section larger than one stored
   value is kept in pieces.

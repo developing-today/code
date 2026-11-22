@@ -10,11 +10,16 @@
 import { DurableObject } from "cloudflare:workers";
 import { Edge } from "./edge.ts";
 import { route } from "./entry.ts";
+import { readOpenPullRequests } from "./github.ts";
 
 interface Env {
   PM: DurableObjectNamespace;
   ASSETS: { fetch(request: Request): Promise<Response> };
   PUBLIC_HOST: string;
+  /** Optional read-only GitHub token; provisioned as a Worker secret. */
+  GITHUB_TOKEN?: string;
+  /** Explicit opt-in; reads stay disabled unless set to `on`. */
+  GITHUB_READ_ENABLED?: string;
   VERSION?: string;
   /** Local development only: where the host is, when it is not simply
    * behind this hostname's route. Never set where this is deployed. */
@@ -36,6 +41,14 @@ export class PmEdge extends DurableObject<Env> {
         },
       },
       setAlarm: (at) => ctx.storage.setAlarm(at),
+      githubReadEnabled: env.GITHUB_READ_ENABLED === "on",
+      githubTokenConfigured: Boolean(env.GITHUB_TOKEN),
+      freshRead: env.GITHUB_READ_ENABLED === "on" && env.GITHUB_TOKEN
+        ? (section, config) =>
+            section === "prs"
+              ? readOpenPullRequests(config.repo, env.GITHUB_TOKEN as string)
+              : Promise.reject(new Error("unsupported edge read"))
+        : undefined,
     });
   }
 
