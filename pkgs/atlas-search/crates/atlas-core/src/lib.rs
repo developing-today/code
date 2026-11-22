@@ -66,9 +66,11 @@ pub const MAX_EXPAND_NEIGHBORS: usize = 100;
 pub use aggregate::{PromoteReport, embed_unit_into_shard, tier_sensitivity_name};
 pub use backend::SearchBackend;
 pub use detect::{
-    DETECTION_LEDGER_SCHEMA, DetectionLedger, DetectionPass, FileStat, LandedState, Mechanism,
-    PathVerdict, PlainTreeOptions, SourceLedger, Verdict, VerdictCounts, default_ledger_path,
-    git_tree_detection, plain_tree_detection, resolve_commit,
+    DETECTION_LEDGER_SCHEMA, DetectionLedger, DetectionPass, FileStat, LandedState, LandedTable,
+    Mechanism, PathVerdict, PlainTreeOptions, RowDetectOptions, RowMode, RowStoreSpec,
+    SourceLedger, TablePass, TableSpec, Verdict, VerdictCounts, WatermarkSpec, WatermarkValue,
+    default_ledger_path, git_tree_detection, plain_tree_detection, resolve_commit,
+    row_store_detection,
 };
 pub use disclosure::{DisclosureContext, chunk_classification};
 pub use embed::{
