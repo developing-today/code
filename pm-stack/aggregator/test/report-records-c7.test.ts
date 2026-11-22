@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -324,12 +325,12 @@ describe("C7 canonical report records", () => {
   test("compares conflicting prose as line-level hunks while preserving both originals", () => {
     const comparison = compareReportBlock("Opening\nold detail\nClosing", "Opening\nnew detail\nClosing");
     expect(comparison.conflict).toBe(true);
-    expect(comparison.hunks).toEqual([{ before: "old detail", after: "new detail" }]);
+    expect(comparison.hunks).toEqual([{ before: "old detail", after: "new detail", beforeLines: 1, afterLines: 1 }]);
     expect(comparison.storedText).toBe("Opening\nold detail\nClosing");
     expect(comparison.renderedText).toBe("Opening\nnew detail\nClosing");
     expect(compareReportBlock("a\nold one\nb\nold two\nc", "a\nnew one\nb\nnew two\nc").hunks).toEqual([
-      { before: "old one", after: "new one" },
-      { before: "old two", after: "new two" },
+      { before: "old one", after: "new one", beforeLines: 1, afterLines: 1 },
+      { before: "old two", after: "new two", beforeLines: 1, afterLines: 1 },
     ]);
     expect(compareReportBlock("same  prose", "same\nprose").conflict).toBe(false);
   });
@@ -374,7 +375,16 @@ describe("C7 canonical report records", () => {
     const stored = Array.from({ length: 450 }, (_, index) => `stored-${index}`).join("\n");
     const rendered = Array.from({ length: 450 }, (_, index) => `rendered-${index}`).join("\n");
     const comparison = compareReportBlock(stored, rendered);
-    expect(comparison.hunks).toEqual([{ before: stored, after: rendered }]);
+    expect(comparison.hunks).toEqual([{ before: stored, after: rendered, beforeLines: 450, afterLines: 450 }]);
+  });
+
+  test("distinguishes a deleted blank line from an absent hunk side", () => {
+    // The blank-line deletion joins to "" on both sides; only the line
+    // counts show that the stored side held one (blank) line.
+    expect(compareReportBlock("a\n\nb\nold", "a\nb\nnew").hunks).toEqual([
+      { before: "", after: "", beforeLines: 1, afterLines: 0 },
+      { before: "old", after: "new", beforeLines: 1, afterLines: 1 },
+    ]);
   });
 
   test("resolves either side by appending a version and leaves the frozen snapshot unchanged", async () => {
@@ -503,6 +513,47 @@ describe("C7 canonical report records", () => {
     )).rejects.toThrow(/later than the source record/);
   });
 
+  test("checks causal order against the persisted predecessor, not a backdated copy", async () => {
+    const file = await storePath();
+    const persisted = makeReportRecord({
+      period: {
+        id: "daily:2026-11-21:America/Chicago",
+        kind: "daily",
+        timezone: "America/Chicago",
+        periodStart: "2026-11-21T06:00:00.000Z",
+        periodEnd: "2026-11-22T06:00:00.000Z",
+        softCloseAt: "2026-11-22T14:00:00.000Z",
+      },
+      asOf: "2026-11-22T05:45:00.000Z",
+      templateVersion: "daily-v1",
+      sourceCursor: "cursor-backdated-predecessor",
+      sources: [],
+      blocks: [{ id: "change-1", text: "Stored.", relatedAt: "2026-11-22T05:40:00.000Z" }],
+    }, "2026-11-22T05:45:01.000Z");
+    await appendReportRecord(file, persisted);
+    // Same ID and content, but generatedAt backdated: content comparison
+    // ignores generatedAt, so only the persisted timestamp can catch a
+    // resolution that predates the real predecessor.
+    const backdated = makeReportRecord({
+      period: persisted.period,
+      asOf: persisted.asOf,
+      templateVersion: persisted.templateVersion,
+      sourceCursor: persisted.sourceCursor,
+      sources: [],
+      blocks: [{ id: "change-1", text: "Stored.", relatedAt: "2026-11-22T05:40:00.000Z" }],
+    }, "2026-11-22T05:00:00.000Z");
+    expect(backdated.id).toBe(persisted.id);
+    await expect(appendReportBlockConflictResolution(
+      file,
+      backdated,
+      "change-1",
+      compareReportBlock("Stored.", "Rendered."),
+      "rendered",
+      "2026-11-22T05:30:00.000Z",
+    )).rejects.toThrow(/later than the source record/);
+    expect(await readReportRecords(file)).toEqual([persisted]);
+  });
+
   test("accepts an edited or reviewer-combined block as an append-only resolution", async () => {
     const file = await storePath();
     const record = makeReportRecord({
@@ -574,6 +625,9 @@ describe("C7 canonical report records", () => {
     }, "2026-11-22T05:45:01.000Z");
     const staleComparison = compareReportBlock("Older stored wording.", "Generated wording.");
 
+    // Persist the predecessor so the attempt exercises the changed-block
+    // guard itself, not the missing-source check that an empty store hits.
+    await appendReportRecord(file, record);
     await expect(appendReportBlockConflictResolution(
       file,
       record,
@@ -581,7 +635,7 @@ describe("C7 canonical report records", () => {
       staleComparison,
       "rendered",
       "2026-11-22T13:00:00.000Z",
-    )).rejects.toThrow(/stale report block comparison/);
+    )).rejects.toThrow(/stale report block comparison: stored block has changed/);
     const currentComparison = compareReportBlock("Current stored wording.", "Generated wording.");
     await expect(appendReportBlockConflictResolution(
       file,
@@ -591,7 +645,53 @@ describe("C7 canonical report records", () => {
       "rendered",
       "2026-11-22T14:00:00.000Z",
     )).rejects.toThrow(/not allowed after soft close/);
-    expect(await readReportRecords(file)).toEqual([]);
+    expect(await readReportRecords(file)).toEqual([record]);
+  });
+
+  test("returns an already committed resolution after soft close instead of rejecting the retry", async () => {
+    const file = await storePath();
+    const record = makeReportRecord({
+      period: {
+        id: "daily:2026-11-21:America/Chicago",
+        kind: "daily",
+        timezone: "America/Chicago",
+        periodStart: "2026-11-21T06:00:00.000Z",
+        periodEnd: "2026-11-22T06:00:00.000Z",
+        softCloseAt: "2026-11-22T14:00:00.000Z",
+      },
+      asOf: "2026-11-22T05:45:00.000Z",
+      templateVersion: "daily-v1",
+      sourceCursor: "cursor-soft-close-retry",
+      sources: [],
+      blocks: [{ id: "change-1", text: "Stored wording.", relatedAt: "2026-11-22T05:40:00.000Z" }],
+    }, "2026-11-22T05:45:01.000Z");
+    await appendReportRecord(file, record);
+    const comparison = compareReportBlock("Stored wording.", "Rendered wording.");
+    const committed = await appendReportBlockConflictResolution(
+      file,
+      record,
+      "change-1",
+      comparison,
+      "rendered",
+      "2026-11-22T13:59:59.000Z",
+    );
+    expect(committed.inserted).toBe(true);
+
+    // The response was lost; the identical retry lands after soft close with
+    // a fresh timestamp. It must return the committed resolution with its
+    // original timestamp, not a soft-close rejection.
+    const retry = await appendReportBlockConflictResolution(
+      file,
+      record,
+      "change-1",
+      comparison,
+      "rendered",
+      "2026-11-22T14:30:00.000Z",
+    );
+    expect(retry.inserted).toBe(false);
+    expect(retry.record).toEqual(committed.record);
+    expect(retry.record.blocks[0]?.resolution?.resolvedAt).toBe("2026-11-22T13:59:59.000Z");
+    expect(await readReportRecords(file)).toEqual([record, committed.record]);
   });
 
   test("allows only one resolution to win from a report version", async () => {
@@ -671,6 +771,137 @@ describe("C7 canonical report records", () => {
     expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
     expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
     expect((await readReportRecords(firstClient)).filter((candidate) => candidate.id !== record.id)).toHaveLength(1);
+  });
+
+  test("remote resolution retry adopts the claimed record after an interrupted event append", async () => {
+    const documents = new Map<string, unknown>();
+    let failEventInsert = false;
+    const remote: AppendOnlyDocumentRemote = {
+      async load(store) {
+        return documents.has(store) ? { version: 1, document: structuredClone(documents.get(store)) } : null;
+      },
+      async insertIfAbsent(store, _version, document) {
+        // The first resolution event insert fails after its claims landed,
+        // simulating a store outage between the claim and the event append.
+        if (failEventInsert && store.startsWith("c7-report:v1:report.generated:")) {
+          failEventInsert = false;
+          throw new Error("simulated event store outage");
+        }
+        if (documents.has(store)) return false;
+        documents.set(store, structuredClone(document));
+        return true;
+      },
+      async listPrefix(prefix) {
+        return [...documents.entries()]
+          .filter(([store]) => store.startsWith(prefix))
+          .map(([store, document]) => ({ store, version: 1, document: structuredClone(document) }));
+      },
+    };
+    const record = makeReportRecord({
+      period: {
+        id: "daily:2026-11-21:America/Chicago",
+        kind: "daily",
+        timezone: "America/Chicago",
+        periodStart: "2026-11-21T06:00:00.000Z",
+        periodEnd: "2026-11-22T06:00:00.000Z",
+        softCloseAt: "2026-11-22T14:00:00.000Z",
+      },
+      asOf: "2026-11-22T05:45:00.000Z",
+      templateVersion: "daily-v1",
+      sourceCursor: "cursor-interrupted-resolution-append",
+      sources: [],
+      blocks: [{ id: "change-1", text: "Stored wording.", relatedAt: "2026-11-22T05:40:00.000Z" }],
+    }, "2026-11-22T05:45:01.000Z");
+    await appendReportRecord(remote, record);
+    const comparison = compareReportBlock("Stored wording.", "Rendered wording.");
+    failEventInsert = true;
+    await expect(appendReportBlockConflictResolution(
+      remote,
+      record,
+      "change-1",
+      comparison,
+      "rendered",
+      "2026-11-22T13:00:00.000Z",
+    )).rejects.toThrow(/simulated event store outage/);
+    expect(await readReportRecords(remote)).toEqual([record]);
+
+    // The retry rebuilds the same record ID with a new timestamp; it must
+    // adopt the claimed record and finish the append with the ORIGINAL
+    // resolvedAt instead of failing on the permanent record claim.
+    const retry = await appendReportBlockConflictResolution(
+      remote,
+      record,
+      "change-1",
+      comparison,
+      "rendered",
+      "2026-11-22T13:05:00.000Z",
+    );
+    expect(retry.inserted).toBe(true);
+    expect(retry.record.generatedAt).toBe("2026-11-22T13:00:00.000Z");
+    expect(retry.record.blocks[0]?.resolution?.resolvedAt).toBe("2026-11-22T13:00:00.000Z");
+    expect(await readCurrentReportRecords(remote)).toEqual([retry.record]);
+  });
+
+  test("aborts a resolution when a generation lands while its claim is written", async () => {
+    const documents = new Map<string, unknown>();
+    const generation = makeReportRecord({
+      period: {
+        id: "daily:2026-11-21:America/Chicago",
+        kind: "daily",
+        timezone: "America/Chicago",
+        periodStart: "2026-11-21T06:00:00.000Z",
+        periodEnd: "2026-11-22T06:00:00.000Z",
+        softCloseAt: "2026-11-22T14:00:00.000Z",
+      },
+      asOf: "2026-11-22T05:50:00.000Z",
+      templateVersion: "daily-v1",
+      sourceCursor: "cursor-racing-generation",
+      sources: [],
+      blocks: [{ id: "change-1", text: "Regenerated wording.", relatedAt: "2026-11-22T05:50:00.000Z" }],
+    }, "2026-11-22T05:50:01.000Z");
+    const remote: AppendOnlyDocumentRemote = {
+      async load(store) {
+        return documents.has(store) ? { version: 1, document: structuredClone(documents.get(store)) } : null;
+      },
+      async insertIfAbsent(store, _version, document) {
+        if (documents.has(store)) return false;
+        documents.set(store, structuredClone(document));
+        // A generation from another client lands in the window between the
+        // resolution's current check and its append.
+        if (store.startsWith("c7-report-resolution-source:v1:")) {
+          const event = { eventId: generation.id, type: "report.generated", record: generation, ts: generation.generatedAt };
+          const eventKey = `c7-report:v1:report.generated:${createHash("sha256").update(generation.id).digest("hex")}`;
+          documents.set(eventKey, structuredClone(event));
+        }
+        return true;
+      },
+      async listPrefix(prefix) {
+        return [...documents.entries()]
+          .filter(([store]) => store.startsWith(prefix))
+          .map(([store, document]) => ({ store, version: 1, document: structuredClone(document) }));
+      },
+    };
+    const record = makeReportRecord({
+      period: generation.period,
+      asOf: "2026-11-22T05:45:00.000Z",
+      templateVersion: "daily-v1",
+      sourceCursor: "cursor-resolution-raced-by-generation",
+      sources: [],
+      blocks: [{ id: "change-1", text: "Stored wording.", relatedAt: "2026-11-22T05:40:00.000Z" }],
+    }, "2026-11-22T05:45:01.000Z");
+    await appendReportRecord(remote, record);
+
+    await expect(appendReportBlockConflictResolution(
+      remote,
+      record,
+      "change-1",
+      compareReportBlock("Stored wording.", "Rendered wording."),
+      "rendered",
+      "2026-11-22T13:00:00.000Z",
+    )).rejects.toThrow(/no longer current/);
+    // The racing generation stays current; no resolution was appended.
+    expect(await readCurrentReportRecords(remote)).toEqual([generation]);
+    expect((await readReportRecords(remote)).map((candidate) => candidate.id).sort()).toEqual([record.id, generation.id].sort());
   });
 
   test("uses append-only permanent document keys for report history and snapshots", async () => {

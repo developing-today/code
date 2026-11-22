@@ -241,9 +241,11 @@ import { computeFlowAnalytics } from "./flow-analytics.ts";
 import {
   appendReportBlockConflictResolution,
   compareReportBlock,
+  currentReportRecords,
   defaultReportRecordsFile,
-  readCurrentReportRecords,
   readReportRecords,
+  ReportRecordConflictError,
+  ReportResolutionValidationError,
 } from "./report-records.ts";
 import { renderReportReview, reportBlockReviews } from "./report-review.ts";
 import {
@@ -2113,10 +2115,11 @@ async function handler(req: Request): Promise<Response> {
 
   if (req.method === "GET" && (path === "/reports" || path === "/api/reports.json")) {
     try {
-      const [records, current] = await Promise.all([
-        readReportRecords(reportRecordsLocation),
-        readCurrentReportRecords(reportRecordsLocation),
-      ]);
+      // One store read: the current projection derives from the same history
+      // snapshot, so `records` and `current` can never reflect different
+      // store states (e.g. a resolution committing between two reads).
+      const records = await readReportRecords(reportRecordsLocation);
+      const current = currentReportRecords(records);
       if (path === "/api/reports.json") {
         return json({
           records: current,
@@ -2152,7 +2155,13 @@ async function handler(req: Request): Promise<Response> {
     const renderedRecordId = typeof body.renderedRecordId === "string" ? body.renderedRecordId : "";
     const blockId = typeof body.blockId === "string" ? body.blockId : "";
     const strategy = body.strategy;
-    if (!storedRecordId || !renderedRecordId || !blockId || !["stored", "rendered", "edited", "combined"].includes(String(strategy))) {
+    if (
+      !storedRecordId ||
+      !renderedRecordId ||
+      !blockId ||
+      typeof strategy !== "string" ||
+      !["stored", "rendered", "edited", "combined"].includes(strategy)
+    ) {
       return json({ error: "storedRecordId, renderedRecordId, blockId and a valid strategy are required" }, 400);
     }
     if (body.resolvedText !== undefined && typeof body.resolvedText !== "string") {
@@ -2171,6 +2180,26 @@ async function handler(req: Request): Promise<Response> {
       if (!storedBlock || !renderedBlock) return json({ error: "compared block is missing" }, 400);
       const comparison = compareReportBlock(storedBlock.text, renderedBlock.text);
       if (!comparison.conflict) return json({ error: "report block has no substantive conflict" }, 400);
+      // Resolve only the pairs the review surface offers — the current record
+      // against its selected alternative — so a caller cannot pair the
+      // current record with a hidden historical version the selection
+      // excluded. An exact retry of an already-committed resolution stays
+      // allowed: the append below returns it unchanged.
+      const offered = reportBlockReviews(records, currentReportRecords(records)).some(
+        (review) =>
+          review.storedRecord.id === storedRecordId && review.renderedRecord.id === renderedRecordId && review.blockId === blockId,
+      );
+      const alreadyResolved = records.some((record) =>
+        record.blocks.some(
+          (block) =>
+            block.id === blockId &&
+            block.resolution?.sourceRecordId === storedRecordId &&
+            block.resolution.comparedRecordId === renderedRecordId,
+        ),
+      );
+      if (!offered && !alreadyResolved) {
+        return json({ error: "report block comparison is not offered for review" }, 400);
+      }
       const result = await appendReportBlockConflictResolution(
         reportRecordsLocation,
         storedRecord,
@@ -2183,7 +2212,11 @@ async function handler(req: Request): Promise<Response> {
       );
       return json({ inserted: result.inserted, record: result.record });
     } catch (error) {
-      return json({ error: error instanceof Error ? error.message : "report resolution failed" }, 400);
+      // Caller-fixable validation failures stay 4xx; store failures (listing
+      // or appending) are 5xx, matching the neighboring write handlers.
+      const message = error instanceof Error ? error.message : "report resolution failed";
+      const clientError = error instanceof ReportResolutionValidationError || error instanceof ReportRecordConflictError;
+      return json({ error: message }, clientError ? 400 : 500);
     }
   }
 

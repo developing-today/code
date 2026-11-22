@@ -1,7 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type Subprocess } from "bun";
+import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { monthlyReportPeriod } from "../src/report-periods.ts";
+import { makeReportRecord, type ReportRecord } from "../src/report-records.ts";
 
 // Boots the real server on an ephemeral port and verifies the fixture-backed
 // app serves all four views and its health/JSON endpoints.
@@ -17,7 +20,15 @@ beforeAll(async () => {
   proc = spawn({
     cmd: ["bun", "run", "src/server.ts"],
     cwd: import.meta.dir + "/..",
-    env: { ...Bun.env, PM_AGG_PORT: String(port), PM_AGG_SOURCE: "fixtures", PM_AGG_REPORT_RECORDS_FILE: reportRecordsFile },
+    env: {
+      ...Bun.env,
+      PM_AGG_PORT: String(port),
+      PM_AGG_SOURCE: "fixtures",
+      // Pin the file backend so the isolated records file controls the
+      // report routes even when the parent environment selects another one.
+      PM_AGG_STORE_BACKEND: "file",
+      PM_AGG_REPORT_RECORDS_FILE: reportRecordsFile,
+    },
     stdout: "pipe",
     stderr: "inherit",
   });
@@ -358,5 +369,100 @@ describe("server boots from fixtures", () => {
     expect(html).not.toContain('type="hidden" name="ref"');
     expect(html).toContain('name="ref" value="developing-today/code#3323"');
     expect(html).toContain('name="ref" value="developing-today/code#3321"');
+  });
+});
+
+describe("report resolution endpoint", () => {
+  let resolveProc: Subprocess<"ignore", "pipe", "inherit"> | null = null;
+  let resolvePort = 0;
+  let stored: ReportRecord;
+  let rendered: ReportRecord;
+
+  beforeAll(async () => {
+    const period = monthlyReportPeriod("2026-11");
+    const base = {
+      period,
+      asOf: "2026-11-22T10:00:00.000Z",
+      templateVersion: "c7-rollup-v1",
+      sources: [{ id: "event-1", uri: "gh:issue/12350", observedAt: "2026-11-22T09:00:00.000Z" }],
+    };
+    rendered = makeReportRecord(
+      { ...base, sourceCursor: "seed-rendered", blocks: [{ id: "narrative", text: "Generated wording.", relatedAt: "2026-11-22T09:00:00.000Z" }] },
+      "2026-11-22T09:00:00.000Z",
+    );
+    stored = makeReportRecord(
+      { ...base, sourceCursor: "seed-stored", blocks: [{ id: "narrative", text: "Human wording.", relatedAt: "2026-11-22T09:00:00.000Z" }] },
+      "2026-11-22T10:00:00.000Z",
+    );
+    const seedFile = join(tmpdir(), `pm-agg-report-resolve-${crypto.randomUUID()}.jsonl`);
+    const event = (record: ReportRecord) =>
+      JSON.stringify({ eventId: record.id, type: "report.generated", record, ts: record.generatedAt });
+    await writeFile(seedFile, `${event(rendered)}\n${event(stored)}\n`, "utf8");
+    resolvePort = 4100 + Math.floor(Math.random() * 1000);
+    resolveProc = spawn({
+      cmd: ["bun", "run", "src/server.ts"],
+      cwd: import.meta.dir + "/..",
+      env: {
+        ...Bun.env,
+        PM_AGG_PORT: String(resolvePort),
+        // The freshness IPC listener has a fixed default port; give this
+        // second server its own so it can run beside the main boot server.
+        PM_AGG_FRESHNESS_PORT: String(resolvePort + 2000),
+        PM_AGG_SOURCE: "fixtures",
+        PM_AGG_STORE_BACKEND: "file",
+        PM_AGG_REPORT_RECORDS_FILE: seedFile,
+      },
+      stdout: "pipe",
+      stderr: "inherit",
+    });
+    const deadline = Date.now() + 8000;
+    let ready = false;
+    while (Date.now() < deadline) {
+      try {
+        const res = await fetch(`http://127.0.0.1:${resolvePort}/api/health`);
+        if (res.ok) {
+          ready = true;
+          break;
+        }
+      } catch {
+        /* not up yet */
+      }
+      await Bun.sleep(120);
+    }
+    expect(ready).toBe(true);
+  }, 60_000);
+
+  afterAll(() => {
+    resolveProc?.kill();
+  });
+
+  const postResolve = (body: unknown) =>
+    fetch(`http://127.0.0.1:${resolvePort}/api/reports/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  test("rejects a non-string strategy", async () => {
+    const res = await postResolve({ storedRecordId: stored.id, renderedRecordId: rendered.id, blockId: "narrative", strategy: ["stored"] });
+    expect(res.status).toBe(400);
+  });
+
+  test("rejects a conflicting pair the review surface does not offer", async () => {
+    // The offered pair is (current stored, selected rendered); the swapped
+    // pair names a real conflict but is not a review selection.
+    const res = await postResolve({ storedRecordId: rendered.id, renderedRecordId: stored.id, blockId: "narrative", strategy: "stored" });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toContain("not offered for review");
+  });
+
+  test("resolves an offered pair and returns the committed resolution on an exact retry", async () => {
+    const body = { storedRecordId: stored.id, renderedRecordId: rendered.id, blockId: "narrative", strategy: "stored" };
+    const first = await postResolve(body);
+    expect(first.status).toBe(200);
+    expect(((await first.json()) as { inserted: boolean }).inserted).toBe(true);
+    const retry = await postResolve(body);
+    expect(retry.status).toBe(200);
+    expect(((await retry.json()) as { inserted: boolean }).inserted).toBe(false);
   });
 });

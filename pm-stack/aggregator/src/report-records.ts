@@ -1,8 +1,8 @@
 // Canonical C7 report records over PM-stack append-only storage. Local JSONL
 // supports development/rollback; the durable adapter appends immutable event
 // documents to the existing aggregator document store.
-import { createHash } from "node:crypto";
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { appendFile, link, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { AppendOnlyDocumentRemote } from "./aa-last-good.ts";
@@ -93,6 +93,17 @@ export class ReportRecordConflictError extends Error {
   constructor(recordId: string) {
     super(`report record ${recordId} already exists with different content`);
     this.name = "ReportRecordConflictError";
+  }
+}
+
+/** A resolution request the caller can fix (stale comparison, causal order,
+ * soft close, invalid strategy/text). Commit-phase store failures throw their
+ * raw errors instead, so HTTP handlers can answer 4xx for these and 5xx for
+ * storage failures. */
+export class ReportResolutionValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReportResolutionValidationError";
   }
 }
 
@@ -301,18 +312,66 @@ async function claimRemoteRecord(location: AppendOnlyDocumentRemote, record: Rep
     throw new ReportRecordConflictError(record.id);
 }
 
+interface ReportResolutionClaim {
+  sourceRecordId: string;
+  resolvedRecordId: string;
+  resolvedRecord?: ReportRecord;
+}
+
+function resolutionClaimKey(sourceRecordId: string): string {
+  return `${REPORT_RESOLUTION_CLAIM_PREFIX}${createHash("sha256").update(sourceRecordId).digest("hex")}`;
+}
+
+function resolutionClaimsFile(location: string, sourceRecordId: string): string {
+  return `${location}.resolution-claims/${createHash("sha256").update(sourceRecordId).digest("hex")}.json`;
+}
+
+/** Read a durable resolution claim without writing one; null when absent or
+ * unreadable. claimResolutionSource performs the authoritative validation. */
+async function readResolutionClaim(
+  location: ReportRecordLocation,
+  sourceRecordId: string,
+): Promise<ReportResolutionClaim | null> {
+  try {
+    if (typeof location !== "string") {
+      const stored = await location.load(resolutionClaimKey(sourceRecordId));
+      if (
+        !stored ||
+        !isObject(stored.document) ||
+        stored.document.sourceRecordId !== sourceRecordId ||
+        typeof stored.document.resolvedRecordId !== "string"
+      ) {
+        return null;
+      }
+      return stored.document as unknown as ReportResolutionClaim;
+    }
+    const stored = JSON.parse(await readFile(resolutionClaimsFile(location, sourceRecordId), "utf8")) as unknown;
+    if (!isObject(stored) || stored.sourceRecordId !== sourceRecordId || typeof stored.resolvedRecordId !== "string") {
+      return null;
+    }
+    return stored as unknown as ReportResolutionClaim;
+  } catch {
+    return null;
+  }
+}
+
 /** A source record may have only one winning resolution append. The durable
  * claim is shared across processes; same-resolution retries may finish an
- * interrupted append, while a different choice from the same source is stale. */
+ * interrupted append, while a different choice from the same source is stale.
+ * The claim stores the full winning record and the winner is returned: if the
+ * event append after a successful claim fails, a retry adopts the claimed
+ * record (with its original resolvedAt) instead of rebuilding the same record
+ * ID with a new timestamp, which the permanent record claim would reject as
+ * different content and leave the source claimed with no visible resolution. */
 async function claimResolutionSource(
   location: ReportRecordLocation,
   sourceRecordId: string,
   resolvedRecord: ReportRecord,
-): Promise<void> {
-  const claim = { sourceRecordId, resolvedRecordId: resolvedRecord.id };
-  const key = `${REPORT_RESOLUTION_CLAIM_PREFIX}${createHash("sha256").update(sourceRecordId).digest("hex")}`;
+): Promise<ReportRecord> {
+  const claim: ReportResolutionClaim = { sourceRecordId, resolvedRecordId: resolvedRecord.id, resolvedRecord };
+  const key = resolutionClaimKey(sourceRecordId);
   if (typeof location !== "string") {
-    if (await location.insertIfAbsent(key, 1, claim)) return;
+    if (await location.insertIfAbsent(key, 1, claim)) return resolvedRecord;
     const stored = await location.load(key);
     if (!stored || !isObject(stored.document) || stored.document.sourceRecordId !== sourceRecordId) {
       throw new Error(`permanent report resolution claim is malformed: ${sourceRecordId}`);
@@ -320,13 +379,21 @@ async function claimResolutionSource(
     if (stored.document.resolvedRecordId !== resolvedRecord.id) {
       throw new Error("stale report block comparison: another resolution already won");
     }
-    return;
+    const claimed = (stored.document as unknown as ReportResolutionClaim).resolvedRecord;
+    return claimed && claimed.id === resolvedRecord.id ? claimed : resolvedRecord;
   }
 
-  const claimsFile = `${location}.resolution-claims/${createHash("sha256").update(sourceRecordId).digest("hex")}.json`;
+  const claimsFile = resolutionClaimsFile(location, sourceRecordId);
   await mkdir(dirname(claimsFile), { recursive: true });
+  // Publish atomically: write the complete claim to a temp file, then link it
+  // into place. link() fails rather than replacing an existing claim, and a
+  // crash mid-write can only orphan the temp file, never a torn claim that
+  // every later attempt would read as malformed.
+  const tempFile = `${claimsFile}.${process.pid}.${randomUUID()}.tmp`;
+  await writeFile(tempFile, JSON.stringify(claim), { encoding: "utf8", flag: "wx" });
   try {
-    await writeFile(claimsFile, JSON.stringify(claim), { encoding: "utf8", flag: "wx" });
+    await link(tempFile, claimsFile);
+    return resolvedRecord;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     let stored: unknown;
@@ -341,6 +408,10 @@ async function claimResolutionSource(
     if (stored.resolvedRecordId !== resolvedRecord.id) {
       throw new Error("stale report block comparison: another resolution already won");
     }
+    const claimed = (stored as ReportResolutionClaim).resolvedRecord;
+    return claimed && claimed.id === resolvedRecord.id ? claimed : resolvedRecord;
+  } finally {
+    await unlink(tempFile).catch(() => {});
   }
 }
 
@@ -445,20 +516,27 @@ export async function readReportRecords(location: ReportRecordLocation): Promise
   return [...byId.values()];
 }
 
-/** Current projection: latest event-time source-cursor version per period/template. */
-export async function readCurrentReportRecords(location: ReportRecordLocation): Promise<ReportRecord[]> {
+/** Current projection of an already-read record list: the latest event-time
+ * version per period/template. Report timestamps encode causal order; in
+ * particular, a resolution projects after the report version it resolves even
+ * when its ID sorts first. Ties keep the input (event) order. */
+export function currentReportRecords(records: ReportRecord[]): ReportRecord[] {
   const current = new Map<string, ReportRecord>();
-  const events = await readLocationEvents(location);
-  // Remote append-only stores may enumerate keys rather than insertion order.
-  // Report timestamps encode causal order; in particular, a resolution must
-  // project after the report version it resolves even when its ID sorts first.
-  const ordered = events.map((event, index) => ({ event, index }))
-    .sort((a, b) => a.event.ts.localeCompare(b.event.ts) || a.index - b.index);
-  for (const { event } of ordered) {
-    if (event.type !== "report.generated" || !event.record) continue;
-    current.set(`${event.record.period.id}\n${event.record.templateVersion}`, event.record);
+  const ordered = records
+    .map((record, index) => ({ record, index }))
+    .sort((a, b) => a.record.generatedAt.localeCompare(b.record.generatedAt) || a.index - b.index);
+  for (const { record } of ordered) {
+    current.set(`${record.period.id}\n${record.templateVersion}`, record);
   }
   return [...current.values()];
+}
+
+/** Current projection: latest event-time source-cursor version per period/template. */
+export async function readCurrentReportRecords(location: ReportRecordLocation): Promise<ReportRecord[]> {
+  const records = (await readLocationEvents(location))
+    .filter((event) => event.type === "report.generated" && event.record)
+    .map((event) => event.record!);
+  return currentReportRecords(records);
 }
 
 export interface AppendReportSnapshotResult {
@@ -638,35 +716,43 @@ export async function appendReportBlockConflictResolution(
   return serializeLocationAppend(location, async () => {
     assertCanonicalRecord(record);
     requireIsoDate(resolvedAt, "resolvedAt");
-    assertReportUpdateAllowed(record.period, "edit", resolvedAt);
-    const persistedSource = (await readReportRecords(location)).find((candidate) => candidate.id === record.id);
+    const records = await readReportRecords(location);
+    const persistedSource = records.find((candidate) => candidate.id === record.id);
     if (!persistedSource || !sameRecordContent(persistedSource, record)) {
-      throw new Error("stale report block comparison: supplied source differs from its persisted record");
+      throw new ReportResolutionValidationError(
+        "stale report block comparison: supplied source differs from its persisted record",
+      );
     }
-    if (Date.parse(resolvedAt) <= Date.parse(record.generatedAt)) {
-      throw new Error("resolvedAt must be later than the source record to preserve causal ordering");
+    // Causal order is checked against the PERSISTED predecessor: the supplied
+    // copy's generatedAt is not content-checked (sameRecordContent ignores
+    // it), so a backdated same-ID copy must not smuggle in an earlier
+    // baseline that would let a resolution predate the real predecessor.
+    if (Date.parse(resolvedAt) <= Date.parse(persistedSource.generatedAt)) {
+      throw new ReportResolutionValidationError(
+        "resolvedAt must be later than the source record to preserve causal ordering",
+      );
     }
     if (!comparison.conflict || !reportBlockConflict(comparison.storedText, comparison.renderedText)) {
-      throw new Error("report block comparison does not contain a conflict");
+      throw new ReportResolutionValidationError("report block comparison does not contain a conflict");
     }
     if (!comparedRecordId.trim() || comparedRecordId === record.id) {
-      throw new Error("compared report record is required and must differ from the stored record");
+      throw new ReportResolutionValidationError("compared report record is required and must differ from the stored record");
     }
 
     const canonicalComparison = compareReportBlock(comparison.storedText, comparison.renderedText);
     if (canonicalJson(canonicalComparison) !== canonicalJson(comparison)) {
-      throw new Error("invalid report block comparison");
+      throw new ReportResolutionValidationError("invalid report block comparison");
     }
     if ((strategy === "edited" || strategy === "combined") && !resolvedText?.trim()) {
-      throw new Error(`${strategy} report block resolution requires non-empty resolved text`);
+      throw new ReportResolutionValidationError(`${strategy} report block resolution requires non-empty resolved text`);
     }
     if ((strategy === "stored" || strategy === "rendered") && resolvedText !== undefined) {
-      throw new Error(`${strategy} report block resolution does not accept resolved text`);
+      throw new ReportResolutionValidationError(`${strategy} report block resolution does not accept resolved text`);
     }
     const text = strategy === "stored" ? comparison.storedText : strategy === "rendered" ? comparison.renderedText : resolvedText!;
     const blockIndex = record.blocks.findIndex((block) => block.id === blockId);
     if (blockIndex < 0 || record.blocks[blockIndex].text !== comparison.storedText) {
-      throw new Error("stale report block comparison: stored block has changed");
+      throw new ReportResolutionValidationError("stale report block comparison: stored block has changed");
     }
 
     const cursor = `resolution:${record.id}:${comparedRecordId}:${blockId}:${strategy}:${createHash("sha256").update(text).digest("hex")}`;
@@ -684,22 +770,55 @@ export async function appendReportBlockConflictResolution(
       sources: record.sources,
       blocks,
     }, resolvedAt);
-    const previousResolution = (await readReportRecords(location)).find((candidate) => candidate.id === resolvedRecord.id);
+    const previousResolution = records.find((candidate) => candidate.id === resolvedRecord.id);
     if (previousResolution) {
       const previousBlock = previousResolution.blocks.find((block) => block.id === blockId);
       if (previousBlock?.text !== text || previousBlock.resolution?.sourceRecordId !== record.id ||
           previousBlock.resolution.comparedRecordId !== comparedRecordId || previousBlock.resolution.strategy !== strategy) {
         throw new ReportRecordConflictError(resolvedRecord.id);
       }
+      // Idempotent retry: an already-committed resolution is returned with
+      // its original timestamp even after soft close. Completing it is not a
+      // new edit, so the soft-close gate below must not reject it.
       return { inserted: false, record: previousResolution };
     }
 
-    const latest = (await readCurrentReportRecords(location)).find(
+    // A resolution whose durable claim already landed but whose event append
+    // was interrupted is likewise a retry, not a new edit: it may complete
+    // after soft close. Only a genuinely new resolution is gated.
+    const existingClaim = await readResolutionClaim(location, record.id);
+    if (existingClaim?.resolvedRecordId !== resolvedRecord.id) {
+      try {
+        assertReportUpdateAllowed(record.period, "edit", resolvedAt);
+      } catch (error) {
+        throw new ReportResolutionValidationError(error instanceof Error ? error.message : String(error));
+      }
+    }
+
+    const latest = currentReportRecords(records).find(
       (candidate) => candidate.period.id === record.period.id && candidate.templateVersion === record.templateVersion,
     );
-    if (!latest || latest.id !== record.id) throw new Error("stale report block comparison: report record is no longer current");
-    await claimResolutionSource(location, record.id, resolvedRecord);
-    return appendReportRecordUnlocked(location, resolvedRecord);
+    if (!latest || latest.id !== record.id) {
+      throw new ReportResolutionValidationError("stale report block comparison: report record is no longer current");
+    }
+    let winningRecord: ReportRecord;
+    try {
+      winningRecord = await claimResolutionSource(location, record.id, resolvedRecord);
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("stale report block comparison")) {
+        throw new ReportResolutionValidationError(error.message);
+      }
+      throw error;
+    }
+    // Commit-time recheck: a generation appended by another client while the
+    // claim was written must not be silently hidden by this resolution.
+    const recheck = currentReportRecords(await readReportRecords(location)).find(
+      (candidate) => candidate.period.id === record.period.id && candidate.templateVersion === record.templateVersion,
+    );
+    if (!recheck || recheck.id !== record.id) {
+      throw new ReportResolutionValidationError("stale report block comparison: report record is no longer current");
+    }
+    return appendReportRecordUnlocked(location, winningRecord);
   });
 }
 
@@ -751,6 +870,10 @@ export function reportBlockConflict(storedText: string, renderedText: string): b
 export interface ReportBlockDiffHunk {
   before: string;
   after: string;
+  /** Line counts keep a deleted blank line (one line, empty text) distinct
+   * from an absent side (zero lines, also empty text) for the review UI. */
+  beforeLines: number;
+  afterLines: number;
 }
 
 export interface ReportBlockComparison {
@@ -770,7 +893,12 @@ export function compareReportBlock(storedText: string, renderedText: string): Re
   // Keep review work bounded for unusually large prose blocks. A single hunk
   // remains truthful when a full line-level alignment would be too expensive.
   if ((left.length + 1) * (right.length + 1) > 200_000) {
-    return { conflict: true, storedText, renderedText, hunks: [{ before: storedText, after: renderedText }] };
+    return {
+      conflict: true,
+      storedText,
+      renderedText,
+      hunks: [{ before: storedText, after: renderedText, beforeLines: left.length, afterLines: right.length }],
+    };
   }
   const rows = left.length + 1;
   const cols = right.length + 1;
@@ -784,7 +912,14 @@ export function compareReportBlock(storedText: string, renderedText: string): Re
   let before: string[] = [];
   let after: string[] = [];
   const flush = () => {
-    if (before.length || after.length) hunks.push({ before: before.join("\n"), after: after.join("\n") });
+    if (before.length || after.length) {
+      hunks.push({
+        before: before.join("\n"),
+        after: after.join("\n"),
+        beforeLines: before.length,
+        afterLines: after.length,
+      });
+    }
     before = [];
     after = [];
   };

@@ -27,7 +27,7 @@ describe("C7 report review UI", () => {
     const reviews = reportBlockReviews([stored, rendered], [stored]);
 
     expect(reviews).toHaveLength(1);
-    const html = renderReportReview(reviews, 2);
+    const html = renderReportReview(reviews, 2, "2026-11-21T13:30:00.000Z");
     for (const phrase of ["Human wording &lt;kept&gt;.", "Generated wording.", "Keep stored wording", "Use rendered wording", "Use my edited wording", "Combine the two"]) {
       expect(html).toContain(phrase);
     }
@@ -64,5 +64,41 @@ describe("C7 report review UI", () => {
     const latest = record("latest", "Latest wording.", "2026-11-21T17:00:00.000Z");
     expect(reportBlockReviews([stored, rendered, resolved, postResolution, latest], [latest]).map((review) => review.renderedRecord.id))
       .toEqual(["post-resolution"]);
+  });
+
+  test("does not re-offer a superseded resolution after a newer one", () => {
+    const stored = record("stored", "Original wording.", "2026-11-21T10:00:00.000Z");
+    const firstResolution = record("resolution-1", "Wording A.", "2026-11-21T11:00:00.000Z");
+    firstResolution.blocks[0].resolution = {
+      sourceRecordId: stored.id,
+      strategy: "edited",
+      resolvedAt: firstResolution.generatedAt,
+    };
+    const regenerated = record("regenerated", "Wording B.", "2026-11-21T12:00:00.000Z");
+    const secondResolution = record("resolution-2", "Wording B.", "2026-11-21T13:00:00.000Z");
+    secondResolution.blocks[0].resolution = {
+      sourceRecordId: regenerated.id,
+      strategy: "stored",
+      resolvedAt: secondResolution.generatedAt,
+    };
+
+    // The current version already represents the latest resolution (Wording
+    // B kept). The superseded Wording A resolution is settled history and
+    // must not be offered as a baseline again.
+    expect(reportBlockReviews([stored, firstResolution, regenerated, secondResolution], [secondResolution])).toHaveLength(0);
+  });
+
+  test("renders the comparison read-only after soft close", () => {
+    const stored = record("stored", "Human wording.", "2026-11-21T13:00:00.000Z");
+    const rendered = record("rendered", "Generated wording.", "2026-11-21T14:00:00.000Z");
+    const reviews = reportBlockReviews([stored, rendered], [stored]);
+    expect(reviews).toHaveLength(1);
+
+    const html = renderReportReview(reviews, 2, "2026-11-21T14:00:00.000Z");
+    expect(html).toContain("edit window closed");
+    expect(html).toContain("read-only");
+    expect(html).not.toContain("<form");
+    expect(html).toContain("Human wording.");
+    expect(html).toContain("Generated wording.");
   });
 });
