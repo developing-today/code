@@ -8,8 +8,11 @@ Design record (issue #12229, "What to build" step 2):
   large enough that ten batches cover a week of id PRs.
 - **What runs.** One command per batch: ``cargo check --workspace``
   for pkgs/id, then ``cargo test`` for the union of the crates the
-  batch's PRs affect (per ``affected-crates.py``). Commands run on
-  the fleet build host through ``fleet shell --build``.
+  batch's PRs affect (per ``affected-crates.py``). Commands run
+  inside pkgs/id's own nix dev shell (``nix develop`` of the
+  candidate's pkgs/id flake, which wires the wayland/X11 system
+  libraries); the fleet build shell lacks those libraries and made
+  batch 1 infrastructure-red (#12229).
 - **Red batch.** Bisected by halving (``find_culprits``): a subset
   that stays red is split until each red PR is isolated. Green
   sub-batches merge; a red PR leaves the batch and goes back to its
@@ -147,11 +150,24 @@ def _run_gh(args: list[str], *, cwd: Path | None = None, **_: object) -> str:
     return result.stdout.strip()
 
 
-def _run_fleet(command: str, *, cwd: Path | None = None, **_: object) -> int:
-    argv = ["fleet", "shell", "--build"]
-    if cwd is not None:
-        argv.extend(["--cwd", str(cwd)])
-    result = subprocess.run([*argv, "--", command], cwd=cwd)
+def _run_devshell(command: str, *, cwd: Path | None = None, **_: object) -> int:
+    """Run one batch command inside pkgs/id's own nix dev shell.
+
+    Batch 1 (#12229) ran under ``fleet shell --build`` and died in the
+    wayland-sys build script: that shell lacks the wayland client
+    libraries. pkgs/id's flake wires them (``pkgs/id/nix-common.nix``),
+    so the batch command — recorded verbatim in the gate log — runs
+    unchanged, from the candidate root, inside ``nix develop`` of the
+    candidate's pkgs/id. The manual re-evaluation of batch 1's candidate
+    in exactly this shell is the green reference run.
+    """
+    root = cwd if cwd is not None else REPO_ROOT
+    argv = [
+        "nix", "--extra-experimental-features", "nix-command flakes",
+        "develop", str(root / "pkgs" / "id"),
+        "--command", "bash", "-c", command,
+    ]
+    result = subprocess.run(argv, cwd=root)
     return result.returncode
 
 
@@ -159,7 +175,7 @@ def run_batch(
     prs: Sequence[int], batch: int, *, affected: Mapping[int, Iterable[str]] | None = None,
     log_path: Path = DEFAULT_LOG_PATH, repo: Path = REPO_ROOT,
     git: Callable[..., str] = _run_git,
-    shell: Callable[..., int] = _run_fleet,
+    shell: Callable[..., int] = _run_devshell,
     gh: Callable[..., str] = _run_gh,
 ) -> str:
     """Build and gate one ordered batch. Command seams make the driver unit-testable."""
