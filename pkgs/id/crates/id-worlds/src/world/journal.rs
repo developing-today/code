@@ -819,10 +819,20 @@ pub const JOURNAL_VERSION_KV: u32 = 13;
 /// instead.
 pub const JOURNAL_VERSION_BLOB: u32 = 14;
 
+/// Journal version 15 (#1062): a journal that carries a
+/// `notify` provider event — a committed (or retained) event of
+/// kind [`WorldEventKind::Notification`]. The entry kinds are the
+/// old ones; the *event* kind is new, exactly as an
+/// entity-addressed input event required
+/// [`JOURNAL_VERSION_REGION_HANDOFF`]. A version-14 binary cannot
+/// parse the event kind and would fail mid-replay, so a journal
+/// containing one must be refused at the header check instead.
+pub const JOURNAL_VERSION_NOTIFY: u32 = 15;
+
 /// Newest journal version this binary can read. Journals with a higher
 /// header version are refused at the header check, before any entry is
 /// applied.
-pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_BLOB;
+pub const MAX_JOURNAL_VERSION: u32 = JOURNAL_VERSION_NOTIFY;
 
 /// The header version a journal must carry once it contains `entry`: version 2
 /// for execution-profile entries, version 3 for region-handoff entries,
@@ -910,6 +920,7 @@ fn entry_kind_version(entry: &JournalEntry) -> u32 {
         | JournalEntry::CheckpointAdminPart { .. } => JOURNAL_VERSION_CHECKPOINT_PARTS,
         JournalEntry::Committed { event } | JournalEntry::System { event } => match &event.kind {
             WorldEventKind::EntityInput { .. } => JOURNAL_VERSION_REGION_HANDOFF,
+            WorldEventKind::Notification { .. } => JOURNAL_VERSION_NOTIFY,
             _ => JOURNAL_VERSION,
         },
         // A checkpoint stands in for the entries it compacted, so it must
@@ -940,9 +951,24 @@ fn entry_kind_version(entry: &JournalEntry) -> u32 {
             schedules,
             kv,
             blobs,
+            admin_history,
             ..
         } => {
-            let base = if blobs.is_some() {
+            // A retained `Notification` event is a version-15 kind
+            // wherever the checkpoint carries it — the retained
+            // events or the admin history (the both-places check
+            // the bundle-provenance rule uses).
+            let base = if events
+                .iter()
+                .any(|event| matches!(event.kind, WorldEventKind::Notification { .. }))
+                || admin_history.as_ref().is_some_and(|history| {
+                    history
+                        .events
+                        .iter()
+                        .any(|event| matches!(event.kind, WorldEventKind::Notification { .. }))
+                }) {
+                JOURNAL_VERSION_NOTIFY
+            } else if blobs.is_some() {
                 JOURNAL_VERSION_BLOB
             } else if kv.is_some() {
                 JOURNAL_VERSION_KV

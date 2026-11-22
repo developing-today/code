@@ -238,20 +238,23 @@ pub(crate) fn claim_preamble(
         let l = match lanes.into_iter().next() {
             Some(l) => l,
             None => {
-                // Wildcard acceptance (Drew, 2026-11-16; #6853): a
-                // lane id in a known family (<family>-<suffix>, see
-                // lane_family_of) with no registry row yet is
-                // provisioned on first claim -- owned by the
-                // claiming worker, enabled, unbound queue -- and
-                // then validated by the same checks below. An
-                // existing row always takes precedence: a lane
-                // disabled by hand keeps refusing. Ids outside
-                // every known family keep the unknown-lane refusal.
-                if lane_family_of(lane_id).is_none() {
-                    return Err(unknown_lane_error(lane_id));
-                }
+                // Auto-registration (Drew, 2026-11-22; #12544): the
+                // lane registry is not a gate. A claim naming a
+                // lane with no registry row registers the lane on
+                // the spot -- owned by the claiming worker, enabled,
+                // unbound queue -- and the claim proceeds through
+                // the same checks below. Any name may register: an
+                // agent name ("archer"), a bare family name, a name
+                // in no known family at all. An existing row always
+                // takes precedence: a lane disabled by hand keeps
+                // refusing (an explicit admin act, not an unknown
+                // name), and a lane owned by another worker keeps
+                // its owner. This supersedes the 2026-11-16
+                // known-family wildcard (#6853), which provisioned
+                // only <family>-<suffix> ids in LANE_FAMILIES and
+                // refused everything else as "unknown lane_id".
                 t.exec(
-                    "INSERT OR IGNORE INTO lanes (lane_id, worker_id, queue, enabled) VALUES (?, ?, '*', 1)",
+                    lane_provision_sql(),
                     &[Arg::Text(lane_id.clone()), Arg::Text(worker.to_string())],
                 )?;
                 let lanes = t.query_objs(
@@ -262,7 +265,9 @@ pub(crate) fn claim_preamble(
                 match lanes.into_iter().next() {
                     Some(l) => l,
                     None => {
-                        return Err(unknown_lane_error(lane_id));
+                        return Err(format!(
+                            "claim_repo_task: lane {lane_id} registration did not land"
+                        ));
                     }
                 }
             }

@@ -390,14 +390,28 @@ elif want tailnet; then
   if ! tailscale --socket="$TS_SOCK" status >/dev/null 2>&1; then
     MODE=userspace
     if [ -c /dev/net/tun ] && { [ "$(id -u)" = 0 ] || [ -n "$SUDO" ]; }; then MODE=kernel; fi
+    # A mode a previous run recorded has already proven itself on
+    # this host; let it override the probe. In the muse sandbox the
+    # probe picks kernel (a TUN device exists and we run as root)
+    # but creating the interface is forbidden, so every cold start
+    # burned ~11s on a doomed kernel daemon before the userspace
+    # fallback — time the 2026-11-22 05:25 keeper restart did not
+    # have under load.
+    RECORDED_MODE=$(cat "$TS_STATE/mode" 2>/dev/null || echo "")
+    [ "$RECORDED_MODE" = userspace ] && MODE=userspace
     if pgrep -f -- "--state=$TS_STATE/tailscaled.state" >/dev/null 2>&1; then
       MODE=$(cat "$TS_STATE/mode" 2>/dev/null || echo "$MODE") # daemon alive, only logged out
     elif [ "$MODE" = kernel ]; then
       rm -f "$TS_SOCK" # a recycle leaves the old socket file on the durable volume
+      # Rotate, never truncate: the previous daemon's log is the
+      # only evidence when a start fails (the 2026-11-22 05:25
+      # attempt's log was destroyed by the next start's `>`).
+      [ -f "$TS_STATE/tailscaled.log" ] && mv "$TS_STATE/tailscaled.log" "$TS_STATE/tailscaled.log.prev"
       $SUDO setsid nohup "$BIN/tailscaled" --state="$TS_STATE/tailscaled.state" --socket="$TS_SOCK" \
         >"$TS_STATE/tailscaled.log" 2>&1 </dev/null &
     else
       rm -f "$TS_SOCK"
+      [ -f "$TS_STATE/tailscaled.log" ] && mv "$TS_STATE/tailscaled.log" "$TS_STATE/tailscaled.log.prev"
       setsid nohup "$BIN/tailscaled" --tun=userspace-networking --state="$TS_STATE/tailscaled.state" \
         --socket="$TS_SOCK" --outbound-http-proxy-listen=127.0.0.1:3130 \
         >"$TS_STATE/tailscaled.log" 2>&1 </dev/null &
@@ -408,7 +422,12 @@ elif want tailnet; then
     ts_backend() { "$BIN/tailscale" --socket="$TS_SOCK" status --json 2>/dev/null |
       python3 -c 'import json,sys; print(json.load(sys.stdin).get("BackendState",""))' 2>/dev/null || true; }
     state=""
-    for _ in $(seq 1 30); do
+    # 60 iterations, not 30: each poll spawns tailscale + python3,
+    # and under sandbox CPU contention (concurrent lane builds) a
+    # single poll can take several seconds — 30 polls elapsed
+    # before a healthy daemon reached Running in the 2026-11-22
+    # 05:25 restart, and the phase died on the auth-key path.
+    for _ in $(seq 1 60); do
       state=$(ts_backend)
       case "$state" in Running | NeedsLogin | NoState | Stopped) [ "$state" = NoState ] || break ;; esac
       sleep 1
