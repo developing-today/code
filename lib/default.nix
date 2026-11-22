@@ -749,6 +749,9 @@ let
         coldStoreRehydratorBundle = coldStoreRehydrator;
       };
       labOpsHub = pkgs.callPackage ../pkgs/lab-ops-hub/package.nix { };
+      labOpsHubDeploy = pkgs.callPackage ../pkgs/lab-ops-hub/deploy.nix {
+        inherit labOpsHub;
+      };
       labOpsHubImagePush = pkgs.callPackage ../pkgs/lab-ops-hub/image-push.nix {
         inherit labOpsHub;
       };
@@ -780,6 +783,7 @@ let
           coldStoreRehydrator
           coldStoreRehydratorDeploy
           labOpsHub
+          labOpsHubDeploy
           labOpsHubImagePush
           cfContainerHello
           cfContainerHelloDeploy
@@ -866,6 +870,7 @@ let
         developing-today-backup-deploy = mkApp developingTodayBackupDeploy "Deploy the developing-today-backup Worker (github-backup webhook receiver) via the wrangler versions flow (needs Bitwarden and sops access)";
         cold-store-rehydrator-deploy = mkApp coldStoreRehydratorDeploy "Deploy the cold-store-rehydrator Worker from its flake bundle via the wrangler versions flow (needs Bitwarden and sops access)";
         lab-ops-hub-image-push = mkApp labOpsHubImagePush "Build and push the Lab Ops Hub crawler container image only (needs Bitwarden and sops access); Worker releases use the GHA cf Versions workflow";
+        lab-ops-hub-deploy = mkApp labOpsHubDeploy "Legacy Lab Ops Hub operator recovery: build/push the pinned crawler image and deploy the Worker with pinned Wrangler (needs Bitwarden, sops, and Cloudflare registry access)";
         cf-container-hello-deploy = mkApp cfContainerHelloDeploy "Deploy the cf-container-hello Worker from its flake package (needs Bitwarden and sops access)";
         queue-transport-alert-deploy = mkApp queueTransportAlertDeploy "Deploy the queue-transport-alert Worker (broker outage alert, code#6369) from its flake package via the cf versions flow (needs Bitwarden and sops access)";
         message-bridge-deploy = mkApp messageBridgeDeploy "Deploy the message-bridge Worker (Claude custom connector that sends and receives messages, plus history page) through the cf versions flow (tagged version, then deployment) and set its access token; --code-only uploads code with Cloudflare env vars (CI), --deploy-version <id> rolls back, --print-urls prints the connector URL (needs Bitwarden and sops access)";

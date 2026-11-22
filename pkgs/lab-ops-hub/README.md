@@ -95,30 +95,52 @@ npm run dev            # local dev (containers run via workerd locally too)
 Worker releases use the two manually dispatched workflows from `main`:
 
 - `lab-ops-hub-worker-release.yml` builds Build Output v1, checks the
-  mapped config against `wrangler.jsonc`, and uploads a tagged Worker
-  Version with `cf workers versions create`. It does not route traffic.
-- `lab-ops-hub-promote.yml` takes an uploaded version UUID and a separate
-  confirmation, then explicitly deploys that version at 100% with
+  mapped config against `wrangler.jsonc`, checks the current single-version
+  100% baseline and uploads a tagged Worker Version with
+  `cf workers versions create`. It does not route traffic.
+- `lab-ops-hub-promote.yml` takes the successful upload workflow's numeric
+  GitHub Actions run ID. It verifies that run and its receipt, including the
+  uploaded version and baseline IDs, then rechecks the current 100% baseline
+  before explicitly deploying the receipt-bound version at 100% with
   `cf workers deployments create`.
 
 Both workflows use Node `24.22.0`, `cf@1.0.0-rc.1`, and Wrangler
-`4.163.0`. The upload workflow keeps a default hold: dispatch it from
-`main`, review the offline build and dry run, then affirm both that the
-existing Worker reports migration tag `v2` and that the pinned crawler
-image is available. It needs the repository variable
-`CLOUDFLARE_ACCOUNT_ID` and secret `CLOUDFLARE_API_TOKEN`; scope the token
-to Cloudflare `Workers Scripts Write`. The secret is present only on the
-version-upload step, never on pull-request workflows. The promotion
-workflow requires the exact version UUID and its own explicit confirmation.
+`4.163.0`, and share a GitHub concurrency group. The upload and promotion
+jobs use the protected environment `lab-ops-hub-cloudflare-release`, with
+the environment variable `CLOUDFLARE_LAB_OPS_HUB_ACCOUNT_ID` and secret
+`CLOUDFLARE_LAB_OPS_HUB_API_TOKEN`. The token must have Cloudflare's
+Workers `Editor` role scoped to the individual `lab-ops-hub` Worker
+(`Individual Workers Editor` API permission). See Cloudflare's [Workers
+roles and permissions](https://developers.cloudflare.com/workers/authorization/).
+The
+secret is used only by the manually dispatched trusted workflows; there is
+no pull-request trigger or pull-request credential path. Configure the
+environment protection and credentials out of band before cutover; this
+change does not edit GitHub settings.
+
+**Current fail-closed hold:** Cloudflare's documented Worker Version GET
+includes the migration tag and container class, but omits the container image
+URI. The documented Containers application read schema also omits the image
+for this Durable Object-managed container. The workflows therefore can check
+`v2` but deliberately stop before upload or promotion when they cannot prove
+the exact `:v5` pin from read-only metadata. Do not grant broader account or
+registry permissions to bypass this check. Cutover needs a read-only image
+metadata field or a separately trusted image-publish attestation that binds
+the immutable image digest to the Worker release receipt.
 
 Cutover prerequisites: the `lab-ops-hub` Worker must already exist,
-Cloudflare must report migration tag `v2` as current, and the pinned
-`lab-ops-hub-crawlercontainer:v5` image must already be present in the
-configured registry. `cf workers versions create` refuses a pending
-Durable Object migration and cannot create a Worker that does not exist.
-The existing `v1` and `v2` migration records stay in `wrangler.jsonc`;
-this release path does not apply them. If any prerequisite is unknown or
-false, keep the upload held and resolve it before promotion.
+Cloudflare must report migration tag `v2` as current, the exact pinned
+`lab-ops-hub-crawlercontainer:v5` image must be verified, and the protected
+environment/token must be configured. Keep the prior operator recovery
+available until this workflow has passed those checks. Pause all other
+Worker releases, including operator deploys, during the GHA promotion
+window: Cloudflare's deployment create API does not expose a compare-and-swap
+condition, so the repeated baseline checks and GitHub concurrency group
+cannot serialize deployments made outside these workflows. `cf workers
+versions create` refuses a pending Durable Object migration and cannot
+create a Worker that does not exist. The existing `v1` and `v2` migration
+records stay in `wrangler.jsonc`; this release path does not apply them. If
+any prerequisite is unknown or false, keep upload and promotion held.
 
 Runtime API auth is separate: the existing `API_TOKEN` Worker secret
 gates the deployed API itself.
@@ -149,6 +171,16 @@ image. The operator app `nix run .#lab-ops-hub-image-push` builds and pushes
 only that image (use `-- --dry-run` to build without pushing). It does not
 upload or promote a Worker Version. `wrangler.jsonc` and the Build Output
 mapping both pin `CrawlerContainerV2` to the matching `:v5` image.
+
+### Legacy operator recovery
+
+Until the GHA release path has passed its cutover checks, keep
+`nix run .#lab-ops-hub-deploy` available as the prior operator recovery.
+It uses the pinned Wrangler from the Worker package, rebuilds and pushes
+the already-pinned `:v5` image, then runs `wrangler deploy`. This fallback
+is separate from the GHA Worker Version upload/promotion flow and retains
+its existing Bitwarden/SOPS and Cloudflare registry credential boundary;
+it is not a CI credential path. Use `-- --dry-run` for config validation.
 
 ### Known behaviour (observed 2026-10-20, D1-verified)
 
