@@ -1433,6 +1433,8 @@ pub fn validate_notify_text(text: &str) -> Result<()> {
         "notify text must not contain control characters"
     );
     Ok(())
+}
+
 /// The canonical spelling of an `http.fetch` host for allowlist
 /// comparison: lowercase, with one trailing dot (the DNS root in
 /// a fully-qualified name) stripped. Applied to URL hosts and to
