@@ -25,7 +25,10 @@ BUCKET_PART = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 def _run_rclone(args):
     try:
         result = subprocess.run(
-            ["rclone", *args], capture_output=True, text=True, timeout=RUN_TIMEOUT_SECONDS
+            ["rclone", *args],
+            capture_output=True,
+            text=True,
+            timeout=RUN_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"rclone {' '.join(args)} timed out") from exc
@@ -37,7 +40,9 @@ def _run_rclone(args):
 def upload_repo(repo, root, bucket):
     """Publish a locally verified bundle and compare the remote bytes."""
     parts = repo.split("/")
-    if len(parts) != 2 or not all(bundle_cold.REPO_PART.fullmatch(part) for part in parts):
+    if len(parts) != 2 or not all(
+        bundle_cold.REPO_PART.fullmatch(part) for part in parts
+    ):
         raise ValueError("repo must be OWNER/REPO using safe path components")
     if not BUCKET_PART.fullmatch(bucket):
         raise ValueError("bucket must be a safe R2 bucket name")
@@ -49,7 +54,9 @@ def upload_repo(repo, root, bucket):
     mirror = mirror_path(root, repo)
     bundle_dir = os.path.join(root, "cold-bundles", *parts[:-1])
     os.makedirs(bundle_dir, exist_ok=True)
-    fd, bundle = tempfile.mkstemp(prefix=parts[-1] + ".", suffix=".bundle", dir=bundle_dir)
+    fd, bundle = tempfile.mkstemp(
+        prefix=parts[-1] + ".", suffix=".bundle", dir=bundle_dir
+    )
     os.close(fd)
     os.unlink(bundle)
     readback = None
@@ -95,15 +102,21 @@ def upload_repo(repo, root, bucket):
 
 def _parser():
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    parser.add_argument("--repo", required=True, help="planned repository as OWNER/REPO")
+    parser.add_argument(
+        "--repo", required=True, help="planned repository as OWNER/REPO"
+    )
     parser.add_argument("--bucket", required=True, help="existing R2 bucket")
-    parser.add_argument("--root", help="backup tree root (defaults to configured backup_root)")
+    parser.add_argument(
+        "--root", help="backup tree root (defaults to configured backup_root)"
+    )
     return parser
 
 
 def main(argv=None):
     args = _parser().parse_args(argv)
-    root = os.path.abspath(os.path.expanduser(args.root)) if args.root else backup_root()
+    root = (
+        os.path.abspath(os.path.expanduser(args.root)) if args.root else backup_root()
+    )
     try:
         result = upload_repo(args.repo, root, args.bucket)
     except (OSError, RuntimeError, ValueError) as exc:

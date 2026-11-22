@@ -50,11 +50,28 @@
 //! on #9029. The inventory that dispositioned every forwarded field,
 //! client flag, and broker verb parameter against this contract is
 //! recorded on #6449.
+//!
+//! One row-level selection sits downstream of this contract:
+//! task_from_packet derives the stored priority from the payload's
+//! labels when Drew's #7030 labels are present (expedite ⇒ 15,
+//! next-up ⇒ 25 — the ratified stored bands, deliberately off the
+//! stated-value scale above). The packet's stated priority is
+//! validated here exactly as before, and stands whenever neither
+//! label is present.
 
 use serde_json::{Value, json};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const PRIORITY_SCALE: [i64; 7] = [10, 20, 30, 40, 50, 70, 90];
+/// #7030: Drew's ratified label bands (ratified 2026-11-07): an issue
+/// carrying the `expedite` label queues at priority 15 (the 10–20
+/// band) and one carrying `next-up` at 25 (the 20–30 band). These are
+/// the ratified *stored* values — deliberately not on PRIORITY_SCALE,
+/// which constrains what a packet may state; the broker claims by
+/// the stored row (priority ASC), and stored expedite rows already
+/// read back at 15/25. task_from_packet performs the selection.
+pub const EXPEDITE_PRIORITY: i64 = 15;
+pub const NEXT_UP_PRIORITY: i64 = 25;
 pub const KINDS: [&str; 5] = [
     "pr_shepherd",
     "triage",
@@ -1088,6 +1105,24 @@ pub fn validate_packet(packet: &Value) -> (Vec<String>, Vec<String>) {
     (errors, warnings)
 }
 
+/// The #7030 band a payload's labels select, if any. An issue task
+/// carries its GitHub labels in the payload's `labels` array — the
+/// same array the claim filter's label field reads. `expedite`
+/// outranks `next-up` when a packet somehow carries both. Parsing is
+/// tolerant, mirroring the claim filter: a non-array `labels` value
+/// or non-string entries select nothing.
+fn label_band_priority(payload: &Value) -> Option<i64> {
+    let labels = payload.get("labels")?.as_array()?;
+    let has = |name: &str| labels.iter().any(|l| l.as_str() == Some(name));
+    if has("expedite") {
+        Some(EXPEDITE_PRIORITY)
+    } else if has("next-up") {
+        Some(NEXT_UP_PRIORITY)
+    } else {
+        None
+    }
+}
+
 /// task_from_packet: the agent.tasks row shape the enqueue RPC takes.
 pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
     let mut payload = packet.get("payload").cloned().unwrap_or(json!({}));
@@ -1151,13 +1186,27 @@ pub fn task_from_packet(packet: &Value, queue: &str) -> Value {
             );
         }
     }
+    // #7030: Drew's labels state his claim order directly, so when
+    // the payload carries `expedite` / `next-up` the label band is
+    // the selected row priority — this row is the single source of
+    // truth, exactly as for max_attempts above — and the packet's
+    // stated priority stands only when neither label is present.
+    // (Stated values for labelled issues were historically produced
+    // by machinery applying the inverted 2026-10-29 mapping,
+    // expedite ⇒ 90, which the broker's priority-ASC claim order
+    // reads as last; the label is Drew's signal, the stated number
+    // is that machinery's output.)
+    let priority = match label_band_priority(&payload) {
+        Some(band) => json!(band),
+        None => packet.get("priority").cloned().unwrap_or(Value::Null),
+    };
     json!({
         "queue": queue,
         "title": packet.get("title").cloned().unwrap_or(Value::Null),
         "body": packet.get("body").cloned().unwrap_or(Value::Null),
         "payload": payload,
         "dedupe_key": packet.get("dedupe_key").cloned().unwrap_or(Value::Null),
-        "priority": packet.get("priority").cloned().unwrap_or(Value::Null),
+        "priority": priority,
         "not_before": packet.get("not_before").cloned().unwrap_or(Value::Null),
         "max_attempts": max_attempts,
         "required_budget_minutes": required_budget,
@@ -1248,6 +1297,62 @@ mod tests {
         assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 1000);
         packet["payload"]["max_attempts"] = json!(7);
         assert_eq!(task_from_packet(&packet, "q")["max_attempts"], 7);
+    }
+
+    #[test]
+    fn label_bands_select_row_priority_7030() {
+        // #7030 oracle (the issue's acceptance line): "Label mapping
+        // flipped and verified by readback: an expedited issue's task
+        // reads in the 10–20 band in the Turso store". The row
+        // task_from_packet builds is what the store reads back, so
+        // the oracle is decided here. Drew ratified the exact stored
+        // values on 2026-11-07: expedite = 15 (10–20 band),
+        // next-up = 25 (20–30 band).
+        let payload = payload_with(json!({"issue": {"number": 7030}}));
+        // The stated 90 is the inverted mapping's expedite value:
+        // valid on the design scale, and exactly what the label must
+        // supersede.
+        let base = json!({"title": "test", "priority": 90, "payload": payload});
+
+        // Expedite: the band is selected over the stated priority
+        // and reads back inside 10..=20.
+        let mut packet = base.clone();
+        packet["payload"]["labels"] = json!(["expedite"]);
+        let row = task_from_packet(&packet, "q");
+        assert_eq!(row["priority"], EXPEDITE_PRIORITY);
+        assert!((10..=20).contains(&row["priority"].as_i64().unwrap()));
+
+        // Next-up: the 20..=30 band, ratified stored value 25.
+        packet["payload"]["labels"] = json!(["next-up"]);
+        let row = task_from_packet(&packet, "q");
+        assert_eq!(row["priority"], NEXT_UP_PRIORITY);
+        assert!((20..=30).contains(&row["priority"].as_i64().unwrap()));
+
+        // Both labels present: expedite outranks next-up.
+        packet["payload"]["labels"] = json!(["next-up", "expedite"]);
+        assert_eq!(
+            task_from_packet(&packet, "q")["priority"],
+            EXPEDITE_PRIORITY
+        );
+
+        // Unrelated labels, then no labels at all: the stated
+        // priority is untouched.
+        packet["payload"]["labels"] = json!(["queue/queued"]);
+        assert_eq!(task_from_packet(&packet, "q")["priority"], 90);
+        packet["payload"].as_object_mut().unwrap().remove("labels");
+        assert_eq!(task_from_packet(&packet, "q")["priority"], 90);
+
+        // Unlabeled and unstated: priority stays null, as before.
+        let mut packet = base.clone();
+        packet.as_object_mut().unwrap().remove("priority");
+        assert!(task_from_packet(&packet, "q")["priority"].is_null());
+
+        // Labeled and unstated: the band still selects the row value.
+        packet["payload"]["labels"] = json!(["expedite"]);
+        assert_eq!(
+            task_from_packet(&packet, "q")["priority"],
+            EXPEDITE_PRIORITY
+        );
     }
 
     #[test]

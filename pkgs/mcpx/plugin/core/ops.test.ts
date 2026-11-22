@@ -242,6 +242,14 @@ describe("DaemonClient.exec", () => {
     const err = await pending.catch((e) => e);
     expect(err).toBeInstanceOf(Error);
     expect(Date.now() - started).toBeLessThan(5000);
+    // The client rejects as soon as its own signal fires; the server
+    // observes the disconnect asynchronously, so wait for it rather
+    // than asserting in the same tick (under load the server's abort
+    // event lands after the client-side rejection).
+    const deadline = Date.now() + 5000;
+    while (!serverSawAbort && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
     expect(serverSawAbort).toBe(true);
   });
 });

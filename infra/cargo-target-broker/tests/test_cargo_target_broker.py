@@ -128,11 +128,17 @@ class WorkspaceArtifactCleanupTest(unittest.TestCase):
                 {"id": "registry+https://example.invalid#dep@1.0.0", "name": "dep"},
             ],
         }
-        with mock.patch.object(
-            broker_mod.subprocess,
-            "run",
-            side_effect=[mock.Mock(stdout=broker_mod.json.dumps(metadata)), mock.Mock()],
-        ) as run, mock.patch.object(Path, "is_file", return_value=True):
+        with (
+            mock.patch.object(
+                broker_mod.subprocess,
+                "run",
+                side_effect=[
+                    mock.Mock(stdout=broker_mod.json.dumps(metadata)),
+                    mock.Mock(),
+                ],
+            ) as run,
+            mock.patch.object(Path, "is_file", return_value=True),
+        ):
             broker_mod.clean_workspace_artifacts(target, cwd=Path("/worktree"))
 
         metadata_call, clean_call = run.call_args_list

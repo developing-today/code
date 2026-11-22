@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Consume a one-time Muse credential handoff and enroll the agent."""
+
 import argparse
 import json
 import os
@@ -53,8 +54,12 @@ def get_credentials(args, config):
     if args.resume:
         try:
             return {
-                "bws_access_token": (config / "bitwarden/access-token").read_text().strip(),
-                "op_service_account_token": (config / "op/service-account-token").read_text().strip(),
+                "bws_access_token": (config / "bitwarden/access-token")
+                .read_text()
+                .strip(),
+                "op_service_account_token": (config / "op/service-account-token")
+                .read_text()
+                .strip(),
                 "agent_name": args.name,
             }
         except OSError:
@@ -62,7 +67,11 @@ def get_credentials(args, config):
     parsed = urllib.parse.urlsplit(args.handoff_url)
     if parsed.scheme != "https" or parsed.query or parsed.username or parsed.password:
         fail("handoff URL must be HTTPS with no query string")
-    if not parsed.hostname or not parsed.hostname.startswith(HANDOFF_ORIGIN_HOST_PREFIX) or not parsed.hostname.endswith(HANDOFF_ORIGIN_HOST_SUFFIX):
+    if (
+        not parsed.hostname
+        or not parsed.hostname.startswith(HANDOFF_ORIGIN_HOST_PREFIX)
+        or not parsed.hostname.endswith(HANDOFF_ORIGIN_HOST_SUFFIX)
+    ):
         fail("URL is not from the Muse handoff service")
     if parsed.path not in ("", "/"):
         fail("handoff URL path is invalid")
@@ -70,7 +79,9 @@ def get_credentials(args, config):
     if len(parts) != 2:
         fail("URL is missing its one-time claim code")
     handoff_id, claim = parts
-    if not re.fullmatch(r"[0-9a-f-]{36}", handoff_id) or not re.fullmatch(r"[A-Za-z0-9_-]{40,48}", claim):
+    if not re.fullmatch(r"[0-9a-f-]{36}", handoff_id) or not re.fullmatch(
+        r"[A-Za-z0-9_-]{40,48}", claim
+    ):
         fail("one-time claim code is malformed")
     request = urllib.request.Request(
         "https://" + parsed.netloc + "/api/claim",
@@ -86,7 +97,9 @@ def get_credentials(args, config):
             fail("handoff is expired or was already used; generate a fresh URL")
         fail("handoff service returned HTTP " + str(error.code))
     except Exception:
-        fail("could not reach the handoff service; if this link may have been consumed, generate a fresh one")
+        fail(
+            "could not reach the handoff service; if this link may have been consumed, generate a fresh one"
+        )
     if credentials.get("agent_name") != args.name:
         fail("handoff is for a different agent name; do not enroll with this URL")
     for key in ("bws_access_token", "op_service_account_token"):
@@ -114,16 +127,20 @@ def run(args):
     config = home / ".config"
     credentials = get_credentials(args, config)
     secure_write(config / "bitwarden/access-token", credentials["bws_access_token"])
-    secure_write(config / "op/service-account-token", credentials["op_service_account_token"])
+    secure_write(
+        config / "op/service-account-token", credentials["op_service_account_token"]
+    )
 
     env = os.environ.copy()
-    env.update({
-        "HOME": str(home),
-        "XDG_CONFIG_HOME": str(config),
-        "FLEET_AGENT": name,
-        "BWS_ACCESS_TOKEN": credentials["bws_access_token"],
-        "OP_SERVICE_ACCOUNT_TOKEN": credentials["op_service_account_token"],
-    })
+    env.update(
+        {
+            "HOME": str(home),
+            "XDG_CONFIG_HOME": str(config),
+            "FLEET_AGENT": name,
+            "BWS_ACCESS_TOKEN": credentials["bws_access_token"],
+            "OP_SERVICE_ACCOUNT_TOKEN": credentials["op_service_account_token"],
+        }
+    )
     del credentials
     saved_bootstrap = home / "tools/muse-bootstrap.sh"
     with tempfile.TemporaryDirectory(prefix=".muse-enroll-", dir=home) as temp:
@@ -135,17 +152,27 @@ def run(args):
         if args.resume:
             print("Resuming the idempotent Muse bootstrap with saved 0600 credentials.")
         else:
-            print("Running the pinned Muse bootstrap (tools, restored setup, tailnet, Fleet, and checks).")
+            print(
+                "Running the pinned Muse bootstrap (tools, restored setup, tailnet, Fleet, and checks)."
+            )
         completed = subprocess.run(["bash", str(bootstrap), "--all"], env=env)
     if completed.returncode:
-        print("Bootstrap failed with exit " + str(completed.returncode) + ".", file=sys.stderr)
-        print("Credentials are saved in 0600 files. Diagnose the named failed phase, then rerun:", file=sys.stderr)
+        print(
+            "Bootstrap failed with exit " + str(completed.returncode) + ".",
+            file=sys.stderr,
+        )
+        print(
+            "Credentials are saved in 0600 files. Diagnose the named failed phase, then rerun:",
+            file=sys.stderr,
+        )
         print("python3 enroll-agent.py --name " + name + " --resume", file=sys.stderr)
         raise SystemExit(completed.returncode)
 
     fleet = home / "tools/fleet"
     if not fleet.is_file():
-        fail("bootstrap completed but ~/tools/fleet is missing; rerun with --resume after repairing the fleet phase")
+        fail(
+            "bootstrap completed but ~/tools/fleet is missing; rerun with --resume after repairing the fleet phase"
+        )
     profile = config / "fleet/agent.json"
     enrolled_name = None
     try:
@@ -153,25 +180,51 @@ def run(args):
     except Exception:
         pass
     if enrolled_name != name:
-        enrolled = subprocess.run([str(fleet), "agent", "enroll", "--kind", "muse", "--name", name], env=env)
+        enrolled = subprocess.run(
+            [str(fleet), "agent", "enroll", "--kind", "muse", "--name", name], env=env
+        )
         if enrolled.returncode:
-            print("Fleet enrollment did not verify. Preserve this name and run the doctor before retrying.", file=sys.stderr)
+            print(
+                "Fleet enrollment did not verify. Preserve this name and run the doctor before retrying.",
+                file=sys.stderr,
+            )
             raise SystemExit(enrolled.returncode)
     else:
-        print("Fleet profile already exists for " + name + "; not enrolling it a second time.")
+        print(
+            "Fleet profile already exists for "
+            + name
+            + "; not enrolling it a second time."
+        )
     doctor = subprocess.run([str(fleet), "agent", "doctor", "--agent", name], env=env)
     if doctor.returncode:
-        print("Enrollment profile exists, but one or more reachability checks failed. Record each failed leg and resume after fixing it.", file=sys.stderr)
+        print(
+            "Enrollment profile exists, but one or more reachability checks failed. Record each failed leg and resume after fixing it.",
+            file=sys.stderr,
+        )
         raise SystemExit(doctor.returncode)
-    print("Enrollment complete: " + name + " is registered and the doctor found a usable intake rung.")
-    print("Next: run ~/tools/fleet agent next and follow the returned task; exit 5 means no task is available.")
+    print(
+        "Enrollment complete: "
+        + name
+        + " is registered and the doctor found a usable intake rung."
+    )
+    print(
+        "Next: run ~/tools/fleet agent next and follow the returned task; exit 5 means no task is available."
+    )
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--name", required=True, help="stable agent name bound to the handoff")
-    parser.add_argument("--handoff-url", help="15-minute single-use URL; omitted with --resume")
-    parser.add_argument("--resume", action="store_true", help="reuse locally saved credentials after a failed phase")
+    parser.add_argument(
+        "--name", required=True, help="stable agent name bound to the handoff"
+    )
+    parser.add_argument(
+        "--handoff-url", help="15-minute single-use URL; omitted with --resume"
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="reuse locally saved credentials after a failed phase",
+    )
     args = parser.parse_args()
     if args.resume == bool(args.handoff_url):
         fail("provide exactly one of --handoff-url or --resume")

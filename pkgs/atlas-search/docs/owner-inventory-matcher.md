@@ -19,9 +19,7 @@ people, logs, reports, or persistent scan artifacts.
 ```json
 {
   "format": "atlas-owner-inventory/v1",
-  "records": [
-    {"id": "opaque-record-01", "class": "address", "value": "synthetic example"}
-  ]
+  "records": [{ "id": "opaque-record-01", "class": "address", "value": "synthetic example" }]
 }
 ```
 

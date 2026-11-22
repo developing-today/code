@@ -161,10 +161,9 @@ describe("atlas-search worker", () => {
     });
     expect(purged.status).toBe(200);
     expect(await purged.json()).toMatchObject({ purged: true, query });
-    const inspect = await SELF.fetch(
-      `https://worker.test/v1/cache/inspect?query=${encodeURIComponent(query)}`,
-      { headers: GATE },
-    );
+    const inspect = await SELF.fetch(`https://worker.test/v1/cache/inspect?query=${encodeURIComponent(query)}`, {
+      headers: GATE,
+    });
     expect(await inspect.json()).toMatchObject({ exists: false });
 
     const second = await search({ query });

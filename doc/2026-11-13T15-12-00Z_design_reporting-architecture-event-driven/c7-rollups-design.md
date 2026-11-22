@@ -74,7 +74,7 @@ restricted post-window operations below.
 - **Dynamic period variables:** template variables resolve once per report
   generation and are stored as numeric ISO values (e.g. `2026-11`) for all
   references in that report. The amendment's before/after-15th previous vs
-  current month is a *suggested selection policy*, not an implicit default
+  current month is a _suggested selection policy_, not an implicit default
   period: generation commands require an explicit period or use the latest
   closed period. This avoids a report changing identity based on generation
   date. A caller may request the suggested policy explicitly.
@@ -115,7 +115,7 @@ progressive disclosure, not the default reading experience.
 - **Design page:** one canonical page per design, linked to its parent/roadmap
   genealogy and origin. Render subdesign tree and why-needed; status ladder
   (`idea → planned → initial issue → issue built out → fully designed →
-  implementation issues`); implementation counts and linked members by
+implementation issues`); implementation counts and linked members by
   done/in-progress/blocked/queued; reasons for blocked states; daily/weekly
   change notes. Long-running designs get linked monthly/quarterly pages.
   Genealogy and metadata are read from #9060/#9073/#9074, not duplicated.
@@ -140,32 +140,32 @@ progressive disclosure, not the default reading experience.
 
 ## Statement disposition map
 
-| Statement | Design element / disposition |
-|---|---|
-| S3.17 | Timeline, tree/sitemap, and full name/text search; see C6 for shared index implementation. |
-| S4.1 | Daily, weekly, monthly series; quarterly and annual added by the issue/amendment. |
-| S4.2 | Frozen dated period snapshots in unpinned library spaces. |
-| S4.3 | Four named project spaces and required state/link sections. |
-| S4.4 | Per-project daily prose, pivots and durable remediations. |
-| S4.5 | Weekly sections and linked work/plans. |
-| S4.6 | Backward daily rollup plus handled-last-week/planned-next/forward sketch. |
-| S4.7 | Prior-Friday reach-back with usage and downstream issues. |
-| S4.8 | Midnight-to-midnight CT; 08:00 next morning selected as soft-close deadline. |
-| S4.9 | Late outcome appears on new report and links to old hypothesis. |
-| S4.10 | Weekly 2 days; monthly/quarterly 7 days (within requested ranges); annual 7 days as amendment extension. |
-| S4.11 | Restricted post-window forms and immutable snapshots/correction records. |
-| S4.12 | Out of C7; C8 ingests C7 pages and exposes Atlas search. |
-| S4.13 | Design pages, genealogy, rationale, status ladder. |
-| S4.14 | Point-in-time linked status counts, child-to-parent rollup, reasons and daily/weekly updates. |
-| S4.15 | Monthly/quarterly pages for long-running designs. |
-| S4.16 | Linked quota/generic pages, excerpts/media and timestamp/event-log rollup. |
-| S4.17 | Tree/sitemap plus name/text search; C6 supplies shared index mechanics. |
-| S4.18 | Permanent PM-stack-backed records, custom/report index, troubleshooting grouping, timeline. |
-| S4.19 | Nested timeline, overview first, fold/unfold in place. |
-| S4.20 | Domain weeklies as adjacent columns/subitems. |
-| S4.21 | Special reports attach to date; designs expose phase milestones. |
-| S4.22 | Monthly/quarterly thematic rollups. |
-| S4.23 | Monthly idea/design report and visual artifacts, progressively detailed. |
+| Statement | Design element / disposition                                                                             |
+| --------- | -------------------------------------------------------------------------------------------------------- |
+| S3.17     | Timeline, tree/sitemap, and full name/text search; see C6 for shared index implementation.               |
+| S4.1      | Daily, weekly, monthly series; quarterly and annual added by the issue/amendment.                        |
+| S4.2      | Frozen dated period snapshots in unpinned library spaces.                                                |
+| S4.3      | Four named project spaces and required state/link sections.                                              |
+| S4.4      | Per-project daily prose, pivots and durable remediations.                                                |
+| S4.5      | Weekly sections and linked work/plans.                                                                   |
+| S4.6      | Backward daily rollup plus handled-last-week/planned-next/forward sketch.                                |
+| S4.7      | Prior-Friday reach-back with usage and downstream issues.                                                |
+| S4.8      | Midnight-to-midnight CT; 08:00 next morning selected as soft-close deadline.                             |
+| S4.9      | Late outcome appears on new report and links to old hypothesis.                                          |
+| S4.10     | Weekly 2 days; monthly/quarterly 7 days (within requested ranges); annual 7 days as amendment extension. |
+| S4.11     | Restricted post-window forms and immutable snapshots/correction records.                                 |
+| S4.12     | Out of C7; C8 ingests C7 pages and exposes Atlas search.                                                 |
+| S4.13     | Design pages, genealogy, rationale, status ladder.                                                       |
+| S4.14     | Point-in-time linked status counts, child-to-parent rollup, reasons and daily/weekly updates.            |
+| S4.15     | Monthly/quarterly pages for long-running designs.                                                        |
+| S4.16     | Linked quota/generic pages, excerpts/media and timestamp/event-log rollup.                               |
+| S4.17     | Tree/sitemap plus name/text search; C6 supplies shared index mechanics.                                  |
+| S4.18     | Permanent PM-stack-backed records, custom/report index, troubleshooting grouping, timeline.              |
+| S4.19     | Nested timeline, overview first, fold/unfold in place.                                                   |
+| S4.20     | Domain weeklies as adjacent columns/subitems.                                                            |
+| S4.21     | Special reports attach to date; designs expose phase milestones.                                         |
+| S4.22     | Monthly/quarterly thematic rollups.                                                                      |
+| S4.23     | Monthly idea/design report and visual artifacts, progressively detailed.                                 |
 
 ## Implementation sequence and verification
 
