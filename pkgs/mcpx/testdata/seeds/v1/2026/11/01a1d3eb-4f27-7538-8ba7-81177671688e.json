@@ -1,12 +1,1 @@
-{
-  "seed": "01a1d3eb-4f27-7538-8ba7-81177671688e",
-  "commit": "00cd285171ce691d833a2e6c8f841a9bb4d2033f",
-  "ref": "refs/heads/queue/15837-9338-protocol-treefmt",
-  "event": "pull_request",
-  "run": "https://github.com/developing-today/code/actions/runs/43372554673",
-  "attempt": 1,
-  "result": "failure",
-  "derivation": "v1",
-  "generators": "",
-  "date": "2026-11-13"
-}
+{"seed":"01a1d3eb-4f27-7538-8ba7-81177671688e","commit":"00cd285171ce691d833a2e6c8f841a9bb4d2033f","ref":"refs/heads/queue/15837-9338-protocol-treefmt","event":"pull_request","run":"https://github.com/developing-today/code/actions/runs/43372554673","attempt":1,"result":"failure","derivation":"v1","generators":"","date":"2026-11-13"}

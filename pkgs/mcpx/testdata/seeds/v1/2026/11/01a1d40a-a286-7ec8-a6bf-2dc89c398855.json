@@ -1,12 +1,1 @@
-{
-  "seed": "01a1d40a-a286-7ec8-a6bf-2dc89c398855",
-  "commit": "bbe9dacb6a57777c123b65f75a6a4002e948f6ca",
-  "ref": "refs/heads/queue/9316-1937-mcpx-exec",
-  "event": "pull_request",
-  "run": "https://github.com/developing-today/code/actions/runs/43366047196",
-  "attempt": 1,
-  "result": "failure",
-  "derivation": "v1",
-  "generators": "",
-  "date": "2026-11-13"
-}
+{"seed":"01a1d40a-a286-7ec8-a6bf-2dc89c398855","commit":"bbe9dacb6a57777c123b65f75a6a4002e948f6ca","ref":"refs/heads/queue/9316-1937-mcpx-exec","event":"pull_request","run":"https://github.com/developing-today/code/actions/runs/43366047196","attempt":1,"result":"failure","derivation":"v1","generators":"","date":"2026-11-13"}
