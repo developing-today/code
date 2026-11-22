@@ -65,6 +65,18 @@ if ((deployVersion === null) !== (expectedBaseline === null)) {
 }
 if (process.env.CSR_CHECK_ARGS_ONLY === "1") process.exit(0);
 
+if (deployVersion !== null) {
+  if (process.env.GITHUB_ACTIONS !== "true" || process.env.COLD_STORE_REHYDRATOR_PRIVATE_STAGING_VERIFIED !== "true") {
+    throw new Error("promotion is restricted to the trusted GitHub workflow after isolated private staging evidence");
+  }
+  if (!/^[0-9]+$/.test(process.env.COLD_STORE_REHYDRATOR_UPLOAD_RUN_ID ?? "")) {
+    throw new Error("promotion requires the validated upload run id");
+  }
+  if (!/^[0-9a-f]{40}$/.test(process.env.COLD_STORE_REHYDRATOR_WORKER_SHA ?? "")) {
+    throw new Error("promotion requires the validated uploaded Worker SHA");
+  }
+}
+
 const accountId = requireEnv("CLOUDFLARE_ACCOUNT_ID");
 const apiToken = resolveApiToken();
 const env = { ...process.env, CLOUDFLARE_API_TOKEN: apiToken, CLOUDFLARE_ACCOUNT_ID: accountId };
@@ -165,6 +177,15 @@ function versionByTag(tag) {
   return versions[0] ?? null;
 }
 
+function assertVersionSource(versionId, workerSha) {
+  const version = versionList().find((candidate) => candidate.id === versionId);
+  const tag = version?.annotations?.["workers/tag"] ?? version?.metadata?.annotations?.["workers/tag"];
+  const expectedTag = `git-${workerSha.slice(0, 12)}`;
+  if (tag !== expectedTag) {
+    throw new Error(`version ${versionId} is not tagged for uploaded source ${workerSha}; refusing to promote`);
+  }
+}
+
 function createdOn(version) {
   const raw = version?.metadata?.created_on ?? version?.created_on ?? version?.createdOn ?? 0;
   const parsed = typeof raw === "number" ? raw : Date.parse(raw);
@@ -226,7 +247,10 @@ function writeWorkflowOutputs(values) {
 
 if (deployVersion !== null) {
   assertServingBaseline(expectedBaseline);
+  assertVersionSource(deployVersion, process.env.COLD_STORE_REHYDRATOR_WORKER_SHA);
   await verifyVersionConfigured(deployVersion);
+  // Recheck after the read-only version checks, immediately before traffic changes.
+  assertServingBaseline(expectedBaseline);
   createDeployment(deployVersion);
   verifyDeployment(deployVersion);
   console.log(`live: ${WORKER_URL} at version ${deployVersion}`);

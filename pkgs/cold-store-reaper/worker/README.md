@@ -91,11 +91,14 @@ production promotion is unavailable through Actions.
 If private staging is later implemented, promotion also compares the current
 serving deployment fingerprint with the exact baseline captured by the
 successful upload run. It refuses a stale or malformed artifact and refuses
-to promote a version missing any existing secret binding names. Runtime
-secret values are never fetched or copied by these workflows; the Worker
-continues to use its existing Cloudflare secret bindings. The D1 and Durable
-Object bindings, the existing SQLite `BundleFlight` class, the original
-`workers.dev` route, and storage are retained unchanged.
+to promote a version unless its tag matches the uploaded source SHA, and
+refuses a version missing any existing secret binding names. The deploy app
+itself accepts promotion only from the trusted GitHub workflow after its
+staging evidence checks; a local operator invocation cannot bypass this gate.
+Runtime secret values are never fetched or copied by these workflows; the
+Worker continues to use its existing Cloudflare secret bindings. The D1 and
+Durable Object bindings, the existing SQLite `BundleFlight` class, the
+original `workers.dev` route, and storage are retained unchanged.
 
 Actions require the protected GitHub environment
 `cold-store-rehydrator-production`, a required reviewer, the dedicated
@@ -109,9 +112,9 @@ For local operator use, `deploy.sh` keeps the existing SOPS account-ID and
 Bitwarden token lookup (`cloudflare.api-token-day-to-day`, overridable with
 `CSR_CF_TOKEN_SECRET`), or accepts explicit `CLOUDFLARE_ACCOUNT_ID` and
 `CLOUDFLARE_API_TOKEN` environment values. Runtime API and Google refresh
-secrets are not fetched or copied. Upload is the no-argument operation;
-`--deploy-version <id> --expected-baseline <sha256>` is the guarded
-promotion/rollback operation and requires the exact current serving baseline.
+secrets are not fetched or copied. Local no-argument invocation uploads an
+immutable version. Promotion/rollback is available only through the trusted
+workflow after the staging gate is implemented and passed.
 
 Until `sync-manifest` has run at least once against a manifest containing
 verified bundles, every `/fetch/<sha>` is a well-formed 404.

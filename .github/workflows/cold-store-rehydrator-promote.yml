@@ -149,6 +149,9 @@ jobs:
         env:
           COLD_STORE_REHYDRATOR_CF_API_TOKEN: ${{ secrets.COLD_STORE_REHYDRATOR_CF_API_TOKEN }}
           COLD_STORE_REHYDRATOR_CF_ACCOUNT_ID: ${{ vars.COLD_STORE_REHYDRATOR_CF_ACCOUNT_ID }}
+          COLD_STORE_REHYDRATOR_PRIVATE_STAGING_VERIFIED: "true"
+          COLD_STORE_REHYDRATOR_UPLOAD_RUN_ID: ${{ inputs.upload_run_id }}
+          COLD_STORE_REHYDRATOR_WORKER_SHA: ${{ steps.version.outputs.worker_sha }}
           VERSION_ID: ${{ steps.version.outputs.version_id }}
           BASELINE_SHA256: ${{ steps.version.outputs.baseline_sha256 }}
         run: |
